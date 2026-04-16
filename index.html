@@ -1,0 +1,3231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HQ Command Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"}}
+</script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--s1:#111118;--s2:#1a1a24;--s3:#232334;
+  --border:#2a2a3a;--border-light:#3a3a4a;
+  --pec:#818cf8;--ftp:#34d399;--combined:#f472b6;
+  --accent:#818cf8;--cyan:#22d3ee;
+  --success:#34d399;--warn:#fbbf24;--danger:#f87171;
+  --text:#e2e8f0;--muted:#64748b;--dim:#475569;
+  --mono:'DM Mono',monospace;--sans:'Syne',sans-serif;--body:'Inter',sans-serif;
+  --radius:12px;--radius-sm:8px;
+}
+html{font-size:15px;background:var(--bg);color:var(--text)}
+body{font-family:var(--body);min-height:100vh;background:var(--bg)}
+a{color:var(--accent);text-decoration:none}
+button{cursor:pointer;font-family:var(--body);border:none;background:none;color:var(--text)}
+input,textarea{font-family:var(--body);background:var(--s2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;width:100%;outline:none;transition:border .2s}
+.mono{font-family:var(--mono)}
+input:focus,textarea:focus{border-color:var(--accent)}
+textarea{resize:vertical;min-height:60px}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--s1)}
+::-webkit-scrollbar-thumb{background:var(--s3);border-radius:3px}
+
+/* Header */
+.header{
+  position:sticky;top:0;z-index:100;
+  background:rgba(10,10,15,.92);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+  padding:16px 24px;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.header-left{display:flex;align-items:center;gap:16px}
+.logo{font-family:var(--sans);font-weight:800;font-size:1.6rem;letter-spacing:-1px;
+  background:linear-gradient(135deg,var(--pec),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header-date{color:var(--muted);font-size:.8rem}
+.header-right{display:flex;align-items:center;gap:12px}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.refresh-btn{padding:6px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.75rem;color:var(--muted);transition:all .2s}
+.refresh-btn:hover{border-color:var(--accent);color:var(--text)}
+
+/* Tab Nav */
+.tab-nav{
+  display:flex;gap:0;background:var(--s1);border-bottom:1px solid var(--border);
+  overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
+.tab-btn{
+  padding:14px 24px;font-size:.75rem;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap;transition:all .2s;
+}
+.tab-btn:hover{color:var(--text);background:rgba(255,255,255,.02)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* Tab Content */
+.tab-content{display:none;padding:24px;max-width:1400px;margin:0 auto}
+.tab-content.active{display:block}
+
+/* Cards */
+.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;transition:border-color .2s}
+.card:hover{border-color:var(--border-light)}
+.card-label{font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.card-value{font-family:var(--mono);font-size:2rem;font-weight:500;line-height:1.1}
+.card-sub{font-size:.8rem;color:var(--muted);margin-top:6px}
+
+/* Grid layouts */
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.grid-2-1{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+
+/* Progress bars */
+.progress-track{height:8px;background:var(--s3);border-radius:4px;margin-top:12px;overflow:hidden;position:relative}
+.progress-fill{height:100%;border-radius:4px;transition:width .8s ease;position:relative}
+.progress-fill::after{content:'';position:absolute;right:0;top:0;bottom:0;width:20px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.2));border-radius:0 4px 4px 0}
+.pace-marker{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text);border-radius:1px;opacity:.5;z-index:1}
+
+/* Revenue specific */
+.rev-card{position:relative;overflow:hidden}
+.rev-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.rev-card.pec::before{background:linear-gradient(90deg,var(--pec),transparent)}
+.rev-card.ftp::before{background:linear-gradient(90deg,var(--ftp),transparent)}
+.rev-card.combined::before{background:linear-gradient(90deg,var(--combined),transparent)}
+.rev-pct{font-size:.85rem;font-weight:500}
+.rev-pct.on-pace{color:var(--success)}
+.rev-pct.close{color:var(--warn)}
+.rev-pct.behind{color:var(--danger)}
+.pace-label{display:inline-flex;align-items:center;gap:6px;font-size:.7rem;padding:3px 8px;
+  border-radius:4px;margin-top:8px;letter-spacing:.5px;text-transform:uppercase}
+.pace-label.on-pace{background:rgba(52,211,153,.1);color:var(--success)}
+.pace-label.close{background:rgba(251,191,36,.1);color:var(--warn)}
+.pace-label.behind{background:rgba(248,113,113,.1);color:var(--danger)}
+
+/* Scorecard strip (compact 4-col) */
+.scorecard-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.score-cell{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px}
+.score-cell-label{font-size:.65rem;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:4px}
+.score-cell-value{font-family:var(--mono);font-size:1.15rem;font-weight:500;margin:4px 0 6px}
+.score-cell-target{font-size:.6rem;color:var(--dim);margin-top:6px}
+.score-cell-edit{font-size:.6rem;color:var(--accent);cursor:pointer;margin-left:auto}
+.score-cell-edit:hover{text-decoration:underline}
+.mini-bar-wrap{display:flex;align-items:center;gap:6px;margin:3px 0}
+.mini-bar-label{font-size:.55rem;width:22px;text-transform:uppercase;letter-spacing:.5px;flex-shrink:0}
+.mini-bar-track{flex:1;height:4px;background:var(--s3);border-radius:2px;overflow:hidden}
+.mini-bar-fill{height:100%;border-radius:2px;transition:width .8s ease}
+.mini-bar-val{font-size:.6rem;color:var(--dim);width:42px;text-align:right;flex-shrink:0;font-family:var(--mono)}
+.auto-badge{font-size:.5rem;letter-spacing:.5px;text-transform:uppercase;padding:1px 5px;border-radius:3px;
+  background:rgba(34,211,238,.1);color:var(--cyan);border:1px solid rgba(34,211,238,.2)}
+
+/* Two-column layout */
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+
+/* Jobs table */
+.jobs-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:.8rem}
+.jobs-table th{text-align:left;padding:10px 12px;color:var(--muted);font-size:.7rem;letter-spacing:1px;
+  text-transform:uppercase;border-bottom:1px solid var(--border)}
+.jobs-table td{padding:10px 12px;border-bottom:1px solid rgba(42,42,58,.5)}
+.jobs-table tr:hover td{background:rgba(255,255,255,.02)}
+.biz-tag{padding:2px 8px;border-radius:4px;font-size:.65rem;letter-spacing:.5px;text-transform:uppercase;font-weight:500}
+.biz-tag.pec{background:rgba(129,140,248,.15);color:var(--pec)}
+.biz-tag.ftp{background:rgba(52,211,153,.15);color:var(--ftp)}
+
+/* Rocks (compact list) */
+.rocks-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.rocks-countdown{font-size:.75rem;color:var(--cyan);font-family:var(--mono)}
+.rock-list-item{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px}
+.rock-status{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.rock-status.not_started{background:var(--s3)}
+.rock-status.in_progress{background:var(--accent)}
+.rock-status.complete{background:var(--success)}
+.rock-status.blocked{background:var(--danger)}
+.rock-category{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:500}
+.rock-category.hr{background:rgba(244,114,182,.15);color:var(--combined)}
+.rock-category.sales{background:rgba(129,140,248,.15);color:var(--pec)}
+.rock-category.ops{background:rgba(34,211,238,.15);color:var(--cyan)}
+.rock-status-select{background:var(--s2);color:var(--text);border:1px solid var(--border);border-radius:4px;
+  font-size:.7rem;padding:4px 8px;cursor:pointer;width:auto;flex-shrink:0}
+.rock-list-item{flex-wrap:wrap}
+.rock-check{width:16px;height:16px;cursor:pointer;accent-color:var(--success);flex-shrink:0}
+.rock-expand-btn{background:none;border:none;color:var(--dim);font-size:.7rem;cursor:pointer;padding:2px 6px;flex-shrink:0}
+.rock-expand-btn:hover{color:var(--text)}
+.rock-notes-wrap{flex-basis:100%;display:none;padding-top:8px;border-top:1px solid var(--border);margin-top:6px}
+.rock-list-item.open .rock-notes-wrap{display:block}
+.rock-notes{width:100%;background:var(--s2);color:var(--text);border:1px solid var(--border);border-radius:4px;
+  font-size:.75rem;padding:8px;font-family:inherit;resize:vertical;min-height:60px;box-sizing:border-box}
+.rock-list-item.complete > span:not(.rock-status):not(.rock-category){text-decoration:line-through;opacity:.6}
+
+/* Weekly Rhythm (compact list) */
+.rhythm-list-item{display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px}
+.rhythm-status{display:inline-flex;align-items:center;gap:4px;font-size:.65rem;padding:3px 10px;border-radius:10px;cursor:pointer;transition:all .2s;flex-shrink:0}
+.rhythm-status.done{background:rgba(52,211,153,.12);color:var(--success)}
+.rhythm-status.pending{background:rgba(100,116,139,.12);color:var(--muted)}
+
+/* Claude Projects */
+.projects-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.project-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;transition:border-color .2s}
+.project-card:hover{border-color:var(--border-light)}
+.project-card.queued{opacity:.6}
+.project-card.paused{opacity:.7}
+.project-row{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer}
+.project-expand{font-size:.75rem;color:var(--dim);transition:transform .2s}
+.project-card.open .project-expand{transform:rotate(90deg)}
+.project-name{flex:1;font-size:.85rem;font-weight:500}
+.project-tags{display:flex;gap:6px;align-items:center}
+.project-tag{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:500}
+.project-tag.shared{background:rgba(100,116,139,.12);color:var(--muted)}
+.project-tag.pec{background:rgba(129,140,248,.12);color:var(--pec)}
+.project-tag.ftp{background:rgba(52,211,153,.12);color:var(--ftp)}
+.project-tag.cat-automation{background:rgba(34,211,238,.08);color:var(--cyan)}
+.project-tag.cat-reporting{background:rgba(251,191,36,.08);color:var(--warn)}
+.project-tag.cat-sop{background:rgba(100,116,139,.08);color:var(--muted)}
+.project-tag.cat-integration{background:rgba(129,140,248,.08);color:var(--pec)}
+.project-tag.cat-dashboard{background:rgba(244,114,182,.08);color:var(--combined)}
+.project-tag.cat-marketing{background:rgba(52,211,153,.08);color:var(--ftp)}
+.project-status-badge{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:500}
+.project-status-badge.active{background:rgba(129,140,248,.12);color:var(--accent)}
+.project-status-badge.queued{background:rgba(100,116,139,.12);color:var(--muted)}
+.project-status-badge.paused{background:rgba(251,191,36,.12);color:var(--warn)}
+.project-status-badge.complete{background:rgba(52,211,153,.12);color:var(--success)}
+.project-progress{width:60px;height:4px;background:var(--s3);border-radius:2px;overflow:hidden}
+.project-progress-fill{height:100%;background:var(--accent);border-radius:2px}
+.project-detail{display:none;padding:0 16px 14px;border-top:1px solid var(--border)}
+.project-card.open .project-detail{display:block}
+.project-task{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:.8rem}
+.project-task-check{width:16px;height:16px;border:2px solid var(--border-light);border-radius:3px;
+  cursor:pointer;flex-shrink:0;transition:all .2s;position:relative;appearance:none;background:none}
+.project-task-check:checked{background:var(--accent);border-color:var(--accent)}
+.project-task-check:checked::after{content:'';position:absolute;left:4px;top:1px;width:4px;height:8px;
+  border:solid var(--bg);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.project-task-text{flex:1}
+.project-task-text.done{text-decoration:line-through;color:var(--muted)}
+.project-task-date{font-size:.65rem;color:var(--dim)}
+.project-add-task{font-size:.75rem;color:var(--accent);cursor:pointer;padding:6px 0;margin-top:4px}
+.project-add-task:hover{text-decoration:underline}
+.project-desc{font-size:.75rem;color:var(--dim);padding:8px 0;line-height:1.5}
+.completed-accordion{margin-top:12px}
+.completed-toggle{font-size:.75rem;color:var(--dim);cursor:pointer;padding:8px 0;display:flex;align-items:center;gap:6px}
+.completed-toggle:hover{color:var(--muted)}
+
+/* The Why banner */
+.goals-banner{text-align:center;padding:24px;margin-top:24px;border-top:1px solid var(--border)}
+.goals-banner-text{font-size:.85rem;color:var(--dim);font-style:italic;line-height:1.6}
+
+/* Responsive */
+@media(max-width:900px){
+  .scorecard-strip{grid-template-columns:repeat(2,1fr)}
+  .two-col{grid-template-columns:1fr}
+}
+@media(max-width:600px){
+  .scorecard-strip{grid-template-columns:1fr}
+}
+
+/* Tasks */
+.task-input-row{display:flex;gap:10px;margin-bottom:20px}
+.task-input-row input{flex:1}
+.btn{padding:10px 20px;border-radius:var(--radius-sm);font-size:.8rem;font-weight:500;transition:all .2s}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{opacity:.85}
+.btn-sm{padding:6px 12px;font-size:.7rem}
+.btn-outline{border:1px solid var(--border);color:var(--muted)}
+.btn-outline:hover{border-color:var(--accent);color:var(--text)}
+.btn-danger{color:var(--danger)}
+.btn-danger:hover{background:rgba(248,113,113,.1)}
+.task-filters{display:flex;gap:8px;margin-bottom:16px}
+.filter-btn{padding:6px 14px;border-radius:20px;font-size:.7rem;letter-spacing:.5px;
+  text-transform:uppercase;border:1px solid var(--border);color:var(--muted);transition:all .2s}
+.filter-btn:hover,.filter-btn.active{border-color:var(--accent);color:var(--accent)}
+.task-item{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;transition:all .2s}
+.task-item:hover{border-color:var(--border-light)}
+.task-item.done{opacity:.5}
+.task-item.done .task-text{text-decoration:line-through}
+.task-check{appearance:none;width:20px;height:20px;border:2px solid var(--border-light);
+  border-radius:50%;cursor:pointer;flex-shrink:0;margin-top:1px;transition:all .2s}
+.task-check:checked{background:var(--success);border-color:var(--success)}
+.task-text{flex:1;font-size:.85rem;line-height:1.5}
+.task-source{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 6px;
+  border-radius:3px;background:rgba(129,140,248,.1);color:var(--pec);margin-top:4px;display:inline-block}
+.task-source.coach{background:rgba(34,211,238,.1);color:var(--cyan)}
+.task-delete{color:var(--dim);font-size:.8rem;padding:4px;transition:color .2s}
+.task-delete:hover{color:var(--danger)}
+.task-empty{text-align:center;color:var(--muted);padding:40px;font-size:.85rem}
+
+/* Cowork status cards */
+.cowork-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.cowork-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 16px;border-left:3px solid var(--dim);transition:border-color .2s}
+.cowork-card.status-green{border-left-color:#22c55e}
+.cowork-card.status-yellow{border-left-color:#eab308}
+.cowork-card.status-red{border-left-color:#ef4444}
+.cowork-card.status-stale{border-left-color:var(--dim)}
+.cowork-card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cowork-card-title{font-size:.7rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:500}
+.cowork-card-ago{font-size:.6rem;color:var(--dim);white-space:nowrap}
+.cowork-card-summary{font-size:.78rem;line-height:1.5;color:var(--text);margin-top:8px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.cowork-card-summary.expanded{display:block;-webkit-line-clamp:unset;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+.cowork-card-toggle{font-size:.65rem;color:var(--accent);cursor:pointer;margin-top:6px;display:none;background:none;border:none;padding:0}
+.cowork-card-toggle.visible{display:inline}
+.cowork-empty{color:var(--dim);font-style:italic;font-size:.78rem}
+
+/* Email */
+.email-filters{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.email-filters .task-filters{margin:0}
+.email-hide-junk{display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--muted);cursor:pointer;user-select:none;margin-left:auto}
+.email-hide-junk input{width:auto;padding:0;margin:0}
+.email-section-label{font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+.email-section-label .count{font-size:.65rem;color:var(--dim);font-weight:400}
+.email-card{display:flex;align-items:flex-start;gap:12px;padding:16px;
+  background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;transition:border-color .2s}
+.email-card:hover{border-color:var(--border-light)}
+.email-priority{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:6px}
+.email-priority.high{background:var(--danger)}
+.email-priority.medium{background:var(--warn)}
+.email-priority.low{background:var(--s3)}
+.email-content{flex:1;min-width:0}
+.email-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.email-tag{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:10px;font-weight:500}
+.email-tag.cat-lead{background:rgba(34,211,238,.12);color:var(--cyan)}
+.email-tag.cat-customer{background:rgba(129,140,248,.12);color:var(--pec)}
+.email-tag.cat-vendor{background:rgba(251,191,36,.12);color:var(--warn)}
+.email-tag.cat-internal{background:rgba(100,116,139,.12);color:var(--muted)}
+.email-tag.cat-junk,.email-tag.cat-marketing{background:rgba(71,85,105,.08);color:var(--dim)}
+.email-tag.biz-pec{background:rgba(129,140,248,.12);color:var(--pec)}
+.email-tag.biz-ftp{background:rgba(52,211,153,.12);color:var(--ftp)}
+.email-from-subject{font-size:.85rem;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.email-from-subject .from{color:var(--text);font-weight:500}
+.email-from-subject .subject{color:var(--muted)}
+.email-summary{font-size:.75rem;color:var(--dim);line-height:1.5;margin-top:4px}
+.email-meta{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.email-time{font-size:.65rem;color:var(--dim);white-space:nowrap}
+.email-draft-toggle{font-size:.6rem;color:var(--accent);cursor:pointer;padding:2px 6px;border:1px solid var(--border);border-radius:4px;white-space:nowrap}
+.email-draft-toggle:hover{border-color:var(--accent)}
+.email-draft{font-size:.75rem;color:var(--muted);line-height:1.6;margin-top:8px;padding:10px 12px;
+  background:var(--s2);border-radius:var(--radius-sm);white-space:pre-wrap;display:none}
+.email-draft.open{display:block}
+
+/* JARVIS */
+.jarvis-layout{display:grid;grid-template-columns:1fr 360px;gap:20px;height:calc(100vh - 140px)}
+.jarvis-chat-col{display:flex;flex-direction:column;background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative}
+.tesseract-bg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:.15}
+.tesseract-mini{flex-shrink:0;width:56px;height:56px}
+.jarvis-header{z-index:1;position:relative}
+.jarvis-messages{z-index:1;position:relative}
+.jarvis-input-row{z-index:1;position:relative}
+.jarvis-brain-col{display:flex;flex-direction:column;gap:12px}
+.jarvis-header{display:flex;align-items:center;gap:16px;padding:16px 20px;border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,rgba(34,211,238,.04),transparent)}
+.jarvis-title{font-family:var(--sans);font-weight:700;font-size:1.1rem;letter-spacing:2px;color:var(--cyan)}
+.jarvis-subtitle{font-size:.7rem;color:var(--muted);letter-spacing:.5px}
+.jarvis-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.msg{max-width:85%;padding:12px 16px;border-radius:var(--radius-sm);font-size:.85rem;line-height:1.6}
+.msg.user{align-self:flex-end;background:rgba(34,211,238,.15);color:var(--text);border:1px solid rgba(34,211,238,.3);border-bottom-right-radius:2px}
+.msg.coach{align-self:flex-start;background:var(--s2);border:1px solid var(--border);border-bottom-left-radius:2px}
+.msg.coach .task-extract{display:block;margin-top:8px;padding:6px 10px;border:1px solid var(--cyan);
+  border-radius:4px;font-size:.7rem;color:var(--cyan);cursor:pointer;transition:all .2s;text-align:center}
+.msg.coach .task-extract:hover{background:rgba(34,211,238,.1)}
+.jarvis-input-row{padding:16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end}
+.jarvis-input-row textarea{flex:1;padding:12px 16px;min-height:44px;max-height:160px;resize:none;line-height:1.5;overflow-y:auto;
+  background:var(--s2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)}
+.coach-send{padding:12px 20px;background:var(--cyan);color:var(--bg);border-radius:var(--radius-sm);font-weight:600;transition:opacity .2s}
+.coach-send:hover{opacity:.85}
+.coach-send:disabled{opacity:.4;cursor:not-allowed}
+.typing{color:var(--cyan);font-size:.8rem;font-style:italic;align-self:flex-start;padding:8px 0}
+
+/* Mic button */
+.jarvis-mic{width:44px;height:44px;border-radius:50%;border:2px solid var(--border);display:flex;align-items:center;
+  justify-content:center;color:var(--muted);transition:all .2s;flex-shrink:0}
+.jarvis-mic:hover{border-color:var(--cyan);color:var(--cyan)}
+.jarvis-mic.listening{border-color:var(--danger);color:var(--danger);animation:mic-pulse 1s infinite;
+  box-shadow:0 0 20px rgba(248,113,113,.3)}
+@keyframes mic-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+/* Arc reactor (legacy, replaced by Three.js tesseract) */
+
+/* Brain dump */
+.brain-input-row{display:flex;gap:8px;align-items:flex-end}
+.brain-input-row textarea{flex:1;padding:10px 14px;min-height:40px;max-height:120px;resize:none;line-height:1.5;overflow-y:auto}
+.brain-item{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:var(--s1);
+  border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;font-size:.8rem;line-height:1.5}
+.brain-item .brain-text{flex:1}
+.brain-item .brain-time{font-size:.6rem;color:var(--dim);flex-shrink:0}
+.brain-item .brain-delete{color:var(--dim);font-size:.75rem;padding:2px;cursor:pointer;flex-shrink:0}
+.brain-item .brain-delete:hover{color:var(--danger)}
+.brain-synced{font-size:.6rem;color:var(--cyan);letter-spacing:.5px;text-transform:uppercase;margin-top:2px}
+
+@media(max-width:1024px){
+  .jarvis-layout{grid-template-columns:1fr;height:auto}
+  .jarvis-chat-col{height:60vh}
+  .jarvis-brain-col{height:auto}
+}
+@media(max-width:768px){
+  .jarvis-layout{grid-template-columns:1fr}
+  .jarvis-chat-col{height:55vh}
+}
+
+/* Setup notice */
+.setup-notice{background:var(--s2);border:1px solid var(--warn);border-radius:var(--radius);
+  padding:24px;margin-bottom:20px;font-size:.85rem;line-height:1.7}
+.setup-notice h3{font-family:var(--sans);color:var(--warn);margin-bottom:8px;font-size:1rem}
+.setup-notice code{background:var(--s3);padding:2px 6px;border-radius:3px;font-size:.8rem}
+
+/* Loading */
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--muted)}
+.spinner{width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .6s linear infinite;margin-right:10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Empty states */
+.empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty-state p{margin-top:8px;font-size:.85rem}
+
+/* SOP Hub */
+.sop-toolbar{display:flex;flex-direction:column;gap:12px;margin-bottom:20px}
+.sop-search{width:100%;padding:12px 16px;background:var(--s1);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);font-size:.9rem}
+.sop-search:focus{border-color:var(--accent);outline:none}
+.sop-filters{display:flex;gap:8px;flex-wrap:wrap}
+.sop-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.sop-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:16px;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;gap:8px}
+.sop-card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.sop-card-tags{display:flex;gap:6px;flex-wrap:wrap}
+.sop-card-title{font-family:var(--sans);font-weight:600;font-size:.95rem;line-height:1.3}
+.sop-card-id{font-size:.6rem;color:var(--dim);font-family:var(--mono);letter-spacing:.5px}
+.sop-card-desc{font-size:.75rem;color:var(--muted);line-height:1.5}
+.sop-card-footer{font-size:.6rem;color:var(--dim);margin-top:auto;padding-top:8px;border-top:1px solid var(--border)}
+.sop-card.expanded{grid-column:1/-1;cursor:default}
+.sop-card.expanded:hover{transform:none}
+.sop-dept-tag{font-size:.55rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:500}
+.sop-dept-tag.sales{background:rgba(129,140,248,.15);color:var(--pec)}
+.sop-dept-tag.ops{background:rgba(34,211,238,.15);color:var(--cyan)}
+.sop-dept-tag.fin,.sop-dept-tag.finance{background:rgba(251,191,36,.15);color:var(--warn)}
+.sop-dept-tag.admin{background:rgba(100,116,139,.15);color:var(--muted)}
+.sop-dept-tag.safety{background:rgba(248,113,113,.15);color:var(--danger)}
+.sop-company-tag{font-size:.55rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:4px;font-weight:500}
+.sop-company-tag.pec{background:rgba(129,140,248,.15);color:var(--pec)}
+.sop-company-tag.ftp{background:rgba(52,211,153,.15);color:var(--ftp)}
+.sop-company-tag.shared{background:rgba(244,114,182,.15);color:var(--combined)}
+.sop-content{font-size:.85rem;line-height:1.7;white-space:pre-wrap;padding:16px;background:var(--s2);
+  border-radius:var(--radius-sm);margin-top:12px;max-height:60vh;overflow-y:auto}
+.sop-content h1,.sop-content h2,.sop-content h3{font-family:var(--sans);font-weight:600;margin:12px 0 6px;color:var(--text)}
+.sop-content h1{font-size:1.1rem}.sop-content h2{font-size:1rem}.sop-content h3{font-size:.9rem}
+.sop-content code{background:var(--s3);padding:2px 5px;border-radius:3px;font-size:.75rem;font-family:var(--mono)}
+.sop-content-close{display:inline-block;margin-top:12px;padding:6px 14px;background:var(--s3);
+  border-radius:var(--radius-sm);font-size:.75rem;color:var(--text);cursor:pointer}
+.sop-content-close:hover{background:var(--border-light)}
+.sop-roles{font-size:.65rem;color:var(--dim);margin-top:6px}
+
+/* SOP Chat */
+.sop-chat-full{display:flex;flex-direction:column;height:calc(100vh - 180px);background:var(--s1);
+  border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.sop-chat-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+.sop-chat-input{display:flex;gap:10px;padding:16px;border-top:1px solid var(--border);background:var(--s1)}
+.sop-chat-input textarea{flex:1;padding:10px 14px;background:var(--s2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);resize:none;min-height:40px;max-height:120px;line-height:1.5;font-family:var(--body)}
+.sop-chat-input textarea:focus{border-color:var(--accent);outline:none}
+.sop-msg{padding:10px 14px;border-radius:var(--radius-sm);max-width:85%;font-size:.85rem;line-height:1.6;white-space:pre-wrap}
+.sop-msg.user{background:rgba(129,140,248,.12);color:var(--text);align-self:flex-end;border:1px solid rgba(129,140,248,.25)}
+.sop-msg.assistant{background:var(--s2);color:var(--text);align-self:flex-start;border:1px solid var(--border)}
+.sop-msg.system{color:var(--muted);align-self:center;font-style:italic;font-size:.75rem}
+.sop-typing{color:var(--cyan);font-size:.8rem;font-style:italic;align-self:flex-start;padding:8px 0}
+
+/* Owner split layout */
+.owner-sop-split{display:grid;grid-template-columns:3fr 2fr;gap:20px;min-height:calc(100vh - 180px)}
+.owner-sop-main{min-width:0}
+.owner-sop-chat{display:flex;flex-direction:column;background:var(--s1);border:1px solid var(--border);
+  border-radius:var(--radius);padding:16px;overflow:hidden;position:sticky;top:80px;height:calc(100vh - 120px)}
+.owner-sop-chat .sop-chat-messages{padding:8px 0}
+.owner-sop-chat .sop-chat-input{padding:12px 0 0;border-top:1px solid var(--border);background:transparent}
+
+/* Employee header overrides */
+.employee-header .header-left{gap:4px}
+
+@media(max-width:1024px){
+  .sop-grid{grid-template-columns:repeat(2,1fr)}
+  .owner-sop-split{grid-template-columns:1fr}
+  .owner-sop-chat{position:static;height:500px}
+}
+@media(max-width:600px){
+  .sop-grid{grid-template-columns:1fr}
+}
+
+/* Responsive */
+@media(max-width:1024px){
+  .grid-3,.cowork-grid{grid-template-columns:repeat(2,1fr)}
+  .grid-2-1{grid-template-columns:1fr}
+}
+@media(max-width:768px){
+  .header{padding:12px 16px}
+  .logo{font-size:1.3rem}
+  .tab-btn{padding:12px 16px;font-size:.65rem}
+  .tab-content{padding:16px}
+  .grid-3,.grid-2,.cowork-grid{grid-template-columns:1fr}
+  .grid-2-1{grid-template-columns:1fr}
+  .card-value{font-size:1.5rem}
+  .jobs-table{font-size:.7rem}
+  .jobs-table th,.jobs-table td{padding:8px 6px}
+}
+</style>
+</head>
+<body>
+
+<!-- PASSWORD GATE -->
+<div id="loginGate" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center">
+  <div style="text-align:center;width:min(360px,90vw)">
+    <div style="font-family:var(--sans);font-weight:800;font-size:2.4rem;margin-bottom:8px;
+      background:linear-gradient(135deg,var(--pec),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent">HQ</div>
+    <div style="color:var(--muted);font-size:.85rem;margin-bottom:8px">Command Center</div>
+    <div style="color:var(--dim);font-size:.7rem;margin-bottom:32px">Owner password or employee code</div>
+    <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password"
+      style="text-align:center;font-size:1rem;padding:14px 20px;margin-bottom:12px"
+      onkeydown="if(event.key==='Enter')checkLogin()">
+    <div style="margin-bottom:12px">
+      <button class="btn btn-primary" style="width:100%;padding:14px" onclick="checkLogin()">Enter</button>
+    </div>
+    <div id="loginError" style="color:var(--danger);font-size:.8rem;min-height:20px"></div>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header class="header" style="display:none">
+  <div class="header-left">
+    <div class="logo">HQ</div>
+    <span class="header-date" id="headerDate"></span>
+  </div>
+  <div class="header-right">
+    <span class="status-dot" id="statusDot" title="Connected"></span>
+    <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+    <button class="refresh-btn" onclick="logout()" style="margin-left:4px">Logout</button>
+  </div>
+</header>
+
+<!-- TAB NAV -->
+<nav class="tab-nav" style="display:none">
+  <button class="tab-btn active" data-tab="command">Command</button>
+  <button class="tab-btn" data-tab="execution">Execution</button>
+  <button class="tab-btn" data-tab="email">Email</button>
+  <button class="tab-btn" data-tab="jarvis">JARVIS</button>
+  <button class="tab-btn" data-tab="sops-owner">SOPs</button>
+</nav>
+
+<!-- COMMAND TAB (merged Revenue + Goals) -->
+<section class="tab-content active" id="tab-command">
+  <!-- Monthly Revenue Cards -->
+  <div id="revSetup"></div>
+  <div class="grid-3" id="revCards">
+    <div class="card rev-card pec">
+      <div class="card-label">PEC Revenue - Monthly</div>
+      <div class="card-value" id="pecRev">--</div>
+      <div class="card-sub">of $151,333/mo target</div>
+      <div class="progress-track"><div class="progress-fill" id="pecBar" style="width:0;background:var(--pec)"></div></div>
+      <div id="pecPace"></div>
+    </div>
+    <div class="card rev-card ftp">
+      <div class="card-label">FTP Revenue - Monthly</div>
+      <div class="card-value" id="ftpRev">--</div>
+      <div class="card-sub">of $91,667/mo target</div>
+      <div class="progress-track"><div class="progress-fill" id="ftpBar" style="width:0;background:var(--ftp)"></div></div>
+      <div id="ftpPace"></div>
+    </div>
+    <div class="card rev-card combined">
+      <div class="card-label">Combined - Monthly</div>
+      <div class="card-value" id="combRev">--</div>
+      <div class="card-sub">of $243,000/mo target</div>
+      <div class="progress-track"><div class="progress-fill" id="combBar" style="width:0;background:var(--combined)"></div></div>
+      <div id="combPace"></div>
+    </div>
+  </div>
+
+  <!-- Annual Scorecard Strip -->
+  <div style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="card-label" style="margin:0">Annual Scorecard <span class="auto-badge">AUTO from Booked Jobs</span></div>
+      <div style="font-size:.7rem;color:var(--dim)" id="yearDaysLeft"></div>
+    </div>
+    <div class="scorecard-strip" id="scorecardStrip"></div>
+  </div>
+
+  <!-- Rocks + Rhythm side by side -->
+  <div class="two-col" style="margin-top:20px">
+    <div>
+      <div class="rocks-header">
+        <div class="card-label" style="margin:0">Q2 2026 Rocks</div>
+        <div class="rocks-countdown" id="q2Countdown"></div>
+      </div>
+      <div id="rocksGrid"></div>
+    </div>
+    <div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="card-label" style="margin:0">Weekly Rhythm</div>
+        <div style="font-size:.65rem;color:var(--dim)" id="weekLabel"></div>
+      </div>
+      <div id="rhythmGrid"></div>
+    </div>
+  </div>
+
+  <!-- Booked Jobs Table -->
+  <div class="card" style="margin-top:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+      <div class="card-label" style="margin:0">Booked Jobs</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <div class="task-filters" style="margin:0">
+          <button class="filter-btn active" data-biz="all" onclick="filterJobs('all',this)">All</button>
+          <button class="filter-btn" data-biz="pec" onclick="filterJobs('pec',this)">PEC</button>
+          <button class="filter-btn" data-biz="ftp" onclick="filterJobs('ftp',this)">FTP</button>
+        </div>
+        <div class="task-filters" style="margin:0">
+          <button class="filter-btn" data-period="lastweek" onclick="filterJobsPeriod('lastweek',this)">Last Week</button>
+          <button class="filter-btn" data-period="wtd" onclick="filterJobsPeriod('wtd',this)">WTD</button>
+          <button class="filter-btn active" data-period="mtd" onclick="filterJobsPeriod('mtd',this)">MTD</button>
+          <button class="filter-btn" data-period="qtd" onclick="filterJobsPeriod('qtd',this)">QTD</button>
+          <button class="filter-btn" data-period="ytd" onclick="filterJobsPeriod('ytd',this)">YTD</button>
+          <button class="filter-btn" data-period="all" onclick="filterJobsPeriod('all',this)">All Time</button>
+          <button class="filter-btn" data-period="custom" onclick="toggleDateRange()">Custom</button>
+        </div>
+        <div id="dateRangePicker" style="display:none;margin-top:8px;display:none;gap:8px;align-items:center">
+          <input type="date" id="dateFrom" style="width:auto;padding:6px 10px;font-size:.75rem">
+          <span style="color:var(--muted);font-size:.75rem">to</span>
+          <input type="date" id="dateTo" style="width:auto;padding:6px 10px;font-size:.75rem">
+          <button class="btn btn-primary btn-sm" onclick="applyDateRange()">Apply</button>
+        </div>
+      </div>
+    </div>
+    <div id="jobsSummary" style="font-size:.8rem;color:var(--muted);margin-bottom:12px"></div>
+    <div style="overflow-x:auto">
+      <table class="jobs-table">
+        <thead>
+          <tr><th>Job</th><th>Biz</th><th>Customer</th><th>Booked</th><th>Revenue</th><th>Sold By</th></tr>
+        </thead>
+        <tbody id="jobsBody">
+          <tr><td colspan="6" class="loading"><div class="spinner"></div>Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- The Why -->
+  <div class="goals-banner">
+    <div class="goals-banner-text" id="goalsWhy"></div>
+  </div>
+</section>
+
+<!-- EXECUTION TAB (merged Tasks + Cowork) -->
+<section class="tab-content" id="tab-execution">
+  <!-- Tasks -->
+  <div class="card-label">Tasks</div>
+  <div class="task-input-row">
+    <input type="text" id="taskInput" placeholder="Add a task..." onkeydown="if(event.key==='Enter')addTask()">
+    <button class="btn btn-primary" onclick="addTask()">Add</button>
+  </div>
+  <div class="task-filters">
+    <button class="filter-btn active" data-filter="active" onclick="filterTasks('active',this)">Active</button>
+    <button class="filter-btn" data-filter="all" onclick="filterTasks('all',this)">All</button>
+    <button class="filter-btn" data-filter="done" onclick="filterTasks('done',this)">Done</button>
+  </div>
+  <div id="taskList"></div>
+
+  <!-- Claude Projects -->
+  <div style="margin-top:28px">
+    <div class="projects-header">
+      <div class="card-label" style="margin:0">Claude Projects</div>
+      <button class="btn btn-outline btn-sm" onclick="addProject()">+ Add Project</button>
+    </div>
+    <div id="projectsList"></div>
+    <div id="projectsCompleted"></div>
+  </div>
+
+  <!-- Cowork Status -->
+  <div style="margin-top:28px">
+    <div class="card-label" style="margin-bottom:12px">Cowork Status</div>
+    <div id="coworkSetup"></div>
+    <div class="cowork-grid" id="coworkGrid">
+      <div class="cowork-card" data-tab="DailySummary">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">Daily Summary</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+      <div class="cowork-card" data-tab="SalesEngine">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">Sales Engine</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+      <div class="cowork-card" data-tab="BackEndOffice">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">Back End Office</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+      <div class="cowork-card" data-tab="CFO">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">CFO</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+      <div class="cowork-card" data-tab="PMforPEC">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">PM for PEC</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+      <div class="cowork-card" data-tab="EmailTriage">
+        <div class="cowork-card-header">
+          <span class="cowork-card-title">Email Triage</span>
+          <span class="cowork-card-ago"></span>
+        </div>
+        <div class="cowork-card-summary cowork-empty">Loading...</div>
+        <button class="cowork-card-toggle" onclick="toggleCoworkCard(this)">Show more</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- EMAIL TAB -->
+<section class="tab-content" id="tab-email">
+  <div class="email-filters">
+    <div class="task-filters">
+      <button class="filter-btn active" data-ecat="all" onclick="filterEmail('all',this)">All</button>
+      <button class="filter-btn" data-ecat="lead" onclick="filterEmail('lead',this)">Leads</button>
+      <button class="filter-btn" data-ecat="customer" onclick="filterEmail('customer',this)">Customers</button>
+      <button class="filter-btn" data-ecat="vendor" onclick="filterEmail('vendor',this)">Vendors</button>
+      <button class="filter-btn" data-ecat="action" onclick="filterEmail('action',this)">Action Needed</button>
+    </div>
+    <div class="task-filters">
+      <button class="filter-btn active" data-ebiz="both" onclick="filterEmailBiz('both',this)">Both</button>
+      <button class="filter-btn" data-ebiz="pec" onclick="filterEmailBiz('pec',this)">PEC</button>
+      <button class="filter-btn" data-ebiz="ftp" onclick="filterEmailBiz('ftp',this)">FTP</button>
+    </div>
+    <label class="email-hide-junk"><input type="checkbox" checked onchange="toggleHideJunk(this.checked)"> Hide Junk</label>
+  </div>
+  <div id="emailList">
+    <div class="loading"><div class="spinner"></div>Loading...</div>
+  </div>
+</section>
+
+<!-- JARVIS TAB -->
+<section class="tab-content" id="tab-jarvis">
+  <div class="jarvis-layout">
+    <!-- Left: Chat -->
+    <div class="jarvis-chat-col">
+      <canvas id="tesseractBg" class="tesseract-bg"></canvas>
+      <div class="jarvis-header">
+        <canvas id="tesseractMini" class="tesseract-mini" width="56" height="56"></canvas>
+        <div>
+          <div class="jarvis-title">J.A.R.V.I.S.</div>
+          <div class="jarvis-subtitle" id="jarvisStatus">Standing by, sir.</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          <span id="saveStatus" style="font-size:.7rem"></span>
+          <button class="btn btn-outline btn-sm" id="muteBtn" onclick="toggleMute()">Voice On</button>
+          <button class="btn btn-outline btn-sm" onclick="saveCoachSession()">Save Log</button>
+        </div>
+      </div>
+      <div class="jarvis-messages" id="coachMessages">
+        <div class="msg coach">Good morning, sir. What's on the agenda today? Give me yesterday's rundown and I'll help you prioritize.</div>
+      </div>
+      <div class="jarvis-input-row">
+        <button class="jarvis-mic" id="micBtn" onclick="toggleVoice()" title="Voice input">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
+        <textarea id="coachInput" rows="1" placeholder="Speak or type, sir..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendCoach()}" oninput="autoGrow(this)"></textarea>
+        <button class="coach-send" id="coachSend" onclick="sendCoach()">Send</button>
+      </div>
+    </div>
+    <!-- Right: Brain Dump -->
+    <div class="jarvis-brain-col">
+      <div class="card-label" style="margin-bottom:12px">Brain Dump / Open Loops</div>
+      <div class="brain-input-row">
+        <textarea id="brainInput" rows="1" placeholder="Capture anything... syncs to Obsidian" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addBrainDump()}" oninput="autoGrow(this)"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="addBrainDump()">Add</button>
+      </div>
+      <div id="brainList"></div>
+    </div>
+  </div>
+</section>
+
+<!-- OWNER SOPs TAB -->
+<section class="tab-content" id="tab-sops-owner">
+  <div class="owner-sop-split">
+    <div class="owner-sop-main">
+      <div class="sop-toolbar">
+        <input type="text" id="sopSearchOwner" class="sop-search" placeholder="Search SOPs..." oninput="searchSOPs(this.value,'owner')">
+        <div class="sop-filters">
+          <button class="filter-btn active" data-sopdept="all" onclick="filterSOPDept('all',this,'owner')">All</button>
+          <button class="filter-btn" data-sopdept="SALES" onclick="filterSOPDept('SALES',this,'owner')">Sales</button>
+          <button class="filter-btn" data-sopdept="OPS" onclick="filterSOPDept('OPS',this,'owner')">Ops</button>
+          <button class="filter-btn" data-sopdept="FIN" onclick="filterSOPDept('FIN',this,'owner')">Finance</button>
+          <button class="filter-btn" data-sopdept="ADMIN" onclick="filterSOPDept('ADMIN',this,'owner')">Admin</button>
+          <button class="filter-btn" data-sopdept="SAFETY" onclick="filterSOPDept('SAFETY',this,'owner')">Safety</button>
+        </div>
+      </div>
+      <div id="sopGridOwner" class="sop-grid">
+        <div class="loading"><div class="spinner"></div>Loading SOPs...</div>
+      </div>
+    </div>
+    <div class="owner-sop-chat">
+      <div class="card-label" style="margin-bottom:8px">Ask SOPs AI</div>
+      <div class="sop-chat-messages" id="sopChatMessagesOwner"></div>
+      <div class="sop-chat-input">
+        <textarea id="sopChatInputOwner" rows="1" placeholder="Ask about any SOP..."
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendSOPChat('owner')}"></textarea>
+        <button class="btn btn-primary btn-sm" onclick="sendSOPChat('owner')">Send</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- EMPLOYEE HEADER -->
+<header class="header employee-header" style="display:none">
+  <div class="header-left">
+    <div class="logo">HQ</div>
+    <div style="margin-left:8px">
+      <div id="empName" style="font-size:.9rem;font-weight:500"></div>
+      <div style="font-size:.65rem;color:var(--dim)">
+        <span id="empRole"></span> <span style="margin:0 6px">·</span> <span id="empCompany"></span>
+      </div>
+    </div>
+  </div>
+  <div class="header-right">
+    <button class="refresh-btn" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<!-- EMPLOYEE TAB NAV -->
+<nav class="tab-nav employee-nav" style="display:none">
+  <button class="tab-btn active" data-emptab="sops">SOPs</button>
+  <button class="tab-btn" data-emptab="ai">Ask AI</button>
+</nav>
+
+<!-- EMPLOYEE SOPs TAB -->
+<section class="tab-content emp-tab-content" id="tab-emp-sops">
+  <div class="sop-toolbar">
+    <input type="text" id="sopSearch" class="sop-search" placeholder="Search SOPs..." oninput="searchSOPs(this.value,'emp')">
+    <div class="sop-filters">
+      <button class="filter-btn active" data-sopdept="all" onclick="filterSOPDept('all',this,'emp')">All</button>
+      <button class="filter-btn" data-sopdept="SALES" onclick="filterSOPDept('SALES',this,'emp')">Sales</button>
+      <button class="filter-btn" data-sopdept="OPS" onclick="filterSOPDept('OPS',this,'emp')">Ops</button>
+      <button class="filter-btn" data-sopdept="FIN" onclick="filterSOPDept('FIN',this,'emp')">Finance</button>
+      <button class="filter-btn" data-sopdept="ADMIN" onclick="filterSOPDept('ADMIN',this,'emp')">Admin</button>
+      <button class="filter-btn" data-sopdept="SAFETY" onclick="filterSOPDept('SAFETY',this,'emp')">Safety</button>
+    </div>
+  </div>
+  <div id="sopGrid" class="sop-grid">
+    <div class="loading"><div class="spinner"></div>Loading SOPs...</div>
+  </div>
+</section>
+
+<!-- EMPLOYEE AI CHAT TAB -->
+<section class="tab-content emp-tab-content" id="tab-emp-ai">
+  <div class="sop-chat-full">
+    <div class="sop-chat-messages" id="sopChatMessages"></div>
+    <div class="sop-chat-input">
+      <textarea id="sopChatInput" rows="1" placeholder="Ask anything about our SOPs..."
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendSOPChat('emp')}"></textarea>
+      <button class="btn btn-primary" onclick="sendSOPChat('emp')">Send</button>
+    </div>
+  </div>
+</section>
+
+<script>
+// ============================================================
+// CONFIG - Replace these values before deploying
+// ============================================================
+const CONFIG = {
+  SHEETS_API_KEY: 'AIzaSyCl4oTuy7HNL9Xk39HmnWAbY-SjRL4JN4M',
+  // ANTHROPIC_API_KEY removed — now server-side only (Netlify env var)
+  SHEETS: {
+    BOOKED_JOBS: '1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4',
+    DASHBOARD_DATA: '1445T0CPavFCWEj2soegc599nCZrbWLgDsCnjQGChI74',
+    MBP_2026: '1vlumbi2mh_mjtmO1ZiTxMy0BTXbtNCNV-FOM-LVZ_s0',
+    CLAUDE_ZAPIER_EMAILS: '121xxdQcAbRPWnnyxcrc6-3npvi6_1tTf7BZUozChIWY'
+  },
+  TARGETS: {
+    PEC_MONTHLY: 151333,
+    FTP_MONTHLY: 91667,
+    COMBINED_MONTHLY: 243000
+  },
+  COACH_MODEL: 'claude-sonnet-4-20250514',
+  ELEVENLABS_API_KEY: 'sk_f3f6812161da21d3ac0f4772bc790227ccf55b1ae2dbc335',
+  ELEVENLABS_VOICE_ID: 'JBFqnCBsd6RMkjVDRZzb',
+  PASSWORD: 'hq2026',
+  COACH_LOG_SCRIPT: 'YOUR_APPS_SCRIPT_URL',
+  SHEETS_PROXY: 'https://script.google.com/macros/s/AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA/exec',
+  EMPLOYEE_CODES: {
+    'dusty2026':  { name: 'Dusty',  company: 'PEC', role: 'sales', code: 'dusty2026' },
+    'doug2026':   { name: 'Doug',   company: 'FTP', role: 'sales', code: 'doug2026' },
+    'justin2026': { name: 'Justin', company: 'PEC', role: 'crew',  code: 'justin2026' },
+    'kyle2026':   { name: 'Kyle',   company: 'PEC', role: 'crew',  code: 'kyle2026' }
+  },
+  SOP_REPO: {
+    owner: 'Dnordby50',
+    repo: 'hq-sops',
+    branch: 'main',
+    rawBase: 'https://raw.githubusercontent.com/Dnordby50/hq-sops/main/',
+    apiBase: 'https://api.github.com/repos/Dnordby50/hq-sops/contents/'
+  },
+  SOP_CHAT_ENDPOINT: '/.netlify/functions/sop-chat'
+};
+
+// ============================================================
+// STATE
+// ============================================================
+let currentFilter = 'active';
+let sopData = [];
+let sopChatHistory = [];
+let sopSystemPrompt = '';
+let sopDeptFilter = 'all';
+let sopSearchQuery = '';
+let currentEmployee = null;
+let sopsLoaded = false;
+let emailCatFilter = 'all';
+let emailBizFilter = 'both';
+let emailHideJunk = true;
+let emailData = [];
+let coachHistory = [];
+let allJobs = [];
+let jobBizFilter = 'all';
+let jobPeriodFilter = 'mtd';
+
+// ============================================================
+// UTILITIES
+// ============================================================
+function $(id) { return document.getElementById(id); }
+function fmt(n) { return '$' + Math.round(n).toLocaleString(); }
+function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function today() {
+  const d = new Date();
+  return { year: d.getFullYear(), month: d.getMonth(), day: d.getDate(),
+    daysInMonth: new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate() };
+}
+
+function parseDate(str) {
+  if (!str) return null;
+  const d = new Date(str);
+  return isNaN(d) ? null : d;
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  return (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear();
+}
+
+function sheetsApiReady() {
+  return CONFIG.SHEETS_PROXY && CONFIG.SHEETS_PROXY !== '';
+}
+
+// anthropicReady() removed — API key is now server-side only (Netlify function proxy)
+
+function showSetup(el, msg) {
+  if (el) el.innerHTML = `<div class="setup-notice"><h3>Setup Required</h3>${msg}</div>`;
+}
+
+// ============================================================
+// GOOGLE SHEETS (via Apps Script proxy)
+// ============================================================
+async function fetchSheet(sheetId, range) {
+  const url = `${CONFIG.SHEETS_PROXY}?id=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Sheets proxy error: ${res.status}`);
+  const data = await res.json();
+  return data || [];
+}
+
+// ============================================================
+// REVENUE
+// ============================================================
+async function loadRevenue() {
+  if (!sheetsApiReady()) {
+    showSetup($('revSetup'), 'Add your Sheets proxy URL to <code>CONFIG.SHEETS_PROXY</code> to load revenue data.');
+    return;
+  }
+  try {
+    const rows = await fetchSheet(CONFIG.SHEETS.BOOKED_JOBS, 'booked jobs!A:G');
+    if (rows.length < 2) { $('jobsBody').innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:20px">No data found</td></tr>'; return; }
+
+    const t = today();
+    let pecTotal = 0, ftpTotal = 0;
+    const jobs = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length < 5) continue;
+      const jobName = r[0] || '';
+      const biz = (r[1] || '').trim().toUpperCase();
+      const customer = r[2] || '';
+      const scheduledDate = r[3] || '';
+      const revenue = parseFloat(String(r[4] || '0').replace(/[$,]/g, '')) || 0;
+      const soldBy = r[5] || '';
+      const dateBooked = r[6] || '';
+      // Use Scheduled Date if available, otherwise fall back to Date Booked
+      const d = parseDate(scheduledDate) || parseDate(dateBooked);
+
+      jobs.push({ jobName, biz, customer, date: d, dateStr: scheduledDate || dateBooked, revenue, soldBy, dateBooked });
+
+      if (d && d.getFullYear() === t.year && d.getMonth() === t.month) {
+        if (biz.includes('PEC') || biz.includes('EPOXY') || biz.includes('PRESCOTT EPOXY')) pecTotal += revenue;
+        else if (biz.includes('FTP') || biz.includes('PAINT') || biz.includes('FINISHING')) ftpTotal += revenue;
+      }
+    }
+
+    const combined = pecTotal + ftpTotal;
+    const pecPct = pct(pecTotal, CONFIG.TARGETS.PEC_MONTHLY);
+    const ftpPct = pct(ftpTotal, CONFIG.TARGETS.FTP_MONTHLY);
+    const combPct = pct(combined, CONFIG.TARGETS.COMBINED_MONTHLY);
+
+    // Expected pace
+    const expectedPct = pct(t.day, t.daysInMonth);
+    const pecProj = t.day > 0 ? (pecTotal / t.day) * t.daysInMonth : 0;
+    const ftpProj = t.day > 0 ? (ftpTotal / t.day) * t.daysInMonth : 0;
+    const combProj = pecProj + ftpProj;
+
+    // Update cards
+    $('pecRev').textContent = fmt(pecTotal);
+    $('ftpRev').textContent = fmt(ftpTotal);
+    $('combRev').textContent = fmt(combined);
+    $('pecBar').style.width = Math.min(pecPct, 100) + '%';
+    $('ftpBar').style.width = Math.min(ftpPct, 100) + '%';
+    $('combBar').style.width = Math.min(combPct, 100) + '%';
+
+    setPace('pecPace', pecPct, expectedPct, pecProj, CONFIG.TARGETS.PEC_MONTHLY);
+    setPace('ftpPace', ftpPct, expectedPct, ftpProj, CONFIG.TARGETS.FTP_MONTHLY);
+    setPace('combPace', combPct, expectedPct, combProj, CONFIG.TARGETS.COMBINED_MONTHLY);
+
+    // Store all jobs for filtering
+    allJobs = jobs.filter(j => j.date).sort((a, b) => b.date - a.date);
+    renderJobsTable();
+
+  } catch (e) {
+    console.error('Revenue load error:', e);
+    $('jobsBody').innerHTML = `<tr><td colspan="6" style="color:var(--danger)">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function isBizMatch(biz, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'pec') return biz.includes('PEC') || biz.includes('EPOXY') || biz.includes('PRESCOTT EPOXY');
+  if (filter === 'ftp') return biz.includes('FTP') || biz.includes('PAINT') || biz.includes('FINISHING');
+  return true;
+}
+
+function isInPeriod(date, period) {
+  if (!date) return false;
+  const t = today();
+  if (period === 'all') return true;
+  if (period === 'lastweek') {
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0=Sun
+    // Last week's Sunday
+    const lastSun = new Date(now);
+    lastSun.setDate(now.getDate() - dayOfWeek - 7);
+    lastSun.setHours(0,0,0,0);
+    // Last week's Saturday (end of day)
+    const lastSat = new Date(lastSun);
+    lastSat.setDate(lastSun.getDate() + 6);
+    lastSat.setHours(23,59,59,999);
+    return date >= lastSun && date <= lastSat;
+  }
+  if (period === 'custom') {
+    const from = $('dateFrom').value ? new Date($('dateFrom').value + 'T00:00:00') : null;
+    const to = $('dateTo').value ? new Date($('dateTo').value + 'T23:59:59') : null;
+    if (from && to) return date >= from && date <= to;
+    if (from) return date >= from;
+    if (to) return date <= to;
+    return true;
+  }
+  if (period === 'wtd') {
+    const now = new Date();
+    const sun = new Date(now);
+    sun.setDate(now.getDate() - now.getDay());
+    sun.setHours(0,0,0,0);
+    return date >= sun;
+  }
+  if (period === 'mtd') return date.getFullYear() === t.year && date.getMonth() === t.month;
+  if (period === 'qtd') {
+    const qStart = new Date(t.year, Math.floor(t.month / 3) * 3, 1);
+    return date >= qStart;
+  }
+  if (period === 'ytd') return date.getFullYear() === t.year;
+  return true;
+}
+
+function filterJobs(biz, btn) {
+  jobBizFilter = biz;
+  document.querySelectorAll('[data-biz]').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderJobsTable();
+}
+
+function filterJobsPeriod(period, btn) {
+  jobPeriodFilter = period;
+  document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  if (period !== 'custom') $('dateRangePicker').style.display = 'none';
+  renderJobsTable();
+}
+
+function toggleDateRange() {
+  const picker = $('dateRangePicker');
+  const showing = picker.style.display === 'flex';
+  picker.style.display = showing ? 'none' : 'flex';
+  if (!showing) {
+    document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
+    document.querySelector('[data-period="custom"]').classList.add('active');
+  }
+}
+
+function applyDateRange() {
+  jobPeriodFilter = 'custom';
+  document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-period="custom"]').classList.add('active');
+  renderJobsTable();
+}
+
+function renderJobsTable() {
+  const filtered = allJobs.filter(j => isBizMatch(j.biz, jobBizFilter) && isInPeriod(j.date, jobPeriodFilter));
+  const totalRev = filtered.reduce((s, j) => s + j.revenue, 0);
+  const count = filtered.length;
+
+  const periodLabels = { lastweek: 'last week (Sun-Sat)', wtd: 'this week (Sun-today)', mtd: 'this month', qtd: 'this quarter', ytd: 'this year', all: 'all time', custom: 'custom range' };
+  const bizLabels = { all: '', pec: 'PEC ', ftp: 'FTP ' };
+  $('jobsSummary').textContent = `${count} ${bizLabels[jobBizFilter]}job${count !== 1 ? 's' : ''} ${periodLabels[jobPeriodFilter]} / ${fmt(totalRev)} total`;
+
+  $('jobsBody').innerHTML = filtered.length ? filtered.map(j => `
+    <tr>
+      <td>${esc(j.jobName)}</td>
+      <td><span class="biz-tag ${isBizMatch(j.biz, 'pec') ? 'pec' : 'ftp'}">${esc(j.biz)}</span></td>
+      <td>${esc(j.customer)}</td>
+      <td>${formatDate(j.date)}</td>
+      <td>${fmt(j.revenue)}</td>
+      <td>${esc(j.soldBy)}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="6" style="color:var(--muted)">No jobs match filters</td></tr>';
+}
+
+function setPace(elId, actualPct, expectedPct, projected, target) {
+  const ratio = expectedPct > 0 ? actualPct / expectedPct : 0;
+  let cls = 'on-pace', label = 'On pace';
+  if (ratio < 0.75) { cls = 'behind'; label = 'Behind pace'; }
+  else if (ratio < 0.95) { cls = 'close'; label = 'Slightly behind'; }
+  $(elId).innerHTML = `
+    <span class="rev-pct ${cls}">${actualPct}%</span>
+    <span class="pace-label ${cls}">${label} / Proj: ${fmt(projected)}</span>`;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ============================================================
+// GOALS — Annual Scorecard, Rocks, Rhythm, Projects
+// ============================================================
+
+const ANNUAL_TARGETS = {
+  PEC: { Sales: 916000, Revenue: 908000, GP_pct: 0.40, NP_pct: 0.20 },
+  FTP: { Sales: 616000, Revenue: 550000, GP_pct: 0.35, NP_pct: 0.20 }
+};
+const METRICS = ['Sales', 'Revenue', 'Gross Profit', 'Net Profit'];
+
+function getYtdFraction() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 1);
+  const end = new Date(now.getFullYear() + 1, 0, 1);
+  return (now - start) / (end - start);
+}
+
+function daysLeftInYear() {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), 11, 31);
+  return Math.ceil((end - now) / 86400000);
+}
+
+function daysLeftInQ2() {
+  const end = new Date(2026, 5, 30); // June 30 2026
+  const diff = Math.ceil((end - new Date()) / 86400000);
+  return Math.max(0, diff);
+}
+
+function paceStatus(actual, target) {
+  const ratio = target > 0 ? actual / target : 0;
+  if (ratio >= 1.05) return 'ahead';
+  if (ratio >= 0.95) return 'on_track';
+  if (ratio >= 0.80) return 'behind';
+  return 'critical';
+}
+
+function paceLabel(status) {
+  return { ahead: 'Ahead', on_track: 'On Track', behind: 'Behind', critical: 'Critical' }[status] || status;
+}
+
+function fmtK(n) {
+  if (n >= 1000000) return '$' + (n / 1000000).toFixed(2) + 'M';
+  if (n >= 1000) return '$' + (n / 1000).toFixed(0) + 'k';
+  return '$' + n.toLocaleString();
+}
+
+function loadScorecard() {
+  const saved = localStorage.getItem('hq_scorecard');
+  if (saved) return JSON.parse(saved);
+  // Initialize with zeros — Dylan fills in actuals
+  const data = {};
+  ['PEC', 'FTP'].forEach(biz => {
+    data[biz] = { Sales: 0, Revenue: 0, 'Gross Profit': 0, 'Net Profit': 0 };
+  });
+  localStorage.setItem('hq_scorecard', JSON.stringify(data));
+  return data;
+}
+
+function saveScorecard(data) {
+  localStorage.setItem('hq_scorecard', JSON.stringify(data));
+}
+
+function renderScorecard() {
+  const manualData = loadScorecard();
+
+  // Auto-compute YTD Sales and Revenue from allJobs
+  const year = new Date().getFullYear();
+  const auto = { PEC: 0, FTP: 0 };
+  allJobs.forEach(j => {
+    if (!j.date || j.date.getFullYear() !== year) return;
+    if (isBizMatch(j.biz, 'pec')) auto.PEC += j.revenue;
+    else if (isBizMatch(j.biz, 'ftp')) auto.FTP += j.revenue;
+  });
+
+  const columns = [
+    { label: 'Sales', isAuto: true,
+      pec: auto.PEC, ftp: auto.FTP,
+      pecTarget: ANNUAL_TARGETS.PEC.Sales, ftpTarget: ANNUAL_TARGETS.FTP.Sales },
+    { label: 'Revenue', isAuto: true,
+      pec: auto.PEC, ftp: auto.FTP,
+      pecTarget: ANNUAL_TARGETS.PEC.Revenue, ftpTarget: ANNUAL_TARGETS.FTP.Revenue },
+    { label: 'Gross Profit', isAuto: false,
+      pec: manualData.PEC['Gross Profit'] || 0, ftp: manualData.FTP['Gross Profit'] || 0,
+      pecTarget: ANNUAL_TARGETS.PEC.Revenue * ANNUAL_TARGETS.PEC.GP_pct,
+      ftpTarget: ANNUAL_TARGETS.FTP.Revenue * ANNUAL_TARGETS.FTP.GP_pct },
+    { label: 'Net Profit', isAuto: false,
+      pec: manualData.PEC['Net Profit'] || 0, ftp: manualData.FTP['Net Profit'] || 0,
+      pecTarget: ANNUAL_TARGETS.PEC.Revenue * ANNUAL_TARGETS.PEC.NP_pct,
+      ftpTarget: ANNUAL_TARGETS.FTP.Revenue * ANNUAL_TARGETS.FTP.NP_pct }
+  ];
+
+  $('scorecardStrip').innerHTML = columns.map(col => {
+    const combined = col.pec + col.ftp;
+    const totalTarget = col.pecTarget + col.ftpTarget;
+    const pecPct = col.pecTarget > 0 ? Math.min(100, col.pec / col.pecTarget * 100) : 0;
+    const ftpPct = col.ftpTarget > 0 ? Math.min(100, col.ftp / col.ftpTarget * 100) : 0;
+    const combinedPct = totalTarget > 0 ? (combined / totalTarget * 100).toFixed(1) : '0.0';
+    const autoBadge = col.isAuto ? ' <span class="auto-badge">AUTO</span>' : '';
+    const editBtn = !col.isAuto ? `<span class="score-cell-edit" onclick="editScorecardMetric('${col.label}')">edit</span>` : '';
+    const noData = !col.isAuto && combined === 0;
+    const valDisplay = noData ? '<span style="color:var(--dim)">--</span>' : fmtK(combined);
+    const pctDisplay = noData ? '<span style="color:var(--dim)">Awaiting data</span>' : `<span style="color:${parseFloat(combinedPct) < 20 ? 'var(--warn)' : 'var(--success)'}">${combinedPct}%</span>`;
+
+    return `<div class="score-cell">
+      <div class="score-cell-label">${col.label}${autoBadge}${editBtn}</div>
+      <div class="score-cell-value">${valDisplay}</div>
+      ${pctDisplay}
+      <div class="mini-bar-wrap">
+        <span class="mini-bar-label" style="color:var(--pec)">PEC</span>
+        <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${pecPct}%;background:var(--pec)"></div></div>
+        <span class="mini-bar-val">${col.pec ? fmtK(col.pec) : '--'}</span>
+      </div>
+      <div class="mini-bar-wrap">
+        <span class="mini-bar-label" style="color:var(--ftp)">FTP</span>
+        <div class="mini-bar-track"><div class="mini-bar-fill" style="width:${ftpPct}%;background:var(--ftp)"></div></div>
+        <span class="mini-bar-val">${col.ftp ? fmtK(col.ftp) : '--'}</span>
+      </div>
+      <div class="score-cell-target">${fmtK(totalTarget)} annual</div>
+    </div>`;
+  }).join('');
+
+  $('yearDaysLeft').textContent = daysLeftInYear() + ' days left';
+}
+
+function editScorecardMetric(metric) {
+  const data = loadScorecard();
+  const pecVal = prompt(metric + ' - PEC YTD actual:', data.PEC[metric] || 0);
+  if (pecVal === null) return;
+  const ftpVal = prompt(metric + ' - FTP YTD actual:', data.FTP[metric] || 0);
+  if (ftpVal === null) return;
+  data.PEC[metric] = parseFloat(pecVal) || 0;
+  data.FTP[metric] = parseFloat(ftpVal) || 0;
+  saveScorecard(data);
+  renderScorecard();
+}
+
+// --- ROCKS ---
+const DEFAULT_ROCKS = [
+  { id: 1, title: 'Hire Epoxy Sales Person', category: 'HR', status: 'not_started', owner: 'Dylan', notes: '', due: '2026-06-30' },
+  { id: 2, title: 'Perfect Grassroots Marketing', category: 'SALES', status: 'not_started', owner: 'Dylan', notes: '', due: '2026-06-30' },
+  { id: 3, title: 'Epoxy Training \u2014 Train Up New Guys', category: 'OPS', status: 'not_started', owner: 'Dylan', notes: '', due: '2026-06-30' }
+];
+
+function loadRocks() {
+  const saved = localStorage.getItem('hq_rocks');
+  return saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(DEFAULT_ROCKS));
+}
+
+function saveRocks(rocks) {
+  localStorage.setItem('hq_rocks', JSON.stringify(rocks));
+}
+
+function renderRocks() {
+  const rocks = loadRocks();
+  $('q2Countdown').textContent = daysLeftInQ2() + ' days left in Q2';
+
+  $('rocksGrid').innerHTML = rocks.map((r, i) => `
+    <div class="rock-list-item ${r.expanded ? 'open' : ''} ${r.status === 'complete' ? 'complete' : ''}">
+      <input type="checkbox" class="rock-check" ${r.status === 'complete' ? 'checked' : ''} onchange="toggleRockComplete(${i})" title="Mark complete">
+      <span class="rock-status ${r.status}"></span>
+      <span class="rock-category ${r.category.toLowerCase()}">${esc(r.category)}</span>
+      <span style="flex:1;font-size:.85rem;font-weight:500">${esc(r.title)}</span>
+      <select class="rock-status-select" onchange="updateRockStatus(${i},this.value)">
+        <option value="not_started"${r.status === 'not_started' ? ' selected' : ''}>Not Started</option>
+        <option value="in_progress"${r.status === 'in_progress' ? ' selected' : ''}>In Progress</option>
+        <option value="complete"${r.status === 'complete' ? ' selected' : ''}>Complete</option>
+        <option value="blocked"${r.status === 'blocked' ? ' selected' : ''}>Blocked</option>
+      </select>
+      <button class="rock-expand-btn" onclick="toggleRockExpand(${i})" title="Notes / next steps">${r.expanded ? '▼' : '▶'} Notes</button>
+      <div class="rock-notes-wrap">
+        <textarea class="rock-notes" placeholder="Next steps, blockers, context…" onblur="updateRockNotes(${i}, this.value)">${esc(r.notes || '')}</textarea>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleRockComplete(i) {
+  const rocks = loadRocks();
+  rocks[i].status = rocks[i].status === 'complete' ? 'not_started' : 'complete';
+  saveRocks(rocks);
+  renderRocks();
+}
+
+function toggleRockExpand(i) {
+  const rocks = loadRocks();
+  rocks[i].expanded = !rocks[i].expanded;
+  saveRocks(rocks);
+  renderRocks();
+}
+
+function updateRockStatus(i, val) {
+  const rocks = loadRocks();
+  rocks[i].status = val;
+  saveRocks(rocks);
+  renderRocks();
+}
+
+function updateRockNotes(i, val) {
+  const rocks = loadRocks();
+  rocks[i].notes = val;
+  saveRocks(rocks);
+}
+
+// --- WEEKLY RHYTHM ---
+const DEFAULT_RHYTHM = [
+  { id: 1, title: 'Block Schedule', description: 'Following the weekly block schedule', frequency: 'daily', type: 'habit' },
+  { id: 2, title: 'Dusty 1:1', description: 'Leads, scheduling, payroll', frequency: 'weekly', type: 'meeting' },
+  { id: 3, title: 'Doug 1:1', description: 'FTP sales, project updates', frequency: 'weekly', type: 'meeting' },
+  { id: 4, title: 'Team Training', description: 'Communicate priorities, build skills', frequency: 'weekly', type: 'meeting' }
+];
+
+function currentWeekKey() {
+  const d = new Date();
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const week = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+  return d.getFullYear() + '-W' + week;
+}
+
+function loadRhythm() {
+  const saved = localStorage.getItem('hq_rhythm');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch (e) {}
+  }
+  return DEFAULT_RHYTHM.map(r => ({ ...r, done: false }));
+}
+
+function saveRhythm(data) {
+  localStorage.setItem('hq_rhythm', JSON.stringify(data));
+}
+
+function resetRhythmWeek() {
+  const items = loadRhythm().map(r => ({ ...r, done: false }));
+  saveRhythm(items);
+  renderRhythm();
+}
+
+function renderRhythm() {
+  const items = loadRhythm();
+  const el = $('weekLabel');
+  if (el) el.innerHTML = 'Week ' + currentWeekKey().split('-W')[1] +
+    ' <button onclick="resetRhythmWeek()" style="background:none;border:none;color:var(--dim);font-size:.65rem;cursor:pointer;margin-left:6px" title="Clear all checks">↻ reset</button>';
+  $('rhythmGrid').innerHTML = items.map((r, i) => {
+    const statusClass = r.done ? 'done' : 'pending';
+    const statusLabel = r.done ? 'Done' : 'Not yet';
+    return `<div class="rhythm-list-item">
+      <span class="rhythm-status ${statusClass}" onclick="toggleRhythm(${i})">${statusLabel}</span>
+      <span style="flex:1;font-size:.85rem">${esc(r.title)}</span>
+      <span style="font-size:.6rem;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">${r.frequency}</span>
+    </div>`;
+  }).join('');
+}
+
+function toggleRhythm(i) {
+  const items = loadRhythm();
+  items[i].done = !items[i].done;
+  saveRhythm(items);
+  renderRhythm();
+}
+
+// --- CLAUDE PROJECTS ---
+const DEFAULT_PROJECTS = [
+  {
+    id: 1, project_name: 'HQ Dashboard', description: 'Central command — revenue tracking, goals, crew dispatch view',
+    status: 'active', company: 'Shared', category: 'Dashboard',
+    tasks: [
+      { task: 'Revenue tab with DripJobs feed', status: 'done', updated: '2026-04-09' },
+      { task: 'Goals tab', status: 'in_progress', updated: '2026-04-10' },
+      { task: 'Email tab', status: 'done', updated: '2026-04-10' },
+      { task: 'Cowork tab', status: 'done', updated: '2026-04-09' },
+      { task: 'Jarvis tab', status: 'done', updated: '2026-04-09' }
+    ], last_activity: '2026-04-10', created: '2026-04-07'
+  },
+  {
+    id: 2, project_name: 'Lead Qual Automation', description: 'Zapier + Claude API + DripJobs — auto-qualify inbound leads',
+    status: 'queued', company: 'Shared', category: 'Automation',
+    tasks: [], last_activity: null, created: '2026-04-09'
+  },
+  {
+    id: 3, project_name: 'PEC Order Sheet Automation', description: 'Auto-fill material quantities from DripJobs job data',
+    status: 'active', company: 'PEC', category: 'Automation',
+    tasks: [], last_activity: null, created: '2026-04-09'
+  },
+  {
+    id: 4, project_name: 'Weekly Meeting Slides', description: 'Auto-generate FTP weekly meeting presentation from job data',
+    status: 'active', company: 'FTP', category: 'Reporting',
+    tasks: [], last_activity: null, created: '2026-04-09'
+  },
+  {
+    id: 5, project_name: 'MBP Marketing Plan Updates', description: 'Monthly campaign spend entry into MBP 2026 sheet',
+    status: 'active', company: 'Shared', category: 'Marketing',
+    tasks: [], last_activity: null, created: '2026-04-09'
+  }
+];
+
+function loadProjects() {
+  const saved = localStorage.getItem('hq_projects');
+  return saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(DEFAULT_PROJECTS));
+}
+
+function saveProjects(data) {
+  localStorage.setItem('hq_projects', JSON.stringify(data));
+}
+
+function renderProjects() {
+  const projects = loadProjects();
+  const active = projects.filter(p => p.status !== 'complete');
+  const completed = projects.filter(p => p.status === 'complete');
+
+  // Sort: active first, then queued, then paused
+  const order = { active: 0, queued: 1, paused: 2 };
+  active.sort((a, b) => (order[a.status] ?? 1) - (order[b.status] ?? 1));
+
+  $('projectsList').innerHTML = active.map(p => projectCardHtml(p)).join('');
+
+  if (completed.length) {
+    $('projectsCompleted').innerHTML = `
+      <div class="completed-accordion">
+        <div class="completed-toggle" onclick="this.parentElement.classList.toggle('open');this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          &#9654; Completed (${completed.length})
+        </div>
+        <div style="display:none">${completed.map(p => projectCardHtml(p)).join('')}</div>
+      </div>`;
+  } else {
+    $('projectsCompleted').innerHTML = '';
+  }
+}
+
+function projectCardHtml(p) {
+  const doneTasks = p.tasks.filter(t => t.status === 'done').length;
+  const totalTasks = p.tasks.length;
+  const progressPct = totalTasks > 0 ? Math.round(doneTasks / totalTasks * 100) : 0;
+  const pi = loadProjects().findIndex(x => x.id === p.id);
+
+  return `<div class="project-card ${p.status}" id="project-${p.id}">
+    <div class="project-row" onclick="toggleProject(${p.id})">
+      <span class="project-expand">&#9654;</span>
+      <span class="project-name">${esc(p.project_name)}</span>
+      <div class="project-tags">
+        <span class="project-tag ${p.company.toLowerCase()}">${esc(p.company)}</span>
+        <span class="project-tag cat-${p.category.toLowerCase()}">${esc(p.category)}</span>
+        <span class="project-status-badge ${p.status}">${p.status.replace('_', ' ')}</span>
+        ${totalTasks > 0 ? `<div class="project-progress"><div class="project-progress-fill" style="width:${progressPct}%"></div></div>` : ''}
+      </div>
+    </div>
+    <div class="project-detail">
+      <div class="project-desc">${esc(p.description)}</div>
+      <div>
+        <select style="font-size:.7rem;background:var(--s2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;margin-bottom:8px"
+          onchange="updateProjectStatus(${pi},this.value)">
+          <option value="active"${p.status === 'active' ? ' selected' : ''}>Active</option>
+          <option value="queued"${p.status === 'queued' ? ' selected' : ''}>Queued</option>
+          <option value="paused"${p.status === 'paused' ? ' selected' : ''}>Paused</option>
+          <option value="complete"${p.status === 'complete' ? ' selected' : ''}>Complete</option>
+        </select>
+      </div>
+      ${p.tasks.map((t, ti) => `
+        <div class="project-task">
+          <input type="checkbox" class="project-task-check" ${t.status === 'done' ? 'checked' : ''}
+            onchange="toggleProjectTask(${pi},${ti})">
+          <span class="project-task-text${t.status === 'done' ? ' done' : ''}">${esc(t.task)}</span>
+          ${t.updated ? `<span class="project-task-date">${t.updated}</span>` : ''}
+        </div>
+      `).join('')}
+      <div class="project-add-task" onclick="addProjectTask(${pi})">+ Add task</div>
+    </div>
+  </div>`;
+}
+
+function toggleProject(id) {
+  const el = document.getElementById('project-' + id);
+  if (el) el.classList.toggle('open');
+}
+
+function toggleProjectTask(pi, ti) {
+  const projects = loadProjects();
+  const t = projects[pi].tasks[ti];
+  t.status = t.status === 'done' ? 'todo' : 'done';
+  t.updated = new Date().toISOString().slice(0, 10);
+  projects[pi].last_activity = t.updated;
+  saveProjects(projects);
+  renderProjects();
+}
+
+function updateProjectStatus(pi, val) {
+  const projects = loadProjects();
+  projects[pi].status = val;
+  projects[pi].last_activity = new Date().toISOString().slice(0, 10);
+  saveProjects(projects);
+  renderProjects();
+}
+
+function addProjectTask(pi) {
+  const task = prompt('Task name:');
+  if (!task || !task.trim()) return;
+  const projects = loadProjects();
+  projects[pi].tasks.push({ task: task.trim(), status: 'todo', updated: new Date().toISOString().slice(0, 10) });
+  projects[pi].last_activity = new Date().toISOString().slice(0, 10);
+  saveProjects(projects);
+  renderProjects();
+  // Re-open the project card
+  setTimeout(() => { const el = document.getElementById('project-' + projects[pi].id); if (el) el.classList.add('open'); }, 50);
+}
+
+function addProject() {
+  const name = prompt('Project name:');
+  if (!name || !name.trim()) return;
+  const desc = prompt('One-line description:') || '';
+  const company = prompt('Company (PEC / FTP / Shared):') || 'Shared';
+  const category = prompt('Category (Automation / Reporting / SOP / Integration / Dashboard / Marketing):') || 'Automation';
+  const projects = loadProjects();
+  const maxId = projects.reduce((m, p) => Math.max(m, p.id), 0);
+  projects.push({
+    id: maxId + 1, project_name: name.trim(), description: desc.trim(),
+    status: 'active', company: company.trim(), category: category.trim(),
+    tasks: [], last_activity: new Date().toISOString().slice(0, 10), created: new Date().toISOString().slice(0, 10)
+  });
+  saveProjects(projects);
+  renderProjects();
+}
+
+// --- THE WHY ---
+function renderGoalsWhy() {
+  const saved = localStorage.getItem('hq_goals_why');
+  const text = saved || 'Both businesses profitable. No more worrying about money.';
+  $('goalsWhy').innerHTML = `<span ondblclick="editGoalsWhy()">${esc(text)}</span>
+    <div style="font-size:.6rem;color:var(--dim);margin-top:4px">(double-click to edit)</div>`;
+}
+
+function editGoalsWhy() {
+  const current = localStorage.getItem('hq_goals_why') || 'Both businesses profitable. No more worrying about money.';
+  const val = prompt('The Why:', current);
+  if (val !== null) {
+    localStorage.setItem('hq_goals_why', val);
+    renderGoalsWhy();
+  }
+}
+
+// --- RENDER ALL GOALS ---
+function renderGoals() {
+  renderScorecard();
+  renderRocks();
+  renderRhythm();
+  renderGoalsWhy();
+}
+
+// ============================================================
+// SOP HUB — GitHub-sourced, employee + owner views
+// ============================================================
+
+const SOP_DEPTS_ALIAS = { FINANCE: 'FIN' };
+
+function normalizeDept(d) {
+  const up = (d || '').toUpperCase();
+  return SOP_DEPTS_ALIAS[up] || up;
+}
+
+function parseSOPFromPath(path, filename) {
+  // Path: "SOP Hub/{Company}/{Dept}/{file}.md" (or "SOP Hub/{Company}/{Dept}/{Sub}/{file}.md")
+  const parts = path.split('/').filter(Boolean);
+  const sopIdx = parts.findIndex(p => p === 'SOP Hub' || p === 'SOP%20Hub');
+  const company = sopIdx >= 0 && parts[sopIdx + 1] ? parts[sopIdx + 1] : 'Shared';
+  const department = sopIdx >= 0 && parts[sopIdx + 2] ? normalizeDept(parts[sopIdx + 2]) : 'ADMIN';
+
+  // Try to parse ID + title from filename: "PEC-SALES-001 -- Title.md" or "PEC-SALES-001 Title.md"
+  const base = filename.replace(/\.md$/i, '');
+  let id = '', title = base;
+  const idMatch = base.match(/^([A-Z]{2,}-[A-Z]+-\d+)\s*[-–—]*\s*(.*)$/);
+  if (idMatch) {
+    id = idMatch[1];
+    title = idMatch[2] || base;
+  } else {
+    // Fallback: use filename as title, derived id from company+dept+hash
+    id = company + '-' + department + '-' + base.slice(0, 20).replace(/[^a-z0-9]/gi, '');
+    title = base.replace(/_/g, ' ').replace(/SOP$/i, '').trim();
+  }
+  return { id, title, company, department };
+}
+
+function parseSOPContent(raw) {
+  // Extract optional frontmatter tag for roles
+  // Format 1 (YAML): "---\nroles: sales,crew\n---\n..."
+  // Format 2 (inline): first line like "roles: sales,crew"
+  let roles = ['all'];
+  let description = '';
+  let content = raw;
+
+  const yamlMatch = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (yamlMatch) {
+    const fm = yamlMatch[1];
+    content = yamlMatch[2];
+    const rolesLine = fm.match(/roles?:\s*(.+)/i);
+    if (rolesLine) roles = rolesLine[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const descLine = fm.match(/description:\s*(.+)/i);
+    if (descLine) description = descLine[1].trim();
+  } else {
+    // Look for inline "roles: ..." in first 10 lines
+    const firstLines = raw.split('\n').slice(0, 10);
+    for (const line of firstLines) {
+      const m = line.match(/^roles?:\s*(.+)$/i);
+      if (m) {
+        roles = m[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        break;
+      }
+    }
+  }
+
+  // Derive description from first non-heading paragraph if not set
+  if (!description) {
+    const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
+    const firstPara = lines.find(l => !l.startsWith('#') && !l.startsWith('---') && l.length > 10);
+    if (firstPara) description = firstPara.slice(0, 140) + (firstPara.length > 140 ? '...' : '');
+  }
+
+  return { roles, description, content };
+}
+
+async function listSOPFilesRecursive(contentsUrl) {
+  // Walk the GitHub Contents API recursively, return flat list of .md files
+  const out = [];
+  try {
+    const res = await fetch(contentsUrl);
+    if (!res.ok) return out;
+    const items = await res.json();
+    if (!Array.isArray(items)) return out;
+    for (const it of items) {
+      if (it.type === 'file' && /\.md$/i.test(it.name)) {
+        out.push({ path: it.path, name: it.name, sha: it.sha, download_url: it.download_url });
+      } else if (it.type === 'dir') {
+        const nested = await listSOPFilesRecursive(it.url);
+        out.push(...nested);
+      }
+    }
+  } catch (e) {
+    console.warn('SOP list error:', e);
+  }
+  return out;
+}
+
+async function loadSOPs() {
+  // Cache check (10 min)
+  const cached = sessionStorage.getItem('hq_sops');
+  const cachedAt = parseInt(sessionStorage.getItem('hq_sops_time') || '0', 10);
+  if (cached && Date.now() - cachedAt < 10 * 60 * 1000) {
+    sopData = JSON.parse(cached);
+    return sopData;
+  }
+
+  const startUrl = CONFIG.SOP_REPO.apiBase + encodeURIComponent('SOP Hub');
+  const files = await listSOPFilesRecursive(startUrl);
+  if (!files.length) {
+    sopData = [];
+    return sopData;
+  }
+
+  // Fetch content for each in parallel (small library)
+  const results = await Promise.all(files.map(async f => {
+    try {
+      const res = await fetch(f.download_url);
+      const raw = await res.text();
+      const meta = parseSOPFromPath(f.path, f.name);
+      const parsed = parseSOPContent(raw);
+      return {
+        id: meta.id,
+        title: meta.title,
+        company: meta.company,
+        department: meta.department,
+        roles: parsed.roles,
+        description: parsed.description,
+        content: parsed.content,
+        path: f.path,
+        sha: f.sha
+      };
+    } catch (e) {
+      return null;
+    }
+  }));
+
+  sopData = results.filter(Boolean);
+  sessionStorage.setItem('hq_sops', JSON.stringify(sopData));
+  sessionStorage.setItem('hq_sops_time', Date.now().toString());
+  return sopData;
+}
+
+function getAccessibleSOPs(employee) {
+  if (!employee) return sopData;
+  return sopData.filter(sop => {
+    const companyOk = sop.company === employee.company || sop.company === 'Shared' || employee.company === 'both';
+    const roleOk = sop.roles.includes('all') || sop.roles.includes(employee.role);
+    return companyOk && roleOk;
+  });
+}
+
+function renderSOPMarkdown(text) {
+  // Minimal markdown rendering: headings, bold, lists preserved via CSS white-space
+  let html = esc(text);
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  return html;
+}
+
+function renderSOPGrid(sops, targetId) {
+  const target = $(targetId);
+  if (!target) return;
+
+  const q = sopSearchQuery.toLowerCase();
+  const filtered = sops.filter(s => {
+    if (sopDeptFilter !== 'all' && normalizeDept(s.department) !== sopDeptFilter) return false;
+    if (q) {
+      const blob = (s.title + ' ' + s.description + ' ' + s.content + ' ' + s.id).toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    return true;
+  });
+
+  if (!filtered.length) {
+    target.innerHTML = '<div class="empty-state"><p>No SOPs match your filter.</p></div>';
+    return;
+  }
+
+  target.innerHTML = filtered.map((s, i) => `
+    <div class="sop-card" onclick="expandSOP('${s.sha}','${targetId}')">
+      <div class="sop-card-tags">
+        <span class="sop-company-tag ${s.company.toLowerCase()}">${esc(s.company)}</span>
+        <span class="sop-dept-tag ${s.department.toLowerCase()}">${esc(s.department)}</span>
+      </div>
+      <div class="sop-card-id">${esc(s.id)}</div>
+      <div class="sop-card-title">${esc(s.title)}</div>
+      ${s.description ? `<div class="sop-card-desc">${esc(s.description)}</div>` : ''}
+      <div class="sop-card-footer">${esc(s.path.replace(/^SOP Hub\//, ''))}</div>
+    </div>
+  `).join('');
+}
+
+function expandSOP(sha, targetId) {
+  const sop = sopData.find(s => s.sha === sha);
+  if (!sop) return;
+  const target = $(targetId);
+  target.innerHTML = `
+    <div class="sop-card expanded">
+      <div class="sop-card-tags">
+        <span class="sop-company-tag ${sop.company.toLowerCase()}">${esc(sop.company)}</span>
+        <span class="sop-dept-tag ${sop.department.toLowerCase()}">${esc(sop.department)}</span>
+        <span class="sop-card-id">${esc(sop.id)}</span>
+      </div>
+      <div class="sop-card-title" style="font-size:1.2rem">${esc(sop.title)}</div>
+      <div class="sop-roles">Access: ${sop.roles.join(', ')}</div>
+      <div class="sop-content">${renderSOPMarkdown(sop.content)}</div>
+      <span class="sop-content-close" onclick="renderSOPContext('${targetId}')">&larr; Back to list</span>
+    </div>
+  `;
+}
+
+function renderSOPContext(targetId) {
+  const sops = targetId === 'sopGridOwner' ? sopData : getAccessibleSOPs(currentEmployee);
+  renderSOPGrid(sops, targetId);
+}
+
+function filterSOPDept(dept, btn, view) {
+  sopDeptFilter = dept;
+  const scope = view === 'owner' ? '#tab-sops-owner' : '#tab-emp-sops';
+  document.querySelectorAll(`${scope} [data-sopdept]`).forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderSOPContext(view === 'owner' ? 'sopGridOwner' : 'sopGrid');
+}
+
+function searchSOPs(query, view) {
+  sopSearchQuery = query;
+  renderSOPContext(view === 'owner' ? 'sopGridOwner' : 'sopGrid');
+}
+
+function buildSOPSystemPrompt(employee) {
+  const accessible = getAccessibleSOPs(employee);
+  const companyContext = employee
+    ? `You are helping ${employee.name}, a ${employee.role} at ${employee.company === 'PEC' ? 'Prescott Epoxy Carpets' : 'Finishing Touch Painting'} in Prescott, AZ.`
+    : 'You are assisting Dylan, the owner of Prescott Epoxy Carpets (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ.';
+
+  let sopBlob = '';
+  let totalChars = 0;
+  const charBudget = 250000; // ~60k tokens, leaves room for response and user messages
+
+  for (const s of accessible) {
+    const block = `\n\n=== SOP: ${s.id} — ${s.title} (${s.company}/${s.department}) ===\n${s.content}`;
+    if (totalChars + block.length > charBudget) {
+      sopBlob += `\n\n[Additional SOPs available but not included in context: ${accessible.length - sopData.indexOf(s)} more. If asked about one of these, suggest opening it in the SOP Library.]`;
+      break;
+    }
+    sopBlob += block;
+    totalChars += block.length;
+  }
+
+  if (!accessible.length) {
+    sopBlob = '\n\n[No SOPs are currently loaded. Tell the user the SOP library is empty or not yet configured.]';
+  }
+
+  return `You are an SOP assistant for the HQ Command Center.
+
+${companyContext}
+
+STRICT RULES:
+1. Answer ONLY from the SOP content provided below. Do not guess, infer beyond the text, or use general knowledge to fill gaps.
+2. If the answer is not in the SOPs, say exactly: "I don't have that in our SOPs — check with Dylan."
+3. When citing an SOP, reference its ID (e.g., "See PEC-OPS-001").
+4. Be concise and direct. No hedging, no filler.
+5. If the user asks about product specs (Penntek, Sherwin-Williams, etc.) and it's not in the SOPs, say so and suggest they check the manufacturer TDS.
+
+=== AVAILABLE SOPs ===${sopBlob}`;
+}
+
+async function sendSOPChat(view) {
+  const inputId = view === 'owner' ? 'sopChatInputOwner' : 'sopChatInput';
+  const msgsId = view === 'owner' ? 'sopChatMessagesOwner' : 'sopChatMessages';
+  const input = $(inputId);
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+
+  sopChatHistory.push({ role: 'user', content: text });
+  renderSOPChatMsg(msgsId, 'user', text);
+
+  const typing = document.createElement('div');
+  typing.className = 'sop-typing';
+  typing.textContent = 'Thinking...';
+  $(msgsId).appendChild(typing);
+  $(msgsId).scrollTop = $(msgsId).scrollHeight;
+
+  try {
+    const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system: sopSystemPrompt,
+        messages: sopChatHistory,
+        model: CONFIG.COACH_MODEL,
+        max_tokens: 1024
+      })
+    });
+    typing.remove();
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error || data);
+      renderSOPChatMsg(msgsId, 'system', 'Error: ' + errMsg);
+      sopChatHistory.pop(); // remove failed user turn so retry works cleanly
+      return;
+    }
+    const reply = data.content && data.content[0] && data.content[0].text ? data.content[0].text : '(no response)';
+    sopChatHistory.push({ role: 'assistant', content: reply });
+    renderSOPChatMsg(msgsId, 'assistant', reply);
+  } catch (e) {
+    typing.remove();
+    renderSOPChatMsg(msgsId, 'system', 'Network error: ' + e.message);
+    sopChatHistory.pop();
+  }
+}
+
+function renderSOPChatMsg(containerId, role, text) {
+  const container = $(containerId);
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'sop-msg ' + role;
+  div.textContent = text;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function renderSOPChatWelcome(containerId, employee) {
+  const name = employee ? employee.name : 'sir';
+  const greeting = employee
+    ? `Hi ${name}. I can answer questions from our SOP library. What do you need?`
+    : `Hi Dylan. I have access to all SOPs across both companies. Ask away.`;
+  renderSOPChatMsg(containerId, 'assistant', greeting);
+}
+
+async function initEmployee() {
+  if (!currentEmployee) return;
+  // Deactivate any owner sections and activate the default employee tab
+  document.querySelectorAll('section.tab-content:not(.emp-tab-content)').forEach(c => c.classList.remove('active'));
+  $('tab-emp-sops').classList.add('active');
+  $('empName').textContent = currentEmployee.name;
+  $('empRole').textContent = currentEmployee.role;
+  $('empCompany').textContent = currentEmployee.company;
+
+  // Wire employee tab switching
+  document.querySelectorAll('.employee-nav .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.employee-nav .tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.emp-tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      $('tab-emp-' + btn.dataset.emptab).classList.add('active');
+    });
+  });
+
+  try {
+    await loadSOPs();
+    if (!sopData.length) {
+      $('sopGrid').innerHTML = '<div class="empty-state"><p>SOP library not yet configured.</p><p>See SOP-SETUP.md for setup instructions.</p></div>';
+      return;
+    }
+    const accessible = getAccessibleSOPs(currentEmployee);
+    renderSOPGrid(accessible, 'sopGrid');
+    sopSystemPrompt = buildSOPSystemPrompt(currentEmployee);
+    sopChatHistory = [];
+    renderSOPChatWelcome('sopChatMessages', currentEmployee);
+  } catch (e) {
+    $('sopGrid').innerHTML = `<div class="empty-state"><p>Failed to load SOPs: ${esc(e.message)}</p></div>`;
+  }
+}
+
+async function initOwnerSOPs() {
+  if (sopsLoaded) return;
+  sopsLoaded = true;
+  try {
+    await loadSOPs();
+    if (!sopData.length) {
+      $('sopGridOwner').innerHTML = '<div class="empty-state"><p>SOP library not yet configured.</p><p>See SOP-SETUP.md for setup instructions.</p></div>';
+      return;
+    }
+    renderSOPGrid(sopData, 'sopGridOwner');
+    sopSystemPrompt = buildSOPSystemPrompt(null);
+    sopChatHistory = [];
+    renderSOPChatWelcome('sopChatMessagesOwner', null);
+  } catch (e) {
+    $('sopGridOwner').innerHTML = `<div class="empty-state"><p>Failed to load SOPs: ${esc(e.message)}</p></div>`;
+  }
+}
+
+// ============================================================
+// TASKS (synced via Google Sheet)
+// ============================================================
+let tasksCache = [];
+let tasksLoaded = false;
+
+async function loadTasks() {
+  // Return cache if already loaded
+  if (tasksLoaded) return tasksCache;
+
+  // Try loading from Sheet
+  if (sheetsApiReady()) {
+    try {
+      const rows = await fetchSheet(CONFIG.SHEETS.DASHBOARD_DATA, 'Tasks!A:E');
+      const tasks = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || !(r[0] || '').trim()) continue;
+        tasks.push({
+          id: parseInt(r[0]) || Date.now() + i,
+          text: r[1] || '',
+          done: (r[2] || '').toLowerCase() === 'true',
+          source: r[3] || 'manual',
+          created: r[4] || ''
+        });
+      }
+      tasksCache = tasks;
+      tasksLoaded = true;
+
+      // Merge any localStorage tasks that haven't been synced yet (keep local as backup)
+      const local = JSON.parse(localStorage.getItem('hq_tasks') || '[]');
+      if (local.length) {
+        const existingIds = new Set(tasksCache.map(t => t.id));
+        const newLocal = local.filter(t => !existingIds.has(t.id));
+        if (newLocal.length) {
+          tasksCache = [...newLocal, ...tasksCache];
+          await syncAllTasks();
+        }
+      }
+      // If sheet returned empty but we have local data, prefer local
+      if (!tasksCache.length && local.length) tasksCache = local;
+      localStorage.setItem('hq_tasks', JSON.stringify(tasksCache));
+      return tasksCache;
+    } catch (e) {
+      console.error('Task load error:', e);
+    }
+  }
+
+  // Fallback to localStorage
+  const saved = localStorage.getItem('hq_tasks');
+  tasksCache = saved ? JSON.parse(saved) : [];
+  return tasksCache;
+}
+
+async function syncAllTasks() {
+  // Always write localStorage first so data survives regardless of sheet sync
+  localStorage.setItem('hq_tasks', JSON.stringify(tasksCache));
+  if (!sheetsApiReady()) return;
+  try {
+    await fetch(CONFIG.SHEETS_PROXY, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'syncTasks',
+        tasks: tasksCache.map(t => ({
+          id: t.id,
+          text: t.text,
+          done: t.done,
+          source: t.source,
+          created: t.created
+        }))
+      })
+    });
+  } catch (e) {
+    console.error('Task sync error:', e);
+  }
+}
+
+async function addTask(text, source) {
+  const input = $('taskInput');
+  const t = text || (input ? input.value.trim() : '');
+  if (!t) return;
+  if (!tasksLoaded) await loadTasks();
+  tasksCache.unshift({ id: Date.now(), text: t, done: false, source: source || 'manual', created: new Date().toISOString() });
+  if (!text && input) input.value = '';
+  renderTasks();
+  syncAllTasks();
+}
+
+async function toggleTask(id) {
+  const t = tasksCache.find(x => x.id === id);
+  if (t) t.done = !t.done;
+  renderTasks();
+  syncAllTasks();
+}
+
+async function deleteTask(id) {
+  tasksCache = tasksCache.filter(x => x.id !== id);
+  renderTasks();
+  syncAllTasks();
+}
+
+function filterTasks(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('[data-filter]').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderTasks();
+}
+
+function renderTasks() {
+  let tasks = [...tasksCache];
+  if (currentFilter === 'active') tasks = tasks.filter(t => !t.done);
+  else if (currentFilter === 'done') tasks = tasks.filter(t => t.done);
+
+  if (!tasks.length) {
+    $('taskList').innerHTML = `<div class="task-empty">${currentFilter === 'done' ? 'No completed tasks' : 'No tasks yet. Add one above or talk to JARVIS.'}</div>`;
+    return;
+  }
+
+  $('taskList').innerHTML = tasks.map(t => `
+    <div class="task-item${t.done ? ' done' : ''}">
+      <input type="checkbox" class="task-check" ${t.done ? 'checked' : ''} onchange="toggleTask(${t.id})">
+      <div>
+        <div class="task-text">${esc(t.text)}</div>
+        <span class="task-source${t.source === 'JARVIS' ? ' coach' : ''}">${t.source}</span>
+      </div>
+      <button class="task-delete" onclick="deleteTask(${t.id})" title="Delete">&times;</button>
+    </div>
+  `).join('');
+}
+
+// ============================================================
+// COWORK
+// ============================================================
+const COWORK_TABS = ['DailySummary','SalesEngine','BackEndOffice','CFO','PMforPEC','EmailTriage'];
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  if (isNaN(d)) return dateStr;
+  const diff = Date.now() - d.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function coworkFreshness(dateStr) {
+  if (!dateStr) return 'stale';
+  const d = new Date(dateStr);
+  if (isNaN(d)) return 'stale';
+  const hrs = (Date.now() - d.getTime()) / 3600000;
+  if (hrs < 24) return 'green';
+  if (hrs < 72) return 'yellow';
+  return 'red';
+}
+
+function toggleCoworkCard(btn) {
+  const summary = btn.previousElementSibling;
+  const expanded = summary.classList.toggle('expanded');
+  btn.textContent = expanded ? 'Show less' : 'Show more';
+}
+
+async function loadCowork() {
+  if (!sheetsApiReady()) {
+    showSetup($('coworkSetup'), 'Add your Sheets proxy URL to <code>CONFIG.SHEETS_PROXY</code> to load cowork data.');
+    return;
+  }
+  for (const tab of COWORK_TABS) {
+    try {
+      const rows = await fetchSheet(CONFIG.SHEETS.DASHBOARD_DATA, `${tab}!A:B`);
+      const card = document.querySelector(`.cowork-card[data-tab="${tab}"]`);
+      if (!card) continue;
+      const summary = card.querySelector('.cowork-card-summary');
+      const ago = card.querySelector('.cowork-card-ago');
+      const toggle = card.querySelector('.cowork-card-toggle');
+
+      const nonEmpty = rows.filter(r => r && ((r[0] || '').trim() !== '' || (r[1] || '').trim() !== ''));
+      const lastRow = nonEmpty.length ? nonEmpty[nonEmpty.length - 1] : null;
+
+      if (!lastRow || (!(lastRow[0] || '').trim() && !(lastRow[1] || '').trim())) {
+        summary.textContent = 'No data yet';
+        summary.classList.add('cowork-empty');
+        ago.textContent = '';
+        card.className = 'cowork-card status-stale';
+        toggle.classList.remove('visible');
+        continue;
+      }
+
+      const ts = (lastRow[0] || '').trim();
+      const body = (lastRow[1] || '').trim();
+      ago.textContent = timeAgo(ts);
+      ago.title = ts;
+      summary.textContent = body;
+      summary.classList.remove('cowork-empty');
+      card.className = 'cowork-card status-' + coworkFreshness(ts);
+
+      // Show toggle only if text is long enough to be clamped
+      requestAnimationFrame(() => {
+        toggle.classList.toggle('visible', summary.scrollHeight > summary.clientHeight + 2);
+      });
+    } catch (e) {
+      console.error(`Cowork ${tab} error:`, e);
+      const card = document.querySelector(`.cowork-card[data-tab="${tab}"]`);
+      if (card) {
+        card.querySelector('.cowork-card-summary').textContent = 'Error: ' + e.message;
+        card.className = 'cowork-card status-red';
+      }
+    }
+  }
+}
+
+// ============================================================
+// EMAIL TRIAGE
+// ============================================================
+function parseEmailJson(raw) {
+  if (!raw || !raw.trim()) return null;
+  try {
+    let parsed = JSON.parse(raw);
+    if (parsed.output && typeof parsed.output === 'string') {
+      parsed = JSON.parse(parsed.output);
+    }
+    // Normalize legacy "Action Needed" key
+    if (parsed['Action Needed'] !== undefined && parsed.ActionNeeded === undefined) {
+      parsed.ActionNeeded = parsed['Action Needed'];
+    }
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function timeAgo(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return 'yesterday';
+  return days + 'd ago';
+}
+
+const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
+
+async function loadEmail() {
+  if (!sheetsApiReady()) {
+    $('emailList').innerHTML = '<div class="setup-notice"><h3>Setup Required</h3>Add your Sheets proxy URL to load email triage.</div>';
+    return;
+  }
+  try {
+    const rows = await fetchSheet(CONFIG.SHEETS.CLAUDE_ZAPIER_EMAILS, 'Sheet1!A:E');
+    if (rows.length < 2) {
+      $('emailList').innerHTML = '<div class="empty-state"><p>No email triage items</p></div>';
+      return;
+    }
+
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+    emailData = rows.slice(1)
+      .filter(r => r && r[1] && new Date(r[1]).getTime() > cutoff)
+      .map(r => {
+        const ai = parseEmailJson(r[4] || '');
+        return {
+          biz: (r[0] || '').trim().toUpperCase(),
+          date: r[1],
+          from: (r[2] || '').trim(),
+          subject: (r[3] || '').trim(),
+          category: ai ? (ai.Category || 'Unknown') : 'Unknown',
+          priority: ai ? (ai.Priority || 'Low') : 'Low',
+          summary: ai ? (ai.Summary || '') : '',
+          draft: ai ? (ai.DraftResponse || '') : '',
+          actionNeeded: ai ? !!ai.ActionNeeded : false
+        };
+      })
+      .sort((a, b) => {
+        // Action needed + high priority first
+        const aUrgent = a.actionNeeded || a.priority === 'High' ? 0 : 1;
+        const bUrgent = b.actionNeeded || b.priority === 'High' ? 0 : 1;
+        if (aUrgent !== bUrgent) return aUrgent - bUrgent;
+        const pa = PRIORITY_ORDER[a.priority] ?? 2;
+        const pb = PRIORITY_ORDER[b.priority] ?? 2;
+        if (pa !== pb) return pa - pb;
+        return new Date(b.date) - new Date(a.date);
+      });
+
+    renderEmails();
+  } catch (e) {
+    $('emailList').innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`;
+  }
+}
+
+function renderEmails() {
+  let items = emailData;
+
+  // Apply filters
+  if (emailHideJunk) {
+    items = items.filter(e => e.category !== 'Junk' && e.category !== 'Marketing');
+  }
+  if (emailBizFilter !== 'both') {
+    items = items.filter(e => e.biz === emailBizFilter.toUpperCase());
+  }
+  if (emailCatFilter === 'action') {
+    items = items.filter(e => e.actionNeeded || e.priority === 'High');
+  } else if (emailCatFilter !== 'all') {
+    items = items.filter(e => e.category.toLowerCase() === emailCatFilter);
+  }
+
+  if (!items.length) {
+    $('emailList').innerHTML = '<div class="empty-state"><p>No emails match current filters</p></div>';
+    return;
+  }
+
+  items = items.slice(0, 30);
+
+  const actionItems = items.filter(e => e.actionNeeded || e.priority === 'High');
+  const recentItems = items.filter(e => !e.actionNeeded && e.priority !== 'High');
+
+  function cardHtml(e, idx) {
+    const catClass = 'cat-' + e.category.toLowerCase();
+    const bizClass = e.biz ? 'biz-' + e.biz.toLowerCase() : '';
+    const draftBtn = e.draft ? `<span class="email-draft-toggle" onclick="this.parentElement.parentElement.querySelector('.email-draft').classList.toggle('open')">Draft</span>` : '';
+    const draftBlock = e.draft ? `<div class="email-draft">${esc(e.draft)}</div>` : '';
+    return `<div class="email-card">
+      <span class="email-priority ${e.priority.toLowerCase()}"></span>
+      <div class="email-content">
+        <div class="email-tags">
+          <span class="email-tag ${catClass}">${esc(e.category)}</span>
+          ${e.biz ? `<span class="email-tag ${bizClass}">${esc(e.biz)}</span>` : ''}
+        </div>
+        <div class="email-from-subject"><span class="from">${esc(e.from)}</span> <span class="subject">${esc(e.subject)}</span></div>
+        ${e.summary ? `<div class="email-summary">${esc(e.summary)}</div>` : ''}
+        ${draftBlock}
+      </div>
+      <div class="email-meta">
+        ${draftBtn}
+        <span class="email-time">${timeAgo(e.date)}</span>
+      </div>
+    </div>`;
+  }
+
+  let html = '';
+  if (actionItems.length) {
+    html += `<div class="email-section-label">Action Needed <span class="count">(${actionItems.length})</span></div>`;
+    html += actionItems.map(cardHtml).join('');
+  }
+  if (recentItems.length) {
+    html += `<div class="email-section-label">All Recent <span class="count">(${recentItems.length})</span></div>`;
+    html += recentItems.map(cardHtml).join('');
+  }
+
+  $('emailList').innerHTML = html;
+}
+
+function filterEmail(cat, btn) {
+  emailCatFilter = cat;
+  document.querySelectorAll('[data-ecat]').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderEmails();
+}
+
+function filterEmailBiz(biz, btn) {
+  emailBizFilter = biz;
+  document.querySelectorAll('[data-ebiz]').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderEmails();
+}
+
+function toggleHideJunk(checked) {
+  emailHideJunk = checked;
+  renderEmails();
+}
+
+// ============================================================
+// COACH
+// ============================================================
+const COACH_SYSTEM = `You are J.A.R.V.I.S., Dylan's AI executive assistant and accountability system. You speak like JARVIS from Iron Man: composed, dry wit, British-inflected precision, occasionally sardonic but always loyal and mission-focused. Address Dylan as "sir" naturally but not excessively.
+
+Your style:
+- JARVIS persona: calm, precise, subtly witty, never flustered
+- Direct and blunt when it matters. No sugarcoating performance gaps.
+- Challenge his thinking when he drifts from high-value work
+- Never use em dashes (use commas, periods, or semicolons instead)
+- Keep responses concise, under 200 words unless a longer answer is truly needed
+- When generating tasks, prefix each with "TASK:" on its own line
+
+Context:
+- Dylan owns Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ
+- Dylan's highest value activity is epoxy sales. Protect it above all else.
+- His weakness: gets pulled into operations, loses pipeline focus
+- Has ADHD; needs big picture focus with concrete next steps
+- Wants block scheduling discipline
+- PEC monthly revenue target: $151,333
+- FTP monthly revenue target: $91,667
+- Q2 goals: PEC $458k sales, FTP $308k sales, 11% net profit, hire PEC installer, hire PEC salesperson, 2 PEC crews running, referral program live, epoxy field training complete
+- Key people: Dusty (office manager, both companies), Doug (FTP sales/PM), Justin (PEC crew lead), Kyle (PEC installer, nearly lead-ready)
+
+Your job:
+1. Run the morning check-in: what happened yesterday, what's top of mind
+2. Identify his top 3 priorities for today
+3. Challenge anything that pulls him away from selling
+4. Generate a clear, prioritized task list
+5. Keep him focused on revenue-generating activities
+6. If he mentions an idea or future item that is not actionable today, tell him you are logging it to his open loops
+
+When you generate tasks, prefix each with "TASK:" on its own line. Example:
+TASK: Call back 3 pending PEC estimates
+TASK: Block 9am-12pm for sales calls
+
+When he mentions something that belongs in his brain dump (future ideas, things to think about later, non-urgent items), prefix with "BRAINDUMP:" on its own line. Example:
+BRAINDUMP: Explore partnership with local real estate agents for referrals`;
+
+async function sendCoach() {
+  const input = $('coachInput');
+  const text = input.value.trim();
+  if (!text) return;
+
+  // Add user message
+  coachHistory.push({ role: 'user', content: text });
+  appendMsg('user', text);
+  input.value = '';
+  input.style.height = 'auto';
+  $('coachSend').disabled = true;
+
+  // Show typing
+  const typing = document.createElement('div');
+  typing.className = 'typing';
+  typing.textContent = 'Processing, sir...';
+  $('coachMessages').appendChild(typing);
+  $('coachMessages').scrollTop = $('coachMessages').scrollHeight;
+  $('jarvisStatus').textContent = 'Processing...';
+  if(window.setJarvisActive) window.setJarvisActive(true);
+
+  try {
+    const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system: COACH_SYSTEM,
+        messages: coachHistory,
+        model: CONFIG.COACH_MODEL,
+        max_tokens: 1024
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error || data);
+      throw new Error(`API error ${res.status}: ${errMsg}`);
+    }
+
+    const reply = data.content && data.content[0] && data.content[0].text ? data.content[0].text : '(no response)';
+    coachHistory.push({ role: 'assistant', content: reply });
+
+    typing.remove();
+    appendMsg('coach', reply);
+
+  } catch (e) {
+    typing.remove();
+    appendMsg('coach', 'Error: ' + e.message);
+  }
+
+  $('coachSend').disabled = false;
+  $('coachInput').focus();
+}
+
+function appendMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+
+  if (role === 'coach') {
+    // Parse for tasks
+    const lines = text.split('\n');
+    const tasks = lines.filter(l => l.trim().startsWith('TASK:'));
+    const brains = lines.filter(l => l.trim().startsWith('BRAINDUMP:'));
+    const displayText = text.replace(/^TASK:\s*/gm, '&#9654; ').replace(/^BRAINDUMP:\s*/gm, '&#128161; ');
+
+    div.innerHTML = displayText.replace(/\n/g, '<br>');
+
+    // Auto-add tasks to task list
+    const notes = [];
+    if (tasks.length) {
+      tasks.forEach(t => addTask(t.replace(/^TASK:\s*/, '').trim(), 'JARVIS'));
+      notes.push(`${tasks.length} task${tasks.length > 1 ? 's' : ''} added to your list`);
+    }
+
+    // Auto-add brain dumps
+    if (brains.length) {
+      brains.forEach(b => addBrainDump(b.replace(/^BRAINDUMP:\s*/, '').trim()));
+      notes.push(`${brains.length} item${brains.length > 1 ? 's' : ''} logged to open loops`);
+    }
+
+    if (notes.length) {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:.7rem;color:var(--cyan);margin-top:8px;letter-spacing:.5px';
+      note.textContent = notes.join(' / ') + ', sir.';
+      div.appendChild(note);
+    }
+
+    // JARVIS speaks the response
+    jarvisSpeak(text);
+  } else {
+    div.textContent = text;
+  }
+
+  $('coachMessages').appendChild(div);
+  $('coachMessages').scrollTop = $('coachMessages').scrollHeight;
+}
+
+// ============================================================
+// VOICE INPUT (Web Speech API)
+// ============================================================
+let recognition = null;
+let isListening = false;
+
+function initSpeech() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { console.warn('Speech recognition not supported'); return; }
+  recognition = new SR();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (e) => {
+    let final = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    const input = $('coachInput');
+    if (final) {
+      input.value += (input.value ? ' ' : '') + final;
+      autoGrow(input);
+    }
+    $('jarvisStatus').textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+  };
+
+  recognition.onend = () => {
+    if (isListening) { recognition.start(); return; }
+    $('micBtn').classList.remove('listening');
+    $('jarvisStatus').textContent = 'Standing by, sir.';
+    if(window.setJarvisActive) window.setJarvisActive(false);
+  };
+
+  recognition.onerror = (e) => {
+    if (e.error === 'no-speech') return;
+    console.error('Speech error:', e.error);
+    stopVoice();
+  };
+}
+
+function toggleVoice() {
+  if (!recognition) initSpeech();
+  if (!recognition) { alert('Voice input is not supported in this browser. Use Chrome.'); return; }
+  isListening ? stopVoice() : startVoice();
+}
+
+function startVoice() {
+  isListening = true;
+  recognition.start();
+  $('micBtn').classList.add('listening');
+  $('jarvisStatus').textContent = 'Listening...';
+  if(window.setJarvisActive) window.setJarvisActive(true);
+}
+
+function stopVoice() {
+  isListening = false;
+  try { recognition.stop(); } catch(e) {}
+  $('micBtn').classList.remove('listening');
+  $('jarvisStatus').textContent = 'Standing by, sir.';
+  if(window.setJarvisActive) window.setJarvisActive(false);
+}
+
+// ============================================================
+// JARVIS VOICE OUTPUT (ElevenLabs)
+// ============================================================
+let jarvisAudio = null;
+let jarvisMuted = false;
+
+function toggleMute() {
+  jarvisMuted = !jarvisMuted;
+  $('muteBtn').textContent = jarvisMuted ? 'Voice Off' : 'Voice On';
+  $('muteBtn').style.borderColor = jarvisMuted ? 'var(--danger)' : '';
+  $('muteBtn').style.color = jarvisMuted ? 'var(--danger)' : '';
+  if (jarvisMuted && jarvisAudio) { jarvisAudio.pause(); jarvisAudio = null; }
+}
+
+async function jarvisSpeak(text) {
+  if (jarvisMuted) return;
+  if (!CONFIG.ELEVENLABS_API_KEY || CONFIG.ELEVENLABS_API_KEY === '') return;
+
+  // Stop any current playback
+  if (jarvisAudio) { jarvisAudio.pause(); jarvisAudio = null; }
+
+  // Clean text for speech
+  const clean = text.replace(/^TASK:\s*/gm, '').replace(/^BRAINDUMP:\s*/gm, '').replace(/\*\*/g, '').replace(/\n+/g, '. ').trim();
+  if (!clean) return;
+
+  // Truncate to stay within free tier limits (max ~500 chars per response)
+  const truncated = clean.length > 800 ? clean.substring(0, 800) + '.' : clean;
+
+  if(window.setJarvisActive) window.setJarvisActive(true);
+  $('jarvisStatus').textContent = 'Speaking...';
+
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${CONFIG.ELEVENLABS_VOICE_ID}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'xi-api-key': CONFIG.ELEVENLABS_API_KEY
+      },
+      body: JSON.stringify({
+        text: truncated,
+        model_id: 'eleven_turbo_v2_5',
+        voice_settings: {
+          stability: 0.6,
+          similarity_boost: 0.8,
+          style: 0.3,
+          use_speaker_boost: true
+        }
+      })
+    });
+
+    if (!res.ok) {
+      console.error('ElevenLabs error:', res.status);
+      if(window.setJarvisActive) window.setJarvisActive(false);
+      $('jarvisStatus').textContent = 'Standing by, sir.';
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    jarvisAudio = new Audio(url);
+
+    jarvisAudio.onended = () => {
+      if(window.setJarvisSpeaking) window.setJarvisSpeaking(false);
+      if(window.setJarvisActive) window.setJarvisActive(false);
+      $('jarvisStatus').textContent = 'Standing by, sir.';
+      URL.revokeObjectURL(url);
+      jarvisAudio = null;
+    };
+
+    jarvisAudio.onerror = () => {
+      if(window.setJarvisActive) window.setJarvisActive(false);
+      $('jarvisStatus').textContent = 'Standing by, sir.';
+      jarvisAudio = null;
+    };
+
+    if(window.setJarvisSpeaking) window.setJarvisSpeaking(true);
+    jarvisAudio.play();
+  } catch (e) {
+    console.error('ElevenLabs error:', e);
+    if(window.setJarvisActive) window.setJarvisActive(false);
+    $('jarvisStatus').textContent = 'Standing by, sir.';
+  }
+}
+
+// ============================================================
+// BRAIN DUMP
+// ============================================================
+function loadBrainDumps() {
+  const saved = localStorage.getItem('hq_braindump');
+  return saved ? JSON.parse(saved) : [];
+}
+
+function saveBrainDumps(items) {
+  localStorage.setItem('hq_braindump', JSON.stringify(items));
+}
+
+function addBrainDump(text) {
+  const input = $('brainInput');
+  const t = text || (input ? input.value.trim() : '');
+  if (!t) return;
+  const items = loadBrainDumps();
+  const item = { id: Date.now(), text: t, created: new Date().toISOString(), synced: false };
+  items.unshift(item);
+  saveBrainDumps(items);
+  if (!text && input) { input.value = ''; input.style.height = 'auto'; }
+  renderBrainDumps();
+  syncBrainDumpToSheet(item);
+}
+
+function deleteBrainDump(id) {
+  saveBrainDumps(loadBrainDumps().filter(x => x.id !== id));
+  renderBrainDumps();
+}
+
+function renderBrainDumps() {
+  const items = loadBrainDumps();
+  const list = $('brainList');
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:.8rem;padding:20px;text-align:center">No open loops captured yet.</div>';
+    return;
+  }
+  list.innerHTML = items.map(item => {
+    const d = new Date(item.created);
+    const time = (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+    return `<div class="brain-item">
+      <div class="brain-text">${esc(item.text)}${item.synced ? '<div class="brain-synced">synced to sheet</div>' : ''}</div>
+      <span class="brain-time">${time}</span>
+      <button class="brain-delete" onclick="deleteBrainDump(${item.id})">&times;</button>
+    </div>`;
+  }).join('');
+}
+
+async function syncBrainDumpToSheet(item) {
+  if (!CONFIG.SHEETS_PROXY || CONFIG.SHEETS_PROXY === '') return;
+  try {
+    // Use the same Apps Script proxy for writing
+    const writeUrl = CONFIG.SHEETS_PROXY.replace('/exec', '/exec');
+    await fetch(writeUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'braindump',
+        timestamp: new Date().toLocaleString('en-US'),
+        text: item.text
+      })
+    });
+    // Mark as synced
+    const items = loadBrainDumps();
+    const found = items.find(x => x.id === item.id);
+    if (found) { found.synced = true; saveBrainDumps(items); renderBrainDumps(); }
+  } catch (e) { console.error('Brain dump sync error:', e); }
+}
+
+async function saveCoachSession() {
+  if (coachHistory.length === 0) return;
+
+  const timestamp = new Date().toLocaleString('en-US');
+  const transcript = coachHistory.map(m => `${m.role === 'user' ? 'Dylan' : 'JARVIS'}: ${m.content}`).join('\n\n');
+
+  // Save to Google Sheet via Apps Script proxy
+  const proxyUrl = CONFIG.SHEETS_PROXY || CONFIG.COACH_LOG_SCRIPT;
+  if (proxyUrl && proxyUrl !== 'YOUR_APPS_SCRIPT_URL' && proxyUrl !== '') {
+    try {
+      await fetch(proxyUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'coachlog', timestamp, transcript })
+      });
+      $('saveStatus').textContent = 'Logged, sir.';
+      $('saveStatus').style.color = 'var(--success)';
+    } catch (e) {
+      $('saveStatus').textContent = 'Error';
+      $('saveStatus').style.color = 'var(--danger)';
+    }
+  } else {
+    // Fallback: copy to clipboard
+    try {
+      await navigator.clipboard.writeText(`Coach Session - ${timestamp}\n\n${transcript}`);
+      $('saveStatus').textContent = 'Copied';
+      $('saveStatus').style.color = 'var(--success)';
+    } catch (e) {
+      $('saveStatus').textContent = 'Error';
+      $('saveStatus').style.color = 'var(--danger)';
+    }
+  }
+  setTimeout(() => { $('saveStatus').textContent = ''; }, 3000);
+}
+
+// ============================================================
+// NAVIGATION
+// ============================================================
+// Owner tab switching (scoped to owner nav only)
+document.querySelectorAll('.tab-nav:not(.employee-nav) .tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-nav:not(.employee-nav) .tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section.tab-content:not(.emp-tab-content)').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const targetId = 'tab-' + btn.dataset.tab;
+    const target = document.getElementById(targetId);
+    if (target) target.classList.add('active');
+    // Lazy load owner SOPs on first click
+    if (btn.dataset.tab === 'sops-owner') initOwnerSOPs();
+  });
+});
+
+// ============================================================
+// INIT
+// ============================================================
+function checkLogin() {
+  const pass = $('loginPass').value.trim();
+  const passLower = pass.toLowerCase();
+  if (pass === CONFIG.PASSWORD) {
+    sessionStorage.setItem('hq_auth', 'true');
+    sessionStorage.setItem('hq_mode', 'owner');
+    sessionStorage.removeItem('hq_employee');
+    currentEmployee = null;
+    unlockDashboard();
+  } else if (CONFIG.EMPLOYEE_CODES[passLower]) {
+    currentEmployee = CONFIG.EMPLOYEE_CODES[passLower];
+    sessionStorage.setItem('hq_auth', 'true');
+    sessionStorage.setItem('hq_mode', 'employee');
+    sessionStorage.setItem('hq_employee', JSON.stringify(currentEmployee));
+    unlockDashboard();
+  } else {
+    $('loginError').textContent = 'Wrong password or code';
+    $('loginPass').value = '';
+    $('loginPass').focus();
+  }
+}
+
+function unlockDashboard() {
+  $('loginGate').style.display = 'none';
+  const mode = sessionStorage.getItem('hq_mode') || 'owner';
+  if (mode === 'employee') {
+    const empJson = sessionStorage.getItem('hq_employee');
+    if (empJson) currentEmployee = JSON.parse(empJson);
+    const empHeader = document.querySelector('.employee-header');
+    const empNav = document.querySelector('.employee-nav');
+    if (empHeader) empHeader.style.display = '';
+    if (empNav) empNav.style.display = '';
+    initEmployee();
+  } else {
+    document.querySelector('.header').style.display = '';
+    document.querySelector('.tab-nav').style.display = '';
+    init();
+  }
+}
+
+function logout() {
+  sessionStorage.clear();
+  location.reload();
+}
+
+async function init() {
+  // Set date
+  const d = new Date();
+  const opts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+  $('headerDate').textContent = d.toLocaleDateString('en-US', opts);
+
+  // Render local-only data first
+  renderBrainDumps();
+
+  // Load tasks
+  await loadTasks();
+  renderTasks();
+
+  // Load revenue FIRST — populates allJobs for scorecard auto-calc
+  await loadRevenue();
+
+  // Now render Command tab (scorecard uses allJobs)
+  renderGoals();
+
+  // Render Execution tab components
+  renderProjects();
+
+  // Load remaining async data
+  loadCowork();
+  loadEmail();
+}
+
+async function refreshAll() {
+  $('statusDot').style.background = 'var(--warn)';
+  await loadRevenue();
+  renderGoals();
+  loadCowork();
+  loadEmail();
+  setTimeout(() => { $('statusDot').style.background = 'var(--success)'; }, 2000);
+}
+
+// Check if already authenticated this session
+if (sessionStorage.getItem('hq_auth') === 'true') {
+  unlockDashboard();
+} else {
+  $('loginPass').focus();
+}
+
+// Auto-refresh every 5 minutes
+setInterval(refreshAll, 5 * 60 * 1000);
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ============================================================
+// TESSERACT VISUALIZATION
+// ============================================================
+
+let isActive = false, isSpeaking = false;
+const CYAN = new THREE.Color(0x22d3ee);
+const CYAN_DIM = new THREE.Color(0x0d5f6e);
+const WHITE = new THREE.Color(0xffffff);
+
+// --- 4D Tesseract Geometry ---
+const verts4D = [];
+for (let i = 0; i < 16; i++) {
+  verts4D.push([(i&1)?1:-1, (i&2)?1:-1, (i&4)?1:-1, (i&8)?1:-1]);
+}
+const edges4D = [];
+for (let i = 0; i < 16; i++) {
+  for (let j = i+1; j < 16; j++) {
+    let d = 0;
+    for (let k = 0; k < 4; k++) if (verts4D[i][k] !== verts4D[j][k]) d++;
+    if (d === 1) edges4D.push([i, j]);
+  }
+}
+
+function rotate4D(v, aXW, aYZ, aXY) {
+  let [x, y, z, w] = v;
+  let c, s;
+  // XW plane
+  c = Math.cos(aXW); s = Math.sin(aXW);
+  [x, w] = [x*c - w*s, x*s + w*c];
+  // YZ plane
+  c = Math.cos(aYZ); s = Math.sin(aYZ);
+  [y, z] = [y*c - z*s, y*s + z*c];
+  // XY plane (subtle)
+  c = Math.cos(aXY); s = Math.sin(aXY);
+  [x, y] = [x*c - y*s, x*s + y*c];
+  return [x, y, z, w];
+}
+
+function project4D(v) {
+  const d = 3.5;
+  const s = d / (d - v[3]);
+  return new THREE.Vector3(v[0]*s, v[1]*s, v[2]*s);
+}
+
+// --- Simplex Noise GLSL ---
+const NOISE_GLSL = `
+vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 mod289(vec4 x){return x-floor(x*(1.0/289.0))*289.0;}
+vec4 permute(vec4 x){return mod289(((x*34.0)+1.0)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-0.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1.0/6.0,1.0/3.0);
+  const vec4 D=vec4(0.0,0.5,1.0,2.0);
+  vec3 i=floor(v+dot(v,C.yyy));
+  vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz);
+  vec3 l=1.0-g;
+  vec3 i1=min(g.xyz,l.zxy);
+  vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx;
+  vec3 x2=x0-i2+C.yyy;
+  vec3 x3=x0-D.yyy;
+  i=mod289(i);
+  vec4 p=permute(permute(permute(
+    i.z+vec4(0.0,i1.z,i2.z,1.0))
+    +i.y+vec4(0.0,i1.y,i2.y,1.0))
+    +i.x+vec4(0.0,i1.x,i2.x,1.0));
+  float n_=0.142857142857;
+  vec3 ns=n_*D.wyz-D.xzx;
+  vec4 j=p-49.0*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z);
+  vec4 y_=floor(j-7.0*x_);
+  vec4 x=x_*ns.x+ns.yyyy;
+  vec4 y=y_*ns.x+ns.yyyy;
+  vec4 h=1.0-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy);
+  vec4 b1=vec4(x.zw,y.zw);
+  vec4 s0=floor(b0)*2.0+1.0;
+  vec4 s1=floor(b1)*2.0+1.0;
+  vec4 sh=-step(h,vec4(0.0));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;
+  vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x);
+  vec3 p1=vec3(a0.zw,h.y);
+  vec3 p2=vec3(a1.xy,h.z);
+  vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));
+  p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+  vec4 m=max(0.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.0);
+  m=m*m;
+  return 42.0*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));
+}`;
+
+// --- Setup Renderers ---
+function initTesseract() {
+  const bgCanvas = document.getElementById('tesseractBg');
+  const miniCanvas = document.getElementById('tesseractMini');
+  if (!bgCanvas || !miniCanvas) return;
+
+  const chatCol = bgCanvas.parentElement;
+  const isMobile = window.innerWidth < 768;
+  const PARTICLE_COUNT = isMobile ? 600 : 1500;
+
+  // Background renderer
+  const bgRenderer = new THREE.WebGLRenderer({ canvas: bgCanvas, alpha: true, antialias: true });
+  bgRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  bgRenderer.setClearColor(0x000000, 0);
+
+  // Mini renderer (header)
+  const miniRenderer = new THREE.WebGLRenderer({ canvas: miniCanvas, alpha: true, antialias: true });
+  miniRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  miniRenderer.setClearColor(0x000000, 0);
+  miniRenderer.setSize(56, 56);
+
+  // Scene
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.z = 6;
+
+  // Mini camera
+  const miniCam = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  miniCam.position.z = 6;
+
+  // --- Tesseract Lines ---
+  const lineGeo = new THREE.BufferGeometry();
+  const linePositions = new Float32Array(edges4D.length * 6);
+  const lineWDepth = new Float32Array(edges4D.length * 2);
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+  lineGeo.setAttribute('wDepth', new THREE.BufferAttribute(lineWDepth, 1));
+  const lineMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uBoost: { value: 1.0 } },
+    vertexShader: `
+      attribute float wDepth;
+      varying float vW;
+      void main() {
+        vW = wDepth;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision mediump float;
+      varying float vW;
+      uniform float uBoost;
+      void main() {
+        vec4 farCol = vec4(0.051, 0.373, 0.431, 0.12);
+        vec4 nearCol = vec4(0.133, 0.827, 0.933, 0.9);
+        gl_FragColor = mix(farCol, nearCol, vW) * uBoost;
+      }
+    `
+  });
+  const tesseract = new THREE.LineSegments(lineGeo, lineMat);
+  scene.add(tesseract);
+
+  // --- Particles ---
+  const partGeo = new THREE.BufferGeometry();
+  const partPos = new Float32Array(PARTICLE_COUNT * 3);
+  const partOrbitRadius = new Float32Array(PARTICLE_COUNT);
+  const partOrbitSpeed = new Float32Array(PARTICLE_COUNT);
+  const partOrbitPhase = new Float32Array(PARTICLE_COUNT);
+  const partOrbitTilt = new Float32Array(PARTICLE_COUNT);
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    partOrbitRadius[i] = 1.8 + Math.random() * 1.5;
+    partOrbitSpeed[i] = 0.1 + Math.random() * 0.2;
+    partOrbitPhase[i] = Math.random() * Math.PI * 2;
+    partOrbitTilt[i] = Math.random() * Math.PI;
+    partPos[i*3] = partOrbitRadius[i] * Math.cos(partOrbitPhase[i]);
+    partPos[i*3+1] = partOrbitRadius[i] * Math.sin(partOrbitPhase[i]) * Math.cos(partOrbitTilt[i]);
+    partPos[i*3+2] = partOrbitRadius[i] * Math.sin(partOrbitPhase[i]) * Math.sin(partOrbitTilt[i]);
+  }
+  partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
+
+  const partMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uBright: { value: 0.3 } },
+    vertexShader: `
+      attribute vec3 position;
+      uniform mat4 modelViewMatrix;
+      uniform mat4 projectionMatrix;
+      uniform float uTime;
+      varying float vAlpha;
+      ${NOISE_GLSL}
+      void main() {
+        float n = snoise(position * 0.8 + uTime * 0.15);
+        vAlpha = smoothstep(-0.2, 0.8, n);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(1.5, 3.0 * vAlpha);
+      }
+    `,
+    fragmentShader: `
+      precision mediump float;
+      varying float vAlpha;
+      uniform float uBright;
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        if (d > 1.0) discard;
+        float a = (1.0 - d * d) * vAlpha * uBright;
+        gl_FragColor = vec4(0.133, 0.827, 0.933, a);
+      }
+    `
+  });
+  const particles = new THREE.Points(partGeo, partMat);
+  scene.add(particles);
+
+  // --- Volumetric Cloud Sphere ---
+  const cloudGeo = new THREE.SphereGeometry(1.0, 32, 32);
+  const cloudMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.FrontSide,
+    uniforms: { uTime: { value: 0 }, uIntensity: { value: 0.15 } },
+    vertexShader: `
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        vPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision mediump float;
+      varying vec3 vNormal;
+      varying vec3 vPosition;
+      uniform float uTime;
+      uniform float uIntensity;
+      ${NOISE_GLSL}
+      void main() {
+        float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0.0, 0.0, 1.0))), 1.8);
+        float n = snoise(vPosition * 2.5 + uTime * 0.3) * 0.5 + 0.5;
+        float n2 = snoise(vPosition * 5.0 - uTime * 0.2) * 0.5 + 0.5;
+        float n3 = snoise(vPosition * 8.0 + vec3(uTime * 0.15, -uTime * 0.1, uTime * 0.08)) * 0.5 + 0.5;
+        float pattern = n * 0.55 + n2 * 0.3 + n3 * 0.15;
+        vec3 cyan = vec3(0.133, 0.827, 0.933);
+        vec3 white = vec3(1.0);
+        vec3 col = mix(cyan, white, pattern * 0.4);
+        float alpha = fresnel * uIntensity + pattern * uIntensity * 0.5;
+        alpha *= smoothstep(0.0, 0.3, pattern);
+        gl_FragColor = vec4(col, alpha);
+      }
+    `
+  });
+  const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+  scene.add(cloud);
+
+  // --- Bloom Post-Processing ---
+  function setupComposer(renderer, w, h) {
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.8, 0.4, 0.85);
+    bloom.threshold = 0.2;
+    bloom.strength = 0.5;
+    bloom.radius = 0.3;
+    composer.addPass(bloom);
+    return { composer, bloom };
+  }
+
+  let bgW = chatCol.clientWidth || 400;
+  let bgH = chatCol.clientHeight || 500;
+  bgRenderer.setSize(bgW, bgH);
+  camera.aspect = bgW / bgH;
+  camera.updateProjectionMatrix();
+
+  let { composer: bgComposer, bloom: bgBloom } = setupComposer(bgRenderer, bgW, bgH);
+
+  // Mini composer (no bloom for performance)
+  // Mini just renders directly
+
+  // --- Resize ---
+  const ro = new ResizeObserver(() => {
+    bgW = chatCol.clientWidth || 400;
+    bgH = chatCol.clientHeight || 500;
+    bgRenderer.setSize(bgW, bgH);
+    camera.aspect = bgW / bgH;
+    camera.updateProjectionMatrix();
+    bgComposer.setSize(bgW, bgH);
+  });
+  ro.observe(chatCol);
+
+  // --- State ---
+  window.setJarvisActive = (val) => { isActive = val; };
+  window.setJarvisSpeaking = (val) => { isSpeaking = val; };
+
+  // --- Animation ---
+  let time = 0;
+  const clock = new THREE.Clock();
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    // Visibility check
+    const jarvisTab = document.getElementById('tab-jarvis');
+    if (!jarvisTab || !jarvisTab.classList.contains('active')) return;
+
+    const dt = clock.getDelta();
+    time += dt;
+
+    const baseSpeed = isActive ? 1.4 : 0.5;
+    const breathe = 0.7 + 0.3 * Math.sin(time * 0.15);
+    const speed = baseSpeed * breathe;
+
+    // Update tesseract
+    const aXW = time * 0.3 * speed;
+    const aYZ = time * 0.2 * speed;
+    const aXY = time * 0.1 * speed;
+    const pos = lineGeo.attributes.position.array;
+    const wArr = lineGeo.attributes.wDepth.array;
+    for (let i = 0; i < edges4D.length; i++) {
+      const [a, b] = edges4D[i];
+      const ra = rotate4D(verts4D[a], aXW, aYZ, aXY);
+      const rb = rotate4D(verts4D[b], aXW, aYZ, aXY);
+      const va = project4D(ra);
+      const vb = project4D(rb);
+      pos[i*6] = va.x; pos[i*6+1] = va.y; pos[i*6+2] = va.z;
+      pos[i*6+3] = vb.x; pos[i*6+4] = vb.y; pos[i*6+5] = vb.z;
+      // Map w from [-1.5, 1.5] to [0, 1]
+      wArr[i*2] = Math.min(1, Math.max(0, (ra[3] + 1.5) / 3.0));
+      wArr[i*2+1] = Math.min(1, Math.max(0, (rb[3] + 1.5) / 3.0));
+    }
+    lineGeo.attributes.position.needsUpdate = true;
+    lineGeo.attributes.wDepth.needsUpdate = true;
+
+    // Update particles (orbital motion)
+    const pArr = partGeo.attributes.position.array;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const r = partOrbitRadius[i];
+      const angle = time * partOrbitSpeed[i] + partOrbitPhase[i];
+      const tilt = partOrbitTilt[i];
+      pArr[i*3] = r * Math.cos(angle) + Math.sin(time * 0.5 + i) * 0.05;
+      pArr[i*3+1] = r * Math.sin(angle) * Math.cos(tilt);
+      pArr[i*3+2] = r * Math.sin(angle) * Math.sin(tilt);
+    }
+    partGeo.attributes.position.needsUpdate = true;
+
+    // Uniforms
+    partMat.uniforms.uTime.value = time;
+    partMat.uniforms.uBright.value = isActive ? 0.6 : 0.3;
+    cloudMat.uniforms.uTime.value = time;
+    cloudMat.uniforms.uIntensity.value = (isActive ? 0.25 : 0.12) + Math.sin(time * 1.5) * 0.03;
+
+    // Bloom pulse when speaking
+    const bloomBase = isActive ? 0.8 : 0.5;
+    const bloomPulse = isSpeaking ? Math.sin(time * 4) * 0.4 : 0;
+    bgBloom.strength = bloomBase + bloomPulse;
+
+    // Line brightness boost
+    lineMat.uniforms.uBoost.value = isActive ? 1.4 : 1.0;
+
+    // Render background
+    bgComposer.render();
+
+    // Render mini (simple, no bloom) — wireframe only
+    particles.visible = false; cloud.visible = false;
+    miniRenderer.render(scene, miniCam);
+    particles.visible = true; cloud.visible = true;
+  }
+
+  animate();
+}
+
+// Init when DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initTesseract);
+} else {
+  initTesseract();
+}
+</script>
+
+</body>
+</html>

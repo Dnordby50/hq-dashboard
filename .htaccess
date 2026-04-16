@@ -1,0 +1,4 @@
+AuthType Basic
+AuthName "HQ Command Center"
+AuthUserFile /path/to/.htpasswd
+Require valid-user
