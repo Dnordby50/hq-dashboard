@@ -1600,11 +1600,20 @@ function normalizeDept(d) {
 }
 
 function parseSOPFromPath(path, filename) {
-  // Path: "SOP Hub/{Company}/{Dept}/{file}.md" (or "SOP Hub/{Company}/{Dept}/{Sub}/{file}.md")
+  // Path: "{Company}/{Dept}/{file}.md" (repo root IS the SOP Hub)
+  // Legacy fallback: "SOP Hub/{Company}/{Dept}/{file}.md"
   const parts = path.split('/').filter(Boolean);
   const sopIdx = parts.findIndex(p => p === 'SOP Hub' || p === 'SOP%20Hub');
-  const company = sopIdx >= 0 && parts[sopIdx + 1] ? parts[sopIdx + 1] : 'Shared';
-  const department = sopIdx >= 0 && parts[sopIdx + 2] ? normalizeDept(parts[sopIdx + 2]) : 'ADMIN';
+  let company, department;
+  if (sopIdx >= 0) {
+    // Legacy path with "SOP Hub" prefix
+    company = parts[sopIdx + 1] || 'Shared';
+    department = parts[sopIdx + 2] ? normalizeDept(parts[sopIdx + 2]) : 'ADMIN';
+  } else {
+    // Repo root = SOP Hub: first segment is company, second is department
+    company = parts[0] || 'Shared';
+    department = parts.length > 2 ? normalizeDept(parts[1]) : 'ADMIN';
+  }
 
   // Try to parse ID + title from filename: "PEC-SALES-001 -- Title.md" or "PEC-SALES-001 Title.md"
   const base = filename.replace(/\.md$/i, '');
@@ -1690,7 +1699,8 @@ async function loadSOPs() {
     return sopData;
   }
 
-  const startUrl = CONFIG.SOP_REPO.apiBase + encodeURIComponent('SOP Hub');
+  // Repo root IS the SOP Hub (Obsidian Git pushes from inside the folder)
+  const startUrl = CONFIG.SOP_REPO.apiBase;
   const files = await listSOPFilesRecursive(startUrl);
   if (!files.length) {
     sopData = [];
@@ -2169,7 +2179,8 @@ async function loadCowork() {
       }
 
       const ts = (lastRow[0] || '').trim();
-      const body = (lastRow[1] || '').trim();
+      // Strip leading markdown headings and blank lines so card shows substance first
+      const body = (lastRow[1] || '').trim().replace(/^(?:#+ .*\n*|[\s*_-]*\n)*/g, '').replace(/^\*\*TL;DR:\*\*\s*/i, '').trim();
       ago.textContent = timeAgo(ts);
       ago.title = ts;
       summary.textContent = body;
