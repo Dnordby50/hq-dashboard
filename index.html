@@ -1895,11 +1895,24 @@ async function sendSOPChat(view) {
       })
     });
     typing.remove();
-    const data = await res.json();
+
+    // Read raw body first so we can report non-JSON responses clearly
+    const raw = await res.text();
+    let data;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (parseErr) {
+      console.error('SOP chat: non-JSON response from', CONFIG.SOP_CHAT_ENDPOINT, { status: res.status, raw });
+      const preview = (raw || '(empty body)').slice(0, 200).replace(/\s+/g, ' ');
+      renderSOPChatMsg(msgsId, 'system', `Server returned non-JSON (HTTP ${res.status}). First 200 chars: ${preview}`);
+      sopChatHistory.pop();
+      return;
+    }
+
     if (!res.ok) {
       const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error || data);
-      renderSOPChatMsg(msgsId, 'system', 'Error: ' + errMsg);
-      sopChatHistory.pop(); // remove failed user turn so retry works cleanly
+      renderSOPChatMsg(msgsId, 'system', `Error ${res.status}: ${errMsg}`);
+      sopChatHistory.pop();
       return;
     }
     const reply = data.content && data.content[0] && data.content[0].text ? data.content[0].text : '(no response)';
@@ -2435,7 +2448,17 @@ async function sendCoach() {
       })
     });
 
-    const data = await res.json();
+    // Read raw body first so we can report non-JSON responses clearly
+    const raw = await res.text();
+    let data;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (parseErr) {
+      console.error('JARVIS: non-JSON response from', CONFIG.SOP_CHAT_ENDPOINT, { status: res.status, raw });
+      const preview = (raw || '(empty body)').slice(0, 200).replace(/\s+/g, ' ');
+      throw new Error(`Server returned non-JSON (HTTP ${res.status}). First 200 chars: ${preview}`);
+    }
+
     if (!res.ok) {
       const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error || data);
       throw new Error(`API error ${res.status}: ${errMsg}`);
