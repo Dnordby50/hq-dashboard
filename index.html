@@ -6,6 +6,7 @@
 <title>HQ Command Center</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"}}
 </script>
@@ -15,7 +16,7 @@
   --bg:#0a0a0f;--s1:#111118;--s2:#1a1a24;--s3:#232334;
   --border:#2a2a3a;--border-light:#3a3a4a;
   --pec:#818cf8;--ftp:#34d399;--combined:#f472b6;
-  --accent:#818cf8;--cyan:#22d3ee;
+  --accent:#818cf8;--cyan:#22d3ee;--teal:#2DD4BF;
   --success:#34d399;--warn:#fbbf24;--danger:#f87171;
   --text:#e2e8f0;--muted:#64748b;--dim:#475569;
   --mono:'DM Mono',monospace;--sans:'Syne',sans-serif;--body:'Inter',sans-serif;
@@ -312,12 +313,16 @@ textarea{resize:vertical;min-height:60px}
 .jarvis-layout{display:grid;grid-template-columns:1fr 360px;gap:20px;height:calc(100vh - 140px)}
 .jarvis-chat-col{display:flex;flex-direction:column;background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative}
 .tesseract-bg{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:.15}
-.tesseract-mini{flex-shrink:0;width:56px;height:56px}
+.voice-orb{position:relative;width:120px;height:120px;flex-shrink:0;border-radius:50%;
+  background:radial-gradient(circle at center,#0a1f1f 0%,#020617 60%);overflow:hidden}
+.voice-orb canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.voice-orb-arcs{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;color:var(--teal)}
+.voice-orb-mic{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;color:var(--teal)}
 .jarvis-header{z-index:1;position:relative}
 .jarvis-messages{z-index:1;position:relative}
 .jarvis-input-row{z-index:1;position:relative}
 .jarvis-brain-col{display:flex;flex-direction:column;gap:12px}
-.jarvis-header{display:flex;align-items:center;gap:16px;padding:16px 20px;border-bottom:1px solid var(--border);
+.jarvis-header{display:flex;align-items:center;gap:20px;padding:20px 24px;border-bottom:1px solid var(--border);
   background:linear-gradient(180deg,rgba(34,211,238,.04),transparent)}
 .jarvis-title{font-family:var(--sans);font-weight:700;font-size:1.1rem;letter-spacing:2px;color:var(--cyan)}
 .jarvis-subtitle{font-size:.7rem;color:var(--muted);letter-spacing:.5px}
@@ -469,6 +474,497 @@ textarea{resize:vertical;min-height:60px}
   .card-value{font-size:1.5rem}
   .jobs-table{font-size:.7rem}
   .jobs-table th,.jobs-table td{padding:8px 6px}
+}
+</style>
+
+<!-- ============================================================
+     REDESIGN SKIN — light shell + sidebar layout layered on top of
+     the original dark theme. Applied via !important so original JS
+     and IDs remain untouched. JARVIS tab retains arc-reactor dark.
+     ============================================================ -->
+<style id="redesign-theme">
+/* ---------- Tokens ---------- */
+:root {
+  --rd-bg:        #eef0f3;
+  --rd-shell:     #ffffff;
+  --rd-card:      #ffffff;
+  --rd-soft:      #f5f6f8;
+  --rd-softer:    #fafbfc;
+  --rd-ink:       #0f1420;
+  --rd-ink-2:     #2b3142;
+  --rd-muted:     #6b7280;
+  --rd-dim:       #9aa1ad;
+  --rd-line:      #e6e8ec;
+  --rd-line-2:    #eef0f3;
+
+  --rd-accent:          #2b59ff;
+  --rd-accent-ink:      #ffffff;
+  --rd-accent-soft:     #e9efff;
+  --rd-accent-hero:     #16306b;
+  --rd-accent-hero-2:   #0c1d46;
+  --rd-accent-ring:     rgba(43,89,255,.18);
+
+  --rd-success:   #10b981;
+  --rd-warn:      #f59e0b;
+  --rd-danger:    #ef4444;
+  --rd-info:      #0ea5e9;
+
+  --rd-r-xl:   22px;
+  --rd-r-lg:   16px;
+  --rd-r-md:   12px;
+  --rd-r-sm:   8px;
+  --rd-r-pill: 999px;
+  --rd-shadow-sm: 0 1px 2px rgba(16,24,40,.04);
+  --rd-shadow-md: 0 6px 18px rgba(16,24,40,.06);
+  --rd-shadow-lg: 0 16px 40px rgba(16,24,40,.08);
+}
+html[data-accent="orange"] {
+  --rd-accent:        #ff6b1a;
+  --rd-accent-soft:   #fff1e6;
+  --rd-accent-hero:   #6b2a0a;
+  --rd-accent-hero-2: #3e1604;
+  --rd-accent-ring:   rgba(255,107,26,.18);
+}
+
+/* ---------- Reset dark shell ---------- */
+html, body {
+  background: var(--rd-bg) !important;
+  color: var(--rd-ink) !important;
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif !important;
+  font-size: 15px;
+}
+body { padding: 18px; min-height: 100vh; }
+::-webkit-scrollbar-track { background: transparent !important; }
+::-webkit-scrollbar-thumb { background: #d7dae0 !important; border-radius: 999px; }
+
+/* ---------- App shell (injected by JS) ---------- */
+#rdShell {
+  display: grid;
+  grid-template-columns: 244px 1fr;
+  gap: 18px;
+  max-width: 1480px;
+  margin: 0 auto;
+}
+#rdSidebar {
+  background: var(--rd-shell);
+  border-radius: var(--rd-r-xl);
+  padding: 22px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: calc(100vh - 36px);
+  box-shadow: var(--rd-shadow-sm);
+  position: sticky;
+  top: 18px;
+  align-self: start;
+}
+#rdMain {
+  background: var(--rd-shell);
+  border-radius: var(--rd-r-xl);
+  padding: 22px 26px 28px;
+  min-height: calc(100vh - 36px);
+  box-shadow: var(--rd-shadow-sm);
+  overflow: hidden;
+}
+
+/* Logo */
+.rd-logo { display: flex; align-items: center; gap: 10px; padding: 4px 10px 0; }
+.rd-logo-mark {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: var(--rd-accent); color: #fff;
+  display: grid; place-items: center;
+  font-weight: 800; font-size: 15px; letter-spacing: -.5px;
+  box-shadow: 0 6px 16px var(--rd-accent-ring);
+}
+.rd-logo-name { font-weight: 800; letter-spacing: -.3px; color: var(--rd-ink); font-size: 17px; }
+.rd-logo-sub  { font-size: 11px; color: var(--rd-muted); margin-top: 1px; }
+
+/* Nav group label */
+.rd-nav-label { font-size: 10.5px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--rd-dim); padding: 0 12px; margin-bottom: 8px; }
+.rd-nav { display: flex; flex-direction: column; gap: 2px; }
+
+#rdSidebarNav .tab-btn,
+#rdSidebarEmpNav .tab-btn {
+  all: unset;
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 14px; font-weight: 500;
+  color: var(--rd-ink-2);
+  cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  border: none;
+  transition: background .15s, color .15s;
+  position: relative;
+}
+#rdSidebarNav .tab-btn:hover,
+#rdSidebarEmpNav .tab-btn:hover { background: var(--rd-soft); color: var(--rd-ink); }
+#rdSidebarNav .tab-btn.active,
+#rdSidebarEmpNav .tab-btn.active {
+  background: var(--rd-accent);
+  color: var(--rd-accent-ink);
+  box-shadow: 0 6px 14px var(--rd-accent-ring);
+}
+#rdSidebarNav .tab-btn.active::before,
+#rdSidebarEmpNav .tab-btn.active::before {
+  content: ""; position: absolute; left: -16px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 0 3px 3px 0; background: var(--rd-accent);
+}
+.rd-ico { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; }
+#rdSidebarNav .tab-btn.active .rd-ico,
+#rdSidebarEmpNav .tab-btn.active .rd-ico { opacity: 1; }
+
+/* Sidebar promo card */
+.rd-promo {
+  margin-top: auto;
+  background: linear-gradient(160deg, var(--rd-accent-hero), var(--rd-accent-hero-2));
+  color: #fff;
+  border-radius: 18px;
+  padding: 18px 16px 16px;
+  position: relative; overflow: hidden;
+}
+.rd-promo::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(120% 80% at 90% 10%, rgba(255,255,255,.12), transparent 60%),
+              repeating-linear-gradient(125deg, transparent 0 18px, rgba(255,255,255,.04) 18px 19px);
+  pointer-events: none;
+}
+.rd-promo-title { font-weight: 700; font-size: 15px; line-height: 1.3; position: relative; }
+.rd-promo-sub   { font-size: 11.5px; opacity: .7; margin-top: 4px; position: relative; }
+.rd-promo-btn {
+  display: inline-block; margin-top: 14px;
+  background: var(--rd-accent); color: #fff;
+  border-radius: 999px; padding: 8px 18px;
+  font-size: 13px; font-weight: 600;
+  position: relative; cursor: pointer; border: none;
+}
+
+/* ---------- Top bar ---------- */
+#rdTopbar { display: flex; align-items: center; gap: 14px; padding: 2px 4px 18px; }
+#rdSearch {
+  flex: 1;
+  background: var(--rd-softer);
+  border: 1px solid var(--rd-line);
+  border-radius: 999px;
+  padding: 11px 18px 11px 42px;
+  font-size: 14px; color: var(--rd-ink);
+  width: 100%;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: 16px 50%;
+}
+#rdSearch:focus { outline: none; border-color: var(--rd-accent); box-shadow: 0 0 0 4px var(--rd-accent-ring); }
+.rd-icon-btn {
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--rd-softer); border: 1px solid var(--rd-line);
+  display: grid; place-items: center; cursor: pointer;
+  color: var(--rd-ink-2); transition: all .15s;
+}
+.rd-icon-btn:hover { border-color: var(--rd-accent); color: var(--rd-accent); }
+.rd-user { display: flex; align-items: center; gap: 10px; padding-left: 8px; border-left: 1px solid var(--rd-line); margin-left: 4px; }
+.rd-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--rd-accent), var(--rd-accent-hero));
+  color: #fff; display: grid; place-items: center;
+  font-weight: 700; font-size: 14px;
+}
+.rd-user-name { font-weight: 700; font-size: 13.5px; color: var(--rd-ink); line-height: 1.15; }
+.rd-user-sub  { font-size: 11px; color: var(--rd-muted); }
+
+/* ---------- Page title row ---------- */
+#rdTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+#rdTitle h1 { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 30px; letter-spacing: -.8px; color: var(--rd-ink); margin: 0; }
+#rdTitle .rd-subtitle { color: var(--rd-muted); font-size: 13.5px; margin-top: 4px; }
+#rdTitle .rd-actions { display: flex; gap: 10px; flex-shrink: 0; }
+.rd-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 999px;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+  border: 1px solid var(--rd-line); background: #fff; color: var(--rd-ink);
+}
+.rd-btn:hover { border-color: var(--rd-ink); }
+.rd-btn.rd-btn-primary { background: var(--rd-accent); color: #fff; border-color: var(--rd-accent); box-shadow: 0 8px 18px var(--rd-accent-ring); }
+.rd-btn.rd-btn-primary:hover { filter: brightness(1.05); }
+
+/* ---------- Hide original chrome ---------- */
+.header, .tab-nav { display: none !important; }
+#rdSidebar .tab-nav { display: flex !important; flex-direction: column; gap: 2px; background: transparent; border: none; padding: 0; overflow: visible; }
+#rdSidebar .header { display: none !important; }
+
+.tab-content { padding: 0 !important; max-width: none !important; margin: 0 !important; }
+.tab-content { display: none !important; }
+.tab-content.active { display: block !important; }
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--rd-card) !important;
+  border: 1px solid var(--rd-line) !important;
+  border-radius: var(--rd-r-lg) !important;
+  padding: 20px 22px !important;
+  color: var(--rd-ink) !important;
+  box-shadow: var(--rd-shadow-sm);
+}
+.card:hover { border-color: var(--rd-line-2) !important; }
+.card-label { color: var(--rd-muted) !important; font-size: 12.5px !important; letter-spacing: .2px !important; text-transform: none !important; font-weight: 600 !important; margin-bottom: 6px !important; }
+.card-value { font-family: 'Plus Jakarta Sans', sans-serif !important; font-weight: 700 !important; font-size: 36px !important; color: var(--rd-ink) !important; letter-spacing: -1px !important; line-height: 1.1 !important; }
+.card-sub { color: var(--rd-muted) !important; font-size: 12px !important; }
+
+.rev-card { position: relative; overflow: hidden; }
+.rev-card::before { display: none !important; }
+.rev-card.pec {
+  background: linear-gradient(160deg, var(--rd-accent-hero), var(--rd-accent-hero-2)) !important;
+  border-color: transparent !important; color: #fff !important;
+}
+.rev-card.pec::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(140% 90% at 110% -10%, rgba(255,255,255,.10), transparent 55%),
+    repeating-linear-gradient(130deg, transparent 0 24px, rgba(255,255,255,.035) 24px 25px);
+}
+.rev-card.pec .card-label,
+.rev-card.pec .card-sub { color: rgba(255,255,255,.72) !important; position: relative; }
+.rev-card.pec .card-value { color: #fff !important; position: relative; }
+.rev-card.pec .progress-track { background: rgba(255,255,255,.15) !important; position: relative; }
+.rev-card.pec .progress-fill { background: #fff !important; }
+.rev-card.ftp .progress-fill { background: var(--rd-success) !important; }
+.rev-card.combined .progress-fill { background: var(--rd-accent) !important; }
+.progress-track { background: var(--rd-line-2) !important; border-radius: 999px !important; height: 8px !important; }
+.progress-fill  { border-radius: 999px !important; }
+.progress-fill::after { display: none !important; }
+.pace-marker { background: var(--rd-ink) !important; opacity: .35 !important; }
+
+.pace-label { border-radius: 999px !important; font-weight: 600 !important; text-transform: none !important; letter-spacing: 0 !important; font-size: 11.5px !important; padding: 4px 10px !important; }
+.pace-label.on-pace { background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important; }
+.pace-label.close   { background: rgba(245,158,11,.14) !important; color: var(--rd-warn) !important; }
+.pace-label.behind  { background: rgba(239,68,68,.12)  !important; color: var(--rd-danger) !important; }
+.rev-card.pec .pace-label { background: rgba(255,255,255,.14) !important; color: #fff !important; }
+
+.grid-3 { gap: 16px !important; }
+.grid-2 { gap: 16px !important; }
+.grid-2-1 { gap: 16px !important; }
+
+.score-cell { background: var(--rd-card) !important; border: 1px solid var(--rd-line) !important; border-radius: var(--rd-r-md) !important; padding: 14px 16px !important; }
+.score-cell-label { color: var(--rd-muted) !important; text-transform: none !important; letter-spacing: 0 !important; font-size: 12px !important; font-weight: 600 !important; }
+.score-cell-value { color: var(--rd-ink) !important; font-family: 'Plus Jakarta Sans' !important; font-weight: 700 !important; font-size: 19px !important; }
+.score-cell-target { color: var(--rd-dim) !important; font-size: 11px !important; }
+.score-cell-edit { color: var(--rd-accent) !important; }
+.mini-bar-track { background: var(--rd-line-2) !important; }
+.auto-badge { background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important; border-color: transparent !important; text-transform: none !important; letter-spacing: 0 !important; font-weight: 600 !important; }
+
+.btn { border-radius: 999px !important; font-weight: 600 !important; }
+.btn-primary { background: var(--rd-accent) !important; color: #fff !important; }
+.btn-outline { background: #fff !important; border: 1px solid var(--rd-line) !important; color: var(--rd-ink-2) !important; }
+.btn-outline:hover { border-color: var(--rd-accent) !important; color: var(--rd-accent) !important; }
+.btn-danger { color: var(--rd-danger) !important; }
+
+.filter-btn {
+  border-radius: 999px !important;
+  background: var(--rd-softer) !important;
+  border: 1px solid var(--rd-line) !important;
+  color: var(--rd-muted) !important;
+  text-transform: none !important; letter-spacing: 0 !important;
+  font-weight: 600 !important; font-size: 12px !important;
+}
+.filter-btn:hover { color: var(--rd-ink) !important; border-color: var(--rd-ink) !important; }
+.filter-btn.active { background: var(--rd-accent) !important; color: #fff !important; border-color: var(--rd-accent) !important; }
+
+input, textarea, select {
+  background: var(--rd-softer) !important;
+  border: 1px solid var(--rd-line) !important;
+  color: var(--rd-ink) !important;
+  border-radius: 10px !important;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--rd-accent) !important;
+  box-shadow: 0 0 0 4px var(--rd-accent-ring) !important;
+}
+
+.jobs-table th { color: var(--rd-muted) !important; text-transform: none !important; letter-spacing: 0 !important; font-weight: 600 !important; font-size: 12.5px !important; border-color: var(--rd-line) !important; }
+.jobs-table td { border-color: var(--rd-line-2) !important; color: var(--rd-ink-2) !important; }
+.jobs-table tr:hover td { background: var(--rd-softer) !important; }
+
+.biz-tag { border-radius: 999px !important; padding: 3px 10px !important; text-transform: none !important; letter-spacing: 0 !important; font-weight: 600 !important; }
+.biz-tag.pec { background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important; }
+.biz-tag.ftp { background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important; }
+
+.rock-list-item, .rhythm-list-item, .task-item, .project-card, .email-card, .brain-item, .cowork-card, .sop-card {
+  background: var(--rd-card) !important;
+  border: 1px solid var(--rd-line) !important;
+  border-radius: var(--rd-r-md) !important;
+}
+.rocks-countdown { color: var(--rd-muted) !important; font-family: 'Plus Jakarta Sans', sans-serif !important; font-size: 12.5px !important; font-weight: 500 !important; }
+.rock-category, .project-tag, .email-tag, .project-status-badge, .task-source, .sop-dept-tag, .sop-company-tag {
+  border-radius: 999px !important; text-transform: none !important; letter-spacing: 0 !important; font-weight: 600 !important;
+}
+.rock-category.hr    { background: rgba(217,70,239,.10) !important; color: #a21caf !important; }
+.rock-category.sales { background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important; }
+.rock-category.ops   { background: rgba(14,165,233,.12) !important; color: var(--rd-info) !important; }
+.rhythm-status.done   { background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important; }
+.rhythm-status.pending{ background: #eef0f3 !important; color: var(--rd-muted) !important; }
+
+.cowork-card { border-left-width: 3px !important; padding: 14px 16px !important; }
+.cowork-card.status-green  { border-left-color: var(--rd-success) !important; }
+.cowork-card.status-yellow { border-left-color: var(--rd-warn) !important; }
+.cowork-card.status-red    { border-left-color: var(--rd-danger) !important; }
+.cowork-card.status-stale  { border-left-color: var(--rd-dim) !important; }
+.cowork-card-title { color: var(--rd-muted) !important; }
+.cowork-card-summary { color: var(--rd-ink-2) !important; }
+.cowork-card-toggle, .completed-toggle, .project-add-task, .score-cell-edit { color: var(--rd-accent) !important; }
+
+.email-tag.biz-pec, .project-tag.pec, .sop-company-tag.pec, .sop-dept-tag.sales, .task-source {
+  background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important;
+}
+.email-tag.biz-ftp, .project-tag.ftp, .sop-company-tag.ftp {
+  background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important;
+}
+.email-tag.cat-lead, .sop-dept-tag.ops { background: rgba(14,165,233,.12) !important; color: var(--rd-info) !important; }
+.email-tag.cat-vendor, .sop-dept-tag.fin, .sop-dept-tag.finance { background: rgba(245,158,11,.14) !important; color: var(--rd-warn) !important; }
+.email-tag.cat-junk, .email-tag.cat-marketing, .email-tag.cat-internal, .sop-dept-tag.admin, .project-tag.shared {
+  background: #eef0f3 !important; color: var(--rd-muted) !important;
+}
+.sop-dept-tag.safety { background: rgba(239,68,68,.12) !important; color: var(--rd-danger) !important; }
+.sop-company-tag.shared { background: rgba(217,70,239,.10) !important; color: #a21caf !important; }
+
+.project-status-badge.active   { background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important; }
+.project-status-badge.queued   { background: #eef0f3 !important; color: var(--rd-muted) !important; }
+.project-status-badge.paused   { background: rgba(245,158,11,.14) !important; color: var(--rd-warn) !important; }
+.project-status-badge.complete { background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important; }
+.project-progress { background: var(--rd-line-2) !important; }
+.project-progress-fill { background: var(--rd-accent) !important; }
+.project-task-check:checked { background: var(--rd-accent) !important; border-color: var(--rd-accent) !important; }
+.project-task-check:checked::after { border-color: #fff !important; }
+
+/* ==== JARVIS — keep dark arc-reactor theme ==== */
+.jarvis-chat-col {
+  background: radial-gradient(120% 90% at 50% 0%, #0a1628 0%, #050912 60%, #020409 100%) !important;
+  border-color: #0f2540 !important;
+}
+.jarvis-header { background: linear-gradient(180deg, rgba(34,211,238,.08), transparent) !important; border-bottom-color: #0f2540 !important; }
+.jarvis-title { color: #7ee9f5 !important; text-shadow: 0 0 14px rgba(34,211,238,.6); letter-spacing: 3px !important; }
+.jarvis-subtitle { color: #5a8fb5 !important; }
+.jarvis-messages { background: transparent !important; }
+.msg.user   { background: rgba(34,211,238,.18) !important; color: #e6f6fb !important; border-color: rgba(34,211,238,.45) !important; }
+.msg.coach  { background: rgba(12,24,42,.7) !important; border-color: rgba(34,211,238,.18) !important; color: #cfe3ef !important; backdrop-filter: blur(6px); }
+.jarvis-input-row { border-top-color: #0f2540 !important; background: rgba(5,9,18,.5); }
+.jarvis-input-row textarea { background: rgba(12,24,42,.7) !important; border-color: rgba(34,211,238,.2) !important; color: #e6f6fb !important; }
+.jarvis-input-row textarea:focus { border-color: #22d3ee !important; box-shadow: 0 0 0 4px rgba(34,211,238,.15) !important; }
+.coach-send { background: #22d3ee !important; color: #02131b !important; box-shadow: 0 0 20px rgba(34,211,238,.45) !important; }
+.jarvis-mic { border-color: rgba(34,211,238,.3) !important; color: #7ee9f5 !important; background: rgba(12,24,42,.5); }
+.jarvis-mic:hover { border-color: #22d3ee !important; color: #22d3ee !important; box-shadow: 0 0 18px rgba(34,211,238,.5); }
+.tesseract-bg { opacity: 1 !important; }
+.typing, .sop-typing { color: var(--rd-accent) !important; }
+.sop-msg.user { background: var(--rd-accent-soft) !important; color: var(--rd-ink) !important; border-color: transparent !important; }
+.sop-msg.assistant { background: #fff !important; border-color: var(--rd-line) !important; color: var(--rd-ink) !important; }
+
+/* SOP cards */
+.sop-card { padding: 16px !important; }
+.sop-card:hover { border-color: var(--rd-accent) !important; }
+.sop-card-title { color: var(--rd-ink) !important; font-family: 'Plus Jakarta Sans' !important; }
+.sop-card-desc { color: var(--rd-muted) !important; }
+.sop-card-id, .sop-card-footer, .sop-roles { color: var(--rd-dim) !important; }
+.sop-content { background: var(--rd-softer) !important; color: var(--rd-ink) !important; }
+.sop-content code { background: #fff !important; border: 1px solid var(--rd-line) !important; color: var(--rd-ink-2) !important; }
+.sop-content-close { background: var(--rd-line-2) !important; color: var(--rd-ink) !important; }
+
+.goals-banner { border-top-color: var(--rd-line) !important; }
+.goals-banner-text { color: var(--rd-muted) !important; }
+
+.setup-notice { background: var(--rd-softer) !important; border-color: var(--rd-warn) !important; color: var(--rd-ink-2) !important; }
+.setup-notice h3 { color: var(--rd-warn) !important; }
+.setup-notice code { background: #fff !important; border: 1px solid var(--rd-line) !important; color: var(--rd-ink-2) !important; }
+
+#loginGate { background: var(--rd-bg) !important; }
+#loginGate > div > div:first-child {
+  background: var(--rd-accent) !important;
+  -webkit-text-fill-color: #fff !important;
+  color: #fff !important;
+  width: 70px; height: 70px; border-radius: 20px;
+  display: inline-grid !important; place-items: center;
+  margin: 0 auto 14px !important;
+  font-size: 1.6rem !important;
+  box-shadow: 0 12px 30px var(--rd-accent-ring) !important;
+}
+#loginGate > div > div:nth-child(2) { color: var(--rd-ink) !important; font-weight: 700 !important; font-size: 1.2rem !important; }
+#loginGate > div > div:nth-child(3) { color: var(--rd-muted) !important; }
+
+.spinner { border-top-color: var(--rd-accent) !important; border-color: var(--rd-line-2) !important; }
+.loading { color: var(--rd-muted) !important; }
+
+/* ---------- Tweak panel ---------- */
+#rdTweaks {
+  position: fixed; right: 20px; bottom: 20px;
+  background: #fff; border: 1px solid var(--rd-line);
+  border-radius: 16px; padding: 14px 16px;
+  box-shadow: var(--rd-shadow-lg);
+  z-index: 9000;
+  display: none;
+  font-size: 13px;
+}
+#rdTweaks.open { display: block; }
+#rdTweaks h4 { margin: 0 0 10px; font-size: 12.5px; color: var(--rd-muted); font-weight: 600; letter-spacing: .2px; }
+#rdTweaks .swatches { display: flex; gap: 8px; }
+#rdTweaks .swatch { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform .15s; }
+#rdTweaks .swatch.active { border-color: var(--rd-ink); transform: scale(1.1); }
+#rdTweaks .swatch.blue   { background: #2b59ff; }
+#rdTweaks .swatch.orange { background: #ff6b1a; }
+#rdTweaks .rd-tweak-section { margin-top: 14px; }
+#rdTweaks .orb-opts { display: flex; gap: 6px; }
+#rdTweaks .orb-opt {
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--rd-line); background: var(--rd-softer);
+  font-size: 12px; font-weight: 600; color: var(--rd-ink-2); cursor: pointer;
+}
+#rdTweaks .orb-opt.active { background: var(--rd-accent); color: #fff; border-color: var(--rd-accent); }
+
+/* ---------- Orb style switching ---------- */
+html[data-orb-style="shader"] .voice-orb-svg { display: none !important; }
+html[data-orb-style="svg"] .voice-orb       { display: none !important; }
+.voice-orb-svg {
+  position: relative; width: 120px; height: 120px; flex-shrink: 0;
+  border-radius: 50%; overflow: hidden;
+  background: radial-gradient(circle at center, #0a1f1f 0%, #020617 60%);
+}
+.voice-orb-svg .siri-orb { position: absolute; inset: 0; width: 100%; height: 100%; }
+.siri-orb .orb-halo,
+.siri-orb .orb-body,
+.siri-orb .orb-core { transform-origin: 60px 60px; }
+.siri-orb .orb-halo { animation: orb-breathe 3.2s ease-in-out infinite; }
+.siri-orb .orb-body { animation: orb-breathe 4s ease-in-out infinite; }
+.siri-orb .orb-core { animation: orb-core 2.4s ease-in-out infinite; }
+.siri-orb .blob-a  { animation: blob-drift-a 5.2s ease-in-out infinite; }
+.siri-orb .blob-b  { animation: blob-drift-b 6s ease-in-out infinite; }
+.siri-orb .blob-c  { animation: blob-drift-c 4.6s ease-in-out infinite; }
+@keyframes orb-breathe { 0%,100%{transform:scale(1)}50%{transform:scale(1.04)} }
+@keyframes orb-core    { 0%,100%{opacity:.55}50%{opacity:.95} }
+@keyframes blob-drift-a { 0%,100%{transform:translate(0,0)} 50%{transform:translate(4px,-3px)} }
+@keyframes blob-drift-b { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-3px,4px)} }
+@keyframes blob-drift-c { 0%,100%{transform:translate(0,0)} 50%{transform:translate(2px,2px)} }
+.siri-orb.active .orb-body { animation-duration: 2.2s; }
+.siri-orb.active .orb-halo { animation-duration: 2.4s; }
+.siri-orb.active .blob-a { animation-duration: 3.2s; }
+.siri-orb.active .blob-b { animation-duration: 3.6s; }
+.siri-orb.active .blob-c { animation-duration: 2.6s; }
+.siri-orb.active .orb-core { animation-duration: 1.5s; }
+.siri-orb.active { filter: brightness(1.25) saturate(1.1); }
+@keyframes orb-speak  { 0%,100%{transform:scale(1)}50%{transform:scale(1.08)} }
+@keyframes core-speak { 0%,100%{opacity:.5}50%{opacity:1} }
+.siri-orb.speaking .orb-body { animation: orb-speak 0.55s ease-in-out infinite; }
+.siri-orb.speaking .orb-core { animation: core-speak 0.5s ease-in-out infinite; }
+.siri-orb.speaking { filter: brightness(1.4) saturate(1.2); }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 980px) {
+  #rdShell { grid-template-columns: 1fr; }
+  #rdSidebar { position: static; min-height: 0; }
+  .rd-promo { display: none; }
+}
+@media (max-width: 720px) {
+  body { padding: 10px; }
+  #rdMain { padding: 16px; }
+  #rdTitle h1 { font-size: 24px; }
+  #rdTopbar { flex-wrap: wrap; }
+  #rdSearch { order: 3; width: 100%; }
 }
 </style>
 </head>
@@ -725,7 +1221,48 @@ textarea{resize:vertical;min-height:60px}
     <div class="jarvis-chat-col">
       <canvas id="tesseractBg" class="tesseract-bg"></canvas>
       <div class="jarvis-header">
-        <canvas id="tesseractMini" class="tesseract-mini" width="56" height="56"></canvas>
+        <div class="voice-orb">
+          <canvas id="voiceOrb" width="120" height="120"></canvas>
+          <svg class="voice-orb-arcs" viewBox="0 0 120 120" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="60" cy="60" r="42" pathLength="360" stroke-dasharray="150 30 150 30" stroke-dashoffset="-15" transform="rotate(-90 60 60)"/>
+            <circle cx="60" cy="60" r="33" pathLength="360" stroke-dasharray="150 30 150 30" stroke-dashoffset="-15" transform="rotate(-90 60 60)"/>
+          </svg>
+          <svg class="voice-orb-mic" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="2" width="6" height="11" rx="3"/>
+            <path d="M5 10v2a7 7 0 0 0 14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+          </svg>
+        </div>
+        <div class="voice-orb-svg" aria-hidden="true">
+          <svg class="siri-orb" viewBox="0 0 120 120" fill="none">
+            <defs>
+              <radialGradient id="orbHaloGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"  stop-color="#22d3ee" stop-opacity=".0"/>
+                <stop offset="60%" stop-color="#22d3ee" stop-opacity=".18"/>
+                <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+              </radialGradient>
+              <radialGradient id="orbBodyGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"  stop-color="#7ee9f5" stop-opacity=".55"/>
+                <stop offset="70%" stop-color="#22d3ee" stop-opacity=".35"/>
+                <stop offset="100%" stop-color="#0ea5b8" stop-opacity=".05"/>
+              </radialGradient>
+              <radialGradient id="orbCoreGrad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%"  stop-color="#fff" stop-opacity=".9"/>
+                <stop offset="60%" stop-color="#7ee9f5" stop-opacity=".5"/>
+                <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+              </radialGradient>
+              <filter id="orbBlur" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3"/>
+              </filter>
+            </defs>
+            <circle class="orb-halo" cx="60" cy="60" r="56" fill="url(#orbHaloGrad)"/>
+            <circle class="orb-body" cx="60" cy="60" r="42" fill="url(#orbBodyGrad)" filter="url(#orbBlur)"/>
+            <circle class="blob-a" cx="48" cy="52" r="18" fill="#7ee9f5" opacity=".35" filter="url(#orbBlur)"/>
+            <circle class="blob-b" cx="72" cy="64" r="16" fill="#22d3ee" opacity=".3" filter="url(#orbBlur)"/>
+            <circle class="blob-c" cx="60" cy="72" r="14" fill="#a7f3f9" opacity=".25" filter="url(#orbBlur)"/>
+            <circle class="orb-core" cx="60" cy="60" r="10" fill="url(#orbCoreGrad)"/>
+          </svg>
+        </div>
         <div>
           <div class="jarvis-title">J.A.R.V.I.S.</div>
           <div class="jarvis-subtitle" id="jarvisStatus">Standing by, sir.</div>
@@ -2991,8 +3528,7 @@ float snoise(vec3 v){
 // --- Setup Renderers ---
 function initTesseract() {
   const bgCanvas = document.getElementById('tesseractBg');
-  const miniCanvas = document.getElementById('tesseractMini');
-  if (!bgCanvas || !miniCanvas) return;
+  if (!bgCanvas) return;
 
   const chatCol = bgCanvas.parentElement;
   const isMobile = window.innerWidth < 768;
@@ -3003,20 +3539,10 @@ function initTesseract() {
   bgRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   bgRenderer.setClearColor(0x000000, 0);
 
-  // Mini renderer (header)
-  const miniRenderer = new THREE.WebGLRenderer({ canvas: miniCanvas, alpha: true, antialias: true });
-  miniRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  miniRenderer.setClearColor(0x000000, 0);
-  miniRenderer.setSize(56, 56);
-
   // Scene
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
   camera.position.z = 6;
-
-  // Mini camera
-  const miniCam = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  miniCam.position.z = 6;
 
   // --- Tesseract Lines ---
   const lineGeo = new THREE.BufferGeometry();
@@ -3158,9 +3684,6 @@ function initTesseract() {
 
   let { composer: bgComposer, bloom: bgBloom } = setupComposer(bgRenderer, bgW, bgH);
 
-  // Mini composer (no bloom for performance)
-  // Mini just renders directly
-
   // --- Resize ---
   const ro = new ResizeObserver(() => {
     bgW = chatCol.clientWidth || 400;
@@ -3173,8 +3696,14 @@ function initTesseract() {
   ro.observe(chatCol);
 
   // --- State ---
-  window.setJarvisActive = (val) => { isActive = val; };
-  window.setJarvisSpeaking = (val) => { isSpeaking = val; };
+  window.setJarvisActive = (val) => {
+    isActive = val;
+    document.querySelectorAll('.siri-orb').forEach(o => o.classList.toggle('active', !!val));
+  };
+  window.setJarvisSpeaking = (val) => {
+    isSpeaking = val;
+    document.querySelectorAll('.siri-orb').forEach(o => o.classList.toggle('speaking', !!val));
+  };
 
   // --- Animation ---
   let time = 0;
@@ -3243,22 +3772,393 @@ function initTesseract() {
 
     // Render background
     bgComposer.render();
-
-    // Render mini (simple, no bloom) — wireframe only
-    particles.visible = false; cloud.visible = false;
-    miniRenderer.render(scene, miniCam);
-    particles.visible = true; cloud.visible = true;
   }
 
   animate();
 }
 
-// Init when DOM ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initTesseract);
-} else {
-  initTesseract();
+// --- Siri-style Voice Orb (JARVIS header) ---
+function initVoiceOrb() {
+  const canvas = document.getElementById('voiceOrb');
+  if (!canvas) return;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(0x000000, 0);
+  renderer.setSize(120, 120, false);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: {
+      uTime: { value: 0 },
+      uAmplitude: { value: 0.04 },
+      uColor: { value: new THREE.Color(0x2DD4BF) }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv;
+      uniform float uTime;
+      uniform float uAmplitude;
+      uniform vec3 uColor;
+      ${NOISE_GLSL}
+      float fbm(vec3 p) {
+        float s = 0.0, a = 0.5;
+        for (int i = 0; i < 4; i++) {
+          s += a * snoise(p);
+          p *= 2.0;
+          a *= 0.5;
+        }
+        return s;
+      }
+      void main() {
+        vec2 uv = vUv * 2.0 - 1.0;
+        float dist = length(uv);
+        float angle = atan(uv.y, uv.x);
+        vec3 np = vec3(cos(angle) * 1.2, sin(angle) * 1.2, uTime * 0.35);
+        float n = fbm(np);
+        float baseRadius = 0.72;
+        float wobbled = baseRadius + n * uAmplitude;
+        float rimWidth = 0.07;
+        float rim = exp(-pow((dist - wobbled) / rimWidth, 2.0));
+        float insideMask = smoothstep(wobbled + 0.01, wobbled - 0.01, dist);
+        float fresnel = pow(clamp(dist / max(wobbled, 0.001), 0.0, 1.0), 2.5);
+        float fill = insideMask * fresnel * 0.55;
+        float intensity = rim * 1.3 + fill;
+        float alpha = clamp(rim * 0.95 + fill * 0.8, 0.0, 1.0);
+        gl_FragColor = vec4(uColor * intensity, alpha);
+      }
+    `
+  });
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+  scene.add(quad);
+
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(120, 120), 0.6, 0.4, 0.5);
+  bloom.threshold = 0.5;
+  bloom.strength = 0.6;
+  bloom.radius = 0.4;
+  composer.addPass(bloom);
+
+  const clock = new THREE.Clock();
+  let time = 0;
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (document.documentElement.dataset.orbStyle === 'svg') return;
+    const jarvisTab = document.getElementById('tab-jarvis');
+    if (!jarvisTab || !jarvisTab.classList.contains('active')) return;
+    time += clock.getDelta();
+
+    mat.uniforms.uTime.value = time;
+    const targetAmp = isActive ? 0.08 : 0.04;
+    mat.uniforms.uAmplitude.value += (targetAmp - mat.uniforms.uAmplitude.value) * 0.06;
+
+    const bloomPulse = isSpeaking ? Math.sin(time * 4) * 0.4 : 0;
+    bloom.strength = 0.6 + bloomPulse;
+
+    composer.render();
+  }
+  animate();
 }
+
+// Init when DOM ready
+function initJarvisVisuals() { initTesseract(); initVoiceOrb(); }
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initJarvisVisuals);
+} else {
+  initJarvisVisuals();
+}
+</script>
+
+<!-- ============================================================
+     REDESIGN SHELL — builds sidebar + topbar and moves the existing
+     tab-content nodes into it. All existing IDs/JS untouched.
+     ============================================================ -->
+<script>
+(function(){
+  // Apply saved orb-style before anything renders so initVoiceOrb sees it
+  try {
+    const savedOrb = localStorage.getItem('hq_orb_style') || 'shader';
+    document.documentElement.setAttribute('data-orb-style', savedOrb);
+  } catch { document.documentElement.setAttribute('data-orb-style', 'shader'); }
+
+  const ICONS = {
+    command:   '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>',
+    execution: '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>',
+    email:     '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>',
+    jarvis:    '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V6a4 4 0 0 0-4-4z"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><path d="M12 19v3"/></svg>',
+    'sops-owner':'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/><path d="M9 8h6M9 12h6"/></svg>',
+    sops:      '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/></svg>',
+    ai:        '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+  };
+  const LABELS = {
+    command: 'Dashboard', execution: 'Execution', email: 'Inbox',
+    jarvis: 'JARVIS', 'sops-owner': 'SOPs',
+    sops: 'SOPs', ai: 'Ask AI'
+  };
+
+  function build() {
+    if (document.getElementById('rdShell')) return;
+
+    const body = document.body;
+    const originalHeader = document.querySelector('.header:not(.employee-header)');
+    const originalNav    = document.querySelector('.tab-nav:not(.employee-nav)');
+    const empHeader      = document.querySelector('.header.employee-header');
+    const empNav         = document.querySelector('.tab-nav.employee-nav');
+    const tabContents    = Array.from(document.querySelectorAll('.tab-content'));
+
+    const shell = document.createElement('div');
+    shell.id = 'rdShell';
+
+    const sidebar = document.createElement('aside');
+    sidebar.id = 'rdSidebar';
+    sidebar.innerHTML = `
+      <div class="rd-logo">
+        <div class="rd-logo-mark">H</div>
+        <div>
+          <div class="rd-logo-name">HQ</div>
+          <div class="rd-logo-sub">Command Center</div>
+        </div>
+      </div>
+      <div>
+        <div class="rd-nav-label">Menu</div>
+        <div class="rd-nav" id="rdSidebarNav"></div>
+      </div>
+      <div id="rdSidebarEmp" style="display:none">
+        <div class="rd-nav-label">Employee</div>
+        <div class="rd-nav" id="rdSidebarEmpNav"></div>
+      </div>
+      <div class="rd-promo">
+        <div class="rd-promo-title">Sync your rhythm</div>
+        <div class="rd-promo-sub">Jump into JARVIS for a daily rundown.</div>
+        <button class="rd-promo-btn" id="rdPromoBtn">Open JARVIS</button>
+      </div>
+    `;
+
+    const main = document.createElement('main');
+    main.id = 'rdMain';
+    main.innerHTML = `
+      <div id="rdTopbar">
+        <input id="rdSearch" placeholder="Search tasks, SOPs, jobs…" />
+        <button class="rd-icon-btn" id="rdBtnRefresh" title="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
+        <button class="rd-icon-btn" id="rdBtnTweaks" title="Theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+        <div class="rd-user">
+          <div class="rd-avatar" id="rdAvatar">HQ</div>
+          <div>
+            <div class="rd-user-name" id="rdUserName">Owner</div>
+            <div class="rd-user-sub" id="rdUserSub">Command Center</div>
+          </div>
+          <button class="rd-icon-btn" id="rdBtnLogout" title="Logout" style="margin-left:6px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+          </button>
+        </div>
+      </div>
+      <div id="rdTitle">
+        <div>
+          <h1 id="rdPageTitle">Dashboard</h1>
+          <div class="rd-subtitle" id="rdPageSub">Plan, prioritize, and ship the day.</div>
+        </div>
+        <div class="rd-actions">
+          <button class="rd-btn" id="rdBtnImport">Import Data</button>
+          <button class="rd-btn rd-btn-primary" id="rdBtnAdd">+ Add Project</button>
+        </div>
+      </div>
+      <div id="rdContentHost"></div>
+    `;
+
+    shell.appendChild(sidebar);
+    shell.appendChild(main);
+
+    const navHost = sidebar.querySelector('#rdSidebarNav');
+    const ownerButtons = [];
+    if (originalNav) {
+      Array.from(originalNav.querySelectorAll('.tab-btn')).forEach(btn => {
+        const key = btn.dataset.tab;
+        const label = LABELS[key] || btn.textContent.trim();
+        const ico = ICONS[key] || '';
+        btn.innerHTML = ico + '<span>' + label + '</span>';
+        navHost.appendChild(btn);
+        ownerButtons.push(btn);
+      });
+    }
+    ownerButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        ownerButtons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    const empNavHost = sidebar.querySelector('#rdSidebarEmpNav');
+    const empButtons = [];
+    if (empNav) {
+      Array.from(empNav.querySelectorAll('.tab-btn')).forEach(btn => {
+        const key = btn.dataset.tab;
+        const label = LABELS[key] || btn.textContent.trim();
+        btn.innerHTML = (ICONS[key] || '') + '<span>' + label + '</span>';
+        empNavHost.appendChild(btn);
+        empButtons.push(btn);
+      });
+    }
+    empButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        empButtons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    const contentHost = main.querySelector('#rdContentHost');
+    tabContents.forEach(tc => contentHost.appendChild(tc));
+
+    body.appendChild(shell);
+
+    const TITLES = {
+      'tab-command':   { t: 'Dashboard',   s: 'Plan, prioritize, and ship the day.' },
+      'tab-execution': { t: 'Execution',   s: 'Tasks, projects, and daily cowork.' },
+      'tab-email':     { t: 'Inbox',       s: 'Email triage across PEC & FTP.' },
+      'tab-jarvis':    { t: 'JARVIS',      s: 'Your strategic sparring partner.' },
+      'tab-sops-owner':{ t: 'SOPs',        s: 'Standard operating procedures library.' },
+      'tab-emp-sops':  { t: 'SOPs',        s: 'Your team knowledge base.' },
+      'tab-emp-ai':    { t: 'Ask AI',      s: 'Get answers from your SOPs.' }
+    };
+    function refreshTitle() {
+      const active = document.querySelector('.tab-content.active');
+      if (!active) return;
+      const info = TITLES[active.id] || { t: 'Dashboard', s: '' };
+      const titleEl = document.getElementById('rdPageTitle');
+      const subEl   = document.getElementById('rdPageSub');
+      if (titleEl) titleEl.textContent = info.t;
+      if (subEl)   subEl.textContent   = info.s;
+      const addBtn = document.getElementById('rdBtnAdd');
+      const impBtn = document.getElementById('rdBtnImport');
+      const isCommand = active.id === 'tab-command' || active.id === 'tab-execution';
+      if (addBtn) addBtn.style.display = isCommand ? '' : 'none';
+      if (impBtn) impBtn.style.display = active.id === 'tab-command' ? '' : 'none';
+    }
+
+    const obs = new MutationObserver(refreshTitle);
+    tabContents.forEach(tc => obs.observe(tc, { attributes: true, attributeFilter: ['class'] }));
+    sidebar.addEventListener('click', () => setTimeout(refreshTitle, 30));
+    const empObs = new MutationObserver(() => {
+      const empVisible = empHeader && empHeader.style.display !== 'none';
+      document.getElementById('rdSidebarEmp').style.display = empVisible ? '' : 'none';
+      const ownerVisible = originalHeader && originalHeader.style.display !== 'none';
+      navHost.parentElement.style.display = ownerVisible ? '' : 'none';
+      const nameEl = document.getElementById('empName');
+      const roleEl = document.getElementById('empRole');
+      const coEl   = document.getElementById('empCompany');
+      if (empVisible && nameEl) {
+        document.getElementById('rdUserName').textContent = nameEl.textContent || 'Team';
+        document.getElementById('rdUserSub').textContent  = [roleEl?.textContent, coEl?.textContent].filter(Boolean).join(' · ');
+        const initials = (nameEl.textContent || 'T').trim().charAt(0).toUpperCase();
+        document.getElementById('rdAvatar').textContent = initials;
+      }
+    });
+    if (originalHeader) empObs.observe(originalHeader, { attributes: true, attributeFilter: ['style'] });
+    if (empHeader)      empObs.observe(empHeader,      { attributes: true, attributeFilter: ['style'] });
+
+    document.getElementById('rdBtnRefresh').addEventListener('click', () => {
+      if (typeof refreshAll === 'function') refreshAll();
+    });
+    document.getElementById('rdBtnLogout').addEventListener('click', () => {
+      if (typeof logout === 'function') logout();
+    });
+    document.getElementById('rdPromoBtn').addEventListener('click', () => {
+      const jarvisBtn = document.querySelector('#rdSidebarNav .tab-btn[data-tab="jarvis"]');
+      if (jarvisBtn) jarvisBtn.click();
+    });
+    document.getElementById('rdBtnAdd').addEventListener('click', () => {
+      if (typeof addProject === 'function') addProject();
+    });
+    document.getElementById('rdBtnImport').addEventListener('click', () => {
+      if (typeof refreshAll === 'function') refreshAll();
+    });
+    document.getElementById('rdSearch').addEventListener('input', (e) => {
+      const v = e.target.value.toLowerCase();
+      document.querySelectorAll('.task-item, .sop-card, .email-card, .jobs-table tbody tr, .project-card').forEach(el => {
+        const t = (el.textContent || '').toLowerCase();
+        el.style.display = (!v || t.includes(v)) ? '' : 'none';
+      });
+    });
+
+    // ---- Tweaks panel (accent color + orb style) ----
+    const TWEAK = { accent: 'blue', orbStyle: 'shader' };
+    const saved = (() => { try { return JSON.parse(localStorage.getItem('rd-tweaks') || 'null'); } catch { return null; } })();
+    const savedOrb = (() => { try { return localStorage.getItem('hq_orb_style'); } catch { return null; } })();
+    const current = Object.assign({}, TWEAK, saved || {}, savedOrb ? { orbStyle: savedOrb } : {});
+
+    function applyAccent(a) {
+      document.documentElement.setAttribute('data-accent', a);
+      document.querySelectorAll('#rdTweaks .swatch').forEach(s => s.classList.toggle('active', s.dataset.accent === a));
+    }
+    function applyOrbStyle(o) {
+      document.documentElement.setAttribute('data-orb-style', o);
+      document.querySelectorAll('#rdTweaks .orb-opt').forEach(b => b.classList.toggle('active', b.dataset.orb === o));
+      try { localStorage.setItem('hq_orb_style', o); } catch {}
+    }
+    applyAccent(current.accent);
+
+    const tweakPanel = document.createElement('div');
+    tweakPanel.id = 'rdTweaks';
+    tweakPanel.innerHTML = `
+      <h4>Accent color</h4>
+      <div class="swatches">
+        <div class="swatch blue"   data-accent="blue"   title="Blue"></div>
+        <div class="swatch orange" data-accent="orange" title="Orange"></div>
+      </div>
+      <div class="rd-tweak-section">
+        <h4>Orb style</h4>
+        <div class="orb-opts">
+          <button class="orb-opt" data-orb="shader">Shader</button>
+          <button class="orb-opt" data-orb="svg">SVG</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(tweakPanel);
+    applyOrbStyle(current.orbStyle || 'shader');
+
+    tweakPanel.addEventListener('click', (e) => {
+      const sw = e.target.closest('.swatch');
+      if (sw) {
+        const a = sw.dataset.accent;
+        applyAccent(a);
+        current.accent = a;
+        localStorage.setItem('rd-tweaks', JSON.stringify(current));
+        return;
+      }
+      const orbBtn = e.target.closest('.orb-opt');
+      if (orbBtn) {
+        applyOrbStyle(orbBtn.dataset.orb);
+      }
+    });
+
+    document.getElementById('rdBtnTweaks').addEventListener('click', () => {
+      tweakPanel.classList.toggle('open');
+    });
+
+    refreshTitle();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', build);
+  } else {
+    build();
+  }
+})();
 </script>
 
 </body>
