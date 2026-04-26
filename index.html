@@ -1580,6 +1580,8 @@ const CONFIG = {
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkZnB6bW1yZ290eW5yd2tlYWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2NjA0NTEsImV4cCI6MjA5MjIzNjQ1MX0.kpZvbMhFEU8MtPa78k2xEbSdrdaW52NE6r9FLwDtn2I',
   PORTAL_BASE_URL: '' // leave '' to use window.location.origin
 };
+// Expose CONFIG to ES modules (PEC CRM module reads window.CONFIG).
+window.CONFIG = CONFIG;
 
 // ============================================================
 // STATE
