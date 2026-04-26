@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-25 23:03] ARM 2 v1: customer color picker + signature wired
+By: Claude Code
+Changed: Customer portal (?portal=token mode in index.html) now lets epoxy customers pick one or more labeled flake colors from the 15 seeded Simiron swatches before signing. Signature submit now sends the picks to portal_confirm_job (was previously sending p_colors: null). Paint jobs skip the picker and just collect a signature with copy explaining the project manager handles paint colors directly. Portal mode now overrides the dark dashboard CSS variables to render on the light/professional palette (--rd-bg, --rd-card, etc) and applies an FTP brand class for orange accent on Finishing Touch customers.
+Why: ARM 2 backend (Supabase schema, RPCs, DripJobs webhooks) was already live and the index.html portal scaffold was already drawn, but customers had no way to actually choose their colors through the portal. Locking colors via customer self-service before the crew shows up is the operationally critical gap.
+Files touched: index.html
+Next steps: Test end-to-end with a real DripJobs-generated token. After v1 validates, follow up with reviews + referrals (already drawn but dormant), per-brand visual polish, paint color seed for Sherwin-Williams, and DripJobs auto-send of the portal link.
+Handoff to Cowork: None
+Handoff to Dylan: 1) Pull a portal link from a recent customer in the Prescott CRM tab and open it in a private window to verify the picker shows 15 Simiron swatches, the signature canvas works, and the confirm button enables only after both a pick AND signature exist. 2) Test on a phone (iOS Safari + Android Chrome) since signature canvas is the highest failure-risk piece. 3) Push to origin when ready (this commit is unpushed).
+
+---
+
 ## [2026-04-25 22:39] Removed TEST-HANDOFF.md after loop verified
 By: Claude Code
 Changed: Deleted TEST-HANDOFF.md from the repo.

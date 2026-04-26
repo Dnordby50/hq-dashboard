@@ -564,9 +564,21 @@ textarea{resize:vertical;min-height:60px}
 .pec-lightbox img{max-width:100%;max-height:100%;border-radius:6px}
 .pec-lightbox-close{position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.1rem}
 
-/* Customer portal — full-bleed, simplified */
-body.pec-portal-mode{background:var(--bg)}
+/* Customer portal — full-bleed, light-theme override of the dark dashboard palette */
+body.pec-portal-mode{
+  --bg:#eef0f3;--s1:#ffffff;--s2:#f5f6f8;--s3:#fafbfc;
+  --border:#e6e8ec;--border-light:#d1d5db;
+  --text:#0f1420;--muted:#6b7280;--dim:#9aa1ad;
+  --accent:#2b59ff;
+  background:var(--bg);color:var(--text);
+}
+body.pec-portal-mode.brand-ftp{--accent:#ff6b1a}
 body.pec-portal-mode #rdShell,body.pec-portal-mode .header,body.pec-portal-mode .tab-nav,body.pec-portal-mode .tab-content,body.pec-portal-mode #loginGate{display:none !important}
+body.pec-portal-mode .pec-btn.primary{color:#fff}
+body.pec-portal-mode .pec-btn.primary:disabled{opacity:.5;cursor:not-allowed}
+body.pec-portal-mode .pec-swatch.selected{box-shadow:0 0 0 2px var(--accent) inset}
+body.pec-portal-mode input,body.pec-portal-mode textarea,body.pec-portal-mode select{background:#fff;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-family:inherit;font-size:.85rem}
+body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-portal-mode select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(43,89,255,.15)}
 #customerPortalRoot{max-width:820px;margin:0 auto;padding:24px 20px;color:var(--text)}
 #customerPortalRoot .pec-portal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px}
 #customerPortalRoot .pec-portal-brand{font-family:var(--sans);font-weight:800;font-size:1.4rem;background:linear-gradient(135deg,var(--pec),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
@@ -5251,13 +5263,19 @@ async function renderCustomerPortal(token) {
   const root = $('customerPortalRoot');
   root.style.display = '';
   root.innerHTML = '<div class="pec-empty">Loading your portal…</div>';
-  const { data, error } = await supabase.rpc('get_portal_data', { p_token: token });
+  const [portalRes, colorsRes] = await Promise.all([
+    supabase.rpc('get_portal_data', { p_token: token }),
+    supabase.from('colors').select('*').order('type').order('name'),
+  ]);
+  const { data, error } = portalRes;
   if (error || !data) {
     root.innerHTML = '<div class="pec-empty">Portal not found. Check your link.</div>';
     return;
   }
   const { customer, jobs, referral_reward_amount } = data;
+  data.colors = colorsRes.data || [];
   const brand = customer.company === 'finishing-touch' ? 'Finishing Touch Painting' : 'Prescott Epoxy';
+  document.body.classList.toggle('brand-ftp', customer.company === 'finishing-touch');
 
   const hash = location.hash || '';
   if (hash.startsWith('#job/')) return portalJobDetail(token, hash.slice(5), data);
@@ -5347,12 +5365,34 @@ async function portalJobDetail(token, jobId, bundle) {
 
     ${!job.confirmed ? `
       <div class="pec-card">
-        <h3>Confirm colors & sign</h3>
-        <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">Sign below to confirm the color selections and approve the job start.</p>
-        <div class="pec-signature-wrap"><canvas id="pecPortalSig" class="pec-signature-canvas"></canvas></div>
+        <h3>Confirm your project</h3>
+        ${job.type === 'paint' ? `
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
+            Your project manager will finalize paint colors with you directly. Sign below to confirm the project scope.
+          </p>
+        ` : `
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
+            Pick the epoxy flake colors you want for your project. You can add more than one (for example, one for the main floor and one for an accent area), then sign below to lock them in.
+          </p>
+          <div id="pecPortalPicks" style="margin-bottom:10px"></div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+            <input id="pecPortalLabel" placeholder="Label (e.g. Garage)" style="flex:1;min-width:160px;max-width:240px">
+            <span style="color:var(--muted);font-size:.78rem">then tap a swatch below</span>
+          </div>
+          <div class="pec-swatch-grid" id="pecPortalSwatches">
+            ${(bundle.colors || []).map(c => `
+              <div class="pec-swatch" data-pick-color="${esc(c.id)}" data-name="${esc(c.name)}" data-hex="${esc(c.hex || '#333')}" data-sku="${esc(c.sku || '')}">
+                <div class="pec-swatch-chip" style="background:${esc(c.hex || '#333')}"></div>
+                <div class="pec-swatch-name">${esc(c.name)}</div>
+                <div class="pec-swatch-code">${esc(c.sku || '')}</div>
+              </div>`).join('')}
+          </div>
+          <div style="margin-top:18px;font-size:.85rem;color:var(--muted)">Sign below to lock in your selections.</div>
+        `}
+        <div class="pec-signature-wrap" style="margin-top:10px"><canvas id="pecPortalSig" class="pec-signature-canvas"></canvas></div>
         <div style="margin-top:10px;display:flex;gap:10px">
-          <button class="pec-btn ghost" id="pecSigClear">Clear</button>
-          <button class="pec-btn primary" id="pecSigConfirm">Confirm & sign</button>
+          <button class="pec-btn ghost" id="pecSigClear">Clear signature</button>
+          <button class="pec-btn primary" id="pecSigConfirm" disabled>Confirm & sign</button>
         </div>
       </div>` : `
       <div class="pec-card">
@@ -5375,8 +5415,61 @@ async function portalJobDetail(token, jobId, bundle) {
       </div>` : ''}
   `;
 
-  // Signature canvas
+  // Color picker + signature canvas (only if not confirmed)
   if (!job.confirmed) {
+    const isPaint = job.type === 'paint';
+    const picks = []; // { color_id, label, name, hex }
+    const labelDefaults = ['Main', 'Accent', 'Border'];
+    let hasInk = false;
+
+    const updateConfirmEnabled = () => {
+      const btn = document.getElementById('pecSigConfirm');
+      if (!btn) return;
+      btn.disabled = !hasInk || (!isPaint && picks.length === 0);
+    };
+
+    const renderPicks = () => {
+      const el = document.getElementById('pecPortalPicks');
+      if (!el) return;
+      el.innerHTML = picks.length === 0
+        ? '<div style="color:var(--muted);font-size:.78rem">No colors picked yet.</div>'
+        : picks.map((p, i) => `
+            <span style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:999px;padding:4px 10px 4px 4px;margin:0 6px 6px 0;font-size:.78rem">
+              <span style="width:18px;height:18px;border-radius:50%;background:${esc(p.hex)};border:1px solid var(--border);display:inline-block"></span>
+              <span><strong>${esc(p.label)}:</strong> ${esc(p.name)}</span>
+              <button type="button" data-remove-pick="${i}" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1rem;line-height:1;padding:0 2px">×</button>
+            </span>`).join('');
+      el.querySelectorAll('[data-remove-pick]').forEach(b =>
+        b.addEventListener('click', () => {
+          picks.splice(Number(b.dataset.removePick), 1);
+          renderPicks();
+          updateConfirmEnabled();
+        }));
+    };
+
+    if (!isPaint) {
+      const swatches = document.getElementById('pecPortalSwatches');
+      if (swatches) {
+        swatches.addEventListener('click', e => {
+          const sw = e.target.closest('[data-pick-color]');
+          if (!sw) return;
+          const labelInput = document.getElementById('pecPortalLabel');
+          const fallback = labelDefaults[picks.length] || `Pick ${picks.length + 1}`;
+          const label = (labelInput.value.trim() || fallback);
+          picks.push({
+            color_id: sw.dataset.pickColor,
+            label,
+            name: sw.dataset.name,
+            hex: sw.dataset.hex,
+          });
+          labelInput.value = '';
+          renderPicks();
+          updateConfirmEnabled();
+        });
+      }
+      renderPicks();
+    }
+
     const canvas = document.getElementById('pecPortalSig');
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -5389,27 +5482,39 @@ async function portalJobDetail(token, jobId, bundle) {
       };
       resize();
       window.addEventListener('resize', resize);
-      let drawing = false, hasInk = false;
+      let drawing = false;
       const pos = e => {
         const r = canvas.getBoundingClientRect();
         const p = e.touches ? e.touches[0] : e;
         return { x: p.clientX - r.left, y: p.clientY - r.top };
       };
       canvas.addEventListener('pointerdown', e => { drawing = true; const { x, y } = pos(e); ctx.beginPath(); ctx.moveTo(x, y); });
-      canvas.addEventListener('pointermove', e => { if (!drawing) return; const { x, y } = pos(e); ctx.lineTo(x, y); ctx.stroke(); hasInk = true; });
+      canvas.addEventListener('pointermove', e => {
+        if (!drawing) return;
+        const { x, y } = pos(e); ctx.lineTo(x, y); ctx.stroke();
+        if (!hasInk) { hasInk = true; updateConfirmEnabled(); }
+      });
       ['pointerup','pointerleave','pointercancel'].forEach(ev => canvas.addEventListener(ev, () => drawing = false));
-      document.getElementById('pecSigClear').addEventListener('click', () => { ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); hasInk = false; });
+      document.getElementById('pecSigClear').addEventListener('click', () => {
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        hasInk = false; updateConfirmEnabled();
+      });
       document.getElementById('pecSigConfirm').addEventListener('click', async () => {
         if (!hasInk) { alert('Please sign first'); return; }
+        if (!isPaint && picks.length === 0) { alert('Please pick at least one color first'); return; }
         const dataUrl = canvas.toDataURL('image/png');
         const { error } = await supabase.rpc('portal_confirm_job', {
-          p_token: token, p_job_id: jobId, p_signature: dataUrl, p_colors: null,
+          p_token: token,
+          p_job_id: jobId,
+          p_signature: dataUrl,
+          p_colors: isPaint ? null : picks.map(p => ({ color_id: p.color_id, label: p.label })),
         });
         if (error) { alert(error.message); return; }
         location.hash = '#job/' + jobId;
         renderCustomerPortal(token);
       });
     }
+    updateConfirmEnabled();
   }
 
   // Review stars
