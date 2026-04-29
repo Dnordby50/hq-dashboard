@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 14:30] PM Module 1 foundation: schema, seed, calculator, proposal doc
+By: Claude Code
+Changed: Approved Module 1 of the PEC PM build (Ordering / Material Calculator) and laid the foundation. New Supabase migration creates 9 production tables prefixed pec_prod_* (products, system_types, recipe_slots, color_pairings, jobs, areas, material_lines, labor_entries, overhead_allocations) with RLS policies matching the existing is_admin_staff pattern. Seed populates the Standard Flake System (3 products, 1 system type, 3 recipe slots, 1 default color pairing). Pure-function material calculator extracted to production/calculator.js with a 24-assertion Node test runner; npm test green for every spec edge case (sqft=0, sqft=1, exact kit and box boundaries, spread_rate=0 rejection, negative sqft rejection, missing-flake rejection, multi-area merge by product, distinct basecoat colors as separate lines, recipe order preserved). Proposal doc at docs/pm-module-ordering-plan.md captures the spec's required Step 0 record. Two-arm decision matrix made with Dylan: extend the existing Apps Script proxy for Sheet writes (no new service account), and keep production tables separate from public.jobs (which is the customer portal). Multi-area jobs supported in v1.
+Why: The kill criterion is two weeks to replace Dylan's manual ordering workflow. Foundation first (schema, calculator) lets the UI and Sheet sync land on solid ground. Calculator is the highest-risk piece (math errors over-order or under-order materials), so unit tests come before any UI.
+Files touched: docs/pm-module-ordering-plan.md, supabase/migrations/2026-04-28_pm_ordering.sql, supabase/seed_pm_ordering.sql, production/calculator.js, production/calculator.test.js, package.json
+Next steps: Apps Script POST snippet (production/sheets-proxy-snippet.js), then Netlify Function pec-prod-sync-sheet.js, then UI inline in index.html (System Catalog admin first, then Jobs list, New Job form, Job Detail with sync button, Mark Complete).
+Handoff to Cowork: None
+Handoff to Dylan: 1) Run supabase/migrations/2026-04-28_pm_ordering.sql in Supabase SQL editor. 2) Run supabase/seed_pm_ordering.sql after the migration. 3) Verify the 9 tables exist in Supabase Studio with RLS enabled. No code wired to these tables yet, so this is safe to do whenever.
+
+---
+
 ## [2026-04-25 23:03] ARM 2 v1: customer color picker + signature wired
 By: Claude Code
 Changed: Customer portal (?portal=token mode in index.html) now lets epoxy customers pick one or more labeled flake colors from the 15 seeded Simiron swatches before signing. Signature submit now sends the picks to portal_confirm_job (was previously sending p_colors: null). Paint jobs skip the picker and just collect a signature with copy explaining the project manager handles paint colors directly. Portal mode now overrides the dark dashboard CSS variables to render on the light/professional palette (--rd-bg, --rd-card, etc) and applies an FTP brand class for orange accent on Finishing Touch customers.
