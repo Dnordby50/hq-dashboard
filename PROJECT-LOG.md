@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 16:55] CRM consolidation: fold Ordering + Material Catalog into the CRM tab
+By: Claude Code
+Changed: Renamed the "Prescott CRM" left-sidebar tab to just "CRM" (LABELS, TITLES, button text). Removed the standalone "Production" top-level tab. Moved its two main views into the existing CRM subnav as "Ordering" (the production jobs list + new-job form + job detail modal) and "Material Catalog" (admin/pm gated; products, system types with recipe-slot editor, color pairings). The CRM module's switchView now hands off to window.prodSwitchView when the user clicks Ordering or Material Catalog: hides #pecViewRoot, shows #prodViewRoot, and the production module renders into it. Auth and tab-activation gates that the production module owned are gone (the parent CRM tab handles both). CSS that was scoped to #tab-production was rescoped to .prod-host, applied to #prodViewRoot and #prodModalRoot (both now siblings inside the CRM shell). Internal navigation between the production sub-views (Jobs list ↔ New Job form ↔ Job Detail) is unchanged; only the entry point changed.
+Why: Dylan reported he couldn't find material ordering or settings in the CRM and asked for the tab to just be named "CRM." Two top-level tabs for what is conceptually one customer/job system was the wrong shape. One tab, one subnav, one auth flow.
+Files touched: index.html, PROJECT-LOG.md
+Next steps: None blocking. Watch for any leftover references to "Production" in copy or screenshots if Dylan shares them.
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh the dashboard (Cmd+Shift+R). The left tab now reads "CRM"; the subnav inside it has Ordering and Material Catalog (the latter only if your role is admin or pm). Everything else works as before. The 2-week kill-criterion check-in routine (trig_01Hb73C7jSPnHWGEYTP8E5fd, fires 2026-05-12) is unaffected.
+
+---
+
 ## [2026-04-28 16:10] PM Module 1: runbook + module v1 ready for end-to-end test
 By: Claude Code
 Changed: Added docs/pm-module-ordering-runbook.md covering one-time setup checklist (migration, Apps Script deploy, Netlify env vars, test sheet), day-to-day operation (new job, quantity edits, recalculate, mark complete, catalog admin), how to switch between test and production sheets, how to run the calculator tests, the rollback plan, what's intentionally not in v1, and known constraints (proxy URL rotation, 30s LockService timeout, unique proposal_number index). Module 1 v1 is now code-complete and waiting on the deploy handoff to Dylan.

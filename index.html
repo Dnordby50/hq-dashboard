@@ -1126,8 +1126,7 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
   <button class="tab-btn" data-tab="email">Email</button>
   <button class="tab-btn" data-tab="jarvis">JARVIS</button>
   <button class="tab-btn" data-tab="sops-owner">SOPs</button>
-  <button class="tab-btn" data-tab="prescott-crm">Prescott CRM</button>
-  <button class="tab-btn" data-tab="production">Production</button>
+  <button class="tab-btn" data-tab="prescott-crm">CRM</button>
 </nav>
 
 <!-- COMMAND TAB (merged Revenue + Goals) -->
@@ -1481,6 +1480,8 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
         <button data-pec-view="dashboard" class="active">Dashboard</button>
         <button data-pec-view="customers">Customers</button>
         <button data-pec-view="jobs">Jobs</button>
+        <button data-pec-view="ordering">Ordering</button>
+        <button data-pec-view="catalog" class="pec-role-admin">Material Catalog</button>
         <button data-pec-view="colors">Colors</button>
         <button data-pec-view="referrals">Referrals</button>
         <button data-pec-view="reviews">Reviews</button>
@@ -1488,33 +1489,12 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
         <button data-pec-view="settings" class="pec-role-admin">Settings</button>
       </nav>
       <div id="pecViewRoot"></div>
+      <div id="prodViewRoot" class="prod-host" style="display:none"></div>
     </div>
 
     <div id="pecModalRoot"></div>
+    <div id="prodModalRoot" class="prod-host"></div>
     <div id="pecLightboxRoot"></div>
-  </div>
-</section>
-
-<!-- PRODUCTION TAB (PM Module 1: Ordering / Material Calculator) -->
-<section class="tab-content" id="tab-production">
-  <div class="pec-wrap">
-    <div id="prodSigninPanel" class="pec-signin" style="display:none">
-      <h2>Production</h2>
-      <p>Sign in via the Prescott CRM tab first, then return here.</p>
-    </div>
-    <div id="prodPendingPanel" class="pec-signin" style="display:none">
-      <h2>Access pending</h2>
-      <p>You're signed in but your account hasn't been added to the staff list yet. Ask an admin to add you in the Prescott CRM Team section.</p>
-    </div>
-    <div id="prodApp" style="display:none">
-      <nav class="pec-subnav" id="prodSubnav">
-        <button data-prod-view="jobs" class="active">Jobs</button>
-        <button data-prod-view="new-job">+ New Job</button>
-        <button data-prod-view="catalog" class="pec-role-admin">System Catalog</button>
-      </nav>
-      <div id="prodViewRoot"></div>
-    </div>
-    <div id="prodModalRoot"></div>
   </div>
 </section>
 
@@ -4096,14 +4076,12 @@ if (document.readyState === 'loading') {
     jarvis:    '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V6a4 4 0 0 0-4-4z"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><path d="M12 19v3"/></svg>',
     'sops-owner':'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/><path d="M9 8h6M9 12h6"/></svg>',
     'prescott-crm':'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h18"/><circle cx="7" cy="7" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="17" r="1"/></svg>',
-    production:'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l5-3 5 3v13"/><path d="M15 21V11l5 3v7"/><path d="M9 12h2M9 16h2"/></svg>',
     sops:      '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/></svg>',
     ai:        '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
   };
   const LABELS = {
     command: 'Dashboard', execution: 'Execution', email: 'Inbox',
-    jarvis: 'JARVIS', 'sops-owner': 'SOPs', 'prescott-crm': 'Prescott CRM',
-    production: 'Production',
+    jarvis: 'JARVIS', 'sops-owner': 'SOPs', 'prescott-crm': 'CRM',
     sops: 'SOPs', ai: 'Ask AI'
   };
 
@@ -4231,8 +4209,7 @@ if (document.readyState === 'loading') {
       'tab-email':     { t: 'Inbox',       s: 'Email triage across PEC & FTP.' },
       'tab-jarvis':    { t: 'JARVIS',      s: 'Your strategic sparring partner.' },
       'tab-sops-owner':{ t: 'SOPs',        s: 'Standard operating procedures library.' },
-      'tab-prescott-crm':{ t: 'Prescott CRM', s: 'Customers, jobs, and the customer portal.' },
-      'tab-production':{ t: 'Production',  s: 'PEC ordering, material calculator, and order sheet sync.' },
+      'tab-prescott-crm':{ t: 'CRM',         s: 'Customers, jobs, ordering, and the customer portal.' },
       'tab-emp-sops':  { t: 'SOPs',        s: 'Your team knowledge base.' },
       'tab-emp-ai':    { t: 'Ask AI',      s: 'Get answers from your SOPs.' }
     };
@@ -4468,10 +4445,15 @@ function renderAuthUI() {
     return;
   }
   signIn.style.display = 'none'; pending.style.display = 'none'; app.style.display = '';
-  // Role-gate admin-only sub-nav buttons
+  // Role-gate admin-only sub-nav buttons. Material Catalog is open to admin+pm,
+  // not just admin, so override its visibility after the default rule runs.
   document.querySelectorAll('#pecSubnav .pec-role-admin').forEach(b => {
     b.style.display = state.adminUser.role === 'admin' ? '' : 'none';
   });
+  const catalogBtn = document.querySelector('#pecSubnav button[data-pec-view="catalog"]');
+  if (catalogBtn) {
+    catalogBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
+  }
   switchView(state.view);
 }
 
@@ -4483,8 +4465,24 @@ function switchView(v) {
   document.querySelectorAll('#pecSubnav button').forEach(b => {
     b.classList.toggle('active', b.dataset.pecView === v);
   });
-  const root = $('pecViewRoot');
-  root.innerHTML = '<div class="pec-empty">Loading…</div>';
+  const pecRoot = $('pecViewRoot');
+  const prodRoot = $('prodViewRoot');
+  // Production-owned views (Ordering / Material Catalog) live in a sibling
+  // root rendered by the production module below. Hand off and bail.
+  if (v === 'ordering' || v === 'catalog') {
+    pecRoot.style.display = 'none';
+    if (prodRoot) prodRoot.style.display = '';
+    if (typeof window.prodSwitchView === 'function') {
+      window.prodSwitchView(v);
+    } else {
+      // Module not booted yet; it self-boots once available and re-reads state.view.
+      window.__pendingProdView = v;
+    }
+    return;
+  }
+  if (prodRoot) prodRoot.style.display = 'none';
+  pecRoot.style.display = '';
+  pecRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
   ({
     dashboard: renderDashboard,
     customers: renderCustomers,
@@ -5680,50 +5678,50 @@ if (portalToken) {
      module above. Calculator is a real ESM import for testability.
      ============================================================ -->
 <style>
-  #tab-production .prod-table { width:100%; border-collapse:collapse; font-size:.85rem }
-  #tab-production .prod-table th { text-align:left; color:var(--muted); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--s2) }
-  #tab-production .prod-table td { padding:8px 10px; border-bottom:1px solid var(--border) }
-  #tab-production .prod-table tr.clickable:hover { background:var(--s2); cursor:pointer }
-  #tab-production .prod-pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.7rem; font-weight:600; letter-spacing:.02em }
-  #tab-production .prod-pill.clean { background:rgba(34,197,94,.15); color:#4ade80 }
-  #tab-production .prod-pill.dirty { background:rgba(234,179,8,.15); color:#facc15 }
-  #tab-production .prod-pill.error { background:rgba(239,68,68,.15); color:#f87171 }
-  #tab-production .prod-pill.status-unscheduled { background:rgba(148,163,184,.15); color:#94a3b8 }
-  #tab-production .prod-pill.status-scheduled   { background:rgba(99,102,241,.18); color:#a5b4fc }
-  #tab-production .prod-pill.status-ordered     { background:rgba(56,189,248,.18); color:#7dd3fc }
-  #tab-production .prod-pill.status-delivered   { background:rgba(20,184,166,.18); color:#5eead4 }
-  #tab-production .prod-pill.status-completed   { background:rgba(34,197,94,.18); color:#4ade80 }
-  #tab-production .prod-card { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:14px }
-  #tab-production .prod-card h3 { margin:0 0 8px; font-size:1rem }
-  #tab-production .prod-row { display:grid; grid-template-columns:repeat(12,1fr); gap:10px; align-items:end }
-  #tab-production .prod-row .col-2 { grid-column:span 2 } #tab-production .prod-row .col-3 { grid-column:span 3 }
-  #tab-production .prod-row .col-4 { grid-column:span 4 } #tab-production .prod-row .col-6 { grid-column:span 6 }
-  #tab-production .prod-row .col-12{ grid-column:span 12 }
-  #tab-production .prod-row label { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px }
-  #tab-production input, #tab-production select, #tab-production textarea {
+  .prod-host .prod-table { width:100%; border-collapse:collapse; font-size:.85rem }
+  .prod-host .prod-table th { text-align:left; color:var(--muted); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--s2) }
+  .prod-host .prod-table td { padding:8px 10px; border-bottom:1px solid var(--border) }
+  .prod-host .prod-table tr.clickable:hover { background:var(--s2); cursor:pointer }
+  .prod-host .prod-pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.7rem; font-weight:600; letter-spacing:.02em }
+  .prod-host .prod-pill.clean { background:rgba(34,197,94,.15); color:#4ade80 }
+  .prod-host .prod-pill.dirty { background:rgba(234,179,8,.15); color:#facc15 }
+  .prod-host .prod-pill.error { background:rgba(239,68,68,.15); color:#f87171 }
+  .prod-host .prod-pill.status-unscheduled { background:rgba(148,163,184,.15); color:#94a3b8 }
+  .prod-host .prod-pill.status-scheduled   { background:rgba(99,102,241,.18); color:#a5b4fc }
+  .prod-host .prod-pill.status-ordered     { background:rgba(56,189,248,.18); color:#7dd3fc }
+  .prod-host .prod-pill.status-delivered   { background:rgba(20,184,166,.18); color:#5eead4 }
+  .prod-host .prod-pill.status-completed   { background:rgba(34,197,94,.18); color:#4ade80 }
+  .prod-host .prod-card { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:14px }
+  .prod-host .prod-card h3 { margin:0 0 8px; font-size:1rem }
+  .prod-host .prod-row { display:grid; grid-template-columns:repeat(12,1fr); gap:10px; align-items:end }
+  .prod-host .prod-row .col-2 { grid-column:span 2 } .prod-host .prod-row .col-3 { grid-column:span 3 }
+  .prod-host .prod-row .col-4 { grid-column:span 4 } .prod-host .prod-row .col-6 { grid-column:span 6 }
+  .prod-host .prod-row .col-12{ grid-column:span 12 }
+  .prod-host .prod-row label { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px }
+  .prod-host input, .prod-host select, .prod-host textarea {
     width:100%; padding:6px 8px; background:var(--s2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); font:inherit
   }
-  #tab-production textarea { resize:vertical; min-height:60px }
-  #tab-production .btn { padding:7px 12px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--s2); color:var(--text); font:inherit; cursor:pointer }
-  #tab-production .btn:hover { background:var(--s3) }
-  #tab-production .btn.primary { background:var(--accent); color:#fff; border-color:transparent }
-  #tab-production .btn.primary:hover { filter:brightness(1.1) }
-  #tab-production .btn.danger { color:#f87171 }
-  #tab-production .btn.ghost { background:transparent }
-  #tab-production .btn[disabled] { opacity:.5; cursor:not-allowed }
-  #tab-production .prod-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:14px; flex-wrap:wrap }
-  #tab-production .prod-area-card { border:1px dashed var(--border); border-radius:var(--radius); padding:12px; margin-bottom:10px; background:rgba(255,255,255,.02) }
-  #tab-production .prod-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9000 }
-  #tab-production .prod-modal { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); width:min(960px,94vw); max-height:90vh; overflow:auto; padding:18px 20px }
-  #tab-production .prod-modal h2 { margin:0 0 12px; font-size:1.1rem }
-  #tab-production .prod-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap }
-  #tab-production .muted { color:var(--muted) }
-  #tab-production .small { font-size:.75rem }
-  #tab-production .prod-error { color:#f87171; font-size:.8rem; min-height:18px }
-  #tab-production .prod-ok { color:#4ade80; font-size:.8rem; min-height:18px }
-  #tab-production .prod-catalog-tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--border) }
-  #tab-production .prod-catalog-tabs button { background:transparent; border:none; color:var(--muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent }
-  #tab-production .prod-catalog-tabs button.active { color:var(--text); border-bottom-color:var(--accent) }
+  .prod-host textarea { resize:vertical; min-height:60px }
+  .prod-host .btn { padding:7px 12px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--s2); color:var(--text); font:inherit; cursor:pointer }
+  .prod-host .btn:hover { background:var(--s3) }
+  .prod-host .btn.primary { background:var(--accent); color:#fff; border-color:transparent }
+  .prod-host .btn.primary:hover { filter:brightness(1.1) }
+  .prod-host .btn.danger { color:#f87171 }
+  .prod-host .btn.ghost { background:transparent }
+  .prod-host .btn[disabled] { opacity:.5; cursor:not-allowed }
+  .prod-host .prod-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:14px; flex-wrap:wrap }
+  .prod-host .prod-area-card { border:1px dashed var(--border); border-radius:var(--radius); padding:12px; margin-bottom:10px; background:rgba(255,255,255,.02) }
+  .prod-host .prod-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9000 }
+  .prod-host .prod-modal { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); width:min(960px,94vw); max-height:90vh; overflow:auto; padding:18px 20px }
+  .prod-host .prod-modal h2 { margin:0 0 12px; font-size:1.1rem }
+  .prod-host .prod-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap }
+  .prod-host .muted { color:var(--muted) }
+  .prod-host .small { font-size:.75rem }
+  .prod-host .prod-error { color:#f87171; font-size:.8rem; min-height:18px }
+  .prod-host .prod-ok { color:#4ade80; font-size:.8rem; min-height:18px }
+  .prod-host .prod-catalog-tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--border) }
+  .prod-host .prod-catalog-tabs button { background:transparent; border:none; color:var(--muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent }
+  .prod-host .prod-catalog-tabs button.active { color:var(--text); border-bottom-color:var(--accent) }
 </style>
 <script type="module">
 import { computeMaterialPlan, CalculatorError } from './production/calculator.js';
@@ -5836,11 +5834,12 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
     if (state.view === 'catalog') return renderCatalog(root);
   }
 
-  function switchView(v) {
+  // Internal navigation between the production module's three sub-views
+  // (jobs list, new-job form, catalog). The CRM tab's outer subnav drives
+  // ordering vs. catalog; this just toggles between jobs/new-job within
+  // ordering and is also called by + New Job and Cancel buttons.
+  function setProdView(v) {
     state.view = v;
-    document.querySelectorAll('#prodSubnav button').forEach((b) => {
-      b.classList.toggle('active', b.dataset.prodView === v);
-    });
     render();
   }
 
@@ -5907,7 +5906,7 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
       state.jobFilter.status = e.target.value;
       render();
     });
-    $('prodNewJobBtn').addEventListener('click', () => switchView('new-job'));
+    $('prodNewJobBtn').addEventListener('click', () => setProdView('new-job'));
     root.querySelectorAll('tr[data-job-id]').forEach((tr) => {
       tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
     });
@@ -5957,7 +5956,7 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
     });
     $('njCancel').addEventListener('click', () => {
       state.newJob = { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', areas: [makeBlankArea()] };
-      switchView('jobs');
+      setProdView('jobs');
     });
     $('njSave').addEventListener('click', saveNewJob);
   }
@@ -6176,7 +6175,7 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
 
     state.newJob = { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', areas: [makeBlankArea()] };
     await loadJobs();
-    switchView('jobs');
+    setProdView('jobs');
   }
 
   // --------------------------------------------------------------------------
@@ -6819,55 +6818,52 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
   }
 
   // --------------------------------------------------------------------------
-  // Boot when the Production tab activates
+  // Boot — driven by the parent CRM tab's switchView handing off to us when
+  // the user clicks "Ordering" or "Material Catalog".
   // --------------------------------------------------------------------------
-  function applyAuthGate() {
+  let booted = false;
+  let booting = null;
+
+  async function ensureBooted() {
+    if (booted) return true;
+    if (booting) return booting;
     const session = window.pecState && window.pecState.session;
     const adminUser = window.pecState && window.pecState.adminUser;
-    if (!session) {
-      $('prodSigninPanel').style.display = '';
-      $('prodPendingPanel').style.display = 'none';
-      $('prodApp').style.display = 'none';
-      return false;
-    }
-    if (!adminUser) {
-      $('prodSigninPanel').style.display = 'none';
-      $('prodPendingPanel').style.display = '';
-      $('prodApp').style.display = 'none';
-      return false;
-    }
-    $('prodSigninPanel').style.display = 'none';
-    $('prodPendingPanel').style.display = 'none';
-    $('prodApp').style.display = '';
-    const isAdminOrPm = ['admin', 'pm'].includes(adminUser.role);
-    document.querySelectorAll('#tab-production .pec-role-admin').forEach((el) => {
-      el.style.display = isAdminOrPm ? '' : 'none';
-    });
-    return true;
+    if (!session || !adminUser) return false;
+    booting = (async () => {
+      await Promise.all([loadCatalog(), loadJobs()]);
+      booted = true;
+      booting = null;
+    })();
+    return booting;
   }
 
-  let booted = false;
-  async function boot() {
-    if (booted) return;
-    if (!applyAuthGate()) {
-      // Re-poll briefly while pec auth resolves.
-      setTimeout(boot, 400);
+  // Map CRM subnav values onto internal production views.
+  function mapView(crmView) {
+    if (crmView === 'ordering') return 'jobs';
+    if (crmView === 'catalog')  return 'catalog';
+    return 'jobs';
+  }
+
+  // Internal switchView (still used by + New Job button in the Jobs view to
+  // toggle between the jobs list and the new-job form within prodViewRoot).
+  // Renamed to avoid collision and exported for the CRM module.
+  window.prodSwitchView = async function (crmView) {
+    const ok = await ensureBooted();
+    if (!ok) {
+      // CRM auth not resolved yet; the CRM module will re-call us once it does.
       return;
     }
-    booted = true;
-    $('prodSubnav').addEventListener('click', (e) => {
-      const btn = e.target.closest('button[data-prod-view]');
-      if (btn) switchView(btn.dataset.prodView);
-    });
-    await Promise.all([loadCatalog(), loadJobs()]);
+    state.view = mapView(crmView);
     render();
-  }
+  };
 
-  const tabEl = $('tab-production');
-  if (tabEl) {
-    if (tabEl.classList.contains('active')) boot();
-    const obs = new MutationObserver(() => { if (tabEl.classList.contains('active')) boot(); });
-    obs.observe(tabEl, { attributes: true, attributeFilter: ['class'] });
+  // If the user clicked Ordering / Catalog before this module loaded, the CRM
+  // switchView left a hint on window.__pendingProdView. Honor it.
+  if (window.__pendingProdView) {
+    const pending = window.__pendingProdView;
+    window.__pendingProdView = null;
+    window.prodSwitchView(pending);
   }
 })();
 </script>
