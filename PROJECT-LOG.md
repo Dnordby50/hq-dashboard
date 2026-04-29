@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 17:45] CRM polish: match dashboard UI in Ordering + Material Catalog, fix blank-view bug, blank Colors view
+By: Claude Code
+Changed: Two real fixes plus a stylistic alignment. (1) Ordering and Material Catalog were rendering blank because ensureBooted in the production module returned the boot promise (which resolves to undefined) and the caller bailed on `if (!ok) return`. Rewrote ensureBooted to await the in-flight boot and explicitly return the booted boolean; also added a "Loading…" empty state that paints immediately so the user never sees a blank panel during the first load. (2) Replaced every .prod-* class in the production module with the existing .pec-* design-system classes (.pec-toolbar, .pec-card, .pec-table, .pec-btn primary/ghost/danger/sm, .pec-badge with status modifier, .pec-field, .pec-row-2/3, .pec-modal-bg, .pec-modal, .pec-modal-actions, .pec-empty, .pec-subnav for the Catalog tab strip). The custom .prod-host stylesheet is gone except for a tiny block (the dashed area-card border, message colors, a slightly wider modal modifier for the job-detail). Sync status uses .pec-badge {completed,admin,submitted} mapped from {clean,error,dirty} so it picks up the existing color tokens. (3) Wiped the Colors subnav view to a single empty-state line per Dylan's request.
+Why: Dylan reported both views came up completely blank, and the visual style didn't match the rest of the CRM. The blank was a real bug, not a styling issue. The class swap unifies the two halves of the CRM under one design system so the eye flows from Customers/Jobs into Ordering/Catalog without a jarring shift.
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Same as before. Dylan still needs to run the migration, deploy the Apps Script POST handler, and set the Netlify env vars before sync goes live (Ordering tab will load and let you create jobs even before that, but the Sync to Order Sheet button will return a clear "not configured" error).
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh. Click CRM, then Ordering. You should see "No production jobs yet. Click + New Job." and the toolbar with status filter + button. Click Material Catalog (admin/pm only). You should see the Products / System Types / Color Pairings sub-strip and tables matching the rest of the CRM. Colors tab is intentionally empty for now.
+
+---
+
 ## [2026-04-28 17:05] dashboard: relabel monthly revenue cards as Booked Sales
 By: Claude Code
 Changed: Top three Command-tab cards now read "PEC Booked Sales - Monthly", "FTP Booked Sales - Monthly", and "Combined Booked Sales - Monthly". Underlying data source (Booked Jobs Sheet) and IDs (#pecRev, #ftpRev, #combRev) are unchanged, so all the existing JS that populates them still works.
