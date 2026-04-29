@@ -4471,7 +4471,14 @@ function switchView(v) {
   // root rendered by the production module below. Hand off and bail.
   if (v === 'ordering' || v === 'catalog') {
     pecRoot.style.display = 'none';
-    if (prodRoot) prodRoot.style.display = '';
+    if (prodRoot) {
+      prodRoot.style.display = 'block';
+      // Paint a visible loading state synchronously so the user never sees
+      // a black panel even if window.prodSwitchView is briefly undefined.
+      if (!prodRoot.innerHTML.trim()) {
+        prodRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
+      }
+    }
     if (typeof window.prodSwitchView === 'function') {
       window.prodSwitchView(v);
     } else {
@@ -6602,23 +6609,48 @@ import { computeMaterialPlan, CalculatorError } from './production/calculator.js
   }
 
   // Show a loading state immediately so the user never sees a blank panel.
+  // Wrapped in try/catch so any runtime error surfaces visibly instead of
+  // leaving the panel blank.
   window.prodSwitchView = async function (crmView) {
     const r = root();
-    if (r) r.innerHTML = '<div class="pec-empty">Loading…</div>';
-    const ok = await ensureBooted();
-    if (!ok) {
-      if (r) r.innerHTML = '<div class="pec-empty">Sign in to the CRM first.</div>';
-      return;
+    if (r) {
+      r.style.display = 'block';
+      r.innerHTML = '<div class="pec-empty" style="font-size:.9rem">Loading ' + esc(crmView) + '…</div>';
     }
-    state.view = mapView(crmView);
-    render();
+    try {
+      const ok = await ensureBooted();
+      if (!ok) {
+        if (r) r.innerHTML = '<div class="pec-empty">Sign in to the CRM first.</div>';
+        return;
+      }
+      state.view = mapView(crmView);
+      render();
+    } catch (err) {
+      console.error('[prod] switchView error:', err);
+      if (r) r.innerHTML = '<div class="pec-empty" style="color:var(--danger);text-align:left;white-space:pre-wrap">'
+        + 'Production module error:\n' + esc(err && err.message ? err.message : String(err))
+        + '\n\nOpen DevTools console for the full stack trace.'
+        + '</div>';
+    }
   };
+
+  // Catch import-level / module-load errors and surface them in any visible
+  // prodViewRoot so the panel is never silently blank.
+  window.addEventListener('error', (ev) => {
+    if (!ev || !ev.message) return;
+    const r = root();
+    if (r && r.style.display !== 'none' && !r.innerHTML.trim()) {
+      r.innerHTML = '<div class="pec-empty" style="color:var(--danger)">Script error: ' + esc(ev.message) + '</div>';
+    }
+  });
 
   if (window.__pendingProdView) {
     const pending = window.__pendingProdView;
     window.__pendingProdView = null;
     window.prodSwitchView(pending);
   }
+
+  console.log('[prod] module booted, prodSwitchView ready');
 })();
 </script>
 
