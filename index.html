@@ -5667,7 +5667,86 @@ if (portalToken) {
   .prod-num { width:80px; text-align:right }
 </style>
 <script type="module">
-import { computeMaterialPlan, CalculatorError } from './production/calculator.js';
+// Calculator inlined so this works under file:// (where ESM imports are
+// blocked by browser CORS). Canonical source: production/calculator.js.
+// If you change the algorithm, change BOTH and re-run `npm test`.
+class CalculatorError extends Error {
+  constructor(message, code) { super(message); this.name = 'CalculatorError'; this.code = code; }
+}
+function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {} }) {
+  if (!Array.isArray(areas)) throw new CalculatorError('areas must be an array', 'INVALID_INPUT');
+  const areaPlans = [];
+  for (const area of areas) areaPlans.push(_planForArea(area, { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake }));
+  const lines = _mergeAcrossAreas(areaPlans);
+  return { lines, areaPlans };
+}
+function _planForArea(area, ctx) {
+  const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake } = ctx;
+  const sqft = Number(area.sqft);
+  if (!Number.isFinite(sqft) || sqft < 0) throw new CalculatorError(`Area "${area.name || area.id}": sqft must be a non-negative number`, 'INVALID_SQFT');
+  const slots = recipeSlotsBySystemType[area.system_type_id] || [];
+  const slotLines = [];
+  const resolvedBasecoatId = area.basecoat_product_id || (area.flake_product_id ? defaultBasecoatByFlake[area.flake_product_id] : null) || null;
+  for (const slot of slots) {
+    let productId = slot.default_product_id;
+    if (slot.material_type === 'Flake') productId = area.flake_product_id || productId;
+    else if (slot.material_type === 'Basecoat') productId = resolvedBasecoatId || productId;
+    if (!productId) {
+      if (slot.required) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
+      continue;
+    }
+    const product = productsById[productId];
+    if (!product) throw new CalculatorError(`Area "${area.name || area.id}": product ${productId} not found in catalog`, 'PRODUCT_NOT_FOUND');
+    const spread = Number(product.spread_rate);
+    const kit = Number(product.kit_size);
+    if (!Number.isFinite(spread) || spread <= 0) throw new CalculatorError(`Product "${product.name}" has invalid spread_rate (${product.spread_rate}); fix it in the System Catalog before calculating`, 'INVALID_SPREAD_RATE');
+    if (!Number.isFinite(kit) || kit <= 0) throw new CalculatorError(`Product "${product.name}" has invalid kit_size (${product.kit_size}); fix it in the System Catalog before calculating`, 'INVALID_KIT_SIZE');
+    slotLines.push({
+      area_id: area.id || null, area_name: area.name || null, order_index: slot.order_index,
+      material_type: slot.material_type, product_id: product.id, product_name: product.name,
+      supplier: product.supplier || null, color: product.color || null,
+      spread_rate: spread, kit_size: kit,
+      unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
+      sqft,
+    });
+  }
+  return { area, lines: slotLines };
+}
+function _mergeAcrossAreas(areaPlans) {
+  const groups = new Map();
+  for (const { lines } of areaPlans) {
+    for (const line of lines) {
+      const key = line.product_id;
+      if (!groups.has(key)) groups.set(key, {
+        material_type: line.material_type, product_id: line.product_id, product_name: line.product_name,
+        supplier: line.supplier, color: line.color, spread_rate: line.spread_rate, kit_size: line.kit_size,
+        unit_cost_snapshot: line.unit_cost, sqft_total: 0, area_ids: [], first_order_index: line.order_index,
+      });
+      const g = groups.get(key);
+      g.sqft_total += line.sqft;
+      if (line.area_id) g.area_ids.push(line.area_id);
+      if (line.order_index < g.first_order_index) g.first_order_index = line.order_index;
+    }
+  }
+  const merged = [];
+  let i = 0;
+  for (const g of groups.values()) {
+    if (g.sqft_total <= 0) continue;
+    const qty = Math.ceil(g.sqft_total / g.spread_rate / g.kit_size);
+    const lineCost = g.unit_cost_snapshot == null ? null : Math.round(qty * g.unit_cost_snapshot * 100) / 100;
+    merged.push({
+      material_type: g.material_type, product_id: g.product_id, product_name: g.product_name,
+      supplier: g.supplier, color: g.color, spread_rate: g.spread_rate, kit_size: g.kit_size,
+      qty_needed: qty, backstock_qty: 0, order_qty: qty,
+      use_backstock: false, ordered: false, delivered: false,
+      unit_cost_snapshot: g.unit_cost_snapshot, line_cost: lineCost,
+      area_ids: g.area_ids, sqft_total: g.sqft_total, order_index: i++, _sort_key: g.first_order_index,
+    });
+  }
+  merged.sort((a, b) => a._sort_key - b._sort_key);
+  merged.forEach((line, idx) => { line.order_index = idx; delete line._sort_key; });
+  return merged;
+}
 
 (function bootProd() {
   const supabase = window.pecSupabase;

@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 18:30] crm: inline material calculator so file:// works
+By: Claude Code
+Changed: Inlined the material calculator into index.html's production module so the dashboard works when opened directly via file:// (Chrome blocks ESM imports for file:// origins with a CORS error, which was killing the entire production script and leaving Ordering + Material Catalog blank). The canonical source is still production/calculator.js — it's used by npm test, kept identical, and the in-file comment in both files now says "if you change one, change both and re-run npm test." Verified npm test still passes 24/24.
+Why: Dylan opens the dashboard locally as a file (file://) for testing. The previous static `import { computeMaterialPlan } from './production/calculator.js'` worked on Netlify but not on file://. Two ways to fix: tell Dylan to use a local server every time, or make the page work on file:// directly. Inlining is the lower-friction fix and removes a class of bug where browser security policy randomly differs between dev and prod.
+Files touched: index.html, production/calculator.js, PROJECT-LOG.md
+Next steps: None blocking. Test runs unchanged.
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh the dashboard. Open DevTools console. Click CRM → Ordering. You should now see the empty-state table with the + New Job button, plus the breadcrumb log "[prod] module booted, prodSwitchView ready" and no CORS error.
+
+---
+
 ## [2026-04-28 17:45] CRM polish: match dashboard UI in Ordering + Material Catalog, fix blank-view bug, blank Colors view
 By: Claude Code
 Changed: Two real fixes plus a stylistic alignment. (1) Ordering and Material Catalog were rendering blank because ensureBooted in the production module returned the boot promise (which resolves to undefined) and the caller bailed on `if (!ok) return`. Rewrote ensureBooted to await the in-flight boot and explicitly return the booted boolean; also added a "Loading…" empty state that paints immediately so the user never sees a blank panel during the first load. (2) Replaced every .prod-* class in the production module with the existing .pec-* design-system classes (.pec-toolbar, .pec-card, .pec-table, .pec-btn primary/ghost/danger/sm, .pec-badge with status modifier, .pec-field, .pec-row-2/3, .pec-modal-bg, .pec-modal, .pec-modal-actions, .pec-empty, .pec-subnav for the Catalog tab strip). The custom .prod-host stylesheet is gone except for a tiny block (the dashed area-card border, message colors, a slightly wider modal modifier for the job-detail). Sync status uses .pec-badge {completed,admin,submitted} mapped from {clean,error,dirty} so it picks up the existing color tokens. (3) Wiped the Colors subnav view to a single empty-state line per Dylan's request.

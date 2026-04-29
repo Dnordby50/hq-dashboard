@@ -4,6 +4,13 @@
 // areas so the same product (e.g., Tinted Gray basecoat used in two areas)
 // shows up as one summed row.
 //
+// IMPORTANT: this file is the canonical source for `npm test`, but the
+// browser dashboard inlines the same logic into index.html so it works under
+// file:// (browsers block ESM imports for file:// origins). If you change
+// anything here, mirror the change in the inline copy near the top of the
+// production module's <script type="module"> block in index.html, then run
+// `npm test`.
+//
 // Rounding rule (carried from spec):
 //   qty_needed = ceil(sqft_total / spread_rate / kit_size)
 // Sqft is summed per-product BEFORE rounding so we don't over-order when the
