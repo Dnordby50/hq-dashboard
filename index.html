@@ -1127,6 +1127,7 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
   <button class="tab-btn" data-tab="jarvis">JARVIS</button>
   <button class="tab-btn" data-tab="sops-owner">SOPs</button>
   <button class="tab-btn" data-tab="prescott-crm">Prescott CRM</button>
+  <button class="tab-btn" data-tab="production">Production</button>
 </nav>
 
 <!-- COMMAND TAB (merged Revenue + Goals) -->
@@ -1491,6 +1492,29 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
 
     <div id="pecModalRoot"></div>
     <div id="pecLightboxRoot"></div>
+  </div>
+</section>
+
+<!-- PRODUCTION TAB (PM Module 1: Ordering / Material Calculator) -->
+<section class="tab-content" id="tab-production">
+  <div class="pec-wrap">
+    <div id="prodSigninPanel" class="pec-signin" style="display:none">
+      <h2>Production</h2>
+      <p>Sign in via the Prescott CRM tab first, then return here.</p>
+    </div>
+    <div id="prodPendingPanel" class="pec-signin" style="display:none">
+      <h2>Access pending</h2>
+      <p>You're signed in but your account hasn't been added to the staff list yet. Ask an admin to add you in the Prescott CRM Team section.</p>
+    </div>
+    <div id="prodApp" style="display:none">
+      <nav class="pec-subnav" id="prodSubnav">
+        <button data-prod-view="jobs" class="active">Jobs</button>
+        <button data-prod-view="new-job">+ New Job</button>
+        <button data-prod-view="catalog" class="pec-role-admin">System Catalog</button>
+      </nav>
+      <div id="prodViewRoot"></div>
+    </div>
+    <div id="prodModalRoot"></div>
   </div>
 </section>
 
@@ -4072,12 +4096,14 @@ if (document.readyState === 'loading') {
     jarvis:    '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V6a4 4 0 0 0-4-4z"/><path d="M5 10v2a7 7 0 0 0 14 0v-2"/><path d="M12 19v3"/></svg>',
     'sops-owner':'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/><path d="M9 8h6M9 12h6"/></svg>',
     'prescott-crm':'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h18"/><circle cx="7" cy="7" r="1"/><circle cx="7" cy="12" r="1"/><circle cx="7" cy="17" r="1"/></svg>',
+    production:'<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l5-3 5 3v13"/><path d="M15 21V11l5 3v7"/><path d="M9 12h2M9 16h2"/></svg>',
     sops:      '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 17a3 3 0 0 1 3-3h12"/></svg>',
     ai:        '<svg class="rd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
   };
   const LABELS = {
     command: 'Dashboard', execution: 'Execution', email: 'Inbox',
     jarvis: 'JARVIS', 'sops-owner': 'SOPs', 'prescott-crm': 'Prescott CRM',
+    production: 'Production',
     sops: 'SOPs', ai: 'Ask AI'
   };
 
@@ -4206,6 +4232,7 @@ if (document.readyState === 'loading') {
       'tab-jarvis':    { t: 'JARVIS',      s: 'Your strategic sparring partner.' },
       'tab-sops-owner':{ t: 'SOPs',        s: 'Standard operating procedures library.' },
       'tab-prescott-crm':{ t: 'Prescott CRM', s: 'Customers, jobs, and the customer portal.' },
+      'tab-production':{ t: 'Production',  s: 'PEC ordering, material calculator, and order sheet sync.' },
       'tab-emp-sops':  { t: 'SOPs',        s: 'Your team knowledge base.' },
       'tab-emp-ai':    { t: 'Ask AI',      s: 'Get answers from your SOPs.' }
     };
@@ -5645,6 +5672,1204 @@ if (portalToken) {
     setTimeout(tryClick, 400);
   }
 }
+</script>
+
+<!-- ============================================================
+     PRODUCTION TAB (PM Module 1: Ordering / Material Calculator)
+     Reuses window.pecSupabase + window.pecState from the PEC CRM
+     module above. Calculator is a real ESM import for testability.
+     ============================================================ -->
+<style>
+  #tab-production .prod-table { width:100%; border-collapse:collapse; font-size:.85rem }
+  #tab-production .prod-table th { text-align:left; color:var(--muted); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--s2) }
+  #tab-production .prod-table td { padding:8px 10px; border-bottom:1px solid var(--border) }
+  #tab-production .prod-table tr.clickable:hover { background:var(--s2); cursor:pointer }
+  #tab-production .prod-pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.7rem; font-weight:600; letter-spacing:.02em }
+  #tab-production .prod-pill.clean { background:rgba(34,197,94,.15); color:#4ade80 }
+  #tab-production .prod-pill.dirty { background:rgba(234,179,8,.15); color:#facc15 }
+  #tab-production .prod-pill.error { background:rgba(239,68,68,.15); color:#f87171 }
+  #tab-production .prod-pill.status-unscheduled { background:rgba(148,163,184,.15); color:#94a3b8 }
+  #tab-production .prod-pill.status-scheduled   { background:rgba(99,102,241,.18); color:#a5b4fc }
+  #tab-production .prod-pill.status-ordered     { background:rgba(56,189,248,.18); color:#7dd3fc }
+  #tab-production .prod-pill.status-delivered   { background:rgba(20,184,166,.18); color:#5eead4 }
+  #tab-production .prod-pill.status-completed   { background:rgba(34,197,94,.18); color:#4ade80 }
+  #tab-production .prod-card { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:14px }
+  #tab-production .prod-card h3 { margin:0 0 8px; font-size:1rem }
+  #tab-production .prod-row { display:grid; grid-template-columns:repeat(12,1fr); gap:10px; align-items:end }
+  #tab-production .prod-row .col-2 { grid-column:span 2 } #tab-production .prod-row .col-3 { grid-column:span 3 }
+  #tab-production .prod-row .col-4 { grid-column:span 4 } #tab-production .prod-row .col-6 { grid-column:span 6 }
+  #tab-production .prod-row .col-12{ grid-column:span 12 }
+  #tab-production .prod-row label { display:block; font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:4px }
+  #tab-production input, #tab-production select, #tab-production textarea {
+    width:100%; padding:6px 8px; background:var(--s2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); font:inherit
+  }
+  #tab-production textarea { resize:vertical; min-height:60px }
+  #tab-production .btn { padding:7px 12px; border-radius:var(--radius-sm); border:1px solid var(--border); background:var(--s2); color:var(--text); font:inherit; cursor:pointer }
+  #tab-production .btn:hover { background:var(--s3) }
+  #tab-production .btn.primary { background:var(--accent); color:#fff; border-color:transparent }
+  #tab-production .btn.primary:hover { filter:brightness(1.1) }
+  #tab-production .btn.danger { color:#f87171 }
+  #tab-production .btn.ghost { background:transparent }
+  #tab-production .btn[disabled] { opacity:.5; cursor:not-allowed }
+  #tab-production .prod-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:14px; flex-wrap:wrap }
+  #tab-production .prod-area-card { border:1px dashed var(--border); border-radius:var(--radius); padding:12px; margin-bottom:10px; background:rgba(255,255,255,.02) }
+  #tab-production .prod-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9000 }
+  #tab-production .prod-modal { background:var(--s1); border:1px solid var(--border); border-radius:var(--radius); width:min(960px,94vw); max-height:90vh; overflow:auto; padding:18px 20px }
+  #tab-production .prod-modal h2 { margin:0 0 12px; font-size:1.1rem }
+  #tab-production .prod-modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; flex-wrap:wrap }
+  #tab-production .muted { color:var(--muted) }
+  #tab-production .small { font-size:.75rem }
+  #tab-production .prod-error { color:#f87171; font-size:.8rem; min-height:18px }
+  #tab-production .prod-ok { color:#4ade80; font-size:.8rem; min-height:18px }
+  #tab-production .prod-catalog-tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--border) }
+  #tab-production .prod-catalog-tabs button { background:transparent; border:none; color:var(--muted); padding:8px 12px; cursor:pointer; border-bottom:2px solid transparent }
+  #tab-production .prod-catalog-tabs button.active { color:var(--text); border-bottom-color:var(--accent) }
+</style>
+<script type="module">
+import { computeMaterialPlan, CalculatorError } from './production/calculator.js';
+
+(function bootProd() {
+  const supabase = window.pecSupabase;
+  if (!supabase) {
+    setTimeout(bootProd, 200);
+    return;
+  }
+
+  const state = {
+    view: 'jobs',
+    catalogTab: 'products',
+    products: [],
+    systemTypes: [],
+    recipeSlots: [],
+    colorPairings: [],
+    jobs: [],
+    jobFilter: { status: '' },
+    activeJob: null,
+    newJob: {
+      proposal_number: '',
+      customer_name: '',
+      address: '',
+      install_date: '',
+      crew: '',
+      notes: '',
+      areas: [makeBlankArea()],
+    },
+  };
+  window.prodState = state;
+
+  function makeBlankArea() {
+    return {
+      _key: Math.random().toString(36).slice(2, 8),
+      name: 'Main',
+      sqft: '',
+      system_type_id: '',
+      flake_product_id: '',
+      basecoat_product_id: '',
+      notes: '',
+    };
+  }
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmtDate = (s) => (s ? new Date(s).toLocaleDateString() : '—');
+  const fmtDateTime = (s) => (s ? new Date(s).toLocaleString() : '—');
+
+  function indexById(rows) { return Object.fromEntries(rows.map((r) => [r.id, r])); }
+  function recipeSlotsBySystemType() {
+    const out = {};
+    for (const slot of state.recipeSlots) {
+      (out[slot.system_type_id] ||= []).push(slot);
+    }
+    for (const k of Object.keys(out)) out[k].sort((a, b) => a.order_index - b.order_index);
+    return out;
+  }
+  function defaultBasecoatByFlake() {
+    const out = {};
+    for (const cp of state.colorPairings) {
+      if (cp.is_default) out[cp.flake_product_id] = cp.basecoat_product_id;
+    }
+    return out;
+  }
+  function productsByMaterialType(t, opts = {}) {
+    return state.products
+      .filter((p) => p.material_type === t && (opts.includeInactive || p.active))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // --------------------------------------------------------------------------
+  // Loaders
+  // --------------------------------------------------------------------------
+  async function loadCatalog() {
+    const [p, s, r, c] = await Promise.all([
+      supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
+      supabase.from('pec_prod_system_types').select('*').order('name'),
+      supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
+      supabase.from('pec_prod_color_pairings').select('*'),
+    ]);
+    if (p.error) console.error('[prod] products:', p.error);
+    if (s.error) console.error('[prod] system_types:', s.error);
+    if (r.error) console.error('[prod] recipe_slots:', r.error);
+    if (c.error) console.error('[prod] color_pairings:', c.error);
+    state.products = p.data || [];
+    state.systemTypes = s.data || [];
+    state.recipeSlots = r.data || [];
+    state.colorPairings = c.data || [];
+  }
+
+  async function loadJobs() {
+    const { data, error } = await supabase
+      .from('pec_prod_jobs')
+      .select('*, areas:pec_prod_areas(*), lines:pec_prod_material_lines(*)')
+      .order('install_date', { ascending: true, nullsFirst: false });
+    if (error) console.error('[prod] jobs:', error);
+    state.jobs = data || [];
+  }
+
+  // --------------------------------------------------------------------------
+  // View dispatcher
+  // --------------------------------------------------------------------------
+  function render() {
+    const root = $('prodViewRoot');
+    if (!root) return;
+    if (state.view === 'jobs') return renderJobs(root);
+    if (state.view === 'new-job') return renderNewJob(root);
+    if (state.view === 'catalog') return renderCatalog(root);
+  }
+
+  function switchView(v) {
+    state.view = v;
+    document.querySelectorAll('#prodSubnav button').forEach((b) => {
+      b.classList.toggle('active', b.dataset.prodView === v);
+    });
+    render();
+  }
+
+  // --------------------------------------------------------------------------
+  // Jobs view
+  // --------------------------------------------------------------------------
+  function renderJobs(root) {
+    const filter = state.jobFilter.status;
+    const jobs = filter ? state.jobs.filter((j) => j.status === filter) : state.jobs;
+    const sysById = indexById(state.systemTypes);
+    const summarize = (job) => {
+      if (!job.areas || !job.areas.length) return '—';
+      const counts = new Map();
+      for (const a of job.areas) {
+        const name = (sysById[a.system_type_id] || {}).name || 'System';
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(' + ');
+    };
+    const sumSqft = (job) => (job.areas || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
+
+    root.innerHTML = `
+      <div class="prod-toolbar">
+        <label class="muted small" style="display:flex;align-items:center;gap:6px">Status
+          <select id="prodJobStatusFilter" style="width:auto">
+            <option value="">All</option>
+            <option ${filter === 'unscheduled' ? 'selected' : ''} value="unscheduled">Unscheduled</option>
+            <option ${filter === 'scheduled'   ? 'selected' : ''} value="scheduled">Scheduled</option>
+            <option ${filter === 'ordered'     ? 'selected' : ''} value="ordered">Ordered</option>
+            <option ${filter === 'delivered'   ? 'selected' : ''} value="delivered">Delivered</option>
+            <option ${filter === 'completed'   ? 'selected' : ''} value="completed">Completed</option>
+          </select>
+        </label>
+        <button class="btn primary" id="prodNewJobBtn">+ New Job</button>
+        <span class="muted small" style="margin-left:auto">${jobs.length} job${jobs.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="prod-card" style="padding:0">
+        <table class="prod-table">
+          <thead><tr>
+            <th>Install Date</th><th>Customer</th><th>Proposal #</th>
+            <th>System</th><th style="text-align:right">Sqft</th>
+            <th>Status</th><th>Sync</th>
+          </tr></thead>
+          <tbody>
+            ${jobs.length === 0 ? `<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No jobs yet. Click + New Job.</td></tr>` : ''}
+            ${jobs.map((j) => `
+              <tr class="clickable" data-job-id="${esc(j.id)}">
+                <td>${j.install_date ? fmtDate(j.install_date) : '<span class="muted">—</span>'}</td>
+                <td>${esc(j.customer_name)}<div class="muted small">${esc(j.address || '')}</div></td>
+                <td>${esc(j.proposal_number)}</td>
+                <td>${esc(summarize(j))}</td>
+                <td style="text-align:right">${sumSqft(j).toLocaleString()}</td>
+                <td><span class="prod-pill status-${esc(j.status)}">${esc(j.status)}</span></td>
+                <td>
+                  <span class="prod-pill ${esc(j.sync_status)}">${esc(j.sync_status)}</span>
+                  ${j.last_synced_at ? `<div class="muted small">${esc(fmtDateTime(j.last_synced_at))}</div>` : ''}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    $('prodJobStatusFilter').addEventListener('change', (e) => {
+      state.jobFilter.status = e.target.value;
+      render();
+    });
+    $('prodNewJobBtn').addEventListener('click', () => switchView('new-job'));
+    root.querySelectorAll('tr[data-job-id]').forEach((tr) => {
+      tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // New Job view
+  // --------------------------------------------------------------------------
+  function renderNewJob(root) {
+    const j = state.newJob;
+    root.innerHTML = `
+      <div class="prod-card">
+        <h3>Job</h3>
+        <div class="prod-row">
+          <div class="col-3"><label>Proposal #</label><input id="njProposal" value="${esc(j.proposal_number)}" placeholder="e.g. 12345"></div>
+          <div class="col-4"><label>Customer name</label><input id="njCustomer" value="${esc(j.customer_name)}"></div>
+          <div class="col-5"><label>Address</label><input id="njAddress" value="${esc(j.address)}"></div>
+          <div class="col-3"><label>Install date</label><input type="date" id="njDate" value="${esc(j.install_date)}"></div>
+          <div class="col-3"><label>Crew</label><input id="njCrew" value="${esc(j.crew)}"></div>
+          <div class="col-6"><label>Notes</label><input id="njNotes" value="${esc(j.notes)}"></div>
+        </div>
+      </div>
+      <div class="prod-card">
+        <h3 style="display:flex;justify-content:space-between;align-items:center">
+          Areas <button class="btn" id="njAddArea">+ Add area</button>
+        </h3>
+        <div id="njAreas"></div>
+      </div>
+      <div class="prod-card">
+        <h3>Calculated material plan</h3>
+        <div id="njPreview"><span class="muted small">Fill in at least one area with sqft to see the plan.</span></div>
+      </div>
+      <div class="prod-modal-actions">
+        <button class="btn ghost" id="njCancel">Cancel</button>
+        <button class="btn primary" id="njSave">Save job</button>
+      </div>
+      <div class="prod-error" id="njError"></div>
+    `;
+    renderAreas();
+    bindNewJobInputs();
+    renderPreview();
+
+    $('njAddArea').addEventListener('click', () => {
+      j.areas.push(makeBlankArea());
+      renderAreas();
+      renderPreview();
+    });
+    $('njCancel').addEventListener('click', () => {
+      state.newJob = { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', areas: [makeBlankArea()] };
+      switchView('jobs');
+    });
+    $('njSave').addEventListener('click', saveNewJob);
+  }
+
+  function renderAreas() {
+    const host = $('njAreas');
+    if (!host) return;
+    const sysOpts = state.systemTypes.filter((s) => s.active).map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    const flakes = productsByMaterialType('Flake');
+    const basecoats = productsByMaterialType('Basecoat');
+    host.innerHTML = state.newJob.areas.map((a, idx) => {
+      const sys = state.systemTypes.find((s) => s.id === a.system_type_id);
+      const showFlake = sys && sys.requires_flake_color;
+      const showBase = sys && sys.requires_basecoat_color;
+      return `
+        <div class="prod-area-card" data-area-key="${esc(a._key)}">
+          <div class="prod-row">
+            <div class="col-3"><label>Area name</label><input data-aprop="name" value="${esc(a.name)}" placeholder="Garage, Shop, Patio..."></div>
+            <div class="col-2"><label>Sqft</label><input data-aprop="sqft" type="number" min="0" step="1" value="${esc(a.sqft)}"></div>
+            <div class="col-3"><label>System type</label>
+              <select data-aprop="system_type_id">
+                <option value="">Pick a system…</option>
+                ${sysOpts.replace(`value="${esc(a.system_type_id)}"`, `value="${esc(a.system_type_id)}" selected`)}
+              </select>
+            </div>
+            <div class="col-2" style="${showFlake ? '' : 'visibility:hidden'}">
+              <label>Flake color</label>
+              <select data-aprop="flake_product_id">
+                <option value="">Pick a flake…</option>
+                ${flakes.map((p) => `<option value="${esc(p.id)}" ${p.id === a.flake_product_id ? 'selected' : ''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="col-2" style="${showBase ? '' : 'visibility:hidden'}">
+              <label>Basecoat <span class="muted small">(override)</span></label>
+              <select data-aprop="basecoat_product_id">
+                <option value="">Auto / default pairing</option>
+                ${basecoats.map((p) => `<option value="${esc(p.id)}" ${p.id === a.basecoat_product_id ? 'selected' : ''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="col-12"><label>Notes</label><input data-aprop="notes" value="${esc(a.notes)}"></div>
+          </div>
+          ${state.newJob.areas.length > 1 ? `<div style="text-align:right;margin-top:8px"><button class="btn ghost danger" data-remove-area="${esc(a._key)}">Remove area ${idx + 1}</button></div>` : ''}
+        </div>
+      `;
+    }).join('');
+    host.querySelectorAll('[data-area-key]').forEach((card) => {
+      const key = card.dataset.areaKey;
+      const area = state.newJob.areas.find((a) => a._key === key);
+      card.querySelectorAll('[data-aprop]').forEach((inp) => {
+        inp.addEventListener('input', () => {
+          area[inp.dataset.aprop] = inp.value;
+          if (inp.dataset.aprop === 'system_type_id') renderAreas();
+          renderPreview();
+        });
+        inp.addEventListener('change', () => {
+          area[inp.dataset.aprop] = inp.value;
+          if (inp.dataset.aprop === 'system_type_id') renderAreas();
+          renderPreview();
+        });
+      });
+      const rmBtn = card.querySelector('[data-remove-area]');
+      if (rmBtn) {
+        rmBtn.addEventListener('click', () => {
+          state.newJob.areas = state.newJob.areas.filter((a) => a._key !== key);
+          renderAreas();
+          renderPreview();
+        });
+      }
+    });
+  }
+
+  function bindNewJobInputs() {
+    const map = { njProposal: 'proposal_number', njCustomer: 'customer_name', njAddress: 'address', njDate: 'install_date', njCrew: 'crew', njNotes: 'notes' };
+    Object.entries(map).forEach(([id, prop]) => {
+      const el = $(id);
+      if (el) el.addEventListener('input', () => { state.newJob[prop] = el.value; });
+    });
+  }
+
+  function buildCalcInput(areas) {
+    const productsById = indexById(state.products);
+    const slotsBySys = recipeSlotsBySystemType();
+    const defaultBC = defaultBasecoatByFlake();
+    const cleanedAreas = areas
+      .filter((a) => a.system_type_id && Number(a.sqft) > 0)
+      .map((a) => ({
+        id: a._key || a.id,
+        name: a.name,
+        sqft: Number(a.sqft),
+        system_type_id: a.system_type_id,
+        flake_product_id: a.flake_product_id || null,
+        basecoat_product_id: a.basecoat_product_id || null,
+      }));
+    return { areas: cleanedAreas, productsById, recipeSlotsBySystemType: slotsBySys, defaultBasecoatByFlake: defaultBC };
+  }
+
+  function renderPreview() {
+    const host = $('njPreview');
+    if (!host) return;
+    const input = buildCalcInput(state.newJob.areas);
+    if (!input.areas.length) {
+      host.innerHTML = `<span class="muted small">Fill in at least one area with sqft to see the plan.</span>`;
+      return;
+    }
+    let plan;
+    try {
+      plan = computeMaterialPlan(input);
+    } catch (err) {
+      host.innerHTML = `<div class="prod-error">${esc(err.message)}</div>`;
+      return;
+    }
+    host.innerHTML = renderLinesTable(plan.lines);
+  }
+
+  function renderLinesTable(lines) {
+    if (!lines.length) return `<span class="muted small">No material lines yet.</span>`;
+    return `
+      <table class="prod-table">
+        <thead><tr>
+          <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th>
+          <th style="text-align:right">Spread / kit</th><th style="text-align:right">Qty</th>
+        </tr></thead>
+        <tbody>
+          ${lines.map((l) => `
+            <tr>
+              <td>${esc(l.material_type)}</td>
+              <td>${esc(l.product_name)}</td>
+              <td>${esc(l.supplier || '')}</td>
+              <td>${esc(l.color || '')}</td>
+              <td style="text-align:right">${esc(l.spread_rate)} / ${esc(l.kit_size)}</td>
+              <td style="text-align:right"><strong>${esc(l.qty_needed)}</strong></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  async function saveNewJob() {
+    const errEl = $('njError');
+    errEl.textContent = '';
+    const j = state.newJob;
+    if (!j.proposal_number.trim()) { errEl.textContent = 'Proposal # is required.'; return; }
+    if (!j.customer_name.trim())   { errEl.textContent = 'Customer name is required.'; return; }
+    if (!j.areas.length)           { errEl.textContent = 'At least one area is required.'; return; }
+    for (const [i, a] of j.areas.entries()) {
+      if (!a.system_type_id) { errEl.textContent = `Area ${i + 1}: pick a system type.`; return; }
+      if (!(Number(a.sqft) > 0)) { errEl.textContent = `Area ${i + 1}: sqft must be greater than 0.`; return; }
+    }
+
+    let plan;
+    try {
+      plan = computeMaterialPlan(buildCalcInput(j.areas));
+    } catch (err) {
+      errEl.textContent = err.message;
+      return;
+    }
+
+    // Insert job row.
+    const status = j.install_date ? 'scheduled' : 'unscheduled';
+    const jobInsert = await supabase.from('pec_prod_jobs').insert({
+      proposal_number: j.proposal_number.trim(),
+      customer_name: j.customer_name.trim(),
+      address: j.address || null,
+      install_date: j.install_date || null,
+      crew: j.crew || null,
+      notes: j.notes || null,
+      status,
+      sync_status: 'dirty',
+    }).select().single();
+    if (jobInsert.error) {
+      errEl.textContent = jobInsert.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : jobInsert.error.message;
+      return;
+    }
+    const jobId = jobInsert.data.id;
+
+    // Insert areas, capture key->id map.
+    const areaPayload = j.areas.map((a, idx) => ({
+      job_id: jobId,
+      name: a.name || `Area ${idx + 1}`,
+      sqft: Number(a.sqft),
+      system_type_id: a.system_type_id,
+      flake_product_id: a.flake_product_id || null,
+      basecoat_product_id: a.basecoat_product_id || null,
+      notes: a.notes || null,
+      order_index: idx,
+    }));
+    const areaInsert = await supabase.from('pec_prod_areas').insert(areaPayload).select();
+    if (areaInsert.error) { errEl.textContent = areaInsert.error.message; return; }
+
+    // Insert material lines (no per-area attribution at the merged level since
+    // lines were merged across areas; assign null area_id for clarity).
+    const linePayload = plan.lines.map((l) => ({
+      job_id: jobId,
+      area_id: null,
+      material_type: l.material_type,
+      product_id: l.product_id || null,
+      product_name: l.product_name,
+      supplier: l.supplier,
+      color: l.color,
+      spread_rate: l.spread_rate,
+      kit_size: l.kit_size,
+      qty_needed: l.qty_needed,
+      backstock_qty: 0,
+      order_qty: l.order_qty,
+      use_backstock: false,
+      ordered: false,
+      delivered: false,
+      unit_cost_snapshot: l.unit_cost_snapshot,
+      line_cost: l.line_cost,
+      order_index: l.order_index,
+    }));
+    if (linePayload.length) {
+      const linesInsert = await supabase.from('pec_prod_material_lines').insert(linePayload);
+      if (linesInsert.error) { errEl.textContent = linesInsert.error.message; return; }
+    }
+
+    state.newJob = { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', areas: [makeBlankArea()] };
+    await loadJobs();
+    switchView('jobs');
+  }
+
+  // --------------------------------------------------------------------------
+  // Job Detail modal
+  // --------------------------------------------------------------------------
+  async function openJobDetail(jobId) {
+    const job = state.jobs.find((j) => j.id === jobId);
+    if (!job) return;
+    state.activeJob = JSON.parse(JSON.stringify(job));
+    renderJobDetail();
+  }
+
+  function closeJobDetail() {
+    state.activeJob = null;
+    $('prodModalRoot').innerHTML = '';
+  }
+
+  function renderJobDetail() {
+    const j = state.activeJob;
+    if (!j) return;
+    const sysById = indexById(state.systemTypes);
+    const totalSqft = (j.areas || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
+    const root = $('prodModalRoot');
+    root.innerHTML = `
+      <div class="prod-modal-bg" id="prodDetailBg">
+        <div class="prod-modal" id="prodDetailModal">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div>
+              <h2>${esc(j.customer_name)} <span class="muted small">#${esc(j.proposal_number)}</span></h2>
+              <div class="muted small">${esc(j.address || '')}</div>
+              <div class="muted small">Install ${j.install_date ? fmtDate(j.install_date) : 'unscheduled'} · Crew ${esc(j.crew || '—')} · Total sqft ${totalSqft.toLocaleString()}</div>
+              <div style="margin-top:6px">
+                <span class="prod-pill status-${esc(j.status)}">${esc(j.status)}</span>
+                <span class="prod-pill ${esc(j.sync_status)}" style="margin-left:6px">${esc(j.sync_status)}</span>
+                ${j.last_synced_at ? `<span class="muted small" style="margin-left:8px">Last synced ${esc(fmtDateTime(j.last_synced_at))}</span>` : ''}
+              </div>
+              ${j.sync_error ? `<div class="prod-error" style="margin-top:6px">${esc(j.sync_error)}</div>` : ''}
+            </div>
+            <button class="btn ghost" id="prodDetailClose">Close</button>
+          </div>
+
+          <div class="prod-card" style="margin-top:14px">
+            <h3>Areas</h3>
+            ${(j.areas || []).map((a) => `
+              <div class="muted small">${esc(a.name)} · ${Number(a.sqft).toLocaleString()} sqft · ${esc((sysById[a.system_type_id] || {}).name || 'System')}</div>
+            `).join('') || '<span class="muted small">No areas</span>'}
+          </div>
+
+          <div class="prod-card">
+            <h3>Material lines</h3>
+            <div id="prodDetailLines"></div>
+          </div>
+
+          <div class="prod-modal-actions">
+            <button class="btn ghost danger" id="prodDetailRecalc">Recalculate from catalog</button>
+            <span style="flex:1"></span>
+            <button class="btn"          id="prodDetailComplete">Mark complete</button>
+            <button class="btn"          id="prodDetailSaveLines">Save line edits</button>
+            <button class="btn primary"  id="prodDetailSync">Sync to Order Sheet</button>
+          </div>
+          <div class="prod-error" id="prodDetailError"></div>
+          <div class="prod-ok"    id="prodDetailOk"></div>
+        </div>
+      </div>
+    `;
+    renderDetailLines();
+    $('prodDetailClose').addEventListener('click', closeJobDetail);
+    $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg') closeJobDetail(); });
+    $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
+    $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
+    $('prodDetailSync').addEventListener('click', syncActiveJob);
+    $('prodDetailComplete').addEventListener('click', completeActiveJob);
+  }
+
+  function renderDetailLines() {
+    const j = state.activeJob;
+    const host = $('prodDetailLines');
+    if (!host) return;
+    const lines = (j.lines || []).slice().sort((a, b) => a.order_index - b.order_index);
+    if (!lines.length) {
+      host.innerHTML = `<span class="muted small">No lines. Click Recalculate to generate from the catalog.</span>`;
+      return;
+    }
+    host.innerHTML = `
+      <table class="prod-table">
+        <thead><tr>
+          <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th>
+          <th style="text-align:right">Qty</th><th style="text-align:right">Backstock</th>
+          <th style="text-align:right">Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
+        </tr></thead>
+        <tbody>
+          ${lines.map((l) => `
+            <tr data-line-id="${esc(l.id)}">
+              <td>${esc(l.material_type)}</td>
+              <td>${esc(l.product_name)}</td>
+              <td><input data-prop="supplier" value="${esc(l.supplier || '')}" style="width:120px"></td>
+              <td><input data-prop="color"    value="${esc(l.color || '')}"    style="width:120px"></td>
+              <td style="text-align:right"><input data-prop="qty_needed"    type="number" min="0" step="1" value="${esc(l.qty_needed)}"    style="width:70px;text-align:right"></td>
+              <td style="text-align:right"><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" style="width:70px;text-align:right"></td>
+              <td style="text-align:right"><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     style="width:70px;text-align:right"></td>
+              <td><input data-prop="use_backstock" type="checkbox" ${l.use_backstock ? 'checked' : ''}></td>
+              <td><input data-prop="ordered"       type="checkbox" ${l.ordered ? 'checked' : ''}></td>
+              <td><input data-prop="delivered"     type="checkbox" ${l.delivered ? 'checked' : ''}></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    `;
+    host.querySelectorAll('tr[data-line-id]').forEach((tr) => {
+      const id = tr.dataset.lineId;
+      const line = j.lines.find((x) => x.id === id);
+      tr.querySelectorAll('[data-prop]').forEach((inp) => {
+        inp.addEventListener('change', () => {
+          const prop = inp.dataset.prop;
+          if (inp.type === 'checkbox') line[prop] = inp.checked;
+          else if (inp.type === 'number') line[prop] = inp.value === '' ? 0 : Number(inp.value);
+          else line[prop] = inp.value;
+          markDirtyLocally();
+        });
+      });
+    });
+  }
+
+  function markDirtyLocally() {
+    state.activeJob.sync_status = 'dirty';
+  }
+
+  async function saveActiveJobLineEdits() {
+    const j = state.activeJob;
+    const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
+    errEl.textContent = ''; okEl.textContent = '';
+    for (const l of j.lines) {
+      const { error } = await supabase.from('pec_prod_material_lines').update({
+        supplier: l.supplier || null,
+        color: l.color || null,
+        qty_needed: Number(l.qty_needed || 0),
+        backstock_qty: Number(l.backstock_qty || 0),
+        order_qty: Number(l.order_qty || 0),
+        use_backstock: !!l.use_backstock,
+        ordered: !!l.ordered,
+        delivered: !!l.delivered,
+      }).eq('id', l.id);
+      if (error) { errEl.textContent = error.message; return; }
+    }
+    await supabase.from('pec_prod_jobs').update({ sync_status: 'dirty' }).eq('id', j.id);
+    okEl.textContent = 'Saved. Click Sync to push to the Order Sheet.';
+    await loadJobs();
+  }
+
+  async function recalcActiveJob() {
+    const j = state.activeJob;
+    if (!confirm('Recalculate will overwrite all material lines for this job from the catalog. Manual edits to qty/supplier/color will be lost. Continue?')) return;
+    const areasInput = (j.areas || []).map((a) => ({
+      id: a.id,
+      name: a.name,
+      sqft: Number(a.sqft),
+      system_type_id: a.system_type_id,
+      flake_product_id: a.flake_product_id || null,
+      basecoat_product_id: a.basecoat_product_id || null,
+    }));
+    let plan;
+    try {
+      plan = computeMaterialPlan({
+        areas: areasInput,
+        productsById: indexById(state.products),
+        recipeSlotsBySystemType: recipeSlotsBySystemType(),
+        defaultBasecoatByFlake: defaultBasecoatByFlake(),
+      });
+    } catch (err) { $('prodDetailError').textContent = err.message; return; }
+    await supabase.from('pec_prod_material_lines').delete().eq('job_id', j.id);
+    if (plan.lines.length) {
+      const payload = plan.lines.map((l) => ({
+        job_id: j.id, area_id: null,
+        material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
+        supplier: l.supplier, color: l.color, spread_rate: l.spread_rate, kit_size: l.kit_size,
+        qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
+        use_backstock: false, ordered: false, delivered: false,
+        unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+      }));
+      const ins = await supabase.from('pec_prod_material_lines').insert(payload);
+      if (ins.error) { $('prodDetailError').textContent = ins.error.message; return; }
+    }
+    await supabase.from('pec_prod_jobs').update({ sync_status: 'dirty' }).eq('id', j.id);
+    await loadJobs();
+    state.activeJob = JSON.parse(JSON.stringify(state.jobs.find((x) => x.id === j.id)));
+    renderJobDetail();
+  }
+
+  async function callSyncFunction(jobId, action) {
+    const session = window.pecState && window.pecState.session;
+    if (!session) throw new Error('Not signed in');
+    const res = await fetch('/.netlify/functions/pec-prod-sync-sheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ action, job_id: jobId }),
+    });
+    let payload = null;
+    try { payload = await res.json(); } catch { /* fallthrough */ }
+    if (!res.ok || !payload || payload.ok !== true) {
+      throw new Error((payload && payload.error) || `Sync failed (${res.status})`);
+    }
+    return payload;
+  }
+
+  async function syncActiveJob() {
+    const j = state.activeJob;
+    const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
+    errEl.textContent = ''; okEl.textContent = '';
+    const btn = $('prodDetailSync'); btn.disabled = true;
+    try {
+      const result = await callSyncFunction(j.id, 'sync');
+      okEl.textContent = `Synced ${result.rows_written} row${result.rows_written === 1 ? '' : 's'} to ${result.used_sheet === 'test' ? 'TEST sheet' : 'production sheet'}.`;
+      await loadJobs();
+      state.activeJob = JSON.parse(JSON.stringify(state.jobs.find((x) => x.id === j.id)));
+      renderJobDetail();
+    } catch (err) {
+      errEl.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function completeActiveJob() {
+    const j = state.activeJob;
+    if (!confirm(`Mark job #${j.proposal_number} complete? This moves the rows from NEW ORDER SHEET to COMPLETED JOBS and sets the job status to completed. Material line data is preserved for future job costing.`)) return;
+    const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
+    errEl.textContent = ''; okEl.textContent = '';
+    const btn = $('prodDetailComplete'); btn.disabled = true;
+    try {
+      const result = await callSyncFunction(j.id, 'mark_complete');
+      okEl.textContent = `Marked complete. Moved ${result.moved_rows} row${result.moved_rows === 1 ? '' : 's'} to COMPLETED JOBS.`;
+      await loadJobs();
+      state.activeJob = JSON.parse(JSON.stringify(state.jobs.find((x) => x.id === j.id)));
+      renderJobDetail();
+    } catch (err) {
+      errEl.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // System Catalog (Products / System Types / Color Pairings)
+  // --------------------------------------------------------------------------
+  function renderCatalog(root) {
+    root.innerHTML = `
+      <div class="prod-catalog-tabs">
+        <button data-cat-tab="products"     ${state.catalogTab === 'products'     ? 'class="active"' : ''}>Products</button>
+        <button data-cat-tab="system_types" ${state.catalogTab === 'system_types' ? 'class="active"' : ''}>System Types</button>
+        <button data-cat-tab="color_pairings" ${state.catalogTab === 'color_pairings' ? 'class="active"' : ''}>Color Pairings</button>
+      </div>
+      <div id="prodCatalogBody"></div>
+    `;
+    root.querySelectorAll('[data-cat-tab]').forEach((b) => {
+      b.addEventListener('click', () => { state.catalogTab = b.dataset.catTab; renderCatalog(root); });
+    });
+    if (state.catalogTab === 'products')       renderProducts($('prodCatalogBody'));
+    if (state.catalogTab === 'system_types')   renderSystemTypes($('prodCatalogBody'));
+    if (state.catalogTab === 'color_pairings') renderColorPairings($('prodCatalogBody'));
+  }
+
+  function renderProducts(host) {
+    host.innerHTML = `
+      <div class="prod-toolbar">
+        <button class="btn primary" id="prodAddProductBtn">+ Add product</button>
+      </div>
+      <table class="prod-table">
+        <thead><tr><th>Name</th><th>Type</th><th>Supplier</th><th>Color</th><th style="text-align:right">Spread / kit</th><th style="text-align:right">Cost</th><th>Active</th><th></th></tr></thead>
+        <tbody>
+          ${state.products.map((p) => `
+            <tr>
+              <td>${esc(p.name)}</td>
+              <td>${esc(p.material_type)}</td>
+              <td>${esc(p.supplier || '')}</td>
+              <td>${esc(p.color || '')}</td>
+              <td style="text-align:right">${esc(p.spread_rate)} / ${esc(p.kit_size)}</td>
+              <td style="text-align:right">${p.unit_cost == null ? '<span class="muted">—</span>' : '$' + Number(p.unit_cost).toLocaleString()}</td>
+              <td>${p.active ? 'Yes' : 'No'}</td>
+              <td><button class="btn ghost small" data-edit-product="${esc(p.id)}">Edit</button></td>
+            </tr>`).join('')}
+          ${state.products.length === 0 ? `<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">No products yet.</td></tr>` : ''}
+        </tbody>
+      </table>
+    `;
+    $('prodAddProductBtn').addEventListener('click', () => openProductModal(null));
+    host.querySelectorAll('[data-edit-product]').forEach((b) => {
+      b.addEventListener('click', () => openProductModal(b.dataset.editProduct));
+    });
+  }
+
+  function openProductModal(productId) {
+    const existing = productId ? state.products.find((p) => p.id === productId) : null;
+    const p = existing
+      ? { ...existing }
+      : { name: '', material_type: 'Basecoat', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', active: true, notes: '' };
+    const root = $('prodModalRoot');
+    root.innerHTML = `
+      <div class="prod-modal-bg" id="prodPModalBg">
+        <div class="prod-modal">
+          <h2>${existing ? 'Edit' : 'New'} product</h2>
+          <div class="prod-row">
+            <div class="col-6"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
+            <div class="col-3"><label>Material type</label>
+              <select id="pmType">
+                ${['Basecoat','Flake','Topcoat','Stain','Sealer','Tint Pack','Extra']
+                  .map((t) => `<option value="${t}" ${t === p.material_type ? 'selected' : ''}>${t}</option>`).join('')}
+              </select>
+            </div>
+            <div class="col-3"><label>Supplier</label><input id="pmSupplier" value="${esc(p.supplier || '')}"></div>
+            <div class="col-3"><label>Color</label><input id="pmColor" value="${esc(p.color || '')}"></div>
+            <div class="col-3"><label>Spread rate (sqft per gal/box)</label><input id="pmSpread" type="number" min="0" step="0.01" value="${esc(p.spread_rate)}"></div>
+            <div class="col-2"><label>Kit size</label><input id="pmKit" type="number" min="0" step="0.01" value="${esc(p.kit_size)}"></div>
+            <div class="col-2"><label>Unit cost</label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
+            <div class="col-2"><label>Active</label>
+              <select id="pmActive">
+                <option value="true"  ${p.active ? 'selected' : ''}>Yes</option>
+                <option value="false" ${!p.active ? 'selected' : ''}>No</option>
+              </select>
+            </div>
+            <div class="col-12"><label>Notes</label><input id="pmNotes" value="${esc(p.notes || '')}"></div>
+          </div>
+          <div class="prod-modal-actions">
+            ${existing ? `<button class="btn ghost danger" id="pmDelete">Delete</button>` : ''}
+            <span style="flex:1"></span>
+            <button class="btn ghost" id="pmCancel">Cancel</button>
+            <button class="btn primary" id="pmSave">${existing ? 'Save' : 'Add product'}</button>
+          </div>
+          <div class="prod-error" id="pmError"></div>
+        </div>
+      </div>
+    `;
+    $('pmCancel').addEventListener('click', () => { root.innerHTML = ''; });
+    $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg') root.innerHTML = ''; });
+    $('pmSave').addEventListener('click', async () => {
+      const errEl = $('pmError'); errEl.textContent = '';
+      const payload = {
+        name: $('pmName').value.trim(),
+        material_type: $('pmType').value,
+        supplier: $('pmSupplier').value.trim() || null,
+        color: $('pmColor').value.trim() || null,
+        spread_rate: Number($('pmSpread').value),
+        kit_size: Number($('pmKit').value || 1),
+        unit_cost: $('pmCost').value === '' ? null : Number($('pmCost').value),
+        active: $('pmActive').value === 'true',
+        notes: $('pmNotes').value || null,
+      };
+      if (!payload.name) { errEl.textContent = 'Name is required.'; return; }
+      if (!(payload.spread_rate > 0)) { errEl.textContent = 'Spread rate must be > 0.'; return; }
+      if (!(payload.kit_size > 0)) { errEl.textContent = 'Kit size must be > 0.'; return; }
+      const op = existing
+        ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
+        : supabase.from('pec_prod_products').insert(payload);
+      const { error } = await op;
+      if (error) { errEl.textContent = error.message; return; }
+      root.innerHTML = '';
+      await loadCatalog();
+      renderCatalog($('prodViewRoot'));
+    });
+    if (existing) {
+      $('pmDelete').addEventListener('click', async () => {
+        if (!confirm(`Delete product "${existing.name}"? This cannot be undone. Material lines that reference it will keep their snapshot data.`)) return;
+        const { error } = await supabase.from('pec_prod_products').delete().eq('id', existing.id);
+        if (error) { $('pmError').textContent = error.message; return; }
+        root.innerHTML = '';
+        await loadCatalog();
+        renderCatalog($('prodViewRoot'));
+      });
+    }
+  }
+
+  function renderSystemTypes(host) {
+    const slotsBySys = recipeSlotsBySystemType();
+    host.innerHTML = `
+      <div class="prod-toolbar">
+        <button class="btn primary" id="prodAddSystemBtn">+ Add system type</button>
+      </div>
+      ${state.systemTypes.map((s) => `
+        <div class="prod-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div>
+              <h3 style="margin:0">${esc(s.name)} ${s.active ? '' : '<span class="muted small">(inactive)</span>'}</h3>
+              <div class="muted small">${esc(s.description || '')}</div>
+              <div class="muted small">Requires flake: ${s.requires_flake_color ? 'yes' : 'no'} · requires basecoat: ${s.requires_basecoat_color ? 'yes' : 'no'}</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button class="btn ghost small" data-edit-system="${esc(s.id)}">Edit</button>
+            </div>
+          </div>
+          <table class="prod-table" style="margin-top:10px">
+            <thead><tr><th>#</th><th>Material</th><th>Default product</th><th>Required</th><th></th></tr></thead>
+            <tbody>
+              ${(slotsBySys[s.id] || []).map((slot) => {
+                const prod = state.products.find((p) => p.id === slot.default_product_id);
+                return `<tr>
+                  <td>${esc(slot.order_index)}</td>
+                  <td>${esc(slot.material_type)}</td>
+                  <td>${prod ? esc(prod.name) : '<span class="muted">user picks</span>'}</td>
+                  <td>${slot.required ? 'Yes' : 'No'}</td>
+                  <td><button class="btn ghost small" data-edit-slot="${esc(slot.id)}">Edit</button>
+                      <button class="btn ghost small danger" data-del-slot="${esc(slot.id)}">Delete</button></td>
+                </tr>`;
+              }).join('') || `<tr><td colspan="5" class="muted" style="text-align:center;padding:14px">No recipe slots yet.</td></tr>`}
+            </tbody>
+          </table>
+          <div style="margin-top:8px"><button class="btn small" data-add-slot="${esc(s.id)}">+ Add slot</button></div>
+        </div>
+      `).join('')}
+    `;
+    $('prodAddSystemBtn').addEventListener('click', () => openSystemTypeModal(null));
+    host.querySelectorAll('[data-edit-system]').forEach((b) => b.addEventListener('click', () => openSystemTypeModal(b.dataset.editSystem)));
+    host.querySelectorAll('[data-add-slot]').forEach((b) => b.addEventListener('click', () => openRecipeSlotModal(b.dataset.addSlot, null)));
+    host.querySelectorAll('[data-edit-slot]').forEach((b) => b.addEventListener('click', () => {
+      const slot = state.recipeSlots.find((x) => x.id === b.dataset.editSlot);
+      if (slot) openRecipeSlotModal(slot.system_type_id, slot.id);
+    }));
+    host.querySelectorAll('[data-del-slot]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Delete this recipe slot?')) return;
+      const { error } = await supabase.from('pec_prod_recipe_slots').delete().eq('id', b.dataset.delSlot);
+      if (error) return alert(error.message);
+      await loadCatalog(); renderCatalog($('prodViewRoot'));
+    }));
+  }
+
+  function openSystemTypeModal(systemId) {
+    const existing = systemId ? state.systemTypes.find((s) => s.id === systemId) : null;
+    const s = existing ? { ...existing } : { name: '', description: '', requires_flake_color: true, requires_basecoat_color: true, active: true, notes: '' };
+    const root = $('prodModalRoot');
+    root.innerHTML = `
+      <div class="prod-modal-bg" id="prodSModalBg">
+        <div class="prod-modal">
+          <h2>${existing ? 'Edit' : 'New'} system type</h2>
+          <div class="prod-row">
+            <div class="col-6"><label>Name</label><input id="smName" value="${esc(s.name)}"></div>
+            <div class="col-3"><label>Requires flake color</label>
+              <select id="smReqFlake"><option value="true" ${s.requires_flake_color ? 'selected' : ''}>Yes</option><option value="false" ${!s.requires_flake_color ? 'selected' : ''}>No</option></select>
+            </div>
+            <div class="col-3"><label>Requires basecoat color</label>
+              <select id="smReqBase"><option value="true" ${s.requires_basecoat_color ? 'selected' : ''}>Yes</option><option value="false" ${!s.requires_basecoat_color ? 'selected' : ''}>No</option></select>
+            </div>
+            <div class="col-12"><label>Description</label><input id="smDesc" value="${esc(s.description || '')}"></div>
+            <div class="col-3"><label>Active</label>
+              <select id="smActive"><option value="true" ${s.active ? 'selected' : ''}>Yes</option><option value="false" ${!s.active ? 'selected' : ''}>No</option></select>
+            </div>
+            <div class="col-9"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
+          </div>
+          <div class="prod-modal-actions">
+            ${existing ? `<button class="btn ghost danger" id="smDelete">Delete</button>` : ''}
+            <span style="flex:1"></span>
+            <button class="btn ghost" id="smCancel">Cancel</button>
+            <button class="btn primary" id="smSave">${existing ? 'Save' : 'Add system type'}</button>
+          </div>
+          <div class="prod-error" id="smError"></div>
+        </div>
+      </div>
+    `;
+    $('smCancel').addEventListener('click', () => { root.innerHTML = ''; });
+    $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg') root.innerHTML = ''; });
+    $('smSave').addEventListener('click', async () => {
+      const payload = {
+        name: $('smName').value.trim(),
+        description: $('smDesc').value || null,
+        requires_flake_color: $('smReqFlake').value === 'true',
+        requires_basecoat_color: $('smReqBase').value === 'true',
+        active: $('smActive').value === 'true',
+        notes: $('smNotes').value || null,
+      };
+      if (!payload.name) { $('smError').textContent = 'Name is required.'; return; }
+      const op = existing
+        ? supabase.from('pec_prod_system_types').update(payload).eq('id', existing.id)
+        : supabase.from('pec_prod_system_types').insert(payload);
+      const { error } = await op;
+      if (error) { $('smError').textContent = error.message; return; }
+      root.innerHTML = '';
+      await loadCatalog(); renderCatalog($('prodViewRoot'));
+    });
+    if (existing) {
+      $('smDelete').addEventListener('click', async () => {
+        if (!confirm(`Delete system type "${existing.name}"? Recipe slots for it will be deleted too.`)) return;
+        const { error } = await supabase.from('pec_prod_system_types').delete().eq('id', existing.id);
+        if (error) { $('smError').textContent = error.message; return; }
+        root.innerHTML = ''; await loadCatalog(); renderCatalog($('prodViewRoot'));
+      });
+    }
+  }
+
+  function openRecipeSlotModal(systemId, slotId) {
+    const existing = slotId ? state.recipeSlots.find((s) => s.id === slotId) : null;
+    const slot = existing ? { ...existing } : { system_type_id: systemId, order_index: nextSlotIndex(systemId), material_type: 'Basecoat', default_product_id: null, required: true, notes: '' };
+    const root = $('prodModalRoot');
+    const productOpts = (mt) => state.products.filter((p) => p.material_type === mt).map((p) => `<option value="${esc(p.id)}" ${p.id === slot.default_product_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+    root.innerHTML = `
+      <div class="prod-modal-bg" id="prodRSlotBg">
+        <div class="prod-modal" style="width:min(640px,94vw)">
+          <h2>${existing ? 'Edit' : 'New'} recipe slot</h2>
+          <div class="prod-row">
+            <div class="col-3"><label>Order #</label><input id="rsOrder" type="number" min="0" step="1" value="${esc(slot.order_index)}"></div>
+            <div class="col-3"><label>Material type</label>
+              <select id="rsType">
+                ${['Basecoat','Flake','Topcoat','Stain','Sealer','Tint Pack','Extra']
+                  .map((t) => `<option value="${t}" ${t === slot.material_type ? 'selected' : ''}>${t}</option>`).join('')}
+              </select>
+            </div>
+            <div class="col-3"><label>Required</label>
+              <select id="rsReq"><option value="true" ${slot.required ? 'selected' : ''}>Yes</option><option value="false" ${!slot.required ? 'selected' : ''}>No</option></select>
+            </div>
+            <div class="col-12"><label>Default product</label>
+              <select id="rsProduct">
+                <option value="">User picks at job time</option>
+                ${productOpts(slot.material_type)}
+              </select>
+            </div>
+            <div class="col-12"><label>Notes</label><input id="rsNotes" value="${esc(slot.notes || '')}"></div>
+          </div>
+          <div class="prod-modal-actions">
+            <span style="flex:1"></span>
+            <button class="btn ghost" id="rsCancel">Cancel</button>
+            <button class="btn primary" id="rsSave">${existing ? 'Save' : 'Add slot'}</button>
+          </div>
+          <div class="prod-error" id="rsError"></div>
+        </div>
+      </div>
+    `;
+    $('rsType').addEventListener('change', () => {
+      $('rsProduct').innerHTML = `<option value="">User picks at job time</option>` + productOpts($('rsType').value);
+    });
+    $('rsCancel').addEventListener('click', () => { root.innerHTML = ''; });
+    $('prodRSlotBg').addEventListener('click', (e) => { if (e.target.id === 'prodRSlotBg') root.innerHTML = ''; });
+    $('rsSave').addEventListener('click', async () => {
+      const payload = {
+        system_type_id: systemId,
+        order_index: Number($('rsOrder').value || 0),
+        material_type: $('rsType').value,
+        default_product_id: $('rsProduct').value || null,
+        required: $('rsReq').value === 'true',
+        notes: $('rsNotes').value || null,
+      };
+      const op = existing
+        ? supabase.from('pec_prod_recipe_slots').update(payload).eq('id', existing.id)
+        : supabase.from('pec_prod_recipe_slots').insert(payload);
+      const { error } = await op;
+      if (error) { $('rsError').textContent = error.message; return; }
+      root.innerHTML = ''; await loadCatalog(); renderCatalog($('prodViewRoot'));
+    });
+  }
+
+  function nextSlotIndex(systemId) {
+    const sibs = state.recipeSlots.filter((s) => s.system_type_id === systemId);
+    if (!sibs.length) return 1;
+    return Math.max(...sibs.map((s) => s.order_index)) + 1;
+  }
+
+  function renderColorPairings(host) {
+    const flakes = productsByMaterialType('Flake', { includeInactive: true });
+    const basecoats = productsByMaterialType('Basecoat', { includeInactive: true });
+    const productById = indexById(state.products);
+    host.innerHTML = `
+      <div class="prod-toolbar">
+        <button class="btn primary" id="prodAddPairBtn">+ Add pairing</button>
+      </div>
+      <table class="prod-table">
+        <thead><tr><th>Flake</th><th>Default basecoat</th><th>Default?</th><th>Notes</th><th></th></tr></thead>
+        <tbody>
+          ${state.colorPairings.map((cp) => {
+            const f = productById[cp.flake_product_id];
+            const b = productById[cp.basecoat_product_id];
+            return `<tr>
+              <td>${esc(f ? f.name : 'unknown flake')}</td>
+              <td>${esc(b ? b.name : 'unknown basecoat')}</td>
+              <td>${cp.is_default ? 'Yes' : 'No'}</td>
+              <td>${esc(cp.notes || '')}</td>
+              <td>
+                ${!cp.is_default ? `<button class="btn ghost small" data-make-default="${esc(cp.id)}">Make default</button>` : ''}
+                <button class="btn ghost small danger" data-del-pair="${esc(cp.id)}">Delete</button>
+              </td>
+            </tr>`;
+          }).join('') || `<tr><td colspan="5" class="muted" style="text-align:center;padding:14px">No pairings yet.</td></tr>`}
+        </tbody>
+      </table>
+    `;
+    $('prodAddPairBtn').addEventListener('click', () => openPairingModal(flakes, basecoats));
+    host.querySelectorAll('[data-make-default]').forEach((b) => b.addEventListener('click', async () => {
+      const cp = state.colorPairings.find((x) => x.id === b.dataset.makeDefault);
+      if (!cp) return;
+      // Clear any other defaults for this flake first.
+      await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', cp.flake_product_id);
+      const { error } = await supabase.from('pec_prod_color_pairings').update({ is_default: true }).eq('id', cp.id);
+      if (error) return alert(error.message);
+      await loadCatalog(); renderCatalog($('prodViewRoot'));
+    }));
+    host.querySelectorAll('[data-del-pair]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Delete this pairing?')) return;
+      const { error } = await supabase.from('pec_prod_color_pairings').delete().eq('id', b.dataset.delPair);
+      if (error) return alert(error.message);
+      await loadCatalog(); renderCatalog($('prodViewRoot'));
+    }));
+  }
+
+  function openPairingModal(flakes, basecoats) {
+    const root = $('prodModalRoot');
+    root.innerHTML = `
+      <div class="prod-modal-bg" id="prodCpBg">
+        <div class="prod-modal" style="width:min(640px,94vw)">
+          <h2>New color pairing</h2>
+          <div class="prod-row">
+            <div class="col-6"><label>Flake</label>
+              <select id="cpFlake"><option value="">Pick a flake…</option>${flakes.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('')}</select>
+            </div>
+            <div class="col-6"><label>Basecoat</label>
+              <select id="cpBase"><option value="">Pick a basecoat…</option>${basecoats.map((b) => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select>
+            </div>
+            <div class="col-6"><label>Make default for this flake</label>
+              <select id="cpDefault"><option value="true">Yes</option><option value="false" selected>No</option></select>
+            </div>
+            <div class="col-12"><label>Notes</label><input id="cpNotes"></div>
+          </div>
+          <div class="prod-modal-actions">
+            <span style="flex:1"></span>
+            <button class="btn ghost" id="cpCancel">Cancel</button>
+            <button class="btn primary" id="cpSave">Add pairing</button>
+          </div>
+          <div class="prod-error" id="cpError"></div>
+        </div>
+      </div>
+    `;
+    $('cpCancel').addEventListener('click', () => { root.innerHTML = ''; });
+    $('prodCpBg').addEventListener('click', (e) => { if (e.target.id === 'prodCpBg') root.innerHTML = ''; });
+    $('cpSave').addEventListener('click', async () => {
+      const errEl = $('cpError'); errEl.textContent = '';
+      const flake = $('cpFlake').value, base = $('cpBase').value;
+      if (!flake || !base) { errEl.textContent = 'Pick both a flake and a basecoat.'; return; }
+      const isDefault = $('cpDefault').value === 'true';
+      if (isDefault) {
+        await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', flake);
+      }
+      const { error } = await supabase.from('pec_prod_color_pairings').insert({
+        flake_product_id: flake, basecoat_product_id: base, is_default: isDefault, notes: $('cpNotes').value || null,
+      });
+      if (error) { errEl.textContent = error.message; return; }
+      root.innerHTML = ''; await loadCatalog(); renderCatalog($('prodViewRoot'));
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Boot when the Production tab activates
+  // --------------------------------------------------------------------------
+  function applyAuthGate() {
+    const session = window.pecState && window.pecState.session;
+    const adminUser = window.pecState && window.pecState.adminUser;
+    if (!session) {
+      $('prodSigninPanel').style.display = '';
+      $('prodPendingPanel').style.display = 'none';
+      $('prodApp').style.display = 'none';
+      return false;
+    }
+    if (!adminUser) {
+      $('prodSigninPanel').style.display = 'none';
+      $('prodPendingPanel').style.display = '';
+      $('prodApp').style.display = 'none';
+      return false;
+    }
+    $('prodSigninPanel').style.display = 'none';
+    $('prodPendingPanel').style.display = 'none';
+    $('prodApp').style.display = '';
+    const isAdminOrPm = ['admin', 'pm'].includes(adminUser.role);
+    document.querySelectorAll('#tab-production .pec-role-admin').forEach((el) => {
+      el.style.display = isAdminOrPm ? '' : 'none';
+    });
+    return true;
+  }
+
+  let booted = false;
+  async function boot() {
+    if (booted) return;
+    if (!applyAuthGate()) {
+      // Re-poll briefly while pec auth resolves.
+      setTimeout(boot, 400);
+      return;
+    }
+    booted = true;
+    $('prodSubnav').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-prod-view]');
+      if (btn) switchView(btn.dataset.prodView);
+    });
+    await Promise.all([loadCatalog(), loadJobs()]);
+    render();
+  }
+
+  const tabEl = $('tab-production');
+  if (tabEl) {
+    if (tabEl.classList.contains('active')) boot();
+    const obs = new MutationObserver(() => { if (tabEl.classList.contains('active')) boot(); });
+    obs.observe(tabEl, { attributes: true, attributeFilter: ['class'] });
+  }
+})();
 </script>
 
 </body>
