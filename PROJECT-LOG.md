@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 17:05] dashboard: relabel monthly revenue cards as Booked Sales
+By: Claude Code
+Changed: Top three Command-tab cards now read "PEC Booked Sales - Monthly", "FTP Booked Sales - Monthly", and "Combined Booked Sales - Monthly". Underlying data source (Booked Jobs Sheet) and IDs (#pecRev, #ftpRev, #combRev) are unchanged, so all the existing JS that populates them still works.
+Why: The numbers are sales booked, not collected revenue. Dylan asked for the labels to match what they actually represent.
+Files touched: index.html, PROJECT-LOG.md
+Next steps: None.
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh the dashboard to see the new labels.
+
+---
+
 ## [2026-04-28 16:55] CRM consolidation: fold Ordering + Material Catalog into the CRM tab
 By: Claude Code
 Changed: Renamed the "Prescott CRM" left-sidebar tab to just "CRM" (LABELS, TITLES, button text). Removed the standalone "Production" top-level tab. Moved its two main views into the existing CRM subnav as "Ordering" (the production jobs list + new-job form + job detail modal) and "Material Catalog" (admin/pm gated; products, system types with recipe-slot editor, color pairings). The CRM module's switchView now hands off to window.prodSwitchView when the user clicks Ordering or Material Catalog: hides #pecViewRoot, shows #prodViewRoot, and the production module renders into it. Auth and tab-activation gates that the production module owned are gone (the parent CRM tab handles both). CSS that was scoped to #tab-production was rescoped to .prod-host, applied to #prodViewRoot and #prodModalRoot (both now siblings inside the CRM shell). Internal navigation between the production sub-views (Jobs list ↔ New Job form ↔ Job Detail) is unchanged; only the entry point changed.
