@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-04-28 16:10] PM Module 1: runbook + module v1 ready for end-to-end test
+By: Claude Code
+Changed: Added docs/pm-module-ordering-runbook.md covering one-time setup checklist (migration, Apps Script deploy, Netlify env vars, test sheet), day-to-day operation (new job, quantity edits, recalculate, mark complete, catalog admin), how to switch between test and production sheets, how to run the calculator tests, the rollback plan, what's intentionally not in v1, and known constraints (proxy URL rotation, 30s LockService timeout, unique proposal_number index). Module 1 v1 is now code-complete and waiting on the deploy handoff to Dylan.
+Why: The kill criterion is two weeks to replace Dylan's manual ordering workflow. Code is done; the remaining gap is operational (Apps Script paste, Netlify env vars, test-sheet copy). The runbook gives Dylan a single page to follow without needing to ask Claude Code questions.
+Files touched: docs/pm-module-ordering-runbook.md
+Next steps: Dylan executes the deploy handoff. After the first real PEC job is synced and visible in production, schedule a 2-week check-in to evaluate the kill criterion before any work begins on Module 2 (Job Costing).
+Handoff to Cowork: None
+Handoff to Dylan: Follow docs/pm-module-ordering-runbook.md "One-time setup checklist." Stop after step 5 (first end-to-end test) and report back with whether the test-sheet sync looked right. Do not point the function at the real production sheet until that passes. Once it does, set CONTEXT-style env to production and run the same flow against one upcoming real job.
+
+---
+
 ## [2026-04-28 15:55] PM Module 1: Production tab UI wired into index.html
 By: Claude Code
 Changed: Added a new Production tab to the dashboard (button at line 1130, section at line 1499, sidebar nav auto-populates via the existing build() in the rd-shell script). The sub-app reuses window.pecSupabase and window.pecState from the Prescott CRM module so a single sign-in works for both. Three views: Jobs (sortable table by install date with a status filter and click-to-detail), New Job form (proposal #, customer, address, install date, crew, plus a multi-area repeater where each area picks System Type then Flake then optional basecoat override and sqft, with a live calculator preview that re-runs on every input change), and System Catalog admin tab gated to admin/pm roles via the existing .pec-role-admin class (Products, System Types with recipe-slot drill-down editor, and Color Pairings with set-as-default toggle). Job Detail modal shows status pills, areas, fully editable material lines, and four buttons: Recalculate from catalog (with overwrite warning), Save line edits (marks the job dirty), Sync to Order Sheet (calls the Netlify Function with the user's Supabase JWT and surfaces success/failure), and Mark Complete (with confirmation; the modal then refreshes from the DB and shows the final status). Calculator imported as a real ESM module from /production/calculator.js (no inlining), so the same code paths are unit-tested and used at runtime. Self-contained styles scoped under #tab-production using existing CSS variables (--accent, --border, --s1/2/3, --text, --muted), no new tokens.
