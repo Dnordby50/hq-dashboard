@@ -1075,6 +1075,286 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
   #rdSearch { order: 3; width: 100%; }
 }
 </style>
+
+<!-- ============================================================
+     CRM light-theme overrides. Repaints all .pec-* / .prod-* surfaces
+     against the redesign palette (--rd-*) so the CRM matches the rest
+     of the dashboard frontend. Skipped for body.pec-portal-mode, which
+     already has its own light overrides at line ~568.
+     ============================================================ -->
+<style id="crm-light-theme">
+body:not(.pec-portal-mode) #tab-prescott-crm { color: var(--rd-ink); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-wrap { max-width: 1400px; padding: 0; }
+
+/* 2-column shell: left rail + content */
+body:not(.pec-portal-mode) .pec-app-grid {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 22px;
+  align-items: start;
+}
+body:not(.pec-portal-mode) .pec-side {
+  background: var(--rd-shell);
+  border-radius: 16px;
+  padding: 14px 10px;
+  box-shadow: var(--rd-shadow-sm, 0 1px 2px rgba(15,20,32,.06));
+  position: sticky;
+  top: 18px;
+  align-self: start;
+}
+body:not(.pec-portal-mode) .pec-main { min-width: 0; }
+
+/* Vertical subnav */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav button {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: none;
+  background: none;
+  border-radius: 10px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rd-ink-2);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav button:hover {
+  background: var(--rd-soft);
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav button.active {
+  background: var(--rd-accent-soft);
+  color: var(--rd-accent);
+  border: none;
+}
+
+/* Sign-in / pending gates */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-signin {
+  background: var(--rd-shell);
+  border-radius: 16px;
+  box-shadow: var(--rd-shadow-sm, 0 1px 2px rgba(15,20,32,.06));
+  margin-top: 24px;
+  padding: 40px 24px;
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-signin h2 { color: var(--rd-ink); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-signin p { color: var(--rd-muted); }
+
+/* Cards, stats, toolbar, tables */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-card,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-stat {
+  background: var(--rd-card);
+  border: 1px solid var(--rd-line);
+  border-radius: 14px;
+  box-shadow: var(--rd-shadow-sm, 0 1px 2px rgba(15,20,32,.04));
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-stat-label { color: var(--rd-muted); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-stat-val { color: var(--rd-ink); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-empty { color: var(--rd-muted); }
+
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-table th {
+  color: var(--rd-muted);
+  border-bottom: 1px solid var(--rd-line);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-table td {
+  border-bottom: 1px solid var(--rd-line-2);
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-table tr:hover td {
+  background: var(--rd-softer);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-table tr.nohover:hover td { background: transparent; }
+
+/* Buttons */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn {
+  background: var(--rd-shell);
+  color: var(--rd-ink);
+  border: 1px solid var(--rd-line);
+  border-radius: 10px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn:hover {
+  border-color: var(--rd-accent);
+  color: var(--rd-ink);
+  background: var(--rd-soft);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.primary {
+  background: var(--rd-accent);
+  border-color: var(--rd-accent);
+  color: var(--rd-accent-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.primary:hover {
+  background: var(--rd-accent);
+  color: var(--rd-accent-ink);
+  opacity: .92;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.ghost { background: transparent; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.danger {
+  color: var(--rd-danger);
+  border-color: rgba(239,68,68,.3);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.danger:hover {
+  background: rgba(239,68,68,.08);
+  border-color: var(--rd-danger);
+}
+
+/* Form fields */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field label { color: var(--rd-muted); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field input,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field textarea,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field select,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-toolbar input,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-toolbar select {
+  background: #fff;
+  color: var(--rd-ink);
+  border: 1px solid var(--rd-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: .85rem;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field input:focus,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field textarea:focus,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-field select:focus,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-toolbar input:focus,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-toolbar select:focus {
+  outline: none;
+  border-color: var(--rd-accent);
+  box-shadow: 0 0 0 3px var(--rd-accent-ring);
+}
+
+/* Modals */
+body:not(.pec-portal-mode) .pec-modal-bg { background: rgba(15,20,32,.45); }
+body:not(.pec-portal-mode) .pec-modal {
+  background: var(--rd-shell);
+  border: 1px solid var(--rd-line);
+  border-radius: 14px;
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) .pec-modal h3 { color: var(--rd-ink); }
+body:not(.pec-portal-mode) .pec-modal .pec-field input,
+body:not(.pec-portal-mode) .pec-modal .pec-field textarea,
+body:not(.pec-portal-mode) .pec-modal .pec-field select {
+  background: #fff;
+  color: var(--rd-ink);
+  border: 1px solid var(--rd-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+body:not(.pec-portal-mode) .pec-modal .pec-field label { color: var(--rd-muted); }
+body:not(.pec-portal-mode) .pec-modal .pec-btn {
+  background: var(--rd-shell); color: var(--rd-ink); border: 1px solid var(--rd-line);
+}
+body:not(.pec-portal-mode) .pec-modal .pec-btn.primary {
+  background: var(--rd-accent); border-color: var(--rd-accent); color: var(--rd-accent-ink);
+}
+body:not(.pec-portal-mode) .pec-modal .pec-btn.ghost { background: transparent; }
+
+/* Timeline + gallery + swatches */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-timeline-stage {
+  background: var(--rd-soft);
+  border: 1px solid var(--rd-line);
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-timeline-dot { background: var(--rd-line); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-timeline-stage.in_progress .pec-timeline-dot {
+  background: var(--rd-warn); box-shadow: 0 0 8px rgba(245,158,11,.5);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-timeline-stage.completed .pec-timeline-dot {
+  background: var(--rd-success);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-gallery-item {
+  background: var(--rd-soft); border: 1px solid var(--rd-line);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-swatch {
+  background: var(--rd-soft); border: 1px solid var(--rd-line); color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-swatch.selected {
+  border-color: var(--rd-accent); box-shadow: 0 0 0 1px var(--rd-accent) inset;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-swatch-name { color: var(--rd-ink); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-swatch-code { color: var(--rd-muted); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-swatch-chip { border-color: var(--rd-line); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-signature-wrap {
+  background: var(--rd-soft); border: 1px solid var(--rd-line);
+}
+
+/* Pagination + stars */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-pagination { color: var(--rd-muted); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-stars { color: var(--rd-line); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-stars .star.on { color: var(--rd-warn); }
+
+/* Badges, retuned for light surfaces */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.confirmed,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.booked,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.epoxy {
+  background: #e9efff; color: #1e3fb3;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.scheduled,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.contacted,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.office {
+  background: #e0f4fb; color: #036681;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.in_progress,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.pm,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.ordered {
+  background: #fff3d6; color: #8a5b00;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.completed,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.paid,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.delivered,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.paint {
+  background: #e6f7ee; color: #0c6e3d;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.submitted,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.unscheduled {
+  background: #eef0f3; color: #4b5563;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.admin {
+  background: #fde7e7; color: #b91c1c;
+}
+
+/* Production module surfaces */
+body:not(.pec-portal-mode) #tab-prescott-crm .prod-area-card {
+  background: var(--rd-softer);
+  border: 1px dashed var(--rd-line);
+  color: var(--rd-ink);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-ok { color: var(--rd-success); }
+body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-danger); }
+
+/* Mobile fallback: collapse subnav back to a horizontal strip */
+@media (max-width: 900px) {
+  body:not(.pec-portal-mode) .pec-app-grid {
+    grid-template-columns: 1fr;
+  }
+  body:not(.pec-portal-mode) .pec-side {
+    position: static;
+    padding: 8px;
+  }
+  body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+  }
+  body:not(.pec-portal-mode) #tab-prescott-crm .pec-subnav button {
+    white-space: nowrap;
+  }
+}
+</style>
 </head>
 <body>
 
@@ -1475,21 +1755,25 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
     </div>
 
     <!-- Main CRM shell (hidden until authed + approved) -->
-    <div id="pecApp" style="display:none">
-      <nav class="pec-subnav" id="pecSubnav">
-        <button data-pec-view="dashboard" class="active">Dashboard</button>
-        <button data-pec-view="customers">Customers</button>
-        <button data-pec-view="jobs">Jobs</button>
-        <button data-pec-view="ordering">Ordering</button>
-        <button data-pec-view="catalog" class="pec-role-admin">Material Catalog</button>
-        <button data-pec-view="colors">Colors</button>
-        <button data-pec-view="referrals">Referrals</button>
-        <button data-pec-view="reviews">Reviews</button>
-        <button data-pec-view="team" class="pec-role-admin">Team</button>
-        <button data-pec-view="settings" class="pec-role-admin">Settings</button>
-      </nav>
-      <div id="pecViewRoot"></div>
-      <div id="prodViewRoot" style="display:none"></div>
+    <div id="pecApp" class="pec-app-grid" style="display:none">
+      <aside class="pec-side">
+        <nav class="pec-subnav" id="pecSubnav">
+          <button data-pec-view="dashboard" class="active">Dashboard</button>
+          <button data-pec-view="customers">Customers</button>
+          <button data-pec-view="jobs">Jobs</button>
+          <button data-pec-view="ordering">Ordering</button>
+          <button data-pec-view="catalog" class="pec-role-admin">Material Catalog</button>
+          <button data-pec-view="colors">Colors</button>
+          <button data-pec-view="referrals">Referrals</button>
+          <button data-pec-view="reviews">Reviews</button>
+          <button data-pec-view="team" class="pec-role-admin">Team</button>
+          <button data-pec-view="settings" class="pec-role-admin">Settings</button>
+        </nav>
+      </aside>
+      <main class="pec-main">
+        <div id="pecViewRoot"></div>
+        <div id="prodViewRoot" style="display:none"></div>
+      </main>
     </div>
 
     <div id="pecModalRoot"></div>
@@ -4732,21 +5016,33 @@ async function renderJobs() {
     const el = $('pecJob' + k);
     el.addEventListener('change', () => { state.jobsFilter[k.toLowerCase()] = el.value; state.jobsPage = 1; renderJobs(); });
   });
-  $('pecJobNew').addEventListener('click', () => openNewJobForm());
+  $('pecJobNew').addEventListener('click', () => { console.log('[crm] pecJobNew click'); openNewJobForm(); });
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
     tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
   );
 }
 
 async function openNewJobForm() {
-  const { data: customers } = await supabase.from('customers').select('id,name,company').is('archived_at', null).order('name');
+  let customers = [];
+  let loadErrMsg = '';
+  try {
+    const { data, error } = await supabase
+      .from('customers').select('id,name,company')
+      .is('archived_at', null).order('name');
+    if (error) throw error;
+    customers = data || [];
+  } catch (e) {
+    console.error('[pec] openNewJobForm load:', e);
+    loadErrMsg = e?.message || String(e);
+  }
   openModal(`
     <h3>New Job</h3>
+    ${loadErrMsg ? `<div class="prod-msg-err" style="margin-bottom:10px">Could not load customers: ${esc(loadErrMsg)}</div>` : ''}
     <form id="pecJobForm">
       <div class="pec-field"><label>Customer</label>
         <select name="customer_id" required>
           <option value="">Select…</option>
-          ${(customers||[]).map(c => `<option value="${c.id}">${esc(c.name)} (${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'})</option>`).join('')}
+          ${customers.map(c => `<option value="${c.id}">${esc(c.name)} (${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'})</option>`).join('')}
         </select>
       </div>
       <div class="pec-row-2">
@@ -4765,6 +5061,7 @@ async function openNewJobForm() {
         <div class="pec-field"><label>Warranty</label><input name="warranty"></div>
       </div>
       <div class="pec-field"><label>Scope</label><textarea name="scope" rows="2"></textarea></div>
+      <div id="pecJobFormError" class="prod-msg-err" style="min-height:18px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
         <button type="submit" class="pec-btn primary">Create</button>
@@ -4773,23 +5070,31 @@ async function openNewJobForm() {
   `, { onMount: modal => {
     modal.querySelector('#pecJobForm').addEventListener('submit', async e => {
       e.preventDefault();
-      const fd = Object.fromEntries(new FormData(e.target));
-      for (const k of ['price','monthly_payment']) fd[k] = fd[k] ? parseFloat(fd[k]) : null;
-      const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
-      if (error) { alert(error.message); return; }
-      const stages = (job.type === 'epoxy'
-        ? ['Proposal Accepted','Scheduled','Prep Day','Coating Day','Cure Period','Final Walkthrough','Complete']
-        : ['Proposal Accepted','Scheduled','Prep','Prime','Paint','Final Walkthrough','Complete']
-      ).map((name,i) => ({
-        job_id: job.id, stage_name: name,
-        status: i === 0 ? 'completed' : 'pending',
-        completed_at: i === 0 ? new Date().toISOString() : null,
-        sort_order: i,
-      }));
-      await supabase.from('timeline_stages').insert(stages);
-      closeModal();
-      state.openJobId = job.id;
-      renderJobDetail(job.id);
+      const errEl = modal.querySelector('#pecJobFormError');
+      errEl.textContent = '';
+      try {
+        const fd = Object.fromEntries(new FormData(e.target));
+        for (const k of ['price','monthly_payment']) fd[k] = fd[k] ? parseFloat(fd[k]) : null;
+        const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
+        if (error) throw error;
+        const stages = (job.type === 'epoxy'
+          ? ['Proposal Accepted','Scheduled','Prep Day','Coating Day','Cure Period','Final Walkthrough','Complete']
+          : ['Proposal Accepted','Scheduled','Prep','Prime','Paint','Final Walkthrough','Complete']
+        ).map((name,i) => ({
+          job_id: job.id, stage_name: name,
+          status: i === 0 ? 'completed' : 'pending',
+          completed_at: i === 0 ? new Date().toISOString() : null,
+          sort_order: i,
+        }));
+        const stagesRes = await supabase.from('timeline_stages').insert(stages);
+        if (stagesRes.error) throw stagesRes.error;
+        closeModal();
+        state.openJobId = job.id;
+        renderJobDetail(job.id);
+      } catch (err) {
+        console.error('[pec] create job:', err);
+        errEl.textContent = 'Create job failed: ' + (err?.message || err);
+      }
     });
   }});
 }
@@ -5879,7 +6184,7 @@ function _mergeAcrossAreas(areaPlans) {
       </div>
     `;
     $('prodJobStatus').addEventListener('change', (e) => { state.jobFilter.status = e.target.value; render(); });
-    $('prodNewJobBtn').addEventListener('click', () => { state.newJob = blankNewJob(); setProdView('new-job'); });
+    $('prodNewJobBtn').addEventListener('click', () => { console.log('[prod] prodNewJobBtn click'); state.newJob = blankNewJob(); setProdView('new-job'); });
     r.querySelectorAll('tr[data-job-id]').forEach((tr) => {
       tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
     });
@@ -6040,55 +6345,62 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   async function saveNewJob() {
-    const errEl = $('njError'); errEl.textContent = '';
-    const j = state.newJob;
-    if (!j.proposal_number.trim()) return errEl.textContent = 'Proposal # is required.';
-    if (!j.customer_name.trim())   return errEl.textContent = 'Customer name is required.';
-    if (!j.areas.length)           return errEl.textContent = 'At least one area is required.';
-    for (const [i, a] of j.areas.entries()) {
-      if (!a.system_type_id) return errEl.textContent = `Area ${i+1}: pick a system type.`;
-      if (!(Number(a.sqft) > 0)) return errEl.textContent = `Area ${i+1}: sqft must be greater than 0.`;
-    }
-    let plan;
-    try { plan = computeMaterialPlan(buildCalcInput(j.areas)); } catch (err) { return errEl.textContent = err.message; }
+    console.log('[prod] saveNewJob click');
+    const errEl = $('njError'); if (errEl) errEl.textContent = '';
+    const setErr = (msg) => { if (errEl) errEl.textContent = msg; else alert(msg); };
+    try {
+      const j = state.newJob;
+      if (!j.proposal_number.trim()) return setErr('Proposal # is required.');
+      if (!j.customer_name.trim())   return setErr('Customer name is required.');
+      if (!j.areas.length)           return setErr('At least one area is required.');
+      for (const [i, a] of j.areas.entries()) {
+        if (!a.system_type_id) return setErr(`Area ${i+1}: pick a system type.`);
+        if (!(Number(a.sqft) > 0)) return setErr(`Area ${i+1}: sqft must be greater than 0.`);
+      }
+      let plan;
+      try { plan = computeMaterialPlan(buildCalcInput(j.areas)); } catch (err) { return setErr(err.message); }
 
-    const status = j.install_date ? 'scheduled' : 'unscheduled';
-    const insJob = await supabase.from('pec_prod_jobs').insert({
-      proposal_number: j.proposal_number.trim(),
-      customer_name: j.customer_name.trim(),
-      address: j.address || null,
-      install_date: j.install_date || null,
-      crew: j.crew || null,
-      notes: j.notes || null,
-      status, sync_status: 'dirty',
-    }).select().single();
-    if (insJob.error) return errEl.textContent = insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message;
-    const jobId = insJob.data.id;
+      const status = j.install_date ? 'scheduled' : 'unscheduled';
+      const insJob = await supabase.from('pec_prod_jobs').insert({
+        proposal_number: j.proposal_number.trim(),
+        customer_name: j.customer_name.trim(),
+        address: j.address || null,
+        install_date: j.install_date || null,
+        crew: j.crew || null,
+        notes: j.notes || null,
+        status, sync_status: 'dirty',
+      }).select().single();
+      if (insJob.error) return setErr(insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message);
+      const jobId = insJob.data.id;
 
-    const areaPayload = j.areas.map((a, idx) => ({
-      job_id: jobId, name: a.name || `Area ${idx+1}`, sqft: Number(a.sqft),
-      system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
-      notes: a.notes || null, order_index: idx,
-    }));
-    const insAreas = await supabase.from('pec_prod_areas').insert(areaPayload).select();
-    if (insAreas.error) return errEl.textContent = insAreas.error.message;
-
-    if (plan.lines.length) {
-      const linePayload = plan.lines.map(l => ({
-        job_id: jobId, area_id: null,
-        material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
-        supplier: l.supplier, color: l.color, spread_rate: l.spread_rate, kit_size: l.kit_size,
-        qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
-        use_backstock: false, ordered: false, delivered: false,
-        unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+      const areaPayload = j.areas.map((a, idx) => ({
+        job_id: jobId, name: a.name || `Area ${idx+1}`, sqft: Number(a.sqft),
+        system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
+        notes: a.notes || null, order_index: idx,
       }));
-      const insLines = await supabase.from('pec_prod_material_lines').insert(linePayload);
-      if (insLines.error) return errEl.textContent = insLines.error.message;
-    }
+      const insAreas = await supabase.from('pec_prod_areas').insert(areaPayload).select();
+      if (insAreas.error) return setErr(insAreas.error.message);
 
-    state.newJob = blankNewJob();
-    await loadJobs();
-    setProdView('jobs');
+      if (plan.lines.length) {
+        const linePayload = plan.lines.map(l => ({
+          job_id: jobId, area_id: null,
+          material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
+          supplier: l.supplier, color: l.color, spread_rate: l.spread_rate, kit_size: l.kit_size,
+          qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
+          use_backstock: false, ordered: false, delivered: false,
+          unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+        }));
+        const insLines = await supabase.from('pec_prod_material_lines').insert(linePayload);
+        if (insLines.error) return setErr(insLines.error.message);
+      }
+
+      state.newJob = blankNewJob();
+      await loadJobs();
+      setProdView('jobs');
+    } catch (err) {
+      console.error('[prod] saveNewJob:', err);
+      setErr('Save failed: ' + (err?.message || err));
+    }
   }
 
   // -------------------- Job Detail modal --------------------
