@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-03 14:25] crm: ran 2026-05-03 link columns migration in Supabase, hit index name collision on idx_pec_prod_jobs_proposal
+By: Cowork
+Changed: Executed supabase/migrations/2026-05-03_pec_prod_link_columns.sql in the production Supabase SQL editor (project zdfpzmmrgotynrwkeakd) exactly as committed. Statement returned "Success. No rows returned." Both new columns landed: customer_id uuid (FK to public.customers, on delete set null) and proposal_id uuid, both nullable. The partial index on customer_id (idx_pec_prod_jobs_customer) was created. The partial index on proposal_id was NOT created because an index named idx_pec_prod_jobs_proposal already existed from the 2026-04-28_pm_ordering.sql migration, where it indexes proposal_number (not proposal_id). Postgres treated `create index if not exists idx_pec_prod_jobs_proposal ...` as a no-op against the same name. No data was modified or dropped. No further SQL was run after the verification revealed the collision.
+Why: Forward-compat schema change so production jobs can later link to a CRM customer + accepted proposal. Stopped at the verification step rather than fixing the index name collision unilaterally because the task instructions said: if anything errors out, do not delete data or drop columns, stop and write a Handoff to Dylan entry. The pre-existing idx_pec_prod_jobs_proposal looks redundant (there's also a UNIQUE INDEX pec_prod_jobs_proposal_number_key on proposal_number that already serves lookup), but that is Dylan's call, not mine.
+Files touched: PROJECT-LOG.md
+Verification output:
+  Q1 columns:
+    customer_id | uuid | YES
+    proposal_id | uuid | YES
+  Q2 indexes filtered to the two expected names:
+    idx_pec_prod_jobs_customer | CREATE INDEX idx_pec_prod_jobs_customer ON public.pec_prod_jobs USING btree (customer_id) WHERE (customer_id IS NOT NULL)
+    idx_pec_prod_jobs_proposal | CREATE INDEX idx_pec_prod_jobs_proposal ON public.pec_prod_jobs USING btree (proposal_number)        <-- pre-existing, NOT the new partial index
+  Q2b all indexes on pec_prod_jobs:
+    idx_pec_prod_jobs_customer (new, partial, on customer_id)
+    idx_pec_prod_jobs_install_date
+    idx_pec_prod_jobs_proposal (pre-existing, non-partial, on proposal_number)
+    idx_pec_prod_jobs_status
+    pec_prod_jobs_pkey (pk on id)
+    pec_prod_jobs_proposal_number_key (unique on proposal_number)
+  Q3 row sanity check:
+    total = 0, with_customer = 0, with_proposal = 0   (table is empty, nothing was disturbed)
+Next steps: Dylan picks one of two fixes and runs the one-liner. The columns themselves are good as-is; only the proposal_id partial index is missing. After the fix is applied, push the merged commit (this entry plus whatever Claude Code does to the migration file) to origin.
+Handoff to Cowork: None
+Handoff to Dylan: 1) Decide between two fixes for the missing partial index on proposal_id. Option A (lowest risk, recommended): rename the partial index in the migration file and re-run. Edit supabase/migrations/2026-05-03_pec_prod_link_columns.sql to change idx_pec_prod_jobs_proposal to idx_pec_prod_jobs_proposal_link (or similar), then in the Supabase SQL editor run: create index if not exists idx_pec_prod_jobs_proposal_link on public.pec_prod_jobs(proposal_id) where proposal_id is not null; Option B: drop the pre-existing redundant index (the unique index pec_prod_jobs_proposal_number_key already covers proposal_number lookups), then re-run the original migration. SQL: drop index if exists public.idx_pec_prod_jobs_proposal; create index if not exists idx_pec_prod_jobs_proposal on public.pec_prod_jobs(proposal_id) where proposal_id is not null; This frees the name but you lose nothing performance-wise. 2) After applying the chosen fix, verify with: select indexname, indexdef from pg_indexes where schemaname = 'public' and tablename = 'pec_prod_jobs' and indexname like '%proposal%'; You should see one entry referencing proposal_id with the partial WHERE clause. 3) Push to origin/main when ready (this commit is local-only).
+
+---
+
 ## [2026-05-03 14:10] crm: forward-compat link columns on pec_prod_jobs + unification plan doc + push to origin
 By: Claude Code
 Changed: Two small additions plus a push. (1) supabase/migrations/2026-05-03_pec_prod_link_columns.sql adds two nullable columns to pec_prod_jobs: customer_id uuid (FK to customers, on delete set null) and proposal_id uuid (no FK yet, placeholder until proposals table exists). Both get partial indexes (where ... is not null) so they stay cheap until rows actually carry links. Migration is idempotent (if not exists). (2) docs/pm-module-unification-plan.md captures the target architecture for the next session: proposals table sits between customers and the two job tables (public.jobs and pec_prod_jobs), proposal-accepted webhook stages a pec_prod_job pre-linked to customer + proposal, and a new customer-detail view in the CRM tab lists everything for a customer. Standalone Ordering use is preserved (both new FKs nullable). (3) git push origin main published the 4 unpushed commits: aa7fbb8 (left-rail subnav, light theme, hardened New Job buttons), cb05c03 (seed_pec_systems.sql), 5ddae58 (Cowork's full catalog migration, already executed in Supabase), and the new 2026-05-03 migration commit.
