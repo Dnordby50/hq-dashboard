@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-03 14:35] crm: resolved index collision (Option A), partial index now lives on idx_pec_prod_jobs_proposal_link
+By: Cowork
+Changed: Two things, in this order. (1) Edited supabase/migrations/2026-05-03_pec_prod_link_columns.sql to rename the new partial index from idx_pec_prod_jobs_proposal to idx_pec_prod_jobs_proposal_link, and added a 4-line comment above it pointing readers at the PROJECT-LOG entries that explain the rename. The rest of the file is unchanged. (2) Ran the renamed create index in the Supabase SQL editor (project zdfpzmmrgotynrwkeakd): create index if not exists idx_pec_prod_jobs_proposal_link on public.pec_prod_jobs(proposal_id) where proposal_id is not null. Result: "Success. No rows returned."
+Why: Dylan picked Option A from the prior entry. Renames the new partial index instead of dropping the pre-existing non-partial one on proposal_number. Lowest-risk path: pre-existing index on proposal_number (and the UNIQUE index pec_prod_jobs_proposal_number_key) are untouched, and the migration file in repo now matches what is actually in the database.
+Files touched: supabase/migrations/2026-05-03_pec_prod_link_columns.sql, PROJECT-LOG.md
+Verification output:
+  select indexname, indexdef from pg_indexes
+  where schemaname = 'public' and tablename = 'pec_prod_jobs' and indexname like '%proposal%' order by indexname;
+    idx_pec_prod_jobs_proposal      | CREATE INDEX idx_pec_prod_jobs_proposal ON public.pec_prod_jobs USING btree (proposal_number)             (pre-existing, untouched)
+    idx_pec_prod_jobs_proposal_link | CREATE INDEX idx_pec_prod_jobs_proposal_link ON public.pec_prod_jobs USING btree (proposal_id) WHERE (proposal_id IS NOT NULL)   (new, partial, intended)
+    pec_prod_jobs_proposal_number_key | CREATE UNIQUE INDEX pec_prod_jobs_proposal_number_key ON public.pec_prod_jobs USING btree (proposal_number)   (pre-existing UNIQUE, untouched)
+Next steps: When Phase 3 of docs/pm-module-unification-plan.md lands and proposal_id starts being populated, the partial index on idx_pec_prod_jobs_proposal_link will start carrying weight automatically. No further DB work needed for this thread.
+Handoff to Cowork: None
+Handoff to Dylan: None. Pushing this commit + the prior 14:25 entry's commit to origin/main now.
+
+---
+
 ## [2026-05-03 14:25] crm: ran 2026-05-03 link columns migration in Supabase, hit index name collision on idx_pec_prod_jobs_proposal
 By: Cowork
 Changed: Executed supabase/migrations/2026-05-03_pec_prod_link_columns.sql in the production Supabase SQL editor (project zdfpzmmrgotynrwkeakd) exactly as committed. Statement returned "Success. No rows returned." Both new columns landed: customer_id uuid (FK to public.customers, on delete set null) and proposal_id uuid, both nullable. The partial index on customer_id (idx_pec_prod_jobs_customer) was created. The partial index on proposal_id was NOT created because an index named idx_pec_prod_jobs_proposal already existed from the 2026-04-28_pm_ordering.sql migration, where it indexes proposal_number (not proposal_id). Postgres treated `create index if not exists idx_pec_prod_jobs_proposal ...` as a no-op against the same name. No data was modified or dropped. No further SQL was run after the verification revealed the collision.

@@ -23,5 +23,9 @@ alter table public.pec_prod_jobs
 create index if not exists idx_pec_prod_jobs_customer
   on public.pec_prod_jobs(customer_id) where customer_id is not null;
 
-create index if not exists idx_pec_prod_jobs_proposal
+-- Note: index renamed to idx_pec_prod_jobs_proposal_link because the original
+-- 2026-04-28_pm_ordering.sql migration already created idx_pec_prod_jobs_proposal
+-- on the proposal_number column. See PROJECT-LOG.md entries dated 2026-05-03
+-- 14:25 (collision discovered) and the follow-up correction entry.
+create index if not exists idx_pec_prod_jobs_proposal_link
   on public.pec_prod_jobs(proposal_id) where proposal_id is not null;
