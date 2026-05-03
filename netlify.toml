@@ -2,5 +2,12 @@
   functions = "netlify/functions"
   publish = "."
 
+[build.environment]
+  # Tell Netlify's secret scanner that this Google Sheets API key value is intentional.
+  # The key is restricted in Google Cloud Console to (a) Google Sheets API only and
+  # (b) HTTP referrer hq-prescott.netlify.app/*, so exposing it in the client bundle is safe by design.
+  # If the key is rotated again, update both index.html line 1845 and this value.
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY"
+
 [functions]
   node_bundler = "esbuild"
