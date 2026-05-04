@@ -30,6 +30,8 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
 7. Keep secrets out of code. If a credential is needed, put a placeholder in the code and add a Handoff entry asking Dylan to set the env variable.
 
+   Exception: domain-restricted client-side API keys (Google Sheets, Maps, etc.) are by design committed to client code, since the architecture requires the browser to call Google directly. To make this safe: (a) the key MUST be restricted in Google Cloud Console to specific HTTP referrers (the live Netlify domain plus any custom domain) AND restricted to the minimum APIs it needs, and (b) the key value MUST be added to SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES in netlify.toml so the secret scanner allows the deploy. If you rotate one of these keys, update both index.html and netlify.toml in the same commit.
+
 ## Key Resource IDs
 
 - Booked Jobs Sheet: 1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4
