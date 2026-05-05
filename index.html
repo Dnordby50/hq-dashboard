@@ -4936,37 +4936,154 @@ async function renderCustomers() {
   });
 }
 
-function openCustomerForm(c) {
+async function openCustomerForm(c) {
   const isNew = !c;
+  // Load lead sources + a deduped list of every tag in use for autocomplete.
+  const [lsRes, tagRes] = await Promise.all([
+    supabase.from('pec_lead_sources').select('*').eq('active', true).order('name'),
+    supabase.from('customers').select('tags'),
+  ]);
+  const leadSources = lsRes.data || [];
+  const tagSet = new Set();
+  (tagRes.data || []).forEach(r => (r.tags || []).forEach(t => tagSet.add(t)));
+  const knownTags = Array.from(tagSet).sort();
+
+  // Decide initial type. If company_name is set, treat as Business; else Individual.
+  const initialType = c?.company_name ? 'business' : 'individual';
+  const initialTags = (c?.tags || []).slice();
+
   openModal(`
     <h3>${isNew ? 'New Customer' : 'Edit Customer'}</h3>
-    <form id="pecCustForm">
-      <div class="pec-field"><label>Name</label><input name="name" required value="${esc(c?.name || '')}"></div>
+    <form id="pecCustForm" autocomplete="off">
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Type</label>
+          <select name="cust_type" id="custType">
+            <option value="individual" ${initialType==='individual'?'selected':''}>Individual</option>
+            <option value="business"   ${initialType==='business'?'selected':''}>Business</option>
+          </select>
+        </div>
+        <div class="pec-field"><label>Brand</label>
+          <select name="company">
+            <option value="prescott-epoxy" ${c?.company !== 'finishing-touch' ? 'selected' : ''}>Prescott Epoxy</option>
+            <option value="finishing-touch" ${c?.company === 'finishing-touch' ? 'selected' : ''}>Finishing Touch</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="custIndivFields" style="${initialType==='individual'?'':'display:none'}">
+        <div class="pec-row-2">
+          <div class="pec-field"><label>First name</label><input name="first_name" value="${esc(c?.first_name || '')}"></div>
+          <div class="pec-field"><label>Last name</label><input name="last_name" value="${esc(c?.last_name || '')}"></div>
+        </div>
+      </div>
+
+      <div id="custBizFields" style="${initialType==='business'?'':'display:none'}">
+        <div class="pec-field"><label>Company name</label><input name="company_name" value="${esc(c?.company_name || '')}"></div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Primary contact, first name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input name="first_name_biz" value="${esc(c?.first_name || '')}"></div>
+          <div class="pec-field"><label>Primary contact, last name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input name="last_name_biz" value="${esc(c?.last_name || '')}"></div>
+        </div>
+      </div>
+
       <div class="pec-row-2">
         <div class="pec-field"><label>Email</label><input name="email" type="email" value="${esc(c?.email || '')}"></div>
         <div class="pec-field"><label>Phone</label><input name="phone" value="${esc(c?.phone || '')}"></div>
       </div>
-      <div class="pec-field"><label>Company</label>
-        <select name="company">
-          <option value="prescott-epoxy" ${c?.company !== 'finishing-touch' ? 'selected' : ''}>Prescott Epoxy</option>
-          <option value="finishing-touch" ${c?.company === 'finishing-touch' ? 'selected' : ''}>Finishing Touch</option>
+
+      <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
+        <select name="lead_source" required>
+          <option value="">Pick a source…</option>
+          ${leadSources.map(s => `<option value="${esc(s.name)}" ${s.name === c?.lead_source ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
         </select>
       </div>
+
+      <div class="pec-field"><label>Contact tags <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">comma-separated; press Enter to add. Examples: dylan's customer, do not call</span></label>
+        <div id="custTagsHost" style="display:flex;flex-wrap:wrap;gap:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--s2);min-height:38px"></div>
+        <input id="custTagInput" list="custTagsKnown" placeholder="Type a tag and press Enter…" style="margin-top:6px">
+        <datalist id="custTagsKnown">${knownTags.map(t => `<option value="${esc(t)}">`).join('')}</datalist>
+      </div>
+
+      <h4 style="margin:14px 0 6px;font-size:.85rem">Billing address</h4>
+      <div class="pec-field"><label>Address line 1</label><input name="billing_address_line1" value="${esc(c?.billing_address_line1 || '')}"></div>
+      <div class="pec-field"><label>Address line 2 <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input name="billing_address_line2" value="${esc(c?.billing_address_line2 || '')}"></div>
+      <div class="pec-row-3">
+        <div class="pec-field"><label>City</label><input name="billing_city" value="${esc(c?.billing_city || '')}"></div>
+        <div class="pec-field"><label>State</label><input name="billing_state" value="${esc(c?.billing_state || '')}" maxlength="2" placeholder="AZ"></div>
+        <div class="pec-field"><label>ZIP</label><input name="billing_zip" value="${esc(c?.billing_zip || '')}"></div>
+      </div>
+
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
         <button type="submit" class="pec-btn primary">${isNew ? 'Create' : 'Save'}</button>
       </div>
     </form>
   `, { onMount: modal => {
+    const tags = initialTags.slice();
+    const tagsHost = modal.querySelector('#custTagsHost');
+    const tagInput = modal.querySelector('#custTagInput');
+    const renderTags = () => {
+      tagsHost.innerHTML = tags.length === 0
+        ? '<span style="color:var(--muted);font-size:.7rem;align-self:center">No tags yet.</span>'
+        : tags.map((t, i) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;background:var(--rd-soft, var(--s3));font-size:.72rem">${esc(t)}<button type="button" data-rm-tag="${i}" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;line-height:1;padding:0">×</button></span>`).join('');
+      tagsHost.querySelectorAll('[data-rm-tag]').forEach(b => b.addEventListener('click', () => { tags.splice(Number(b.dataset.rmTag), 1); renderTags(); }));
+    };
+    renderTags();
+    const addTag = () => {
+      const v = tagInput.value.trim();
+      if (!v) return;
+      if (!tags.includes(v)) tags.push(v);
+      tagInput.value = '';
+      renderTags();
+    };
+    tagInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(); }
+      if (e.key === 'Backspace' && !tagInput.value && tags.length) { tags.pop(); renderTags(); }
+    });
+    tagInput.addEventListener('blur', () => { if (tagInput.value.trim()) addTag(); });
+
+    // Toggle individual vs business field groups
+    const typeSel = modal.querySelector('#custType');
+    typeSel.addEventListener('change', () => {
+      const isBiz = typeSel.value === 'business';
+      modal.querySelector('#custIndivFields').style.display = isBiz ? 'none' : '';
+      modal.querySelector('#custBizFields').style.display   = isBiz ? '' : 'none';
+    });
+
     modal.querySelector('#pecCustForm').addEventListener('submit', async e => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const body = Object.fromEntries(fd);
+      const isBiz = fd.get('cust_type') === 'business';
+      const first_name = (isBiz ? fd.get('first_name_biz') : fd.get('first_name')) || null;
+      const last_name  = (isBiz ? fd.get('last_name_biz')  : fd.get('last_name'))  || null;
+      const company_name = isBiz ? (fd.get('company_name') || null) : null;
+      // Validation
+      if (isBiz && !company_name) { alert('Company name is required for businesses.'); return; }
+      if (!isBiz && !first_name && !last_name) { alert('First or last name is required.'); return; }
+      if (!fd.get('lead_source')) { alert('Lead source is required.'); return; }
+
+      // Denormalized display name keeps customer portal renderers happy
+      const displayName = company_name || [first_name, last_name].filter(Boolean).join(' ') || 'Customer';
+
+      const payload = {
+        name: displayName,
+        first_name, last_name, company_name,
+        email: fd.get('email') || null,
+        phone: fd.get('phone') || null,
+        company: fd.get('company'),
+        lead_source: fd.get('lead_source'),
+        tags,
+        billing_address_line1: fd.get('billing_address_line1') || null,
+        billing_address_line2: fd.get('billing_address_line2') || null,
+        billing_city: fd.get('billing_city') || null,
+        billing_state: (fd.get('billing_state') || '').toUpperCase() || null,
+        billing_zip: fd.get('billing_zip') || null,
+      };
+
       let error;
       if (isNew) {
-        ({ error } = await supabase.from('customers').insert({ ...body, token: randomToken() }));
+        ({ error } = await supabase.from('customers').insert({ ...payload, token: randomToken() }));
       } else {
-        ({ error } = await supabase.from('customers').update(body).eq('id', c.id));
+        ({ error } = await supabase.from('customers').update(payload).eq('id', c.id));
       }
       if (error) { alert(error.message); return; }
       closeModal();
@@ -5043,7 +5160,7 @@ async function openNewJobForm() {
   let loadErrMsg = '';
   try {
     const { data, error } = await supabase
-      .from('customers').select('id,name,company')
+      .from('customers').select('id,name,company,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
       .is('archived_at', null).order('name');
     if (error) throw error;
     customers = data || [];
@@ -5051,12 +5168,17 @@ async function openNewJobForm() {
     console.error('[pec] openNewJobForm load:', e);
     loadErrMsg = e?.message || String(e);
   }
+  const fmtBilling = (c) => {
+    if (!c) return '';
+    const parts = [c.billing_address_line1, c.billing_address_line2, [c.billing_city, c.billing_state, c.billing_zip].filter(Boolean).join(' ')].filter(Boolean);
+    return parts.join(', ');
+  };
   openModal(`
     <h3>New Job</h3>
     ${loadErrMsg ? `<div class="prod-msg-err" style="margin-bottom:10px">Could not load customers: ${esc(loadErrMsg)}</div>` : ''}
     <form id="pecJobForm">
       <div class="pec-field"><label>Customer</label>
-        <select name="customer_id" required>
+        <select name="customer_id" id="pecJobCustomer" required>
           <option value="">Select…</option>
           ${customers.map(c => `<option value="${c.id}">${esc(c.name)} (${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'})</option>`).join('')}
         </select>
@@ -5065,9 +5187,20 @@ async function openNewJobForm() {
         <div class="pec-field"><label>Type</label>
           <select name="type"><option value="epoxy">Epoxy</option><option value="paint">Paint</option></select>
         </div>
-        <div class="pec-field"><label>Package</label><input name="package"></div>
+        <div class="pec-field"><label>Job class</label>
+          <select name="job_class">
+            <option value="residential">Residential</option>
+            <option value="commercial">Commercial</option>
+          </select>
+        </div>
       </div>
-      <div class="pec-field"><label>Address</label><input name="address"></div>
+      <div class="pec-field"><label>Package</label><input name="package"></div>
+      <div class="pec-field" style="margin-bottom:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="pecJobSameAsBilling" checked> Job address same as customer's billing address
+        </label>
+      </div>
+      <div class="pec-field"><label>Job address</label><input name="address" id="pecJobAddress" placeholder="Will pre-fill from customer's billing once you pick one"></div>
       <div class="pec-row-2">
         <div class="pec-field"><label>Price</label><input name="price" type="number" step="0.01"></div>
         <div class="pec-field"><label>Monthly Payment</label><input name="monthly_payment" type="number" step="0.01"></div>
@@ -5084,11 +5217,29 @@ async function openNewJobForm() {
       </div>
     </form>
   `, { onMount: modal => {
+    const custSel = modal.querySelector('#pecJobCustomer');
+    const sameAsBilling = modal.querySelector('#pecJobSameAsBilling');
+    const addrInput = modal.querySelector('#pecJobAddress');
+    const syncAddress = () => {
+      const c = customers.find(x => x.id === custSel.value);
+      if (sameAsBilling.checked) {
+        addrInput.value = fmtBilling(c);
+        addrInput.disabled = true;
+      } else {
+        addrInput.disabled = false;
+      }
+    };
+    custSel.addEventListener('change', syncAddress);
+    sameAsBilling.addEventListener('change', syncAddress);
+    syncAddress();
+
     modal.querySelector('#pecJobForm').addEventListener('submit', async e => {
       e.preventDefault();
       const errEl = modal.querySelector('#pecJobFormError');
       errEl.textContent = '';
       try {
+        // Re-enable the address input so FormData picks it up
+        addrInput.disabled = false;
         const fd = Object.fromEntries(new FormData(e.target));
         for (const k of ['price','monthly_payment']) fd[k] = fd[k] ? parseFloat(fd[k]) : null;
         const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
@@ -5558,14 +5709,35 @@ function openTeamForm(t) {
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
-  const [{ data: settingsRows }, crewsRes] = await Promise.all([
+  const [{ data: settingsRows }, crewsRes, leadRes] = await Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
+    supabase.from('pec_lead_sources').select('*').order('name'),
   ]);
   const map = Object.fromEntries((settingsRows||[]).map(s => [s.key, s.value]));
   state.crews = crewsRes.data || [];
+  state.leadSources = leadRes.data || [];
 
   root.innerHTML = `
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h3 style="margin:0">Lead Sources</h3>
+        <button class="pec-btn primary sm" id="pecLeadAddBtn">+ Add source</button>
+      </div>
+      <table class="pec-table">
+        <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+        <tbody>
+          ${state.leadSources.map(s => `
+            <tr data-lead-id="${esc(s.id)}">
+              <td><strong>${esc(s.name)}</strong></td>
+              <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+              <td>${esc(s.notes || '')}</td>
+              <td><button class="pec-btn sm ghost" data-edit-lead="${esc(s.id)}">Edit</button></td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No lead sources yet.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
     <div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <h3 style="margin:0">Crews</h3>
@@ -5606,6 +5778,57 @@ async function renderSettings() {
   });
   $('pecCrewAddBtn').addEventListener('click', () => openCrewModal(null));
   root.querySelectorAll('[data-edit-crew]').forEach(b => b.addEventListener('click', () => openCrewModal(b.dataset.editCrew)));
+  $('pecLeadAddBtn').addEventListener('click', () => openLeadSourceModal(null));
+  root.querySelectorAll('[data-edit-lead]').forEach(b => b.addEventListener('click', () => openLeadSourceModal(b.dataset.editLead)));
+}
+
+function openLeadSourceModal(leadId) {
+  const existing = leadId ? state.leadSources.find(s => s.id === leadId) : null;
+  const s = existing || { name: '', active: true, notes: '' };
+  openModal(`
+    <h3>${existing ? 'Edit' : 'New'} lead source</h3>
+    <div class="pec-field"><label>Name</label><input id="leadName" value="${esc(s.name)}" placeholder="e.g. Google, Yard Sign"></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Active</label>
+        <select id="leadActive"><option value="true" ${s.active?'selected':''}>Yes</option><option value="false" ${!s.active?'selected':''}>No</option></select>
+      </div>
+      <div class="pec-field"><label>Notes</label><input id="leadNotes" value="${esc(s.notes || '')}"></div>
+    </div>
+    <div class="pec-modal-actions">
+      ${existing ? '<button class="pec-btn danger" id="leadDelete">Delete</button>' : ''}
+      <span style="flex:1"></span>
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn primary" id="leadSave">${existing ? 'Save' : 'Add source'}</button>
+    </div>
+    <div class="prod-msg-err" id="leadError"></div>
+  `, {
+    onMount(modal) {
+      modal.querySelector('#leadSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#leadError'); errEl.textContent = '';
+        const payload = {
+          name: modal.querySelector('#leadName').value.trim(),
+          active: modal.querySelector('#leadActive').value === 'true',
+          notes: modal.querySelector('#leadNotes').value || null,
+        };
+        if (!payload.name) return errEl.textContent = 'Name is required.';
+        const op = existing
+          ? supabase.from('pec_lead_sources').update(payload).eq('id', existing.id)
+          : supabase.from('pec_lead_sources').insert(payload);
+        const { error } = await op;
+        if (error) return errEl.textContent = error.message;
+        closeModal();
+        renderSettings();
+      });
+      const delBtn = modal.querySelector('#leadDelete');
+      if (delBtn) delBtn.addEventListener('click', async () => {
+        if (!confirm(`Delete lead source "${existing.name}"? Customers tagged with this source will keep the text value.`)) return;
+        const { error } = await supabase.from('pec_lead_sources').delete().eq('id', existing.id);
+        if (error) return modal.querySelector('#leadError').textContent = error.message;
+        closeModal();
+        renderSettings();
+      });
+    },
+  });
 }
 
 function openCrewModal(crewId) {
@@ -6804,7 +7027,7 @@ function _mergeAcrossAreas(areaPlans) {
   window.prodState = state;
 
   function blankNewJob() {
-    return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', areas: [blankArea()] };
+    return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', job_class: 'residential', areas: [blankArea()] };
   }
   function blankArea() {
     return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', notes: '' };
@@ -7070,7 +7293,15 @@ function _mergeAcrossAreas(areaPlans) {
         <div class="pec-row-3">
           <div class="pec-field"><label>Install date</label><input type="date" id="njDate" value="${esc(j.install_date)}"></div>
           <div class="pec-field"><label>Crew</label><input id="njCrew" value="${esc(j.crew)}"></div>
-          <div class="pec-field"><label>Notes</label><input id="njNotes" value="${esc(j.notes)}"></div>
+          <div class="pec-field"><label>Job class</label>
+            <select id="njJobClass">
+              <option value="residential" ${j.job_class==='residential'?'selected':''}>Residential</option>
+              <option value="commercial"  ${j.job_class==='commercial'?'selected':''}>Commercial</option>
+            </select>
+          </div>
+        </div>
+        <div class="pec-row-3">
+          <div class="pec-field" style="grid-column:1 / -1"><label>Notes</label><input id="njNotes" value="${esc(j.notes)}"></div>
         </div>
       </div>
       <div class="pec-card">
@@ -7174,7 +7405,7 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   function bindNewJobInputs() {
-    const map = { njProposal: 'proposal_number', njCustomer: 'customer_name', njAddress: 'address', njDate: 'install_date', njCrew: 'crew', njNotes: 'notes' };
+    const map = { njProposal: 'proposal_number', njCustomer: 'customer_name', njAddress: 'address', njDate: 'install_date', njCrew: 'crew', njNotes: 'notes', njJobClass: 'job_class' };
     Object.entries(map).forEach(([id, prop]) => {
       const el = $(id); if (el) el.addEventListener('input', () => { state.newJob[prop] = el.value; });
     });
@@ -7247,6 +7478,7 @@ function _mergeAcrossAreas(areaPlans) {
         install_date: j.install_date || null,
         crew: j.crew || null,
         notes: j.notes || null,
+        job_class: j.job_class || null,
         status, sync_status: 'dirty',
       }).select().single();
       if (insJob.error) return setErr(insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message);
