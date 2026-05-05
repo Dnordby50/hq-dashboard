@@ -4899,6 +4899,7 @@ async function renderCustomers() {
     <div class="pec-toolbar">
       <input id="pecCustSearch" placeholder="Search name, email, phone…" value="${esc(state.customersSearch)}">
       <button class="pec-btn primary" id="pecCustNew">+ New Customer</button>
+      <button class="pec-btn" id="pecCustImport">Import from CSV</button>
     </div>
     <div class="pec-card">
       <table class="pec-table">
@@ -4918,6 +4919,7 @@ async function renderCustomers() {
   `;
   $('pecCustSearch').addEventListener('input', debounce(e => { state.customersSearch = e.target.value.trim(); state.customersPage = 1; renderCustomers(); }, 250));
   $('pecCustNew').addEventListener('click', () => openCustomerForm());
+  $('pecCustImport').addEventListener('click', () => openCustomerImportModal());
   root.querySelectorAll('tr[data-cust-id]').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.closest('[data-copy-token]')) return;
@@ -5088,6 +5090,213 @@ async function openCustomerForm(c) {
       if (error) { alert(error.message); return; }
       closeModal();
       renderCustomers();
+    });
+  }});
+}
+
+// ============================================================
+// Customer CSV import (DripJobs export shape)
+// ============================================================
+//
+// Parses the DripJobs contacts CSV and inserts new customers in batches.
+// Dedupes against existing rows by email (case-insensitive). Rows without an
+// email are treated as new since we have no other unique identifier. The
+// brand defaults to 'prescott-epoxy' for the whole file (DripJobs is PEC's
+// proposal tool today; FTP imports get a separate path later).
+
+function parseCsv(text) {
+  // State machine: handles quoted fields with embedded commas, newlines, and
+  // doubled-quote escapes. Returns rows of trimmed strings.
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += ch;
+      }
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === '\r') { /* swallow */ }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += ch;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows
+    .map(r => r.map(c => (c || '').trim()))
+    .filter(r => r.some(c => c !== ''));
+}
+
+async function openCustomerImportModal() {
+  const state0 = { rows: [], headerMap: null, existingEmails: null, parsed: null };
+  openModal(`
+    <div style="max-width:760px">
+      <h3>Import customers from CSV</h3>
+      <p style="color:var(--muted);font-size:.78rem;margin:6px 0 14px">
+        Drop in the DripJobs contacts export. Expected columns: First Name, Last Name, Email, Company Name,
+        Phone, Address, Address 2, City, State, Zip Code, Lead Source. Duplicates by email are skipped (existing
+        customers keep their current data). Brand is set to Prescott Epoxy for the whole file.
+      </p>
+      <div class="pec-field">
+        <label>CSV file</label>
+        <input type="file" id="pecImportFile" accept=".csv,text/csv">
+      </div>
+      <div id="pecImportStatus" style="font-size:.78rem;color:var(--muted);margin-top:8px;min-height:20px"></div>
+      <div id="pecImportPreview" style="margin-top:10px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="pecImportRun" disabled>Import</button>
+      </div>
+      <div class="prod-msg-err" id="pecImportError"></div>
+      <div class="prod-msg-ok"  id="pecImportOk"></div>
+    </div>
+  `, { onMount: modal => {
+    const fileInput = modal.querySelector('#pecImportFile');
+    const statusEl  = modal.querySelector('#pecImportStatus');
+    const previewEl = modal.querySelector('#pecImportPreview');
+    const runBtn    = modal.querySelector('#pecImportRun');
+    const errEl     = modal.querySelector('#pecImportError');
+    const okEl      = modal.querySelector('#pecImportOk');
+
+    fileInput.addEventListener('change', async () => {
+      errEl.textContent = ''; okEl.textContent = '';
+      const file = fileInput.files[0]; if (!file) return;
+      statusEl.textContent = `Parsing ${file.name}…`;
+      let text;
+      try { text = await file.text(); }
+      catch (e) { errEl.textContent = 'Could not read file: ' + e.message; return; }
+      const rows = parseCsv(text);
+      if (rows.length < 2) { errEl.textContent = 'File looks empty or missing a header row.'; return; }
+
+      const header = rows[0].map(h => h.toLowerCase());
+      const colIdx = (...names) => {
+        for (const n of names) {
+          const i = header.indexOf(n.toLowerCase());
+          if (i >= 0) return i;
+        }
+        return -1;
+      };
+      const idx = {
+        first:    colIdx('First Name', 'first_name', 'first'),
+        last:     colIdx('Last Name', 'last_name', 'last'),
+        email:    colIdx('Email', 'email_address'),
+        company:  colIdx('Company Name', 'company', 'business'),
+        phone:    colIdx('Phone', 'phone_number'),
+        addr1:    colIdx('Address', 'address_line_1', 'street'),
+        addr2:    colIdx('Address 2', 'address_line_2'),
+        city:     colIdx('City'),
+        state:    colIdx('State'),
+        zip:      colIdx('Zip Code', 'zip', 'postal_code'),
+        source:   colIdx('Lead Source', 'source'),
+      };
+      // Build customer payloads from data rows.
+      const records = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const get = (k) => idx[k] >= 0 ? (r[idx[k]] || '') : '';
+        const first   = get('first');
+        const last    = get('last');
+        const company = get('company');
+        const email   = get('email').toLowerCase();
+        if (!first && !last && !company) continue; // empty / blank row
+        const display = company || [first, last].filter(Boolean).join(' ') || 'Customer';
+        records.push({
+          name: display,
+          first_name: first || null,
+          last_name:  last  || null,
+          company_name: company || null,
+          email: email || null,
+          phone: get('phone') || null,
+          billing_address_line1: get('addr1') || null,
+          billing_address_line2: get('addr2') || null,
+          billing_city:  get('city')  || null,
+          billing_state: (get('state') || '').toUpperCase() || null,
+          billing_zip:   get('zip')   || null,
+          lead_source:   get('source') || null,
+          company:       'prescott-epoxy', // brand
+          tags:          [],
+        });
+      }
+
+      // Dedupe against existing rows by email (lowercased).
+      statusEl.textContent = `Parsed ${records.length} rows. Checking for duplicates…`;
+      const { data: existing, error: existErr } = await supabase
+        .from('customers')
+        .select('email')
+        .not('email', 'is', null);
+      if (existErr) { errEl.textContent = 'Could not read existing customers: ' + existErr.message; return; }
+      const existingEmails = new Set((existing || []).map(c => (c.email || '').toLowerCase()).filter(Boolean));
+      let toInsert = [];
+      let dupes = 0;
+      let noEmail = 0;
+      for (const r of records) {
+        if (!r.email) { noEmail++; toInsert.push(r); continue; }
+        if (existingEmails.has(r.email)) { dupes++; continue; }
+        // also dedupe within the file
+        if (toInsert.some(x => x.email === r.email)) { dupes++; continue; }
+        toInsert.push(r);
+      }
+
+      state0.parsed = { records, toInsert, dupes, noEmail };
+
+      const sample = toInsert.slice(0, 5);
+      previewEl.innerHTML = `
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">
+          ${records.length} rows in file · <strong>${toInsert.length} new</strong> · ${dupes} duplicate email${dupes===1?'':'s'} (will skip)${noEmail ? ` · ${noEmail} without email (treated as new)` : ''}
+        </div>
+        ${toInsert.length === 0 ? '<div class="pec-empty">Nothing to import. Either the file is empty or every row matches an existing customer.</div>' : `
+          <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">First ${sample.length} of ${toInsert.length} to import:</div>
+          <table class="pec-table" style="font-size:.72rem">
+            <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>City, State</th><th>Source</th></tr></thead>
+            <tbody>${sample.map(r => `
+              <tr class="nohover">
+                <td>${esc(r.name)}${r.company_name ? ` <span style="color:var(--muted)">· biz</span>` : ''}</td>
+                <td>${esc(r.email || '—')}</td>
+                <td>${esc(r.phone || '—')}</td>
+                <td>${esc([r.billing_city, r.billing_state].filter(Boolean).join(', ') || '—')}</td>
+                <td>${esc(r.lead_source || '—')}</td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        `}
+      `;
+      statusEl.textContent = '';
+      runBtn.disabled = toInsert.length === 0;
+    });
+
+    runBtn.addEventListener('click', async () => {
+      const { toInsert } = state0.parsed || {};
+      if (!toInsert || !toInsert.length) return;
+      runBtn.disabled = true; errEl.textContent = ''; okEl.textContent = '';
+      const total = toInsert.length;
+      const batchSize = 200;
+      let written = 0, failed = 0;
+      const errors = [];
+      // Stamp tokens client-side so each customer has a portal link from the jump.
+      const stamped = toInsert.map(r => ({ ...r, token: randomToken() }));
+      for (let i = 0; i < stamped.length; i += batchSize) {
+        const slice = stamped.slice(i, i + batchSize);
+        statusEl.textContent = `Importing ${i + 1}–${Math.min(i + slice.length, total)} of ${total}…`;
+        const { error } = await supabase.from('customers').insert(slice);
+        if (error) {
+          failed += slice.length;
+          errors.push(`Batch ${i}-${i + slice.length}: ${error.message}${error.hint ? ' (' + error.hint + ')' : ''}`);
+        } else {
+          written += slice.length;
+        }
+      }
+      statusEl.textContent = '';
+      if (errors.length) {
+        errEl.innerHTML = `Imported ${written} of ${total}. ${failed} failed.<br><span style="white-space:pre-wrap;font-size:.7rem">${esc(errors.join('\n'))}</span>`;
+      } else {
+        okEl.textContent = `Imported ${written} customers.`;
+        setTimeout(() => { closeModal(); renderCustomers(); }, 700);
+      }
     });
   }});
 }
