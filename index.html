@@ -1762,6 +1762,8 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="ordering">Ordering</button>
+          <button data-pec-view="schedule">Job Schedule</button>
+          <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="colors">Colors</button>
           <button data-pec-view="referrals">Referrals</button>
@@ -4651,6 +4653,10 @@ const state = {
   referrals: [], referralsFilter: { status: '' },
   reviews: [], team: [], settings: {},
   openJobId: null, openCustomerId: null,
+  // Job Schedule + Job Costing (PEC production)
+  crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {},
+  scheduleView: 'weekly', scheduleAnchor: null, scheduleEdit: null,
+  costing: [], costingFilter: 'all',
 };
 window.pecState = state;
 const PAGE = 20;
@@ -4738,6 +4744,10 @@ function renderAuthUI() {
   if (catalogBtn) {
     catalogBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
   }
+  const costingBtn = document.querySelector('#pecSubnav button[data-pec-view="costing"]');
+  if (costingBtn) {
+    costingBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
+  }
   switchView(state.view);
 }
 
@@ -4774,10 +4784,16 @@ function switchView(v) {
   if (prodRoot) prodRoot.style.display = 'none';
   pecRoot.style.display = '';
   pecRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
+  // Job Costing renders full-bleed; toggle a class on <main> so it can break
+  // out of the standard CRM grid padding.
+  const main = document.querySelector('#pecApp .pec-main');
+  if (main) main.classList.toggle('pec-fullbleed', v === 'costing');
   ({
     dashboard: renderDashboard,
     customers: renderCustomers,
     jobs: renderJobs,
+    schedule: renderSchedule,
+    costing: renderJobCosting,
     colors: renderColors,
     referrals: renderReferrals,
     reviews: renderReviews,
@@ -5542,9 +5558,33 @@ function openTeamForm(t) {
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
-  const { data } = await supabase.from('settings').select('*').order('key');
-  const map = Object.fromEntries((data||[]).map(s => [s.key, s.value]));
+  const [{ data: settingsRows }, crewsRes] = await Promise.all([
+    supabase.from('settings').select('*').order('key'),
+    supabase.from('pec_prod_crews').select('*').order('name'),
+  ]);
+  const map = Object.fromEntries((settingsRows||[]).map(s => [s.key, s.value]));
+  state.crews = crewsRes.data || [];
+
   root.innerHTML = `
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h3 style="margin:0">Crews</h3>
+        <button class="pec-btn primary sm" id="pecCrewAddBtn">+ Add crew</button>
+      </div>
+      <table class="pec-table">
+        <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+        <tbody>
+          ${state.crews.map(c => `
+            <tr data-crew-id="${esc(c.id)}">
+              <td><strong>${esc(c.name)}</strong></td>
+              <td>${c.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+              <td>${esc(c.notes || '')}</td>
+              <td><button class="pec-btn sm ghost" data-edit-crew="${esc(c.id)}">Edit</button></td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No crews yet. Click + Add crew to create your first one.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
     <div class="pec-card">
       <h3>Settings</h3>
       <form id="pecSettingsForm">
@@ -5563,6 +5603,644 @@ async function renderSettings() {
       await supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' });
     }
     renderSettings();
+  });
+  $('pecCrewAddBtn').addEventListener('click', () => openCrewModal(null));
+  root.querySelectorAll('[data-edit-crew]').forEach(b => b.addEventListener('click', () => openCrewModal(b.dataset.editCrew)));
+}
+
+function openCrewModal(crewId) {
+  const existing = crewId ? state.crews.find(c => c.id === crewId) : null;
+  const c = existing || { name: '', active: true, notes: '' };
+  openModal(`
+    <h3>${existing ? 'Edit' : 'New'} crew</h3>
+    <div class="pec-field"><label>Name</label><input id="crewName" value="${esc(c.name)}" placeholder="e.g. Crew A"></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Active</label>
+        <select id="crewActive"><option value="true" ${c.active?'selected':''}>Yes</option><option value="false" ${!c.active?'selected':''}>No</option></select>
+      </div>
+      <div class="pec-field"><label>Notes</label><input id="crewNotes" value="${esc(c.notes || '')}"></div>
+    </div>
+    <div class="pec-modal-actions">
+      ${existing ? '<button class="pec-btn danger" id="crewDelete">Delete</button>' : ''}
+      <span style="flex:1"></span>
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn primary" id="crewSave">${existing ? 'Save' : 'Add crew'}</button>
+    </div>
+    <div class="prod-msg-err" id="crewError"></div>
+  `, {
+    onMount(modal) {
+      modal.querySelector('#crewSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#crewError'); errEl.textContent = '';
+        const payload = {
+          name: modal.querySelector('#crewName').value.trim(),
+          active: modal.querySelector('#crewActive').value === 'true',
+          notes: modal.querySelector('#crewNotes').value || null,
+        };
+        if (!payload.name) return errEl.textContent = 'Name is required.';
+        const op = existing
+          ? supabase.from('pec_prod_crews').update(payload).eq('id', existing.id)
+          : supabase.from('pec_prod_crews').insert(payload);
+        const { error } = await op;
+        if (error) return errEl.textContent = error.message;
+        closeModal();
+        renderSettings();
+      });
+      const delBtn = modal.querySelector('#crewDelete');
+      if (delBtn) delBtn.addEventListener('click', async () => {
+        if (!confirm(`Delete crew "${existing.name}"? Jobs assigned to this crew will lose the assignment.`)) return;
+        const { error } = await supabase.from('pec_prod_crews').delete().eq('id', existing.id);
+        if (error) return modal.querySelector('#crewError').textContent = error.message;
+        closeModal();
+        renderSettings();
+      });
+    },
+  });
+}
+
+// ============================================================
+// Job Schedule (PEC production)
+// ============================================================
+function isoDate(d) {
+  const yr = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${yr}-${mo}-${da}`;
+}
+function parseISO(s) {
+  if (!s) return null;
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function startOfWeek(d) {
+  // Monday start
+  const day = (d.getDay() + 6) % 7;
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  out.setDate(out.getDate() - day);
+  return out;
+}
+function addDays(d, n) {
+  const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  out.setDate(out.getDate() + n);
+  return out;
+}
+function sameDay(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+async function loadScheduleData() {
+  const [jobsRes, daysRes, sysRes, crewsRes, areasRes] = await Promise.all([
+    supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
+    supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
+    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    supabase.from('pec_prod_crews').select('*').order('name'),
+    supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
+  ]);
+  state.prodJobs = jobsRes.data || [];
+  state.scheduleDays = daysRes.data || [];
+  state.systemTypes = sysRes.data || [];
+  state.crews = crewsRes.data || [];
+  const byJob = {};
+  for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
+  state.productAreasByJob = byJob;
+}
+
+async function renderSchedule() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
+  await loadScheduleData();
+  if (!state.scheduleAnchor) state.scheduleAnchor = isoDate(new Date());
+
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  const areaSystem = (job) => {
+    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
+    return areas[0] ? sysById[areas[0].system_type_id] : null;
+  };
+  const sumSqft = (job) => (state.productAreasByJob[job.id] || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
+
+  // Pending = no install_date AND no schedule rows
+  const scheduledJobIds = new Set(state.scheduleDays.map(d => d.job_id));
+  const pending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled');
+
+  root.innerHTML = `
+    <div class="pec-sched-grid">
+      <aside>
+        <h3 style="margin:0 0 10px;font-size:1rem">Pending Jobs <span style="color:var(--muted);font-weight:400">· ${pending.length}</span></h3>
+        <div class="pec-sched-pending" id="pecSchedPending">
+          ${pending.length === 0 ? '<div class="pec-empty" style="padding:20px 8px">No pending jobs. New jobs from accepted DripJobs estimates land here automatically.</div>' : pending.map(j => {
+            const sys = areaSystem(j);
+            return `<div class="pec-sched-pcard">
+              <h4>${esc(j.customer_name)}</h4>
+              <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${j.revenue ? ' · ' + fmtMoney(j.revenue) : ''}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
+              <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs est` : ''}</div>
+              <button class="pec-btn primary sm" data-schedule-job="${esc(j.id)}" style="width:100%">+ Schedule</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </aside>
+      <main>
+        <div class="pec-sched-toolbar">
+          <button class="pec-btn sm" id="pecSchedPrev">‹</button>
+          <button class="pec-btn sm" id="pecSchedToday">Today</button>
+          <button class="pec-btn sm" id="pecSchedNext">›</button>
+          <span class="pec-sched-period" id="pecSchedPeriod"></span>
+          <span style="margin-left:auto"></span>
+          <button class="pec-btn sm ${state.scheduleView==='weekly'?'primary':''}" id="pecSchedWeekly">Weekly</button>
+          <button class="pec-btn sm ${state.scheduleView==='monthly'?'primary':''}" id="pecSchedMonthly">Monthly</button>
+        </div>
+        <div id="pecSchedCalendar"></div>
+      </main>
+    </div>
+  `;
+
+  $('pecSchedWeekly').addEventListener('click', () => { state.scheduleView = 'weekly'; renderSchedule(); });
+  $('pecSchedMonthly').addEventListener('click', () => { state.scheduleView = 'monthly'; renderSchedule(); });
+  $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
+  $('pecSchedPrev').addEventListener('click', () => {
+    const d = parseISO(state.scheduleAnchor);
+    state.scheduleAnchor = isoDate(state.scheduleView === 'weekly' ? addDays(d, -7) : new Date(d.getFullYear(), d.getMonth() - 1, d.getDate()));
+    renderSchedule();
+  });
+  $('pecSchedNext').addEventListener('click', () => {
+    const d = parseISO(state.scheduleAnchor);
+    state.scheduleAnchor = isoDate(state.scheduleView === 'weekly' ? addDays(d, 7) : new Date(d.getFullYear(), d.getMonth() + 1, d.getDate()));
+    renderSchedule();
+  });
+  root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
+
+  renderScheduleCalendar(sysById, crewById, areaSystem);
+}
+
+function renderScheduleCalendar(sysById, crewById, areaSystem) {
+  const host = $('pecSchedCalendar');
+  const periodEl = $('pecSchedPeriod');
+  const anchor = parseISO(state.scheduleAnchor);
+  const today = new Date();
+
+  // Group schedule_days by job_id, sorted by date
+  const daysByJob = {};
+  for (const d of state.scheduleDays) (daysByJob[d.job_id] ||= []).push(d);
+  for (const k in daysByJob) daysByJob[k].sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
+
+  // Helper: build event metadata for a job
+  const eventFor = (jobId) => {
+    const job = state.prodJobs.find(j => j.id === jobId); if (!job) return null;
+    const sys = areaSystem(job);
+    return { job, sys, color: (sys && sys.color) || '#6366f1', label: `${sys ? sys.name + ' · ' : ''}${job.customer_name}` };
+  };
+
+  if (state.scheduleView === 'weekly') {
+    const weekStart = startOfWeek(anchor);
+    const weekEnd = addDays(weekStart, 6);
+    periodEl.textContent = `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+    const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+    // For each day, find schedule_days that fall on it
+    const cells = days.map(d => {
+      const iso = isoDate(d);
+      const events = state.scheduleDays.filter(sd => sd.scheduled_date === iso).map(sd => {
+        const all = daysByJob[sd.job_id] || [];
+        const isFirst = all[0] && all[0].id === sd.id;
+        return { sd, isFirst, ev: eventFor(sd.job_id) };
+      }).filter(e => e.ev);
+      return { d, iso, events };
+    });
+
+    host.innerHTML = `
+      <div class="pec-cal-week">
+        ${days.map(d => `<div class="day-h">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>`).join('')}
+        ${cells.map(c => `
+          <div class="day-c ${sameDay(c.d, today)?'today':''}">
+            <div class="day-num">${c.d.getDate()}</div>
+            ${c.events.map(e => `
+              <div class="pec-cal-event ${e.isFirst?'':'cont'}" data-event-job="${esc(e.sd.job_id)}" style="--ev-color:${esc(e.ev.color)};${e.isFirst ? '' : 'border-top-style:dashed'}">
+                ${e.isFirst ? esc(e.ev.label) : '·'}
+              </div>
+            `).join('')}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } else {
+    // Monthly view: render the month containing anchor as 6 rows of 7 days
+    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const monthStart = startOfWeek(first);
+    const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
+    periodEl.textContent = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+    host.innerHTML = `
+      <div class="pec-cal-month">
+        ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
+        ${days.map(d => {
+          const iso = isoDate(d);
+          const inMonth = d.getMonth() === first.getMonth();
+          const events = state.scheduleDays.filter(sd => sd.scheduled_date === iso).map(sd => {
+            const all = daysByJob[sd.job_id] || [];
+            const isFirst = all[0] && all[0].id === sd.id;
+            return { sd, isFirst, ev: eventFor(sd.job_id) };
+          }).filter(e => e.ev);
+          const visible = events.slice(0, 3);
+          const more = events.length - visible.length;
+          return `
+            <div class="day-c ${inMonth?'':'dim'} ${sameDay(d, today)?'today':''}">
+              <div class="day-num">${d.getDate()}</div>
+              ${visible.map(e => `
+                <div class="pec-cal-event ${e.isFirst?'':'cont'}" data-event-job="${esc(e.sd.job_id)}" style="--ev-color:${esc(e.ev.color)};font-size:.62rem;margin-top:2px">
+                  ${e.isFirst ? esc(e.ev.label) : '·'}
+                </div>
+              `).join('')}
+              ${more > 0 ? `<div style="font-size:.6rem;color:var(--muted);margin-top:2px">+${more} more</div>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+}
+
+function openScheduleModal(jobId) {
+  const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
+  const sys = areas[0] ? sysById[areas[0].system_type_id] : null;
+  const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
+
+  // The picker month is the one containing the first scheduled day, else today
+  const seedDate = existingDays[0] ? parseISO(existingDays[0].scheduled_date) : new Date();
+  const draft = {
+    selectedDates: existingDays.map(d => d.scheduled_date), // ISO strings, in selection order
+    pickerMonth: new Date(seedDate.getFullYear(), seedDate.getMonth(), 1),
+    crew_id: existingDays[0]?.crew_id || job.crew_id || '',
+    crew_lead: existingDays[0]?.crew_lead || job.crew_lead || '',
+    estimated_hours: job.estimated_hours || '',
+    sales_team: job.sales_team || '',
+  };
+
+  const renderBody = (modal) => {
+    const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
+    const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
+    const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const idxFor = (iso) => draft.selectedDates.indexOf(iso) + 1;
+    modal.querySelector('#schedDayGrid').innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <button type="button" class="pec-btn sm ghost" id="schedPickerPrev">‹</button>
+        <div style="flex:1;text-align:center;font-weight:600;font-size:.85rem">${monthLabel}</div>
+        <button type="button" class="pec-btn sm ghost" id="schedPickerNext">›</button>
+      </div>
+      <div class="pec-day-grid">
+        ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
+        ${days.map(d => {
+          const iso = isoDate(d);
+          const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
+          const idx = idxFor(iso);
+          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add/remove. The order you click sets day 1, day 2, etc.</div>
+    `;
+    modal.querySelector('#schedPickerPrev').addEventListener('click', () => {
+      draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() - 1, 1);
+      renderBody(modal);
+    });
+    modal.querySelector('#schedPickerNext').addEventListener('click', () => {
+      draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() + 1, 1);
+      renderBody(modal);
+    });
+    modal.querySelectorAll('[data-pick]').forEach(c => c.addEventListener('click', () => {
+      const iso = c.dataset.pick;
+      const i = draft.selectedDates.indexOf(iso);
+      if (i >= 0) draft.selectedDates.splice(i, 1);
+      else draft.selectedDates.push(iso);
+      renderBody(modal);
+    }));
+  };
+
+  openModal(`
+    <div class="prod-modal-wide" style="max-width:760px;margin:auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0">Schedule job</h3>
+          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">${esc(job.customer_name)} · ${esc(job.address || 'No address')} · #${esc(job.proposal_number)}</div>
+        </div>
+        <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
+      </div>
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">System type (from estimate)</div>
+        <div style="margin-top:4px;font-size:.95rem">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color||'#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system selected yet — set this in Ordering &gt; New Job before scheduling.</span>'}</div>
+      </div>
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Pick install days</div>
+        <div id="schedDayGrid"></div>
+      </div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Crew</label>
+          <select id="schedCrew">
+            <option value="">Pick a crew…</option>
+            ${state.crews.filter(c => c.active).map(c => `<option value="${esc(c.id)}" ${c.id===draft.crew_id?'selected':''}>${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pec-field"><label>Crew lead</label><input id="schedLead" value="${esc(draft.crew_lead)}" placeholder="Who's leading"></div>
+      </div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
+        <div class="pec-field"><label>Sales team</label><input id="schedSales" value="${esc(draft.sales_team)}" placeholder="Who closed it"></div>
+      </div>
+      <div class="pec-modal-actions">
+        ${existingDays.length ? '<button class="pec-btn danger" id="schedClear">Clear schedule</button>' : ''}
+        <span style="flex:1"></span>
+        <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button class="pec-btn primary" id="schedSave">Save schedule</button>
+      </div>
+      <div class="prod-msg-err" id="schedError"></div>
+    </div>
+  `, {
+    onMount(modal) {
+      renderBody(modal);
+      modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
+      modal.querySelector('#schedLead').addEventListener('input', e => { draft.crew_lead = e.target.value; });
+      modal.querySelector('#schedHours').addEventListener('input', e => { draft.estimated_hours = e.target.value; });
+      modal.querySelector('#schedSales').addEventListener('input', e => { draft.sales_team = e.target.value; });
+      modal.querySelector('#schedSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
+        if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+        // Replace existing schedule rows
+        const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
+        if (del.error) return errEl.textContent = del.error.message;
+        const rows = draft.selectedDates.map((iso, idx) => ({
+          job_id: job.id,
+          scheduled_date: iso,
+          day_index: idx,
+          crew_id: draft.crew_id || null,
+          crew_lead: draft.crew_lead || null,
+        }));
+        const ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
+        if (ins.error) return errEl.textContent = ins.error.message;
+        const sortedIso = draft.selectedDates.slice().sort();
+        const update = await supabase.from('pec_prod_jobs').update({
+          install_date: sortedIso[0],
+          status: 'scheduled',
+          crew_id: draft.crew_id || null,
+          crew_lead: draft.crew_lead || null,
+          estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
+          sales_team: draft.sales_team || null,
+        }).eq('id', job.id);
+        if (update.error) return errEl.textContent = update.error.message;
+        closeModal();
+        renderSchedule();
+      });
+      const clearBtn = modal.querySelector('#schedClear');
+      if (clearBtn) clearBtn.addEventListener('click', async () => {
+        if (!confirm('Clear all scheduled days for this job and move it back to Pending?')) return;
+        await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
+        await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null, crew_lead: null }).eq('id', job.id);
+        closeModal();
+        renderSchedule();
+      });
+    },
+  });
+}
+
+// ============================================================
+// Job Costing (full-bleed)
+// ============================================================
+async function loadCostingData() {
+  const [jobsRes, costRes, sysRes, crewsRes, areasRes] = await Promise.all([
+    supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
+    supabase.from('pec_prod_job_costing').select('*'),
+    supabase.from('pec_prod_system_types').select('id,name,color'),
+    supabase.from('pec_prod_crews').select('id,name'),
+    supabase.from('pec_prod_areas').select('id,job_id,system_type_id,order_index'),
+  ]);
+  state.prodJobs = jobsRes.data || [];
+  state.costing = costRes.data || [];
+  state.systemTypes = sysRes.data || [];
+  state.crews = crewsRes.data || [];
+  const byJob = {};
+  for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
+  state.productAreasByJob = byJob;
+}
+
+function computeCostingRow(job, cost, sysName) {
+  const c = cost || {};
+  const revenue = Number(job.revenue || 0);
+  const estHrs = Number(job.estimated_hours ?? c.estimated_hours ?? 0);
+  const actHrs = Number(job.actual_hours ?? c.actual_hours ?? 0);
+  const overUnder = (actHrs && estHrs) ? (actHrs - estHrs) : null;
+  const hoursVarPct = (actHrs && estHrs) ? ((actHrs - estHrs) / estHrs) : null;
+  const buckets = {
+    equipment_rental_cost: Number(c.equipment_rental_cost || 0),
+    materials_ordered_cost: Number(c.materials_ordered_cost || 0),
+    materials_used_cost: Number(c.materials_used_cost || 0),
+    salary_wages_cost: Number(c.salary_wages_cost || 0),
+    subcontractor_cost: Number(c.subcontractor_cost || 0),
+    bonus_cost: Number(c.bonus_cost || 0),
+    commission_cost: Number(c.commission_cost || 0),
+    misc_cost: Number(c.misc_cost || 0),
+  };
+  // Total Var Expense uses materials_used (not ordered) so we don't double-count
+  const totalVar = buckets.equipment_rental_cost + buckets.materials_used_cost + buckets.salary_wages_cost + buckets.subcontractor_cost + buckets.bonus_cost + buckets.commission_cost + buckets.misc_cost;
+  const gp = revenue - totalVar;
+  const gpPct = revenue > 0 ? gp / revenue : null;
+  const gpHr = actHrs > 0 ? gp / actHrs : null;
+  const revHr = actHrs > 0 ? revenue / actHrs : null;
+  const pct = (n) => revenue > 0 ? n / revenue : null;
+  return { c, revenue, estHrs, actHrs, overUnder, hoursVarPct, buckets, totalVar, gp, gpPct, gpHr, revHr, pct };
+}
+
+const _costingDebounce = {};
+function saveCostingField(jobId, field, value) {
+  clearTimeout(_costingDebounce[jobId + '|' + field]);
+  _costingDebounce[jobId + '|' + field] = setTimeout(async () => {
+    const existing = state.costing.find(c => c.job_id === jobId);
+    if (existing) {
+      const { error } = await supabase.from('pec_prod_job_costing').update({ [field]: value }).eq('id', existing.id);
+      if (error) console.error('[costing] update', field, error);
+      else existing[field] = value;
+    } else {
+      const { data, error } = await supabase.from('pec_prod_job_costing').insert({ job_id: jobId, [field]: value }).select().single();
+      if (error) console.error('[costing] insert', field, error);
+      else state.costing.push(data);
+    }
+  }, 250);
+}
+async function saveJobField(jobId, field, value) {
+  const { error } = await supabase.from('pec_prod_jobs').update({ [field]: value }).eq('id', jobId);
+  if (error) console.error('[costing] job update', field, error);
+  const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = value;
+}
+
+function fmtMoneyOrDash(n) { return Number.isFinite(n) && n !== 0 ? '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'; }
+function fmtPct(n) { return n == null ? '—' : (n * 100).toFixed(1) + '%'; }
+function fmtNum(n) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 }); }
+
+async function renderJobCosting() {
+  const root = $('pecViewRoot');
+  if (!['admin','pm'].includes(state.adminUser?.role)) { root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty">Loading job costing…</div>';
+  await loadCostingData();
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
+  const areaSystem = (job) => {
+    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
+    return areas[0] ? sysById[areas[0].system_type_id] : null;
+  };
+
+  const filt = state.costingFilter;
+  const jobs = state.prodJobs.filter(j => {
+    if (filt === 'all') return true;
+    if (filt === 'active') return j.status !== 'completed';
+    return j.status === filt;
+  });
+
+  root.innerHTML = `
+    <div class="pec-card" style="border-radius:0">
+      <div class="pec-toolbar">
+        <h3 style="margin:0">Job Costing</h3>
+        <select id="costFilter">
+          <option value="all" ${filt==='all'?'selected':''}>All jobs</option>
+          <option value="active" ${filt==='active'?'selected':''}>Active (not completed)</option>
+          <option value="scheduled" ${filt==='scheduled'?'selected':''}>Scheduled</option>
+          <option value="ordered" ${filt==='ordered'?'selected':''}>Ordered</option>
+          <option value="delivered" ${filt==='delivered'?'selected':''}>Delivered</option>
+          <option value="completed" ${filt==='completed'?'selected':''}>Completed</option>
+        </select>
+        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
+        <button class="pec-btn sm" id="costPrint">Print</button>
+      </div>
+      <div style="overflow-x:auto;padding-bottom:8px">
+        <table class="pec-cost-table">
+          <thead><tr>
+            <th>Job Address / ID</th><th>Misc</th><th>Status</th><th>Sales Team</th><th>System Type</th><th>Crew</th>
+            <th>Revenue Stream</th><th>Revenue</th>
+            <th>Est. Hrs</th><th>Hours</th><th>Over/Under</th><th>Hrs Var %</th>
+            <th>Equip Rental</th><th>%</th>
+            <th>Mat. Ordered</th><th>%</th>
+            <th>Mat. Used</th><th>%</th>
+            <th>Salary &amp; Wages</th><th>%</th>
+            <th>Subcontractor</th><th>%</th>
+            <th>Bonus</th><th>%</th>
+            <th>Commission</th><th>%</th>
+            <th>Misc Exp</th><th>%</th>
+            <th>Total Var Exp</th><th>%</th>
+            <th>Gross Profit</th><th>GP %</th>
+            <th>GP / HR</th><th>Rev / HR</th>
+            <th>Callback</th><th>Notes</th>
+          </tr></thead>
+          <tbody>
+            ${jobs.map(j => {
+              const sys = areaSystem(j);
+              const cost = costByJob[j.id];
+              const r = computeCostingRow(j, cost, sys ? sys.name : '');
+              const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
+              return `<tr data-job-id="${esc(j.id)}">
+                <td><strong>${esc(j.address || '—')}</strong><div style="color:var(--muted);font-size:.62rem">#${esc(j.proposal_number)}</div></td>
+                <td><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></td>
+                <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
+                <td><input class="cost-text" data-cost="sales_team" data-table="job" value="${esc(j.sales_team || '')}"></td>
+                <td>${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color||'#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">—</span>'}</td>
+                <td>${j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
+                <td>${sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>'}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="revenue" data-table="job" value="${esc(j.revenue ?? '')}"></td>
+                <td><input class="prod-num" type="number" min="0" step="0.5" data-cost="estimated_hours" data-table="job" value="${esc(j.estimated_hours ?? '')}"></td>
+                <td><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(j.actual_hours ?? '')}"></td>
+                <td class="cost-derived ${overCls}" data-derived="overUnder">${r.overUnder == null ? '—' : fmtNum(r.overUnder)}</td>
+                <td class="cost-pct ${overCls}" data-derived="hoursVarPct">${fmtPct(r.hoursVarPct)}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="equipment_rental_cost" data-table="cost" value="${esc(cost?.equipment_rental_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-equip">${fmtPct(r.pct(r.buckets.equipment_rental_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="materials_ordered_cost" data-table="cost" value="${esc(cost?.materials_ordered_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-matord">${fmtPct(r.pct(r.buckets.materials_ordered_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="materials_used_cost" data-table="cost" value="${esc(cost?.materials_used_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-matused">${fmtPct(r.pct(r.buckets.materials_used_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="salary_wages_cost" data-table="cost" value="${esc(cost?.salary_wages_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-salary">${fmtPct(r.pct(r.buckets.salary_wages_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="subcontractor_cost" data-table="cost" value="${esc(cost?.subcontractor_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-sub">${fmtPct(r.pct(r.buckets.subcontractor_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="bonus_cost" data-table="cost" value="${esc(cost?.bonus_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-bonus">${fmtPct(r.pct(r.buckets.bonus_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="commission_cost" data-table="cost" value="${esc(cost?.commission_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-comm">${fmtPct(r.pct(r.buckets.commission_cost))}</td>
+                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="misc_cost" data-table="cost" value="${esc(cost?.misc_cost ?? 0)}"></td>
+                <td class="cost-pct" data-derived="pct-misc">${fmtPct(r.pct(r.buckets.misc_cost))}</td>
+                <td class="cost-derived" data-derived="totalVar">${fmtMoneyOrDash(r.totalVar)}</td>
+                <td class="cost-pct" data-derived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</td>
+                <td class="cost-derived ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-derived="gp">${fmtMoneyOrDash(r.gp)}</td>
+                <td class="cost-pct ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-derived="gpPct">${fmtPct(r.gpPct)}</td>
+                <td class="cost-derived" data-derived="gpHr">${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)}</td>
+                <td class="cost-derived" data-derived="revHr">${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}</td>
+                <td><input type="checkbox" data-cost="callback" data-table="job" ${j.callback?'checked':''}></td>
+                <td><input class="cost-text" data-cost="notes" data-table="cost" value="${esc(cost?.notes || '')}"></td>
+              </tr>`;
+            }).join('') || '<tr class="nohover"><td colspan="34" class="pec-empty">No jobs in this filter.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  $('costFilter').addEventListener('change', e => { state.costingFilter = e.target.value; renderJobCosting(); });
+  $('costPrint').addEventListener('click', () => window.print());
+
+  // In-place derived-cell updater so input focus isn't lost while typing.
+  function refreshDerived(tr, jobId) {
+    const job = state.prodJobs.find(j => j.id === jobId);
+    const cost = state.costing.find(c => c.job_id === jobId);
+    const sys = areaSystem(job);
+    const r = computeCostingRow(job, cost, sys ? sys.name : '');
+    const set = (sel, html, cls) => {
+      const el = tr.querySelector(sel);
+      if (!el) return;
+      el.innerHTML = html;
+      if (cls !== undefined) {
+        el.classList.remove('cost-neg', 'cost-pos');
+        if (cls) el.classList.add(cls);
+      }
+    };
+    const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
+    set('[data-derived="overUnder"]', r.overUnder == null ? '—' : fmtNum(r.overUnder), overCls);
+    set('[data-derived="hoursVarPct"]', fmtPct(r.hoursVarPct), overCls);
+    set('[data-derived="pct-equip"]',  fmtPct(r.pct(r.buckets.equipment_rental_cost)));
+    set('[data-derived="pct-matord"]', fmtPct(r.pct(r.buckets.materials_ordered_cost)));
+    set('[data-derived="pct-matused"]',fmtPct(r.pct(r.buckets.materials_used_cost)));
+    set('[data-derived="pct-salary"]', fmtPct(r.pct(r.buckets.salary_wages_cost)));
+    set('[data-derived="pct-sub"]',    fmtPct(r.pct(r.buckets.subcontractor_cost)));
+    set('[data-derived="pct-bonus"]',  fmtPct(r.pct(r.buckets.bonus_cost)));
+    set('[data-derived="pct-comm"]',   fmtPct(r.pct(r.buckets.commission_cost)));
+    set('[data-derived="pct-misc"]',   fmtPct(r.pct(r.buckets.misc_cost)));
+    set('[data-derived="totalVar"]',   fmtMoneyOrDash(r.totalVar));
+    set('[data-derived="totalVarPct"]', fmtPct(r.pct(r.totalVar)));
+    set('[data-derived="gp"]',         fmtMoneyOrDash(r.gp), r.gp < 0 ? 'cost-neg' : 'cost-pos');
+    set('[data-derived="gpPct"]',      fmtPct(r.gpPct), r.gp < 0 ? 'cost-neg' : 'cost-pos');
+    set('[data-derived="gpHr"]',       r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr));
+    set('[data-derived="revHr"]',      r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
+  }
+
+  root.querySelectorAll('tr[data-job-id]').forEach(tr => {
+    const jobId = tr.dataset.jobId;
+    tr.querySelectorAll('[data-cost]').forEach(inp => {
+      const handler = async () => {
+        const field = inp.dataset.cost;
+        const tbl = inp.dataset.table;
+        let val;
+        if (inp.type === 'checkbox') val = inp.checked;
+        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+        else val = inp.value;
+        if (tbl === 'job') {
+          const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
+          await saveJobField(jobId, field, val);
+        } else {
+          let c = state.costing.find(c => c.job_id === jobId);
+          if (!c) { c = { job_id: jobId }; state.costing.push(c); }
+          c[field] = val;
+          saveCostingField(jobId, field, val);
+        }
+        refreshDerived(tr, jobId);
+      };
+      inp.addEventListener('change', handler);
+      if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
+    });
   });
 }
 
@@ -5978,6 +6656,50 @@ if (portalToken) {
   .pec-pull-table tbody tr.pull-detail { font-size:.72rem; color:var(--muted) }
   .pec-pull-table tbody tr.pull-detail td { padding-top:0; padding-bottom:6px }
   .pec-pull-supplier { margin-top:18px; font-weight:600; font-size:.85rem; padding:8px 4px; border-bottom:1px solid var(--border) }
+  /* Job Schedule */
+  .pec-sched-grid { display:grid; grid-template-columns: 280px 1fr; gap:16px; align-items:start }
+  @media (max-width:900px){ .pec-sched-grid { grid-template-columns: 1fr } }
+  .pec-sched-pending { display:flex; flex-direction:column; gap:8px; max-height:75vh; overflow-y:auto; padding-right:4px }
+  .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:default }
+  .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
+  .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
+  .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
+  .pec-sched-period { font-weight:600; font-size:.95rem; min-width:200px; text-align:center }
+  .pec-cal-week { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:4px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden }
+  .pec-cal-week .day-h { background:var(--rd-soft, var(--s2)); font-size:.7rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:8px; text-align:center; font-weight:600 }
+  .pec-cal-week .day-c { background:var(--rd-card, var(--s1)); min-height:140px; padding:6px; position:relative; display:flex; flex-direction:column; gap:4px }
+  .pec-cal-week .day-c.today { box-shadow: inset 0 0 0 2px var(--rd-accent, var(--accent)) }
+  .pec-cal-week .day-c .day-num { font-size:.8rem; color:var(--muted); margin-bottom:2px }
+  .pec-cal-month { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden }
+  .pec-cal-month .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
+  .pec-cal-month .day-c { background:var(--rd-card, var(--s1)); min-height:88px; padding:4px; position:relative }
+  .pec-cal-month .day-c.dim { background:var(--rd-softer, rgba(0,0,0,.03)) }
+  .pec-cal-month .day-c.today .day-num { color:var(--rd-accent, var(--accent)); font-weight:700 }
+  .pec-cal-month .day-c .day-num { font-size:.7rem; color:var(--muted) }
+  .pec-cal-event { padding:4px 6px; border-radius:4px; font-size:.7rem; cursor:pointer; line-height:1.3; border-top:3px solid var(--ev-color, #888); background:var(--rd-soft, rgba(255,255,255,.04)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .pec-cal-event.cont { color:transparent; user-select:none }
+  .pec-cal-event:hover { filter:brightness(1.05) }
+  /* Schedule modal day picker */
+  .pec-day-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:2px; user-select:none }
+  .pec-day-grid .day-h { font-size:.6rem; text-transform:uppercase; color:var(--muted); text-align:center; padding:4px }
+  .pec-day-grid .day-cell { aspect-ratio:1/1; display:flex; align-items:center; justify-content:center; font-size:.78rem; border-radius:4px; cursor:pointer; border:1px solid transparent; background:var(--rd-soft, var(--s2)); position:relative }
+  .pec-day-grid .day-cell.dim { color:var(--muted); opacity:.5 }
+  .pec-day-grid .day-cell.selected { background:var(--rd-accent, var(--accent)); color:#fff; font-weight:700 }
+  .pec-day-grid .day-cell.selected::after { content: attr(data-idx); position:absolute; top:1px; right:3px; font-size:.55rem }
+  /* Job Costing full-bleed */
+  .pec-fullbleed { padding: 0 !important; max-width: none !important }
+  .pec-fullbleed .pec-card { border-radius:0; border-left:0; border-right:0 }
+  .pec-cost-table { font-size:.72rem; min-width:2400px; border-collapse:separate; border-spacing:0 }
+  .pec-cost-table th, .pec-cost-table td { padding:6px 8px; border-bottom:1px solid var(--rd-line, var(--border)); white-space:nowrap }
+  .pec-cost-table th { background:var(--rd-soft, var(--s2)); position:sticky; top:0; z-index:2; font-size:.65rem; text-transform:uppercase; letter-spacing:.6px }
+  .pec-cost-table input { width:90px; font-size:.72rem; padding:2px 4px }
+  .pec-cost-table input.cost-money { width:100px }
+  .pec-cost-table input.cost-text { width:140px }
+  .pec-cost-table .cost-derived { color:var(--muted); font-variant-numeric:tabular-nums }
+  .pec-cost-table .cost-pct { color:var(--muted); font-size:.66rem; font-variant-numeric:tabular-nums }
+  .pec-cost-table .cost-neg { color:var(--danger) }
+  .pec-cost-table .cost-pos { color:var(--success) }
+  .pec-color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,.15) }
   @media print {
     .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
     .pec-modal { max-width:none !important; max-height:none !important; box-shadow:none !important; border:none !important }
@@ -6987,7 +7709,7 @@ function _mergeAcrossAreas(areaPlans) {
 
   function openSystemTypeModal(systemId) {
     const existing = systemId ? state.systemTypes.find(s => s.id === systemId) : null;
-    const s = existing ? { ...existing } : { name: '', description: '', requires_flake_color: true, requires_basecoat_color: true, active: true, notes: '' };
+    const s = existing ? { ...existing } : { name: '', description: '', requires_flake_color: true, requires_basecoat_color: true, active: true, color: '#7c3aed', notes: '' };
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodSModalBg">
         <div class="pec-modal">
@@ -7004,6 +7726,10 @@ function _mergeAcrossAreas(areaPlans) {
             <div class="pec-field"><label>Active</label>
               <select id="smActive"><option value="true" ${s.active?'selected':''}>Yes</option><option value="false" ${!s.active?'selected':''}>No</option></select>
             </div>
+          </div>
+          <div class="pec-field">
+            <label>Calendar color <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">shown as the band on Job Schedule events</span></label>
+            <input id="smColor" type="color" value="${esc(s.color || '#7c3aed')}" style="width:80px;height:36px;padding:2px;cursor:pointer">
           </div>
           <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
           <div class="pec-modal-actions">
@@ -7026,6 +7752,7 @@ function _mergeAcrossAreas(areaPlans) {
         requires_flake_color: $('smReqFlake').value === 'true',
         requires_basecoat_color: $('smReqBase').value === 'true',
         active: $('smActive').value === 'true',
+        color: $('smColor').value || null,
         notes: $('smNotes').value || null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
