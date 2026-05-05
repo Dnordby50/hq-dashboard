@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-04 22:05] crm: gate dripjobs auto-bridge to PEC only; log FTP-equivalent path
+By: Claude Code
+Changed: Two small follow-ups to the 21:30 entry. (1) netlify/functions/pec-webhook-proposal-accepted.js: the auto-bridge that creates a pec_prod_jobs row on proposal-accepted now skips when customer.company !== 'prescott-epoxy'. The default still falls back to 'prescott-epoxy' if neither customer.company nor payload.company is set, so existing PEC behavior is unchanged; FTP-accepted estimates now land in public.customers + public.jobs only (as before this whole branch), without polluting the PEC production schema. (2) docs/job-schedule-future-todos.md gets a new section 11 capturing the FTP-equivalent decision: option A (separate ftp_prod_* tables) vs option B (recommended: add a `company` column to pec_prod_* tables and let the brand switcher filter). The remaining numbered items shifted by one.
+Why: User confirmed the brand switcher direction (top-of-dashboard toggle, single nav, filter by company) and explicitly chose option (a) — gate the bridge now, build the FTP equivalent later. Without this gate, every FTP estimate accepted via DripJobs would silently create a pec_prod_jobs row — a bug that wouldn't surface until FTP started routing through DripJobs and Pending Jobs filled with FTP customers under the PEC brand.
+Files touched: netlify/functions/pec-webhook-proposal-accepted.js, docs/job-schedule-future-todos.md, PROJECT-LOG.md
+Verification: node --check on the webhook = clean. Behavior change is conditional and only matters once a FTP estimate is sent through the webhook; until then this is a no-op.
+Next steps: When the brand switcher build kicks off, walk docs/job-schedule-future-todos.md section 11 and pick option A vs B. Recommendation in the doc is option B.
+Handoff to Cowork: None
+Handoff to Dylan: Push when ready (small webhook change; Netlify auto-deploys on push). No DB migration needed.
+
+---
+
 ## [2026-05-04 21:55 MST] crm: ran 2026-05-04 job_schedule migration in production Supabase
 By: Cowork
 Changed: Executed supabase/migrations/2026-05-04_job_schedule.sql against production Supabase (project zdfpzmmrgotynrwkeakd) via the SQL editor. Supabase flagged the migration on the destructive-operations confirmation (expected: the file uses `drop trigger if exists` and `drop policy if exists` as idempotency guards, no actual data drops); confirmed and ran. Result: "Success. No rows returned." Three new tables created (pec_prod_crews, pec_prod_job_schedule_days, pec_prod_job_costing). Seven new columns added to pec_prod_jobs (estimated_hours, actual_hours, sales_team, crew_id FK, crew_lead, callback, dripjobs_deal_id) plus the partial index on dripjobs_deal_id. New `color` column on pec_prod_system_types backfilled with hex values for all 6 active systems. updated_at triggers wired on pec_prod_crews and pec_prod_job_costing. RLS enabled on all three new tables with staff-only policies (using public.is_admin_staff()).

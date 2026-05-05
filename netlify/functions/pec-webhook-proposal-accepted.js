@@ -73,34 +73,43 @@ exports.handler = async (event) => {
     await sb('POST', '/timeline_stages', stages);
 
     // Auto-bridge: create the matching pec_prod_jobs row so this proposal lands
-    // in the Job Schedule's Pending Jobs sidebar immediately. install_date stays
-    // null (PM picks days in the schedule popup). Idempotent against
+    // in the PEC Job Schedule's Pending Jobs sidebar immediately. install_date
+    // stays null (PM picks days in the schedule popup). Idempotent against
     // re-deliveries via dripjobs_deal_id check; failures here do NOT roll back
     // the public.jobs side.
+    //
+    // Brand gate: pec_prod_* tables are PEC-only. FTP customers come through
+    // the same webhook (one DripJobs endpoint, payload field `company`
+    // distinguishes), so skip the bridge when company is anything other than
+    // 'prescott-epoxy'. The FTP equivalent (separate table or a `company`
+    // column on pec_prod_jobs) is logged in docs/job-schedule-future-todos.md.
+    const companyKey = customer.company || company || 'prescott-epoxy';
     let prodJobId = null;
-    try {
-      if (deal_id) {
-        const existing = await sb('GET', `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id&limit=1`);
-        if (!existing.length) {
-          const proposalNumber = String(deal_id);
-          const created = await sb('POST', '/pec_prod_jobs', {
-            proposal_number: proposalNumber,
-            customer_id: customer.id,
-            customer_name: customer_name,
-            address: address || null,
-            revenue: price ? parseFloat(price) : null,
-            status: 'unscheduled',
-            sync_status: 'dirty',
-            dripjobs_deal_id: deal_id,
-            notes: scope || null,
-          }, true);
-          prodJobId = created && created[0] ? created[0].id : null;
-        } else {
-          prodJobId = existing[0].id;
+    if (companyKey === 'prescott-epoxy') {
+      try {
+        if (deal_id) {
+          const existing = await sb('GET', `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id&limit=1`);
+          if (!existing.length) {
+            const proposalNumber = String(deal_id);
+            const created = await sb('POST', '/pec_prod_jobs', {
+              proposal_number: proposalNumber,
+              customer_id: customer.id,
+              customer_name: customer_name,
+              address: address || null,
+              revenue: price ? parseFloat(price) : null,
+              status: 'unscheduled',
+              sync_status: 'dirty',
+              dripjobs_deal_id: deal_id,
+              notes: scope || null,
+            }, true);
+            prodJobId = created && created[0] ? created[0].id : null;
+          } else {
+            prodJobId = existing[0].id;
+          }
         }
+      } catch (bridgeErr) {
+        console.error('pec-webhook-proposal-accepted: prod auto-bridge failed (non-fatal):', bridgeErr);
       }
-    } catch (bridgeErr) {
-      console.error('pec-webhook-proposal-accepted: prod auto-bridge failed (non-fatal):', bridgeErr);
     }
 
     return json(200, {

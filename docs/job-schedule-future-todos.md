@@ -78,6 +78,16 @@ Current Job Schedule lets you reschedule via the popup only. Future enhancement:
 
 The 2026-05-04 Pull Material modal renders on screen and prints. If users want the result in a Google Sheet (for sharing or further manipulation), wire it through the existing `pec-prod-sync-sheet` Netlify Function infrastructure. Same for Job Costing exports at quarter-end.
 
-## 11. Material auto-sum into Materials Ordered/Pulled
+## 11. FTP equivalent of the PEC production stack
+
+The 2026-05-04 webhook auto-bridge currently fires only when `customer.company === 'prescott-epoxy'`. FTP-accepted estimates land in `public.customers` + `public.jobs` as before, but get NO `pec_prod_jobs` row (and so don't appear in the Job Schedule sidebar).
+
+When FTP needs the same Schedule + Costing + Ordering treatment, decide between:
+- **Option A — separate FTP tables**: `ftp_prod_jobs`, `ftp_prod_crews`, etc. Cleanest separation, but doubles the schema and the UI render functions need to dispatch by brand.
+- **Option B — add `company` column to `pec_prod_*` tables (recommended)**: rename them to `prod_*` (or leave the prefix, treat it as historical), add a `company text not null default 'prescott-epoxy'` column to `pec_prod_jobs`, `pec_prod_crews`, `pec_prod_job_costing`, `pec_prod_job_schedule_days`. Brand switcher on the dashboard sets the active filter; every query gets `.eq('company', activeBrand)`. The webhook bridge passes through the company. One schema, two brands.
+
+Then update the brand switcher (top of dashboard) to flip `state.activeBrand` and refresh all the pec_prod_* loaders accordingly.
+
+## 12. Material auto-sum into Materials Ordered/Pulled
 
 The user opted for fully manual costing entry, but if the catalog `unit_cost` data ever gets fully populated, we could pre-fill `materials_ordered_cost = sum(qty_needed * unit_cost_snapshot)` from `pec_prod_material_lines` on first open of a job's costing row. Manual override would still win.
