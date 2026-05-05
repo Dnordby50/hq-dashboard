@@ -5803,6 +5803,18 @@ function openLeadSourceModal(leadId) {
     <div class="prod-msg-err" id="leadError"></div>
   `, {
     onMount(modal) {
+      // Render the full Postgres error (message + details + hint + code) so
+      // schema-cache misses, RLS denies, and unique-constraint violations
+      // are diagnosable at a glance. PostgREST sometimes returns a short
+      // message that omits the actual cause without these extras.
+      const showSupabaseError = (errEl, error) => {
+        const parts = [error.message];
+        if (error.details) parts.push('Details: ' + error.details);
+        if (error.hint)    parts.push('Hint: ' + error.hint);
+        if (error.code)    parts.push('Code: ' + error.code);
+        errEl.textContent = parts.join('  ·  ');
+        console.error('[crm] pec_lead_sources error:', error);
+      };
       modal.querySelector('#leadSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#leadError'); errEl.textContent = '';
         const payload = {
@@ -5815,7 +5827,7 @@ function openLeadSourceModal(leadId) {
           ? supabase.from('pec_lead_sources').update(payload).eq('id', existing.id)
           : supabase.from('pec_lead_sources').insert(payload);
         const { error } = await op;
-        if (error) return errEl.textContent = error.message;
+        if (error) return showSupabaseError(errEl, error);
         closeModal();
         renderSettings();
       });
@@ -5823,7 +5835,7 @@ function openLeadSourceModal(leadId) {
       if (delBtn) delBtn.addEventListener('click', async () => {
         if (!confirm(`Delete lead source "${existing.name}"? Customers tagged with this source will keep the text value.`)) return;
         const { error } = await supabase.from('pec_lead_sources').delete().eq('id', existing.id);
-        if (error) return modal.querySelector('#leadError').textContent = error.message;
+        if (error) return showSupabaseError(modal.querySelector('#leadError'), error);
         closeModal();
         renderSettings();
       });
