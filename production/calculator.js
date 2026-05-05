@@ -91,7 +91,10 @@ function planForArea(area, ctx) {
   for (const slot of slots) {
     let productId = slot.default_product_id;
 
-    if (slot.material_type === 'Flake') {
+    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz') {
+      // Quartz colors are picked per-job and stored in the same area column
+      // (flake_product_id) as flake picks. Slot type just gates which catalog
+      // products the New Job picker shows.
       productId = area.flake_product_id || productId;
     } else if (slot.material_type === 'Basecoat') {
       productId = resolvedBasecoatId || productId;

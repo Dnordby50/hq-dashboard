@@ -529,7 +529,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-row-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 @media (max-width:720px){.pec-row-2,.pec-row-3{grid-template-columns:1fr}}
 .pec-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px}
-.pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto}
+.pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto}
 .pec-modal h3{font-family:var(--sans);font-weight:600;margin-bottom:14px}
 .pec-modal .pec-modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .pec-pagination{display:flex;gap:8px;margin-top:14px;align-items:center;justify-content:center;font-size:.75rem;color:var(--muted)}
@@ -1762,7 +1762,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="ordering">Ordering</button>
-          <button data-pec-view="catalog" class="pec-role-admin">Material Catalog</button>
+          <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="colors">Colors</button>
           <button data-pec-view="referrals">Referrals</button>
           <button data-pec-view="reviews">Reviews</button>
@@ -5968,8 +5968,21 @@ if (portalToken) {
   .prod-area-card + .prod-area-card { margin-top:10px }
   .prod-msg-ok    { color:var(--success); font-size:.78rem; min-height:18px; margin-top:8px }
   .prod-msg-err   { color:var(--danger); font-size:.78rem; min-height:18px; margin-top:8px }
-  .prod-modal-wide { max-width:920px }
+  .prod-modal-wide { max-width: min(1280px, 96vw) }
+  .prod-modal-wide .pec-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch }
   .prod-num { width:80px; text-align:right }
+  .prod-readonly { display:inline-block; padding:4px 0; color:var(--ink, inherit); font-size:.78rem; white-space:nowrap }
+  .prod-cat-section { margin-top:18px; font-size:.7rem; letter-spacing:1.2px; text-transform:uppercase; color:var(--muted); font-weight:600; padding:0 4px 6px }
+  .prod-chip-thumb { width:48px; height:48px; border-radius:6px; object-fit:cover; border:1px solid var(--border); background:rgba(255,255,255,.04); display:block }
+  .prod-chip-empty { width:48px; height:48px; border-radius:6px; border:1px dashed var(--border); display:flex; align-items:center; justify-content:center; font-size:.55rem; color:var(--muted); text-align:center; line-height:1 }
+  .pec-pull-table tbody tr.pull-detail { font-size:.72rem; color:var(--muted) }
+  .pec-pull-table tbody tr.pull-detail td { padding-top:0; padding-bottom:6px }
+  .pec-pull-supplier { margin-top:18px; font-weight:600; font-size:.85rem; padding:8px 4px; border-bottom:1px solid var(--border) }
+  @media print {
+    .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
+    .pec-modal { max-width:none !important; max-height:none !important; box-shadow:none !important; border:none !important }
+    .pec-modal-bg { position:static !important; background:transparent !important; padding:0 !important }
+  }
 </style>
 <script type="module">
 // Calculator inlined so this works under file:// (where ESM imports are
@@ -5994,7 +6007,7 @@ function _planForArea(area, ctx) {
   const resolvedBasecoatId = area.basecoat_product_id || (area.flake_product_id ? defaultBasecoatByFlake[area.flake_product_id] : null) || null;
   for (const slot of slots) {
     let productId = slot.default_product_id;
-    if (slot.material_type === 'Flake') productId = area.flake_product_id || productId;
+    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz') productId = area.flake_product_id || productId;
     else if (slot.material_type === 'Basecoat') productId = resolvedBasecoatId || productId;
     if (!productId) {
       if (slot.required) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
@@ -6157,6 +6170,7 @@ function _mergeAcrossAreas(areaPlans) {
             .map(s => `<option value="${s}" ${filter===s?'selected':''}>${s}</option>`).join('')}
         </select>
         <button class="pec-btn primary" id="prodNewJobBtn">+ New Job</button>
+        <button class="pec-btn" id="prodPullMaterialBtn">Pull Material</button>
         <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
       </div>
       <div class="pec-card">
@@ -6185,9 +6199,139 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     $('prodJobStatus').addEventListener('change', (e) => { state.jobFilter.status = e.target.value; render(); });
     $('prodNewJobBtn').addEventListener('click', () => { console.log('[prod] prodNewJobBtn click'); state.newJob = blankNewJob(); setProdView('new-job'); });
+    $('prodPullMaterialBtn').addEventListener('click', () => openMaterialPull());
     r.querySelectorAll('tr[data-job-id]').forEach((tr) => {
       tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
     });
+  }
+
+  // -------------------- Pull Material (aggregated by date range) --------------------
+  function isoDay(offset) {
+    const d = new Date(); d.setDate(d.getDate() + offset);
+    return d.toISOString().slice(0, 10);
+  }
+  // Aggregates needed material across jobs whose install_date falls in
+  // [startISO, endISO] inclusive. Groups by product_id; sums (order_qty for
+  // ordered=false) - (backstock_qty when use_backstock=true) clamped to >= 0.
+  // Pure function so the math stays testable later.
+  function aggregateMaterialPull(jobs, startISO, endISO) {
+    const inRange = (j) => j.install_date && j.install_date >= startISO && j.install_date <= endISO && j.status !== 'completed';
+    const out = new Map();
+    for (const job of jobs) {
+      if (!inRange(job)) continue;
+      for (const l of (job.lines || [])) {
+        if (l.delivered) continue;
+        const have = l.use_backstock ? Number(l.backstock_qty || 0) : 0;
+        const need = Math.max(0, Number(l.order_qty || l.qty_needed || 0) - have);
+        if (need <= 0) continue;
+        const key = l.product_id || `name:${l.product_name}`;
+        if (!out.has(key)) out.set(key, {
+          product_id: l.product_id || null,
+          product_name: l.product_name,
+          material_type: l.material_type,
+          supplier: l.supplier || 'Unassigned',
+          color: l.color || null,
+          kit_size: l.kit_size,
+          spread_rate: l.spread_rate,
+          unit_cost: l.unit_cost_snapshot ?? null,
+          total_qty: 0,
+          jobs: [],
+        });
+        const row = out.get(key);
+        row.total_qty += need;
+        if (l.ordered) row.has_some_ordered = true;
+        row.jobs.push({
+          job_id: job.id,
+          proposal: job.proposal_number,
+          customer: job.customer_name,
+          address: job.address,
+          install_date: job.install_date,
+          qty: need,
+        });
+      }
+    }
+    return Array.from(out.values()).sort((a, b) => {
+      if (a.supplier !== b.supplier) return (a.supplier || '').localeCompare(b.supplier || '');
+      if (a.material_type !== b.material_type) return a.material_type.localeCompare(b.material_type);
+      return a.product_name.localeCompare(b.product_name);
+    });
+  }
+
+  function openMaterialPull() {
+    state._pull = state._pull || { start: isoDay(0), end: isoDay(14) };
+    renderMaterialPull();
+  }
+
+  function renderMaterialPull() {
+    const { start, end } = state._pull;
+    const rows = aggregateMaterialPull(state.jobs, start, end);
+    const groupedBySupplier = rows.reduce((acc, r) => {
+      (acc[r.supplier] ||= []).push(r);
+      return acc;
+    }, {});
+    const supplierKeys = Object.keys(groupedBySupplier);
+    const totalLines = rows.length;
+    const totalCost = rows.reduce((s, r) => s + (r.unit_cost == null ? 0 : Number(r.unit_cost) * Number(r.total_qty)), 0);
+
+    $('prodModalRoot').innerHTML = `
+      <div class="pec-modal-bg" id="prodPullBg">
+        <div class="pec-modal prod-modal-wide">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div>
+              <h3 style="margin:0">Material Pull</h3>
+              <div style="color:var(--muted);font-size:.75rem;margin-top:4px">Everything you need to order to cover scheduled installs in this window. Excludes completed jobs and any line already marked delivered.</div>
+            </div>
+            <button class="pec-btn ghost sm" id="prodPullClose">Close</button>
+          </div>
+
+          <div class="pec-toolbar" style="margin-top:14px">
+            <label style="font-size:.7rem;color:var(--muted)">From <input id="prodPullStart" type="date" value="${esc(start)}" style="margin-left:6px"></label>
+            <label style="font-size:.7rem;color:var(--muted)">To <input id="prodPullEnd" type="date" value="${esc(end)}" style="margin-left:6px"></label>
+            <button class="pec-btn sm" id="prodPullPreset7">Next 7 days</button>
+            <button class="pec-btn sm" id="prodPullPreset14">Next 14 days</button>
+            <button class="pec-btn sm" id="prodPullPreset30">Next 30 days</button>
+            <span style="margin-left:auto;color:var(--muted);font-size:.7rem">${totalLines} line${totalLines===1?'':'s'}${totalCost > 0 ? ` · est $${totalCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : ''}</span>
+            <button class="pec-btn primary sm" id="prodPullPrint">Print</button>
+          </div>
+
+          ${supplierKeys.length === 0
+            ? '<div class="pec-empty" style="margin-top:14px">No outstanding material in this window. Either no jobs are scheduled, or every line is already marked delivered.</div>'
+            : supplierKeys.map(sup => `
+              <div class="pec-pull-supplier">${esc(sup)} <span style="color:var(--muted);font-weight:400;font-size:.75rem">· ${groupedBySupplier[sup].length} line${groupedBySupplier[sup].length===1?'':'s'}</span></div>
+              <div class="pec-table-wrap">
+              <table class="pec-table pec-pull-table">
+                <thead><tr>
+                  <th>Material</th><th>Product</th><th>Color</th><th>Qty (kits/boxes)</th><th>Per-job breakdown</th>
+                </tr></thead>
+                <tbody>
+                  ${groupedBySupplier[sup].map(row => `
+                    <tr class="nohover">
+                      <td>${esc(row.material_type)}</td>
+                      <td>${esc(row.product_name)}</td>
+                      <td>${esc(row.color || '')}</td>
+                      <td><strong>${esc(row.total_qty)}</strong></td>
+                      <td style="font-size:.7rem;color:var(--muted)">
+                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) — ${esc(j.qty)}`).join('<br>')}
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              </div>
+            `).join('')
+          }
+        </div>
+      </div>
+    `;
+
+    $('prodPullClose').addEventListener('click', () => { $('prodModalRoot').innerHTML = ''; });
+    $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg') $('prodModalRoot').innerHTML = ''; });
+    $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
+    $('prodPullEnd').addEventListener('change', (e) => { state._pull.end = e.target.value; renderMaterialPull(); });
+    $('prodPullPreset7').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(7)  }; renderMaterialPull(); });
+    $('prodPullPreset14').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(14) }; renderMaterialPull(); });
+    $('prodPullPreset30').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(30) }; renderMaterialPull(); });
+    $('prodPullPrint').addEventListener('click', () => window.print());
   }
 
   // -------------------- New Job view --------------------
@@ -6235,13 +6379,19 @@ function _mergeAcrossAreas(areaPlans) {
   function renderAreas() {
     const host = $('njAreas'); if (!host) return;
     const sysOpts = state.systemTypes.filter(s => s.active).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    const slotsBySys = recipeSlotsBySystemType();
     const flakes = productsByMaterialType('Flake');
+    const quartz = productsByMaterialType('Quartz');
     const basecoats = productsByMaterialType('Basecoat');
+    const sysHasSlot = (sys, mt) => sys && (slotsBySys[sys.id] || []).some(s => s.material_type === mt);
 
     host.innerHTML = state.newJob.areas.map((a, idx) => {
       const sys = state.systemTypes.find(s => s.id === a.system_type_id);
-      const showFlake = sys && sys.requires_flake_color;
-      const showBase  = sys && sys.requires_basecoat_color;
+      const showQuartz = sysHasSlot(sys, 'Quartz');
+      // Flake picker hides when Quartz is the picked-color slot, even if the
+      // legacy requires_flake_color flag is true.
+      const showFlake  = !showQuartz && (sysHasSlot(sys, 'Flake') || (sys && sys.requires_flake_color));
+      const showBase   = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
       const sysSel = sysOpts.replace(`value="${esc(a.system_type_id)}"`, `value="${esc(a.system_type_id)}" selected`);
       return `
         <div class="prod-area-card" data-area-key="${esc(a._key)}">
@@ -6253,14 +6403,21 @@ function _mergeAcrossAreas(areaPlans) {
             </div>
           </div>
           <div class="pec-row-3">
-            <div class="pec-field" style="${showFlake ? '' : 'visibility:hidden'}">
+            <div class="pec-field" style="${showFlake ? '' : 'display:none'}">
               <label>Flake color</label>
               <select data-aprop="flake_product_id">
                 <option value="">Pick a flake…</option>
                 ${flakes.map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
-            <div class="pec-field" style="${showBase ? '' : 'visibility:hidden'}">
+            <div class="pec-field" style="${showQuartz ? '' : 'display:none'}">
+              <label>Quartz color</label>
+              <select data-aprop="flake_product_id">
+                <option value="">Pick a Q-Color blend…</option>
+                ${quartz.map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="pec-field" style="${showBase ? '' : 'display:none'}">
               <label>Basecoat <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">override</span></label>
               <select data-aprop="basecoat_product_id">
                 <option value="">Auto / default pairing</option>
@@ -6468,7 +6625,21 @@ function _mergeAcrossAreas(areaPlans) {
     const j = state.activeJob; const host = $('prodDetailLines'); if (!host) return;
     const lines = (j.lines || []).slice().sort((a, b) => a.order_index - b.order_index);
     if (!lines.length) { host.innerHTML = `<div class="pec-empty">No lines. Click Recalculate to generate from the catalog.</div>`; return; }
+    // Build the per-row supplier dropdown options from a fixed list. Catalog
+    // identity (product, color, material) is read-only so it can't drift away
+    // from the catalog snapshot. Supplier is the one catalog field that stays
+    // user-pickable since orders sometimes shift between Simiron and Prestige.
+    const supplierOptions = (current) => {
+      const known = ['Simiron', 'Prestige Protective Coatings', 'Torginol', 'Cohills'];
+      const seen = new Set();
+      const all = [];
+      const push = (s) => { if (s && !seen.has(s)) { seen.add(s); all.push(s); } };
+      if (current) push(current);
+      known.forEach(push);
+      return all.map(s => `<option value="${esc(s)}" ${s === (current || '') ? 'selected' : ''}>${esc(s)}</option>`).join('');
+    };
     host.innerHTML = `
+      <div class="pec-table-wrap">
       <table class="pec-table">
         <thead><tr>
           <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th>
@@ -6477,10 +6648,12 @@ function _mergeAcrossAreas(areaPlans) {
         <tbody>
           ${lines.map(l => `
             <tr class="nohover" data-line-id="${esc(l.id)}">
-              <td>${esc(l.material_type)}</td>
-              <td>${esc(l.product_name)}</td>
-              <td><input data-prop="supplier" value="${esc(l.supplier || '')}" style="width:120px"></td>
-              <td><input data-prop="color"    value="${esc(l.color || '')}"    style="width:120px"></td>
+              <td><span class="prod-readonly">${esc(l.material_type)}</span></td>
+              <td><span class="prod-readonly">${esc(l.product_name)}</span></td>
+              <td>
+                <select data-prop="supplier" style="width:170px">${supplierOptions(l.supplier)}</select>
+              </td>
+              <td><span class="prod-readonly">${esc(l.color || '')}</span></td>
               <td><input data-prop="qty_needed"    type="number" min="0" step="1" value="${esc(l.qty_needed)}"    class="prod-num"></td>
               <td><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" class="prod-num"></td>
               <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num"></td>
@@ -6490,6 +6663,8 @@ function _mergeAcrossAreas(areaPlans) {
             </tr>`).join('')}
         </tbody>
       </table>
+      </div>
+      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product and Color come from the catalog (read-only here). Edit them in Price &amp; Material Catalog.</div>
     `;
     host.querySelectorAll('tr[data-line-id]').forEach(tr => {
       const id = tr.dataset.lineId;
@@ -6618,28 +6793,55 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   function renderProducts(host) {
+    // Group products by material_type so the Catalog reads as labeled sections
+    // (Flake Materials, Quartz Colors, Basecoats, ...). Within each section
+    // sort by color first, then name, so flake/quartz colors are alphabetical
+    // by their visible color label.
+    const sectionOrder = ['Flake', 'Quartz', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Tint Pack', 'Extra'];
+    const sectionLabel = {
+      Flake: 'Flake Materials', Quartz: 'Quartz Colors', Basecoat: 'Basecoats',
+      Topcoat: 'Topcoats', Stain: 'Stains', Sealer: 'Sealers',
+      'Tint Pack': 'Tint Packs', Extra: 'Extras',
+    };
+    const grouped = sectionOrder.map(t => ({
+      type: t,
+      label: sectionLabel[t],
+      rows: state.products
+        .filter(p => p.material_type === t)
+        .sort((a, b) => (a.color || a.name).localeCompare(b.color || b.name) || a.name.localeCompare(b.name)),
+    })).filter(g => g.rows.length);
+    const uncategorized = state.products.filter(p => !sectionOrder.includes(p.material_type));
+    if (uncategorized.length) grouped.push({ type: 'Other', label: 'Other', rows: uncategorized });
+
+    const renderRow = (p) => `
+      <tr data-edit-product="${esc(p.id)}">
+        <td>${p.image_url ? `<img class="prod-chip-thumb" src="${esc(p.image_url)}" alt="${esc(p.color || p.name)}">` : `<div class="prod-chip-empty">no chip</div>`}</td>
+        <td>${esc(p.name)}</td>
+        <td>${esc(p.color || '')}</td>
+        <td>${esc(p.manufacturer || '')}</td>
+        <td>${esc(p.supplier || '')}</td>
+        <td>${esc(p.spread_rate)} / ${esc(p.kit_size)}</td>
+        <td>${p.unit_cost == null ? '<span style="color:var(--muted)">—</span>' : '$' + Number(p.unit_cost).toLocaleString()}</td>
+        <td>${p.active ? 'Yes' : 'No'}</td>
+        <td><span style="color:var(--accent);font-size:.7rem">Edit ›</span></td>
+      </tr>`;
+
     host.innerHTML = `
       <div class="pec-toolbar">
         <button class="pec-btn primary" id="prodAddProductBtn">+ Add product</button>
+        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost is per kit. Manufacturer = who makes it; Supplier = who you order it from.</span>
       </div>
-      <div class="pec-card">
-        <table class="pec-table">
-          <thead><tr><th>Name</th><th>Type</th><th>Supplier</th><th>Color</th><th>Spread / kit</th><th>Cost</th><th>Active</th><th></th></tr></thead>
-          <tbody>
-            ${state.products.map(p => `
-              <tr data-edit-product="${esc(p.id)}">
-                <td>${esc(p.name)}</td>
-                <td>${esc(p.material_type)}</td>
-                <td>${esc(p.supplier || '')}</td>
-                <td>${esc(p.color || '')}</td>
-                <td>${esc(p.spread_rate)} / ${esc(p.kit_size)}</td>
-                <td>${p.unit_cost == null ? '<span style="color:var(--muted)">—</span>' : '$' + Number(p.unit_cost).toLocaleString()}</td>
-                <td>${p.active ? 'Yes' : 'No'}</td>
-                <td><span style="color:var(--accent);font-size:.7rem">Edit ›</span></td>
-              </tr>`).join('') || '<tr class="nohover"><td colspan="8" class="pec-empty">No products yet. Click + Add product.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
+      ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => `
+        <div class="prod-cat-section">${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span></div>
+        <div class="pec-card" style="margin-top:6px">
+          <table class="pec-table">
+            <thead><tr>
+              <th style="width:60px">Chip</th><th>Name</th><th>Color</th><th>Manufacturer</th><th>Supplier</th><th>Spread / kit</th><th>Cost / kit</th><th>Active</th><th></th>
+            </tr></thead>
+            <tbody>${g.rows.map(renderRow).join('')}</tbody>
+          </table>
+        </div>
+      `).join('')}
     `;
     $('prodAddProductBtn').addEventListener('click', () => openProductModal(null));
     host.querySelectorAll('[data-edit-product]').forEach(b => b.addEventListener('click', () => openProductModal(b.dataset.editProduct)));
@@ -6647,17 +6849,18 @@ function _mergeAcrossAreas(areaPlans) {
 
   function openProductModal(productId) {
     const existing = productId ? state.products.find(p => p.id === productId) : null;
-    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', active: true, notes: '' };
+    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '' };
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPModalBg">
         <div class="pec-modal">
           <h3>${existing ? 'Edit' : 'New'} product</h3>
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
-          <div class="pec-row-2">
+          <div class="pec-row-3">
             <div class="pec-field"><label>Material type</label>
-              <select id="pmType">${['Basecoat','Flake','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="pmType">${['Basecoat','Flake','Quartz','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t}</option>`).join('')}</select>
             </div>
-            <div class="pec-field"><label>Supplier</label><input id="pmSupplier" value="${esc(p.supplier || '')}"></div>
+            <div class="pec-field"><label>Manufacturer</label><input id="pmManufacturer" value="${esc(p.manufacturer || '')}" placeholder="e.g. Torginol, Simiron"></div>
+            <div class="pec-field"><label>Supplier</label><input id="pmSupplier" value="${esc(p.supplier || '')}" placeholder="who we order from"></div>
           </div>
           <div class="pec-row-2">
             <div class="pec-field"><label>Color</label><input id="pmColor" value="${esc(p.color || '')}"></div>
@@ -6665,9 +6868,16 @@ function _mergeAcrossAreas(areaPlans) {
           </div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Kit size</label><input id="pmKit" type="number" min="0" step="0.01" value="${esc(p.kit_size)}"></div>
-            <div class="pec-field"><label>Unit cost</label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
+            <div class="pec-field"><label>Unit cost / kit</label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
             <div class="pec-field"><label>Active</label>
               <select id="pmActive"><option value="true" ${p.active?'selected':''}>Yes</option><option value="false" ${!p.active?'selected':''}>No</option></select>
+            </div>
+          </div>
+          <div class="pec-field">
+            <label>Chip image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a URL; uploads coming later)</span></label>
+            <div style="display:flex;gap:10px;align-items:center">
+              <input id="pmImage" value="${esc(p.image_url || '')}" placeholder="https://..." style="flex:1">
+              <div id="pmImagePreview">${p.image_url ? `<img class="prod-chip-thumb" src="${esc(p.image_url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`}</div>
             </div>
           </div>
           <div class="pec-field"><label>Notes</label><input id="pmNotes" value="${esc(p.notes || '')}"></div>
@@ -6684,16 +6894,24 @@ function _mergeAcrossAreas(areaPlans) {
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('pmCancel').addEventListener('click', closer);
     $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg') closer(); });
+    const imgEl = $('pmImage');
+    if (imgEl) imgEl.addEventListener('input', () => {
+      const url = imgEl.value.trim();
+      const host = $('pmImagePreview');
+      host.innerHTML = url ? `<img class="prod-chip-thumb" src="${esc(url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`;
+    });
     $('pmSave').addEventListener('click', async () => {
       const errEl = $('pmError'); errEl.textContent = '';
       const payload = {
         name: $('pmName').value.trim(),
         material_type: $('pmType').value,
+        manufacturer: $('pmManufacturer').value.trim() || null,
         supplier: $('pmSupplier').value.trim() || null,
         color: $('pmColor').value.trim() || null,
         spread_rate: Number($('pmSpread').value),
         kit_size: Number($('pmKit').value || 1),
         unit_cost: $('pmCost').value === '' ? null : Number($('pmCost').value),
+        image_url: $('pmImage').value.trim() || null,
         active: $('pmActive').value === 'true',
         notes: $('pmNotes').value || null,
       };
@@ -6837,7 +7055,7 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-row-3">
             <div class="pec-field"><label>Order #</label><input id="rsOrder" type="number" min="0" step="1" value="${esc(slot.order_index)}"></div>
             <div class="pec-field"><label>Material type</label>
-              <select id="rsType">${['Basecoat','Flake','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="rsType">${['Basecoat','Flake','Quartz','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
             </div>
             <div class="pec-field"><label>Required</label>
               <select id="rsReq"><option value="true" ${slot.required?'selected':''}>Yes</option><option value="false" ${!slot.required?'selected':''}>No</option></select>
