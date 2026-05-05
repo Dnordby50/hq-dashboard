@@ -6936,10 +6936,28 @@ if (portalToken) {
 class CalculatorError extends Error {
   constructor(message, code) { super(message); this.name = 'CalculatorError'; this.code = code; }
 }
-function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {} }) {
+function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, standaloneMvb = false, standaloneMvbProductId = null }) {
   if (!Array.isArray(areas)) throw new CalculatorError('areas must be an array', 'INVALID_INPUT');
   const areaPlans = [];
   for (const area of areas) areaPlans.push(_planForArea(area, { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake }));
+  if (standaloneMvb && standaloneMvbProductId) {
+    const product = productsById[standaloneMvbProductId];
+    if (!product) throw new CalculatorError(`Standalone MVB product ${standaloneMvbProductId} not found in catalog`, 'PRODUCT_NOT_FOUND');
+    const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+    if (totalSqft > 0) {
+      areaPlans.push({
+        area: { id: '_standalone_mvb', name: 'Standalone MVB', sqft: totalSqft },
+        lines: [{
+          area_id: null, area_name: 'Standalone MVB', order_index: -1,
+          material_type: product.material_type, product_id: product.id, product_name: product.name,
+          supplier: product.supplier || null, color: product.color || null,
+          spread_rate: Number(product.spread_rate), kit_size: Number(product.kit_size),
+          unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
+          sqft: totalSqft,
+        }],
+      });
+    }
+  }
   const lines = _mergeAcrossAreas(areaPlans);
   return { lines, areaPlans };
 }
@@ -6952,7 +6970,7 @@ function _planForArea(area, ctx) {
   const resolvedBasecoatId = area.basecoat_product_id || (area.flake_product_id ? defaultBasecoatByFlake[area.flake_product_id] : null) || null;
   for (const slot of slots) {
     let productId = slot.default_product_id;
-    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz') productId = area.flake_product_id || productId;
+    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment') productId = area.flake_product_id || productId;
     else if (slot.material_type === 'Basecoat') productId = resolvedBasecoatId || productId;
     if (!productId) {
       if (slot.required) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
@@ -7027,7 +7045,7 @@ function _mergeAcrossAreas(areaPlans) {
   window.prodState = state;
 
   function blankNewJob() {
-    return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', job_class: 'residential', areas: [blankArea()] };
+    return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', job_class: 'residential', standalone_mvb: false, areas: [blankArea()] };
   }
   function blankArea() {
     return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '' };
@@ -7303,6 +7321,12 @@ function _mergeAcrossAreas(areaPlans) {
         <div class="pec-row-3">
           <div class="pec-field" style="grid-column:1 / -1"><label>Notes</label><input id="njNotes" value="${esc(j.notes)}"></div>
         </div>
+        <div class="pec-field" style="margin-top:6px">
+          <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:.78rem;text-transform:none;letter-spacing:0;color:var(--ink, inherit)">
+            <input type="checkbox" id="njStandaloneMvb" ${j.standalone_mvb?'checked':''}>
+            Standalone MVB <span style="color:var(--muted);font-size:.7rem">(adds Simiron MVB at 100 sqft / gal across all areas)</span>
+          </label>
+        </div>
       </div>
       <div class="pec-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -7335,6 +7359,7 @@ function _mergeAcrossAreas(areaPlans) {
     const slotsBySys = recipeSlotsBySystemType();
     const flakes = productsByMaterialType('Flake');
     const quartz = productsByMaterialType('Quartz');
+    const pigments = productsByMaterialType('Metallic Pigment');
     const basecoats = productsByMaterialType('Basecoat');
     const sysHasSlot = (sys, mt) => sys && (slotsBySys[sys.id] || []).some(s => s.material_type === mt);
 
@@ -7347,12 +7372,13 @@ function _mergeAcrossAreas(areaPlans) {
 
     host.innerHTML = state.newJob.areas.map((a, idx) => {
       const sys = state.systemTypes.find(s => s.id === a.system_type_id);
-      const showQuartz = sysHasSlot(sys, 'Quartz');
-      // Flake picker hides when Quartz is the picked-color slot, even if the
-      // legacy requires_flake_color flag is true.
-      const showFlake  = !showQuartz && (sysHasSlot(sys, 'Flake') || (sys && sys.requires_flake_color));
-      const showBase   = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
-      const showColorPicker = showFlake || showQuartz;
+      const showQuartz   = sysHasSlot(sys, 'Quartz');
+      const showPigment  = sysHasSlot(sys, 'Metallic Pigment');
+      // Flake picker hides when Quartz or Metallic Pigment is the picked-color
+      // slot, even if the legacy requires_flake_color flag is true.
+      const showFlake    = !showQuartz && !showPigment && (sysHasSlot(sys, 'Flake') || (sys && sys.requires_flake_color));
+      const showBase     = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
+      const showColorPicker = showFlake || showQuartz || showPigment;
       const sysSel = sysOpts.replace(`value="${esc(a.system_type_id)}"`, `value="${esc(a.system_type_id)}" selected`);
       return `
         <div class="prod-area-card" data-area-key="${esc(a._key)}">
@@ -7378,6 +7404,13 @@ function _mergeAcrossAreas(areaPlans) {
                 ${quartz.filter(p => p.name !== 'Special Order Quartz').map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
+            <div class="pec-field" style="${showPigment && !a.special_order ? '' : 'display:none'}">
+              <label>Metallic pigment color</label>
+              <select data-aprop="flake_product_id">
+                <option value="">Pick a pigment…</option>
+                ${pigments.map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
             <div class="pec-field" style="${showColorPicker && a.special_order ? '' : 'display:none'}">
               <label>Custom color name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">special order</span></label>
               <input data-aprop="special_order_color" value="${esc(a.special_order_color || '')}" placeholder="e.g. Mauve Sunset">
@@ -7400,7 +7433,7 @@ function _mergeAcrossAreas(areaPlans) {
             <div class="pec-field"><label>Area notes</label><input data-aprop="notes" value="${esc(a.notes)}"></div>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:.75rem">
-            <label style="display:${showColorPicker ? 'inline-flex' : 'none'};align-items:center;gap:6px;cursor:pointer;color:var(--muted)">
+            <label style="display:${(showFlake || showQuartz) ? 'inline-flex' : 'none'};align-items:center;gap:6px;cursor:pointer;color:var(--muted)">
               <input type="checkbox" data-aprop-checkbox="special_order" ${a.special_order ? 'checked' : ''}>
               Special order (custom color we don't stock)
             </label>
@@ -7454,9 +7487,12 @@ function _mergeAcrossAreas(areaPlans) {
     Object.entries(map).forEach(([id, prop]) => {
       const el = $(id); if (el) el.addEventListener('input', () => { state.newJob[prop] = el.value; });
     });
+    const mvb = $('njStandaloneMvb');
+    if (mvb) mvb.addEventListener('change', () => { state.newJob.standalone_mvb = mvb.checked; renderPreview(); });
   }
 
   function buildCalcInput(areas) {
+    const standaloneMvbProduct = state.products.find(p => p.name === 'Simiron MVB - Standalone' && p.active);
     return {
       areas: areas
         .filter(a => a.system_type_id && Number(a.sqft) > 0)
@@ -7464,6 +7500,8 @@ function _mergeAcrossAreas(areaPlans) {
       productsById: indexById(state.products),
       recipeSlotsBySystemType: recipeSlotsBySystemType(),
       defaultBasecoatByFlake: defaultBasecoatByFlake(),
+      standaloneMvb: !!state.newJob.standalone_mvb,
+      standaloneMvbProductId: standaloneMvbProduct ? standaloneMvbProduct.id : null,
     };
   }
 
@@ -7524,6 +7562,7 @@ function _mergeAcrossAreas(areaPlans) {
         crew: j.crew || null,
         notes: j.notes || null,
         job_class: j.job_class || null,
+        standalone_mvb: !!j.standalone_mvb,
         status, sync_status: 'dirty',
       }).select().single();
       if (insJob.error) return setErr(insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message);
@@ -7814,9 +7853,10 @@ function _mergeAcrossAreas(areaPlans) {
     // (Flake Materials, Quartz Colors, Basecoats, ...). Within each section
     // sort by color first, then name, so flake/quartz colors are alphabetical
     // by their visible color label.
-    const sectionOrder = ['Flake', 'Quartz', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Tint Pack', 'Extra'];
+    const sectionOrder = ['Flake', 'Quartz', 'Metallic Pigment', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Tint Pack', 'Extra'];
     const sectionLabel = {
-      Flake: 'Flake Materials', Quartz: 'Quartz Colors', Basecoat: 'Basecoats',
+      Flake: 'Flake Materials', Quartz: 'Quartz Colors',
+      'Metallic Pigment': 'Metallic Pigments', Basecoat: 'Basecoats',
       Topcoat: 'Topcoats', Stain: 'Stains', Sealer: 'Sealers',
       'Tint Pack': 'Tint Packs', Extra: 'Extras',
     };
@@ -7834,6 +7874,7 @@ function _mergeAcrossAreas(areaPlans) {
     // tints are kits. Used both for the spread rate and the kit-size cells.
     const unitFor = (mt) => {
       if (mt === 'Flake' || mt === 'Quartz') return { per: 'box', kit: 'box' };
+      if (mt === 'Metallic Pigment') return { per: 'pack', kit: 'pack' };
       if (mt === 'Tint Pack') return { per: 'pack', kit: 'pack' };
       return { per: 'gal', kit: 'gal' };
     };
@@ -7896,7 +7937,7 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Material type</label>
-              <select id="pmType">${['Basecoat','Flake','Quartz','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="pmType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t}</option>`).join('')}</select>
             </div>
             <div class="pec-field"><label>Manufacturer</label>
               <input id="pmManufacturer" list="pmManufacturerList" value="${esc(p.manufacturer || '')}" placeholder="Pick or add a new one">
@@ -8105,7 +8146,7 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-row-3">
             <div class="pec-field"><label>Order #</label><input id="rsOrder" type="number" min="0" step="1" value="${esc(slot.order_index)}"></div>
             <div class="pec-field"><label>Material type</label>
-              <select id="rsType">${['Basecoat','Flake','Quartz','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="rsType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
             </div>
             <div class="pec-field"><label>Required</label>
               <select id="rsReq"><option value="true" ${slot.required?'selected':''}>Yes</option><option value="false" ${!slot.required?'selected':''}>No</option></select>

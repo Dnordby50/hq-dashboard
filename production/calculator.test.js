@@ -218,6 +218,70 @@ assertThrows(() => {
   );
 }
 
+// --- Metallic Pigment slot resolves via area.flake_product_id --------------
+{
+  const productsByIdMP = {
+    ...productsById,
+    mvb:     { id: 'mvb',     name: 'Simiron MVB', material_type: 'Basecoat', supplier: 'Simiron', color: 'Clear', spread_rate: 150, kit_size: 3, unit_cost: null },
+    metEpx:  { id: 'metEpx',  name: 'Simiron Metallic Epoxy', material_type: 'Extra', supplier: 'Simiron', color: 'Clear', spread_rate: 100, kit_size: 3, unit_cost: null },
+    pigSilv: { id: 'pigSilv', name: 'Simiron Metallic Pigment - Silver', material_type: 'Metallic Pigment', supplier: 'Simiron', color: 'Silver', spread_rate: 240, kit_size: 1, unit_cost: null },
+    urethane:{ id: 'urethane',name: 'Simiron High Wear Urethane', material_type: 'Topcoat', supplier: 'Simiron', color: 'Clear', spread_rate: 150, kit_size: 1, unit_cost: null },
+  };
+  const recipesMP = {
+    metallic: [
+      { id: 'm1', order_index: 1, material_type: 'Basecoat',         default_product_id: 'mvb',     required: true },
+      { id: 'm2', order_index: 2, material_type: 'Extra',            default_product_id: 'metEpx',  required: true },
+      { id: 'm3', order_index: 3, material_type: 'Metallic Pigment', default_product_id: null,      required: true },
+      { id: 'm4', order_index: 4, material_type: 'Topcoat',          default_product_id: 'urethane',required: true },
+    ],
+  };
+  const plan = computeMaterialPlan({
+    areas: [{ id: 'a1', name: 'Studio', sqft: 480, system_type_id: 'metallic', flake_product_id: 'pigSilv' }],
+    productsById: productsByIdMP,
+    recipeSlotsBySystemType: recipesMP,
+  });
+  const pig = plan.lines.find(l => l.material_type === 'Metallic Pigment');
+  assertEq(!!pig, true, 'Metallic Pigment slot produces a line');
+  assertEq(pig.product_id, 'pigSilv', 'Metallic Pigment line uses area.flake_product_id pick');
+  assertEq(pig.qty_needed, Math.ceil(480 / 240 / 1), 'Metallic Pigment qty = ceil(480/240/1) = 2');
+}
+
+// --- Standalone MVB: one extra line at total sqft / 100 / 3 ----------------
+{
+  const productsByIdMvb = {
+    ...productsById,
+    mvbStd: { id: 'mvbStd', name: 'Simiron MVB - Standalone', material_type: 'Basecoat', supplier: 'Simiron', color: 'Clear', spread_rate: 100, kit_size: 3, unit_cost: null },
+  };
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage A', sqft: 300, system_type_id: 'std', flake_product_id: 'flake' },
+      { id: 'a2', name: 'Garage B', sqft: 300, system_type_id: 'std', flake_product_id: 'flake' },
+    ],
+    productsById: productsByIdMvb,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+    standaloneMvb: true,
+    standaloneMvbProductId: 'mvbStd',
+  });
+  const mvbLine = plan.lines.find(l => l.product_id === 'mvbStd');
+  assertEq(!!mvbLine, true, 'Standalone MVB produces an extra line');
+  assertEq(mvbLine.qty_needed, Math.ceil(600 / 100 / 3), 'Standalone MVB qty over 600 sqft = 2 kits');
+  assertEq(mvbLine.product_name, 'Simiron MVB - Standalone', 'Standalone MVB line carries the right product name');
+}
+
+// --- Standalone MVB off: no extra line --------------------------------------
+{
+  const plan = computeMaterialPlan({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+    standaloneMvb: false,
+  });
+  const hasMvbLine = plan.lines.some(l => /MVB/.test(l.product_name));
+  assertEq(hasMvbLine, false, 'standaloneMvb=false produces no MVB line');
+}
+
 // ----------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

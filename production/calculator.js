@@ -45,6 +45,8 @@ export function computeMaterialPlan({
   productsById,
   recipeSlotsBySystemType,
   defaultBasecoatByFlake = {},
+  standaloneMvb = false,
+  standaloneMvbProductId = null,
 }) {
   if (!Array.isArray(areas)) {
     throw new CalculatorError('areas must be an array', 'INVALID_INPUT');
@@ -58,6 +60,40 @@ export function computeMaterialPlan({
       recipeSlotsBySystemType,
       defaultBasecoatByFlake,
     }));
+  }
+
+  // Job-level standalone MVB: one extra synthetic area whose only "slot" is
+  // the MVB product, applied to total sqft across all real areas. Folded into
+  // mergeAcrossAreas so it shows up as a single line in the order. Does not
+  // override the in-Metallic-system MVB; that one comes from the recipe.
+  if (standaloneMvb && standaloneMvbProductId) {
+    const product = productsById[standaloneMvbProductId];
+    if (!product) {
+      throw new CalculatorError(
+        `Standalone MVB product ${standaloneMvbProductId} not found in catalog`,
+        'PRODUCT_NOT_FOUND'
+      );
+    }
+    const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+    if (totalSqft > 0) {
+      areaPlans.push({
+        area: { id: '_standalone_mvb', name: 'Standalone MVB', sqft: totalSqft },
+        lines: [{
+          area_id: null,
+          area_name: 'Standalone MVB',
+          order_index: -1, // sorts to top of the order
+          material_type: product.material_type,
+          product_id: product.id,
+          product_name: product.name,
+          supplier: product.supplier || null,
+          color: product.color || null,
+          spread_rate: Number(product.spread_rate),
+          kit_size: Number(product.kit_size),
+          unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
+          sqft: totalSqft,
+        }],
+      });
+    }
   }
 
   const lines = mergeAcrossAreas(areaPlans, productsById);
@@ -91,10 +127,11 @@ function planForArea(area, ctx) {
   for (const slot of slots) {
     let productId = slot.default_product_id;
 
-    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz') {
-      // Quartz colors are picked per-job and stored in the same area column
-      // (flake_product_id) as flake picks. Slot type just gates which catalog
-      // products the New Job picker shows.
+    if (slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment') {
+      // Flake / Quartz / Metallic Pigment colors are all picked per-job and
+      // stored in the same area column (flake_product_id) as the user's
+      // pick. The slot's material_type just gates which catalog products
+      // the New Job picker shows for that system.
       productId = area.flake_product_id || productId;
     } else if (slot.material_type === 'Basecoat') {
       productId = resolvedBasecoatId || productId;
