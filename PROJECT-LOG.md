@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 14:20 MST] crm: ran customer_fields + lead_sources_full_list migrations in production
+By: Cowork
+Changed: Executed two migrations in sequence against production Supabase (project zdfpzmmrgotynrwkeakd) via the SQL editor. (1) supabase/migrations/2026-05-04_customer_fields.sql ran first because the prior migration was never actually applied to prod (the 2026-05-04 22:40 Claude Code entry's Cowork handoff was missed; no Cowork run-confirmation entry exists for it in the log). Supabase prompted the destructive-operations confirmation (the `drop policy if exists` + `drop trigger if exists` idempotency guards trigger it; same pattern as the prior metallic_pigment_split run); confirmed and ran. Result: "Success. No rows returned." (2) supabase/migrations/2026-05-05_lead_sources_full_list.sql ran second. Result: "Success. No rows returned."
+Why: This is a correction to the diagnosis in the 2026-05-05 06:50 Claude Code entry. That entry attributed Dylan's "Could not find the table 'pec_lead_sources' in the schema cache" error to PostgREST schema-cache lag and added a `notify pgrst, 'reload schema';` to the new migration. The actual root cause was that the table did not exist in production at all because 2026-05-04_customer_fields.sql was never executed there. Today's first run of 2026-05-05_lead_sources_full_list.sql failed with `ERROR: 42P01: relation "public.pec_lead_sources" does not exist`, which surfaced the real problem. After running customer_fields first, the lead_sources_full_list migration ran cleanly.
+Files touched: PROJECT-LOG.md
+External systems touched: Supabase (production project zdfpzmmrgotynrwkeakd), executed both migration files in the SQL editor.
+
+Verification output (post customer_fields):
+  customers_new_cols           | {billing_address_line1, billing_address_line2, billing_city, billing_state, billing_zip, company_name, first_name, last_name, lead_source, tags}  (10 columns, expected 10)
+  job_class_cols               | {jobs.job_class, pec_prod_jobs.job_class}  (2 columns, expected 2)
+  pec_lead_sources_constraints | UNIQUE pec_lead_sources_name_key + PRIMARY KEY pec_lead_sources_pkey (expected; the ON CONFLICT (name) clause in the lead-sources migration depends on this unique constraint)
+
+Verification output (post lead_sources_full_list):
+  active=true  (17 rows): Facebook, Google, Google PPC, Home Show, Home Show 2025, Instagram, Magazine AD, Mail, Other, Parade, Postcard Mailer, Referral, Repeat Customer, Saw our truck, Walk In, Website, Yard Sign
+  active=false (2 rows):  Door Hanger, Truck Lettering
+
+Counts match the spec from the 2026-05-05 06:50 handoff exactly. The 9 originally-seeded names from customer_fields plus the 10 newly-inserted names total 19; ON CONFLICT prevented any duplicates (none of the 10 new names overlapped). Door Hanger and Truck Lettering correctly flipped to active=false.
+
+Next steps: Dylan hard-refreshes the dashboard, opens CRM > Settings > Lead Sources, confirms 17 active rows, and tries the + Add source path that was failing earlier. With both migrations in place the schema-cache error should be gone; if a different error appears, the richer error surfacing added in the 06:50 commit will print the full Postgres error code/details/hint to the modal so we can diagnose immediately.
+Handoff to Cowork: None.
+Handoff to Dylan: 1) Hard-refresh the dashboard. 2) Open CRM > Settings, scroll to Lead Sources. Confirm the 17 active rows appear (Facebook, Google, Google PPC, Home Show, Home Show 2025, Instagram, Magazine AD, Mail, Other, Parade, Postcard Mailer, Referral, Repeat Customer, Saw our truck, Walk In, Website, Yard Sign). 3) Click + Add source, type a brand-new name (e.g. "Test Source"), save. It should land in the table. 4) Open CRM > Customers > + New. The new structured fields (Individual / Business toggle, billing address split into 5 fields, lead source dropdown, tag chips) should all be functional now that the customers table has the new columns. 5) Push when ready. From your terminal: cd /Users/dylannordby/Claude-Code/HQ-Dashboard && git push origin main. The sandbox can't reach git@github.com.
+
+---
+
 ## [2026-05-05 07:30] crm: customer CSV import (DripJobs export shape)
 By: Claude Code
 Changed: index.html. Added "Import from CSV" button to the Customers toolbar (next to + New Customer). Click opens a modal with a file picker, an inline CSV parser that handles quoted fields + escaped quotes + multi-line values, and a header-aware column mapping for the DripJobs export shape: First Name, Last Name, Email, Company Name, Phone, Address, Address 2, City, State, Zip Code, Lead Source. After parsing, the modal previews the first 5 rows that will be imported and shows row counts (total / new / duplicate-by-email / blank-email). Duplicates against existing customers are detected by case-insensitive email lookup against the customers table; in-file duplicates by email are also collapsed. Rows without an email are treated as new (no other unique identifier). Confirm runs batched inserts of 200 rows each into public.customers, stamping a portal token client-side via crypto.getRandomValues for each new row, with status text updating per batch and a final "Imported N customers." message. Brand defaults to 'prescott-epoxy' for the whole file (DripJobs is PEC's tool); a separate FTP path will need a brand toggle later. Lead source values that don't match the managed pec_lead_sources list are saved as-is (free text on customers.lead_source) so the import never blocks on unknown sources; user can normalize later via the Customers > Edit form.
