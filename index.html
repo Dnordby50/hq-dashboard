@@ -8152,7 +8152,10 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   function renderColorPairings(host) {
-    const flakes = productsByMaterialType('Flake', { includeInactive: true });
+    // Drop Special Order placeholders from the pairing pickers — they're for
+    // one-off custom-color jobs, not for default basecoat lookups.
+    const isSpecial = (p) => p.name === 'Special Order Flake' || p.name === 'Special Order Quartz';
+    const flakes = productsByMaterialType('Flake', { includeInactive: true }).filter(p => !isSpecial(p));
     const basecoats = productsByMaterialType('Basecoat', { includeInactive: true });
     const productById = indexById(state.products);
     host.innerHTML = `
@@ -8180,7 +8183,15 @@ function _mergeAcrossAreas(areaPlans) {
         </table>
       </div>
     `;
-    $('prodAddPairBtn').addEventListener('click', () => openPairingModal(flakes, basecoats));
+    const addPairBtn = $('prodAddPairBtn');
+    if (!addPairBtn) {
+      console.error('[prod] prodAddPairBtn missing from DOM after render');
+    } else {
+      addPairBtn.addEventListener('click', () => {
+        console.log('[prod] Add pairing click; flakes:', flakes.length, 'basecoats:', basecoats.length);
+        openPairingModal(flakes, basecoats);
+      });
+    }
     host.querySelectorAll('[data-make-default]').forEach(b => b.addEventListener('click', async () => {
       const cp = state.colorPairings.find(x => x.id === b.dataset.makeDefault); if (!cp) return;
       await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', cp.flake_product_id);
