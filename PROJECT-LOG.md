@@ -4,6 +4,75 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-04 20:09 MST] crm: ran 2026-05-04 catalog migrations (quartz split + 23 new colors)
+By: Cowork
+Changed: Executed both 2026-05-04 migrations against production Supabase (project zdfpzmmrgotynrwkeakd) in order, via the SQL editor. (1) supabase/migrations/2026-05-04_quartz_material_type.sql ran cleanly ("Success. No rows returned."); the three CHECK constraints (pec_prod_products, pec_prod_recipe_slots, pec_prod_material_lines) now allow material_type='Quartz', the 41 Torginol Q-Color rows reclassified from Flake to Quartz, and the Quartz system's broadcast slot flipped from Flake to Quartz. (2) supabase/migrations/2026-05-04_catalog_expansion.sql ran cleanly. Two columns added (manufacturer text, image_url text). Manufacturer backfilled. 17 of 17 Decorative Simiron Flake rows inserted, 5 of 6 new Simiron 1100 SL basecoat rows inserted (the sixth, "Simiron 1100 SL - Clear", was a name conflict with a pre-existing row that ON CONFLICT (name) DO NOTHING correctly skipped; see Verification below).
+Why: Run the migrations Claude Code wrote in the prior 19:30 entry, which were committed at 712626e but not yet executed in prod.
+Files touched: PROJECT-LOG.md
+External systems touched: Supabase (production project zdfpzmmrgotynrwkeakd) - executed both migration files in the SQL editor.
+
+Verification output (post-Step-1):
+  select material_type, count(*) from public.pec_prod_products where active group by 1 order by 1;
+    Basecoat | 3
+    Extra    | 2
+    Flake    | 2
+    Quartz   | 41
+    Sealer   | 1
+    Stain    | 1
+    Topcoat  | 2
+
+  Spec said Flake=1 (Domino), but actual is 2. Pre-existing row "Simiron Metallic Pigment" (color "Per-job pick") was sitting at material_type='Flake' before this migration. The migration's WHERE clause only targeted Torginol Q-Color rows so it didn't touch Metallic Pigment. Pre-existing data quality issue, not caused by this migration.
+
+  select st.name as system, rs.material_type, count(*) from public.pec_prod_recipe_slots rs join public.pec_prod_system_types st on st.id = rs.system_type_id group by 1,2 order by 1,2;
+    Flake                    | Basecoat | 1
+    Flake                    | Flake    | 1
+    Flake                    | Topcoat  | 1
+    Grind and Seal - Cohills | Sealer   | 1
+    Grind and Seal - Urethane| Basecoat | 1
+    Grind and Seal - Urethane| Stain    | 1
+    Grind and Seal - Urethane| Topcoat  | 1
+    Grind Stain and Seal     | Sealer   | 1
+    Grind Stain and Seal     | Stain    | 1
+    Metallic                 | Basecoat | 1
+    Metallic                 | Extra    | 1
+    Metallic                 | Flake    | 1
+    Metallic                 | Topcoat  | 1
+    Quartz                   | Basecoat | 1
+    Quartz                   | Extra    | 1
+    Quartz                   | Quartz   | 1   <-- expected, replaced prior Quartz/Flake
+    Quartz                   | Topcoat  | 1
+    Standard Flake           | Basecoat | 1
+    Standard Flake           | Flake    | 1
+    Standard Flake           | Topcoat  | 1
+  Quartz/Quartz slot present, prior Quartz/Flake gone. Metallic still has a Flake slot (intentional, migration only flipped the Quartz system).
+
+Verification output (post-Step-2):
+  select material_type, count(*) from public.pec_prod_products where active group by 1 order by 1;
+    Basecoat | 8
+    Extra    | 2
+    Flake    | 19
+    Quartz   | 41
+    Sealer   | 1
+    Stain    | 1
+    Topcoat  | 2
+  Total active 74 (was 52 before; 22 of 23 new rows inserted, 1 conflict).
+
+  select coalesce(manufacturer, '<NULL>') as manufacturer, count(*) from public.pec_prod_products group by 1 order by 1;
+    Cohills  | 2
+    Simiron  | 13
+    Torginol | 59
+  Zero NULL manufacturers; backfill rules covered every row.
+
+Unexpected (worth Dylan flagging):
+  1) "Simiron 1100 SL - Clear" already existed in the catalog (seeded 2026-05-01 19:35 as one of the 8 non-color SKUs), and was classified as material_type='Extra'. The migration tried to insert it as material_type='Basecoat' but ON CONFLICT (name) DO NOTHING correctly skipped, so the existing Extra-classified row remains. Per the migration's intent (and per the seed comment "Often used as the body coat in Quartz systems"), it should be a Basecoat. Not blocking, but Dylan may want to UPDATE it via the Material Catalog UI or one-line SQL.
+  2) "Simiron Metallic Pigment" sits at material_type='Flake' (color "Per-job pick"). Probably should be Tint Pack or Extra. Pre-existing, not caused by this migration. Same fix path.
+
+Next steps: Dylan hard-refreshes the live dashboard and walks the verification list from the prior 19:30 entry (catalog sections render in order, New Job picker filters correctly per system slot, job-detail modal fits, Pull Material aggregator returns aggregated rows). Optional cleanup: reclassify "Simiron 1100 SL - Clear" to Basecoat (and/or "Simiron Metallic Pigment" to Tint Pack/Extra) via the catalog UI if those classifications matter for the New Job pickers.
+Handoff to Cowork: None
+Handoff to Dylan: 1) Hard-refresh the live site. Open CRM > Price & Material Catalog > Products and confirm sections render: Flake Materials (19), Quartz Colors (41), Basecoats (8), Topcoats, Stains, Sealers, plus 2 Extras. 2) Open + New Job, pick a Flake system: picker should show Simiron flakes (18 Decorative Simiron Flake rows + Domino + possibly Metallic Pigment depending on filter). 3) Pick the Quartz system: Quartz Color picker shows the 41 Q-Color blends. 4) Optional: in the Material Catalog, edit "Simiron 1100 SL - Clear" and change material_type from Extra to Basecoat so it shows up under Basecoats and is selectable as a body coat. Same for "Simiron Metallic Pigment" if you want it out of Flake.
+
+---
+
 ## [2026-05-04 19:30] crm: catalog manufacturer/quartz split, 23 new colors, edit lockdown, modal sizing fix, Pull Material aggregator
 By: Claude Code
 Changed: Six connected fixes/additions to the PEC Material Catalog and Ordering UX. (1) Two new Supabase migrations. supabase/migrations/2026-05-04_quartz_material_type.sql extends the CHECK constraint on pec_prod_products / pec_prod_recipe_slots / pec_prod_material_lines to allow material_type='Quartz', then reclassifies the 41 Torginol Q-Color rows from 'Flake' to 'Quartz' and flips the Quartz system's broadcast recipe slot from 'Flake' to 'Quartz' so slot-type matches product-type. supabase/migrations/2026-05-04_catalog_expansion.sql adds two columns to pec_prod_products (manufacturer text, image_url text), backfills manufacturer for existing rows (Torginol, Simiron, Cohills), and inserts 17 new Decorative Simiron Flake colors (Autumn Brown, Cabin Fever, Coyote, Creekbed, Feather Gray, Garnet, Glacier, Gravel, Nightfall, Orbit, Outback, Pumice, Safari, Schist, Shoreline, Stargazer, Tidal Wave; Domino skipped, already exists) plus 6 new Simiron 1100 SL basecoat color variants (Light Gray, Haze Gray, Deck Gray, Sandstone, White, Clear). Each flake row carries manufacturer='Torginol' supplier='Simiron' spread_rate=325 kit_size=1; basecoats are spread 150 / kit 3, mirroring Tinted Gray. unit_cost left null on all new rows; Dylan fills via Material Catalog UI. (2) Calculator (production/calculator.js + the inline copy in index.html) now treats slot.material_type='Quartz' the same as 'Flake' (user picks per area, stored in area.flake_product_id). 24/24 tests still pass. (3) Material Catalog UI in index.html: subnav button renamed to "Price & Material Catalog"; Products view now groups rows by material_type into labeled sections (Flake Materials, Quartz Colors, Basecoats, Topcoats, Stains, Sealers, Tint Packs, Extras) with alphabetical sort by color within each section; new Manufacturer column between Color and Supplier; new Chip column shows the chip image thumbnail (or a "no chip" placeholder div) using the new image_url field; product-edit modal got Manufacturer + Chip image URL fields with a live thumbnail preview, Quartz added to material_type dropdown, recipe-slot modal got Quartz too. (4) New Job form (renderAreas) replaces the old requires_flake_color flag with system-aware slot inspection: if the picked system has a Quartz slot the Quartz Color picker fires (Torginol Q-Color blends only); if it has a Flake slot the Flake picker fires (Simiron flakes only, no Torginol bleed-through); else both are hidden. Both pickers bind to the same area.flake_product_id column so no schema change needed. (5) Job-detail materials chart locked down: Material, Product, Color render as read-only spans (catalog identity stays in the catalog); Supplier is now a per-line dropdown (Simiron / Prestige Protective Coatings / Torginol / Cohills, plus whatever the line currently has) so the user can switch supplier per job without retyping. Qty / Backstock / Order remain number inputs; checkboxes unchanged. (6) Modal sizing fixed: .prod-modal-wide max-width raised from 920px to min(1280px, 96vw); .pec-modal max-height raised from 90vh to 92vh; tables wrapped in a .pec-table-wrap with overflow-x:auto so the chart scrolls horizontally on narrow viewports instead of clipping the page. (7) New Pull Material toolbar button on the Ordering view opens an aggregated order modal with date-range pickers (default Today through +14 days plus 7/14/30 presets), grouped by supplier then material_type then product. Aggregation logic lives in aggregateMaterialPull(jobs, startISO, endISO): sums (order_qty - backstock_qty when use_backstock=true) clamped to >= 0 across all non-completed jobs whose install_date is in range, skipping any line already marked delivered. Each row shows total kits/boxes plus the per-job breakdown (date · customer · proposal · qty). Modal includes a Print button (window.print) with a print stylesheet that hides toolbars and removes max-widths.
