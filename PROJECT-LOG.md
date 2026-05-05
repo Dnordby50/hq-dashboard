@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-04 22:06 MST] crm: ran 2026-05-04 flake cleanup + special-order migration
+By: Cowork
+Changed: Executed supabase/migrations/2026-05-04_flake_cleanup_special_order.sql against production Supabase (project zdfpzmmrgotynrwkeakd) via the SQL editor. Result: "Success. No rows returned." Three things landed: (1) all 18 "Decorative Simiron Flake - <Color>" rows renamed to "<Color> Flake" (Domino is now "Domino Flake"; the 17 colors added in the prior catalog_expansion migration were also renamed). Color column untouched. (2) Two new text columns on pec_prod_areas: flake_size and special_order_color. (3) Two placeholder products inserted: "Special Order Flake" (material_type='Flake', spread 325, kit 1) and "Special Order Quartz" (material_type='Quartz', spread 50, kit 1). manufacturer + supplier are NULL on both placeholders by design.
+Why: Step 1 of the handoff in the prior 23:10 Claude Code entry. Migration was committed at 4015032 but not yet applied to prod; the New Job "Special order" checkbox + per-area flake-size dropdown depend on these schema and product changes.
+Files touched: PROJECT-LOG.md
+External systems touched: Supabase (production project zdfpzmmrgotynrwkeakd), executed migration via SQL editor.
+
+Verification output (4-row union query):
+  old_naming_remaining   | 0
+  first5_flake_names     | Autumn Brown Flake, Cabin Fever Flake, Coyote Flake, Creekbed Flake, Domino Flake
+  areas_new_columns      | flake_size, special_order_color
+  special_order_products | Special Order Flake (Flake), Special Order Quartz (Quartz)
+
+All four match expectations. Zero rows still using the old "Decorative Simiron Flake - " prefix. Renamed names sort alphabetically by color (Autumn Brown -> Cabin Fever -> Coyote -> Creekbed -> Domino in the first 5). Both new pec_prod_areas columns present. Both Special Order placeholders inserted with the correct material_type. Nothing unexpected.
+
+Next steps: Dylan pushes to origin so Netlify deploys the New Job "Special order" UI and catalog spec-sheet column changes that depend on this schema. Then walk the in-app verification list from the prior 23:10 entry's Handoff to Dylan.
+Handoff to Cowork: None
+Handoff to Dylan: 1) Push the new commit (the cowork log entry below this one) plus any prior unpushed commits. From your terminal: cd /Users/dylannordby/Claude-Code/HQ-Dashboard && git push origin main. The sandbox can't reach git@github.com so this needs to come from the host. 2) After Netlify deploys, walk the in-app verification list from the prior 23:10 entry: catalog flake names, supplier/manufacturer datalist autocomplete, New Job flake-size dropdown, Special order checkbox + custom color flow, materials chart showing "Special: <color>".
+
+---
+
 ## [2026-05-04 23:10] crm: catalog spread/kit columns; flake rename; flake size + special-order
 By: Claude Code
 Changed: Five small but useful catalog/order changes. (1) supabase/migrations/2026-05-04_flake_cleanup_special_order.sql renames every "Decorative Simiron Flake - <Color>" product to just "<Color> Flake" (color column unchanged so calendar dots, color pairings, and order pulls keep working). Adds two columns to pec_prod_areas: flake_size text (for the per-area 1/4" / 1/8" / 1/16" choice) and special_order_color text (free-text custom color name). Inserts two placeholder products: "Special Order Flake" (material_type='Flake', spread 325, kit 1, no manufacturer/supplier) and "Special Order Quartz" (Quartz, spread 50, kit 1) so the calculator has a row to compute against when an area is marked special-order; the actual color name lives on the area, not as a new catalog row. (2) Material Catalog products view now shows three unit-aware columns instead of the old combined "Spread / kit": "Spread Rate" (sqft / gal for liquids, sqft / box for flakes/quartz, sqft / pack for tints), "Kit Size" (with matching unit label), and "Spread / Kit" (= spread × kit, computed). Right-aligned tabular numerals so the column reads like a spec sheet. (3) Product edit modal: supplier and manufacturer text inputs converted to datalist-backed inputs that autocomplete from the distinct values across the catalog. Typing a brand-new value still works — it just becomes a new option on the next render. Matches the user request "dropdown with the option to add an additional choice." (4) PEC Ordering New Job form: each area now has a "Flake size" dropdown (1/4" default, 1/8", 1/16") visible only when a flake or quartz picker is showing; doesn't affect spread rate or pricing — saved on pec_prod_areas.flake_size for order-printout reference. Each area also gets a "Special order (custom color we don't stock)" checkbox; when checked, the regular flake/quartz color picker is hidden and a free-text "Custom color name" input appears; toggling on stamps the matching Special Order placeholder product onto area.flake_product_id automatically (so the calculator math works) and saves the typed color name to pec_prod_areas.special_order_color. The catalog stays clean of one-off colors. (5) On save, material lines that came from the Special Order placeholder are post-processed to overwrite product_name and color with the user's custom name (e.g. "Special: Mauve Sunset") so the job-detail materials chart and order pull show the real color instead of the placeholder text.
