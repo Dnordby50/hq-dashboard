@@ -4817,6 +4817,17 @@ function openModal(html, { onMount } = {}) {
 function closeModal() { $('pecModalRoot').innerHTML = ''; }
 window.pecCloseModal = closeModal;
 
+// Safety net: if any uncaught error or rejected promise escapes while a modal
+// is open, clear the backdrop so it cannot silently block the whole UI.
+window.addEventListener('error', () => {
+  const root = document.getElementById('pecModalRoot');
+  if (root) root.innerHTML = '';
+});
+window.addEventListener('unhandledrejection', () => {
+  const root = document.getElementById('pecModalRoot');
+  if (root) root.innerHTML = '';
+});
+
 function openLightbox(src) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-lightbox';
@@ -5081,13 +5092,18 @@ async function openCustomerForm(c) {
         billing_zip: fd.get('billing_zip') || null,
       };
 
-      let error;
-      if (isNew) {
-        ({ error } = await supabase.from('customers').insert({ ...payload, token: randomToken() }));
-      } else {
-        ({ error } = await supabase.from('customers').update(payload).eq('id', c.id));
+      try {
+        let error;
+        if (isNew) {
+          ({ error } = await supabase.from('customers').insert({ ...payload, token: randomToken() }));
+        } else {
+          ({ error } = await supabase.from('customers').update(payload).eq('id', c.id));
+        }
+        if (error) { alert(error.message); return; }
+      } catch (err) {
+        alert('Save failed: ' + err.message);
+        return; // do not close on error so user can retry
       }
-      if (error) { alert(error.message); return; }
       closeModal();
       renderCustomers();
     });
@@ -5683,17 +5699,27 @@ function openColorForm(c) {
     modal.querySelector('#pecColorForm').addEventListener('submit', async e => {
       e.preventDefault();
       const body = Object.fromEntries(new FormData(e.target));
-      const { error } = isNew
-        ? await supabase.from('colors').insert(body)
-        : await supabase.from('colors').update(body).eq('id', c.id);
-      if (error) { alert(error.message); return; }
+      try {
+        const { error } = isNew
+          ? await supabase.from('colors').insert(body)
+          : await supabase.from('colors').update(body).eq('id', c.id);
+        if (error) { alert(error.message); return; }
+      } catch (err) {
+        alert('Save failed: ' + err.message);
+        return; // do not close on error so user can retry
+      }
       closeModal(); renderColors();
     });
     const del = modal.querySelector('#pecColorDel');
     if (del) del.addEventListener('click', async () => {
       if (!confirm('Delete color?')) return;
-      const { error } = await supabase.from('colors').delete().eq('id', c.id);
-      if (error) { alert(error.message); return; }
+      try {
+        const { error } = await supabase.from('colors').delete().eq('id', c.id);
+        if (error) { alert(error.message); return; }
+      } catch (err) {
+        alert('Delete failed: ' + err.message);
+        return; // do not close on error so user can retry
+      }
       closeModal(); renderColors();
     });
   }});
@@ -5765,8 +5791,13 @@ function openReferralForm(r) {
       const body = Object.fromEntries(new FormData(e.target));
       body.payment_amount = body.payment_amount ? parseFloat(body.payment_amount) : null;
       if (body.status === 'paid' && !r.paid_at) body.paid_at = new Date().toISOString();
-      const { error } = await supabase.from('referrals').update(body).eq('id', r.id);
-      if (error) { alert(error.message); return; }
+      try {
+        const { error } = await supabase.from('referrals').update(body).eq('id', r.id);
+        if (error) { alert(error.message); return; }
+      } catch (err) {
+        alert('Save failed: ' + err.message);
+        return; // do not close on error so user can retry
+      }
       closeModal(); renderReferrals();
     });
   }});
@@ -5889,23 +5920,28 @@ function openTeamForm(t) {
       const errEl = modal.querySelector('#pecTeamErr');
       errEl.textContent = '';
       const body = Object.fromEntries(new FormData(e.target));
-      if (isNew) {
-        const res = await fetch('/.netlify/functions/pec-create-staff', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${state.session.access_token}`,
-          },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const out = await res.json().catch(() => ({ error: 'Failed' }));
-          errEl.textContent = out.error || 'Failed to create staff';
-          return;
+      try {
+        if (isNew) {
+          const res = await fetch('/.netlify/functions/pec-create-staff', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${state.session.access_token}`,
+            },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const out = await res.json().catch(() => ({ error: 'Failed' }));
+            errEl.textContent = out.error || 'Failed to create staff';
+            return;
+          }
+        } else {
+          const { error } = await supabase.from('admin_users').update({ name: body.name, role: body.role }).eq('id', t.id);
+          if (error) { errEl.textContent = error.message; return; }
         }
-      } else {
-        const { error } = await supabase.from('admin_users').update({ name: body.name, role: body.role }).eq('id', t.id);
-        if (error) { errEl.textContent = error.message; return; }
+      } catch (err) {
+        errEl.textContent = 'Save failed: ' + err.message;
+        return; // do not close on error so user can retry
       }
       closeModal(); renderTeam();
     });
@@ -6032,19 +6068,30 @@ function openLeadSourceModal(leadId) {
           notes: modal.querySelector('#leadNotes').value || null,
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
-        const op = existing
-          ? supabase.from('pec_lead_sources').update(payload).eq('id', existing.id)
-          : supabase.from('pec_lead_sources').insert(payload);
-        const { error } = await op;
-        if (error) return showSupabaseError(errEl, error);
+        try {
+          const op = existing
+            ? supabase.from('pec_lead_sources').update(payload).eq('id', existing.id)
+            : supabase.from('pec_lead_sources').insert(payload);
+          const { error } = await op;
+          if (error) return showSupabaseError(errEl, error);
+        } catch (err) {
+          errEl.textContent = 'Save failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSettings();
       });
       const delBtn = modal.querySelector('#leadDelete');
       if (delBtn) delBtn.addEventListener('click', async () => {
         if (!confirm(`Delete lead source "${existing.name}"? Customers tagged with this source will keep the text value.`)) return;
-        const { error } = await supabase.from('pec_lead_sources').delete().eq('id', existing.id);
-        if (error) return showSupabaseError(modal.querySelector('#leadError'), error);
+        const errEl = modal.querySelector('#leadError'); errEl.textContent = '';
+        try {
+          const { error } = await supabase.from('pec_lead_sources').delete().eq('id', existing.id);
+          if (error) return showSupabaseError(errEl, error);
+        } catch (err) {
+          errEl.textContent = 'Delete failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSettings();
       });
@@ -6081,19 +6128,30 @@ function openCrewModal(crewId) {
           notes: modal.querySelector('#crewNotes').value || null,
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
-        const op = existing
-          ? supabase.from('pec_prod_crews').update(payload).eq('id', existing.id)
-          : supabase.from('pec_prod_crews').insert(payload);
-        const { error } = await op;
-        if (error) return errEl.textContent = error.message;
+        try {
+          const op = existing
+            ? supabase.from('pec_prod_crews').update(payload).eq('id', existing.id)
+            : supabase.from('pec_prod_crews').insert(payload);
+          const { error } = await op;
+          if (error) return errEl.textContent = error.message;
+        } catch (err) {
+          errEl.textContent = 'Save failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSettings();
       });
       const delBtn = modal.querySelector('#crewDelete');
       if (delBtn) delBtn.addEventListener('click', async () => {
         if (!confirm(`Delete crew "${existing.name}"? Jobs assigned to this crew will lose the assignment.`)) return;
-        const { error } = await supabase.from('pec_prod_crews').delete().eq('id', existing.id);
-        if (error) return modal.querySelector('#crewError').textContent = error.message;
+        const errEl = modal.querySelector('#crewError'); errEl.textContent = '';
+        try {
+          const { error } = await supabase.from('pec_prod_crews').delete().eq('id', existing.id);
+          if (error) return errEl.textContent = error.message;
+        } catch (err) {
+          errEl.textContent = 'Delete failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSettings();
       });
@@ -6409,36 +6467,49 @@ function openScheduleModal(jobId) {
       modal.querySelector('#schedSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
-        // Replace existing schedule rows
-        const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
-        if (del.error) return errEl.textContent = del.error.message;
-        const rows = draft.selectedDates.map((iso, idx) => ({
-          job_id: job.id,
-          scheduled_date: iso,
-          day_index: idx,
-          crew_id: draft.crew_id || null,
-          crew_lead: draft.crew_lead || null,
-        }));
-        const ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
-        if (ins.error) return errEl.textContent = ins.error.message;
-        const sortedIso = draft.selectedDates.slice().sort();
-        const update = await supabase.from('pec_prod_jobs').update({
-          install_date: sortedIso[0],
-          status: 'scheduled',
-          crew_id: draft.crew_id || null,
-          crew_lead: draft.crew_lead || null,
-          estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
-          sales_team: draft.sales_team || null,
-        }).eq('id', job.id);
-        if (update.error) return errEl.textContent = update.error.message;
+        try {
+          // Replace existing schedule rows
+          const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
+          if (del.error) return errEl.textContent = del.error.message;
+          const rows = draft.selectedDates.map((iso, idx) => ({
+            job_id: job.id,
+            scheduled_date: iso,
+            day_index: idx,
+            crew_id: draft.crew_id || null,
+            crew_lead: draft.crew_lead || null,
+          }));
+          const ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
+          if (ins.error) return errEl.textContent = ins.error.message;
+          const sortedIso = draft.selectedDates.slice().sort();
+          const update = await supabase.from('pec_prod_jobs').update({
+            install_date: sortedIso[0],
+            status: 'scheduled',
+            crew_id: draft.crew_id || null,
+            crew_lead: draft.crew_lead || null,
+            estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
+            sales_team: draft.sales_team || null,
+          }).eq('id', job.id);
+          if (update.error) return errEl.textContent = update.error.message;
+        } catch (err) {
+          errEl.textContent = 'Save failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSchedule();
       });
       const clearBtn = modal.querySelector('#schedClear');
       if (clearBtn) clearBtn.addEventListener('click', async () => {
         if (!confirm('Clear all scheduled days for this job and move it back to Pending?')) return;
-        await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
-        await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null, crew_lead: null }).eq('id', job.id);
+        const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
+        try {
+          const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
+          if (del.error) return errEl.textContent = del.error.message;
+          const upd = await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null, crew_lead: null }).eq('id', job.id);
+          if (upd.error) return errEl.textContent = upd.error.message;
+        } catch (err) {
+          errEl.textContent = 'Clear failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
         closeModal();
         renderSchedule();
       });

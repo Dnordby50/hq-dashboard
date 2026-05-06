@@ -4,6 +4,45 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 20:10 MST] dashboard: fix stale modal backdrop blocking clicks until reload
+By: Cowork
+Changed: index.html. Two coordinated changes addressing the "buttons go dead until I reload the page" bug. Bug mechanics: the .pec-modal-bg backdrop is position:fixed inset:0 z-index:10000 and is appended to #pecModalRoot when openModal() runs (index.html ~line 4808) then removed by closeModal() (~line 4817). Several modal submit/click handlers placed closeModal() only on the success branch of an `await` that could reject. When the await rejected, closeModal() never ran, the backdrop stayed mounted on top of every other element, and silently swallowed every click until a page reload reset #pecModalRoot.
+
+CHANGE 1, the immediate global safety net (added right after `window.pecCloseModal = closeModal;` near line 4818): two new top-level listeners, `window.addEventListener('error', ...)` and `window.addEventListener('unhandledrejection', ...)`, each of which clears #pecModalRoot.innerHTML. Pre-check confirmed the only existing `window.addEventListener('error')` in the file is the one at line 8571 inside the prod module IIFE; that one targets a different element (#prodViewRoot) and a different concern (surfacing import-level prod errors), so adding a global modal-cleanup handler does not conflict, the two run independently. There was no existing `unhandledrejection` listener anywhere, so a fresh one was added.
+
+CHANGE 2, defense in depth on each modal save handler. Audited every closeModal() call site, classified each as wrap or skip per the rules in the task, and applied the standard `try { ...existing await work... } catch (err) { errEl.textContent = 'Save failed: ' + err.message; return; }` shape. For handlers that already used alert() for errors, the catch keeps alert(); for handlers that use an inline errEl status div, the catch writes to that same errEl so the existing UX is preserved.
+
+Wrapped (11 handlers, post-edit line numbers refer to the file as it stands after this commit):
+1) #pecCustForm submit (~line 5065, closeModal at ~5106). Was: alert + return on Supabase {error}, but bare await could still reject. Now: try/catch around the insert/update, alert on throw, modal stays open.
+2) #pecColorForm submit (~line 5694, closeModal at ~5705). Wrapped Supabase insert/update.
+3) #pecColorDel click (~line 5708, closeModal at ~5717). Wrapped Supabase delete.
+4) #pecRefForm submit (~line 5774, closeModal at ~5785). Wrapped Supabase update.
+5) #pecTeamForm submit (~line 5898, closeModal at ~5925). Both branches (fetch /.netlify/functions/pec-create-staff for new, supabase admin_users update for edit) wrapped in a single try/catch; catch writes to existing #pecTeamErr div so inline UX preserved.
+6) #leadSave click (~line 6038, closeModal at ~6055). Wrapped supabase pec_lead_sources insert/update; catch writes to #leadError.
+7) #leadDelete click (~line 6055, closeModal at ~6066). Wrapped supabase pec_lead_sources delete; catch writes to #leadError.
+8) #crewSave click (~line 6087, closeModal at ~6104). Wrapped supabase pec_prod_crews insert/update; catch writes to #crewError.
+9) #crewDelete click (~line 6104, closeModal at ~6112). Wrapped supabase pec_prod_crews delete; catch writes to #crewError.
+10) #schedSave click (~line 6420, closeModal at ~6448). Wrapped the three sequential awaits (delete schedule_days, insert new days, update jobs); catch writes to #schedError.
+11) #schedClear click (~line 6452, closeModal at ~6460). Wrapped the two awaits (delete schedule_days, update jobs back to unscheduled). Note: the original was the only handler with completely unchecked awaits (no error inspection at all); the wrap added explicit `if (res.error) errEl = ...` after each await in addition to the try/catch. Minor scope creep but it brings this handler in line with the others; previous behavior on a partial DB failure was silent corruption (job marked unscheduled but schedule rows still present, or vice versa), so the user benefits from the new error surface.
+
+Skipped (5, with reasons):
+A) CSV import runBtn click (~line 5283, closeModal in setTimeout at ~5311). Per the task rule "If a handler intentionally keeps the modal open on validation error and shows an inline message, leave it alone." The handler deliberately collects per-batch errors into an `errors` array, never throws, only calls closeModal on full success. The task's own carve-out covers this case.
+B) #pecJobForm submit (~line 5456, closeModal at ~5478). Already had a full try/catch with inline #pecJobFormError handling, this matches the task's other carve-out: "Do not change behavior of handlers that already handle errors."
+C) $('pecJobEdit') submit (~line 5608). No closeModal call (this is an inline edit form on the job detail page, not a modal). Outside the scope of CHANGE 2.
+D) $('pecSettingsForm') submit (~line 5991). Re-renders the settings page after upserting; no modal context. Outside scope.
+E) #pecPortalRef submit (~line 7015) and #pecSigninForm submit (~line 7061). Both replace root.innerHTML or sign in; no closeModal involved. Outside scope.
+
+Why: User reported the dashboard's buttons go inert until a manual reload. Diagnosis pointed at a stale .pec-modal-bg sitting on top of the layout consuming clicks. The global listeners (CHANGE 1) make the symptom recoverable for any future handler that gets added without try/catch; the per-handler wraps (CHANGE 2) make each modal submit fail gracefully with an actionable error message instead of silently going dead. The two are layered intentionally, so a regression in one site does not break the user's session.
+
+Files touched: index.html, PROJECT-LOG.md.
+Verification: 1) `node --check` passed on all three classic inline scripts in index.html (the importmap script triggers a false positive because it's JSON, not JS, and is not changed by this commit). 2) `npm test` reports 31/31 passing (calculator suite is untouched, this is a sanity check that nothing structural broke). 3) Live browser verification of the force-failure step deferred to Dylan: open the deploy after this lands, open any wrapped modal (e.g. CRM > Settings > + Add lead source), use DevTools to overwrite the supabase fetch URL or kill the network tab, click Save, confirm the inline error message appears and clicks elsewhere on the page still work. (Cowork sandbox cannot reach Chrome from a file:// path and the sandbox-local HTTP server is not reachable from the host's Chrome instance.)
+
+Next steps: Push this commit so Netlify deploys. After deploy, walk the verification step above on at least one of the wrapped handlers to confirm end-to-end. If anything else surfaces a similar pattern in future PRs, the global listeners in CHANGE 1 will catch it as a backstop.
+Handoff to Cowork: None.
+Handoff to Dylan: 1) From your terminal: `cd /Users/dylannordby/Claude-Code/HQ-Dashboard && git push origin main`. The sandbox cannot reach git@github.com from inside, this needs to come from the host. 2) Once Netlify deploys, do one round of force-failure verification: open any modal save flow, break the network or fetch URL via DevTools, submit, confirm the inline error renders and other clicks on the page still work. If the click-blocking ever recurs, open DevTools > Console and look for an unhandledrejection log with a stack trace pointing at the new offending await.
+
+---
+
 ## [2026-05-05 19:50] ops: fix A — rename pec-* netlify functions to .cjs so handlers actually load
 By: Claude Code
 Changed: Renamed seven Netlify Function files from .js to .cjs and updated the require() path inside each consumer to match. Files: netlify/functions/_pec-supabase.js → _pec-supabase.cjs (the shared helper), pec-create-staff.js → .cjs, pec-log-signin.js → .cjs, pec-prod-sync-sheet.js → .cjs, pec-webhook-proposal-accepted.js → .cjs, pec-webhook-stage-changed.js → .cjs, pec-webhook-project-completed.js → .cjs. Each consumer's `require('./_pec-supabase.js')` was updated to `require('./_pec-supabase.cjs')`. sop-chat.js stays .js because it works (no require, esbuild apparently coerces a require-less CommonJS-shaped file into something the ESM loader tolerates). package.json's `"type": "module"` is left as-is so the production module's ESM imports keep working in tests and the inline frontend code keeps building.
