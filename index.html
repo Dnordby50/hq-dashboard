@@ -4636,7 +4636,21 @@ const CFG = window.CONFIG || {};
 if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_URL.includes('YOUR-')) {
   console.warn('[pec] Supabase not configured — set CONFIG.SUPABASE_URL and CONFIG.SUPABASE_ANON_KEY');
 }
-const supabase = createClient(CFG.SUPABASE_URL || 'https://missing.supabase.co', CFG.SUPABASE_ANON_KEY || 'missing');
+// supabase-js v2 serializes auth ops through a navigator.locks-based exclusive lock.
+// If a lock callback ever fails to release (e.g. a backgrounded tab whose autorefresh
+// fetch never settles), every subsequent .from(...).select() / auth.getSession() call
+// queues forever and never even reaches the network. Diagnosed live: navigator.locks
+// showed 1 held + 1 pending lock on lock:sb-zdfpzmmrgotynrwkeakd-auth-token, with zero
+// requests on the wire and 8s+ timeouts in console. We override the lock with an
+// in-memory no-op. Trade-off: no cross-tab auth coordination. Acceptable here because
+// this dashboard is a single-user app; worst case is two tabs both refreshing the
+// token at once, which supabase tolerates (last-write-wins, both end up authenticated).
+const noopLock = (_name, _acquireTimeout, fn) => Promise.resolve(fn());
+const supabase = createClient(
+  CFG.SUPABASE_URL || 'https://missing.supabase.co',
+  CFG.SUPABASE_ANON_KEY || 'missing',
+  { auth: { lock: noopLock } }
+);
 window.pecSupabase = supabase;
 
 const portalBase = () => (CFG.PORTAL_BASE_URL || (location.origin + location.pathname)).replace(/\/+$/, '');

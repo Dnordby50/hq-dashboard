@@ -4,6 +4,49 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 23:30 MST] dashboard: kill supabase-js navigator.locks deadlock with a no-op auth.lock override
+By: Cowork
+Changed: index.html. Final root-cause fix for the recurring "buttons go dead, save hangs forever, hard refresh fixes it" bug that 759bec9, 27af535, c0fa577, and ea00ed7 each chipped away at without identifying the underlying cause. The earlier commits all addressed downstream symptoms (stale .pec-modal-bg backdrop, missing per-handler try/catch, double-click reentry, lack of a save timeout). They were correct as defenses, but the trigger they all defended against was always the same: every supabase call was hanging before the request even left the browser. Diagnosed live tonight from Cowork via Claude-in-Chrome MCP after Dylan kicked the diagnostic playbook from his Claude Code session over because he could not reach it himself.
+
+Diagnosis (three independent signals, all consistent):
+1. Probe #2: `await window.pecSupabase.auth.getSession()` wrapped in an 8s timeout race -> TIMEOUT_OVER_8s at took_ms 8326. The session call never resolved.
+2. Probe #3: `await window.pecSupabase.from('pec_prod_products').select('id').limit(1)` same wrapper -> TIMEOUT_OVER_8s at took_ms 8097. The select call never resolved either.
+3. Network probe via `read_network_requests` filtered to the supabase project ref `zdfpzmmrgotynrwkeakd`: zero requests on the wire after both probes ran. The browser never sent.
+
+Smoking gun: `await navigator.locks.query()` returned 1 held lock and 1 pending lock on the exact same name, both in exclusive mode: `lock:sb-zdfpzmmrgotynrwkeakd-auth-token`. Different clientIds (held vs pending), so the held lock is from this page's own bootstrap (visibilitychange handler or auto-refresh ticker entered its callback and never released), and the pending one is the queued auth call from probe #2 forever waiting behind it.
+
+Why this matches every prior symptom Dylan saw:
+- "Buttons go dead until reload" -> any modal save handler awaits supabase, supabase awaits the lock, the lock never releases, the await never settles, the modal's closeModal() in the success branch never runs, the .pec-modal-bg backdrop sits on top consuming clicks. Hard refresh tears down the page, the navigator.locks entry dies with the document, and a fresh bootstrap starts clean.
+- "It only happens after the tab has been backgrounded for a while" -> Chrome throttles timers and fetches in background tabs. Supabase's autorefresh ticker enters the lock callback, fires a fetch to refresh the access token, the fetch is throttled and never completes, the callback never returns, the lock is held until page unload.
+- "The 20s timeout in ea00ed7 catches it cleanly" -> correct, because the timeout fires from outside the lock; the supabase await is abandoned but the lock itself stays held. Hence why subsequent saves still hang the same way until refresh.
+
+Fix: pass a no-op lock function in the supabase client config so auth ops never serialize through navigator.locks at all.
+
+```
+const noopLock = (_name, _acquireTimeout, fn) => Promise.resolve(fn());
+const supabase = createClient(URL, KEY, { auth: { lock: noopLock } });
+```
+
+Trade-off: no cross-tab auth coordination. Acceptable here because this dashboard is a single-user app; worst case is two tabs both refreshing the token at the same moment, which supabase tolerates (last write wins, both end up with valid sessions). Did not switch to supabase-shipped `processLock` because it would require changing the import line and the esm.sh-resolved version may not export it under the expected name; a no-op is the smallest-surface-area fix that touches one block.
+
+Why this is the right layer of fix and not yet another wrap: every prior commit's defense (try/catch around save, idempotent close, save timeout) is still load-bearing. They protect against any OTHER kind of hung await down the line. This commit removes the specific cause that has been firing repeatedly. Keep all prior defenses in place.
+
+Files touched: index.html, PROJECT-LOG.md.
+External systems touched: read-only Supabase via the live dashboard for diagnosis. No data changed.
+Verification before deploy: visual diff of the createClient block, comment block explains the why so the next person touching this knows.
+Verification after deploy (the actual proof): hard-refresh the dashboard once Netlify ships the new bundle. Open DevTools console, paste:
+```
+(async () => { const t=Date.now(); await window.pecSupabase.auth.getSession(); return Date.now()-t; })()
+```
+Expected: returns a number under 500. Then run a fresh navigator.locks.query() and confirm there are zero held or pending entries on the lock name. Then leave the tab backgrounded for 10+ minutes, come back, and try a Material Catalog product save. Should still complete.
+
+Next steps: Push, deploy, verify per above. If the verify probe still hangs after the fresh deploy, that means esm.sh-resolved supabase-js is silently ignoring the `lock` option on this version, in which case fall back to also overriding `autoRefreshToken: false` and managing token refresh manually (much more invasive, only do if the no-op approach actually fails).
+
+Handoff to Cowork: After Dylan pushes and Netlify deploys, run the verification probe in a Claude-in-Chrome tab against hq-prescott.netlify.app. Report took_ms and the navigator.locks.query() output. If both look right, log a confirmation entry. If they don't, the next thing to try is the autoRefreshToken: false path described above.
+Handoff to Dylan: From your terminal, `cd /Users/dylannordby/Claude-Code/HQ-Dashboard && git add index.html PROJECT-LOG.md && git commit -m "dashboard: kill supabase-js navigator.locks deadlock with no-op auth.lock override" && git push origin main`. Sandbox can't push to git@github.com so this has to come from your host. After Netlify finishes building (usually under 2 minutes), hard-refresh the dashboard and run the verification probe above.
+
+---
+
 ## [2026-05-06 06:50] dashboard: harden openProductModal save/delete against double-click + downstream throws
 By: Claude Code
 Changed: index.html. Third pass at the recurring "Material Catalog edit-product buttons work once then stop" bug (Dylan reported again this morning). Prior commits 759bec9 + the 21:30 entry's broaden-the-net work fixed half the surface area but not the actual repro path. Added four defensive layers to openProductModal:
