@@ -8217,6 +8217,15 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   function openProductModal(productId) {
+    console.log('[prod] openProductModal entry, productId=', productId);
+    // Force-clear prodModalRoot first so any stale backdrop from a prior
+    // failed close path can't sit invisibly on top of the page blocking
+    // clicks. Cheap defensive guard; no-op if root is already empty.
+    const modalRoot = $('prodModalRoot');
+    if (modalRoot && modalRoot.innerHTML) {
+      console.log('[prod] openProductModal: prodModalRoot was non-empty, clearing');
+      modalRoot.innerHTML = '';
+    }
     const existing = productId ? state.products.find(p => p.id === productId) : null;
     const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '' };
     // Distinct values across the catalog feed the datalist autocomplete on the
@@ -8281,7 +8290,15 @@ function _mergeAcrossAreas(areaPlans) {
       host.innerHTML = url ? `<img class="prod-chip-thumb" src="${esc(url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`;
     });
     $('pmSave').addEventListener('click', async () => {
+      console.log('[prod] pmSave click, existing=', !!existing);
       const errEl = $('pmError'); errEl.textContent = '';
+      const saveBtn = $('pmSave');
+      // Disable buttons during the async op so a double-click can't race two
+      // saves through the handler. The buttons are inside the modal-bg, so if
+      // closer() runs the disabled state goes with the dom anyway.
+      const delBtn = $('pmDelete');
+      saveBtn.disabled = true; if (delBtn) delBtn.disabled = true;
+      const reenable = () => { saveBtn.disabled = false; if (delBtn) delBtn.disabled = false; };
       const payload = {
         name: $('pmName').value.trim(),
         material_type: $('pmType').value,
@@ -8295,29 +8312,57 @@ function _mergeAcrossAreas(areaPlans) {
         active: $('pmActive').value === 'true',
         notes: $('pmNotes').value || null,
       };
-      if (!payload.name) return errEl.textContent = 'Name is required.';
-      if (!(payload.spread_rate > 0)) return errEl.textContent = 'Spread rate must be > 0.';
-      if (!(payload.kit_size > 0)) return errEl.textContent = 'Kit size must be > 0.';
+      if (!payload.name)             { reenable(); return errEl.textContent = 'Name is required.'; }
+      if (!(payload.spread_rate > 0)){ reenable(); return errEl.textContent = 'Spread rate must be > 0.'; }
+      if (!(payload.kit_size > 0))   { reenable(); return errEl.textContent = 'Kit size must be > 0.'; }
       try {
         const op = existing
           ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
           : supabase.from('pec_prod_products').insert(payload);
         const { error } = await op;
-        if (error) return errEl.textContent = error.message;
+        if (error) { reenable(); return errEl.textContent = error.message; }
       } catch (err) {
+        reenable();
         return errEl.textContent = 'Save failed: ' + err.message;
       }
-      closer(); await loadCatalog(); render();
+      console.log('[prod] pmSave: supabase ok, calling closer()');
+      closer();
+      // Wrap the post-close refresh chain in try/catch so a downstream throw
+      // (loadCatalog network blip, render() rebuild error) cannot surface as
+      // an unhandledrejection that fires clearAllModalRoots and confuses the
+      // user. The modal is already gone at this point; we just need to log
+      // and recover.
+      try {
+        await loadCatalog();
+        render();
+        console.log('[prod] pmSave: post-close refresh complete');
+      } catch (err) {
+        console.error('[prod] pmSave: post-close refresh failed:', err);
+        // Force re-render of the catalog body even if loadCatalog threw, so
+        // the user can keep working with whatever state.products had before.
+        try { render(); } catch (_) {}
+      }
     });
     if (existing) $('pmDelete').addEventListener('click', async () => {
+      console.log('[prod] pmDelete click');
       if (!confirm(`Delete product "${existing.name}"?`)) return;
+      const saveBtn = $('pmSave');
+      const delBtn = $('pmDelete');
+      saveBtn.disabled = true; delBtn.disabled = true;
+      const reenable = () => { saveBtn.disabled = false; delBtn.disabled = false; };
       try {
         const { error } = await supabase.from('pec_prod_products').delete().eq('id', existing.id);
-        if (error) return $('pmError').textContent = error.message;
+        if (error) { reenable(); return $('pmError').textContent = error.message; }
       } catch (err) {
+        reenable();
         return $('pmError').textContent = 'Delete failed: ' + err.message;
       }
-      closer(); await loadCatalog(); render();
+      closer();
+      try { await loadCatalog(); render(); }
+      catch (err) {
+        console.error('[prod] pmDelete: post-close refresh failed:', err);
+        try { render(); } catch (_) {}
+      }
     });
   }
 

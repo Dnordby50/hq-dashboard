@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-06 06:50] dashboard: harden openProductModal save/delete against double-click + downstream throws
+By: Claude Code
+Changed: index.html. Third pass at the recurring "Material Catalog edit-product buttons work once then stop" bug (Dylan reported again this morning). Prior commits 759bec9 + the 21:30 entry's broaden-the-net work fixed half the surface area but not the actual repro path. Added four defensive layers to openProductModal:
+1. Force-clear $('prodModalRoot').innerHTML at function entry, with a console.log noting if non-empty content was found. Guards against any stale backdrop or modal HTML lingering from a prior failed close.
+2. Disable both Save and Delete buttons during the supabase async op, with a `reenable()` helper called on every short-circuit error path. A double-click during the in-flight period can no longer race two saves through the handler.
+3. Wrap the post-close refresh chain (closer → loadCatalog → render) in its own try/catch. If loadCatalog throws (network blip, RLS hiccup) or render throws (bad template input, etc.), the caught error is logged to console and a defensive render() retry runs. Without this, the throw escapes as an unhandled rejection, fires clearAllModalRoots from the global safety net, and confuses the operator.
+4. Console breadcrumb logs at: openProductModal entry, stale-content clear, pmSave click, supabase ok before close, post-close refresh complete, post-close refresh failed (with the error). These print in the browser console so the next time the bug surfaces the failing step is identifiable in seconds instead of through speculative back-and-forth.
+Same hardening applied to the pmDelete handler (force-disable, post-close try/catch, breadcrumbs).
+Why: The user said "buttons STILL are not working when I edit product in material catalog. its works once then stops. very frustrating." Exact symptom of a stuck position:fixed backdrop or a missing click handler after a re-render. We've shipped three rounds of fixes for variants of this and it keeps recurring, which means each fix only patched ONE failure mode while a different one is the live offender. This pass attacks the four most plausible remaining failure modes (stale state at modal entry, double-click race, downstream-throw kill chain, and inability to diagnose silently) at once. If it still fails after this, the breadcrumbs will name the exact step that's misbehaving.
+Files touched: index.html, PROJECT-LOG.md
+Verification: npm test 31/31 pass (no calculator changes). Browser-level verification deferred to Dylan.
+Next steps: If Dylan reports the same symptom again after this commit deploys, paste me the console breadcrumbs for the failing sequence — the missing log line tells us exactly where the flow halts.
+Handoff to Cowork: None.
+Handoff to Dylan: After Netlify redeploys, hard-refresh, open DevTools (Cmd+Opt+I) > Console tab, then walk the failing flow once. If buttons still freeze, copy the console output and paste it back; the [prod] breadcrumbs will identify the offending step.
+
+---
+
 ## [2026-05-05 22:45 MST] crm: cleaned up test row from Zap v4 publish-test; webhook is live end-to-end
 By: Cowork
 Changed: Cleaned the four production-Supabase rows the Zap v4 pre-publish Test step landed (project zdfpzmmrgotynrwkeakd). Context: Zap 353945579 ("PEC Proposal Accepted") published v4 with the full handler-key field map, and the pre-publish Test step that 22:00 documented as still partially mapped now succeeds end-to-end and returns a non-null prod_job_id. That success means a real customer/jobs/pec_prod_jobs/timeline_stages chain landed in prod under the DripJobs trigger sample data.
