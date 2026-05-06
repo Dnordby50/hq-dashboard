@@ -8316,12 +8316,20 @@ function _mergeAcrossAreas(areaPlans) {
       if (!(payload.spread_rate > 0)){ reenable(); return errEl.textContent = 'Spread rate must be > 0.'; }
       if (!(payload.kit_size > 0))   { reenable(); return errEl.textContent = 'Kit size must be > 0.'; }
       try {
+        console.log('[prod] pmSave: dispatching supabase op');
         const op = existing
           ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
           : supabase.from('pec_prod_products').insert(payload);
-        const { error } = await op;
+        // 20s timeout so a hung connection can't freeze the modal forever.
+        // Promise.race rejects if supabase doesn't return in time; the catch
+        // below shows the error inline and re-enables the button so the user
+        // can retry rather than hard-refresh.
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Save timed out after 20s. The Supabase request never returned. Check Network tab for a pending request.')), 20000));
+        const { error } = await Promise.race([op, timeout]);
+        console.log('[prod] pmSave: supabase resolved, error=', error);
         if (error) { reenable(); return errEl.textContent = error.message; }
       } catch (err) {
+        console.error('[prod] pmSave caught:', err);
         reenable();
         return errEl.textContent = 'Save failed: ' + err.message;
       }
