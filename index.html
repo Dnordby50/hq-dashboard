@@ -4818,15 +4818,17 @@ function closeModal() { $('pecModalRoot').innerHTML = ''; }
 window.pecCloseModal = closeModal;
 
 // Safety net: if any uncaught error or rejected promise escapes while a modal
-// is open, clear the backdrop so it cannot silently block the whole UI.
-window.addEventListener('error', () => {
-  const root = document.getElementById('pecModalRoot');
-  if (root) root.innerHTML = '';
-});
-window.addEventListener('unhandledrejection', () => {
-  const root = document.getElementById('pecModalRoot');
-  if (root) root.innerHTML = '';
-});
+// is open, clear the backdrop so it cannot silently block the whole UI. The
+// app has two separate modal-root containers (#pecModalRoot for CRM views,
+// #prodModalRoot for production / Material Catalog views), so clear both.
+function clearAllModalRoots() {
+  ['pecModalRoot', 'prodModalRoot'].forEach(id => {
+    const root = document.getElementById(id);
+    if (root) root.innerHTML = '';
+  });
+}
+window.addEventListener('error', clearAllModalRoots);
+window.addEventListener('unhandledrejection', clearAllModalRoots);
 
 function openLightbox(src) {
   const wrap = document.createElement('div');
@@ -8296,17 +8298,25 @@ function _mergeAcrossAreas(areaPlans) {
       if (!payload.name) return errEl.textContent = 'Name is required.';
       if (!(payload.spread_rate > 0)) return errEl.textContent = 'Spread rate must be > 0.';
       if (!(payload.kit_size > 0)) return errEl.textContent = 'Kit size must be > 0.';
-      const op = existing
-        ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
-        : supabase.from('pec_prod_products').insert(payload);
-      const { error } = await op;
-      if (error) return errEl.textContent = error.message;
+      try {
+        const op = existing
+          ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
+          : supabase.from('pec_prod_products').insert(payload);
+        const { error } = await op;
+        if (error) return errEl.textContent = error.message;
+      } catch (err) {
+        return errEl.textContent = 'Save failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
     if (existing) $('pmDelete').addEventListener('click', async () => {
       if (!confirm(`Delete product "${existing.name}"?`)) return;
-      const { error } = await supabase.from('pec_prod_products').delete().eq('id', existing.id);
-      if (error) return $('pmError').textContent = error.message;
+      try {
+        const { error } = await supabase.from('pec_prod_products').delete().eq('id', existing.id);
+        if (error) return $('pmError').textContent = error.message;
+      } catch (err) {
+        return $('pmError').textContent = 'Delete failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
   }
@@ -8412,17 +8422,25 @@ function _mergeAcrossAreas(areaPlans) {
         notes: $('smNotes').value || null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
-      const op = existing
-        ? supabase.from('pec_prod_system_types').update(payload).eq('id', existing.id)
-        : supabase.from('pec_prod_system_types').insert(payload);
-      const { error } = await op;
-      if (error) return $('smError').textContent = error.message;
+      try {
+        const op = existing
+          ? supabase.from('pec_prod_system_types').update(payload).eq('id', existing.id)
+          : supabase.from('pec_prod_system_types').insert(payload);
+        const { error } = await op;
+        if (error) return $('smError').textContent = error.message;
+      } catch (err) {
+        return $('smError').textContent = 'Save failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
     if (existing) $('smDelete').addEventListener('click', async () => {
       if (!confirm(`Delete system type "${existing.name}"? Recipe slots will be deleted too.`)) return;
-      const { error } = await supabase.from('pec_prod_system_types').delete().eq('id', existing.id);
-      if (error) return $('smError').textContent = error.message;
+      try {
+        const { error } = await supabase.from('pec_prod_system_types').delete().eq('id', existing.id);
+        if (error) return $('smError').textContent = error.message;
+      } catch (err) {
+        return $('smError').textContent = 'Delete failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
   }
@@ -8470,11 +8488,15 @@ function _mergeAcrossAreas(areaPlans) {
         required: $('rsReq').value === 'true',
         notes: $('rsNotes').value || null,
       };
-      const op = existing
-        ? supabase.from('pec_prod_recipe_slots').update(payload).eq('id', existing.id)
-        : supabase.from('pec_prod_recipe_slots').insert(payload);
-      const { error } = await op;
-      if (error) return $('rsError').textContent = error.message;
+      try {
+        const op = existing
+          ? supabase.from('pec_prod_recipe_slots').update(payload).eq('id', existing.id)
+          : supabase.from('pec_prod_recipe_slots').insert(payload);
+        const { error } = await op;
+        if (error) return $('rsError').textContent = error.message;
+      } catch (err) {
+        return $('rsError').textContent = 'Save failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
   }
@@ -8576,9 +8598,13 @@ function _mergeAcrossAreas(areaPlans) {
       const flake = $('cpFlake').value, base = $('cpBase').value;
       if (!flake || !base) return errEl.textContent = 'Pick both a flake and a basecoat.';
       const isDefault = $('cpDefault').value === 'true';
-      if (isDefault) await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', flake);
-      const { error } = await supabase.from('pec_prod_color_pairings').insert({ flake_product_id: flake, basecoat_product_id: base, is_default: isDefault, notes: $('cpNotes').value || null });
-      if (error) return errEl.textContent = error.message;
+      try {
+        if (isDefault) await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', flake);
+        const { error } = await supabase.from('pec_prod_color_pairings').insert({ flake_product_id: flake, basecoat_product_id: base, is_default: isDefault, notes: $('cpNotes').value || null });
+        if (error) return errEl.textContent = error.message;
+      } catch (err) {
+        return errEl.textContent = 'Save failed: ' + err.message;
+      }
       closer(); await loadCatalog(); render();
     });
   }

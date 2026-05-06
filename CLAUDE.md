@@ -32,6 +32,29 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
    Exception: domain-restricted client-side API keys (Google Sheets, Maps, etc.) are by design committed to client code, since the architecture requires the browser to call Google directly. To make this safe: (a) the key MUST be restricted in Google Cloud Console to specific HTTP referrers (the live Netlify domain plus any custom domain) AND restricted to the minimum APIs it needs, and (b) the key value MUST be added to SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES in netlify.toml so the secret scanner allows the deploy. If you rotate one of these keys, update both index.html and netlify.toml in the same commit.
 
+## Bug Diagnosis Workflow
+
+When Dylan reports a bug or unexpected behavior, follow this workflow:
+
+1. Diagnose from the code, not from guessing. Read the relevant files, grep for the symptom, identify the most likely root cause(s) with line numbers as evidence. Do not propose a fix until you have read the code.
+
+2. Present findings in this order:
+   a. The most likely cause, named in one sentence with the file:line that proves it.
+   b. Other plausible causes ranked by likelihood, each with its file:line.
+   c. A cheap way for Dylan to confirm which one it is (DevTools check, console command, network tab, log line) before changing code.
+
+3. Default to fixing the bug yourself, in this session. Edit the code, commit per standing rules, log per standing rules. Do NOT produce a Cowork prompt for work you can do directly. Code edits in this repo are not a Cowork handoff.
+
+4. Hand off to Cowork only when the task literally cannot be done from this session, per standing rule 5. That means actions that require something outside Claude Code's reach: clicking around a third-party web UI (DripJobs, Supabase Studio, Netlify dashboard, Google Sheets), uploading a file via a browser, running a migration in prod, pasting a value into a sheet, or running a CLI tool that needs auth this session does not have. When this happens, write a `## Handoff to Cowork` section in the PROJECT-LOG.md entry listing exactly what Cowork needs to do.
+
+5. After fixing, give Dylan a plain-English explanation of the root cause and the fix, written so he learns the underlying concept, not just the patch. Keep it concrete: tie every claim to the actual code in this repo.
+
+## Architecture Gotchas
+
+These are non-obvious shapes of the codebase that have caused bugs. Keep them in mind when touching related code.
+
+- Two modal-root containers, not one. index.html:1781 has `#pecModalRoot` (used by the helpers `openModal()` / `closeModal()` around index.html:4808) and index.html:1782 has `#prodModalRoot` (used by hand-rolled inline modal flows in the production / catalog views around index.html:7531, 7923, 8225, 8369, 8434, 8544). They share the same `.pec-modal-bg` CSS class but no JS. Any fix that touches modal lifecycle (safety nets, focus traps, escape-to-close, etc.) MUST be applied to both roots, or audited and explicitly justified for skipping one.
+
 ## Key Resource IDs
 
 - Booked Jobs Sheet: 1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4

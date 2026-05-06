@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 21:30 MST] dashboard: extend modal-backdrop safety net to prodModalRoot
+
+By: Claude Code
+Changed: index.html. Correction-style follow-up to commit 759bec9 (the 20:10 entry below). That commit's diagnosis was right about the bug shape (a stuck position:fixed backdrop eating clicks) but missed that the app has TWO modal-root containers, not one: index.html:1781 #pecModalRoot and index.html:1782 #prodModalRoot. The earlier safety net cleared only #pecModalRoot, and the per-handler try/catch wraps only covered modals that route through the openModal()/closeModal() helpers. The Material Catalog and the rest of the production views write directly into #prodModalRoot via inline `$('prodModalRoot').innerHTML = ...` and define a local `closer` function in each one, so they were entirely outside 759bec9's scope. Dylan reported the bug still occurring specifically when adding an image URL to a product in the Material Catalog, which is the openProductModal flow at index.html:8225.
+
+CHANGE 1, broaden the global safety net. Replaced the two anonymous handlers at index.html:4822-4829 with a single named function `clearAllModalRoots()` that wipes both #pecModalRoot and #prodModalRoot, and rebound both `window.addEventListener('error', ...)` and `window.addEventListener('unhandledrejection', ...)` to it. Now uncaught errors / rejected promises clear backdrops in either system. Added an inline comment naming both roots so the next person touching this knows there are two.
+
+CHANGE 2, wrap the prod-side save and delete handlers in try/catch. Six modals render into #prodModalRoot (lines 7531, 7923, 8225, 8369, 8434, 8544). Audited each:
+- Material Pull (~7531): read-only listing modal with no async writes. Skipped, nothing to wrap.
+- Job Detail (~7923): the four action handlers (saveActiveJobLineEdits, recalcActiveJob, syncActiveJob, completeActiveJob) intentionally do NOT close the modal. They show inline status via #prodDetailError and #prodDetailOk. syncActiveJob and completeActiveJob already have try/catch. The two without (saveActiveJobLineEdits, recalcActiveJob) won't strand the user because the modal is supposed to stay open; the global safety net catches any escaped rejection. Skipped, in line with "Do not change behavior of handlers that already handle errors."
+- Product Modal (~8225): pmSave and pmDelete wrapped. catch writes to existing #pmError div with prefix `Save failed:` / `Delete failed:`.
+- System Type Modal (~8369): smSave and smDelete wrapped. catch writes to existing #smError div.
+- Recipe Slot Modal (~8434): rsSave wrapped. catch writes to existing #rsError div. (No delete in this modal; deletes happen from the parent system-type view.)
+- Color Pairing Modal (~8544): cpSave wrapped. catch writes to existing #cpError div. The `if (isDefault)` flip-default await and the insert await are both inside the same try.
+
+Why: 759bec9 only solved half the surface. The Material Catalog flow Dylan was hitting goes through #prodModalRoot, so neither the global safety net nor the per-handler wraps from that commit applied. Without try/catch around the supabase call, a rejection (network blip, RLS denial, schema mismatch on image_url, etc.) skipped the local `closer()` and left the .pec-modal-bg backdrop sitting on top of the page. The fix layers the same two-tier pattern (global net + per-handler try/catch) onto the production-side modals.
+
+Architecture follow-up: also updated CLAUDE.md with a new "Architecture Gotchas" section documenting that #pecModalRoot and #prodModalRoot are parallel modal systems with no shared helpers, so future cross-cutting modal fixes must be applied to both. Updated the "Bug Diagnosis Workflow" section to make explicit that Claude Code does the coding directly and only hands off to Cowork for tasks Claude Code literally cannot do (browser UI clicks, manual migrations, file uploads, paste-into-sheet, etc.).
+
+Files touched: index.html, CLAUDE.md, PROJECT-LOG.md.
+Verification: visual diff review of the five edited handler bodies, all preserve the existing inline-error display path on the {error} branch and only add a new throw-handling branch. Try/catch counts increase by 5 in the file (one per wrapped handler), which matches the edits. Browser-level verification deferred per the same constraint as 759bec9: open the Material Catalog, click + Add product (or Edit on an existing one), paste any URL into Chip image URL, throttle the network in DevTools or kill the supabase connection, click Save, confirm an inline error renders in #pmError and clicks elsewhere on the page still work.
+
+Handoff to Cowork: None.
+Handoff to Dylan: 1) Push the commit (`git push origin main`) and wait for Netlify to deploy. 2) Reproduce the original failure path: open Material Catalog, edit a product, change the image URL, click Save under throttled or offline network. Confirm the inline error appears AND clicking other UI elements still works (no stuck backdrop). 3) If the click-blocking ever recurs in any other modal, open DevTools > Console and look for the unhandledrejection / error log; the global safety net should still kick in and clear the backdrop, but the source error in the log tells us which handler still needs a try/catch.
+
+---
+
 ## [2026-05-05 20:10 MST] dashboard: fix stale modal backdrop blocking clicks until reload
 By: Cowork
 Changed: index.html. Two coordinated changes addressing the "buttons go dead until I reload the page" bug. Bug mechanics: the .pec-modal-bg backdrop is position:fixed inset:0 z-index:10000 and is appended to #pecModalRoot when openModal() runs (index.html ~line 4808) then removed by closeModal() (~line 4817). Several modal submit/click handlers placed closeModal() only on the success branch of an `await` that could reject. When the await rejected, closeModal() never ran, the backdrop stayed mounted on top of every other element, and silently swallowed every click until a page reload reset #pecModalRoot.
