@@ -3,7 +3,7 @@
 // No secret needed — the only data collected is the caller's own sign-in event;
 // the service-role key stays server-side.
 
-const { sb, json } = require('./_pec-supabase.js');
+const { sb, json } = require('./_pec-supabase.cjs');
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {

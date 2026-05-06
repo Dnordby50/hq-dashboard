@@ -3,7 +3,7 @@
 // POST /.netlify/functions/pec-webhook-proposal-accepted
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>
 
-const { sb, epoxyStages, paintStages, badSecret, json, randomToken } = require('./_pec-supabase.js');
+const { sb, epoxyStages, paintStages, badSecret, json, randomToken } = require('./_pec-supabase.cjs');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });

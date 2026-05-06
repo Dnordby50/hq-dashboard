@@ -4,7 +4,7 @@
 // POST /.netlify/functions/pec-create-staff
 // Body: { name, email, password, role? }
 
-const { sb, json } = require('./_pec-supabase.js');
+const { sb, json } = require('./_pec-supabase.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;

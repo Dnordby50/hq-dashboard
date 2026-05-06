@@ -2,7 +2,7 @@
 // Marks job as completed and all timeline stages as completed.
 // POST /.netlify/functions/pec-webhook-project-completed
 
-const { sb, badSecret, json } = require('./_pec-supabase.js');
+const { sb, badSecret, json } = require('./_pec-supabase.cjs');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });

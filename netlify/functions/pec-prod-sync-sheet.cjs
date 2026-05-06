@@ -18,7 +18,7 @@
 //   PEC_PROD_SHEET_ID_TEST        copy used during dev. Used when body.use_test=true
 //                                 OR when CONTEXT='dev' (Netlify Dev / preview).
 
-const { sb, json } = require('./_pec-supabase.js');
+const { sb, json } = require('./_pec-supabase.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;

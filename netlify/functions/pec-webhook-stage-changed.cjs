@@ -2,7 +2,7 @@
 // Advances timeline to the named stage and updates job status accordingly.
 // POST /.netlify/functions/pec-webhook-stage-changed
 
-const { sb, badSecret, json } = require('./_pec-supabase.js');
+const { sb, badSecret, json } = require('./_pec-supabase.cjs');
 
 const IN_PROGRESS_STAGES = ['Prep Day', 'Coating Day', 'Prep', 'Prime', 'Paint'];
 
