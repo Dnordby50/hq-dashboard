@@ -4,6 +4,57 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 22:00 MST] crm: re-verified DripJobs proposal-accepted webhook (LIVE, smoke-tested) and started Zapier wiring (Draft, NOT published)
+By: Cowork
+Changed: Two-track work in one entry. (A) Re-verification of the webhook now that fix A (.cjs rename in commit 1fb6030) shipped. (B) First pass at the Zapier Zap that actually fires the webhook on accepted proposals.
+
+A. Re-verification of the proposal-accepted webhook (LIVE):
+1) Deploy landed: PUBLISHED. Netlify > Deploys shows main@1fb6030 "ops: rename pec-* netlify functions to .cjs so handlers actually load" Published, deployed in 20s, no build errors.
+2) Negative path: 401 (was 502). `curl -i -X POST` against the endpoint with no header returns HTTP/2 401 with body `{"success":false,"error":"Invalid webhook secret"}`. Confirms the function loads, the handler binds, and the badSecret check executes. The 502 Runtime.HandlerNotFound condition documented in the 19:30 entry is gone.
+3) Positive smoke test: 200. Pulled PEC_WEBHOOK_SECRET from Netlify Project configuration > Environment variables via the Reveal flow (value is held only in Netlify and Zapier, never written here or to chat). Sent an authenticated POST with deal_id=TEST-20260506-0241 and a synthetic email; HTTP/2 200 with body containing customer_token, customer_id, job_id, prod_job_id, portal_link.
+4) Database verification: 1 row each in public.customers, public.jobs (source='dripjobs', dripjobs_deal_id matches), public.pec_prod_jobs (status='unscheduled', dripjobs_deal_id matches, customer_id matches the customers row). 7 timeline_stages rows attached to the new jobs row (the epoxy stage ladder: Proposal Accepted, Scheduled, Prep Day, Coating Day, Cure Period, Final Walkthrough, Complete). Counts match expectation exactly.
+5) Cleanup: deleted in FK order (pec_prod_jobs > timeline_stages > jobs > customers). Re-ran the count query to confirm all four counts back to 0. Production state is clean.
+
+End-to-end verdict for the webhook itself: LIVE and working. Fix A took, the cache reload stuck, the bridge to pec_prod_jobs creates a row exactly as the handler intends.
+
+B. Zapier Zap (Draft state, NOT published):
+6) Existing Zap discovery: there is already a Zap named "PEC Proposal Accepted" (id 353945579, owned by Dylan, modified Apr 16) on his personal Zapier account. v3 is published and has run in the last 5 hours. Inspecting the steps: Step 1 = DripJobs Proposal Accepted (account: Prescott Epoxy Company #3), Step 2 = Google Sheets Create Spreadsheet Row (writing to "Booked Jobs Tracker" / "Booked Jobs"), Step 3 = Slack Send Channel Message. There is NO existing webhook step pointing at our Netlify endpoint. That explains why public.jobs was empty before today's smoke test: this Zap fires on every accepted proposal but only writes to Sheets and Slack, never to our backend.
+7) Added Step 4 to this same Zap (rather than creating a parallel Zap that would double the trigger fire rate): Webhooks by Zapier > POST. Configured: URL = https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-proposal-accepted, Payload Type = Json, Data row 1 customer_name -> 1.Customer Name (mapped from trigger), Headers row 1 x-webhook-secret = the production PEC_WEBHOOK_SECRET value (pasted into Zapier; this is the intended use, the secret has to live somewhere on the Zapier side for outbound auth). Wrap Request In Array=No, Unflatten=Yes (defaults).
+8) Test step result: Success=true with returned customer_token, customer_id, job_id, prod_job_id (empty since deal_id wasn't mapped). Confirms auth works and the webhook accepts the JSON payload.
+9) Did NOT publish. Reason: only customer_name is currently mapped in the Data section. The handler at netlify/functions/pec-webhook-proposal-accepted.cjs lines 27-46 dedupes customers by email, and only by email, so without customer_email mapped, every accepted proposal would hit the `if (!customer)` branch and create a fresh customers row with email=null, polluting the table Dylan just CSV-imported 1340 rows into yesterday. The fix is small (map ~13 more trigger fields to Data keys), but it has to happen before the Zap goes live.
+10) Cleaned up the test rows the Test step inserted into production Supabase (the Jeff Fisher sample): deleted timeline_stages, jobs, customers in FK order. Production back to clean state.
+
+Architectural note for the next cycle: the existing Zap places the webhook as Step 4 (after Sheets and Slack). Zapier executes steps sequentially and stops on first error. If the webhook ever returns non-2xx, Sheets and Slack still ran (they're earlier), so the existing notification flow is unaffected by webhook failures. Good positioning, leave it as Step 4.
+
+Why: With the .cjs rename shipped, the webhook is the load-bearing path for the Pending Jobs sidebar in CRM > Job Schedule and the Job Costing view. Verifying it end-to-end and starting the Zapier wiring closes the loop the 19:30 entry opened. Stopping short of publish was a deliberate call: shipping a partially-mapped Zap would have created days of customer-table cleanup before benefiting anyone, and the existing v3 Sheets+Slack flow is unaffected because v4 is still Draft.
+
+Files touched: PROJECT-LOG.md.
+External systems touched: Netlify (read-only deploy + env var view), Supabase (production project zdfpzmmrgotynrwkeakd, two destructive-confirmed deletes for the smoke test cleanup and the Zapier test cleanup, both verified at 0 rows after), DripJobs (read-only sales pipeline view), Zapier (created Step 4 in Zap 353945579, configured URL/payload/data/header, ran one test step, left as Draft, did not publish, did not modify v3).
+
+Verification command Dylan can run any time to confirm the webhook is still live: `curl -i -X POST https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-proposal-accepted -H "Content-Type: application/json" -d '{}'` should return HTTP/2 401 + `{"success":false,"error":"Invalid webhook secret"}`. Anything else (502, 5xx, timeout) means something regressed.
+
+Next steps: Dylan finishes the Zap field mapping per the handoff below, runs Test step once more to verify a richer payload, then publishes v4. After v4 publishes, the next real DripJobs proposal-accepted will create a clean row in customers/jobs/pec_prod_jobs/timeline_stages and surface in the Pending Jobs sidebar.
+
+Handoff to Cowork: None for this entry. Next likely Cowork task is post-Dylan: confirm a real proposal flows through the published Zap by running the same four count queries from this entry and verifying counts move from 0.
+
+Handoff to Dylan: Open the Zap at https://zapier.com/editor/353945579/draft, click into Step 4 POST, click the Configure tab. The Data section currently has one row (customer_name -> 1.Customer Name). Add value sets so each row maps a handler key to a DripJobs trigger field; do this for at least these in priority order, then publish. Click into a value field, click the variable picker, type to filter, pick the matching trigger field. The handler accepts null for any of these so missing-data rows fail gracefully, but at minimum customer_email and deal_id are required (email for customers dedupe, deal_id for the pec_prod_jobs auto-bridge):
+  customer_email -> Customer Email
+  customer_phone -> Customer Phone
+  deal_id        -> the trigger's unique-per-event identifier (try Customer Id first, but ideally find a Job Id or Proposal Id field; if you cannot find a unique-per-proposal field via the picker, use Step Output to inspect the raw JSON and pick the right token — same Customer Id across multiple proposals from the same person would break the bridge dedupe)
+  company        -> static text "prescott-epoxy" (do not map from a trigger field; this is the brand gate)
+  address        -> Customer Job Address (or Customer Billing Address if the job address is not in the trigger payload)
+  job_type       -> static text "epoxy"
+  package        -> trigger's package/system field if available
+  scope          -> Job Notes or Scope field
+  sqft           -> Job Square Footage if available
+  price          -> Job Amount
+  monthly_payment -> Monthly Payment field if available
+  dripjobs_url   -> Job Work Order Url
+  warranty       -> Warranty field if available
+After mapping, click Continue, then Test step. The response should still be 200 with customer_token/customer_id/job_id, AND prod_job_id should now be populated (because deal_id is mapped). After confirming the test row landed correctly in Supabase, delete the test row (it will appear under whatever customer_email you mapped) using the same FK-order delete from this entry. Then click Publish. Once Published, the next real DripJobs proposal-accepted event fires the full chain (Sheets + Slack + customer onboarding + Pending Jobs).
+
+---
+
 ## [2026-05-05 21:30 MST] dashboard: extend modal-backdrop safety net to prodModalRoot
 
 By: Claude Code
