@@ -4,6 +4,47 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-05 22:45 MST] crm: cleaned up test row from Zap v4 publish-test; webhook is live end-to-end
+By: Cowork
+Changed: Cleaned the four production-Supabase rows the Zap v4 pre-publish Test step landed (project zdfpzmmrgotynrwkeakd). Context: Zap 353945579 ("PEC Proposal Accepted") published v4 with the full handler-key field map, and the pre-publish Test step that 22:00 documented as still partially mapped now succeeds end-to-end and returns a non-null prod_job_id. That success means a real customer/jobs/pec_prod_jobs/timeline_stages chain landed in prod under the DripJobs trigger sample data.
+
+What I did, in order:
+1) Inspected the customer row first (the only one with a possible "preserve" path because the handler at pec-webhook-proposal-accepted.cjs:27-36 PATCHes existing customers by email instead of inserting). Query: select id, name, email, phone, created_at, now() - created_at as age from public.customers where id = '4443bb3a-116a-4a94-9d34-922ef7bc9e32'. Result: name=Jeff Fisher, email=fisher2426@yahoo.com, phone=9517577881, created_at=2026-05-06 03:31:22.780405+00 UTC, age=00:04:55. Age well under 30 minutes, so this customer was newly INSERTED by the test (the prior Jeff Fisher row from the 22:00 entry's Test-step cleanup had already been deleted, so the v4 Test step had no email match and inserted a fresh row). Decision: DELETE.
+
+2) Deleted the three guaranteed-new rows in FK order (used RETURNING id on the latter two so the affected count is visible directly in the result panel; pec_prod_jobs's first run reported "Success. No rows returned" with the standard DELETE response, but the verification union below confirms it landed):
+   - delete from public.pec_prod_jobs where id = '6915148f-e42d-4975-a354-a4c42ad49b3f' -> 1 row affected (verified by post-delete count = 0).
+   - delete from public.timeline_stages where job_id = '31e794b8-6358-4f42-a3ca-c41dca238d28' returning id -> 7 rows (matches the epoxy stage ladder count exactly).
+   - delete from public.jobs where id = '31e794b8-6358-4f42-a3ca-c41dca238d28' returning id -> 1 row.
+
+3) Deleted the customer (decision from step 1):
+   - delete from public.customers where id = '4443bb3a-116a-4a94-9d34-922ef7bc9e32' returning id, email -> 1 row, email=fisher2426@yahoo.com.
+
+4) Verification union, all four counts confirmed at 0:
+   pec_prod_jobs    | 0
+   jobs             | 0
+   timeline_stages  | 0
+   customers        | 0
+
+Production state is clean. v4 is published and live; the next real DripJobs proposal-accepted event will create the full chain (customers + jobs + timeline_stages + pec_prod_jobs) and surface in the Pending Jobs sidebar in CRM > Job Schedule and the Job Costing view.
+
+Note on the customer disposition: I deleted instead of preserving because the age was 4:55, not hours/days. If the row had pre-existed (i.e. a Jeff Fisher row in the customers table from before today's testing), the age would reflect the original creation time and we would have preserved it. The 22:00 entry already removed any prior Jeff Fisher row, so v4's Test step inserted fresh; nothing pre-existing to protect.
+
+Files touched: PROJECT-LOG.md.
+External systems touched: Supabase (production project zdfpzmmrgotynrwkeakd) via the SQL editor. Five queries: 1 inspect, 3 destructive in FK order, 1 verification union. Each destructive query went through Supabase's "Query has destructive operations" confirmation prompt and was confirmed.
+
+Next steps: Wait for the first real DripJobs proposal-accepted event to fire through the published v4 Zap. After that, run a re-verification pass to confirm rows are flowing.
+
+Handoff to Cowork: Re-verification pass after the first real DripJobs proposal-accept fires through v4. Run select count(*), max(created_at) from public.jobs where source = 'dripjobs' and confirm the count is no longer zero. Same query against public.pec_prod_jobs where dripjobs_deal_id is not null. If both counts are >= 1 with a recent created_at, the loop is closed and the Pending Jobs sidebar will start populating naturally.
+Handoff to Dylan: I could not commit + push from the sandbox this run. The repo has a stale .git/HEAD.lock at the host path (created 2026-05-06 03:06 UTC, owned by your user, presumably leftover from a prior cowork or claude-code git operation that exited without releasing). The sandbox's virtiofs mount of the repo allows reads and writes but blocks unlink on .git internals (rm returns "Operation not permitted" even though ls shows me as the owner), so I cannot remove the lock from in here. Steps for you, all from /Users/dylannordby/Claude-Code/HQ-Dashboard:
+  1) rm .git/HEAD.lock
+  2) git status (expect: PROJECT-LOG.md modified, no other changes)
+  3) git add PROJECT-LOG.md
+  4) git commit -m "cowork: cleaned up Zap v4 publish-test rows from production Supabase"
+  5) git push origin main
+After the push, this entry is archived and the v4 chain is documented. The Supabase cleanup itself already landed (verification union returned 0/0/0/0); the only thing missing is the git record of the log change.
+
+---
+
 ## [2026-05-05 22:00 MST] crm: re-verified DripJobs proposal-accepted webhook (LIVE, smoke-tested) and started Zapier wiring (Draft, NOT published)
 By: Cowork
 Changed: Two-track work in one entry. (A) Re-verification of the webhook now that fix A (.cjs rename in commit 1fb6030) shipped. (B) First pass at the Zapier Zap that actually fires the webhook on accepted proposals.
