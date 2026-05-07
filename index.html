@@ -7247,6 +7247,17 @@ if (portalToken) {
 class CalculatorError extends Error {
   constructor(message, code) { super(message); this.name = 'CalculatorError'; this.code = code; }
 }
+function cureSpeedSpec(product) {
+  // Mirror of production/calculator.js cureSpeedSpec. Used both by the planner
+  // (to stamp cure_speed onto each computed material line) and the area editor
+  // (to decide whether to render the cure-speed dropdown for the resolved
+  // basecoat/topcoat product). Keep these two copies in sync.
+  if (!product) return null;
+  const name = String(product.name || '').toLowerCase();
+  if (/^simiron\s*1100\s*sl\b/.test(name)) return { areaField: 'basecoat_cure_speed', options: ['Fast', 'Standard', 'Slow'] };
+  if (/polyaspartic/.test(name)) return { areaField: 'topcoat_cure_speed', options: ['Fast', 'Medium', 'Slow', 'XTRA Slow'] };
+  return null;
+}
 function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, standaloneMvb = false, standaloneMvbProductId = null }) {
   if (!Array.isArray(areas)) throw new CalculatorError('areas must be an array', 'INVALID_INPUT');
   const areaPlans = [];
@@ -7264,7 +7275,7 @@ function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, def
           supplier: product.supplier || null, color: product.color || null,
           spread_rate: Number(product.spread_rate), kit_size: Number(product.kit_size),
           unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
-          sqft: totalSqft,
+          sqft: totalSqft, cure_speed: null,
         }],
       });
     }
@@ -7293,13 +7304,15 @@ function _planForArea(area, ctx) {
     const kit = Number(product.kit_size);
     if (!Number.isFinite(spread) || spread <= 0) throw new CalculatorError(`Product "${product.name}" has invalid spread_rate (${product.spread_rate}); fix it in the System Catalog before calculating`, 'INVALID_SPREAD_RATE');
     if (!Number.isFinite(kit) || kit <= 0) throw new CalculatorError(`Product "${product.name}" has invalid kit_size (${product.kit_size}); fix it in the System Catalog before calculating`, 'INVALID_KIT_SIZE');
+    const _cureSpec = cureSpeedSpec(product);
+    const _cure_speed = _cureSpec ? (area[_cureSpec.areaField] || null) : null;
     slotLines.push({
       area_id: area.id || null, area_name: area.name || null, order_index: slot.order_index,
       material_type: slot.material_type, product_id: product.id, product_name: product.name,
       supplier: product.supplier || null, color: product.color || null,
       spread_rate: spread, kit_size: kit,
       unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
-      sqft,
+      sqft, cure_speed: _cure_speed,
     });
   }
   return { area, lines: slotLines };
@@ -7308,11 +7321,16 @@ function _mergeAcrossAreas(areaPlans) {
   const groups = new Map();
   for (const { lines } of areaPlans) {
     for (const line of lines) {
-      const key = line.product_id;
+      // Group key includes cure_speed so two areas using the same product with
+      // two different cure speeds stay as two lines (Fast and Slow can't be
+      // collapsed). For products without a cure speed the suffix is "" and
+      // the merge behaves exactly like before.
+      const key = `${line.product_id}|${line.cure_speed || ''}`;
       if (!groups.has(key)) groups.set(key, {
         material_type: line.material_type, product_id: line.product_id, product_name: line.product_name,
         supplier: line.supplier, color: line.color, spread_rate: line.spread_rate, kit_size: line.kit_size,
-        unit_cost_snapshot: line.unit_cost, sqft_total: 0, area_ids: [], first_order_index: line.order_index,
+        unit_cost_snapshot: line.unit_cost, cure_speed: line.cure_speed || null,
+        sqft_total: 0, area_ids: [], first_order_index: line.order_index,
       });
       const g = groups.get(key);
       g.sqft_total += line.sqft;
@@ -7332,6 +7350,7 @@ function _mergeAcrossAreas(areaPlans) {
       qty_needed: qty, backstock_qty: 0, order_qty: qty,
       use_backstock: false, ordered: false, delivered: false,
       unit_cost_snapshot: g.unit_cost_snapshot, line_cost: lineCost,
+      cure_speed: g.cure_speed,
       area_ids: g.area_ids, sqft_total: g.sqft_total, order_index: i++, _sort_key: g.first_order_index,
     });
   }
@@ -7360,7 +7379,7 @@ function _mergeAcrossAreas(areaPlans) {
     return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', job_class: 'residential', standalone_mvb: false, areas: [blankArea()] };
   }
   function blankArea() {
-    return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '' };
+    return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', topcoat_product_id: '', basecoat_cure_speed: '', topcoat_cure_speed: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '', tints: [] };
   }
 
   const $ = (id) => document.getElementById(id);
@@ -7499,13 +7518,16 @@ function _mergeAcrossAreas(areaPlans) {
         const have = l.use_backstock ? Number(l.backstock_qty || 0) : 0;
         const need = Math.max(0, Number(l.order_qty || l.qty_needed || 0) - have);
         if (need <= 0) continue;
-        const key = l.product_id || `name:${l.product_name}`;
+        // Cure-speed-bearing products with different cure speeds are different
+        // SKUs from a procurement standpoint, so they aggregate separately.
+        const key = `${l.product_id || `name:${l.product_name}`}|${l.cure_speed || ''}`;
         if (!out.has(key)) out.set(key, {
           product_id: l.product_id || null,
           product_name: l.product_name,
           material_type: l.material_type,
           supplier: l.supplier || 'Unassigned',
           color: l.color || null,
+          cure_speed: l.cure_speed || null,
           kit_size: l.kit_size,
           spread_rate: l.spread_rate,
           unit_cost: l.unit_cost_snapshot ?? null,
@@ -7576,7 +7598,7 @@ function _mergeAcrossAreas(areaPlans) {
               <div class="pec-table-wrap">
               <table class="pec-table pec-pull-table">
                 <thead><tr>
-                  <th>Material</th><th>Product</th><th>Color</th><th>Qty (kits/boxes)</th><th>Per-job breakdown</th>
+                  <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits/boxes)</th><th>Per-job breakdown</th>
                 </tr></thead>
                 <tbody>
                   ${groupedBySupplier[sup].map(row => `
@@ -7584,9 +7606,10 @@ function _mergeAcrossAreas(areaPlans) {
                       <td>${esc(row.material_type)}</td>
                       <td>${esc(row.product_name)}</td>
                       <td>${esc(row.color || '')}</td>
+                      <td>${esc(row.cure_speed || '')}</td>
                       <td><strong>${esc(row.total_qty)}</strong></td>
                       <td style="font-size:.7rem;color:var(--muted)">
-                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) — ${esc(j.qty)}`).join('<br>')}
+                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}`).join('<br>')}
                       </td>
                     </tr>
                   `).join('')}
@@ -7682,6 +7705,8 @@ function _mergeAcrossAreas(areaPlans) {
     const specialFlake  = state.products.find(p => p.name === 'Special Order Flake'  && p.active);
     const specialQuartz = state.products.find(p => p.name === 'Special Order Quartz' && p.active);
 
+    const productById = indexById(state.products);
+    const defaultsByFlake = defaultBasecoatByFlake();
     host.innerHTML = state.newJob.areas.map((a, idx) => {
       const sys = state.systemTypes.find(s => s.id === a.system_type_id);
       const showQuartz   = sysHasSlot(sys, 'Quartz');
@@ -7692,6 +7717,24 @@ function _mergeAcrossAreas(areaPlans) {
       const showBase     = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
       const showColorPicker = showFlake || showQuartz || showPigment;
       const sysSel = sysOpts.replace(`value="${esc(a.system_type_id)}"`, `value="${esc(a.system_type_id)}" selected`);
+
+      // Resolve the products that will actually fill the basecoat and topcoat
+      // slots so we know whether to render a cure-speed dropdown for them.
+      // Mirrors the planner resolution: explicit pick > default pairing > slot
+      // default. Topcoat override picker is added in a later commit; for now
+      // the topcoat resolves from the recipe slot's default_product_id.
+      const sysSlots = sys ? (slotsBySys[sys.id] || []) : [];
+      const resolvedBasecoatId =
+        a.basecoat_product_id ||
+        (a.flake_product_id ? defaultsByFlake[a.flake_product_id] : null) ||
+        (sysSlots.find(s => s.material_type === 'Basecoat') || {}).default_product_id ||
+        null;
+      const resolvedTopcoatId =
+        a.topcoat_product_id ||
+        (sysSlots.find(s => s.material_type === 'Topcoat') || {}).default_product_id ||
+        null;
+      const baseCure = cureSpeedSpec(resolvedBasecoatId ? productById[resolvedBasecoatId] : null);
+      const topCure  = cureSpeedSpec(resolvedTopcoatId  ? productById[resolvedTopcoatId]  : null);
       return `
         <div class="prod-area-card" data-area-key="${esc(a._key)}">
           <div class="pec-row-3">
@@ -7744,6 +7787,27 @@ function _mergeAcrossAreas(areaPlans) {
             </div>
             <div class="pec-field"><label>Area notes</label><input data-aprop="notes" value="${esc(a.notes)}"></div>
           </div>
+          ${(baseCure || topCure) ? `
+          <div class="pec-row-3">
+            ${baseCure ? `
+              <div class="pec-field">
+                <label>Basecoat cure speed <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(productById[resolvedBasecoatId]?.name || '')}</span></label>
+                <select data-aprop="basecoat_cure_speed">
+                  <option value="">Pick a cure speed...</option>
+                  ${baseCure.options.map(o => `<option value="${esc(o)}" ${o===a.basecoat_cure_speed?'selected':''}>${esc(o)}</option>`).join('')}
+                </select>
+              </div>
+            ` : ''}
+            ${topCure ? `
+              <div class="pec-field">
+                <label>Topcoat cure speed <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(productById[resolvedTopcoatId]?.name || '')}</span></label>
+                <select data-aprop="topcoat_cure_speed">
+                  <option value="">Pick a cure speed...</option>
+                  ${topCure.options.map(o => `<option value="${esc(o)}" ${o===a.topcoat_cure_speed?'selected':''}>${esc(o)}</option>`).join('')}
+                </select>
+              </div>
+            ` : ''}
+          </div>` : ''}
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:.75rem">
             <label style="display:${(showFlake || showQuartz) ? 'inline-flex' : 'none'};align-items:center;gap:6px;cursor:pointer;color:var(--muted)">
               <input type="checkbox" data-aprop-checkbox="special_order" ${a.special_order ? 'checked' : ''}>
@@ -7761,7 +7825,12 @@ function _mergeAcrossAreas(areaPlans) {
       card.querySelectorAll('[data-aprop]').forEach((inp) => {
         const sync = () => {
           area[inp.dataset.aprop] = inp.value;
-          if (inp.dataset.aprop === 'system_type_id') renderAreas();
+          // Re-render the area card whenever a field changes that could change
+          // which fields are shown: system pick gates flake/quartz/pigment;
+          // flake/basecoat/topcoat picks gate the cure-speed dropdowns by
+          // resolving to a (possibly cure-speed-bearing) product.
+          const layoutFields = new Set(['system_type_id', 'flake_product_id', 'basecoat_product_id', 'topcoat_product_id']);
+          if (layoutFields.has(inp.dataset.aprop)) renderAreas();
           renderPreview();
         };
         inp.addEventListener('input', sync);
@@ -7808,7 +7877,15 @@ function _mergeAcrossAreas(areaPlans) {
     return {
       areas: areas
         .filter(a => a.system_type_id && Number(a.sqft) > 0)
-        .map(a => ({ id: a._key || a.id, name: a.name, sqft: Number(a.sqft), system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null })),
+        .map(a => ({
+          id: a._key || a.id, name: a.name, sqft: Number(a.sqft),
+          system_type_id: a.system_type_id,
+          flake_product_id: a.flake_product_id || null,
+          basecoat_product_id: a.basecoat_product_id || null,
+          topcoat_product_id: a.topcoat_product_id || null,
+          basecoat_cure_speed: a.basecoat_cure_speed || null,
+          topcoat_cure_speed: a.topcoat_cure_speed || null,
+        })),
       productsById: indexById(state.products),
       recipeSlotsBySystemType: recipeSlotsBySystemType(),
       defaultBasecoatByFlake: defaultBasecoatByFlake(),
@@ -7883,6 +7960,9 @@ function _mergeAcrossAreas(areaPlans) {
       const areaPayload = j.areas.map((a, idx) => ({
         job_id: jobId, name: a.name || `Area ${idx+1}`, sqft: Number(a.sqft),
         system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
+        topcoat_product_id: a.topcoat_product_id || null,
+        basecoat_cure_speed: a.basecoat_cure_speed || null,
+        topcoat_cure_speed: a.topcoat_cure_speed || null,
         notes: a.notes || null, order_index: idx,
         flake_size: a.flake_size || null,
         special_order_color: a.special_order ? (a.special_order_color || null) : null,
@@ -7913,6 +7993,7 @@ function _mergeAcrossAreas(areaPlans) {
             qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
             use_backstock: false, ordered: false, delivered: false,
             unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+            cure_speed: l.cure_speed || null,
           };
         });
         const insLines = await supabase.from('pec_prod_material_lines').insert(linePayload);
@@ -8010,7 +8091,7 @@ function _mergeAcrossAreas(areaPlans) {
       <div class="pec-table-wrap">
       <table class="pec-table">
         <thead><tr>
-          <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th>
+          <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th><th>Cure</th>
           <th>Qty</th><th>Backstock</th><th>Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
         </tr></thead>
         <tbody>
@@ -8022,6 +8103,7 @@ function _mergeAcrossAreas(areaPlans) {
                 <select data-prop="supplier" style="width:170px">${supplierOptions(l.supplier)}</select>
               </td>
               <td><span class="prod-readonly">${esc(l.color || '')}</span></td>
+              <td><span class="prod-readonly">${esc(l.cure_speed || '')}</span></td>
               <td><input data-prop="qty_needed"    type="number" min="0" step="1" value="${esc(l.qty_needed)}"    class="prod-num"></td>
               <td><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" class="prod-num"></td>
               <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num"></td>
@@ -8032,7 +8114,7 @@ function _mergeAcrossAreas(areaPlans) {
         </tbody>
       </table>
       </div>
-      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product and Color come from the catalog (read-only here). Edit them in Price &amp; Material Catalog.</div>
+      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product, Color and Cure come from the catalog and area settings (read-only here). Edit cure speed on the area; everything else in Price &amp; Material Catalog.</div>
     `;
     host.querySelectorAll('tr[data-line-id]').forEach(tr => {
       const id = tr.dataset.lineId;
@@ -8072,6 +8154,9 @@ function _mergeAcrossAreas(areaPlans) {
     const areasInput = (j.areas || []).map(a => ({
       id: a.id, name: a.name, sqft: Number(a.sqft),
       system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
+      topcoat_product_id: a.topcoat_product_id || null,
+      basecoat_cure_speed: a.basecoat_cure_speed || null,
+      topcoat_cure_speed: a.topcoat_cure_speed || null,
     }));
     let plan;
     try {
@@ -8089,6 +8174,7 @@ function _mergeAcrossAreas(areaPlans) {
         qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
         use_backstock: false, ordered: false, delivered: false,
         unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+        cure_speed: l.cure_speed || null,
       }));
       const ins = await supabase.from('pec_prod_material_lines').insert(payload);
       if (ins.error) return $('prodDetailError').textContent = ins.error.message;

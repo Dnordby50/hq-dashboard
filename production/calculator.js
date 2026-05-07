@@ -24,6 +24,24 @@ export class CalculatorError extends Error {
   }
 }
 
+// Cure speed lives on the area, not the line, but the per-line cure_speed
+// snapshot has to know *which* area column to read. Two product families need
+// it today: Simiron 1100 SL (Fast/Standard/Slow, written to basecoat_cure_speed
+// because in every shipped recipe 1100 SL fills the basecoat slot) and the
+// Polyaspartic family (Fast/Medium/Slow/XTRA Slow, written to topcoat_cure_speed).
+// A line for a non-cure-speed product gets cure_speed=null.
+export function cureSpeedSpec(product) {
+  if (!product) return null;
+  const name = String(product.name || '').toLowerCase();
+  if (/^simiron\s*1100\s*sl\b/.test(name)) {
+    return { areaField: 'basecoat_cure_speed', options: ['Fast', 'Standard', 'Slow'] };
+  }
+  if (/polyaspartic/.test(name)) {
+    return { areaField: 'topcoat_cure_speed', options: ['Fast', 'Medium', 'Slow', 'XTRA Slow'] };
+  }
+  return null;
+}
+
 /**
  * @param {Object} input
  * @param {Array<Area>} input.areas
@@ -91,6 +109,7 @@ export function computeMaterialPlan({
           kit_size: Number(product.kit_size),
           unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
           sqft: totalSqft,
+          cure_speed: null,
         }],
       });
     }
@@ -170,6 +189,9 @@ function planForArea(area, ctx) {
       );
     }
 
+    const spec = cureSpeedSpec(product);
+    const cure_speed = spec ? (area[spec.areaField] || null) : null;
+
     slotLines.push({
       area_id: area.id || null,
       area_name: area.name || null,
@@ -183,6 +205,7 @@ function planForArea(area, ctx) {
       kit_size: kit,
       unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
       sqft, // carry sqft so we can sum across areas before rounding
+      cure_speed,
     });
   }
 
@@ -196,7 +219,11 @@ function mergeAcrossAreas(areaPlans, productsById) {
 
   for (const { lines } of areaPlans) {
     for (const line of lines) {
-      const key = line.product_id;
+      // Two areas using the same product with two different cure speeds must
+      // stay as two lines; merging would silently average the cure speed away.
+      // For products without a cure speed, the suffix is "" and the merge
+      // behaves exactly like before.
+      const key = `${line.product_id}|${line.cure_speed || ''}`;
       if (!groups.has(key)) {
         groups.set(key, {
           material_type: line.material_type,
@@ -207,6 +234,7 @@ function mergeAcrossAreas(areaPlans, productsById) {
           spread_rate: line.spread_rate,
           kit_size: line.kit_size,
           unit_cost_snapshot: line.unit_cost,
+          cure_speed: line.cure_speed || null,
           sqft_total: 0,
           area_ids: [],
           first_order_index: line.order_index,
@@ -241,6 +269,7 @@ function mergeAcrossAreas(areaPlans, productsById) {
       delivered: false,
       unit_cost_snapshot: g.unit_cost_snapshot,
       line_cost: lineCost,
+      cure_speed: g.cure_speed,
       area_ids: g.area_ids,
       sqft_total: g.sqft_total,
       order_index: i++,

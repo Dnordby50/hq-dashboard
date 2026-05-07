@@ -4,6 +4,46 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-07 MST] dashboard: cure speed dropdowns for 1100 SL and Polyaspartic, plumbed planner -> material lines -> sync
+
+By: Claude Code
+Changed: production/calculator.js, production/calculator.test.js, index.html, netlify/functions/pec-prod-sync-sheet.cjs.
+
+Why this exists: per the migration entry above, products in the Simiron 1100 SL family take a Fast/Standard/Slow cure speed and Polyaspartic-family topcoats take a Fast/Medium/Slow/XTRA Slow cure speed. The user picks it on the area; the planner stamps it onto the matching computed material line; the line eventually rides the existing sync function out to the work-order Google Sheet.
+
+What this commit ships:
+
+1. New cureSpeedSpec(product) helper in production/calculator.js (canonical) with a byte-equivalent mirror inlined into index.html so file:// works. Detects product family by name regex (^Simiron 1100 SL\b -> basecoat_cure_speed/3 options; polyaspartic -> topcoat_cure_speed/4 options) and returns null for everything else. Used by both the planner and the area-editor render to decide whether to stamp/show a cure speed.
+
+2. computeMaterialPlan now stamps cure_speed onto each line by reading area[spec.areaField]. The line shape grows one new field; non-cure-speed lines get cure_speed: null. The merge key in mergeAcrossAreas changes from product_id to product_id|cure_speed||'' so two areas using the same basecoat with different cure speeds (e.g. Garage A Fast, Garage B Slow) come out as two material lines, not one collapsed line. Same product + same cure speed across multiple areas continues to merge by sqft as before.
+
+3. New tests in production/calculator.test.js: (a) basecoat 1100 SL gets basecoat_cure_speed stamped, topcoat Polyaspartic gets topcoat_cure_speed stamped, flake gets null; (b) different cure speeds across two areas stay as two lines; (c) same cure speed across two areas merges to one line and the merged line keeps the cure speed. npm test green at 40 passed / 0 failed.
+
+4. Area editor (index.html renderAreas) gets a conditional second row that renders Basecoat cure speed and/or Topcoat cure speed dropdowns. Both are gated on cureSpeedSpec returning a spec for the resolved basecoat/topcoat product, where the resolved topcoat for now comes from the recipe slot's default_product_id (the topcoat override picker ships in the next commit). Field names ("basecoat_cure_speed", "topcoat_cure_speed") match the area columns from the migration so the existing data-aprop sync wires them straight through.
+
+5. Re-render trigger expanded: previously renderAreas only re-rendered when system_type_id changed. Now it also re-renders when flake_product_id, basecoat_product_id, or topcoat_product_id changes, since each of those can change which product fills the basecoat or topcoat slot and therefore whether a cure-speed dropdown should be visible. This is the change that makes the dropdown appear/disappear live as the user picks a basecoat.
+
+6. saveNewJob, recalcActiveJob, and buildCalcInput all carry the new fields end-to-end: the area payload writes basecoat_cure_speed and topcoat_cure_speed (and topcoat_product_id, which the next commit will start setting); the line payload snapshots cure_speed onto pec_prod_material_lines so the sync function and the Material Pull view can read it.
+
+7. Job-detail material lines table grows a "Cure" column showing the snapshot cure_speed (read-only there; users edit cure speed on the area, not the line). Material Pull aggregation key is product_id|cure_speed so the printout shows separate rows for separate cure speeds.
+
+8. Netlify sync function pec-prod-sync-sheet.cjs adds cure_speed to the lines payload sent to the Apps Script proxy. The proxy is not yet updated to write that column on the sheet (Cowork handoff in the migration entry), so the field will currently be silently ignored on the sheet side, but the value is in Supabase.
+
+What is NOT here yet:
+
+- Topcoat override picker in the area editor (next commit). For now the topcoat resolves from the recipe slot's default_product_id, which means the topcoat cure speed dropdown shows up correctly for any system whose recipe slot defaults to a Polyaspartic product, but the user can't override the topcoat product from the editor yet.
+- U-Tint attachment UI (next commit).
+
+Files touched: production/calculator.js, production/calculator.test.js, index.html, netlify/functions/pec-prod-sync-sheet.cjs, PROJECT-LOG.md.
+
+Verification before commit: npm test (40 passed). Manual UI verification deferred until Dylan runs the migration; without the new columns the area editor will still load but saveNewJob will throw on the new payload fields.
+
+## Handoff to Cowork
+
+Same Apps Script proxy update flagged in the migration entry. Without it, cure speed will save in Supabase but won't appear on the work-order sheet. The netlify function is now sending it.
+
+---
+
 ## [2026-05-07 MST] supabase: cure speed + per-area U-Tint attachments + topcoat override migration
 
 By: Claude Code

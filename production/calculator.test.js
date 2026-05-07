@@ -282,6 +282,67 @@ assertThrows(() => {
   assertEq(hasMvbLine, false, 'standaloneMvb=false produces no MVB line');
 }
 
+// --- Cure speed: 1100 SL basecoat stamps from area.basecoat_cure_speed -----
+// Cure speed is authored on the area, not the line, but the planner needs to
+// stamp it onto whichever line ends up using a 1100 SL or Polyaspartic
+// product. This test pins the basecoat stamping against the Standard Flake
+// recipe (basecoat = Simiron 1100 SL - Tinted Gray).
+{
+  const plan = computeMaterialPlan({
+    areas: [{
+      id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake',
+      basecoat_cure_speed: 'Slow',
+      topcoat_cure_speed: 'XTRA Slow',
+    }],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  assertEq(lineByMaterial(plan, 'Basecoat').cure_speed, 'Slow',     'basecoat (1100 SL) line gets basecoat_cure_speed');
+  assertEq(lineByMaterial(plan, 'Topcoat').cure_speed,  'XTRA Slow', 'topcoat (Polyaspartic) line gets topcoat_cure_speed');
+  assertEq(lineByMaterial(plan, 'Flake').cure_speed,    null,        'flake line has no cure speed');
+}
+
+// --- Cure speed: same product across areas with different cure speeds stays
+// as two lines, not one (otherwise Fast and Slow collapse and the value is
+// silently lost). Both areas share the same flake so the basecoat product
+// resolves the same way; only the cure_speed differs.
+{
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage A', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', basecoat_cure_speed: 'Fast' },
+      { id: 'a2', name: 'Garage B', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', basecoat_cure_speed: 'Slow' },
+    ],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const basecoats = plan.lines.filter(l => l.material_type === 'Basecoat');
+  assertEq(basecoats.length, 2, 'two cure speeds for same basecoat -> two basecoat lines');
+  const speeds = basecoats.map(l => l.cure_speed).sort();
+  assertEq(speeds[0], 'Fast', 'one line keeps Fast');
+  assertEq(speeds[1], 'Slow', 'other line keeps Slow');
+}
+
+// --- Cure speed: same product, same cure speed across two areas merges as
+// before (this is the regression test that proves we didn't break sqft merge
+// for cure-speed-bearing products).
+{
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage A', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', basecoat_cure_speed: 'Standard' },
+      { id: 'a2', name: 'Garage B', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', basecoat_cure_speed: 'Standard' },
+    ],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const basecoats = plan.lines.filter(l => l.material_type === 'Basecoat');
+  assertEq(basecoats.length, 1, 'same cure speed across two areas -> one merged basecoat line');
+  assertEq(basecoats[0].cure_speed, 'Standard', 'merged line keeps the cure speed');
+  assertEq(basecoats[0].sqft_total, 600, 'merged line sums sqft across both areas');
+}
+
 // ----------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

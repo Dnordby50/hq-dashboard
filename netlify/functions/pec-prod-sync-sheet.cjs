@@ -150,6 +150,7 @@ async function doSync({ job: bundle, sheetId, caller, useTest }) {
       material: l.product_name,
       supplier: l.supplier || '',
       color: l.color || '',
+      cure_speed: l.cure_speed || '',
       qty_needed: Number(l.qty_needed || 0),
       backstock_qty: Number(l.backstock_qty || 0),
       order_qty: Number(l.order_qty || 0),
