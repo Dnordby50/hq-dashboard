@@ -32,6 +32,32 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
    Exception: domain-restricted client-side API keys (Google Sheets, Maps, etc.) are by design committed to client code, since the architecture requires the browser to call Google directly. To make this safe: (a) the key MUST be restricted in Google Cloud Console to specific HTTP referrers (the live Netlify domain plus any custom domain) AND restricted to the minimum APIs it needs, and (b) the key value MUST be added to SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES in netlify.toml so the secret scanner allows the deploy. If you rotate one of these keys, update both index.html and netlify.toml in the same commit.
 
+8. Default to Cowork for inputs and verifications, not direct questions to Dylan. When something would otherwise need Dylan to provide a value, verify a result in a third-party UI, run a migration, or perform a manual web action, package it as a Cowork handoff (in the PROJECT-LOG entry AND as a standalone Cowork prompt printed in chat) instead of asking Dylan directly. Cowork has its own asynchronous workflow with Dylan and can collect inputs without interrupting the current Claude Code session.
+
+   Stay direct (still ask Dylan) when this Claude Code session is BLOCKED on a binary architectural choice that fundamentally changes downstream work, or when waiting on Cowork would cost more than the answer is worth (a 1-2 word reply that unblocks 30+ minutes of work). The trigger for direct asking is "this session is stalled until I get this answer", not "this needs Dylan's input eventually". When in doubt, write the Cowork prompt.
+
+## Cowork Handoff Prompt Format
+
+Cowork prompts go to a separate operator with no chat history, no familiarity with the current session's reasoning, and no access to this conversation. They MUST be self-contained. When you write one, print it in chat as a fenced code block in this shape:
+
+```
+## Context
+One paragraph. What just shipped (with commit SHAs if relevant), why this handoff exists, what is currently blocked on it. State the repo and the deploy URL so Cowork knows which environment.
+
+## Tasks
+Numbered list. Each task has:
+- What to do (one sentence, imperative).
+- Where to do it (file paths with line numbers, table names, sheet IDs, or URLs). Include enough that Cowork doesn't have to grep.
+- Acceptance criteria (how Cowork knows it worked).
+- What NOT to touch (guardrails).
+Take tasks in dependency order; if task 2 needs task 1 to be live first, say so.
+
+## After
+What Cowork should update once tasks are done: the PROJECT-LOG entry to append (with `By: Cowork`), specific values to capture in the entry (counts, column letters, before/after values), and what to report back to Dylan.
+```
+
+Rules of thumb: include actual SQL / file snippets when they're short. Point Cowork at the specific commit on `main` so versions don't drift. Never assume Cowork has read PROJECT-LOG; if a past entry matters, paste the relevant line. If a task requires a credential or context Cowork would have to ask Dylan for anyway (which sheet, which Supabase project, which API key), name it explicitly so Cowork can ask Dylan once instead of bouncing back.
+
 ## Bug Diagnosis Workflow
 
 When Dylan reports a bug or unexpected behavior, follow this workflow:
