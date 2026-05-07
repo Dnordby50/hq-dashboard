@@ -154,6 +154,10 @@ function planForArea(area, ctx) {
       productId = area.flake_product_id || productId;
     } else if (slot.material_type === 'Basecoat') {
       productId = resolvedBasecoatId || productId;
+    } else if (slot.material_type === 'Topcoat') {
+      // Topcoat works the same way basecoat does: explicit area override
+      // wins, otherwise the slot's default product fills it.
+      productId = area.topcoat_product_id || productId;
     }
 
     if (!productId) {
@@ -209,6 +213,44 @@ function planForArea(area, ctx) {
     });
   }
 
+  // Per-area U-Tint Pack attachments. Quantity is the user-entered packs
+  // count (NOT a sqft-derived number), so these lines carry a _tint_packs
+  // marker and bypass the ceil(sqft/spread/kit) formula in mergeAcrossAreas.
+  // order_index sorts them after every recipe slot so the work order reads
+  // basecoat -> flake -> topcoat -> tints, in that order.
+  const tints = Array.isArray(area.tints) ? area.tints : [];
+  const lastSlotIndex = slots.length ? slots[slots.length - 1].order_index : 0;
+  let tintOrder = lastSlotIndex + 1;
+  for (const t of tints) {
+    if (!t || !t.product_id) continue;
+    const tProduct = productsById[t.product_id];
+    if (!tProduct) {
+      throw new CalculatorError(
+        `Area "${area.name || area.id}": tint product ${t.product_id} not found in catalog`,
+        'PRODUCT_NOT_FOUND'
+      );
+    }
+    const packs = Number(t.packs);
+    if (!Number.isFinite(packs) || packs <= 0) continue;
+    slotLines.push({
+      area_id: area.id || null,
+      area_name: area.name || null,
+      order_index: tintOrder++,
+      material_type: 'Tint Pack',
+      product_id: tProduct.id,
+      product_name: tProduct.name,
+      supplier: tProduct.supplier || null,
+      color: tProduct.color || null,
+      spread_rate: Number(tProduct.spread_rate) || 1,
+      kit_size: Number(tProduct.kit_size) || 1,
+      unit_cost: tProduct.unit_cost == null ? null : Number(tProduct.unit_cost),
+      sqft: 0,
+      cure_speed: null,
+      _tint_packs: packs,
+      _tint_attach_to: t.attach_to || null,
+    });
+  }
+
   return { area, lines: slotLines };
 }
 
@@ -219,11 +261,15 @@ function mergeAcrossAreas(areaPlans, productsById) {
 
   for (const { lines } of areaPlans) {
     for (const line of lines) {
-      // Two areas using the same product with two different cure speeds must
-      // stay as two lines; merging would silently average the cure speed away.
-      // For products without a cure speed, the suffix is "" and the merge
-      // behaves exactly like before.
-      const key = `${line.product_id}|${line.cure_speed || ''}`;
+      // Two flavors of grouping share one Map: sqft-driven lines (recipe
+      // slots) merge by product_id|cure_speed so two cure speeds for the
+      // same product stay separate; pack-driven tint lines merge by
+      // product_id alone so the same Tint Pack attached to two basecoats
+      // in two areas comes out as one summed order line.
+      const isTint = line._tint_packs != null;
+      const key = isTint
+        ? `tint:${line.product_id}`
+        : `${line.product_id}|${line.cure_speed || ''}`;
       if (!groups.has(key)) {
         groups.set(key, {
           material_type: line.material_type,
@@ -235,13 +281,16 @@ function mergeAcrossAreas(areaPlans, productsById) {
           kit_size: line.kit_size,
           unit_cost_snapshot: line.unit_cost,
           cure_speed: line.cure_speed || null,
+          is_tint: isTint,
           sqft_total: 0,
+          packs_total: 0,
           area_ids: [],
           first_order_index: line.order_index,
         });
       }
       const g = groups.get(key);
-      g.sqft_total += line.sqft;
+      if (isTint) g.packs_total += line._tint_packs;
+      else g.sqft_total += line.sqft;
       if (line.area_id) g.area_ids.push(line.area_id);
       if (line.order_index < g.first_order_index) g.first_order_index = line.order_index;
     }
@@ -250,8 +299,14 @@ function mergeAcrossAreas(areaPlans, productsById) {
   const merged = [];
   let i = 0;
   for (const g of groups.values()) {
-    if (g.sqft_total <= 0) continue; // sqft=0 across all areas, skip
-    const qty = Math.ceil(g.sqft_total / g.spread_rate / g.kit_size);
+    let qty;
+    if (g.is_tint) {
+      if (g.packs_total <= 0) continue;
+      qty = g.packs_total;
+    } else {
+      if (g.sqft_total <= 0) continue;
+      qty = Math.ceil(g.sqft_total / g.spread_rate / g.kit_size);
+    }
     const lineCost = g.unit_cost_snapshot == null ? null : round2(qty * g.unit_cost_snapshot);
     merged.push({
       material_type: g.material_type,
@@ -271,7 +326,7 @@ function mergeAcrossAreas(areaPlans, productsById) {
       line_cost: lineCost,
       cure_speed: g.cure_speed,
       area_ids: g.area_ids,
-      sqft_total: g.sqft_total,
+      sqft_total: g.is_tint ? 0 : g.sqft_total,
       order_index: i++,
       _sort_key: g.first_order_index,
     });

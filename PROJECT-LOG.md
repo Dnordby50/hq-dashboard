@@ -4,6 +4,47 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-07 MST] dashboard: per-area topcoat override + per-area U-Tint Pack pickers
+
+By: Claude Code
+Changed: production/calculator.js, production/calculator.test.js, index.html.
+
+Why this exists: closes the loop on Tasks 4 and 5 of Dylan's brief. Cure-speed plumbing landed in the previous commit but the area editor still had no way to pick a topcoat product (it was always whatever the recipe slot defaulted to) and no way to attach U-Tint Packs to a basecoat or topcoat. Both ship here.
+
+What this commit ships:
+
+1. computeMaterialPlan now resolves area.topcoat_product_id with the same precedence rule the basecoat already uses: explicit area override > slot default. The planner change is one additional `else if (slot.material_type === 'Topcoat')` branch in the slot loop.
+
+2. computeMaterialPlan now reads area.tints (array of { product_id, attach_to, packs }) and emits one Tint Pack line per non-empty tint. These lines are pack-driven, not sqft-driven: qty_needed = packs (NOT ceil(sqft/spread/kit)). They carry _tint_packs and _tint_attach_to markers which the merge step keys off.
+
+3. mergeAcrossAreas now keeps two flavors of group in one Map. Sqft-driven recipe lines merge by product_id|cure_speed (existing behavior). Pack-driven tint lines merge by product_id alone, so the same Tint Pack attached to two different areas (or to a basecoat in one area and a topcoat in another) sums into one order line whose qty_needed is the total pack count. Different attach_to values on the same product do NOT split the order row, since for ordering purposes they're the same SKU.
+
+4. Three new tests in production/calculator.test.js: (a) topcoat_product_id override wins over slot default; (b) area.tints emit a Tint Pack line with qty=packs and line_cost = packs * unit_cost; (c) the same tint across two areas merges to one row whose qty equals the sum of the per-area pack counts. npm test green at 48 passed / 0 failed.
+
+5. Area editor (index.html renderAreas) gets a Topcoat override select right next to the existing Basecoat override. Default option is "Recipe default" so the picker is non-destructive; users only see this slot when the area's system has a Topcoat in its recipe.
+
+6. Area editor gets a new "U-Tint Packs" sub-section, gated on whether the area's system has a Basecoat or Topcoat slot (i.e., gated on tintability). Each attached tint renders as a row of three controls: Tint product (every active 'Tint Pack' product), Packs (integer >= 1), Attach to (Basecoat / Topcoat; the Topcoat option is disabled when the system has no Topcoat slot). + Add U-Tint pushes a new row onto area.tints with the first available tint product preselected; Remove splices it. The picker is disabled with a tooltip if no Tint Pack products exist in the catalog.
+
+7. saveNewJob now persists pec_prod_area_tints rows after pec_prod_areas inserts. The mapping from j.areas[i].tints to the inserted area_id relies on insAreas.data preserving insert order (verified Supabase JS client behavior). order_index on each tint row is the array index so re-loading the job recovers the same display order.
+
+8. loadJobs select grew nested tint loading (areas:pec_prod_areas(*, tints:pec_prod_area_tints(*))) so state.activeJob.areas[i].tints is populated when the job-detail modal opens.
+
+9. recalcActiveJob and buildCalcInput both thread tints through to the planner so a recalc on an existing job emits the right Tint Pack lines (and material_lines wipe-and-replace continues to work — tints are read-only inputs to the planner, not outputs of the recalc).
+
+10. Job-detail Areas summary grew a "+ N U-Tints" badge and a "cure F/X" badge so users can see at a glance whether an area has either configured.
+
+Not in this commit (deliberate, queued for a follow-up):
+
+- Editing area.tints from the job-detail modal. Today the modal only shows areas as read-only summaries; tints follow the same rule. If users want to add U-Tints to an existing job, they have to recreate the job. Same constraint applies to flake_product_id and basecoat_product_id today, so this is consistent rather than worse.
+- Per-area sub-grouping of tint order lines. The merge collapses by product_id only; if Sandstone is attached to a Garage basecoat and a Patio topcoat, the order shows one Sandstone Tint Pack line with qty=2 and area_ids=[garage, patio]. Sufficient for ordering; if invoicing wants per-area itemization, that's a printing concern, not a planner concern.
+- Apps Script proxy work for printing cure speed (still flagged in the migration entry's Cowork handoff). Tint Pack lines already flow through to the work order via the existing material_lines passthrough; the new Tint Pack rows from area_tints will appear on the sheet automatically.
+
+Files touched: production/calculator.js, production/calculator.test.js, index.html, PROJECT-LOG.md.
+
+Verification before commit: npm test (48 passed). Manual UI verification deferred until Dylan runs the migration. Without the new pec_prod_areas columns and the pec_prod_area_tints table, saveNewJob will fail with a Supabase column-not-found error on the tint insert, which is the correct failure mode (the migration is the gate).
+
+---
+
 ## [2026-05-07 MST] dashboard: cure speed dropdowns for 1100 SL and Polyaspartic, plumbed planner -> material lines -> sync
 
 By: Claude Code

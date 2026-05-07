@@ -7294,6 +7294,7 @@ function _planForArea(area, ctx) {
     let productId = slot.default_product_id;
     if (slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment') productId = area.flake_product_id || productId;
     else if (slot.material_type === 'Basecoat') productId = resolvedBasecoatId || productId;
+    else if (slot.material_type === 'Topcoat') productId = area.topcoat_product_id || productId;
     if (!productId) {
       if (slot.required) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
       continue;
@@ -7315,25 +7316,50 @@ function _planForArea(area, ctx) {
       sqft, cure_speed: _cure_speed,
     });
   }
+  // Per-area U-Tint Pack attachments. Pack count drives quantity directly
+  // (no sqft math). order_index sits after every recipe slot so the work
+  // order reads basecoat -> flake -> topcoat -> tints.
+  const _tints = Array.isArray(area.tints) ? area.tints : [];
+  const _lastSlot = slots.length ? slots[slots.length - 1].order_index : 0;
+  let _tintOrder = _lastSlot + 1;
+  for (const _t of _tints) {
+    if (!_t || !_t.product_id) continue;
+    const _tp = productsById[_t.product_id];
+    if (!_tp) throw new CalculatorError(`Area "${area.name || area.id}": tint product ${_t.product_id} not found in catalog`, 'PRODUCT_NOT_FOUND');
+    const _packs = Number(_t.packs);
+    if (!Number.isFinite(_packs) || _packs <= 0) continue;
+    slotLines.push({
+      area_id: area.id || null, area_name: area.name || null, order_index: _tintOrder++,
+      material_type: 'Tint Pack', product_id: _tp.id, product_name: _tp.name,
+      supplier: _tp.supplier || null, color: _tp.color || null,
+      spread_rate: Number(_tp.spread_rate) || 1, kit_size: Number(_tp.kit_size) || 1,
+      unit_cost: _tp.unit_cost == null ? null : Number(_tp.unit_cost),
+      sqft: 0, cure_speed: null,
+      _tint_packs: _packs, _tint_attach_to: _t.attach_to || null,
+    });
+  }
   return { area, lines: slotLines };
 }
 function _mergeAcrossAreas(areaPlans) {
   const groups = new Map();
   for (const { lines } of areaPlans) {
     for (const line of lines) {
-      // Group key includes cure_speed so two areas using the same product with
-      // two different cure speeds stay as two lines (Fast and Slow can't be
-      // collapsed). For products without a cure speed the suffix is "" and
-      // the merge behaves exactly like before.
-      const key = `${line.product_id}|${line.cure_speed || ''}`;
+      // Two flavors share one Map: sqft-driven recipe lines merge by
+      // product_id|cure_speed (cure_speeds stay separate); pack-driven tint
+      // lines merge by product_id alone (same Tint Pack across two areas
+      // sums into one order line).
+      const isTint = line._tint_packs != null;
+      const key = isTint ? `tint:${line.product_id}` : `${line.product_id}|${line.cure_speed || ''}`;
       if (!groups.has(key)) groups.set(key, {
         material_type: line.material_type, product_id: line.product_id, product_name: line.product_name,
         supplier: line.supplier, color: line.color, spread_rate: line.spread_rate, kit_size: line.kit_size,
         unit_cost_snapshot: line.unit_cost, cure_speed: line.cure_speed || null,
-        sqft_total: 0, area_ids: [], first_order_index: line.order_index,
+        is_tint: isTint, sqft_total: 0, packs_total: 0,
+        area_ids: [], first_order_index: line.order_index,
       });
       const g = groups.get(key);
-      g.sqft_total += line.sqft;
+      if (isTint) g.packs_total += line._tint_packs;
+      else g.sqft_total += line.sqft;
       if (line.area_id) g.area_ids.push(line.area_id);
       if (line.order_index < g.first_order_index) g.first_order_index = line.order_index;
     }
@@ -7341,8 +7367,14 @@ function _mergeAcrossAreas(areaPlans) {
   const merged = [];
   let i = 0;
   for (const g of groups.values()) {
-    if (g.sqft_total <= 0) continue;
-    const qty = Math.ceil(g.sqft_total / g.spread_rate / g.kit_size);
+    let qty;
+    if (g.is_tint) {
+      if (g.packs_total <= 0) continue;
+      qty = g.packs_total;
+    } else {
+      if (g.sqft_total <= 0) continue;
+      qty = Math.ceil(g.sqft_total / g.spread_rate / g.kit_size);
+    }
     const lineCost = g.unit_cost_snapshot == null ? null : Math.round(qty * g.unit_cost_snapshot * 100) / 100;
     merged.push({
       material_type: g.material_type, product_id: g.product_id, product_name: g.product_name,
@@ -7351,7 +7383,8 @@ function _mergeAcrossAreas(areaPlans) {
       use_backstock: false, ordered: false, delivered: false,
       unit_cost_snapshot: g.unit_cost_snapshot, line_cost: lineCost,
       cure_speed: g.cure_speed,
-      area_ids: g.area_ids, sqft_total: g.sqft_total, order_index: i++, _sort_key: g.first_order_index,
+      area_ids: g.area_ids, sqft_total: g.is_tint ? 0 : g.sqft_total,
+      order_index: i++, _sort_key: g.first_order_index,
     });
   }
   merged.sort((a, b) => a._sort_key - b._sort_key);
@@ -7424,7 +7457,7 @@ function _mergeAcrossAreas(areaPlans) {
   async function loadJobs() {
     const { data, error } = await supabase
       .from('pec_prod_jobs')
-      .select('*, areas:pec_prod_areas(*), lines:pec_prod_material_lines(*)')
+      .select('*, areas:pec_prod_areas(*, tints:pec_prod_area_tints(*)), lines:pec_prod_material_lines(*)')
       .order('install_date', { ascending: true, nullsFirst: false });
     if (error) console.error('[prod] jobs:', error);
     state.jobs = data || [];
@@ -7707,6 +7740,8 @@ function _mergeAcrossAreas(areaPlans) {
 
     const productById = indexById(state.products);
     const defaultsByFlake = defaultBasecoatByFlake();
+    const topcoats   = productsByMaterialType('Topcoat');
+    const tintProducts = productsByMaterialType('Tint Pack');
     host.innerHTML = state.newJob.areas.map((a, idx) => {
       const sys = state.systemTypes.find(s => s.id === a.system_type_id);
       const showQuartz   = sysHasSlot(sys, 'Quartz');
@@ -7715,14 +7750,15 @@ function _mergeAcrossAreas(areaPlans) {
       // slot, even if the legacy requires_flake_color flag is true.
       const showFlake    = !showQuartz && !showPigment && (sysHasSlot(sys, 'Flake') || (sys && sys.requires_flake_color));
       const showBase     = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
+      const showTopcoat  = sysHasSlot(sys, 'Topcoat');
       const showColorPicker = showFlake || showQuartz || showPigment;
+      const showTints    = showBase || showTopcoat;
       const sysSel = sysOpts.replace(`value="${esc(a.system_type_id)}"`, `value="${esc(a.system_type_id)}" selected`);
 
       // Resolve the products that will actually fill the basecoat and topcoat
       // slots so we know whether to render a cure-speed dropdown for them.
       // Mirrors the planner resolution: explicit pick > default pairing > slot
-      // default. Topcoat override picker is added in a later commit; for now
-      // the topcoat resolves from the recipe slot's default_product_id.
+      // default.
       const sysSlots = sys ? (slotsBySys[sys.id] || []) : [];
       const resolvedBasecoatId =
         a.basecoat_product_id ||
@@ -7785,6 +7821,13 @@ function _mergeAcrossAreas(areaPlans) {
                 ${basecoats.map(p => `<option value="${esc(p.id)}" ${p.id===a.basecoat_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
+            <div class="pec-field" style="${showTopcoat ? '' : 'display:none'}">
+              <label>Topcoat <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">override</span></label>
+              <select data-aprop="topcoat_product_id">
+                <option value="">Recipe default</option>
+                ${topcoats.map(p => `<option value="${esc(p.id)}" ${p.id===a.topcoat_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
             <div class="pec-field"><label>Area notes</label><input data-aprop="notes" value="${esc(a.notes)}"></div>
           </div>
           ${(baseCure || topCure) ? `
@@ -7807,6 +7850,40 @@ function _mergeAcrossAreas(areaPlans) {
                 </select>
               </div>
             ` : ''}
+          </div>` : ''}
+          ${showTints ? `
+          <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-weight:600;font-size:.78rem">U-Tint Packs</span>
+              <button class="pec-btn ghost sm" data-add-tint="${esc(a._key)}"${tintProducts.length === 0 ? ' disabled title="No Tint Pack products in catalog"' : ''}>+ Add U-Tint</button>
+            </div>
+            ${(a.tints || []).length === 0
+              ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">No U-Tints attached to this area.</div>`
+              : (a.tints || []).map((t, ti) => `
+                <div class="pec-row-3" style="margin-top:6px;align-items:end" data-tint-row="${esc(a._key)}::${ti}">
+                  <div class="pec-field">
+                    <label>Tint product</label>
+                    <select data-tprop="product_id" data-tidx="${ti}">
+                      <option value="">Pick a Tint Pack...</option>
+                      ${tintProducts.map(p => `<option value="${esc(p.id)}" ${p.id===t.product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="pec-field">
+                    <label>Packs</label>
+                    <input data-tprop="packs" data-tidx="${ti}" type="number" min="1" step="1" value="${esc(t.packs ?? 1)}">
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:end">
+                    <div class="pec-field" style="flex:1">
+                      <label>Attach to</label>
+                      <select data-tprop="attach_to" data-tidx="${ti}">
+                        <option value="Basecoat" ${t.attach_to==='Basecoat'?'selected':''}>Basecoat</option>
+                        <option value="Topcoat"  ${t.attach_to==='Topcoat'?'selected':''}${showTopcoat?'':' disabled'}>Topcoat${showTopcoat?'':' (no topcoat in this system)'}</option>
+                      </select>
+                    </div>
+                    <button class="pec-btn ghost sm danger" data-remove-tint="${esc(a._key)}::${ti}" style="margin-bottom:2px">Remove</button>
+                  </div>
+                </div>
+              `).join('')}
           </div>` : ''}
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:.75rem">
             <label style="display:${(showFlake || showQuartz) ? 'inline-flex' : 'none'};align-items:center;gap:6px;cursor:pointer;color:var(--muted)">
@@ -7860,6 +7937,44 @@ function _mergeAcrossAreas(areaPlans) {
         state.newJob.areas = state.newJob.areas.filter(a => a._key !== key);
         renderAreas(); renderPreview();
       });
+
+      // Tint row handlers. Each row carries data-tidx; the values live on
+      // area.tints[idx]. Add appends a row with the first available tint
+      // product preselected so the dropdown isn't empty.
+      const addTintBtn = card.querySelector('[data-add-tint]');
+      if (addTintBtn) addTintBtn.addEventListener('click', () => {
+        if (!Array.isArray(area.tints)) area.tints = [];
+        const firstTint = state.products.find(p => p.material_type === 'Tint Pack' && p.active);
+        const sysSlots2 = state.recipeSlots.filter(s => s.system_type_id === area.system_type_id);
+        const hasTopcoat = sysSlots2.some(s => s.material_type === 'Topcoat');
+        area.tints.push({
+          product_id: firstTint ? firstTint.id : '',
+          attach_to: hasTopcoat ? 'Basecoat' : 'Basecoat',
+          packs: 1,
+        });
+        renderAreas(); renderPreview();
+      });
+      card.querySelectorAll('[data-tprop]').forEach((inp) => {
+        const sync = () => {
+          const idx = Number(inp.dataset.tidx);
+          if (!Array.isArray(area.tints) || !area.tints[idx]) return;
+          const prop = inp.dataset.tprop;
+          if (prop === 'packs') area.tints[idx].packs = Math.max(1, Number(inp.value) || 1);
+          else area.tints[idx][prop] = inp.value;
+          renderPreview();
+        };
+        inp.addEventListener('input', sync);
+        inp.addEventListener('change', sync);
+      });
+      card.querySelectorAll('[data-remove-tint]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const [k, idxStr] = btn.dataset.removeTint.split('::');
+          if (k !== area._key) return;
+          const idx = Number(idxStr);
+          if (Array.isArray(area.tints)) area.tints.splice(idx, 1);
+          renderAreas(); renderPreview();
+        });
+      });
     });
   }
 
@@ -7885,6 +8000,9 @@ function _mergeAcrossAreas(areaPlans) {
           topcoat_product_id: a.topcoat_product_id || null,
           basecoat_cure_speed: a.basecoat_cure_speed || null,
           topcoat_cure_speed: a.topcoat_cure_speed || null,
+          tints: (a.tints || []).map(t => ({
+            product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
+          })),
         })),
       productsById: indexById(state.products),
       recipeSlotsBySystemType: recipeSlotsBySystemType(),
@@ -7970,6 +8088,31 @@ function _mergeAcrossAreas(areaPlans) {
       const insAreas = await supabase.from('pec_prod_areas').insert(areaPayload).select();
       if (insAreas.error) return setErr(insAreas.error.message);
 
+      // Persist per-area U-Tint attachments. insAreas.data preserves the
+      // insert order, which matches j.areas, so we can map area index -> id
+      // without depending on _key being stored anywhere.
+      const tintPayload = [];
+      (insAreas.data || []).forEach((insArea, i) => {
+        const src = j.areas[i];
+        const tints = Array.isArray(src && src.tints) ? src.tints : [];
+        tints.forEach((t, ti) => {
+          if (!t || !t.product_id) return;
+          const packs = Number(t.packs);
+          if (!Number.isFinite(packs) || packs <= 0) return;
+          tintPayload.push({
+            area_id: insArea.id,
+            product_id: t.product_id,
+            attach_to: t.attach_to === 'Topcoat' ? 'Topcoat' : 'Basecoat',
+            packs,
+            order_index: ti,
+          });
+        });
+      });
+      if (tintPayload.length) {
+        const insTints = await supabase.from('pec_prod_area_tints').insert(tintPayload);
+        if (insTints.error) return setErr(insTints.error.message);
+      }
+
       if (plan.lines.length) {
         // For Special Order placeholder products, overwrite the color +
         // product_name so the materials chart shows the actual custom color
@@ -8041,7 +8184,11 @@ function _mergeAcrossAreas(areaPlans) {
 
           <div class="pec-card" style="margin-top:14px">
             <h3>Areas</h3>
-            ${(j.areas || []).map(a => `<div style="color:var(--muted);font-size:.78rem">${esc(a.name)} · ${Number(a.sqft).toLocaleString()} sqft · ${esc((sysById[a.system_type_id]||{}).name || 'System')}</div>`).join('') || '<div class="pec-empty">No areas</div>'}
+            ${(j.areas || []).map(a => {
+              const tintCount = Array.isArray(a.tints) ? a.tints.length : 0;
+              const cureBits = [a.basecoat_cure_speed, a.topcoat_cure_speed].filter(Boolean);
+              return `<div style="color:var(--muted);font-size:.78rem">${esc(a.name)} · ${Number(a.sqft).toLocaleString()} sqft · ${esc((sysById[a.system_type_id]||{}).name || 'System')}${cureBits.length ? ` · cure ${esc(cureBits.join(' / '))}` : ''}${tintCount ? ` · ${tintCount} U-Tint${tintCount===1?'':'s'}` : ''}</div>`;
+            }).join('') || '<div class="pec-empty">No areas</div>'}
           </div>
 
           <div class="pec-card">
@@ -8157,6 +8304,9 @@ function _mergeAcrossAreas(areaPlans) {
       topcoat_product_id: a.topcoat_product_id || null,
       basecoat_cure_speed: a.basecoat_cure_speed || null,
       topcoat_cure_speed: a.topcoat_cure_speed || null,
+      tints: (a.tints || []).map(t => ({
+        product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
+      })),
     }));
     let plan;
     try {

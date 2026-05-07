@@ -343,6 +343,79 @@ assertThrows(() => {
   assertEq(basecoats[0].sqft_total, 600, 'merged line sums sqft across both areas');
 }
 
+// --- Topcoat override: area.topcoat_product_id wins over the slot default ---
+// New behavior added alongside U-Tint attachments. Without the override, the
+// recipe's topcoat slot default would be used and there'd be no way to attach
+// a U-Tint to a different topcoat product per area.
+{
+  const productsWithAlt = {
+    ...productsById,
+    altTop: { id: 'altTop', name: 'Polyaspartic Matte', material_type: 'Topcoat', supplier: 'Simiron', color: 'Matte', spread_rate: 120, kit_size: 2, unit_cost: 350 },
+  };
+  const plan = computeMaterialPlan({
+    areas: [{
+      id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake',
+      topcoat_product_id: 'altTop',
+    }],
+    productsById: productsWithAlt,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const top = plan.lines.find(l => l.material_type === 'Topcoat');
+  assertEq(top.product_id, 'altTop',         'topcoat_product_id override wins over slot default');
+  assertEq(top.product_name, 'Polyaspartic Matte', 'override carries the right product name');
+}
+
+// --- U-Tint attachment: area.tints emit Tint Pack lines with packs as qty --
+// One tint, two packs, expect one Tint Pack line with qty_needed = 2 and
+// line_cost = 2 * unit_cost (no sqft math).
+{
+  const productsWithTint = {
+    ...productsById,
+    tintHaze: { id: 'tintHaze', name: 'Simiron U-Tint Pack 16oz - Haze Gray', material_type: 'Tint Pack', supplier: 'Simiron', color: 'Haze Gray', spread_rate: 240, kit_size: 1, unit_cost: 22 },
+  };
+  const plan = computeMaterialPlan({
+    areas: [{
+      id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake',
+      tints: [{ product_id: 'tintHaze', attach_to: 'Basecoat', packs: 2 }],
+    }],
+    productsById: productsWithTint,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const tint = plan.lines.find(l => l.material_type === 'Tint Pack');
+  assertEq(!!tint, true,            'tint attachment produces a Tint Pack line');
+  assertEq(tint.qty_needed, 2,      'qty_needed = packs (no sqft math)');
+  assertEq(tint.line_cost,  44,     'line_cost = packs * unit_cost');
+  assertEq(tint.product_name, 'Simiron U-Tint Pack 16oz - Haze Gray', 'tint line carries the right product name');
+}
+
+// --- U-Tint attachment merges across areas by product_id (sums packs) -------
+// Same tint attached to two areas (one Basecoat, one Topcoat) should sum to
+// one order line with packs_total. Different attach_to values do not split
+// the row; the order list cares about ordering quantity, not per-slot
+// allocation.
+{
+  const productsWithTint = {
+    ...productsById,
+    tintWhite: { id: 'tintWhite', name: 'Simiron U-Tint Pack 16oz - White', material_type: 'Tint Pack', supplier: 'Simiron', color: 'White', spread_rate: 240, kit_size: 1, unit_cost: 22 },
+  };
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage', sqft: 300, system_type_id: 'std', flake_product_id: 'flake',
+        tints: [{ product_id: 'tintWhite', attach_to: 'Basecoat', packs: 1 }] },
+      { id: 'a2', name: 'Patio',  sqft: 300, system_type_id: 'std', flake_product_id: 'flake',
+        tints: [{ product_id: 'tintWhite', attach_to: 'Topcoat',  packs: 3 }] },
+    ],
+    productsById: productsWithTint,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const tints = plan.lines.filter(l => l.material_type === 'Tint Pack');
+  assertEq(tints.length, 1,   'same tint across two areas merges into one Tint Pack line');
+  assertEq(tints[0].qty_needed, 4, 'merged Tint Pack qty = sum of packs (1+3)');
+}
+
 // ----------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
