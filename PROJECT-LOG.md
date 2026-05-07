@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-06 MST] dripjobs: scoped API, exports, and pricing tiers ahead of any import
+
+By: Cowork
+Changed: PROJECT-LOG.md only. No code touched. Dylan asked for a research-only sweep on DripJobs before deciding whether to proceed with a contacts import or revise the migration plan first. Investigated four questions via web research (DripJobs help center, Featurebase board, marketing pricing page, third-party review sites). No exports were performed.
+
+Findings:
+
+1. API. No public REST API exists today. The "API Key" Featurebase request is tagged status "Planned for V2", filed ~June 2025, 14 upvotes. No documentation URL, auth scheme, or endpoint surface. Today the only programmatic outputs are (a) webhooks, which we already consume in netlify/functions/pec-webhook-*.js, and (b) Zapier, available on the Advanced plan and above. Native partner integrations exist (Stripe, QuickBooks, CompanyCam, Quo, NiceJob, HeyPros) but those are vertical, not a general data API.
+
+2. Exports. Confirmed: contacts export to CSV (the help article URL changed but Help Center search still surfaces it), and jobs export to CSV/Excel from the Jobs List (the Featurebase request "Ability to Export Job Data" is marked Completed). NOT confirmed from public sources (treated as unknown until Dylan verifies in the actual Export UI): deals, proposals, invoices, notes, activity log, photos, attachments. The pattern of separate per-entity Featurebase requests being filed and shipped years apart suggests these are not uniformly available.
+
+3. Contact ID column. Could not determine from public docs whether the contacts CSV includes a Contact ID column or whether columns are togglable. The legacy help article URL 404s. This needs eyes on the live Export dialog before any contacts import.
+
+4. Pricing. Pro $97/mo, Advanced $147/mo (recommended, the tier with Zapier), Growth custom. Important finding: there is no read-only, view-only, archive, or museum tier. The "museum option" Dylan referenced does not exist as a DripJobs product. After cancellation, access is gone, not downgraded.
+
+Pushback flagged to Dylan: the migration plan needs to be re-scoped on two assumptions that did not survive contact with reality. (a) There is no cheap parked-DripJobs path, so anything we want to look at again has to be lifted in the export pass, not retrieved later. (b) Without an API and (potentially) without a stable Contact ID column, future cross-system reconciliation has to fall back to email/phone matching, which is fragile for households and shared contractor numbers; we should confirm the ID-column question BEFORE the contacts import, not after.
+
+Files touched: PROJECT-LOG.md.
+External systems touched: none modified. Read-only web fetches against DripJobs help center, Featurebase, and pricing page. Nothing exported, nothing written to DripJobs.
+Verification: Featurebase post statuses ("Planned for V2" for API, "Completed" for job export) read directly from the DripJobs Featurebase HTML server-side payload via subagent extraction. Pricing cross-checked between dripjobs.com/pricing and the DripJobs Help Center "Plans and Pricing" article.
+Next steps: Dylan decides whether to (a) proceed with the contacts import as-is, (b) first verify in the live DripJobs UI which entities are CSV-exportable and whether the contacts export includes a Contact ID column, or (c) revise the migration plan to budget for a fuller one-shot extraction (including PDF/HTML snapshots of proposals and per-deal context) given that there is no museum tier.
+
+## Handoff to Cowork
+
+None unless Dylan picks option (b) above, in which case Cowork should drive a Claude-in-Chrome session through DripJobs and document, per entity (deals, proposals, invoices, notes, activity, photos, attachments), whether an Export to CSV control exists, and on the contacts export specifically, whether there is a column-selection UI and whether Contact ID is present.
+
+## Handoff to Dylan
+
+Read the scoping note in chat and pick a path: proceed with import, verify-then-import, or re-scope the museum strategy.
+
+---
+
 ## [2026-05-06 MST] mcp: spike a Claude-facing MCP server (v0.1, get_schedule only)
 
 By: Claude Code
