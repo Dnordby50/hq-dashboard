@@ -7182,6 +7182,9 @@ if (portalToken) {
   .prod-num { width:80px; text-align:right }
   .prod-readonly { display:inline-block; padding:4px 0; color:var(--ink, inherit); font-size:.78rem; white-space:nowrap }
   .prod-cat-section { margin-top:18px; font-size:.7rem; letter-spacing:1.2px; text-transform:uppercase; color:var(--muted); font-weight:600; padding:0 4px 6px }
+  .prod-cat-section.prod-cat-toggle { cursor:pointer; user-select:none; display:flex; align-items:center; gap:8px }
+  .prod-cat-section.prod-cat-toggle:hover { color:var(--text) }
+  .prod-cat-chevron { display:inline-block; font-size:.6rem; color:var(--muted); width:10px }
   .prod-chip-thumb { width:48px; height:48px; border-radius:6px; object-fit:cover; border:1px solid var(--border); background:rgba(255,255,255,.04); display:block }
   .prod-chip-empty { width:48px; height:48px; border-radius:6px; border:1px dashed var(--border); display:flex; align-items:center; justify-content:center; font-size:.55rem; color:var(--muted); text-align:center; line-height:1 }
   .pec-pull-table tbody tr.pull-detail { font-size:.72rem; color:var(--muted) }
@@ -7344,6 +7347,7 @@ function _mergeAcrossAreas(areaPlans) {
   const state = {
     view: 'jobs', // 'jobs' | 'new-job' | 'catalog'
     catalogTab: 'products',
+    catalogFlakeOpen: false, catalogQuartzOpen: false,
     products: [], systemTypes: [], recipeSlots: [], colorPairings: [],
     jobs: [],
     jobFilter: { status: '' },
@@ -8212,22 +8216,40 @@ function _mergeAcrossAreas(areaPlans) {
         <button class="pec-btn primary" id="prodAddProductBtn">+ Add product</button>
         <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost is per kit. Manufacturer = who makes it; Supplier = who you order it from.</span>
       </div>
-      ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => `
-        <div class="prod-cat-section">${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span></div>
-        <div class="pec-card" style="margin-top:6px">
-          <table class="pec-table">
-            <thead><tr>
-              <th style="width:60px">Chip</th><th>Name</th><th>Color</th><th>Manufacturer</th><th>Supplier</th>
-              <th style="text-align:right">Spread Rate</th><th style="text-align:right">Kit Size</th><th style="text-align:right">Spread / Kit</th>
-              <th style="text-align:right">Cost / Kit</th><th>Active</th><th></th>
-            </tr></thead>
-            <tbody>${g.rows.map(renderRow).join('')}</tbody>
-          </table>
-        </div>
-      `).join('')}
+      ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => {
+        const isCollapsible = g.type === 'Flake' || g.type === 'Quartz';
+        const isOpen = !isCollapsible || (g.type === 'Flake' ? state.catalogFlakeOpen : state.catalogQuartzOpen);
+        const header = isCollapsible
+          ? `<div class="prod-cat-section prod-cat-toggle" data-cat-toggle="${g.type}" role="button" tabindex="0">
+               <span class="prod-cat-chevron">${isOpen ? '▼' : '▶'}</span>
+               ${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span>
+             </div>`
+          : `<div class="prod-cat-section">${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span></div>`;
+        return `
+          ${header}
+          <div class="pec-card" style="margin-top:6px;${isOpen ? '' : 'display:none'}">
+            <table class="pec-table">
+              <thead><tr>
+                <th style="width:60px">Chip</th><th>Name</th><th>Color</th><th>Manufacturer</th><th>Supplier</th>
+                <th style="text-align:right">Spread Rate</th><th style="text-align:right">Kit Size</th><th style="text-align:right">Spread / Kit</th>
+                <th style="text-align:right">Cost / Kit</th><th>Active</th><th></th>
+              </tr></thead>
+              <tbody>${g.rows.map(renderRow).join('')}</tbody>
+            </table>
+          </div>
+        `;
+      }).join('')}
     `;
     $('prodAddProductBtn').addEventListener('click', () => openProductModal(null));
     host.querySelectorAll('[data-edit-product]').forEach(b => b.addEventListener('click', () => openProductModal(b.dataset.editProduct)));
+    host.querySelectorAll('[data-cat-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.catToggle;
+        if (t === 'Flake')  state.catalogFlakeOpen  = !state.catalogFlakeOpen;
+        if (t === 'Quartz') state.catalogQuartzOpen = !state.catalogQuartzOpen;
+        renderProducts(host);
+      });
+    });
   }
 
   function openProductModal(productId) {

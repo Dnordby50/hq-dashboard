@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-06 MST] dashboard: collapse Flake and Quartz sections in material catalog
+By: Claude Code
+Changed: index.html. The Material & Price Catalog (Catalog tab → Products) used to render every flake color and every quartz color as its own row in one long visible table per section. Dylan said the screen felt too busy and asked to condense flakes under a single click-to-expand button, same for quartz. Now both the "Flake Materials" and "Quartz Colors" section headers are clickable, with a chevron (▶ collapsed, ▼ expanded), and both default to collapsed when the catalog opens. Every other section (Basecoats, Topcoats, Stains, Sealers, Tint Packs, Metallic Pigments, Extras, Other) renders unchanged with no chevron.
+
+How it works: two new state keys (state.catalogFlakeOpen, state.catalogQuartzOpen) hold the open/closed state. renderProducts() picks the chevron and the table's display style off those flags, and a delegated click handler on [data-cat-toggle] flips the flag and re-renders. Section labels stay as "Flake Materials" / "Quartz Colors" rather than "Simiron Flake", since the data model has no enforced brand grouping (manufacturer is a free-text field) and not every flake is guaranteed to be Simiron. Per Dylan's pick in plan mode.
+
+Re-render-on-toggle was chosen over a CSS-only .open class because renderProducts already re-renders cheaply on tab switches (pattern at index.html:8153), state lives in one place, and the chevron flips for free without touching the row template. Edit links inside expanded sections still work (the [data-edit-product] listener gets re-wired on every render).
+
+Files touched: index.html, PROJECT-LOG.md.
+Verification: npm test 31/31 pass (calculator unchanged). Browser-level verification deferred to Dylan: open the dashboard → Catalog → Products. Confirm Flake Materials and Quartz Colors show "▶ Flake Materials · N" / "▶ Quartz Colors · N" with their tables hidden. Click each → chevron flips to ▼ and rows reveal. Click Edit on a flake row → product modal still opens. Switch to System Types and back to Products → collapsed state persists within the session.
+Handoff to Cowork: None.
+Handoff to Dylan: After this commit pushes and Netlify deploys, hard-refresh and walk the verification steps above. If you want either section to default open instead, change state.catalogFlakeOpen / state.catalogQuartzOpen at index.html:7347 from false to true.
+
+---
+
 ## [2026-05-05 23:30 MST] dashboard: kill supabase-js navigator.locks deadlock with a no-op auth.lock override
 By: Cowork
 Changed: index.html. Final root-cause fix for the recurring "buttons go dead, save hangs forever, hard refresh fixes it" bug that 759bec9, 27af535, c0fa577, and ea00ed7 each chipped away at without identifying the underlying cause. The earlier commits all addressed downstream symptoms (stale .pec-modal-bg backdrop, missing per-handler try/catch, double-click reentry, lack of a save timeout). They were correct as defenses, but the trigger they all defended against was always the same: every supabase call was hanging before the request even left the browser. Diagnosed live tonight from Cowork via Claude-in-Chrome MCP after Dylan kicked the diagnostic playbook from his Claude Code session over because he could not reach it himself.
