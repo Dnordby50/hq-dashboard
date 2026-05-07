@@ -4,6 +4,50 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-07 MST] supabase: cure speed + per-area U-Tint attachments + topcoat override migration
+
+By: Claude Code
+Changed: supabase/migrations/2026-05-07_cure_speed_tints_topcoat.sql (new).
+
+Why this exists: Dylan asked for three related capabilities on the production module: (a) attach 1+ Simiron U-Tint Packs to a basecoat or topcoat on a per-area basis, (b) record a cure speed for products in the 1100 SL family (Fast/Standard/Slow) and the Polyaspartic family (Fast/Medium/Slow/XTRA Slow), and (c) override the topcoat product per area instead of taking whatever the recipe slot defaults to. All three are area-level authoring, so they're one migration.
+
+Decisions locked with Dylan in chat before this got written:
+
+- material_type for U-Tint rows uses the existing 'Tint Pack' value, not a new 'Tint'. The previous migration 2026-05-04_metallic_pigment_split.sql:35 already allows 'Tint Pack' on every CHECK constraint (pec_prod_products, pec_prod_recipe_slots, pec_prod_material_lines), so no constraint dance is needed. Adding a second 'Tint' value alongside 'Tint Pack' would have produced two near-identical chip labels and split the catalog arbitrarily; rejected.
+- Cure speed lives on pec_prod_areas as TWO columns (basecoat_cure_speed, topcoat_cure_speed) rather than one. Reason: the cure-speed enums differ between the two product families (1100 SL: 3 values; Polyaspartic HS: 4 values, including the multi-word "XTRA Slow"). One generic cure_speed column would conflate two different enums and lose meaning. The planner reads one column or the other based on product-name detection (cureSpeedSpec helper in production/calculator.js).
+- Per-area tint attachments live in a new pec_prod_area_tints join table rather than a self-reference on pec_prod_material_lines. Reason: the existing material_lines flow is wipe-and-replace on every recalc (index.html recalcActiveJob around 8083), so a parent_line_item_id on lines would be erased on the next save. Authoring on the area survives recompute the same way every other per-area pick already does.
+- Tint cost flows as separate Tint Pack rows in pec_prod_material_lines (already supported by the existing planner output and sync function), not rolled into the basecoat row. Confirmed with Dylan: separate invoice line.
+- Topcoats CAN be tinted in some systems per Dylan, so the topcoat_product_id override + a "U-Tints for topcoat" picker are both required (the picker UI ships in a follow-up commit).
+
+What the SQL does:
+
+1. Adds three nullable columns to pec_prod_areas: topcoat_product_id (uuid, FK to pec_prod_products on delete set null), basecoat_cure_speed (text), topcoat_cure_speed (text). No CHECK constraints on the cure_speed columns; valid values vary by which product the column applies to and the JS handles validation.
+2. Adds cure_speed (text, nullable) to pec_prod_material_lines as a snapshot column, mirroring the unit_cost_snapshot pattern. The planner stamps it onto each computed line whose product family triggers cureSpeedSpec.
+3. Creates pec_prod_area_tints with FK to pec_prod_areas (cascade) and pec_prod_products (restrict; deleting a U-Tint product mid-job should not silently drop tints from a saved job), plus an attach_to CHECK ('Basecoat','Topcoat') and packs > 0 CHECK. RLS + updated_at trigger match every other pec_prod_* table verbatim.
+4. Inserts 14 U-Tint Pack rows into pec_prod_products. Catalog data scraped from Simiron's public Shopify JSON (https://shop.simiron.com/products/u-tint-universal-pigment-pack-16-oz.json). Names, colors, and image URLs are real. Prices are Simiron RETAIL ($22 standard, $29.50 Sky Blue, $59 safety colors) since dealer cost was not in hand at migration time; Cowork should verify dealer cost. spread_rate is set to 240 sqft/pack as a rough match for one 3-gal 1100 SL kit, though in practice the planner pulls Tint Pack quantity from pec_prod_area_tints (packs count), not from sqft math.
+
+Not in this commit (queued):
+
+- Apps Script proxy on the Google Sheet still needs a new "Cure Speed" column. The netlify sync function in the next commit will start sending cure_speed in the lines payload, but the Apps Script proxy currently ignores unknown keys, so the value will land in Supabase but not on the work order until the proxy is updated. Cowork handoff below.
+- The area-editor pickers for cure speed, topcoat override, and U-Tint attachments live in follow-up commits in this same session.
+
+Files touched: supabase/migrations/2026-05-07_cure_speed_tints_topcoat.sql (new), PROJECT-LOG.md.
+
+Verification before commit: SQL syntax-checked by visual review only. Real verification happens after Dylan or Cowork runs the migration in Supabase Studio against the production project (see Handoff). The verification queries are baked into the bottom of the migration file as comments.
+
+## Handoff to Dylan
+
+Run this migration in Supabase Studio against the production PEC project, in the SQL editor. Paste the file contents, run, and confirm the four verification queries at the bottom of the file all return what they say they should. After the migration runs, the catalog UI will show 14 new Tint Pack rows in the Price & Material Catalog under "Tint Packs"; the area editor pickers and planner stamping land in the next two commits.
+
+## Handoff to Cowork
+
+Two follow-ups, neither blocking the next two commits in this session:
+
+1. Update the Apps Script proxy on the Booked Jobs sheet (or whichever sheet pec-prod-sync-sheet.cjs writes to in production) to add a "Cure Speed" column and write the new payload field lines[i].cure_speed into it. Without this, cure speed will save in Supabase but won't print on the work order. The netlify function already passes the field as of the next commit in this session.
+2. Verify Simiron dealer cost on the 14 new Tint Pack rows. Currently set to Simiron retail ($22 / $29.50 / $59) since dealer cost was not in hand. If dealer cost differs, update unit_cost on the affected rows in Supabase or via the catalog edit UI (no migration needed).
+
+---
+
 ## [2026-05-06 MST] dripjobs: scoped API, exports, and pricing tiers ahead of any import
 
 By: Cowork
