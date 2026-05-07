@@ -4,6 +4,74 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-06 MST] mcp: spike a Claude-facing MCP server (v0.1, get_schedule only)
+
+By: Claude Code
+Changed: netlify/functions/mcp.cjs (new), netlify.toml.
+
+Why this exists: Dylan asked for a way for Claude (claude.ai and Claude Code, plus future server-side calls from ARM 3) to read the dashboard directly instead of driving a browser via Chrome MCP. Agreed-upon shape was a remote MCP server hosted alongside the existing pec-* Netlify Functions, bearer-token auth, read-only for v0.1, with draft-write tools (Supabase-backed pending_actions table + dashboard approval panel) added in v0.2 once the round trip is confirmed against a live Claude.ai connector.
+
+What this commit ships: a single Netlify Function at /.netlify/functions/mcp (clean URL /mcp via redirect) that speaks MCP Streamable-HTTP transport in stateless mode (one POST = one JSON-RPC response, no SSE stream, no session ids). It implements four JSON-RPC methods: initialize, tools/list, tools/call, and ping; treats messages with no id as notifications and replies 202. CORS is open with the headers Claude.ai's custom connector and Claude Code's HTTP MCP client send (Authorization, Mcp-Session-Id, MCP-Protocol-Version). Auth is a single env-var bearer token (MCP_BEARER_TOKEN); requests without a matching Authorization: Bearer header get 401 with a WWW-Authenticate challenge.
+
+One tool exposed: get_schedule. It hits the same Apps Script proxy the dashboard already uses (CONFIG.SHEETS_PROXY in index.html:1865) against the Booked Jobs sheet, normalizes rows A:G into job_name / business / customer / scheduled_date / date_booked / revenue / sold_by, and accepts business (all|pec|ftp), start_date, end_date, and limit (default 100, max 500). Results sort newest-first by scheduled_date if present, otherwise date_booked.
+
+Smoke verification ran in-process before commit, with MCP_BEARER_TOKEN=test-token:
+- initialize -> 200, returns protocolVersion 2025-06-18 + tools capability + serverInfo.
+- tools/list -> 200, one tool, name get_schedule.
+- Request without Authorization -> 401.
+- notifications/initialized (no id) -> 202 with empty body.
+- Unknown method -> JSON-RPC error -32601.
+- tools/call get_schedule {limit: 3} against the live Apps Script proxy -> 200, isError false, total_matched 1062, top row Peter Cilliers / PEC / $3555 / booked 2026-05-07. The live sheet pull works end to end.
+
+Not in v0.1 (deliberately, queued for v0.2): get_job, get_customer, search_customers, list_open_proposals, get_dashboard_summary, get_recent_activity, and the four draft-write tools (draft_customer_message, draft_job_note, draft_task, list_pending_drafts/cancel_draft). v0.2 also adds the supabase pending_actions table + a "Pending from Claude" review panel in the dashboard, plus a thin /api/* JSON wrapper around the same handlers so ARM 3 can call them without speaking MCP.
+
+Things to watch on first live connect: claude.ai's custom-connector UI may want OAuth and may not accept a static bearer header; if so, Claude Code's .mcp.json (which definitely supports custom headers) is the fallback path until we add OAuth, and the spike is still validated. Stateless transport means each call re-fetches the sheet (no caching); fine for v0.1 since the Apps Script proxy is fast enough, but worth a 30-60s in-memory cache when the surface grows. The MCP_BEARER_TOKEN env var lives only in Netlify; rotating it means changing it in Netlify + the connector config, no code change.
+
+Files touched: netlify/functions/mcp.cjs (new), netlify.toml, PROJECT-LOG.md.
+
+Verification before deploy: in-process smoke test above. After deploy, Dylan needs to confirm the live URL responds (curl with the bearer token) and that at least one of Claude.ai or Claude Code can list the tool and call it.
+
+Next steps: once Dylan confirms the live round-trip works through a real client, build out v0.2 (rest of the read tools + pending_actions table + draft-write tools + dashboard review panel).
+
+## Handoff to Dylan
+
+To make the spike actually live:
+
+1. Generate a strong bearer token: `openssl rand -hex 32` (copy the 64-char hex string).
+2. Add it to Netlify env vars: Netlify dashboard -> hq-prescott site -> Site configuration -> Environment variables -> Add a variable -> key MCP_BEARER_TOKEN, value <the hex string>, scope All. Save.
+3. Commit and push:
+   ```
+   cd /Users/dylannordby/Claude-Code/HQ-Dashboard
+   git add netlify/functions/mcp.cjs netlify.toml PROJECT-LOG.md
+   git commit -m "mcp: spike a Claude-facing MCP server (v0.1, get_schedule only)"
+   git push origin main
+   ```
+4. Wait for Netlify to finish the deploy (under 2 minutes).
+5. Smoke the live endpoint from your terminal:
+   ```
+   curl -s -X POST https://hq-prescott.netlify.app/mcp \
+     -H "Authorization: Bearer <your-token>" \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
+   ```
+   Expect a JSON-RPC result with one tool named get_schedule. If you get 401, the env var didn't take effect (re-deploy or check the variable value). If you get 404, the redirect didn't ship (try /.netlify/functions/mcp directly).
+6. Connect from Claude Code first (most likely to work on first try):
+   ```
+   claude mcp add hq-dashboard https://hq-prescott.netlify.app/mcp \
+     --transport http \
+     --header "Authorization: Bearer <your-token>"
+   ```
+   Then ask Claude Code "what's the most recent job in the Booked Jobs schedule?" and confirm it calls get_schedule and answers correctly.
+7. Connect from Claude.ai: Settings -> Connectors -> Add custom connector -> URL https://hq-prescott.netlify.app/mcp. If the UI offers a "custom HTTP header" field, paste Authorization: Bearer <your-token> there. If it only offers OAuth, that's expected, hold on this until v0.2 adds an OAuth flow (Claude Code path is sufficient for now).
+
+Tell me what step 5 returned and which client(s) connected; that's the green light to start v0.2.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-06 MST] dashboard: collapse Flake and Quartz sections in material catalog
 By: Claude Code
 Changed: index.html. The Material & Price Catalog (Catalog tab → Products) used to render every flake color and every quartz color as its own row in one long visible table per section. Dylan said the screen felt too busy and asked to condense flakes under a single click-to-expand button, same for quartz. Now both the "Flake Materials" and "Quartz Colors" section headers are clickable, with a chevron (▶ collapsed, ▼ expanded), and both default to collapsed when the catalog opens. Every other section (Basecoats, Topcoats, Stains, Sealers, Tint Packs, Metallic Pigments, Extras, Other) renders unchanged with no chevron.

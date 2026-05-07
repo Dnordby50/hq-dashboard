@@ -11,3 +11,11 @@
 
 [functions]
   node_bundler = "esbuild"
+
+# Clean URL for the MCP server so the Claude.ai connector and Claude Code
+# .mcp.json can point at https://<site>/mcp instead of /.netlify/functions/mcp.
+[[redirects]]
+  from = "/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
