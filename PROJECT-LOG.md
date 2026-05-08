@@ -4,6 +4,69 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-07 MST] supabase migration applied, PEC sync proxy first-time install, U-Tint dealer pricing
+
+By: Cowork
+Changed: PROJECT-LOG.md (this entry). External systems touched: Supabase prod (schema migration plus 14 catalog row updates), Apps Script project HQ Dashboard Proxy (Code.gs plus new SCRIPT_SECRET property plus new Web App deployment Version 4), PEC Order Sheet (header cells P1 of NEW ORDER SHEET and COMPLETED JOBS tabs).
+
+Three tasks from Dylan's brief plus one finding handled inline.
+
+Task 1, Supabase migration. Ran 2026-05-07_cure_speed_tints_topcoat.sql in Supabase Studio against the prod PEC project (HQ Dashboard, project id zdfpzmmrgotynrwkeakd). Pre-count of pec_prod_products where material_type='Tint Pack' returned 0, confirming a clean baseline. After running the migration, all four verification queries pass:
+- tint_pack_count = 14
+- pec_prod_areas new columns present (basecoat_cure_speed, topcoat_cure_speed, topcoat_product_id)
+- pec_prod_material_lines.cure_speed exists
+- pec_prod_area_tints table exists
+
+Task 3, U-Tint dealer pricing. Per Dylan's confirmation that PEC dealer cost is $16.37 flat across all 14 colors (including Sky Blue and the 4 safety colors that retail at $29.50 and $59 respectively), ran UPDATE pec_prod_products SET unit_cost=16.37 WHERE material_type='Tint Pack' AND name LIKE 'Simiron U-Tint Pack 16oz - %'. RETURNING reported 14 rows updated. Before/after:
+
+| Color          | Old      | New     |
+|----------------|----------|---------|
+| Black          | $22.00   | $16.37  |
+| Deck Gray      | $22.00   | $16.37  |
+| Haze Gray      | $22.00   | $16.37  |
+| Light Gray     | $22.00   | $16.37  |
+| Safety Blue    | $59.00   | $16.37  |
+| Safety Green   | $59.00   | $16.37  |
+| Safety Orange  | $59.00   | $16.37  |
+| Safety Red     | $59.00   | $16.37  |
+| Safety Yellow  | $59.00   | $16.37  |
+| Sandstone      | $22.00   | $16.37  |
+| Sky Blue       | $29.50   | $16.37  |
+| Taupe          | $22.00   | $16.37  |
+| Tile Red       | $22.00   | $16.37  |
+| White          | $22.00   | $16.37  |
+
+Task 2, Apps Script proxy update for cure_speed. The task brief assumed there was already a PEC syncJob handler in the Apps Script proxy that simply ignored unknown payload keys. That assumption did not survive contact with reality. After auditing all 8 Apps Script projects in Dylan's account, no project had a syncJob action, no _pecSyncJob, no _pecBuildBlock, none of the snippet's helpers. The PEC sync proxy code in production/sheets-proxy-snippet.js was never deployed. The deployed Code.gs in HQ Dashboard Proxy (the project whose Web App URL matches CONFIG.SHEETS_PROXY at index.html:1865) only handled syncTasks, braindump, and coachlog actions against the Dashboard Data Sheet. Every Sync to Order Sheet click in the dashboard since the production module shipped was hitting a doPost that fell through to ContentService.createTextOutput('OK') without writing anything to the PEC Order Sheet. The job rows currently in the Order Sheet must have been entered by some other mechanism (manual entry or a one-off script not part of the deployed proxy).
+
+Resolution: installed the snippet code into HQ Dashboard Proxy (the canonical install location per the snippet's own install note in production/sheets-proxy-snippet.js lines 5-15 and per docs/pm-module-ordering-runbook.md line 19), with the cure_speed column baked in at column P. Specifically:
+- Renamed the existing function doPost(e) to function doPostLegacy(e) using a single targeted Monaco edit. This keeps syncTasks, braindump, and coachlog functional and reachable.
+- Appended a new function doPost(e) that handles syncJob, moveJobToCompleted, and ping with SCRIPT_SECRET auth and a 30 second LockService lock, and falls through to doPostLegacy(e) when the action is not a PEC action.
+- Appended the snippet's helper functions: _pecSyncJob, _pecMoveJobToCompleted, _pecBuildBlock, _pecCollectRowsByProposal, _pecDeleteRowsByProposal, _pecFindInsertionRow, _pecDividerRow, _pecParseDate, _pecTodayIso, _pecJson. PEC_NUM_COLS set to 16 (snippet had 15). _pecBuildBlock returns a 16-element row with String(line.cure_speed || '') at index 15 (column P).
+- Saved Code.gs (file went from 52 lines to 284 lines).
+- Added Project Settings > Script Properties > SCRIPT_SECRET with a freshly-generated 64 character hex value (the property did not exist before today). The new secret starts with 9d03 and ends with c94b.
+- Created Web App deployment Version 4 by editing the existing deployment (Untitled, deployment id AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA, same /exec URL as before). The dashboard's CONFIG.SHEETS_PROXY URL did not change, so existing read calls continue to work.
+
+Sheet header changes: typed "Cure Speed" into cell P1 of the NEW ORDER SHEET tab and cell P1 of the COMPLETED JOBS tab in the PEC Order Sheet (sheet id 16vfUHggITTuz53RRWFepQWNtInJmN1JsZ7qt3MeRGcI).
+
+Verification status. Migration verification passed all 4 inline queries (per above). Apps Script deploy succeeded (Version 4 created, no syntax errors). End-to-end sync test (creating a job in the dashboard with cure_speed=Slow, syncing, confirming Slow lands in column P) was NOT performed because it depends on Netlify env vars matching the SCRIPT_SECRET I just set, which Dylan needs to update. See handoff below.
+
+## Handoff to Dylan
+
+Three steps, in order. Sync will not work until step 1 lands.
+
+1. Update Netlify env var PEC_SHEETS_PROXY_SECRET to match the SCRIPT_SECRET I just set in Apps Script. The cleanest path: open the HQ Dashboard Proxy Apps Script (https://script.google.com/u/0/home/projects/1bWZHurxsc311orTJqaMjm3vL0GYCFc-oePWdDCXqHhOrc3Aw9x5S1CeY/settings), click "Edit script properties", triple-click the SCRIPT_SECRET value to select all 64 hex chars (it starts with 9d03 and ends with c94b), copy, then paste into Netlify env var PEC_SHEETS_PROXY_SECRET. Alternative: rotate the value, paste a new value into both places. Either way, both ends must match.
+2. While in Netlify env vars, confirm:
+   - PEC_SHEETS_PROXY_URL = https://script.google.com/macros/s/AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA/exec
+   - PEC_PROD_SHEET_ID = 16vfUHggITTuz53RRWFepQWNtInJmN1JsZ7qt3MeRGcI
+   If either is missing or different, sync will return 503 (URL missing) or hit the wrong sheet.
+3. Run the acceptance test from your brief once env vars are aligned: open hq-prescott.netlify.app, create a new job with a 1100 SL basecoat, set cure speed to Slow, attach a U-Tint Pack to the basecoat, save, click Sync to Order Sheet. Open the NEW ORDER SHEET tab and confirm "Slow" appears in column P on the basecoat row. If sync returns 403, secrets do not match. If sync returns 503, env var is missing. If sync returns 200 but column P is empty, my proxy code has a bug, ping me.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-07 MST] dashboard: per-area topcoat override + per-area U-Tint Pack pickers
 
 By: Claude Code
