@@ -4,6 +4,49 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-10 MST] dashboard: Job Costing made operable (clickable rows + rollups + auto-populated Mat. Ordered)
+
+By: Claude Code
+Changed: index.html.
+
+Why this exists: Dylan said the Job Costing view was "broken, not operable, list but no way to click into it". Comparing the live UI against his MBP working sheet (screenshot pasted in chat) showed (a) rows were inline-editable but offered no drill-down, (b) no rollup totals at the top by sales team / job type / crew, and (c) Mat. Ordered required manual entry instead of pulling from the planner output Production already builds. All three are addressed here in one commit; Dylan picked "both rollups + clickable rows" and "keep dashboard's more granular columns" when asked.
+
+Note on dependencies: Cowork's 2026-05-07 entry below applied the cure-speed migration and rebuilt the Apps Script proxy from scratch. The Material Lines table inside the new detail modal reads cure_speed off pec_prod_material_lines, which now exists in prod, so the modal lights up immediately on the live dashboard once Dylan finishes the env-var step in that entry's Handoff.
+
+What this commit ships:
+
+1. **Mat. Ordered is now derived, not entered.** loadCostingData also fetches pec_prod_material_lines (id, job_id, product_name, material_type, supplier, color, qty_needed, order_qty, unit_cost_snapshot, line_cost, ordered, delivered, cure_speed, order_index), aggregates line_cost per job_id into state.materialOrderedByJob, and builds state.materialLinesByJob keyed on job_id for the detail modal. computeCostingRow takes the aggregate as its fourth argument and uses it whenever it's > 0; falls back to the stored cost.materials_ordered_cost only for legacy rows that pre-date the material_lines flow. The cell in the per-job table is now a read-only cost-derived cell with title="Sum of pec_prod_material_lines.line_cost for this job. Read-only; edit material_lines to change."
+
+2. **Callback is now a Yes/No dropdown** instead of a checkbox. Stored as boolean (true/false/null) with the select translating between strings and booleans via a new data-bool="true" attribute that the change handler now special-cases.
+
+3. **Per-job detail modal opens on row click.** Each tr[data-job-id] now has cursor:pointer plus a click handler that calls openCostingDetail(jobId). The handler bails when the click landed on input/select/button/textarea/label so inline editing keeps working. The modal hosts the same set of editable cost fields in a roomier layout (Hours & Revenue card, Costs card, Material Lines card with read-only line breakdown including cure_speed and ordered/delivered status, Misc & Notes card). Closing the modal preserves scroll position and re-renders the costing view so saved edits show up immediately and rollups recompute.
+
+4. **Rollup totals card at the top.** New aggregateCostingRows() helper sums revenue + every cost bucket + actual hours across an arbitrary list of pre-computed rows, and re-derives Total Var Exp / GP / GP% / GP-per-hour / Rev-per-hour using the same formulas computeCostingRow uses, so the rollup never disagrees with the per-job rows. groupCostingBy() pivots the computed rows by an arbitrary key with a fallback bucket for nullish values. Render emits one rollup table with sections: GRAND TOTAL (current filter), By Sales Team (group on job.sales_team), By System Type (group on the area's system name; the closest existing field to the sheet's "JOB TYPE"), By Crew (group on crew name). Section is collapsible via state.costingRollupOpen (default open). Business rollup (FTP vs PEC) is intentionally skipped: this module is PEC-only today, so the row would always read 100% PEC.
+
+What is NOT here yet (deliberate, queued):
+
+- Job Type as a first-class field. The MBP sheet's "JOB TYPE" column lists labels like "Flake Garage", "Quartz Patio", "Specialty Epoxy", which look like a job-class-plus-system hybrid. The dashboard currently uses system_type_id alone as a proxy. If Dylan wants the exact same labels as the sheet, that's a new column on pec_prod_jobs (a future migration) plus a picker in New Job. Out of scope for "make it operable".
+- FTP rollup row. PEC-only context today. When the FTP arm of this module exists, add a Business grouping that splits FTP/PEC.
+- Per-area / per-line rollups. The MBP sheet doesn't have these either; mentioning so we don't quietly miss a follow-up.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification before commit: npm test (48 passed; no calculator changes in this commit so the tests are a regression check). Manual UI verification deferred to Dylan; the Job Costing view is unreachable in this session because it requires a signed-in admin/PM session against the live Supabase project.
+
+## Handoff to Dylan
+
+Hard-refresh hq-prescott.netlify.app, navigate to Job Costing, then walk:
+1. The new "Rollups" card sits above the per-job table. Click the chevron to collapse it and confirm it stays collapsed across a filter change. Click again to re-expand.
+2. The per-job rows have a pointer cursor and hover background. Click a row in white space (not on an input). The detail modal opens. Save a value (e.g. change Bonus from 0 to 100 and tab out). Close the modal. The row reflects the new total var / GP without a hard refresh, and scroll position is preserved.
+3. The Mat. Ordered cell shows a derived value with no input. For a job whose material_lines have line_cost values, the cell reads "$XXX,XXX". For a brand-new job with no lines yet, the cell reads "—".
+4. Callback column shows a Yes / No / blank dropdown. Pick Yes on a row, click into the row to open the modal, confirm the modal also shows Yes for the same job.
+
+## Handoff to Cowork
+
+None for this commit. The 3-step env-var handoff in Cowork's 2026-05-07 entry below still stands and is the gating action for end-to-end sync (cure speed -> sheet column P).
+
+---
+
 ## [2026-05-07 MST] supabase migration applied, PEC sync proxy first-time install, U-Tint dealer pricing
 
 By: Cowork

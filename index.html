@@ -6537,12 +6537,13 @@ function openScheduleModal(jobId) {
 // Job Costing (full-bleed)
 // ============================================================
 async function loadCostingData() {
-  const [jobsRes, costRes, sysRes, crewsRes, areasRes] = await Promise.all([
+  const [jobsRes, costRes, sysRes, crewsRes, areasRes, linesRes] = await Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
     supabase.from('pec_prod_job_costing').select('*'),
     supabase.from('pec_prod_system_types').select('id,name,color'),
     supabase.from('pec_prod_crews').select('id,name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,order_index'),
+    supabase.from('pec_prod_material_lines').select('id,job_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,order_index'),
   ]);
   state.prodJobs = jobsRes.data || [];
   state.costing = costRes.data || [];
@@ -6551,18 +6552,35 @@ async function loadCostingData() {
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
+  // Aggregate material_lines per job so the costing view can derive
+  // materials_ordered_cost from the planner output instead of asking the user
+  // to type it in. linesByJob also feeds the per-job detail modal.
+  const ordered = {};
+  const linesByJob = {};
+  for (const l of linesRes.data || []) {
+    ordered[l.job_id] = (ordered[l.job_id] || 0) + Number(l.line_cost || 0);
+    (linesByJob[l.job_id] ||= []).push(l);
+  }
+  state.materialOrderedByJob = ordered;
+  state.materialLinesByJob = linesByJob;
 }
 
-function computeCostingRow(job, cost, sysName) {
+function computeCostingRow(job, cost, sysName, derivedOrderedCost) {
   const c = cost || {};
   const revenue = Number(job.revenue || 0);
   const estHrs = Number(job.estimated_hours ?? c.estimated_hours ?? 0);
   const actHrs = Number(job.actual_hours ?? c.actual_hours ?? 0);
   const overUnder = (actHrs && estHrs) ? (actHrs - estHrs) : null;
   const hoursVarPct = (actHrs && estHrs) ? ((actHrs - estHrs) / estHrs) : null;
+  // Materials ordered is derived from pec_prod_material_lines (sum of
+  // line_cost) when an aggregate is provided. Falls back to the stored
+  // value only for legacy jobs that pre-date the material_lines flow.
+  const orderedCost = derivedOrderedCost != null && derivedOrderedCost > 0
+    ? Number(derivedOrderedCost)
+    : Number(c.materials_ordered_cost || 0);
   const buckets = {
     equipment_rental_cost: Number(c.equipment_rental_cost || 0),
-    materials_ordered_cost: Number(c.materials_ordered_cost || 0),
+    materials_ordered_cost: orderedCost,
     materials_used_cost: Number(c.materials_used_cost || 0),
     salary_wages_cost: Number(c.salary_wages_cost || 0),
     subcontractor_cost: Number(c.subcontractor_cost || 0),
@@ -6606,6 +6624,190 @@ function fmtMoneyOrDash(n) { return Number.isFinite(n) && n !== 0 ? '$' + Number
 function fmtPct(n) { return n == null ? '—' : (n * 100).toFixed(1) + '%'; }
 function fmtNum(n) { return n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 1 }); }
 
+// Aggregate one summary row from a list of pre-computed per-job rows. The
+// per-job rows already carry r.buckets / r.totalVar etc. via computeCostingRow,
+// so the rollup just sums the underlying numbers and re-derives GP / GP% /
+// GP per hour / Rev per hour. Mirrors the math in computeCostingRow so the
+// rollup never disagrees with the row arithmetic.
+function aggregateCostingRows(rows) {
+  const sum = (fn) => rows.reduce((s, x) => s + (Number(fn(x)) || 0), 0);
+  const revenue = sum(x => x.r.revenue);
+  const actHrs  = sum(x => x.r.actHrs);
+  const buckets = {
+    equipment_rental_cost:  sum(x => x.r.buckets.equipment_rental_cost),
+    materials_ordered_cost: sum(x => x.r.buckets.materials_ordered_cost),
+    materials_used_cost:    sum(x => x.r.buckets.materials_used_cost),
+    salary_wages_cost:      sum(x => x.r.buckets.salary_wages_cost),
+    subcontractor_cost:     sum(x => x.r.buckets.subcontractor_cost),
+    bonus_cost:             sum(x => x.r.buckets.bonus_cost),
+    commission_cost:        sum(x => x.r.buckets.commission_cost),
+    misc_cost:              sum(x => x.r.buckets.misc_cost),
+  };
+  const totalVar = buckets.equipment_rental_cost + buckets.materials_used_cost + buckets.salary_wages_cost + buckets.subcontractor_cost + buckets.bonus_cost + buckets.commission_cost + buckets.misc_cost;
+  const gp = revenue - totalVar;
+  const gpPct = revenue > 0 ? gp / revenue : null;
+  const gpHr  = actHrs  > 0 ? gp / actHrs  : null;
+  const revHr = actHrs  > 0 ? revenue / actHrs : null;
+  return { count: rows.length, revenue, actHrs, buckets, totalVar, gp, gpPct, gpHr, revHr };
+}
+
+// Group an array of computed rows by a key function. Falls back to a label
+// for nullish values so "Unassigned" still appears as its own bucket.
+function groupCostingBy(rows, keyFn, fallback = 'Unassigned') {
+  const out = new Map();
+  for (const x of rows) {
+    const raw = keyFn(x);
+    const key = (raw == null || raw === '') ? fallback : String(raw);
+    if (!out.has(key)) out.set(key, []);
+    out.get(key).push(x);
+  }
+  return out;
+}
+
+// Per-job detail modal. Opens on row click; hosts the same set of editable
+// fields as the inline row in a roomier two-column layout, plus a read-only
+// material_lines table and a Notes section. Each input wires the same
+// saveCostingField / saveJobField handlers the row uses; closing the modal
+// re-renders the costing view so any edits show up immediately and rollups
+// recompute. Scroll position is preserved across the re-render so the user
+// doesn't lose their place in a long list.
+function openCostingDetail(jobId) {
+  const job = state.prodJobs.find(j => j.id === jobId);
+  if (!job) return;
+  const cost = state.costing.find(c => c.job_id === jobId);
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  const areas = (state.productAreasByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const sys = areas[0] ? sysById[areas[0].system_type_id] : null;
+  const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId]);
+  const lines = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
+
+  const moneyInput = (label, key, table, val, hint = '') => `
+    <div class="pec-field">
+      <label>${esc(label)}${hint ? ` <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(hint)}</span>` : ''}</label>
+      <input class="cost-money" type="number" min="0" step="0.01" data-cost="${esc(key)}" data-table="${esc(table)}" value="${esc(val ?? '')}">
+    </div>`;
+  const derivedField = (label, content, cls = '') => `
+    <div class="pec-field">
+      <label>${esc(label)} <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">derived</span></label>
+      <div class="cost-derived ${cls}" style="padding:6px 8px;background:var(--bg-soft);border-radius:6px;font-variant-numeric:tabular-nums">${content}</div>
+    </div>`;
+
+  const html = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div>
+        <h3 style="margin:0">${esc(job.customer_name || '')} <span style="color:var(--muted);font-weight:400">#${esc(job.proposal_number || '')}</span></h3>
+        <div style="color:var(--muted);font-size:.75rem;margin-top:4px">${esc(job.address || '')}</div>
+        <div style="color:var(--muted);font-size:.75rem">Install ${job.install_date ? esc(new Date(job.install_date).toLocaleDateString()) : 'unscheduled'} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span>${sys ? ` · ${esc(sys.name)}` : ''}${crew ? ` · ${esc(crew)} crew` : ''}</div>
+      </div>
+      <button class="pec-btn ghost sm" data-cost-detail-close>Close</button>
+    </div>
+
+    <div class="pec-card" style="margin-top:14px">
+      <h3>Hours &amp; Revenue</h3>
+      <div class="pec-row-3">
+        <div class="pec-field"><label>Sales Team</label><input class="cost-text" data-cost="sales_team" data-table="job" value="${esc(job.sales_team || '')}"></div>
+        <div class="pec-field"><label>Revenue</label><input class="cost-money" type="number" min="0" step="0.01" data-cost="revenue" data-table="job" value="${esc(job.revenue ?? '')}"></div>
+        <div class="pec-field"><label>Callback</label>
+          <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
+            <option value=""     ${job.callback == null   ? 'selected' : ''}>—</option>
+            <option value="true" ${job.callback === true  ? 'selected' : ''}>Yes</option>
+            <option value="false"${job.callback === false ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+        <div class="pec-field"><label>Estimated Hours</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="estimated_hours" data-table="job" value="${esc(job.estimated_hours ?? '')}"></div>
+        <div class="pec-field"><label>Actual Hours</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(job.actual_hours ?? '')}"></div>
+        ${derivedField('Over / Under', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, r.overUnder == null ? '' : r.overUnder > 0 ? 'cost-neg' : 'cost-pos')}
+      </div>
+    </div>
+
+    <div class="pec-card">
+      <h3>Costs</h3>
+      <div class="pec-row-3">
+        ${moneyInput('Equipment Rental', 'equipment_rental_cost', 'cost', cost?.equipment_rental_cost)}
+        ${derivedField('Materials Ordered', fmtMoneyOrDash(r.buckets.materials_ordered_cost) + ' <span style="color:var(--muted);font-size:.65rem">from material_lines</span>')}
+        ${moneyInput('Materials Used',    'materials_used_cost', 'cost', cost?.materials_used_cost)}
+        ${moneyInput('Salary &amp; Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
+        ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
+        ${moneyInput('Bonus',             'bonus_cost',         'cost', cost?.bonus_cost)}
+        ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
+        ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
+      </div>
+      <div class="pec-row-3" style="margin-top:10px">
+        ${derivedField('Total Var Expense', fmtMoneyOrDash(r.totalVar) + ' (' + fmtPct(r.pct(r.totalVar)) + ')')}
+        ${derivedField('Gross Profit', fmtMoneyOrDash(r.gp) + ' (' + fmtPct(r.gpPct) + ')', r.gp < 0 ? 'cost-neg' : 'cost-pos')}
+        ${derivedField('GP / HR · REV / HR', `${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)} · ${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}`)}
+      </div>
+    </div>
+
+    <div class="pec-card">
+      <h3>Material Lines <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · sum ${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span></h3>
+      ${lines.length === 0 ? `<div class="pec-empty">No material lines for this job. They populate automatically from the Production module's New Job flow once areas + system types are saved.</div>` : `
+        <div class="pec-table-wrap">
+        <table class="pec-table">
+          <thead><tr>
+            <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty</th><th>Order Qty</th><th>Unit $</th><th>Line $</th><th>Ordered</th><th>Delivered</th>
+          </tr></thead>
+          <tbody>
+            ${lines.map(l => `
+              <tr class="nohover">
+                <td>${esc(l.material_type || '')}</td>
+                <td>${esc(l.product_name || '')}</td>
+                <td>${esc(l.color || '')}</td>
+                <td>${esc(l.cure_speed || '')}</td>
+                <td>${esc(l.qty_needed)}</td>
+                <td>${esc(l.order_qty)}</td>
+                <td>${l.unit_cost_snapshot == null ? '—' : '$' + Number(l.unit_cost_snapshot).toLocaleString()}</td>
+                <td>${l.line_cost == null ? '—' : '$' + Number(l.line_cost).toLocaleString()}</td>
+                <td>${l.ordered ? 'Yes' : 'No'}</td>
+                <td>${l.delivered ? 'Yes' : 'No'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+      `}
+    </div>
+
+    <div class="pec-card">
+      <h3>Misc &amp; Notes</h3>
+      <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
+      <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="3" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
+    </div>
+  `;
+
+  openModal(html, { onMount: (modal) => {
+    modal.querySelectorAll('[data-cost]').forEach(inp => {
+      const handler = async () => {
+        const field = inp.dataset.cost;
+        const tbl = inp.dataset.table;
+        let val;
+        if (inp.type === 'checkbox') val = inp.checked;
+        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+        else if (inp.dataset.bool === 'true') val = inp.value === '' ? null : inp.value === 'true';
+        else val = inp.value;
+        if (tbl === 'job') {
+          const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
+          await saveJobField(jobId, field, val);
+        } else {
+          let c = state.costing.find(c => c.job_id === jobId);
+          if (!c) { c = { job_id: jobId }; state.costing.push(c); }
+          c[field] = val;
+          saveCostingField(jobId, field, val);
+        }
+      };
+      inp.addEventListener('change', handler);
+      if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
+    });
+    const closeBtn = modal.querySelector('[data-cost-detail-close]');
+    if (closeBtn) closeBtn.addEventListener('click', () => {
+      const scroll = window.scrollY;
+      closeModal();
+      renderJobCosting().then(() => window.scrollTo(0, scroll));
+    });
+  } });
+}
+
 async function renderJobCosting() {
   const root = $('pecViewRoot');
   if (!['admin','pm'].includes(state.adminUser?.role)) { root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>'; return; }
@@ -6626,6 +6828,73 @@ async function renderJobCosting() {
     return j.status === filt;
   });
 
+  // Pre-compute every visible row once so the rollups and the per-job table
+  // share the same underlying numbers and can never drift.
+  const computedRows = jobs.map(j => {
+    const sys = areaSystem(j);
+    const cost = costByJob[j.id];
+    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id]);
+    return { job: j, sys, cost, r };
+  });
+  const grandTotal = aggregateCostingRows(computedRows);
+  const bySalesTeam = groupCostingBy(computedRows, x => x.job.sales_team);
+  const bySystem    = groupCostingBy(computedRows, x => x.sys ? x.sys.name : null);
+  const byCrew      = groupCostingBy(computedRows, x => x.job.crew_id ? (crewById[x.job.crew_id] || {}).name : null);
+
+  // Rollup table emits Group / # Jobs / Revenue / Hours / Total Var / GP /
+  // GP% / GP per hour / Rev per hour. Section headers separate the four
+  // groupings (Grand Total, Sales Team, System Type, Crew) inside one table
+  // so column widths line up.
+  const rollupRow = (label, agg, isGrand = false) => `
+    <tr class="${isGrand ? 'cost-rollup-grand' : 'cost-rollup-row'}">
+      <td>${esc(label)}</td>
+      <td style="text-align:right">${agg.count}</td>
+      <td style="text-align:right">${fmtMoneyOrDash(agg.revenue)}</td>
+      <td style="text-align:right">${fmtNum(agg.actHrs)}</td>
+      <td style="text-align:right">${fmtMoneyOrDash(agg.totalVar)}</td>
+      <td style="text-align:right" class="${agg.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtMoneyOrDash(agg.gp)}</td>
+      <td style="text-align:right" class="${agg.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(agg.gpPct)}</td>
+      <td style="text-align:right">${agg.gpHr  == null ? '—' : fmtMoneyOrDash(agg.gpHr)}</td>
+      <td style="text-align:right">${agg.revHr == null ? '—' : fmtMoneyOrDash(agg.revHr)}</td>
+    </tr>`;
+  const sectionHeader = (label) => `
+    <tr class="cost-rollup-section"><td colspan="9" style="font-weight:600;background:var(--bg-soft)">${esc(label)}</td></tr>`;
+  const groupRows = (groupMap) => Array.from(groupMap.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([k, list]) => rollupRow(k, aggregateCostingRows(list)))
+    .join('');
+
+  const rollupOpen = state.costingRollupOpen !== false;
+  const rollupHtml = `
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;cursor:pointer" data-rollup-toggle>
+        <span class="prod-cat-chevron">${rollupOpen ? '▼' : '▶'}</span>
+        <h3 style="margin:0">Rollups</h3>
+        <span style="color:var(--muted);font-size:.7rem">grand totals plus sales team / system type / crew breakouts</span>
+      </div>
+      ${rollupOpen ? `
+        <div style="overflow-x:auto;margin-top:10px">
+        <table class="pec-table pec-cost-table" style="font-size:.78rem">
+          <thead><tr>
+            <th>Group</th><th style="text-align:right"># Jobs</th><th style="text-align:right">Revenue</th><th style="text-align:right">Hours</th>
+            <th style="text-align:right">Total Var</th><th style="text-align:right">Gross Profit</th><th style="text-align:right">GP %</th>
+            <th style="text-align:right">GP / HR</th><th style="text-align:right">REV / HR</th>
+          </tr></thead>
+          <tbody>
+            ${rollupRow('GRAND TOTAL (current filter)', grandTotal, true)}
+            ${sectionHeader('By Sales Team')}
+            ${bySalesTeam.size ? groupRows(bySalesTeam) : '<tr class="nohover"><td colspan="9" class="pec-empty">No jobs.</td></tr>'}
+            ${sectionHeader('By System Type')}
+            ${bySystem.size ? groupRows(bySystem) : '<tr class="nohover"><td colspan="9" class="pec-empty">No jobs.</td></tr>'}
+            ${sectionHeader('By Crew')}
+            ${byCrew.size ? groupRows(byCrew) : '<tr class="nohover"><td colspan="9" class="pec-empty">No jobs.</td></tr>'}
+          </tbody>
+        </table>
+        </div>
+      ` : ''}
+    </div>
+  `;
+
   root.innerHTML = `
     <div class="pec-card" style="border-radius:0">
       <div class="pec-toolbar">
@@ -6641,6 +6910,9 @@ async function renderJobCosting() {
         <span style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
         <button class="pec-btn sm" id="costPrint">Print</button>
       </div>
+    </div>
+    ${rollupHtml}
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
       <div style="overflow-x:auto;padding-bottom:8px">
         <table class="pec-cost-table">
           <thead><tr>
@@ -6664,7 +6936,7 @@ async function renderJobCosting() {
             ${jobs.map(j => {
               const sys = areaSystem(j);
               const cost = costByJob[j.id];
-              const r = computeCostingRow(j, cost, sys ? sys.name : '');
+              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id]);
               const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
               return `<tr data-job-id="${esc(j.id)}">
                 <td><strong>${esc(j.address || '—')}</strong><div style="color:var(--muted);font-size:.62rem">#${esc(j.proposal_number)}</div></td>
@@ -6681,7 +6953,7 @@ async function renderJobCosting() {
                 <td class="cost-pct ${overCls}" data-derived="hoursVarPct">${fmtPct(r.hoursVarPct)}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="equipment_rental_cost" data-table="cost" value="${esc(cost?.equipment_rental_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-equip">${fmtPct(r.pct(r.buckets.equipment_rental_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="materials_ordered_cost" data-table="cost" value="${esc(cost?.materials_ordered_cost ?? 0)}"></td>
+                <td class="cost-derived" data-derived="matOrdered" title="Sum of pec_prod_material_lines.line_cost for this job. Read-only; edit material_lines to change.">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</td>
                 <td class="cost-pct" data-derived="pct-matord">${fmtPct(r.pct(r.buckets.materials_ordered_cost))}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="materials_used_cost" data-table="cost" value="${esc(cost?.materials_used_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-matused">${fmtPct(r.pct(r.buckets.materials_used_cost))}</td>
@@ -6701,7 +6973,13 @@ async function renderJobCosting() {
                 <td class="cost-pct ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-derived="gpPct">${fmtPct(r.gpPct)}</td>
                 <td class="cost-derived" data-derived="gpHr">${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)}</td>
                 <td class="cost-derived" data-derived="revHr">${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}</td>
-                <td><input type="checkbox" data-cost="callback" data-table="job" ${j.callback?'checked':''}></td>
+                <td>
+                  <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
+                    <option value=""     ${j.callback == null ? 'selected' : ''}>—</option>
+                    <option value="true" ${j.callback === true ? 'selected' : ''}>Yes</option>
+                    <option value="false" ${j.callback === false ? 'selected' : ''}>No</option>
+                  </select>
+                </td>
                 <td><input class="cost-text" data-cost="notes" data-table="cost" value="${esc(cost?.notes || '')}"></td>
               </tr>`;
             }).join('') || '<tr class="nohover"><td colspan="34" class="pec-empty">No jobs in this filter.</td></tr>'}
@@ -6713,13 +6991,18 @@ async function renderJobCosting() {
 
   $('costFilter').addEventListener('change', e => { state.costingFilter = e.target.value; renderJobCosting(); });
   $('costPrint').addEventListener('click', () => window.print());
+  const rollupToggle = root.querySelector('[data-rollup-toggle]');
+  if (rollupToggle) rollupToggle.addEventListener('click', () => {
+    state.costingRollupOpen = !(state.costingRollupOpen !== false);
+    renderJobCosting();
+  });
 
   // In-place derived-cell updater so input focus isn't lost while typing.
   function refreshDerived(tr, jobId) {
     const job = state.prodJobs.find(j => j.id === jobId);
     const cost = state.costing.find(c => c.job_id === jobId);
     const sys = areaSystem(job);
-    const r = computeCostingRow(job, cost, sys ? sys.name : '');
+    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId]);
     const set = (sel, html, cls) => {
       const el = tr.querySelector(sel);
       if (!el) return;
@@ -6750,6 +7033,13 @@ async function renderJobCosting() {
 
   root.querySelectorAll('tr[data-job-id]').forEach(tr => {
     const jobId = tr.dataset.jobId;
+    tr.style.cursor = 'pointer';
+    // Open the per-job detail modal on row click. Skip if the click landed on
+    // an interactive control so inline editing keeps working unchanged.
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('input, select, button, textarea, label')) return;
+      openCostingDetail(jobId);
+    });
     tr.querySelectorAll('[data-cost]').forEach(inp => {
       const handler = async () => {
         const field = inp.dataset.cost;
@@ -6757,6 +7047,7 @@ async function renderJobCosting() {
         let val;
         if (inp.type === 'checkbox') val = inp.checked;
         else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+        else if (inp.dataset.bool === 'true') val = inp.value === '' ? null : inp.value === 'true';
         else val = inp.value;
         if (tbl === 'job') {
           const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
@@ -7233,6 +7524,10 @@ if (portalToken) {
   .pec-cost-table .cost-pct { color:var(--muted); font-size:.66rem; font-variant-numeric:tabular-nums }
   .pec-cost-table .cost-neg { color:var(--danger) }
   .pec-cost-table .cost-pos { color:var(--success) }
+  .pec-cost-table tr.cost-rollup-grand td { font-weight:600; background:var(--rd-soft, var(--s2)) }
+  .pec-cost-table tr.cost-rollup-section td { font-size:.7rem; padding:8px 8px 4px }
+  .pec-cost-table tr.cost-rollup-row td { font-size:.74rem }
+  .pec-cost-table tr[data-job-id]:hover { background:var(--rd-soft, var(--s2)) }
   .pec-color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,.15) }
   @media print {
     .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
