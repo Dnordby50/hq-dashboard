@@ -4,6 +4,57 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: Cockpit (Phase 2) merges Dashboard/Execution/Inbox/JARVIS behind a single sidebar entry
+
+By: Claude Code
+Changed: index.html.
+
+Phase 2 of the brand pass. The four operational tabs (Command, Execution, Email, JARVIS) no longer appear separately in the sidebar; they live behind a single Cockpit entry that swaps content via a sub-nav strip. TopCoat stays the default landing view. The "Open Cockpit" promo button is now a real launcher; it activates Cockpit and restores the user's last-viewed sub-section.
+
+Implementation strategy: keep the four `.tab-content` sections (`#tab-command`, `#tab-execution`, `#tab-email`, `#tab-jarvis`) exactly as-is so all their existing JS, state, and DOM bindings continue to work without a rewrite. Sidebar layer treats them as children of a virtual Cockpit; only the navigation UX changes.
+
+What this commit ships:
+
+1. **Cockpit-child tagging on the hidden tab-nav (index.html:1404-1410)**: the four buttons got `data-cockpit-child="true"`. The visible label was set on the button text ("Command" -> "Dashboard" to match the existing `LABELS['command'] = 'Dashboard'` mapping so the sub-nav reads the same wherever the user looks).
+
+2. **Sidebar clone (the former 4502-4517) now skips cockpit children**. Loop checks `btn.dataset.cockpitChild === 'true'` and returns early before the `navHost.appendChild`. The hidden buttons stay in their original `.tab-nav` (which has `display:none`) so the global tab-btn click handler at index.html:3832 can still fire on them via programmatic `.click()`. A `cockpitChildButtons` array tracks them for the Cockpit launcher.
+
+3. **Virtual Cockpit sidebar button**: created via `document.createElement('button')`, not a real `.tab-btn` with `data-tab`, so the global handler ignores it. Inserted at position 1 (between TopCoat and SOPs). Click handler reads `localStorage["cockpit_last_child"]` (defaults to `command`), programmatically clicks the matching hidden tab-btn so the global handler activates the section.
+
+4. **Sub-nav strip (`#rdCockpitSubnav`)**: four buttons (Dashboard / Execution / Inbox / JARVIS) injected into the main shell template between `#rdTitle` and `#rdContentHost`. CSS adds pill-tab styling with a "card" look for the active state; `html[data-pec-brand="on"]` recolors the active state to PEC orange. Hidden by default; the existing `refreshTitle` MutationObserver (already watching the four tab-contents for class changes) was extended to toggle the strip's visibility based on which `.tab-content.active` is showing.
+
+5. **Active-state sync**: `refreshTitle` now maps the four `tab-*` ids to a `cockpitKey`, shows the sub-nav, marks the matching sub-nav button as active, adds `active` to the Cockpit sidebar button, and writes the key to localStorage so a future "Open Cockpit" remembers where the user was. When TopCoat or SOPs is active, the strip hides and the Cockpit sidebar button loses its active class.
+
+6. **Promo button rewired**: the `rdPromoBtn` "Open Cockpit" handler at the former 4594-4597 used to click the hidden JARVIS button. Now it clicks the virtual `#rdCockpitBtn` so the launcher logic (restore-last-child) runs.
+
+7. **Promo card subtitle updated** to "Daily flow" + "Dashboard, Execution, Inbox, and JARVIS in one place." since this is no longer a teaser; the merge is real.
+
+What is NOT in this commit (Phase 3 candidates):
+
+- Wider PEC brand theme applied to CRM content area (tables, modals inside `#tab-prescott-crm`). Still chrome-only by intent; the cost table and unified job page have density needs that Archivo + uppercase could regress.
+- Drag-onto-calendar bulk-schedule UX (F6 from the 2026-05-17 walkthrough handoff).
+- DripJobs -> CRM stub-create flow for jobs that don't exist in CRM yet (F7 / task 5 from that handoff).
+
+Verification before commit: `npm test` (48 passed; no calc changes). Manual UI verification deferred to Dylan because the chrome only renders in a signed-in admin session.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+After Netlify auto-deploys, hard-refresh hq-prescott.netlify.app and walk:
+
+1. Sidebar reads top-to-bottom: TopCoat (the existing CRM, default landing), Cockpit (new), SOPs. The Dashboard / Execution / Inbox / JARVIS sidebar entries are gone.
+2. Click Cockpit. The page swaps to Dashboard by default. A four-button strip appears just below the page title with Dashboard / Execution / Inbox / JARVIS. Click any of those four; the content swaps without changing the sidebar selection.
+3. Click TopCoat to leave Cockpit. The strip vanishes. Click Cockpit again; it returns to the last sub-section you were on (persisted via localStorage["cockpit_last_child"]).
+4. Bottom-left "Cockpit" promo card: button "Open Cockpit" now activates the Cockpit sidebar item (same restore-last-child behavior). Previously it shortcut to JARVIS only.
+5. Brand toggle (gear icon top-right -> Brand subsection): when on, the active sub-nav tab is highlighted in PEC orange. When off, accent stays blue. The sub-nav itself is visible regardless of theme.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] dashboard: PEC brand chrome (Phase 1): logo, TopCoat rename, Cockpit teaser, switchable brand theme
 
 By: Claude Code

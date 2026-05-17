@@ -834,6 +834,12 @@ body { padding: 18px; min-height: 100vh; }
 #rdTitle h1 { font-family: 'Plus Jakarta Sans', sans-serif; font-weight: 800; font-size: 30px; letter-spacing: -.8px; color: var(--rd-ink); margin: 0; }
 #rdTitle .rd-subtitle { color: var(--rd-muted); font-size: 13.5px; margin-top: 4px; }
 #rdTitle .rd-actions { display: flex; gap: 10px; flex-shrink: 0; }
+/* Cockpit sub-nav strip: shown when any of the four merged sections is active */
+#rdCockpitSubnav { display: flex; gap: 2px; padding: 4px; background: var(--rd-soft, #f5f6f8); border: 1px solid var(--rd-line, #e5e7eb); border-radius: 10px; margin-bottom: 14px; }
+.rd-cockpit-tab { flex: 1; background: transparent; border: 0; padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--rd-muted, #6b7280); cursor: pointer; border-radius: 8px; transition: background .12s, color .12s; }
+.rd-cockpit-tab:hover { color: var(--rd-ink, #111827); }
+.rd-cockpit-tab.active { background: var(--rd-card, #fff); color: var(--rd-accent, #2b59ff); box-shadow: 0 1px 2px rgba(16,24,40,.06); }
+html[data-pec-brand="on"] .rd-cockpit-tab.active { color: var(--pec-orange); }
 .rd-btn {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 10px 18px; border-radius: 999px;
@@ -1451,10 +1457,10 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 <!-- TAB NAV -->
 <nav class="tab-nav" style="display:none">
   <button class="tab-btn active" data-tab="prescott-crm">TopCoat</button>
-  <button class="tab-btn" data-tab="command">Command</button>
-  <button class="tab-btn" data-tab="execution">Execution</button>
-  <button class="tab-btn" data-tab="email">Email</button>
-  <button class="tab-btn" data-tab="jarvis">JARVIS</button>
+  <button class="tab-btn" data-tab="command" data-cockpit-child="true">Dashboard</button>
+  <button class="tab-btn" data-tab="execution" data-cockpit-child="true">Execution</button>
+  <button class="tab-btn" data-tab="email" data-cockpit-child="true">Inbox</button>
+  <button class="tab-btn" data-tab="jarvis" data-cockpit-child="true">JARVIS</button>
   <button class="tab-btn" data-tab="sops-owner">SOPs</button>
 </nav>
 
@@ -4452,9 +4458,9 @@ if (document.readyState === 'loading') {
         <div class="rd-nav" id="rdSidebarEmpNav"></div>
       </div>
       <div class="rd-promo">
-        <div class="rd-promo-eyebrow">Coming next</div>
+        <div class="rd-promo-eyebrow">Daily flow</div>
         <div class="rd-promo-title">Cockpit</div>
-        <div class="rd-promo-sub">Dashboard, Execution, Inbox, and JARVIS, merged into one daily flow.</div>
+        <div class="rd-promo-sub">Dashboard, Execution, Inbox, and JARVIS in one place.</div>
         <button class="rd-promo-btn" id="rdPromoBtn">Open Cockpit</button>
       </div>
     `;
@@ -4491,6 +4497,12 @@ if (document.readyState === 'loading') {
           <button class="rd-btn rd-btn-primary" id="rdBtnAdd">+ Add Project</button>
         </div>
       </div>
+      <div id="rdCockpitSubnav" style="display:none">
+        <button class="rd-cockpit-tab" data-cockpit="command">Dashboard</button>
+        <button class="rd-cockpit-tab" data-cockpit="execution">Execution</button>
+        <button class="rd-cockpit-tab" data-cockpit="email">Inbox</button>
+        <button class="rd-cockpit-tab" data-cockpit="jarvis">JARVIS</button>
+      </div>
       <div id="rdContentHost"></div>
     `;
 
@@ -4499,21 +4511,56 @@ if (document.readyState === 'loading') {
 
     const navHost = sidebar.querySelector('#rdSidebarNav');
     const ownerButtons = [];
+    const cockpitChildButtons = [];
     if (originalNav) {
       Array.from(originalNav.querySelectorAll('.tab-btn')).forEach(btn => {
         const key = btn.dataset.tab;
         const label = LABELS[key] || btn.textContent.trim();
         const ico = ICONS[key] || '';
         btn.innerHTML = ico + '<span>' + label + '</span>';
+        if (btn.dataset.cockpitChild === 'true') {
+          // Keep the button in DOM so the global tab-btn handler at line 3832
+          // can still fire on programmatic clicks, but do NOT show it in the
+          // sidebar. Cockpit becomes the single sidebar entry for these four.
+          cockpitChildButtons.push(btn);
+          btn.style.display = 'none';
+          // Park it inside the hidden nav so future code can find it via data-tab.
+          return;
+        }
         navHost.appendChild(btn);
         ownerButtons.push(btn);
       });
     }
+    // Inject a virtual "Cockpit" sidebar button. It is NOT a real .tab-btn (no
+    // data-tab), so the global handler at line 3832 ignores it. Click behavior
+    // is wired below: it programmatically clicks the last-viewed cockpit child
+    // (or Dashboard on first visit). Marked .tab-btn for styling parity with
+    // the other sidebar entries.
+    const cockpitBtn = document.createElement('button');
+    cockpitBtn.className = 'tab-btn rd-cockpit-btn';
+    cockpitBtn.id = 'rdCockpitBtn';
+    cockpitBtn.innerHTML = (ICONS.jarvis || '') + '<span>Cockpit</span>';
+    // Place Cockpit AFTER TopCoat (the current first item) but before SOPs.
+    // TopCoat is index 0; insert at index 1.
+    if (navHost.children.length >= 1) navHost.insertBefore(cockpitBtn, navHost.children[1] || null);
+    else navHost.appendChild(cockpitBtn);
     ownerButtons.forEach(btn => {
       btn.addEventListener('click', () => {
         ownerButtons.forEach(b => b.classList.remove('active'));
+        cockpitBtn.classList.remove('active');
         btn.classList.add('active');
       });
+    });
+    // Cockpit sidebar button: activate the last-viewed cockpit child, or
+    // Dashboard on first visit. Persist last child in localStorage.
+    const COCKPIT_LAST_KEY = 'cockpit_last_child';
+    cockpitBtn.addEventListener('click', () => {
+      ownerButtons.forEach(b => b.classList.remove('active'));
+      cockpitBtn.classList.add('active');
+      const last = (() => { try { return localStorage.getItem(COCKPIT_LAST_KEY); } catch { return null; } })();
+      const targetKey = ['command', 'execution', 'email', 'jarvis'].includes(last) ? last : 'command';
+      const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey);
+      if (targetBtn) targetBtn.click();
     });
 
     const empNavHost = sidebar.querySelector('#rdSidebarEmpNav');
@@ -4562,7 +4609,34 @@ if (document.readyState === 'loading') {
       const isCommand = active.id === 'tab-command' || active.id === 'tab-execution';
       if (addBtn) addBtn.style.display = isCommand ? '' : 'none';
       if (impBtn) impBtn.style.display = active.id === 'tab-command' ? '' : 'none';
+      // Cockpit context: when the active section is one of the four children,
+      // show the sub-nav, mark Cockpit sidebar button as active, mark the
+      // matching sub-nav button as active, and persist last-viewed child.
+      const COCKPIT_IDS = { 'tab-command': 'command', 'tab-execution': 'execution', 'tab-email': 'email', 'tab-jarvis': 'jarvis' };
+      const cockpitKey = COCKPIT_IDS[active.id];
+      const subnav = document.getElementById('rdCockpitSubnav');
+      const cockpitBtnEl = document.getElementById('rdCockpitBtn');
+      if (cockpitKey) {
+        if (subnav) subnav.style.display = '';
+        if (cockpitBtnEl) cockpitBtnEl.classList.add('active');
+        document.querySelectorAll('#rdCockpitSubnav .rd-cockpit-tab').forEach(b => {
+          b.classList.toggle('active', b.dataset.cockpit === cockpitKey);
+        });
+        try { localStorage.setItem('cockpit_last_child', cockpitKey); } catch {}
+      } else {
+        if (subnav) subnav.style.display = 'none';
+        if (cockpitBtnEl) cockpitBtnEl.classList.remove('active');
+      }
     }
+    // Sub-nav click handlers: programmatically click the matching hidden
+    // tab-btn so the global handler at line 3832 activates the section.
+    document.querySelectorAll('#rdCockpitSubnav .rd-cockpit-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.cockpit;
+        const hidden = document.querySelector(`.tab-nav .tab-btn[data-tab="${key}"]`);
+        if (hidden) hidden.click();
+      });
+    });
 
     const obs = new MutationObserver(refreshTitle);
     tabContents.forEach(tc => obs.observe(tc, { attributes: true, attributeFilter: ['class'] }));
@@ -4592,8 +4666,8 @@ if (document.readyState === 'loading') {
       if (typeof logout === 'function') logout();
     });
     document.getElementById('rdPromoBtn').addEventListener('click', () => {
-      const jarvisBtn = document.querySelector('#rdSidebarNav .tab-btn[data-tab="jarvis"]');
-      if (jarvisBtn) jarvisBtn.click();
+      const cockpit = document.getElementById('rdCockpitBtn');
+      if (cockpit) cockpit.click();
     });
     document.getElementById('rdBtnAdd').addEventListener('click', () => {
       if (typeof addProject === 'function') addProject();
