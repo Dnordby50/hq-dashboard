@@ -4,6 +4,56 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] catalog: bulk pricing pass on pec_prod_products from the epoxy price list
+
+By: Cowork
+Changed: supabase/migrations/2026-05-17_catalog_pricing_pass.sql (new), PROJECT-LOG.md (this entry). External systems touched: Supabase prod (HQ Dashboard project zdfpzmmrgotynrwkeakd, ran migration + one corrective update in the SQL editor), Google Sheet 1S0EeQKa_mPZ0IFujGrRBdS3T2UYQFVAV7Kk9eL3i92I read-only (sheet cleanup is queued separately, see below).
+
+Why this exists: Dylan asked Cowork to populate prices and material entries on the CRM Price & Material Catalog using the Simiron / multi-supplier epoxy price list. The catalog had unit_cost null on roughly 110 existing rows (1100SL color basecoats, 17 flake colors, 41 Torginol Q-Color quartz rows, 49 metallic pigment rows, the standalone Polyaspartic Clear Gloss topcoat, Simiron High Wear Urethane, Simiron MVB Standalone, and a couple of extras) and about 40 SKUs from the price list had no catalog home yet.
+
+What the migration does in one transaction:
+
+1. Updates unit_cost on existing rows the pricing rules cover. All Simiron 1100 SL color variants priced at $144.27 flat, except 1100 SL Clear at $139.03 (price list explicitly broke Clear out as a separate kit cost). MVB Standalone at $214.04 (notes confirmed $214.04 for the kit including activator). Simiron High Wear Urethane at $199.36. Polyaspartic Clear Gloss at $153.02 (mapped to the newest Polyaspartic Slow Cure 2-gal row at 1/15/2026). Existing 'Simiron Metallic Pigment' + every other Metallic Pigment row flat at $63.70 per canister. Torginol Q-Color quartz at $38.25 (under-400-lb tier as the safer default for cost estimates). The 17 Simiron-supplied flake colors at $87.44 except Autumn Brown at $91.64; Domino Flake intentionally left null.
+
+2. Upserts 40 new products via INSERT ... ON CONFLICT (name) DO UPDATE so a re-run refreshes prices instead of duplicating rows. Six new Topcoats (Polyaspartic HS Slow Cure 10gal kit at $765.10, HS Medium Cure 10gal kit at $856.16, Medium Cure 2gal at $122.41, Fast Cure 2gal at $153.02, SW PolyGuard 85 2gal at $238.27, One Stop Epoxy Premera T2 at $165.00). Five new Basecoats (1100SL Standard Activator standalone, 1100SL Fast Activator standalone, MVB Clear Activator standalone, E-Flex 2gal at $136.98, Metallic Epoxy 3gal at $157.10). Six new Sealers (Acrylux 5gal at $218.60, DCP EZ Densifier/Green Cut/Superguard 5gal at $135.12/$135.12/$189.17, SureCrete Matte Agent at $22.95, Simiron Cure & Seal 5gal at $166.90). Eight new Stains (Brickform Acid Stain at $65.85, Ameripolish Classic Stain 1gal/5gal at $75.27/$326.20, Ameripolish Densifier at $71.86, ColorSolve 1gal/5gal at $81.82/$376.07, SR2 Polishing Sealer 1gal/5gal at $193.70/$937.25). Two new Flake (Simiron Special Flake 40lb Standard $136.62, Carbon $125.69). Two new Quartz (SW Quartz Granules 50lb over-400lb tier at $30.05, under-400lb tier at $38.25). One new Metallic Pigment (Torginol 12 oz at $36.48). Eleven new Extras (Simiron Instant Patch $82.16, 800CF $164.93, 50 Tex Slip $11.05, Thickening Fibers $81.07, Self Leveling Concrete $32.72, Metzger/McQuire Joint Filler 10gal $628.47, Reliable Diamond honeycomb pad $42.77, backer pad $30.55, CRT pads 3in-12mm $34.91, 3in-3mm $8.73, 7in $41.46).
+
+Several pricing decisions were non-obvious and were checked with Dylan one by one before applying. Column H (Price per kit) on the source sheet was populated for only 7 of 86 rows, so the rest had to be derived. The sheet's column E was inconsistently per-gallon vs per-kit depending on the row: Dylan resolved 11 ambiguous rows individually (the 10-gal Polyaspartic HS Slow Cure kit definition combining 5gal base + 5gal activator at jug-cost x 2 = $765.10 is the big one). Resin Tek rows were skipped entirely (Dylan does not order from them). When multiple dated prices existed for the same SKU, the newest was used (Polyaspartic HS Slow Cure 10gal kit went from $874.40 in October to $819.74 in November to the final $765.10 from 1/15/2026).
+
+One correction inside the same session: the initial flake update used the LIKE pattern 'Decorative Simiron Flake - %' from the 2026-05-04 catalog expansion migration, but the actual prod rows are named '<Color> Flake' (e.g. 'Autumn Brown Flake'), not the longer form. The first verification query showed only 2 of 21 Flake rows priced. I ran a one-off corrective UPDATE in the SQL editor against the short-form names and re-ran verification; the migration file in supabase/migrations was then patched to match what is actually in prod, so anyone re-running this file from clean will hit the right rows.
+
+Verification after both updates (active rows only):
+
+| material_type    | priced | unpriced | total |
+|------------------|--------|----------|-------|
+| Basecoat         |     11 |        1 |    12 |
+| Extra            |     12 |        1 |    13 |
+| Flake            |     20 |        1 |    21 |
+| Metallic Pigment |     50 |        0 |    50 |
+| Quartz           |     43 |        1 |    44 |
+| Sealer           |      6 |        1 |     7 |
+| Stain            |      8 |        1 |     9 |
+| Tint Pack        |     14 |        0 |    14 |
+| Topcoat          |      8 |        0 |     8 |
+| **TOTAL**        |  **172** |    **6** | **178** |
+
+172 of 178 active products now have a unit_cost set (96.6% coverage). The 6 nulls are intentional: Domino Flake (legacy, not on the price list), Cohills Eco Water-Based Stain and Cohills Water-Based Sealer (Dylan said leave null until he has a confirmed cost), and three rows in Basecoat / Extra / Quartz that aren't on the price list (likely the standalone "Simiron 1100 SL - Clear" extra and a non-Torginol Quartz row).
+
+Files touched: supabase/migrations/2026-05-17_catalog_pricing_pass.sql, PROJECT-LOG.md.
+
+## Handoff to Cowork
+
+Pending: clean up the source Google Sheet (1S0EeQKa_mPZ0IFujGrRBdS3T2UYQFVAV7Kk9eL3i92I) per Dylan's go-ahead. Specifically dedupe the duplicate-row blocks (Reliable Diamond entries, Resin Tek entries, Sherwin Williams Quartz Granules entries, SureCrete Matte Agent, Brickform Acid Stain, Acrylux Colorback are all doubled), then populate column H consistently using the rules captured in the migration file's top comment. Source-of-truth for catalog pricing is now Supabase; the sheet is becoming a vendor-pricing reference only.
+
+## Handoff to Dylan
+
+Two items.
+
+1. Hard refresh hq-prescott.netlify.app -> CRM -> Price & Material Catalog. The 110+ rows that were showing "—" for COST / KIT should now show real prices. Spot-check a few: any Simiron 1100 SL color basecoat should read $144.27, every Decorative Simiron Flake row except Autumn Brown should read $87.44, every Torginol Q-Color quartz row should read $38.25, every Metallic Pigment row should read $63.70.
+
+2. Decide what to do with the 6 nulls. Cohills stain and sealer just need a cost from your next Cohills invoice. Domino Flake might be retired. The remaining 3 unpriced rows are likely legacy / oddball entries; ping Cowork or Claude Code if you want them either priced or hidden.
+
+---
+
 ## [2026-05-17 MST] dashboard: unified per-job page (commit 1A); per-line material used + per-crew bonuses
 
 By: Claude Code
