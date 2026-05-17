@@ -4,6 +4,104 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: unified per-job page (commit 1A); per-line material used + per-crew bonuses
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-17_job_costing_unified.sql (new), PROJECT-LOG.md.
+
+Why this exists: Dylan wants the whole process from job acceptance to finish to be seamless and unified, instead of three disconnected modals (Ordering, Schedule, Costing) for the same job. The Job Costing modal in particular was the bottleneck: read-only material lines, a single `bonus_cost` field, and a single `materials_used_cost` field, none granular enough to reflect how the work actually runs. He decided in plan: per-line `actual_used_qty` with auto-computed cost, per-crew-member bonuses (with BusyBusy hours integration queued for a later commit), and one full-page per-job view that every list eventually routes into.
+
+This commit ships **Commit 1A** of that plan: a new full-page `renderUnifiedJob(jobId)` reachable from the Job Costing list (row click). Commits 1B, 1C, and 2 are documented at the bottom of this entry as the queued follow-ups.
+
+What this commit ships:
+
+1. **New migration `supabase/migrations/2026-05-17_job_costing_unified.sql`** (not yet applied; see Cowork handoff below). Three changes:
+   - `alter table pec_prod_material_lines add column actual_used_qty numeric(12,4)`. The dollar value of used material is derived in the UI as `actual_used_qty * unit_cost_snapshot`, so only the qty is persisted.
+   - `create table pec_prod_crew_members (id, crew_id, name, busybusy_member_id, active, ...)`. `pec_prod_crews` was teams; this is people. `busybusy_member_id` is the placeholder for the BusyBusy integration in Commit 2.
+   - `create table pec_prod_job_bonuses (id, job_id, crew_member_id, crew_member_name, hours_actual, amount, note, ...)`. crew_member_name is snapshotted so rows survive a member deletion. hours_actual is manual today; BusyBusy will overwrite it later. RLS and updated_at triggers mirror the 2026-05-04_job_schedule.sql pattern (is_admin_staff() policy, pec_prod_touch_updated_at trigger).
+
+2. **`renderUnifiedJob(jobId)` full-page view** (index.html ~line 6849 onwards), reached by clicking any row in Job Costing. The page is one scrolling layout, not a modal and not tabs, with a sticky header bar containing a Back button, the job's customer/proposal/status pill, and a TOC nav (Header, Schedule, Materials, Hours, Bonuses, Costs, Notes) that jump-scrolls to each section.
+
+3. **Sections (top to bottom)**:
+   - *Job Info*: editable Sales Team, Revenue, Callback (Yes/No/blank).
+   - *Schedule*: read-only summary of `pec_prod_job_schedule_days` (date, crew, lead, notes). In-page editing is queued for Commit 1C; the strip shows what's there so the PM has context without leaving.
+   - *Materials*: every material line with the existing columns (material_type, product_name, color, cure, qty_needed, order_qty, unit_cost_snapshot, line_cost, ordered, delivered) plus a new editable **Actual Used Qty** input and a derived **Used $** cell (qty x unit_cost_snapshot). Editing the qty saves immediately to `pec_prod_material_lines.actual_used_qty` and re-derives the Costs card's Materials Used number in place (no full re-render, so input focus is preserved while typing).
+   - *Hours*: estimated_hours, actual_hours, derived Over/Under and Hours Var %.
+   - *Crew Bonuses*: one row per crew member, columns Crew Member / Hours Actual / Amount / Note / delete. "+ Add bonus row" picks a crew_member from a dropdown sourced by `state.crewMembers` (the new pec_prod_crew_members table). The dropdown is empty until Cowork seeds members (handoff below). The Costs card's Bonus cell is the live sum of these rows.
+   - *Costs*: same eight categories as the old modal, except Materials Ordered (already derived), Materials Used (now derived from per-line actual_used_qty), and Bonus (now derived from the bonus rows) are read-only displays. The other five buckets are still inline-editable. The derived rollup (Total Var, GP, GP %, GP/HR, Rev/HR) recomputes on every change.
+   - *Notes*: misc_text and notes.
+
+4. **`computeCostingRow` extended** with two optional args, `derivedUsedCost` and `derivedBonusCost`. Each follows the same "if > 0 use derived, else fall back to stored" pattern that was already in place for `derivedOrderedCost`. So legacy jobs without bonus child rows or actual_used_qty values still display whatever was previously typed into the now-deprecated `cost.materials_used_cost` and `cost.bonus_cost` fields, and new jobs get derived totals from the child rows.
+
+5. **Job Costing list rolls up to the same numbers**: the per-row `r.buckets.materials_used_cost` and `r.buckets.bonus_cost` now come from `state.materialUsedByJob[id]` and `bonusTotalForJob(id)`. The Mat. Used and Bonus cells in the list are now derived (read-only) display cells with tooltips pointing the user to the unified detail page for editing. The Rollups table at the top continues to sum the same per-row numbers, so totals never disagree.
+
+6. **State additions** (set by `loadCostingData`):
+   - `state.crewMembers`: array of pec_prod_crew_members rows.
+   - `state.bonusesByJob`: `{ jobId: [bonus rows...] }`.
+   - `state.materialUsedByJob`: `{ jobId: sum(actual_used_qty * unit_cost_snapshot) }`.
+   - `state.scheduleByJob`: `{ jobId: [schedule_days...] }`.
+   - `state.openUnifiedJobId`: flag that short-circuits `renderJobCosting` to the detail page (mirrors the `state.openJobId` pattern that Jobs already uses).
+
+7. **Save helpers**:
+   - `saveLineActualUsedQty(lineId, qty)` (one-shot PATCH per line, same shape as saveActiveJobLineEdits).
+   - `addBonusRow(jobId, crewMember)`, `saveBonusField(rowId, jobId, field, value)`, `deleteBonusRow(rowId, jobId)`.
+
+8. **CSS** for the unified page: sticky header with TOC nav, max-width container, scroll-margin on cards so the TOC jump-links don't hide content under the sticky header.
+
+What is intentionally NOT in this commit:
+
+- The legacy `openCostingDetail` modal is still in the file but no longer reached from the list. Deleted in Commit 1B once the unified page is verified in production.
+- Ordering's editable material-lines modal (`index.html` around line 8458, inside `#prodModalRoot`) is unchanged. Editing supplier / qty_needed / order_qty / ordered / delivered still happens there. Commit 1B will fold that into the unified page and redirect Ordering row clicks here.
+- Schedule's day-cell popover is unchanged. Commit 1C folds it into the unified Schedule section and redirects schedule row clicks here.
+- BusyBusy integration is not wired. `hours_actual` is a manual input today; the column and the `busybusy_member_id` column exist so Commit 2 can populate them.
+
+Verification before commit: `npm test` (48 passed; calculator unchanged). UI verification deferred to Dylan because the costing view is unreachable without a signed-in admin/PM session against live Supabase.
+
+Files touched: index.html, supabase/migrations/2026-05-17_job_costing_unified.sql, PROJECT-LOG.md.
+
+## Handoff to Cowork
+
+```
+## Context
+Commit 1A of the unified per-job page just landed in main. The dashboard now expects two new tables and one new column in the prod PEC Supabase project (id zdfpzmmrgotynrwkeakd). Until the migration runs, the Job Costing list will load fine but clicking a row will show empty Bonuses + Materials sections and the costing list's Mat. Used / Bonus cells will show the empty placeholder instead of a dollar figure. Deploy URL: hq-prescott.netlify.app.
+
+Repo: /Users/dylannordby/Claude-Code/HQ-Dashboard, main branch. Migration file: supabase/migrations/2026-05-17_job_costing_unified.sql.
+
+## Tasks
+
+1. Apply the migration in Supabase Studio against the prod PEC project (HQ Dashboard, id zdfpzmmrgotynrwkeakd).
+   - Where: Supabase Studio -> SQL Editor -> paste the contents of supabase/migrations/2026-05-17_job_costing_unified.sql verbatim and run.
+   - Acceptance: the file ends with three verification queries in comments. Run each (uncomment), expect: actual_used_qty column present on pec_prod_material_lines (1 row), pec_prod_crew_members count = 0, pec_prod_job_bonuses count = 0.
+   - What NOT to touch: do not edit existing rows in pec_prod_material_lines, do not touch pec_prod_jobs.
+
+2. Seed pec_prod_crew_members with the PEC crew roster.
+   - Where: still Supabase SQL Editor.
+   - Names to seed (from the Job Costing Google Sheet, file id 1cb2QZLgK-wWQOX1bzB8SBv3RN6e-FXTEbI7AFfAr1HQ, "Job Costing" tab, block 17): Doug, Rick, Fallis, JD, Mike, Landen, Jay, Justin, Kyle, David. Ten members total.
+   - For each: insert a row with `name`, leave `crew_id` NULL for now (Dylan can map members to crews via Settings later; not blocking), `active=true`, `busybusy_member_id` NULL (Commit 2 will fill it).
+   - SQL:
+     insert into public.pec_prod_crew_members (name) values
+       ('Doug'),('Rick'),('Fallis'),('JD'),('Mike'),('Landen'),('Jay'),('Justin'),('Kyle'),('David');
+   - Acceptance: `select count(*) from pec_prod_crew_members where active=true;` returns 10.
+   - What NOT to touch: do not create rows in pec_prod_job_bonuses; those get created from the dashboard UI when the PM opens a job and adds bonus rows.
+
+3. Smoke-test the dashboard.
+   - Hard-refresh hq-prescott.netlify.app. Sign in as admin. Navigate CRM -> Job Costing.
+   - Click any job row. The unified page should load with sticky header, TOC, six section cards.
+   - In the Materials section, enter any nonzero number into the Actual Used Qty cell on one line, tab out. The Costs card's Materials Used should update to a derived dollar figure (qty x unit_cost_snapshot). Refresh the page; value persists.
+   - In the Crew Bonuses section, the dropdown should list all ten names from task 2. Select one, click "+ Add bonus row". A row appears. Enter an amount; the Costs card's Bonus cell updates. Click ✕ to delete; row goes away.
+   - Click the Back button. List re-renders with the new Mat. Used and Bonus totals visible in that row's columns.
+
+## After
+
+Append a `## [2026-05-17 MST] supabase: applied job-costing-unified migration; seeded crew members` entry to PROJECT-LOG.md with `By: Cowork`. Include the row counts you saw from each verification query, and confirm the smoke test outcomes (or report any drift). Do NOT modify or delete this entry above yours; the standing rule is append-only.
+```
+
+## Handoff to Dylan
+
+After Cowork applies the migration and seeds crew members (handoff above), open Job Costing, click a row, and walk the five smoke-test steps. If a cell shows the empty placeholder instead of a number, that's likely the per-line actual_used_qty being empty (which is correct for jobs that haven't had material consumption entered yet), not a bug. The BusyBusy integration is queued as Commit 2 and will need an API key handoff when you're ready.
+
+---
+
 ## [2026-05-17 MST] apps-script: cleared NEW ORDER SHEET data validations; cure-speed sync verified end-to-end
 
 By: Cowork

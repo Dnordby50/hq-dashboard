@@ -6537,54 +6537,83 @@ function openScheduleModal(jobId) {
 // Job Costing (full-bleed)
 // ============================================================
 async function loadCostingData() {
-  const [jobsRes, costRes, sysRes, crewsRes, areasRes, linesRes] = await Promise.all([
+  const [jobsRes, costRes, sysRes, crewsRes, membersRes, areasRes, linesRes, bonusesRes, schedRes] = await Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
     supabase.from('pec_prod_job_costing').select('*'),
     supabase.from('pec_prod_system_types').select('id,name,color'),
     supabase.from('pec_prod_crews').select('id,name'),
+    supabase.from('pec_prod_crew_members').select('id,crew_id,name,busybusy_member_id,active').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,order_index'),
-    supabase.from('pec_prod_material_lines').select('id,job_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,order_index'),
+    supabase.from('pec_prod_material_lines').select('id,job_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
+    supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
+    supabase.from('pec_prod_job_schedule_days').select('id,job_id,scheduled_date,day_index,crew_id,crew_lead,notes').order('scheduled_date'),
   ]);
   state.prodJobs = jobsRes.data || [];
   state.costing = costRes.data || [];
   state.systemTypes = sysRes.data || [];
   state.crews = crewsRes.data || [];
+  state.crewMembers = membersRes.data || [];
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
-  // Aggregate material_lines per job so the costing view can derive
-  // materials_ordered_cost from the planner output instead of asking the user
-  // to type it in. linesByJob also feeds the per-job detail modal.
+  // Aggregate material_lines per job. ordered = sum of line_cost (cost to
+  // order); used = sum of actual_used_qty * unit_cost_snapshot (cost actually
+  // consumed; the PM fills in actual_used_qty on the unified job page).
   const ordered = {};
+  const used = {};
   const linesByJob = {};
   for (const l of linesRes.data || []) {
     ordered[l.job_id] = (ordered[l.job_id] || 0) + Number(l.line_cost || 0);
+    const usedQty = Number(l.actual_used_qty || 0);
+    const unit = Number(l.unit_cost_snapshot || 0);
+    if (usedQty > 0 && unit > 0) used[l.job_id] = (used[l.job_id] || 0) + usedQty * unit;
     (linesByJob[l.job_id] ||= []).push(l);
   }
   state.materialOrderedByJob = ordered;
+  state.materialUsedByJob = used;
   state.materialLinesByJob = linesByJob;
+  // Bonus rows grouped per job; the per-job bonus total is the derived sum
+  // shown in the Costs card on the unified page (replaces the stored
+  // pec_prod_job_costing.bonus_cost number for jobs that have rows).
+  const bonusesByJob = {};
+  for (const b of bonusesRes.data || []) (bonusesByJob[b.job_id] ||= []).push(b);
+  state.bonusesByJob = bonusesByJob;
+  // Schedule days grouped per job; the unified page renders a read-only
+  // strip pulled from this (full editing comes in a later commit).
+  const schedByJob = {};
+  for (const s of schedRes.data || []) (schedByJob[s.job_id] ||= []).push(s);
+  state.scheduleByJob = schedByJob;
 }
 
-function computeCostingRow(job, cost, sysName, derivedOrderedCost) {
+function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCost, derivedBonusCost) {
   const c = cost || {};
   const revenue = Number(job.revenue || 0);
   const estHrs = Number(job.estimated_hours ?? c.estimated_hours ?? 0);
   const actHrs = Number(job.actual_hours ?? c.actual_hours ?? 0);
   const overUnder = (actHrs && estHrs) ? (actHrs - estHrs) : null;
   const hoursVarPct = (actHrs && estHrs) ? ((actHrs - estHrs) / estHrs) : null;
-  // Materials ordered is derived from pec_prod_material_lines (sum of
-  // line_cost) when an aggregate is provided. Falls back to the stored
-  // value only for legacy jobs that pre-date the material_lines flow.
+  // Materials ordered, materials used, and bonus are all derived from child
+  // rows when present, falling back to legacy stored values on the costing
+  // row for jobs that pre-date the per-line / per-crew-member capture.
+  //   - ordered: sum(pec_prod_material_lines.line_cost)
+  //   - used:    sum(pec_prod_material_lines.actual_used_qty * unit_cost_snapshot)
+  //   - bonus:   sum(pec_prod_job_bonuses.amount)
   const orderedCost = derivedOrderedCost != null && derivedOrderedCost > 0
     ? Number(derivedOrderedCost)
     : Number(c.materials_ordered_cost || 0);
+  const usedCost = derivedUsedCost != null && derivedUsedCost > 0
+    ? Number(derivedUsedCost)
+    : Number(c.materials_used_cost || 0);
+  const bonusCost = derivedBonusCost != null && derivedBonusCost > 0
+    ? Number(derivedBonusCost)
+    : Number(c.bonus_cost || 0);
   const buckets = {
     equipment_rental_cost: Number(c.equipment_rental_cost || 0),
     materials_ordered_cost: orderedCost,
-    materials_used_cost: Number(c.materials_used_cost || 0),
+    materials_used_cost: usedCost,
     salary_wages_cost: Number(c.salary_wages_cost || 0),
     subcontractor_cost: Number(c.subcontractor_cost || 0),
-    bonus_cost: Number(c.bonus_cost || 0),
+    bonus_cost: bonusCost,
     commission_cost: Number(c.commission_cost || 0),
     misc_cost: Number(c.misc_cost || 0),
   };
@@ -6596,6 +6625,10 @@ function computeCostingRow(job, cost, sysName, derivedOrderedCost) {
   const revHr = actHrs > 0 ? revenue / actHrs : null;
   const pct = (n) => revenue > 0 ? n / revenue : null;
   return { c, revenue, estHrs, actHrs, overUnder, hoursVarPct, buckets, totalVar, gp, gpPct, gpHr, revHr, pct };
+}
+
+function bonusTotalForJob(jobId) {
+  return (state.bonusesByJob?.[jobId] || []).reduce((s, b) => s + Number(b.amount || 0), 0);
 }
 
 const _costingDebounce = {};
@@ -6679,7 +6712,7 @@ function openCostingDetail(jobId) {
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
   const areas = (state.productAreasByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const sys = areas[0] ? sysById[areas[0].system_type_id] : null;
-  const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId]);
+  const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
   const lines = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
 
@@ -6808,9 +6841,423 @@ function openCostingDetail(jobId) {
   } });
 }
 
+// ------------------------------------------------------------
+// Unified per-job page (Commit 1A of the acceptance-to-finish unification).
+// Reachable today from the Job Costing list (row click). Commits 1B / 1C will
+// also route Ordering and Schedule rows here. This single page supersedes the
+// openCostingDetail modal: every cost / hours / material-used / bonus edit
+// happens on this scrolling page rather than a popup.
+// ------------------------------------------------------------
+
+// Per-line "actually used" qty. Cost is derived on read (qty * unit_cost_snapshot)
+// so we only persist the qty. Returns the supabase promise so callers can await.
+function saveLineActualUsedQty(lineId, qty) {
+  return supabase.from('pec_prod_material_lines').update({ actual_used_qty: qty }).eq('id', lineId);
+}
+
+// Bonus rows: per-job, per-crew-member. crew_member_name is a snapshot so the
+// display survives a member deletion. amount + hours_actual are editable; the
+// BusyBusy integration (later commit) will overwrite hours_actual.
+async function addBonusRow(jobId, crewMember) {
+  const payload = {
+    job_id: jobId,
+    crew_member_id: crewMember?.id || null,
+    crew_member_name: crewMember?.name || '(unnamed)',
+    amount: 0,
+    hours_actual: null,
+  };
+  const { data, error } = await supabase.from('pec_prod_job_bonuses').insert(payload).select().single();
+  if (error) { console.error('[bonus] insert', error); return null; }
+  (state.bonusesByJob ||= {});
+  (state.bonusesByJob[jobId] ||= []).push(data);
+  return data;
+}
+async function saveBonusField(rowId, jobId, field, value) {
+  const { error } = await supabase.from('pec_prod_job_bonuses').update({ [field]: value }).eq('id', rowId);
+  if (error) console.error('[bonus] update', field, error);
+  const row = (state.bonusesByJob?.[jobId] || []).find(b => b.id === rowId);
+  if (row) row[field] = value;
+}
+async function deleteBonusRow(rowId, jobId) {
+  const { error } = await supabase.from('pec_prod_job_bonuses').delete().eq('id', rowId);
+  if (error) { console.error('[bonus] delete', error); return; }
+  state.bonusesByJob[jobId] = (state.bonusesByJob[jobId] || []).filter(b => b.id !== rowId);
+}
+
+async function renderUnifiedJob(jobId) {
+  const root = $('pecViewRoot');
+  if (!['admin','pm'].includes(state.adminUser?.role)) {
+    root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>';
+    return;
+  }
+  // Cold-load case (page refresh while flag is set, or arriving from a not-yet-
+  // loaded list). loadCostingData hydrates every state slot we read below.
+  if (!state.prodJobs || !state.prodJobs.length) {
+    root.innerHTML = '<div class="pec-empty">Loading job…</div>';
+    await loadCostingData();
+  }
+  const job = state.prodJobs.find(j => j.id === jobId);
+  if (!job) {
+    state.openUnifiedJobId = null;
+    return renderJobCosting();
+  }
+
+  const cost = state.costing.find(c => c.job_id === jobId);
+  const sysById  = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  const areas    = (state.productAreasByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const sys      = areas[0] ? sysById[areas[0].system_type_id] : null;
+  const crewName = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
+  const lines    = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const bonuses  = (state.bonusesByJob?.[jobId] || []).slice();
+  const sched    = (state.scheduleByJob?.[jobId] || []).slice().sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date)));
+  const crewMembers = (state.crewMembers || []).filter(m => m.active !== false);
+
+  // Helper closures
+  const recomputeR = () => computeCostingRow(
+    job, state.costing.find(c => c.job_id === jobId),
+    sys ? sys.name : '',
+    state.materialOrderedByJob[jobId],
+    state.materialUsedByJob?.[jobId],
+    bonusTotalForJob(jobId)
+  );
+
+  let r = recomputeR();
+
+  const moneyInput = (label, key, table, val, hint = '') => `
+    <div class="pec-field">
+      <label>${esc(label)}${hint ? ` <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(hint)}</span>` : ''}</label>
+      <input class="cost-money" type="number" min="0" step="0.01" data-cost="${esc(key)}" data-table="${esc(table)}" value="${esc(val ?? '')}">
+    </div>`;
+  const derivedField = (label, content, cls = '', dataKey = '') => `
+    <div class="pec-field">
+      <label>${esc(label)} <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">derived</span></label>
+      <div class="cost-derived ${cls}"${dataKey ? ` data-uderived="${esc(dataKey)}"` : ''} style="padding:6px 8px;background:var(--bg-soft);border-radius:6px;font-variant-numeric:tabular-nums">${content}</div>
+    </div>`;
+
+  const headerMeta = [
+    job.address || '',
+    job.install_date ? `Install ${new Date(job.install_date).toLocaleDateString()}` : 'Unscheduled',
+    sys ? sys.name : '',
+    crewName ? `${crewName} crew` : '',
+  ].filter(Boolean).map(esc).join(' · ');
+
+  const schedHtml = sched.length === 0
+    ? `<div class="pec-empty">Not scheduled yet. Add days in the Job Schedule tab. In-page editing will land in a follow-up commit.</div>`
+    : `<table class="pec-table" style="font-size:.78rem">
+         <thead><tr><th>Day</th><th>Date</th><th>Crew</th><th>Crew Lead</th><th>Notes</th></tr></thead>
+         <tbody>
+           ${sched.map(s => `
+             <tr class="nohover">
+               <td>Day ${esc((s.day_index ?? 0) + 1)}</td>
+               <td>${s.scheduled_date ? esc(new Date(s.scheduled_date).toLocaleDateString()) : '—'}</td>
+               <td>${s.crew_id && crewById[s.crew_id] ? esc(crewById[s.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
+               <td>${esc(s.crew_lead || '')}</td>
+               <td>${esc(s.notes || '')}</td>
+             </tr>`).join('')}
+         </tbody>
+       </table>`;
+
+  const lineUsedCost = (l) => {
+    const q = Number(l.actual_used_qty || 0);
+    const u = Number(l.unit_cost_snapshot || 0);
+    return q > 0 && u > 0 ? q * u : null;
+  };
+
+  const linesHtml = lines.length === 0
+    ? `<div class="pec-empty">No material lines yet. They populate from the Production module's New Job flow once areas + systems are saved.</div>`
+    : `<div class="pec-table-wrap">
+         <table class="pec-table">
+           <thead><tr>
+             <th>Material</th><th>Product</th><th>Color</th><th>Cure</th>
+             <th>Qty</th><th>Order Qty</th><th>Unit $</th><th>Line $</th>
+             <th>Ordered</th><th>Delivered</th>
+             <th>Actual Used</th><th>Used $</th>
+           </tr></thead>
+           <tbody>
+             ${lines.map(l => `
+               <tr class="nohover" data-line-id="${esc(l.id)}">
+                 <td>${esc(l.material_type || '')}</td>
+                 <td>${esc(l.product_name || '')}</td>
+                 <td>${esc(l.color || '')}</td>
+                 <td>${esc(l.cure_speed || '')}</td>
+                 <td>${esc(l.qty_needed ?? '')}</td>
+                 <td>${esc(l.order_qty ?? '')}</td>
+                 <td>${l.unit_cost_snapshot == null ? '—' : '$' + Number(l.unit_cost_snapshot).toLocaleString()}</td>
+                 <td>${l.line_cost == null ? '—' : '$' + Number(l.line_cost).toLocaleString()}</td>
+                 <td>${l.ordered ? 'Yes' : 'No'}</td>
+                 <td>${l.delivered ? 'Yes' : 'No'}</td>
+                 <td><input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px"></td>
+                 <td class="cost-derived" data-line-used-cost="${esc(l.id)}">${lineUsedCost(l) == null ? '—' : '$' + Math.round(lineUsedCost(l)).toLocaleString()}</td>
+               </tr>`).join('')}
+           </tbody>
+         </table>
+       </div>`;
+
+  const bonusOptions = crewMembers.length === 0
+    ? `<option value="">No crew members yet — seed via Cowork (see PROJECT-LOG handoff)</option>`
+    : crewMembers.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+
+  const bonusesHtml = bonuses.length === 0
+    ? `<div class="pec-empty">No bonus rows yet. Add one per crew member as the job wraps up.</div>`
+    : `<table class="pec-table" style="font-size:.78rem">
+         <thead><tr>
+           <th>Crew Member</th>
+           <th style="width:110px">Hours Actual</th>
+           <th style="width:130px">Amount</th>
+           <th>Note</th>
+           <th style="width:36px"></th>
+         </tr></thead>
+         <tbody>
+           ${bonuses.map(b => `
+             <tr class="nohover" data-bonus-id="${esc(b.id)}">
+               <td><strong>${esc(b.crew_member_name)}</strong>${b.crew_member_id ? '' : ' <span style="color:var(--muted);font-size:.65rem">(unlinked)</span>'}</td>
+               <td><input class="prod-num" type="number" min="0" step="0.25" data-bonus-field="hours_actual" value="${esc(b.hours_actual ?? '')}" style="width:90px"></td>
+               <td><input class="cost-money" type="number" min="0" step="0.01" data-bonus-field="amount" value="${esc(b.amount ?? 0)}" style="width:110px"></td>
+               <td><input class="cost-text" data-bonus-field="note" value="${esc(b.note || '')}"></td>
+               <td><button class="pec-btn ghost sm" data-bonus-delete title="Delete row">✕</button></td>
+             </tr>`).join('')}
+         </tbody>
+       </table>`;
+
+  const html = `
+    <div class="pec-unified-job">
+      <div class="pec-unified-header">
+        <button class="pec-btn ghost sm" data-unified-back>← Back to Job Costing</button>
+        <div class="pec-unified-title">
+          <h2 style="margin:0">${esc(job.customer_name || '—')} <span style="color:var(--muted);font-weight:400">#${esc(job.proposal_number || '')}</span></h2>
+          <div style="color:var(--muted);font-size:.78rem;margin-top:4px"><span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span> ${headerMeta}</div>
+        </div>
+        <nav class="pec-unified-nav">
+          <a href="#sec-header">Header</a>
+          <a href="#sec-schedule">Schedule</a>
+          <a href="#sec-materials">Materials</a>
+          <a href="#sec-hours">Hours</a>
+          <a href="#sec-bonuses">Bonuses</a>
+          <a href="#sec-costs">Costs</a>
+          <a href="#sec-notes">Notes</a>
+        </nav>
+      </div>
+
+      <div class="pec-card" id="sec-header">
+        <h3>Job Info</h3>
+        <div class="pec-row-3">
+          <div class="pec-field"><label>Sales Team</label><input class="cost-text" data-cost="sales_team" data-table="job" value="${esc(job.sales_team || '')}"></div>
+          <div class="pec-field"><label>Revenue</label><input class="cost-money" type="number" min="0" step="0.01" data-cost="revenue" data-table="job" value="${esc(job.revenue ?? '')}"></div>
+          <div class="pec-field"><label>Callback</label>
+            <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
+              <option value=""     ${job.callback == null   ? 'selected' : ''}>—</option>
+              <option value="true" ${job.callback === true  ? 'selected' : ''}>Yes</option>
+              <option value="false"${job.callback === false ? 'selected' : ''}>No</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="pec-card" id="sec-schedule">
+        <h3>Schedule</h3>
+        ${schedHtml}
+      </div>
+
+      <div class="pec-card" id="sec-materials">
+        <h3>Materials <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · ordered <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span></h3>
+        ${linesHtml}
+        <div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>
+      </div>
+
+      <div class="pec-card" id="sec-hours">
+        <h3>Hours</h3>
+        <div class="pec-row-3">
+          <div class="pec-field"><label>Estimated Hours</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="estimated_hours" data-table="job" value="${esc(job.estimated_hours ?? '')}"></div>
+          <div class="pec-field"><label>Actual Hours</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(job.actual_hours ?? '')}"></div>
+          ${derivedField('Over / Under', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, r.overUnder == null ? '' : r.overUnder > 0 ? 'cost-neg' : 'cost-pos', 'overUnder')}
+        </div>
+      </div>
+
+      <div class="pec-card" id="sec-bonuses">
+        <h3>Crew Bonuses <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span></h3>
+        ${bonusesHtml}
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <select id="bonusAddSelect" style="max-width:240px">${bonusOptions}</select>
+          <button class="pec-btn sm" id="bonusAddBtn" ${crewMembers.length === 0 ? 'disabled' : ''}>+ Add bonus row</button>
+          <span style="color:var(--muted);font-size:.7rem;margin-left:auto">BusyBusy hours auto-fill is queued for the next commit.</span>
+        </div>
+      </div>
+
+      <div class="pec-card" id="sec-costs">
+        <h3>Costs</h3>
+        <div class="pec-row-3">
+          ${moneyInput('Equipment Rental', 'equipment_rental_cost', 'cost', cost?.equipment_rental_cost)}
+          ${derivedField('Materials Ordered', `<span data-uderived="ordered">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span>`, '', 'ordered-box')}
+          ${derivedField('Materials Used',    `<span data-uderived="used">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span>`, '', 'used-box')}
+          ${moneyInput('Salary &amp; Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
+          ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
+          ${derivedField('Bonus',           `<span data-uderived="bonus">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span>`, '', 'bonus-box')}
+          ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
+          ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
+        </div>
+        <div class="pec-row-3" style="margin-top:10px">
+          ${derivedField('Total Var Expense', `<span data-uderived="totalVar">${fmtMoneyOrDash(r.totalVar)}</span> (<span data-uderived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</span>)`, '', 'totalVar-box')}
+          ${derivedField('Gross Profit',      `<span data-uderived="gp">${fmtMoneyOrDash(r.gp)}</span> (<span data-uderived="gpPct">${fmtPct(r.gpPct)}</span>)`, r.gp < 0 ? 'cost-neg' : 'cost-pos', 'gp-box')}
+          ${derivedField('GP / HR · REV / HR', `<span data-uderived="gpHr">${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)}</span> · <span data-uderived="revHr">${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}</span>`)}
+        </div>
+      </div>
+
+      <div class="pec-card" id="sec-notes">
+        <h3>Notes</h3>
+        <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
+        <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="4" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
+      </div>
+    </div>`;
+
+  root.innerHTML = html;
+
+  // In-place refresh of every derived display on the page (Costs card, Materials
+  // header sums, GP/Hr, etc.) without re-rendering the whole HTML so input focus
+  // is preserved while typing.
+  const refreshUnifiedTotals = () => {
+    r = recomputeR();
+    const set = (sel, content, cls) => {
+      root.querySelectorAll(sel).forEach(el => {
+        el.innerHTML = content;
+        if (cls !== undefined) {
+          el.classList.remove('cost-neg', 'cost-pos');
+          if (cls) el.classList.add(cls);
+        }
+      });
+    };
+    set('[data-uderived="ordered"]', fmtMoneyOrDash(r.buckets.materials_ordered_cost));
+    set('[data-uderived="ordered-sum"]', fmtMoneyOrDash(r.buckets.materials_ordered_cost));
+    set('[data-uderived="used"]', fmtMoneyOrDash(r.buckets.materials_used_cost));
+    set('[data-uderived="used-sum"]', fmtMoneyOrDash(r.buckets.materials_used_cost));
+    set('[data-uderived="bonus"]', fmtMoneyOrDash(r.buckets.bonus_cost));
+    set('[data-uderived="bonus-sum"]', fmtMoneyOrDash(r.buckets.bonus_cost));
+    set('[data-uderived="totalVar"]', fmtMoneyOrDash(r.totalVar));
+    set('[data-uderived="totalVarPct"]', fmtPct(r.pct(r.totalVar)));
+    set('[data-uderived="gp"]', fmtMoneyOrDash(r.gp));
+    set('[data-uderived="gpPct"]', fmtPct(r.gpPct));
+    set('[data-uderived="gpHr"]', r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr));
+    set('[data-uderived="revHr"]', r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
+    const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
+    set('[data-uderived="overUnder"]', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, overCls);
+    // GP / TotalVar coloring on their wrapping cells
+    root.querySelectorAll('[data-uderived="gp-box"], [data-uderived="totalVar-box"]').forEach(el => {
+      el.classList.remove('cost-neg', 'cost-pos');
+      if (r.gp < 0) el.classList.add('cost-neg'); else el.classList.add('cost-pos');
+    });
+  };
+
+  // Back to list
+  root.querySelector('[data-unified-back]').addEventListener('click', () => {
+    state.openUnifiedJobId = null;
+    renderJobCosting();
+  });
+
+  // Header / Hours / Costs / Notes [data-cost] inputs (job table or costing table)
+  root.querySelectorAll('[data-cost]').forEach(inp => {
+    const handler = async () => {
+      const field = inp.dataset.cost;
+      const tbl = inp.dataset.table;
+      let val;
+      if (inp.type === 'checkbox') val = inp.checked;
+      else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+      else if (inp.dataset.bool === 'true') val = inp.value === '' ? null : inp.value === 'true';
+      else val = inp.value;
+      if (tbl === 'job') {
+        const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
+        await saveJobField(jobId, field, val);
+      } else {
+        let c = state.costing.find(c => c.job_id === jobId);
+        if (!c) { c = { job_id: jobId }; state.costing.push(c); }
+        c[field] = val;
+        saveCostingField(jobId, field, val);
+      }
+      refreshUnifiedTotals();
+    };
+    inp.addEventListener('change', handler);
+    if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
+  });
+
+  // Material line actual_used_qty inputs
+  root.querySelectorAll('input[data-line-used]').forEach(inp => {
+    const handler = async () => {
+      const lineId = inp.dataset.lineId;
+      const qty = inp.value === '' ? null : Number(inp.value);
+      const line = (state.materialLinesByJob[jobId] || []).find(l => l.id === lineId);
+      if (line) line.actual_used_qty = qty;
+      // Recompute the per-job used cost aggregate
+      let used = 0;
+      for (const l of (state.materialLinesByJob[jobId] || [])) {
+        const q = Number(l.actual_used_qty || 0);
+        const u = Number(l.unit_cost_snapshot || 0);
+        if (q > 0 && u > 0) used += q * u;
+      }
+      (state.materialUsedByJob ||= {});
+      if (used > 0) state.materialUsedByJob[jobId] = used; else delete state.materialUsedByJob[jobId];
+      // Update this row's "Used $" cell in place
+      const cell = root.querySelector(`[data-line-used-cost="${lineId}"]`);
+      if (cell) {
+        const display = line && Number(line.actual_used_qty || 0) > 0 && Number(line.unit_cost_snapshot || 0) > 0
+          ? '$' + Math.round(Number(line.actual_used_qty) * Number(line.unit_cost_snapshot)).toLocaleString()
+          : '—';
+        cell.innerHTML = display;
+      }
+      const { error } = await saveLineActualUsedQty(lineId, qty);
+      if (error) console.error('[line] actual_used_qty', error);
+      refreshUnifiedTotals();
+    };
+    inp.addEventListener('change', handler);
+    inp.addEventListener('blur', handler);
+  });
+
+  // Bonus row inputs (hours_actual, amount, note)
+  const wireBonusInputs = () => {
+    root.querySelectorAll('input[data-bonus-field]').forEach(inp => {
+      const handler = async () => {
+        const tr = inp.closest('tr[data-bonus-id]');
+        const rowId = tr?.dataset.bonusId;
+        const field = inp.dataset.bonusField;
+        if (!rowId) return;
+        let val;
+        if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
+        else val = inp.value;
+        await saveBonusField(rowId, jobId, field, val);
+        refreshUnifiedTotals();
+      };
+      inp.addEventListener('change', handler);
+      inp.addEventListener('blur', handler);
+    });
+    root.querySelectorAll('button[data-bonus-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const tr = btn.closest('tr[data-bonus-id]');
+        const rowId = tr?.dataset.bonusId;
+        if (!rowId) return;
+        if (!confirm('Delete this bonus row?')) return;
+        await deleteBonusRow(rowId, jobId);
+        renderUnifiedJob(jobId);
+      });
+    });
+  };
+  wireBonusInputs();
+
+  // Bonus add
+  const addBtn = root.querySelector('#bonusAddBtn');
+  const addSel = root.querySelector('#bonusAddSelect');
+  if (addBtn && addSel) {
+    addBtn.addEventListener('click', async () => {
+      const id = addSel.value;
+      const member = (state.crewMembers || []).find(m => m.id === id);
+      if (!member) return;
+      await addBonusRow(jobId, member);
+      renderUnifiedJob(jobId);
+    });
+  }
+}
+
 async function renderJobCosting() {
   const root = $('pecViewRoot');
   if (!['admin','pm'].includes(state.adminUser?.role)) { root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>'; return; }
+  if (state.openUnifiedJobId) return renderUnifiedJob(state.openUnifiedJobId);
   root.innerHTML = '<div class="pec-empty">Loading job costing…</div>';
   await loadCostingData();
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
@@ -6833,7 +7280,7 @@ async function renderJobCosting() {
   const computedRows = jobs.map(j => {
     const sys = areaSystem(j);
     const cost = costByJob[j.id];
-    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id]);
+    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
     return { job: j, sys, cost, r };
   });
   const grandTotal = aggregateCostingRows(computedRows);
@@ -6936,7 +7383,7 @@ async function renderJobCosting() {
             ${jobs.map(j => {
               const sys = areaSystem(j);
               const cost = costByJob[j.id];
-              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id]);
+              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
               const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
               return `<tr data-job-id="${esc(j.id)}">
                 <td><strong>${esc(j.address || '—')}</strong><div style="color:var(--muted);font-size:.62rem">#${esc(j.proposal_number)}</div></td>
@@ -6955,13 +7402,13 @@ async function renderJobCosting() {
                 <td class="cost-pct" data-derived="pct-equip">${fmtPct(r.pct(r.buckets.equipment_rental_cost))}</td>
                 <td class="cost-derived" data-derived="matOrdered" title="Sum of pec_prod_material_lines.line_cost for this job. Read-only; edit material_lines to change.">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</td>
                 <td class="cost-pct" data-derived="pct-matord">${fmtPct(r.pct(r.buckets.materials_ordered_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="materials_used_cost" data-table="cost" value="${esc(cost?.materials_used_cost ?? 0)}"></td>
+                <td class="cost-derived" data-derived="matUsed" title="Sum of actual_used_qty × unit_cost_snapshot across material lines. Edit per-line on the unified job page.">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</td>
                 <td class="cost-pct" data-derived="pct-matused">${fmtPct(r.pct(r.buckets.materials_used_cost))}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="salary_wages_cost" data-table="cost" value="${esc(cost?.salary_wages_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-salary">${fmtPct(r.pct(r.buckets.salary_wages_cost))}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="subcontractor_cost" data-table="cost" value="${esc(cost?.subcontractor_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-sub">${fmtPct(r.pct(r.buckets.subcontractor_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="bonus_cost" data-table="cost" value="${esc(cost?.bonus_cost ?? 0)}"></td>
+                <td class="cost-derived" data-derived="bonus" title="Sum of pec_prod_job_bonuses.amount across crew members. Edit on the unified job page.">${fmtMoneyOrDash(r.buckets.bonus_cost)}</td>
                 <td class="cost-pct" data-derived="pct-bonus">${fmtPct(r.pct(r.buckets.bonus_cost))}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="commission_cost" data-table="cost" value="${esc(cost?.commission_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-comm">${fmtPct(r.pct(r.buckets.commission_cost))}</td>
@@ -7002,7 +7449,7 @@ async function renderJobCosting() {
     const job = state.prodJobs.find(j => j.id === jobId);
     const cost = state.costing.find(c => c.job_id === jobId);
     const sys = areaSystem(job);
-    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId]);
+    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
     const set = (sel, html, cls) => {
       const el = tr.querySelector(sel);
       if (!el) return;
@@ -7017,7 +7464,9 @@ async function renderJobCosting() {
     set('[data-derived="hoursVarPct"]', fmtPct(r.hoursVarPct), overCls);
     set('[data-derived="pct-equip"]',  fmtPct(r.pct(r.buckets.equipment_rental_cost)));
     set('[data-derived="pct-matord"]', fmtPct(r.pct(r.buckets.materials_ordered_cost)));
+    set('[data-derived="matUsed"]',    fmtMoneyOrDash(r.buckets.materials_used_cost));
     set('[data-derived="pct-matused"]',fmtPct(r.pct(r.buckets.materials_used_cost)));
+    set('[data-derived="bonus"]',      fmtMoneyOrDash(r.buckets.bonus_cost));
     set('[data-derived="pct-salary"]', fmtPct(r.pct(r.buckets.salary_wages_cost)));
     set('[data-derived="pct-sub"]',    fmtPct(r.pct(r.buckets.subcontractor_cost)));
     set('[data-derived="pct-bonus"]',  fmtPct(r.pct(r.buckets.bonus_cost)));
@@ -7038,7 +7487,8 @@ async function renderJobCosting() {
     // an interactive control so inline editing keeps working unchanged.
     tr.addEventListener('click', (e) => {
       if (e.target.closest('input, select, button, textarea, label')) return;
-      openCostingDetail(jobId);
+      state.openUnifiedJobId = jobId;
+      renderJobCosting();
     });
     tr.querySelectorAll('[data-cost]').forEach(inp => {
       const handler = async () => {
@@ -7529,6 +7979,15 @@ if (portalToken) {
   .pec-cost-table tr.cost-rollup-row td { font-size:.74rem }
   .pec-cost-table tr[data-job-id]:hover { background:var(--rd-soft, var(--s2)) }
   .pec-color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,.15) }
+  /* Unified per-job page (acceptance → finish) */
+  .pec-unified-job { max-width:1280px; margin:0 auto; padding:8px 16px 80px }
+  .pec-unified-header { position:sticky; top:0; z-index:5; background:var(--bg, #fff); padding:12px 0; margin:0 0 12px; border-bottom:1px solid var(--border); display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:center }
+  .pec-unified-title h2 { font-size:1.05rem; line-height:1.2 }
+  .pec-unified-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end }
+  .pec-unified-nav a { font-size:.7rem; padding:4px 8px; border-radius:6px; text-decoration:none; color:var(--muted); background:var(--bg-soft) }
+  .pec-unified-nav a:hover { color:inherit; background:var(--s2, var(--bg-soft)) }
+  .pec-unified-job .pec-card { scroll-margin-top:88px }
+  .pec-unified-job .pec-card h3 { font-size:.85rem; margin:0 0 10px }
   @media print {
     .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
     .pec-modal { max-width:none !important; max-height:none !important; box-shadow:none !important; border:none !important }
