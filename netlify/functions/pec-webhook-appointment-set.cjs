@@ -28,9 +28,17 @@ exports.handler = async (event) => {
   if (!deal_id) return json(400, { success: false, error: 'deal_id is required' });
   if (!rawDate) return json(400, { success: false, error: 'install_date (or appointment_date) is required' });
 
-  const iso = String(rawDate).slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
-    return json(400, { success: false, error: 'install_date must be YYYY-MM-DD or ISO 8601 timestamp' });
+  // Accept YYYY-MM-DD, ISO 8601 (slice first 10), or US-style M/D/YYYY (the
+  // shape DripJobs sends via Zapier's Lead Job Start Date field).
+  let iso;
+  const raw = String(rawDate).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    iso = raw.slice(0, 10);
+  } else if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) {
+    const [m, d, y] = raw.split('/');
+    iso = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  } else {
+    return json(400, { success: false, error: 'install_date must be YYYY-MM-DD, ISO 8601 timestamp, or M/D/YYYY' });
   }
 
   try {
