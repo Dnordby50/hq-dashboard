@@ -7021,23 +7021,10 @@ async function renderUnifiedJob(jobId) {
        </table>`;
 
   const html = `
-    <div class="pec-unified-job">
-      <div class="pec-unified-header">
-        <button class="pec-btn ghost sm" data-unified-back>← Back to Job Costing</button>
-        <div class="pec-unified-title">
-          <h2 style="margin:0">${esc(job.customer_name || '—')} <span style="color:var(--muted);font-weight:400">#${esc(job.proposal_number || '')}</span></h2>
-          <div style="color:var(--muted);font-size:.78rem;margin-top:4px"><span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span> ${headerMeta}</div>
-        </div>
-        <nav class="pec-unified-nav">
-          <a href="#sec-header">Header</a>
-          <a href="#sec-schedule">Schedule</a>
-          <a href="#sec-materials">Materials</a>
-          <a href="#sec-hours">Hours</a>
-          <a href="#sec-bonuses">Bonuses</a>
-          <a href="#sec-costs">Costs</a>
-          <a href="#sec-notes">Notes</a>
-        </nav>
-      </div>
+    <div class="pec-toolbar">
+      <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customer_name || '—')} · #${esc(job.proposal_number || '')} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span>${headerMeta ? ` · ${headerMeta}` : ''}</span>
+    </div>
 
       <div class="pec-card" id="sec-header">
         <h3>Job Info</h3>
@@ -7107,8 +7094,7 @@ async function renderUnifiedJob(jobId) {
         <h3>Notes</h3>
         <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
         <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="4" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
-      </div>
-    </div>`;
+      </div>`;
 
   root.innerHTML = html;
 
@@ -7979,15 +7965,6 @@ if (portalToken) {
   .pec-cost-table tr.cost-rollup-row td { font-size:.74rem }
   .pec-cost-table tr[data-job-id]:hover { background:var(--rd-soft, var(--s2)) }
   .pec-color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,.15) }
-  /* Unified per-job page (acceptance → finish) */
-  .pec-unified-job { max-width:1280px; margin:0 auto; padding:8px 16px 80px }
-  .pec-unified-header { position:sticky; top:0; z-index:5; background:var(--bg, #fff); padding:12px 0; margin:0 0 12px; border-bottom:1px solid var(--border); display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:center }
-  .pec-unified-title h2 { font-size:1.05rem; line-height:1.2 }
-  .pec-unified-nav { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end }
-  .pec-unified-nav a { font-size:.7rem; padding:4px 8px; border-radius:6px; text-decoration:none; color:var(--muted); background:var(--bg-soft) }
-  .pec-unified-nav a:hover { color:inherit; background:var(--s2, var(--bg-soft)) }
-  .pec-unified-job .pec-card { scroll-margin-top:88px }
-  .pec-unified-job .pec-card h3 { font-size:.85rem; margin:0 0 10px }
   @media print {
     .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
     .pec-modal { max-width:none !important; max-height:none !important; box-shadow:none !important; border:none !important }

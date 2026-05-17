@@ -4,6 +4,15 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: unified-page header matches standard pec-toolbar pattern
+
+By: Claude Code
+Changed: index.html.
+
+Dylan flagged that the unified per-job page header from commit 1A (90aeae2) did not match the rest of the dashboard. Replaced the bespoke `.pec-unified-header` (sticky grid with custom title block and TOC anchor nav) with the standard `.pec-toolbar` shape used by renderJobDetail at index.html:5526 and every other detail surface in the app: a single row with a `← Back to Job Costing` button on the left and a right-aligned meta span (customer, proposal number, status pill, install date, system, crew). Dropped the `.pec-unified-job` max-width:1280px wrapper so cards flow full-bleed within the existing `.pec-fullbleed` class (matches the Job Costing list it returns to). Dropped the TOC anchor nav (user chose drop over keep when asked). The four `.pec-unified-*` CSS rules are deleted. All card bodies, inputs, save handlers, and the back-button click handler are unchanged.
+
+---
+
 ## [2026-05-17 MST] catalog: cleaned-snapshot tab added to epoxy price list sheet
 
 By: Cowork
