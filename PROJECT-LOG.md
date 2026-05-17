@@ -4,6 +4,43 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: job-schedule modal system pick + install-date prefill, richer calendar pill, save toast with Undo
+
+By: Claude Code
+Changed: index.html.
+
+Knocks out frictions F1, F2, F3 from the 2026-05-17 Cowork walkthrough entry below (handoff tasks 2, 3, 4). The remaining items from that handoff (task 1 install_date webhook, task 5 DripJobs import) ship separately.
+
+What this commit does:
+
+1. **F1 fix (task 2): inline system_type picker.** The schedule modal's read-only "No system selected yet" warning at the former index.html:6449 is now a `<select id="schedSystem">` populated from `state.systemTypes` (filtered to active). It pre-selects the job's current first-area system if one exists, otherwise opens with a "Pick a system" placeholder. On Save, if the job has zero areas AND the user picked a system, the handler inserts one default `pec_prod_areas` row (name='Main', sqft=0, system_type_id=picked, order_index=0) so the job can carry material lines later from the Unified Job page. sqft=0 satisfies the >=0 CHECK on the table; the PM fills it in later. Existing jobs with areas are untouched (re-keying a system from this modal does NOT mutate the existing area; that stays in Ordering for now). Plumbing: new `draft.system_type_id` field initialized from `sys ? sys.id : ''`, change handler on the select, area-insert step appended to the Save try block.
+
+2. **F1 secondary (task 2): default install_date prefill.** The picker month seedDate at the former index.html:6389 now falls back to `job.install_date` (the DripJobs appointment-set webhook will populate this once it ships) before today. When a job arrives with an install_date and no schedule rows, that date is also pre-selected so the PM just confirms + picks a crew instead of re-typing dates across browser tabs.
+
+3. **F3 fix (task 3): richer calendar pill.** `eventFor()` now returns `customer`, `crew`, `revLabel`, plus a `tooltip` string. Both weekly and monthly calendar templates render three lines on the first scheduled day (`pec-cal-event-name` for customer in bold, `pec-cal-event-meta` for crew and `$XX,XXX`). Continuation cells still show a small dash. `title=` attribute on each pill carries the full one-line "customer · system · crew · $rev · #proposal" string for overflow. CSS adjustments: `.pec-cal-event` line-height tightened, white-space removed at container level so multi-line wraps work, `.pec-cal-event.cont` padding reduced. New `.pec-cal-event-name` and `.pec-cal-event-meta` classes carry the typography.
+
+4. **F2 fix (task 4): toast utility + schedule save toast with Undo.** No toast utility existed in the codebase; added a `showToast(html, opts)` helper near `openModal/closeModal` (index.html ~line 4839). It stacks toasts at bottom-right in a fixed `#pecToastHost` div, supports an action button + onAction async callback, auto-dismisses after `ttl` ms (default 5000). The schedule save handler now snapshots the pre-save job state (`install_date`, `status`, `crew_id`, `crew_lead`, `estimated_hours`, `sales_team`) and on success calls `scheduleSaveToast(job, firstSavedIso, { undoSnapshot })`. Undo deletes the just-inserted `pec_prod_job_schedule_days` rows and reverts the job fields back to the snapshot. Auto-scroll: `state.scheduleAnchor = firstSavedIso` before `renderSchedule()` so the calendar lands on the week containing the new pill.
+
+What is intentionally NOT in this commit:
+
+- The area-insert path does NOT create `pec_prod_material_lines` because we don't have product picks (basecoat / topcoat / flake) at scheduling time. Material lines are authored from the Unified Job page once areas exist; the area row is the placeholder that makes that possible.
+- F4 (Monthly view's trailing-month visual break), F5 (DripJobs install_date webhook - shipping in next commit as task 1), F6 (bulk-schedule UX), F7 (DripJobs-only stub create - shipping as task 5b in a follow-up).
+- The schedule modal's system dropdown does not currently re-key the system on a job that already has areas. Changing the selected system on a job-with-areas is a noop today; if Dylan wants in-modal system editing for established jobs, that's a follow-up.
+
+Verification before commit: `npm test` (48 passed; no calc changes). Live UI verification deferred to Dylan: navigate Job Schedule, click a Pending Job with no system, pick a system + a date + crew, Save, confirm (a) calendar pill shows customer/crew/$, (b) toast appears with Undo, (c) clicking Undo within 5s restores the job to Pending. Then click Marti Seitz (Jun 3) and Mike Long (May 28) and confirm their pills now show crew + $ value per Dylan's handoff acceptance.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+After Netlify deploys this commit (auto from main), refresh hq-prescott.netlify.app and walk the verification above. The remaining Cowork handoff items (task 1 install_date webhook, task 5 DripJobs import) are queued; task 1 ships in the next commit alongside this one.
+
+## Handoff to Cowork
+
+None for this commit. The webhook commit landing next will need you to register a new webhook URL in DripJobs.
+
+---
+
 ## [2026-05-17 MST] crm: job-schedule manual sync walkthrough; 2 of 9 pending scheduled; 7-item friction list captured
 
 By: Cowork
