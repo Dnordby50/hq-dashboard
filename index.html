@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Black&display=swap" rel="stylesheet">
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"}}
 </script>
@@ -634,6 +635,53 @@ html[data-accent="orange"] {
   --rd-accent-ring:   rgba(255,107,26,.18);
 }
 
+/* ============================================================
+   PEC brand theme (Phase 1, chrome-only).
+   Toggle via html[data-pec-brand="on"]; toggle persists in
+   localStorage["pec_brand_enabled"]. CRM content area is NOT
+   touched here so dense tables stay readable; that's Phase 2.
+   ============================================================ */
+html[data-pec-brand="on"] {
+  --pec-ink:       #14181C;
+  --pec-slate:     #232B33;
+  --pec-orange:    #D8531C;
+  --pec-orange-2:  #F0792F;
+  --pec-paper:     #FFFFFF;
+  --pec-concrete:  #B9B3A6;
+  --rd-accent:      var(--pec-orange);
+  --rd-accent-soft: rgba(216,83,28,0.08);
+  --rd-accent-hero: var(--pec-orange-2);
+  --rd-accent-ring: rgba(216,83,28,0.18);
+}
+html[data-pec-brand="on"] #rdSidebar,
+html[data-pec-brand="on"] #rdTopbar,
+html[data-pec-brand="on"] #rdTitle,
+html[data-pec-brand="on"] .rd-promo,
+html[data-pec-brand="on"] #loginGate {
+  font-family: "Archivo", system-ui, sans-serif;
+}
+html[data-pec-brand="on"] .rd-logo-name,
+html[data-pec-brand="on"] .rd-promo-title,
+html[data-pec-brand="on"] #rdPageTitle {
+  font-family: "Archivo Black", "Archivo", system-ui, sans-serif;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+html[data-pec-brand="on"] .rd-logo {
+  position: relative;
+  padding-bottom: 10px;
+}
+html[data-pec-brand="on"] .rd-logo::after {
+  content: "";
+  display: block;
+  height: 4px;
+  background: var(--pec-orange);
+  width: 48px;
+  position: absolute;
+  left: 10px;
+  bottom: 0;
+}
+
 /* ---------- Reset dark shell ---------- */
 html, body {
   background: var(--rd-bg) !important;
@@ -684,6 +732,7 @@ body { padding: 18px; min-height: 100vh; }
   font-weight: 800; font-size: 15px; letter-spacing: -.5px;
   box-shadow: 0 6px 16px var(--rd-accent-ring);
 }
+.rd-logo-img { width: 38px; height: auto; display: block; flex-shrink: 0; }
 .rd-logo-name { font-weight: 800; letter-spacing: -.3px; color: var(--rd-ink); font-size: 17px; }
 .rd-logo-sub  { font-size: 11px; color: var(--rd-muted); margin-top: 1px; }
 
@@ -737,6 +786,7 @@ body { padding: 18px; min-height: 100vh; }
               repeating-linear-gradient(125deg, transparent 0 18px, rgba(255,255,255,.04) 18px 19px);
   pointer-events: none;
 }
+.rd-promo-eyebrow { font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase; opacity: .65; margin-bottom: 6px; position: relative; }
 .rd-promo-title { font-weight: 700; font-size: 15px; line-height: 1.3; position: relative; }
 .rd-promo-sub   { font-size: 11.5px; opacity: .7; margin-top: 4px; position: relative; }
 .rd-promo-btn {
@@ -1372,9 +1422,8 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 <!-- PASSWORD GATE -->
 <div id="loginGate" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center">
   <div style="text-align:center;width:min(360px,90vw)">
-    <div style="font-family:var(--sans);font-weight:800;font-size:2.4rem;margin-bottom:8px;
-      background:linear-gradient(135deg,var(--pec),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent">HQ</div>
-    <div style="color:var(--muted);font-size:.85rem;margin-bottom:8px">Command Center</div>
+    <img src="assets/pec-logo.png" alt="Prescott Epoxy Company" style="width:96px;height:auto;margin:0 auto 12px;display:block">
+    <div style="color:var(--muted);font-size:.85rem;margin-bottom:8px">Coating Operations</div>
     <div style="color:var(--dim);font-size:.7rem;margin-bottom:32px">Owner password or employee code</div>
     <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password"
       style="text-align:center;font-size:1rem;padding:14px 20px;margin-bottom:12px"
@@ -1401,16 +1450,16 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 
 <!-- TAB NAV -->
 <nav class="tab-nav" style="display:none">
-  <button class="tab-btn active" data-tab="command">Command</button>
+  <button class="tab-btn active" data-tab="prescott-crm">TopCoat</button>
+  <button class="tab-btn" data-tab="command">Command</button>
   <button class="tab-btn" data-tab="execution">Execution</button>
   <button class="tab-btn" data-tab="email">Email</button>
   <button class="tab-btn" data-tab="jarvis">JARVIS</button>
   <button class="tab-btn" data-tab="sops-owner">SOPs</button>
-  <button class="tab-btn" data-tab="prescott-crm">CRM</button>
 </nav>
 
 <!-- COMMAND TAB (merged Revenue + Goals) -->
-<section class="tab-content active" id="tab-command">
+<section class="tab-content" id="tab-command">
   <!-- Monthly Booked Sales Cards -->
   <div id="revSetup"></div>
   <div class="grid-3" id="revCards">
@@ -1732,7 +1781,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 </section>
 
 <!-- PRESCOTT CRM TAB (admin side — Supabase-backed) -->
-<section class="tab-content" id="tab-prescott-crm">
+<section class="tab-content active" id="tab-prescott-crm">
   <div class="pec-wrap">
     <!-- Auth gate: rendered when no Supabase session -->
     <div id="pecSigninPanel" class="pec-signin" style="display:none">
@@ -4367,7 +4416,7 @@ if (document.readyState === 'loading') {
   };
   const LABELS = {
     command: 'Dashboard', execution: 'Execution', email: 'Inbox',
-    jarvis: 'JARVIS', 'sops-owner': 'SOPs', 'prescott-crm': 'CRM',
+    jarvis: 'JARVIS', 'sops-owner': 'SOPs', 'prescott-crm': 'TopCoat',
     sops: 'SOPs', ai: 'Ask AI'
   };
 
@@ -4388,10 +4437,10 @@ if (document.readyState === 'loading') {
     sidebar.id = 'rdSidebar';
     sidebar.innerHTML = `
       <div class="rd-logo">
-        <div class="rd-logo-mark">H</div>
+        <img class="rd-logo-img" src="assets/pec-logo.png" alt="Prescott Epoxy Company">
         <div>
-          <div class="rd-logo-name">HQ</div>
-          <div class="rd-logo-sub">Command Center</div>
+          <div class="rd-logo-name">Prescott Epoxy</div>
+          <div class="rd-logo-sub">Coating Operations</div>
         </div>
       </div>
       <div>
@@ -4403,9 +4452,10 @@ if (document.readyState === 'loading') {
         <div class="rd-nav" id="rdSidebarEmpNav"></div>
       </div>
       <div class="rd-promo">
-        <div class="rd-promo-title">Sync your rhythm</div>
-        <div class="rd-promo-sub">Jump into JARVIS for a daily rundown.</div>
-        <button class="rd-promo-btn" id="rdPromoBtn">Open JARVIS</button>
+        <div class="rd-promo-eyebrow">Coming next</div>
+        <div class="rd-promo-title">Cockpit</div>
+        <div class="rd-promo-sub">Dashboard, Execution, Inbox, and JARVIS, merged into one daily flow.</div>
+        <button class="rd-promo-btn" id="rdPromoBtn">Open Cockpit</button>
       </div>
     `;
 
@@ -4495,7 +4545,7 @@ if (document.readyState === 'loading') {
       'tab-email':     { t: 'Inbox',       s: 'Email triage across PEC & FTP.' },
       'tab-jarvis':    { t: 'JARVIS',      s: 'Your strategic sparring partner.' },
       'tab-sops-owner':{ t: 'SOPs',        s: 'Standard operating procedures library.' },
-      'tab-prescott-crm':{ t: 'CRM',         s: 'Customers, jobs, ordering, and the customer portal.' },
+      'tab-prescott-crm':{ t: 'TopCoat',     s: 'Customers, jobs, ordering, schedule, and costing for PEC.' },
       'tab-emp-sops':  { t: 'SOPs',        s: 'Your team knowledge base.' },
       'tab-emp-ai':    { t: 'Ask AI',      s: 'Get answers from your SOPs.' }
     };
@@ -4559,10 +4609,11 @@ if (document.readyState === 'loading') {
       });
     });
 
-    // ---- Tweaks panel (accent color + orb style) ----
+    // ---- Tweaks panel (accent color + orb style + PEC brand) ----
     const TWEAK = { accent: 'blue', orbStyle: 'shader' };
     const saved = (() => { try { return JSON.parse(localStorage.getItem('rd-tweaks') || 'null'); } catch { return null; } })();
     const savedOrb = (() => { try { return localStorage.getItem('hq_orb_style'); } catch { return null; } })();
+    const savedPecBrand = (() => { try { return JSON.parse(localStorage.getItem('pec_brand_enabled') || 'false'); } catch { return false; } })();
     const current = Object.assign({}, TWEAK, saved || {}, savedOrb ? { orbStyle: savedOrb } : {});
 
     function applyAccent(a) {
@@ -4574,7 +4625,15 @@ if (document.readyState === 'loading') {
       document.querySelectorAll('#rdTweaks .orb-opt').forEach(b => b.classList.toggle('active', b.dataset.orb === o));
       try { localStorage.setItem('hq_orb_style', o); } catch {}
     }
+    function setPecBrand(on) {
+      if (on) document.documentElement.setAttribute('data-pec-brand', 'on');
+      else document.documentElement.removeAttribute('data-pec-brand');
+      try { localStorage.setItem('pec_brand_enabled', JSON.stringify(!!on)); } catch {}
+      const t = document.getElementById('rdPecBrandToggle');
+      if (t) t.checked = !!on;
+    }
     applyAccent(current.accent);
+    setPecBrand(savedPecBrand);
 
     const tweakPanel = document.createElement('div');
     tweakPanel.id = 'rdTweaks';
@@ -4583,6 +4642,13 @@ if (document.readyState === 'loading') {
       <div class="swatches">
         <div class="swatch blue"   data-accent="blue"   title="Blue"></div>
         <div class="swatch orange" data-accent="orange" title="Orange"></div>
+      </div>
+      <div class="rd-tweak-section">
+        <h4>Brand</h4>
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="rdPecBrandToggle" ${savedPecBrand ? 'checked' : ''}>
+          <span>PEC brand theme (chrome only)</span>
+        </label>
       </div>
       <div class="rd-tweak-section">
         <h4>Orb style</h4>
@@ -4607,6 +4673,11 @@ if (document.readyState === 'loading') {
       const orbBtn = e.target.closest('.orb-opt');
       if (orbBtn) {
         applyOrbStyle(orbBtn.dataset.orb);
+      }
+    });
+    tweakPanel.addEventListener('change', (e) => {
+      if (e.target && e.target.id === 'rdPecBrandToggle') {
+        setPecBrand(!!e.target.checked);
       }
     });
 
@@ -4749,6 +4820,16 @@ function renderAuthUI() {
     return;
   }
   signIn.style.display = 'none'; pending.style.display = 'none'; app.style.display = '';
+  // Populate the top-right user badge from state.adminUser. Avatar shows up to
+  // 2 initials from name; sub line is the role title-cased into something
+  // friendly (admin -> Admin, pm -> Project Manager).
+  const name = state.adminUser.name || state.session?.user?.email || 'Signed in';
+  const role = state.adminUser.role || '';
+  const initials = (name.match(/\b[A-Za-z]/g) || []).slice(0, 2).join('').toUpperCase() || '?';
+  const roleLabel = role === 'pm' ? 'Project Manager' : (role ? role.charAt(0).toUpperCase() + role.slice(1) : '');
+  const avEl = document.getElementById('rdAvatar'); if (avEl) avEl.textContent = initials;
+  const nmEl = document.getElementById('rdUserName'); if (nmEl) nmEl.textContent = name;
+  const sbEl = document.getElementById('rdUserSub');  if (sbEl) sbEl.textContent = roleLabel;
   // Role-gate admin-only sub-nav buttons. Material Catalog is open to admin+pm,
   // not just admin, so override its visibility after the default rule runs.
   document.querySelectorAll('#pecSubnav .pec-role-admin').forEach(b => {

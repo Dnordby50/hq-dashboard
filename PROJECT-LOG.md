@@ -4,6 +4,60 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: PEC brand chrome (Phase 1): logo, TopCoat rename, Cockpit teaser, switchable brand theme
+
+By: Claude Code
+Changed: index.html, assets/pec-logo.png (new).
+
+Phase 1 of 2 of the brand identity pass Dylan asked for. The HQ chrome (top-left logo, sidebar nav labels, sidebar bottom CTA, top-right user badge, login screen) now wears PEC. The four operational tabs (Command, Execution, Email, JARVIS) are untouched in this commit; Phase 2 will merge them into the Cockpit card. Three architectural picks were confirmed via AskUserQuestion in plan mode: CRM rebadged as TopCoat, the merged future-section named Cockpit, brand theme scoped to chrome only for the first commit.
+
+What this commit ships:
+
+1. **PEC logo replaces HQ branding**. New asset `assets/pec-logo.png` copied from Dylan's Downloads folder. Sidebar top-left (`.rd-logo` block at the former index.html:4390-4395) now renders the logo image plus "Prescott Epoxy / Coating Operations" labels instead of the H-box mark + "HQ / Command Center". Login screen (the former index.html:1376-1377) shows the same logo image instead of the "HQ" gradient text. The `.rd-logo-mark` class still exists in CSS for backwards compatibility but is no longer referenced in markup; new `.rd-logo-img` rule renders the image at 38px wide.
+
+2. **CRM is now TopCoat**. Three coordinated changes so the rename is consistent everywhere: the hidden `.tab-nav` button text at index.html:1409 ("CRM" to "TopCoat"), the `LABELS` map at index.html:4370 (`'prescott-crm': 'TopCoat'` which drives the visible sidebar item), and the `TITLES` map at index.html:4498 (`{ t: 'TopCoat', s: 'Customers, jobs, ordering, schedule, and costing for PEC.' }` which drives the page header). The element id `#tab-prescott-crm` and the URL routing stay the same; only the user-facing label changes.
+
+3. **TopCoat is the default landing view**. The `active` class on the hidden tab-nav (line 1404) moved from `command` to `prescott-crm`. The matching `.tab-content` section (was `#tab-command` at 1413, now `#tab-prescott-crm` at 1735) carries the `active` class. First-load now opens TopCoat instead of the Command dashboard. Also reordered the hidden tab-nav so TopCoat is the first button; the sidebar clone preserves that order so it's also first in the visible sidebar.
+
+4. **Cockpit teaser replaces "Sync your rhythm" card**. The bottom-of-sidebar `.rd-promo` block (the former index.html:4405-4409) is now a three-line card: eyebrow "Coming next", title "Cockpit", sub "Dashboard, Execution, Inbox, and JARVIS, merged into one daily flow.", button "Open Cockpit". Phase 1 keeps the button wired to its current handler (Open JARVIS) so the affordance still works; Phase 2 will rewire it to a merged Cockpit view. New CSS rule `.rd-promo-eyebrow` styles the eyebrow.
+
+5. **Top-right user badge binds to `state.adminUser`**. In `renderApp` (the function that shows/hides signIn/pending/app blocks around index.html:4810), right after the app becomes visible, three DOM updates run: `#rdAvatar` gets the user's initials (up to 2, derived from name word boundaries; "?" fallback), `#rdUserName` gets `state.adminUser.name` (falling back to the session email, then "Signed in"), `#rdUserSub` gets a title-cased role label ("admin" to "Admin", "pm" to "Project Manager"). No schema change; uses the existing `name` and `role` columns on `admin_users`. A future "title" column would let us render "Owner & Founder" style subtitles; out of scope today.
+
+6. **Switchable PEC brand theme**. New CSS block `html[data-pec-brand="on"] { ... }` injected right after the existing `html[data-accent="orange"]` block (the FTP swatch pattern at the former index.html:629-635). It overrides `--rd-accent`, `--rd-accent-soft`, `--rd-accent-hero`, `--rd-accent-ring` to PEC orange (#D8531C), and adds Archivo / Archivo Black typography on the chrome selectors: `#rdSidebar`, `#rdTopbar`, `#rdTitle`, `.rd-promo`, `#loginGate`. The display elements (`.rd-logo-name`, `.rd-promo-title`, `#rdPageTitle`) get Archivo Black with uppercase + tight tracking, matching the brand packet's "tight letter-fit of Archivo Black IS the brand voice in type" instruction. A `.rd-logo::after` adds the 4px orange under-rule from the brand packet, scoped to chrome so it doesn't leak into content. CRM content area (`#tab-prescott-crm`) is NOT in scope; Phase 2 will widen the brand.
+
+7. **Toggle UX** lives in the existing Tweaks panel (gear icon top-right) under a new "Brand" subsection, a checkbox labeled "PEC brand theme (chrome only)". Wired via a new `setPecBrand(on)` helper that sets/removes `data-pec-brand` on `<html>` and persists to `localStorage["pec_brand_enabled"]` as a JSON boolean. On app boot the saved value is restored before the rest of the page renders so there is no flash of un-branded chrome.
+
+8. **Font load**: appended `<link rel="stylesheet">` for Archivo + Archivo Black after the existing Plus Jakarta Sans link (the former index.html:9). Fonts load regardless of toggle state (two cheap font fetches) so toggling on is instant.
+
+What is NOT in this commit (deferred to Phase 2):
+
+- The actual merge of `#tab-command` / `#tab-execution` / `#tab-email` / `#tab-jarvis` into a single Cockpit view with sub-navigation. Needs its own design pass.
+- PEC fonts / palette applied to CRM content area (tables, modals, forms inside `#tab-prescott-crm`). Risk of breaking density on the cost table and unified job page; deferred.
+- New `title` column on `admin_users` for "Owner & Founder" style subtitles. Role suffices for now.
+- Wiring "Open Cockpit" to anything new; still opens JARVIS as before.
+- Customer portal (`body.pec-portal-mode`) is unchanged; it has its own theme.
+
+Verification before commit: `npm test` (48 passed; no calculator changes). Manual UI verification deferred to Dylan because the chrome only renders in a signed-in admin session.
+
+Files touched: index.html, assets/pec-logo.png (new), PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+Hard-refresh hq-prescott.netlify.app after Netlify auto-deploys, then walk:
+
+1. Top-left sidebar: PEC logo plus "Prescott Epoxy / Coating Operations". The old "H" box should be gone.
+2. Sidebar nav: TopCoat is the first item (was last), and the CRM you previously used opens when you click it. App lands on TopCoat by default on cold reload.
+3. Bottom-left card: reads "Coming next · Cockpit · Dashboard, Execution, Inbox, and JARVIS, merged into one daily flow.". "Open Cockpit" still jumps to JARVIS for now (Phase 2 rewires it).
+4. Top-right badge: shows your initials plus "Dylan Nordby" plus your role title-cased.
+5. Gear icon (top-right) then "Brand" subsection: toggle "PEC brand theme (chrome only)" on. Sidebar accent shifts to PEC orange, logo block sprouts a 4px orange under-rule, "Prescott Epoxy" wordmark switches to Archivo Black uppercase, page title in the top-right area also goes Archivo Black. Toggle off returns to current look. Hard refresh: state persists.
+6. CRM content (Customers / Jobs / Ordering / Schedule / Costing) should look identical to before, regardless of toggle state. If anything inside the CRM tables shifts, that's a leak in the chrome-scoped selectors and worth flagging.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] dripjobs: appointment-set webhook registered in Zapier + verified end-to-end
 
 By: Cowork
