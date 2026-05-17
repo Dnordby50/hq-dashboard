@@ -6036,24 +6036,35 @@ async function renderSettings() {
   state.leadSources = leadRes.data || [];
 
   root.innerHTML = `
-    <div class="pec-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <h3 style="margin:0">Lead Sources</h3>
-        <button class="pec-btn primary sm" id="pecLeadAddBtn">+ Add source</button>
-      </div>
-      <table class="pec-table">
-        <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
-        <tbody>
-          ${state.leadSources.map(s => `
-            <tr data-lead-id="${esc(s.id)}">
-              <td><strong>${esc(s.name)}</strong></td>
-              <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
-              <td>${esc(s.notes || '')}</td>
-              <td><button class="pec-btn sm ghost" data-edit-lead="${esc(s.id)}">Edit</button></td>
-            </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No lead sources yet.</td></tr>'}
-        </tbody>
-      </table>
-    </div>
+    ${(() => {
+      const leadsOpen = state.leadSourcesOpen === true;
+      const count = state.leadSources.length;
+      return `
+      <div class="pec-card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:${leadsOpen ? '10px' : '0'}">
+          <div style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1" data-leadsources-toggle>
+            <span class="prod-cat-chevron">${leadsOpen ? '▼' : '▶'}</span>
+            <h3 style="margin:0">Lead Sources</h3>
+            <span style="color:var(--muted);font-size:.7rem">${count} source${count === 1 ? '' : 's'}</span>
+          </div>
+          <button class="pec-btn primary sm" id="pecLeadAddBtn">+ Add source</button>
+        </div>
+        ${leadsOpen ? `
+          <table class="pec-table">
+            <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+              ${state.leadSources.map(s => `
+                <tr data-lead-id="${esc(s.id)}">
+                  <td><strong>${esc(s.name)}</strong></td>
+                  <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
+                  <td>${esc(s.notes || '')}</td>
+                  <td><button class="pec-btn sm ghost" data-edit-lead="${esc(s.id)}">Edit</button></td>
+                </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No lead sources yet.</td></tr>'}
+            </tbody>
+          </table>
+        ` : ''}
+      </div>`;
+    })()}
 
     <div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -6097,6 +6108,11 @@ async function renderSettings() {
   root.querySelectorAll('[data-edit-crew]').forEach(b => b.addEventListener('click', () => openCrewModal(b.dataset.editCrew)));
   $('pecLeadAddBtn').addEventListener('click', () => openLeadSourceModal(null));
   root.querySelectorAll('[data-edit-lead]').forEach(b => b.addEventListener('click', () => openLeadSourceModal(b.dataset.editLead)));
+  const leadsToggle = root.querySelector('[data-leadsources-toggle]');
+  if (leadsToggle) leadsToggle.addEventListener('click', () => {
+    state.leadSourcesOpen = !(state.leadSourcesOpen === true);
+    renderSettings();
+  });
 }
 
 function openLeadSourceModal(leadId) {
