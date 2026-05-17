@@ -4,6 +4,58 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] netlify: PEC sheet sync env vars created from scratch; redeployed; Apps Script _pecSyncJob still throws
+
+By: Cowork
+Changed: PROJECT-LOG.md (this entry). External systems touched: Netlify env vars on hq-prescott (3 new variables), Netlify production deploy (re-published), Supabase prod (one test job created via the dashboard UI).
+
+Goal: resolve the cure-speed sync handoff in the 2026-05-07 Cowork entry below. Original handoff said Dylan needed to update PEC_SHEETS_PROXY_SECRET to match the SCRIPT_SECRET Cowork set on 2026-05-07. Verifying in Netlify revealed something different and worse than a stale value.
+
+What I found and fixed:
+
+1. All three PEC sheet sync env vars were entirely MISSING from Netlify. Not just stale. Searching the env var list on hq-prescott for "PEC_" returned only PEC_WEBHOOK_SECRET. PEC_SHEETS_PROXY_SECRET, PEC_SHEETS_PROXY_URL, and PEC_PROD_SHEET_ID had never been set. That is why every "Sync to Order Sheet" click since the production module shipped returned the 503 "Sheet sync not configured" error, not because the values drifted. The 2026-05-07 handoff was written assuming the first two existed and only the secret needed to be aligned. That assumption did not hold.
+
+2. Copied SCRIPT_SECRET out of Apps Script Project Settings -> Script Properties for project id 1bWZHurxsc311orTJqaMjm3vL0GYCFc-oePWdDCXqHhOrc3Aw9x5S1CeY. Confirmed via DOM read that the value is 64 hex chars, starts with 9d03, ends with c94b. Matches what Cowork installed on 2026-05-07 with no rotation since.
+
+3. Created three Netlify env vars on hq-prescott (Add a variable -> "Add a single variable" for the secret, then "Import from a .env file" for the URL and SHEET_ID):
+   - PEC_SHEETS_PROXY_SECRET = the 64-char SCRIPT_SECRET (All scopes, Same value in all deploy contexts). Not marked Secret because the existing PEC_WEBHOOK_SECRET in this project is not marked Secret either; consistent with that pattern.
+   - PEC_SHEETS_PROXY_URL = https://script.google.com/macros/s/AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA/exec
+   - PEC_PROD_SHEET_ID = 16vfUHggITTuz53RRWFepQWNtInJmN1JsZ7qt3MeRGcI
+   Verified each by clicking the reveal eye on the Production context row.
+
+4. Triggered a Netlify production deploy via Trigger deploy -> "Deploy project". Deploy completed in 17s as deploy 6a09fb74db0c8b3c0cedd494 from main@f766d99 (the same commit that was already deployed). The reason for the redeploy: the initial post-env-var sync attempt hit the "Sheet sync not configured" error message, which is the function's response when process.env.PEC_SHEETS_PROXY_SECRET or PEC_SHEETS_PROXY_URL is empty. Netlify Function lambdas can keep stale env in warm containers; the redeploy guaranteed fresh ones.
+
+5. Acceptance test (option A: create a TEST job): Created a test job in the live dashboard at hq-prescott.netlify.app via CRM -> Ordering -> + New Job. Proposal "TEST-CURE-9999", customer "TEST CURE SYNC - DELETE", address "1 Test Address, Prescott AZ", install 2026-06-15, area "Main" 100 sqft, system Flake, flake color Coyote, basecoat default (Simiron 1100 SL - Light Gray), basecoat cure speed Slow, U-Tint Pack Black 1 pack attached to Basecoat. Save succeeded; job appears in the Ordering list with SCHEDULED / DIRTY tags. The job-detail modal shows the basecoat row with Cure = Slow and a Tint Pack line - confirming cureSpeedSpec stamping and area_tints plumbing through to material_lines is working end to end in the dashboard layer. Job id 145690ef-aa13-4b8f-a071-3a3102d26bf2.
+
+6. Clicked Sync to Order Sheet on the test job. New error surfaced: "Sheet sync failed: Apps Script returned non-JSON (200): <!DOCTYPE html>..." The full Apps Script HTML error body is truncated by pec-prod-sync-sheet.cjs:291 (text.slice(0, 300)), so the actual `.errorMessage` div content is not visible client-side. Confirmed in Apps Script -> Executions that the corresponding doPost run at 2026-05-17 10:32:32 AM is marked Status = Failed (Version 4 deployment, doPost function, Web App type, 2.186s).
+
+What this proves:
+
+- env vars are now correctly set and the function IS reading them at runtime (the 503 "Sheet sync not configured" error no longer fires).
+- The function IS reaching the Apps Script /exec URL (status 200 came back, not a 401/403/timeout).
+- The Apps Script doPost dispatcher is entering the syncJob branch (otherwise we would get "Forbidden" or "Unknown action" as JSON, not an HTML error page).
+- Something inside _pecSyncJob, _pecBuildBlock, _pecFindInsertionRow, _pecDeleteRowsByProposal, or one of the SpreadsheetApp calls is throwing. The deployed Code.gs at line 63 declares PEC_NUM_COLS=16 and line 158-179 of _pecBuildBlock returns a 16-element row with cure_speed at index 15 (column P), so the snippet+Cowork's bump-to-16 are in sync. The bug is somewhere else.
+
+What is NOT done and why:
+
+- End-to-end sync verification did not succeed. Cure speed did NOT land in column P of NEW ORDER SHEET because Apps Script threw before reaching the setValues call. The original 2026-05-07 acceptance test is therefore still open.
+- The TEST job remains in Supabase pec_prod_jobs and the related pec_prod_areas, pec_prod_area_tints, pec_prod_material_lines rows. It needs to be cleaned up to avoid polluting Ordering / Job Costing views.
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+Two items.
+
+1. Delete the test job: in CRM -> Ordering, locate TEST CURE SYNC - DELETE (#TEST-CURE-9999, install 6/14/2026, id 145690ef-aa13-4b8f-a071-3a3102d26bf2) and delete it. This will cascade to pec_prod_areas, pec_prod_area_tints, and pec_prod_material_lines via FK cascade.
+2. Confirm you want me (Cowork) to keep digging on the Apps Script throw, or assign it to Claude Code. The Apps Script HTML error body is being truncated at 300 chars by the Netlify function, so the actual error message is not visible from the dashboard. Two viable debugging paths: (a) temporarily widen the truncation in pec-prod-sync-sheet.cjs line 291 from `text.slice(0, 300)` to `text.slice(0, 4000)`, redeploy, re-trigger sync, capture the .errorMessage div, revert. Or (b) call the Apps Script /exec directly from a script with the SCRIPT_SECRET to get the full response. (b) is faster but requires me to handle the secret again.
+
+## Handoff to Cowork
+
+None for this commit. Test-job cleanup is a Dylan action because deletion is on the protected list.
+
+---
+
 ## [2026-05-10 MST] dashboard: Job Costing made operable (clickable rows + rollups + auto-populated Mat. Ordered)
 
 By: Claude Code
