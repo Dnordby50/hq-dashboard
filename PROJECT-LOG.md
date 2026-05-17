@@ -4,6 +4,50 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dripjobs: appointment-set webhook registered in Zapier + verified end-to-end
+
+By: Cowork
+Changed: PROJECT-LOG.md (this entry). External systems touched: Zapier (Dylan Nordby personal account, new Zap "PEC Deal Scheduled → Set Install Date in CRM" v2 published and ON; uses Prescott Epoxy Company #3 DripJobs connection). Netlify Function pec-webhook-appointment-set (smoke-tested via 4 curl requests). Supabase pec_prod_jobs (one row temporarily written and reverted during the end-to-end test).
+
+Completes the Cowork handoff in the 2026-05-17 entry below (netlify: appointment-set webhook). DripJobs has no native webhooks UI; the existing PEC Proposal Accepted webhook fires through Zapier, so the new appointment-set bridge also uses Zapier rather than a direct DripJobs webhook subscription.
+
+What the Zap does:
+
+- Trigger: DripJobs "Deal Stage Changed" on Prescott Epoxy Company #3 connection.
+- Filter: only continue when `Lead New Deal Stage` exactly matches `Scheduled`.
+- Action: Webhooks by Zapier POST → https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-appointment-set with JSON body `{ deal_id: {{Lead Job Number}}, install_date: {{Lead Job Start Date}} }` and header `x-webhook-secret: <PEC_WEBHOOK_SECRET, same value the existing proposal-accepted Zap uses>`.
+
+One bug caught in flight: v1 mapped `deal_id` to `Lead Job Id` (the long hex internal ID from the trigger payload). The CRM stores `dripjobs_deal_id` as the short numeric proposal number (e.g. `2836531`). The handler's GET query against `pec_prod_jobs?dripjobs_deal_id=eq.<id>` would never match. Caught by running `select id, customer_name, dripjobs_deal_id from pec_prod_jobs where dripjobs_deal_id is not null` against Supabase before declaring done. v2 of the Zap re-maps `deal_id` to `Lead Job Number` (the short proposal number) and was published. Anyone editing the Zap later: keep this mapping; do NOT switch to Lead Job Id.
+
+Smoke tests, in order, all against the live Netlify Function endpoint:
+
+1. POST with missing `install_date`: HTTP 400, body `{success:false, error:"install_date (or appointment_date) is required"}`. ✓
+2. POST with wrong `x-webhook-secret`: HTTP 401, body `{success:false, error:"Invalid webhook secret"}`. ✓
+3. POST with valid auth + valid `install_date` + fake `deal_id`: HTTP 200, body `{success:true, data:{matched:false, deal_id:"smoke-test-fake-id-12345"}}`. ✓
+4. POST with valid auth + real CRM deal_id (Bill Nance, dripjobs_deal_id=2836531) + test install_date `2099-12-31`: HTTP 200, body `{success:true, data:{matched:true, job_id:"77ffcec4-d5e9-4b17-8daf-2f9e00e4cab1", install_date:"2099-12-31", previous_install_date:null}}`. ✓
+
+Cleanup: after test #4 confirmed the Supabase write, ran `update public.pec_prod_jobs set install_date=null where id='77ffcec4-d5e9-4b17-8daf-2f9e00e4cab1'`. Verified Bill Nance is back to install_date=null so Dylan does not see a fake 2099 date on the Job Schedule.
+
+What is NOT verified yet: the Zapier→Netlify path end to end. My smoke tests hit the Netlify Function directly via curl, which proves the function and the secret work. Whether Zapier's POST shape matches what the function expects is unverified until a real DripJobs deal moves to the `Scheduled` stage and Zapier fires. The data-shape risk is low: payload_type=json + the four fields I configured (deal_id, install_date, headers, url) are exactly what the curl tests sent.
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+Three items, in priority order:
+
+1. Move one DripJobs deal to the `Scheduled` stage with an install date set. Then check Supabase: `select customer_name, install_date from pec_prod_jobs where dripjobs_deal_id='<that proposal number>'`. install_date should be populated within a minute of the stage change. If it is, the full Zapier→Netlify path is verified and the manual sync work from earlier today is no longer needed for new jobs.
+
+2. After step 1 works, open hq-prescott.netlify.app → CRM → Job Schedule → click that Pending Job. The schedule modal should pre-fill the install date you just set. That verifies the F5 + F1 fixes (install-date prefill + system-type dropdown) shipped in commit alongside the webhook.
+
+3. Hard-refresh hq-prescott.netlify.app and walk Mike Long (5/28) and Marti Seitz (6/3) from yesterday's manual schedule. Their pills should now show crew + dollar value (F3 fix), and saving any new schedule should pop a toast with Undo (F2 fix). If those work, the four highest-friction items from yesterday's walkthrough are all closed.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] netlify: appointment-set webhook writes install_date to pec_prod_jobs
 
 By: Claude Code
