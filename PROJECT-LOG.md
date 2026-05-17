@@ -4,6 +4,92 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] crm: job-schedule manual sync walkthrough; 2 of 9 pending scheduled; 7-item friction list captured
+
+By: Cowork
+Changed: PROJECT-LOG.md (this entry). External systems touched: pec_prod_jobs in Supabase prod (two rows scheduled via the dashboard UI; no schema or code changes).
+
+Dylan asked Cowork to manually sync the CRM Job Schedule against DripJobs as a first walkthrough, until automated DripJobs sync ships. Scope agreed in chat: today plus next 4 weeks of installs (May 17 through ~Jun 14), create the customer + job in CRM where DripJobs has a job that CRM does not, schedule existing CRM Pending Jobs against the matching DripJobs install date. This pass got the two cleanest matches done end-to-end and stopped at the friction wall.
+
+What got scheduled in CRM:
+
+1. Marti Seitz on Wed Jun 3 2026. CRM pending #2787966 ($3,516). DripJobs entry was on 6/3 with no crew label, so crew left blank. No system_type set on the job (the schedule modal warned but did not block; see friction F1). Job ID not captured but the calendar pill now shows on 6/3.
+
+2. Mike Long on Thu May 28 2026, Kyle crew. CRM pending #2812764 ($4,700). DripJobs entry was on 5/28 with crew Kyle, $4700 — a clean match. Crew set via the dropdown (Justin / Kyle / Landen are the three options today).
+
+Pending Jobs count in CRM dropped from 9 to 7. Calendar Monthly view confirms both pills on the right dates.
+
+What did NOT get scheduled and why: the other seven CRM Pending Jobs (Robert Waxler, Wayne Rhodes, Luca Paindelli, Peter Cilliers, Justin Wildman, Alex Medenica, Haley Construction) needed me to scan DripJobs week-by-week to find their install dates, then enter each one. With the manual labor cost (~5 clicks per pending job + 1-2 minutes of DripJobs navigation each), Dylan called it and asked for a Claude Code handoff instead of finishing by hand. None of the DripJobs-only jobs (Kevin Brown 5/18, Jeff Walker 5/18, Ryan Blauvelt 5/13, Steve Burgman 5/20, Brian Zimmerman 5/21, Kathy Carmack 5/26, Lisa Santana 5/27, Jon Loyd 5/29, Greg Gutierrez 5/29, Dave Mancini 6/1, Ed Lawson 6/1, Harold Tuttle 6/3, plus more) got added to CRM at all. They cannot be added via the current Ordering > + New Job UI without inventing system type, area count, sqft, and materials data we do not have from the DripJobs calendar.
+
+Friction list captured in this pass (full file at /Users/dylannordby/Library/Application Support/Claude/local-agent-mode-sessions/.../outputs/friction.md, copied below for the record):
+
+- F1 (high): Schedule modal "No system selected yet" warns but saves anyway. Job ends up scheduled with no system_type_id, no recipe slots, no material lines. Fix: block save OR add inline system_type dropdown to the modal and trigger default-areas creation on save.
+- F2 (medium): No success feedback after Save. Modal closes silently, pending count drops, no toast, no auto-scroll to the scheduled week.
+- F3 (medium): Calendar pill on the schedule view shows only customer name. DripJobs pills include time, customer, dollar value, crew. CRM pill should show at minimum customer + crew + dollar value.
+- F4 (low): Monthly view's trailing June rows appear under the May header with no visual break.
+- F5 (high, architectural): CRM does not pre-fill install date from DripJobs even though every Pending Job was imported from a DripJobs proposal. The schedule modal opens with no date set. We are manually copying dates across two browser tabs. Webhook from DripJobs (an "appointment-set" trigger, parallel to the existing proposal-accepted / stage-changed / project-completed handlers in netlify/functions/) would populate scheduled_at and pre-fill the modal.
+- F6 (medium): No bulk-schedule UX. Drag-onto-calendar or multi-select-then-pick-date would save ~120 clicks for the current backlog.
+- F7 (blocker for sync): DripJobs-only jobs (no CRM customer yet) cannot be created via the existing Ordering UI without inventing system + materials. Need an import path that consumes DripJobs proposal-accepted (or appointment-set) data and creates customer + job + areas + default materials in one shot, OR a lightweight "stub job" create flow that holds a place on the schedule for the PM to fill in later.
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Claude Code
+
+```
+## Context
+Cowork did a manual walkthrough of CRM Job Schedule against DripJobs on 2026-05-17 in the hq-prescott.netlify.app production deploy. Two pending jobs got scheduled end-to-end (Marti Seitz Jun 3, Mike Long May 28 Kyle), confirming the modal flow works. The remaining 7 CRM pending jobs and the ~20 DripJobs-only installs in the next 4 weeks did NOT get added because (a) bulk-scheduling is all manual clicks and (b) DripJobs-only jobs can't be created from Ordering > + New Job without inventing system_type / area / material data. Dylan wants the CRM to become the primary in 1-2 weeks; this handoff is the work needed to get there. Friction list is in the PROJECT-LOG entry above.
+
+## Tasks
+Take in priority order; tasks 1 and 5 are the blockers for "use CRM as primary."
+
+1. Add an "appointment-set" or equivalent DripJobs webhook handler that writes the install date back to pec_prod_jobs.
+   - Where: netlify/functions/. Mirror the existing pec-webhook-proposal-accepted.js / pec-webhook-stage-changed.js / pec-webhook-project-completed.js handlers. Use _pec-supabase.js for the Supabase client.
+   - Add the schema column first if it doesn't exist: alter table public.pec_prod_jobs add column if not exists install_date date. (Confirm with `select column_name from information_schema.columns where table_name='pec_prod_jobs' and column_name='install_date'`.)
+   - On webhook fire, update pec_prod_jobs.install_date by matching DripJobs proposal_number to pec_prod_jobs.dripjobs_proposal_number (or whatever the existing column is named; check the proposal-accepted handler).
+   - Acceptance: send a known test payload to the new endpoint with curl, then confirm the matching row's install_date updates in Supabase.
+   - What NOT to touch: the existing three webhook handlers stay as-is. New file only.
+
+2. In the Job Schedule modal (index.html search for the "No system selected yet" string), default the calendar selection to install_date when present, AND add a "system_type" dropdown to the modal so it can be set inline.
+   - Where: index.html. Locate openScheduleModal() / renderScheduleModal() (or similar; grep for "Schedule job" in the modal header).
+   - The dropdown options come from pec_prod_system_types (active=true). On Save, if system_type_id was null on the job and the user picked one, update pec_prod_jobs.system_type_id AND trigger the same "create default areas and recipe slots" path that Ordering > + New Job uses (locate by following the New Job submit handler in index.html).
+   - Acceptance: open a Pending Job with no system, pick a system from the new dropdown, pick a date, save. Verify in Supabase that pec_prod_jobs.system_type_id is set and pec_prod_areas / pec_prod_material_lines were created.
+   - What NOT to touch: don't break the existing flow for jobs that already have a system; the dropdown should pre-select the existing system if present.
+
+3. Make the schedule pill on the calendar show more than just the customer name.
+   - Where: index.html, the function that renders calendar cells (grep for "data-job-id" near the calendar render).
+   - Show: customer name (line 1), crew name (line 2), formatted $ value (line 3). Keep height reasonable; truncate with title="" tooltips for overflow.
+   - Acceptance: Marti Seitz (Jun 3) and Mike Long (May 28) should now show their crew and $ value on the calendar pill at hq-prescott.netlify.app.
+
+4. Add a toast on schedule save success.
+   - Where: index.html, after the schedule modal's save fetch resolves successfully.
+   - Show: "Scheduled <customer> on <date>" with an "Undo" button (5-second window; if pressed, DELETE the schedule). Auto-scroll the calendar to the scheduled week so the new pill is visible.
+   - Acceptance: schedule a job, see the toast, click Undo within 5s, confirm the job returns to Pending Jobs.
+
+5. The big one: DripJobs -> CRM job import. Two viable paths:
+   - (a) Backfill script: write a Netlify Function (or one-off Node script) that hits the DripJobs API for all proposals with stage=Accepted and install_date set, and upserts them into pec_prod_jobs + pec_prod_customers. Idempotent; safe to re-run. Needs a DripJobs API token (Cowork can grab from Dylan if it's not already in Netlify env).
+   - (b) Lightweight stub create flow: in the CRM, add a "+ New Job stub" button that takes minimum fields (customer name, address, proposal #, dollar value, install date) and creates a row in pec_prod_jobs with system_type_id null. The Job appears in Pending Jobs / on the calendar as a stub; the PM completes it from the unified job page (per the 2026-05-17 commit 1A entry below).
+   - Recommend (a) as the right long-term move and (b) as a 1-day stopgap. Pick after a quick scoping pass with Dylan.
+
+## After
+- Append a new PROJECT-LOG entry per task as it ships (commit format: `dashboard: <area> <what changed>` or `netlify: <area> <what changed>`).
+- Update this entry to mark which task IDs are still open if not all five get done in one Claude Code session.
+- Once tasks 1, 2, 5 are live, ping Dylan that the full manual sync is unblocked and Cowork can finish the remaining 7 CRM pending jobs + the ~20 DripJobs-only installs in one fast pass.
+```
+
+## Handoff to Dylan
+
+Two items.
+
+1. Refresh hq-prescott.netlify.app -> CRM -> Job Schedule -> Monthly view. Confirm Mike Long is on Thu May 28 (Kyle crew should show on the pill once F3 ships, today the pill just says "Mike Long") and Marti Seitz is on Wed Jun 3. If either looks off (wrong date, wrong customer), tell me and I'll correct in a follow-up.
+
+2. The 7 remaining pending jobs still need dates. Easiest path: drop them in chat next time as a short list (customer name -> install date -> crew). Cowork can batch them in ~10 minutes once the F1 + F2 + F3 fixes ship from Claude Code, or sooner if you just want them on the calendar with the existing "no system" caveat.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] git: widen apps script error truncation from 300 to 4000 chars
 
 By: Claude Code
