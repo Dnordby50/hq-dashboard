@@ -4,6 +4,54 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] dashboard: Phase 3, CRM views become the main sidebar; SOPs moves top-right; Cockpit is bottom-card only
+
+By: Claude Code
+Changed: index.html.
+
+Per Dylan's instruction, the sidebar is now CRM-first. Every CRM view (Dashboard, Customers, Jobs, Ordering, Job Schedule, Job Costing, Price & Material Catalog, Colors, Referrals, Reviews, Team, Settings) is a top-level sidebar item. TopCoat (the old "wrap them all" entry), the virtual Cockpit button, and the SOPs entry are gone from the sidebar. SOPs lives as a small icon button in the top-right user area next to the name + role. Cockpit is launched only via the bottom-left promo card; the card lights up when one of the four merged sections is the active page.
+
+What this commit ships:
+
+1. **CRM sub-nav becomes the main sidebar**. The hidden `#pecSubnav` inside `#tab-prescott-crm` (the CRM's internal nav at index.html:1815) is hidden (`style="display:none"`) and cloned into the main sidebar at build time. Each clone is a `.rd-crm-btn` carrying `data-pec-view` plus the role-gate class if applicable. Click on a clone activates `#tab-prescott-crm` if needed (programmatically clicks the hidden TopCoat tab-btn) and then programmatically clicks the source `#pecSubnav` button so the existing delegated click handler at index.html:8178 fires `switchView(view)` unchanged.
+
+2. **CRM grid collapses to one column**. The `.pec-app-grid` CSS rule (the former index.html:1146-1150) goes from `220px 1fr` to `1fr` and `.pec-side` gets `display:none` because the CRM's left rail is now empty (pecSubnav is the only thing it contained, and pecSubnav is hidden). The full-width content has more room to breathe.
+
+3. **Active state on the main sidebar mirrors `#pecSubnav`** via a new MutationObserver scoped to pecSubnav button class changes. Whenever switchView toggles the active class on a CRM source button, the matching sidebar mirror button picks up the active class. Also calls `refreshTitle` so the page title updates to the current CRM view name (e.g. "Customers") instead of the parent "TopCoat" label.
+
+4. **TopCoat and SOPs hidden from the sidebar**. Their hidden `.tab-btn` elements remain in `originalNav` (the hidden top tab-nav) so the global handler at index.html:3832 can still fire on programmatic `.click()`. References stored as `topCoatBtn` and `sopsBtn` JS locals so the sidebar clones (which need TopCoat to be active) and the top-right SOPs icon (which forwards to sopsBtn) can drive them.
+
+5. **SOPs icon button** added to the `.rd-user` top-right block. It is an `.rd-icon-btn.rd-sops-btn` with a small book SVG plus the text label "SOPs". Click forwards to the hidden SOPs `.tab-btn`. Picks up an active state when the SOPs section is showing (set by `refreshTitle`). Styled with a subtle background tint when active, accent-colored under the PEC brand theme.
+
+6. **Virtual Cockpit sidebar button removed**. Phase 2's `cockpitBtn = document.createElement('button')` is gone. The promo card (`#rdPromoBtn`) click handler now does the launcher logic inline: read `localStorage["cockpit_last_child"]`, find the matching hidden `.tab-btn`, click it. The card itself gets an `rd-promo-active` class via `refreshTitle` whenever one of the four merged sections is active, which draws a 2px accent outline so the card visually reads as "you are here". Sub-nav strip behavior (Dashboard / Execution / Inbox / JARVIS) above the content is unchanged from Phase 2.
+
+7. **Page title**: `refreshTitle` now prefers the active `#pecSubnav` button's text when `#tab-prescott-crm` is the active tab, so the header reads "Customers" / "Job Costing" / "Settings" instead of the generic "TopCoat".
+
+What is NOT in this commit:
+
+- Wider PEC brand theme inside CRM content area (still chrome-only by intent).
+- DripJobs to CRM stub-create flow (still queued; F7 / task 5 from the manual-sync walkthrough handoff).
+- Bulk-schedule drag UX (F6).
+
+Verification before commit: `npm test` (48 passed; no calc changes). Manual UI verification deferred to Dylan because the chrome only renders in a signed-in admin session.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+Hard-refresh hq-prescott.netlify.app after Netlify auto-deploys, then walk:
+
+1. Sidebar: Dashboard / Customers / Jobs / Ordering / Job Schedule / Job Costing / Price & Material Catalog / Colors / Referrals / Reviews / Team / Settings, each clickable. Role-gated entries (Job Costing, Catalog, Team, Settings) only appear for admins; PM accounts see the four non-admin ones plus Catalog and Costing. Clicking each one switches the main content and updates the page title in the top header.
+2. Top-right: SOPs icon-button with a small book glyph appears between the gear icon and your initials. Click it, the SOPs section loads. The SOPs button gets a subtle highlight while SOPs is showing.
+3. Bottom-left Cockpit card: button "Open Cockpit" launches the merged Dashboard / Execution / Inbox / JARVIS flow with the last-viewed sub-tab pre-selected. While you are inside Cockpit, the card itself draws a thin orange (under PEC brand theme) or blue outline so you can tell you are "in" Cockpit. The Cockpit sidebar button that briefly existed in Phase 2 is gone.
+4. Brand toggle (gear -> Brand): PEC brand theme still scoped to chrome only. Active sidebar item and active SOPs button highlight in PEC orange when the brand theme is on.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] dashboard: Cockpit (Phase 2) merges Dashboard/Execution/Inbox/JARVIS behind a single sidebar entry
 
 By: Claude Code

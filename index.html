@@ -840,6 +840,14 @@ body { padding: 18px; min-height: 100vh; }
 .rd-cockpit-tab:hover { color: var(--rd-ink, #111827); }
 .rd-cockpit-tab.active { background: var(--rd-card, #fff); color: var(--rd-accent, #2b59ff); box-shadow: 0 1px 2px rgba(16,24,40,.06); }
 html[data-pec-brand="on"] .rd-cockpit-tab.active { color: var(--pec-orange); }
+/* Cockpit promo card carries an "active" state when one of the four merged sections is showing */
+.rd-promo.rd-promo-active { outline: 2px solid var(--rd-accent, #2b59ff); outline-offset: -2px; }
+html[data-pec-brand="on"] .rd-promo.rd-promo-active { outline-color: var(--pec-orange); }
+/* Top-right SOPs button (icon + label) */
+.rd-sops-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; margin-right: 8px; font-weight: 600; font-size: 12px; }
+.rd-sops-btn span { display: inline-block; }
+.rd-sops-btn.active { color: var(--rd-accent, #2b59ff); background: var(--rd-accent-soft, rgba(43,89,255,.08)); }
+html[data-pec-brand="on"] .rd-sops-btn.active { color: var(--pec-orange); background: var(--rd-accent-soft); }
 .rd-btn {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 10px 18px; border-radius: 999px;
@@ -1145,18 +1153,14 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-wrap { max-width: 1400px; padd
 /* 2-column shell: left rail + content */
 body:not(.pec-portal-mode) .pec-app-grid {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  /* Phase 3: pecSubnav lives in the main HQ sidebar now, so the CRM's
+     internal 220px rail is collapsed and the content takes the full width. */
+  grid-template-columns: 1fr;
   gap: 22px;
   align-items: start;
 }
 body:not(.pec-portal-mode) .pec-side {
-  background: var(--rd-shell);
-  border-radius: 16px;
-  padding: 14px 10px;
-  box-shadow: var(--rd-shadow-sm, 0 1px 2px rgba(15,20,32,.06));
-  position: sticky;
-  top: 18px;
-  align-self: start;
+  display: none;
 }
 body:not(.pec-portal-mode) .pec-main { min-width: 0; }
 
@@ -1812,7 +1816,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
     <!-- Main CRM shell (hidden until authed + approved) -->
     <div id="pecApp" class="pec-app-grid" style="display:none">
       <aside class="pec-side">
-        <nav class="pec-subnav" id="pecSubnav">
+        <nav class="pec-subnav" id="pecSubnav" style="display:none">
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
@@ -4477,6 +4481,10 @@ if (document.readyState === 'loading') {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
         </button>
         <div class="rd-user">
+          <button class="rd-icon-btn rd-sops-btn" id="rdBtnSops" title="SOPs">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            <span>SOPs</span>
+          </button>
           <div class="rd-avatar" id="rdAvatar">HQ</div>
           <div>
             <div class="rd-user-name" id="rdUserName">Owner</div>
@@ -4512,6 +4520,13 @@ if (document.readyState === 'loading') {
     const navHost = sidebar.querySelector('#rdSidebarNav');
     const ownerButtons = [];
     const cockpitChildButtons = [];
+    // Phase 3: the sidebar is now the CRM's view list (Dashboard, Customers,
+    // Jobs, Ordering, Schedule, etc). The original tab-btns (TopCoat, SOPs)
+    // stay in the hidden .tab-nav so the global handler at line 3832 still
+    // works on programmatic .click(), but they no longer appear in the
+    // sidebar. SOPs moves to the top-right user area; TopCoat is now the
+    // implicit root that the CRM view buttons activate behind the scenes.
+    let topCoatBtn = null, sopsBtn = null;
     if (originalNav) {
       Array.from(originalNav.querySelectorAll('.tab-btn')).forEach(btn => {
         const key = btn.dataset.tab;
@@ -4519,48 +4534,70 @@ if (document.readyState === 'loading') {
         const ico = ICONS[key] || '';
         btn.innerHTML = ico + '<span>' + label + '</span>';
         if (btn.dataset.cockpitChild === 'true') {
-          // Keep the button in DOM so the global tab-btn handler at line 3832
-          // can still fire on programmatic clicks, but do NOT show it in the
-          // sidebar. Cockpit becomes the single sidebar entry for these four.
           cockpitChildButtons.push(btn);
           btn.style.display = 'none';
-          // Park it inside the hidden nav so future code can find it via data-tab.
           return;
         }
+        if (key === 'prescott-crm') { topCoatBtn = btn; btn.style.display = 'none'; return; }
+        if (key === 'sops-owner')   { sopsBtn    = btn; btn.style.display = 'none'; return; }
+        // Anything else (none expected today) keeps the legacy sidebar slot.
         navHost.appendChild(btn);
         ownerButtons.push(btn);
       });
     }
-    // Inject a virtual "Cockpit" sidebar button. It is NOT a real .tab-btn (no
-    // data-tab), so the global handler at line 3832 ignores it. Click behavior
-    // is wired below: it programmatically clicks the last-viewed cockpit child
-    // (or Dashboard on first visit). Marked .tab-btn for styling parity with
-    // the other sidebar entries.
-    const cockpitBtn = document.createElement('button');
-    cockpitBtn.className = 'tab-btn rd-cockpit-btn';
-    cockpitBtn.id = 'rdCockpitBtn';
-    cockpitBtn.innerHTML = (ICONS.jarvis || '') + '<span>Cockpit</span>';
-    // Place Cockpit AFTER TopCoat (the current first item) but before SOPs.
-    // TopCoat is index 0; insert at index 1.
-    if (navHost.children.length >= 1) navHost.insertBefore(cockpitBtn, navHost.children[1] || null);
-    else navHost.appendChild(cockpitBtn);
+    // Clone the CRM's #pecSubnav into the main sidebar. Each cloned button
+    // is a real .tab-btn-shaped item so it gets the existing sidebar styling;
+    // click handler ensures #tab-prescott-crm is the active tab-content (so
+    // the CRM shell is showing) and then forwards to the source pecSubnav
+    // button so the existing delegated handler at index.html:8178 calls
+    // switchView(view) unchanged.
+    const crmNav = document.getElementById('pecSubnav');
+    const crmButtons = [];
+    if (crmNav) {
+      Array.from(crmNav.querySelectorAll('button[data-pec-view]')).forEach(srcBtn => {
+        const sidebarBtn = document.createElement('button');
+        sidebarBtn.className = 'tab-btn rd-crm-btn';
+        sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;
+        if (srcBtn.classList.contains('pec-role-admin')) sidebarBtn.classList.add('pec-role-admin');
+        if (srcBtn.classList.contains('active')) sidebarBtn.classList.add('active');
+        sidebarBtn.innerHTML = '<span>' + srcBtn.textContent.trim() + '</span>';
+        sidebarBtn.addEventListener('click', () => {
+          // Make sure the CRM tab-content is active so the view actually shows.
+          const crmTabContent = document.getElementById('tab-prescott-crm');
+          if (crmTabContent && !crmTabContent.classList.contains('active') && topCoatBtn) topCoatBtn.click();
+          // Forward to the source button so #pecSubnav's delegated handler runs.
+          srcBtn.click();
+          // Active state on the sidebar: clear all CRM mirror buttons, set this one.
+          navHost.querySelectorAll('.rd-crm-btn').forEach(b => b.classList.remove('active'));
+          sidebarBtn.classList.add('active');
+        });
+        navHost.appendChild(sidebarBtn);
+        crmButtons.push({ src: srcBtn, mirror: sidebarBtn });
+      });
+    }
+    // Sync sidebar active state when switchView toggles #pecSubnav buttons
+    // (e.g. user navigated via deep link or programmatic switchView call).
+    if (crmNav) {
+      const crmObs = new MutationObserver(() => {
+        crmButtons.forEach(({ src, mirror }) => {
+          mirror.classList.toggle('active', src.classList.contains('active'));
+        });
+        // Also refresh the page title since the active CRM view may have
+        // changed without the parent .tab-content's class changing (which is
+        // what the other MutationObserver watches).
+        try { refreshTitle(); } catch {}
+      });
+      crmObs.observe(crmNav, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    }
+    // Legacy ownerButtons array kept for empObs visibility logic below; with
+    // Phase 3, nothing routes through ownerButtons in normal usage. The
+    // forEach binds the active-class swap that prior phases relied on.
     ownerButtons.forEach(btn => {
       btn.addEventListener('click', () => {
         ownerButtons.forEach(b => b.classList.remove('active'));
-        cockpitBtn.classList.remove('active');
+        navHost.querySelectorAll('.rd-crm-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
       });
-    });
-    // Cockpit sidebar button: activate the last-viewed cockpit child, or
-    // Dashboard on first visit. Persist last child in localStorage.
-    const COCKPIT_LAST_KEY = 'cockpit_last_child';
-    cockpitBtn.addEventListener('click', () => {
-      ownerButtons.forEach(b => b.classList.remove('active'));
-      cockpitBtn.classList.add('active');
-      const last = (() => { try { return localStorage.getItem(COCKPIT_LAST_KEY); } catch { return null; } })();
-      const targetKey = ['command', 'execution', 'email', 'jarvis'].includes(last) ? last : 'command';
-      const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey);
-      if (targetBtn) targetBtn.click();
     });
 
     const empNavHost = sidebar.querySelector('#rdSidebarEmpNav');
@@ -4602,31 +4639,44 @@ if (document.readyState === 'loading') {
       const info = TITLES[active.id] || { t: 'Dashboard', s: '' };
       const titleEl = document.getElementById('rdPageTitle');
       const subEl   = document.getElementById('rdPageSub');
-      if (titleEl) titleEl.textContent = info.t;
-      if (subEl)   subEl.textContent   = info.s;
+      // When the CRM is the active tab, prefer the current CRM view label
+      // (Customers / Jobs / Ordering / etc) over the generic "TopCoat" parent
+      // title, since the user just navigated to a specific view via the
+      // sidebar.
+      let pageTitle = info.t, pageSub = info.s;
+      if (active.id === 'tab-prescott-crm') {
+        const crmActive = document.querySelector('#pecSubnav button.active');
+        if (crmActive) pageTitle = crmActive.textContent.trim();
+      }
+      if (titleEl) titleEl.textContent = pageTitle;
+      if (subEl)   subEl.textContent   = pageSub;
       const addBtn = document.getElementById('rdBtnAdd');
       const impBtn = document.getElementById('rdBtnImport');
       const isCommand = active.id === 'tab-command' || active.id === 'tab-execution';
       if (addBtn) addBtn.style.display = isCommand ? '' : 'none';
       if (impBtn) impBtn.style.display = active.id === 'tab-command' ? '' : 'none';
       // Cockpit context: when the active section is one of the four children,
-      // show the sub-nav, mark Cockpit sidebar button as active, mark the
-      // matching sub-nav button as active, and persist last-viewed child.
+      // show the sub-nav, highlight the Cockpit promo card as the current
+      // location, mark the matching sub-nav tab as active, and persist
+      // last-viewed child for next launch.
       const COCKPIT_IDS = { 'tab-command': 'command', 'tab-execution': 'execution', 'tab-email': 'email', 'tab-jarvis': 'jarvis' };
       const cockpitKey = COCKPIT_IDS[active.id];
       const subnav = document.getElementById('rdCockpitSubnav');
-      const cockpitBtnEl = document.getElementById('rdCockpitBtn');
+      const promoCard = document.querySelector('.rd-promo');
       if (cockpitKey) {
         if (subnav) subnav.style.display = '';
-        if (cockpitBtnEl) cockpitBtnEl.classList.add('active');
+        if (promoCard) promoCard.classList.add('rd-promo-active');
         document.querySelectorAll('#rdCockpitSubnav .rd-cockpit-tab').forEach(b => {
           b.classList.toggle('active', b.dataset.cockpit === cockpitKey);
         });
         try { localStorage.setItem('cockpit_last_child', cockpitKey); } catch {}
       } else {
         if (subnav) subnav.style.display = 'none';
-        if (cockpitBtnEl) cockpitBtnEl.classList.remove('active');
+        if (promoCard) promoCard.classList.remove('rd-promo-active');
       }
+      // Top-right SOPs button highlights when the SOPs section is active.
+      const sopsTop = document.getElementById('rdBtnSops');
+      if (sopsTop) sopsTop.classList.toggle('active', active.id === 'tab-sops-owner');
     }
     // Sub-nav click handlers: programmatically click the matching hidden
     // tab-btn so the global handler at line 3832 activates the section.
@@ -4666,9 +4716,18 @@ if (document.readyState === 'loading') {
       if (typeof logout === 'function') logout();
     });
     document.getElementById('rdPromoBtn').addEventListener('click', () => {
-      const cockpit = document.getElementById('rdCockpitBtn');
-      if (cockpit) cockpit.click();
+      // Phase 3: Cockpit no longer has a sidebar button. The promo card is the
+      // only Cockpit launcher. Restore last-viewed child from localStorage, or
+      // fall back to Dashboard, by clicking the matching hidden tab-btn.
+      const last = (() => { try { return localStorage.getItem('cockpit_last_child'); } catch { return null; } })();
+      const targetKey = ['command', 'execution', 'email', 'jarvis'].includes(last) ? last : 'command';
+      const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey);
+      if (targetBtn) targetBtn.click();
     });
+    // Top-right SOPs button: forward to the hidden sops-owner tab-btn so the
+    // global handler at line 3832 activates the SOPs section.
+    const sopsTopBtn = document.getElementById('rdBtnSops');
+    if (sopsTopBtn && sopsBtn) sopsTopBtn.addEventListener('click', () => sopsBtn.click());
     document.getElementById('rdBtnAdd').addEventListener('click', () => {
       if (typeof addProject === 'function') addProject();
     });
