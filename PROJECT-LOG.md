@@ -4,6 +4,68 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] netlify: appointment-set webhook writes install_date to pec_prod_jobs
+
+By: Claude Code
+Changed: netlify/functions/pec-webhook-appointment-set.cjs (new file).
+
+Knocks out F5 / task 1 from the 2026-05-17 Cowork walkthrough handoff: DripJobs now has a target to push install dates to, so the schedule modal stops forcing the PM to copy dates between browser tabs. Pairs with the prior commit (994b6cb) which already teaches the schedule modal to pre-fill from `job.install_date`.
+
+Schema note: `pec_prod_jobs.install_date` already exists from 2026-04-28_pm_ordering.sql:84, so no migration is needed. The handoff prompt's defensive `add column if not exists` is therefore not part of this commit.
+
+What this handler does:
+
+- POST /.netlify/functions/pec-webhook-appointment-set
+- Header `x-webhook-secret` checked against `PEC_WEBHOOK_SECRET` (same env var the existing three webhook handlers use).
+- Body `{ deal_id, install_date }`; accepts `appointment_date` as a synonym for install_date. Date is sliced to YYYY-MM-DD if a full timestamp is sent; rejected if not parseable.
+- Looks up `pec_prod_jobs` by `dripjobs_deal_id` (the same key the proposal-accepted bridge writes). PATCH sets `install_date` to the new value. Does NOT touch `status`: scheduling-driven status changes belong to the in-app schedule modal and the stage-changed webhook, not this one.
+- If no matching `pec_prod_jobs` row exists (FTP job, or proposal-accepted bridge hasn't fired yet) the response is `200 { success:true, matched:false }` so DripJobs does not retry indefinitely.
+
+Mirrored after pec-webhook-stage-changed.cjs: same auth, same JSON shape, same _pec-supabase.cjs helper, same console.error pattern.
+
+Files touched: netlify/functions/pec-webhook-appointment-set.cjs (new), PROJECT-LOG.md.
+
+## Handoff to Cowork
+
+```
+## Context
+Just-shipped Netlify Function `pec-webhook-appointment-set` (commit will be in main at the time this handoff is read; deployment URL https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-appointment-set). Same auth pattern as the existing three webhooks (x-webhook-secret header, value = PEC_WEBHOOK_SECRET env var already in Netlify).
+
+## Tasks
+
+1. Register a new webhook in DripJobs that fires on appointment-set (or whatever the platform calls it; the closest equivalent that carries a deal_id + an install/appointment date).
+   - Where: DripJobs settings -> Integrations / Webhooks (whatever the current path is; Dylan can point you at the existing proposal-accepted / stage-changed / project-completed entries if it's not obvious).
+   - URL: https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-appointment-set
+   - Method: POST
+   - Header: x-webhook-secret = the same value already used by the other three webhooks (grab from Netlify env if you don't have it).
+   - Payload: must include `deal_id` and either `install_date` or `appointment_date`. JSON. Date format YYYY-MM-DD or ISO 8601.
+   - What NOT to touch: the existing three webhook entries stay as-is. Do not modify them.
+
+2. Smoke-test from a real DripJobs job.
+   - Pick any PEC proposal in DripJobs that already has install_date set (any of the 7 unmatched pending jobs from the 2026-05-17 walkthrough is fine).
+   - Trigger the appointment-set event (re-save the install date in DripJobs if needed).
+   - Acceptance: in Supabase Studio (project zdfpzmmrgotynrwkeakd), run `select id, customer_name, install_date from pec_prod_jobs where dripjobs_deal_id='<the deal id you used>';` and confirm install_date matches what you set in DripJobs.
+   - Also: open hq-prescott.netlify.app -> Job Schedule, find that same job in Pending Jobs, click it. The schedule modal should now pre-select the install date in the calendar grid. Pick a crew, hit Save, confirm the toast appears.
+
+3. (Optional but useful) Curl smoke-test the function directly if DripJobs setup blocks for any reason:
+   ```
+   curl -X POST https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-appointment-set \
+     -H "Content-Type: application/json" \
+     -H "x-webhook-secret: $PEC_WEBHOOK_SECRET" \
+     -d '{"deal_id":"<a known PEC deal id>","install_date":"2026-06-15"}'
+   ```
+   Expected: 200, body `{"success":true,"data":{"matched":true,"job_id":"...","install_date":"2026-06-15","previous_install_date":null}}`. Then verify in Supabase.
+
+## After
+Append a `## [2026-05-17 MST] dripjobs: appointment-set webhook registered + verified` entry to PROJECT-LOG.md with By: Cowork. Include the deal_id you smoke-tested with, the install_date you set, and a one-line note on whether the Pending Job pre-fill worked end-to-end in the dashboard.
+```
+
+## Handoff to Dylan
+
+None for this commit specifically. The webhook is dark until Cowork registers it in DripJobs (handoff above).
+
+---
+
 ## [2026-05-17 MST] dashboard: job-schedule modal system pick + install-date prefill, richer calendar pill, save toast with Undo
 
 By: Claude Code
