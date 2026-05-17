@@ -4,6 +4,15 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] git: widen apps script error truncation from 300 to 4000 chars
+
+By: Claude Code
+Changed: netlify/functions/pec-prod-sync-sheet.cjs.
+
+Follow-up to the two 2026-05-17 Cowork debugging entries below (env-var creation, then NEW ORDER SHEET data-validation clear). Both were slowed down because the JSON-parse-failure path in pec-prod-sync-sheet.cjs:291 truncates the Apps Script response body to 300 chars when it surfaces as a dashboard error, and Google's HTML error page puts the `.errorMessage` div well past character 300. The dashboard kept showing only the DOCTYPE and stylesheet preamble. Widened that single slice from 300 to 4000 so the next failure in this code path is debuggable from the dashboard alone, without an Apps Script editor round-trip. Grep across the repo (.js / .cjs / .mjs / .html) confirmed this was the only 300-char error-path truncation; nothing else to widen.
+
+---
+
 ## [2026-05-17 MST] dashboard: unified-page header matches standard pec-toolbar pattern
 
 By: Claude Code

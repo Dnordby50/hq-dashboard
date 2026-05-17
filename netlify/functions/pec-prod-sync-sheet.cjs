@@ -288,7 +288,7 @@ async function callProxy(payload) {
   let parsed;
   try { parsed = JSON.parse(text); }
   catch {
-    throw new Error(`Apps Script returned non-JSON (${res.status}): ${text.slice(0, 300)}`);
+    throw new Error(`Apps Script returned non-JSON (${res.status}): ${text.slice(0, 4000)}`);
   }
   return parsed;
 }
