@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-17 MST] catalog: cleaned-snapshot tab added to epoxy price list sheet
+
+By: Cowork
+Changed: PROJECT-LOG.md (this entry). External systems touched: Google Sheet 1S0EeQKa_mPZ0IFujGrRBdS3T2UYQFVAV7Kk9eL3i92I (added one new tab "CLEAN 2026-05-17", populated rows 1-53 with the consolidated catalog data, original gid 0 tab left untouched).
+
+Follow-up to the catalog pricing pass entry below. That entry's "Handoff to Cowork" said the source sheet still needed dedupe + column H fill. Resolved here in the same session per Dylan's call: rather than mutate the original tab, I created a parallel tab "CLEAN 2026-05-17" with the consolidated, deduped, H-filled data (52 products plus a header row) that was used to build the migration. The original tab stays as the raw vendor-price reference so nothing historical was lost. Dylan can switch over to the CLEAN tab when he's done with side-by-side comparisons, or delete it if he prefers the original.
+
+What is now in the CLEAN tab: 52 rows, columns Section / Product Name / Color / Manufacturer / Supplier / Spread Rate / Kit Size / Cost / Kit / Source. Grouped by Section in this order: Topcoats (8), Basecoats (8), Sealers (7), Stains (9), Flake Materials (4), Quartz Colors (2), Metallic Pigments (2), Tint Packs (1 summary row), Extras (11). Cost / Kit matches what the migration wrote to Supabase. Source column captures the price-list provenance (e.g. "1/15/2026 price; per-gallon $76.51 x 2") so the math is auditable from inside the sheet without going back to the migration file.
+
+What is NOT here: the U-Tint Pack section is collapsed to a single summary row because all 14 colors share the same $16.37 cost; the catalog still has the 14 individual rows. Resin Tek rows are absent (Dylan does not order from them). Cohills Eco Water-Based Sealer and Stain are present with blank Cost / Kit (no price on the list yet). Domino Flake is absent (legacy item).
+
+Files touched: PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+When you next look at the price list sheet, you'll see two tabs: the original gid-0 tab (unchanged) and CLEAN 2026-05-17. Either keep both, or archive the original once you're confident the CLEAN snapshot covers what you need. Going forward the CRM catalog in Supabase is the live source of truth; the sheet is for vendor-pricing reference and audit history.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] catalog: bulk pricing pass on pec_prod_products from the epoxy price list
 
 By: Cowork
