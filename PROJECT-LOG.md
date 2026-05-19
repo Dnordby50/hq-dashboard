@@ -4,6 +4,47 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: "+ Add Job" requires picking an existing customer, plus an optional path to reschedule an existing PEC job for them
+
+By: Claude Code
+Changed: index.html.
+
+After the previous commit deployed, Dylan looked at the new "+ Add Job" flow and pointed out a real gap: the modal lets you type any name and creates a brand-new customer + brand-new pec_prod_jobs row out of the blue. That was useful as a one-week bridge for the 2026-05-18 booked-jobs week, but it lets the schedule diverge from the rest of the CRM: customers exist in the system because they came from DripJobs or were entered through CRM -> Customers, and a job on the production schedule should always link back to one of those records. He asked for the button to "connect to a current customer or job."
+
+What the modal does now:
+
+1. The "Customer" card no longer takes a freeform name + phone + email. It has a single search box that loads up to 1000 PEC customers (where `company='prescott-epoxy'` and `archived_at is null`) and filters them client-side as you type. Pick one to lock the selection; the picker collapses into a chip showing the name with a "Change" button. There is no fallback that creates a customer if no match exists; the hint text directs the user to CRM -> Customers first.
+
+2. Once a customer is picked, a second card appears with two paths. The default option is "New job for this customer", which keeps the existing address / value / quote # / scope fields and writes a fresh `pec_prod_jobs` row linked to the picked customer_id (the `dripjobs_deal_id IS NULL` plus `MANUAL-` proposal_number markers from the 2026-05-17 manual-entry contract are still applied). The other path is a dropdown of that customer's existing `pec_prod_jobs` rows pulled straight from `state.prodJobs`, labeled with their proposal number + address + value + install date so each row is identifiable. Pick one and the new-job fields hide; only Crew and Install days stay editable, and a note explains "Saving will replace any previously scheduled days; the job's address, value, and scope stay as-is." This mirrors the contract of `openScheduleModal` (touch only `install_date`, `status`, `crew_id`, plus schedule_days) so the rescheduling path can't accidentally clobber a DripJobs-imported job's address or revenue.
+
+3. The save handler branches on `existing_job_id`. New-job branch is unchanged from the 2026-05-17 flow but uses the picker's `customer_id` instead of the previous name lookup + auto-insert (so the "create a customer in passing" path is gone). Reschedule branch updates only the three schedule fields on the existing row, deletes its schedule_days, and reinserts the new set with day_index following sorted-date order. Day-row insert failure on the new-job branch still rolls back the orphan `pec_prod_jobs` row; on the reschedule branch the existing job stays as-is for retry (we don't want to delete a real job because a reinsert failed).
+
+A few polish items came with this. The modal title is now "Schedule a job" (matches the new shape: it both books new jobs for existing customers and reschedules existing jobs). The subheader copy is updated. A small inline-CSS bug was fixed where the selected-customer chip had two `display` properties (`display:none` followed by `display:flex`) and would have rendered open by default.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan because the modal needs a signed-in admin session against live Supabase to test end-to-end. Local sanity check: traced the four branches by hand. (a) Customer not picked -> Save errors with "Pick an existing customer first." (b) Customer picked, existing job dropdown left on "New job" -> Save validates address + value + crew + days, then inserts a new pec_prod_jobs row with the picked customer_id and MANUAL- proposal_number, then inserts schedule_days. (c) Customer picked, existing job selected -> Save validates crew + days only, updates only install_date / status / crew_id on the existing row, replaces schedule_days. (d) "Change" button on the selected-customer chip resets the picker and re-enables the search input.
+
+## Handoff to Dylan
+
+After Netlify auto-deploys this commit, hard-refresh and walk:
+
+1. TopCoat -> Job Schedule -> "+ Add Job". The first card is now a search input instead of a name field. Type a few letters of an existing PEC customer name. Pick one from the dropdown.
+
+2. The "Job" card should appear. Leave the dropdown on "New job for this customer." Fill address / value / crew / install days. Save. Confirm a new pill appears on the calendar for that customer.
+
+3. Open "+ Add Job" again. Pick the same customer. This time pick that customer's just-created job from the existing-jobs dropdown. The address / value / scope fields should disappear and a note should explain you're rescheduling. Pick different dates. Save. Confirm the existing pill on the calendar moves to the new dates (no duplicate row is created).
+
+4. Try to save without picking a customer. The error should read "Pick an existing customer first." Try to save without picking a crew or any days; the relevant errors should fire.
+
+5. Try a customer who genuinely has no record in the system (type a made-up name). The dropdown should show "No matches. Add this customer in CRM -> Customers first." and there should be no way to save.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-19 MST] dashboard: Job Schedule multi-day jobs render as one connected bar + monthly is the default view + larger weekly cells + recovers the un-deployed 2026-05-17 "+ Add Job" work
 
 By: Claude Code

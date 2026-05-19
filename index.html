@@ -6931,9 +6931,14 @@ function openScheduleModal(jobId) {
 function openAddJobModal() {
   const today = new Date();
   const draft = {
+    // The PEC schedule never adds jobs out of the blue. A row must always
+    // be linked to an existing customer (and optionally to an existing
+    // pec_prod_jobs row, in which case Save reschedules that row instead
+    // of inserting a new one). The picker is required.
+    customer_id: '',
     customer_name: '',
-    phone: '',
-    email: '',
+    customer_query: '',
+    existing_job_id: '',
     address: '',
     quote_number: '',
     revenue: '',
@@ -6942,6 +6947,10 @@ function openAddJobModal() {
     pickerMonth: new Date(today.getFullYear(), today.getMonth(), 1),
     scope: '',
   };
+  // Cached list of PEC customers, fetched once when the modal mounts and
+  // filtered client-side by the search input. Capped to avoid pulling the
+  // entire table; the search refines further as the user types.
+  let pecCustomers = [];
 
   // Same multi-day picker shape as openScheduleModal. Click toggles a date in
   // or out of selectedDates; the day_index of each scheduled day is the index
@@ -7001,29 +7010,42 @@ function openAddJobModal() {
     <div class="prod-modal-wide" style="max-width:760px;margin:auto">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
-          <h3 style="margin:0">Add job</h3>
-          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">Manually book a job and schedule its install days. Temporary bridge until full DripJobs sync ships.</div>
+          <h3 style="margin:0">Schedule a job</h3>
+          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">Pick a customer that's already in the system, then either schedule one of their existing jobs or book a new one.</div>
         </div>
         <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
       </div>
 
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
-        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Customer</div>
-        <div class="pec-field" style="margin-bottom:8px"><label>Customer name <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobName" placeholder="e.g. Kevin Brown" autocomplete="off"></div>
-        <div class="pec-row-2">
-          <div class="pec-field"><label>Phone</label><input id="addJobPhone" placeholder="Optional"></div>
-          <div class="pec-field"><label>Email</label><input id="addJobEmail" type="email" placeholder="Optional"></div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Customer <span style="color:var(--accent,#D8531C)">*</span></div>
+        <div class="pec-field" style="margin-bottom:8px">
+          <input id="addJobCustQuery" placeholder="Search existing customers by name…" autocomplete="off">
+          <div id="addJobCustResults" style="display:none;border:1px solid var(--rd-line, var(--border));border-radius:6px;margin-top:4px;max-height:200px;overflow-y:auto;background:var(--rd-card, var(--s1))"></div>
+          <div id="addJobCustSelected" style="display:none;margin-top:6px;padding:6px 10px;border-radius:6px;background:color-mix(in srgb, var(--rd-accent, var(--accent)) 12%, transparent);align-items:center;gap:8px">
+            <span id="addJobCustSelectedName" style="font-weight:600;font-size:.85rem;flex:1"></span>
+            <button type="button" class="pec-btn ghost sm" id="addJobCustClear">Change</button>
+          </div>
+          <div id="addJobCustHint" style="font-size:.7rem;color:var(--muted);margin-top:6px">Only customers already in the system can be scheduled. Create the customer in CRM &rarr; Customers first if they aren't here yet.</div>
         </div>
       </div>
 
-      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+      <div class="pec-card" id="addJobLinkCard" style="padding:14px;margin:0 0 12px;display:none">
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Job</div>
-        <div class="pec-field" style="margin-bottom:8px"><label>Service address <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobAddress" placeholder="Street, City, State"></div>
-        <div class="pec-row-2">
-          <div class="pec-field"><label>Job value ($) <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobValue" type="number" min="0" step="0.01" placeholder="e.g. 8350"></div>
-          <div class="pec-field"><label>Proposal or quote #</label><input id="addJobQuote" placeholder="Optional, e.g. DripJobs proposal #"></div>
+        <div class="pec-field" style="margin-bottom:8px">
+          <label>Link to an existing job, or schedule a new one for them</label>
+          <select id="addJobExisting">
+            <option value="">New job for this customer</option>
+          </select>
         </div>
-        <div class="pec-field" style="margin-top:8px"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
+        <div id="addJobFields">
+          <div class="pec-field" style="margin-bottom:8px"><label>Service address <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobAddress" placeholder="Street, City, State"></div>
+          <div class="pec-row-2">
+            <div class="pec-field"><label>Job value ($) <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobValue" type="number" min="0" step="0.01" placeholder="e.g. 8350"></div>
+            <div class="pec-field"><label>Proposal or quote #</label><input id="addJobQuote" placeholder="Optional, e.g. DripJobs proposal #"></div>
+          </div>
+          <div class="pec-field" style="margin-top:8px"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
+        </div>
+        <div id="addJobLinkedNote" style="display:none;font-size:.72rem;color:var(--muted);margin-top:6px"></div>
       </div>
 
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
@@ -7052,109 +7074,229 @@ function openAddJobModal() {
   `, {
     onMount(modal) {
       renderBody(modal);
-      modal.querySelector('#addJobName').addEventListener('input', e => { draft.customer_name = e.target.value; });
-      modal.querySelector('#addJobPhone').addEventListener('input', e => { draft.phone = e.target.value; });
-      modal.querySelector('#addJobEmail').addEventListener('input', e => { draft.email = e.target.value; });
-      modal.querySelector('#addJobAddress').addEventListener('input', e => { draft.address = e.target.value; });
-      modal.querySelector('#addJobValue').addEventListener('input', e => { draft.revenue = e.target.value; });
-      modal.querySelector('#addJobQuote').addEventListener('input', e => { draft.quote_number = e.target.value; });
-      modal.querySelector('#addJobScope').addEventListener('input', e => { draft.scope = e.target.value; });
-      modal.querySelector('#addJobCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
+
+      const queryEl = modal.querySelector('#addJobCustQuery');
+      const resultsEl = modal.querySelector('#addJobCustResults');
+      const selectedEl = modal.querySelector('#addJobCustSelected');
+      const selectedNameEl = modal.querySelector('#addJobCustSelectedName');
+      const linkCard = modal.querySelector('#addJobLinkCard');
+      const existingSel = modal.querySelector('#addJobExisting');
+      const fieldsBox = modal.querySelector('#addJobFields');
+      const linkedNote = modal.querySelector('#addJobLinkedNote');
+      const addrEl = modal.querySelector('#addJobAddress');
+      const valueEl = modal.querySelector('#addJobValue');
+      const quoteEl = modal.querySelector('#addJobQuote');
+      const scopeEl = modal.querySelector('#addJobScope');
+      const crewEl = modal.querySelector('#addJobCrew');
+      const errEl = modal.querySelector('#addJobError');
+
+      // Load PEC customers once. 1000-row ceiling is well above the current
+      // table size and keeps the query bounded; the client-side filter
+      // refines as the user types so search feels instant.
+      (async () => {
+        const { data, error } = await supabase
+          .from('customers')
+          .select('id,name,phone,email')
+          .eq('company', 'prescott-epoxy')
+          .is('archived_at', null)
+          .order('name', { ascending: true })
+          .limit(1000);
+        if (error) {
+          errEl.textContent = 'Could not load customer list: ' + (error.message || error);
+          return;
+        }
+        pecCustomers = data || [];
+      })();
+
+      const renderResults = () => {
+        const q = draft.customer_query.trim().toLowerCase();
+        if (!q) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+        const matches = pecCustomers
+          .filter(c => (c.name || '').toLowerCase().includes(q))
+          .slice(0, 15);
+        if (!matches.length) {
+          resultsEl.style.display = 'block';
+          resultsEl.innerHTML = `<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">No matches. Add this customer in CRM &rarr; Customers first.</div>`;
+          return;
+        }
+        resultsEl.style.display = 'block';
+        resultsEl.innerHTML = matches.map(c => `
+          <div class="addjob-cust-row" data-id="${esc(c.id)}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--rd-line, var(--border));font-size:.85rem">
+            <div style="font-weight:600">${esc(c.name || '(no name)')}</div>
+            <div style="font-size:.7rem;color:var(--muted)">${esc([c.phone, c.email].filter(Boolean).join(' · ') || 'No phone or email on file')}</div>
+          </div>
+        `).join('');
+        resultsEl.querySelectorAll('.addjob-cust-row').forEach(row => row.addEventListener('click', () => {
+          const cust = pecCustomers.find(c => c.id === row.dataset.id); if (!cust) return;
+          selectCustomer(cust);
+        }));
+      };
+
+      const selectCustomer = (cust) => {
+        draft.customer_id = cust.id;
+        draft.customer_name = cust.name || '';
+        queryEl.style.display = 'none';
+        resultsEl.style.display = 'none';
+        modal.querySelector('#addJobCustHint').style.display = 'none';
+        selectedEl.style.display = 'flex';
+        selectedNameEl.textContent = cust.name || '(no name)';
+        linkCard.style.display = '';
+        // Populate the existing-jobs dropdown with this customer's
+        // pec_prod_jobs rows already in state. Scheduled and unscheduled
+        // alike are listed so the user can pick a row to reschedule or
+        // schedule a job that imported without a date.
+        const theirJobs = (state.prodJobs || []).filter(j => j.customer_id === cust.id);
+        existingSel.innerHTML = `<option value="">New job for this customer</option>` + theirJobs.map(j => {
+          const label = [
+            j.proposal_number ? `#${j.proposal_number}` : '',
+            j.address || '',
+            j.revenue ? '$' + Math.round(Number(j.revenue)).toLocaleString() : '',
+            j.install_date ? 'install ' + j.install_date : 'no date',
+          ].filter(Boolean).join(' · ');
+          return `<option value="${esc(j.id)}">${esc(label || j.id)}</option>`;
+        }).join('');
+        applyExistingPick();
+      };
+
+      const clearCustomer = () => {
+        draft.customer_id = '';
+        draft.customer_name = '';
+        draft.customer_query = '';
+        draft.existing_job_id = '';
+        queryEl.value = '';
+        queryEl.style.display = '';
+        modal.querySelector('#addJobCustHint').style.display = '';
+        selectedEl.style.display = 'none';
+        linkCard.style.display = 'none';
+        existingSel.innerHTML = `<option value="">New job for this customer</option>`;
+        applyExistingPick();
+        queryEl.focus();
+      };
+
+      const applyExistingPick = () => {
+        const id = existingSel.value;
+        draft.existing_job_id = id || '';
+        if (!id) {
+          // New-job path: show the editable address/value/quote/scope
+          // inputs again. Their values are still bound to draft so
+          // anything the user typed is preserved.
+          fieldsBox.style.display = '';
+          linkedNote.style.display = 'none';
+          return;
+        }
+        const j = (state.prodJobs || []).find(j => j.id === id);
+        if (!j) return;
+        // Reschedule path: the existing job already owns its address /
+        // value / scope / proposal#, so hide the editable inputs and just
+        // show a summary plus a note. Only crew + dates are editable.
+        // Mirrors the contract of openScheduleModal (install_date,
+        // status, crew_id only).
+        fieldsBox.style.display = 'none';
+        linkedNote.style.display = '';
+        const summary = [
+          j.address ? esc(j.address) : '',
+          j.revenue ? '$' + Math.round(Number(j.revenue)).toLocaleString() : '',
+          j.install_date ? 'currently install ' + esc(j.install_date) : 'currently no install date',
+        ].filter(Boolean).join(' · ');
+        linkedNote.innerHTML = `Rescheduling existing job. ${summary}. Saving will replace any previously scheduled days; the job's address, value, and scope stay as-is.`;
+        if (j.crew_id) { crewEl.value = j.crew_id; draft.crew_id = j.crew_id; }
+      };
+
+      queryEl.addEventListener('input', e => { draft.customer_query = e.target.value; renderResults(); });
+      modal.querySelector('#addJobCustClear').addEventListener('click', clearCustomer);
+      existingSel.addEventListener('change', applyExistingPick);
+      addrEl.addEventListener('input', e => { draft.address = e.target.value; });
+      valueEl.addEventListener('input', e => { draft.revenue = e.target.value; });
+      quoteEl.addEventListener('input', e => { draft.quote_number = e.target.value; });
+      scopeEl.addEventListener('input', e => { draft.scope = e.target.value; });
+      crewEl.addEventListener('change', e => { draft.crew_id = e.target.value; });
 
       modal.querySelector('#addJobSave').addEventListener('click', async () => {
-        const errEl = modal.querySelector('#addJobError'); errEl.textContent = '';
-        const name = draft.customer_name.trim();
+        errEl.textContent = '';
+        const isReschedule = !!draft.existing_job_id;
         const address = draft.address.trim();
         const revenueNum = Number(draft.revenue);
 
-        if (!name) return errEl.textContent = 'Customer name is required.';
-        if (!address) return errEl.textContent = 'Service address is required.';
-        if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Job value must be a positive number.';
+        if (!draft.customer_id) return errEl.textContent = 'Pick an existing customer first.';
         if (!draft.crew_id) return errEl.textContent = 'Pick a crew.';
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+        if (!isReschedule) {
+          if (!address) return errEl.textContent = 'Service address is required.';
+          if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Job value must be a positive number.';
+        }
 
         const saveBtn = modal.querySelector('#addJobSave');
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving…';
 
-        let createdJobId = null;
+        const sortedIso = draft.selectedDates.slice().sort();
+        // Notes carries the optional quote # and the scope text; matches
+        // the convention used by the proposal-accepted webhook. Only
+        // applied on the new-job path; reschedule preserves the existing
+        // job's notes untouched.
+        const notesParts = [];
+        if (draft.quote_number.trim()) notesParts.push(`Quote #${draft.quote_number.trim()}`);
+        if (draft.scope.trim()) notesParts.push(draft.scope.trim());
+        const notes = notesParts.join('\n\n') || null;
+
         try {
-          // 1. Customer: reuse exact-name match within PEC company, else insert.
-          const lookup = await supabase.from('customers')
-            .select('id')
-            .eq('name', name)
-            .eq('company', 'prescott-epoxy')
-            .limit(1);
-          if (lookup.error) throw lookup.error;
-          let customerId;
-          if (lookup.data && lookup.data.length) {
-            customerId = lookup.data[0].id;
+          let jobId;
+          if (isReschedule) {
+            // Reschedule path: only touch the schedule-related fields on
+            // the existing pec_prod_jobs row (mirrors openScheduleModal),
+            // wipe any existing schedule_days, and reinsert the new set.
+            // Address / revenue / notes / proposal_number stay as-is.
+            jobId = draft.existing_job_id;
+            const upd = await supabase.from('pec_prod_jobs').update({
+              install_date: sortedIso[0],
+              status: 'scheduled',
+              crew_id: draft.crew_id,
+            }).eq('id', jobId);
+            if (upd.error) throw upd.error;
+            const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', jobId);
+            if (del.error) throw del.error;
           } else {
-            const custIns = await supabase.from('customers').insert({
-              name,
-              phone: draft.phone.trim() || null,
-              email: draft.email.trim() || null,
-              company: 'prescott-epoxy',
-              token: randomToken(),
+            // New-job path: insert a fresh pec_prod_jobs row linked to the
+            // picked customer. dripjobs_deal_id stays null, the implicit
+            // marker for manual entries; proposal_number is a unique
+            // MANUAL- timestamp so the UNIQUE NOT NULL constraint is met.
+            const n = new Date();
+            const pad = x => String(x).padStart(2, '0');
+            const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+            const proposalNumber = `MANUAL-${stamp}`;
+            const jobIns = await supabase.from('pec_prod_jobs').insert({
+              proposal_number: proposalNumber,
+              customer_id: draft.customer_id,
+              customer_name: draft.customer_name,
+              address,
+              revenue: revenueNum,
+              install_date: sortedIso[0],
+              status: 'scheduled',
+              crew_id: draft.crew_id,
+              notes,
             }).select('id').single();
-            if (custIns.error) throw custIns.error;
-            customerId = custIns.data.id;
+            if (jobIns.error) throw jobIns.error;
+            jobId = jobIns.data.id;
           }
 
-          // 2. Generate a unique proposal_number. pec_prod_jobs.proposal_number
-          // is UNIQUE NOT NULL but DripJobs deal_ids are short numerics; the
-          // MANUAL- prefix guarantees no collision.
-          const n = new Date();
-          const pad = x => String(x).padStart(2, '0');
-          const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
-          const proposalNumber = `MANUAL-${stamp}`;
-
-          // 3. Notes field carries the optional quote # and the scope text.
-          const notesParts = [];
-          if (draft.quote_number.trim()) notesParts.push(`Quote #${draft.quote_number.trim()}`);
-          if (draft.scope.trim()) notesParts.push(draft.scope.trim());
-          const notes = notesParts.join('\n\n') || null;
-
-          // 4. pec_prod_jobs row. dripjobs_deal_id stays null, the implicit
-          // marker for manual entries.
-          const sortedIso = draft.selectedDates.slice().sort();
-          const jobIns = await supabase.from('pec_prod_jobs').insert({
-            proposal_number: proposalNumber,
-            customer_id: customerId,
-            customer_name: name,
-            address,
-            revenue: revenueNum,
-            install_date: sortedIso[0],
-            status: 'scheduled',
-            crew_id: draft.crew_id,
-            notes,
-          }).select('id').single();
-          if (jobIns.error) throw jobIns.error;
-          createdJobId = jobIns.data.id;
-
-          // 5. One schedule_days row per selected date. day_index follows the
-          // sorted date order so the calendar renders day 1, day 2, etc.
-          // left-to-right.
           const dayRows = sortedIso.map((iso, idx) => ({
-            job_id: createdJobId,
+            job_id: jobId,
             scheduled_date: iso,
             day_index: idx,
             crew_id: draft.crew_id,
           }));
           const dayIns = await supabase.from('pec_prod_job_schedule_days').insert(dayRows);
           if (dayIns.error) {
-            // Clean up the orphan pec_prod_jobs row so the next attempt does
-            // not collide on proposal_number or leave dangling data. The
-            // customers row is left alone (harmless if orphaned, and may be
-            // a pre-existing customer we just looked up).
-            await supabase.from('pec_prod_jobs').delete().eq('id', createdJobId);
+            // On the new-job path only, roll back the orphan pec_prod_jobs
+            // row so the next attempt does not collide on proposal_number.
+            // On the reschedule path we already cleared the day rows; the
+            // existing job stays as-is so the user can retry.
+            if (!draft.existing_job_id) await supabase.from('pec_prod_jobs').delete().eq('id', jobId);
             throw dayIns.error;
           }
 
           closeModal();
-          showToast(`Added job for ${esc(name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
-          // Pin the calendar to the first scheduled day so the new pill is
-          // visible without scrolling.
+          showToast(`${draft.existing_job_id ? 'Rescheduled' : 'Added'} job for ${esc(draft.customer_name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
           state.scheduleAnchor = sortedIso[0];
           await renderSchedule();
         } catch (err) {
