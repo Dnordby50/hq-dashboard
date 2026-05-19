@@ -81,6 +81,20 @@ These are non-obvious shapes of the codebase that have caused bugs. Keep them in
 
 - Two modal-root containers, not one. index.html:1781 has `#pecModalRoot` (used by the helpers `openModal()` / `closeModal()` around index.html:4808) and index.html:1782 has `#prodModalRoot` (used by hand-rolled inline modal flows in the production / catalog views around index.html:7531, 7923, 8225, 8369, 8434, 8544). They share the same `.pec-modal-bg` CSS class but no JS. Any fix that touches modal lifecycle (safety nets, focus traps, escape-to-close, etc.) MUST be applied to both roots, or audited and explicitly justified for skipping one.
 
+- Two parallel job tables. `public.jobs` (paired with `public.customers`) is read by the Jobs page (`renderJobs` at index.html:5613). `public.pec_prod_jobs` (paired with `pec_prod_job_schedule_days`, `pec_prod_crews`, `pec_prod_areas`) is read by the Job Schedule calendar (`renderSchedule` / `loadScheduleData` at index.html:6494). They are siblings, not duplicates. The proposal-accepted webhook writes to BOTH so DripJobs deals show up everywhere; manual entries (see next section) only write to `pec_prod_jobs` so they appear on the calendar but not the Jobs page.
+
+## Manual job entries (temporary bridge)
+
+The Job Schedule "+ Add Job" button (`openAddJobModal` at index.html ~6902) writes manual entries to `pec_prod_jobs` for jobs that did not flow through the DripJobs proposal-accepted webhook. These are marked implicitly: `dripjobs_deal_id` stays null. Every DripJobs-sourced row has `dripjobs_deal_id` set (by `pec-webhook-proposal-accepted.cjs`), so the NULL check is a reliable filter. Their `proposal_number` is also prefixed `MANUAL-` for at-a-glance identification in Supabase Studio.
+
+When the full DripJobs proposal-import script ships, bulk-remove every manual entry with:
+
+```sql
+DELETE FROM pec_prod_jobs WHERE dripjobs_deal_id IS NULL;
+```
+
+The cascade on `pec_prod_job_schedule_days.job_id` will delete the schedule rows automatically. Customer rows in `public.customers` are NOT deleted by the cascade and should be reviewed manually (the manual flow reuses an existing customer row when the exact name + PEC company already matches, so most manual rows do not introduce new customers).
+
 ## Key Resource IDs
 
 - Booked Jobs Sheet: 1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4

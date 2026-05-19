@@ -4,6 +4,144 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: Job Schedule multi-day jobs render as one connected bar + monthly is the default view + larger weekly cells + recovers the un-deployed 2026-05-17 "+ Add Job" work
+
+By: Claude Code
+Changed: index.html. Bundled (recovered, not changed) in the same commit: the 2026-05-17 working-tree edits to index.html, CLAUDE.md, and PROJECT-LOG.md that were written up but never committed.
+
+Two things shipped today.
+
+First, the headline change. The Job Schedule calendar used to render each scheduled day of a job as its own little chip. A three-day job became three identical-looking chips on three days, with only a tiny "·" continuation dot to hint they were the same job. Dylan asked for a Google-Calendar-style "one continuous event" treatment: solid colored bar across the span, rounded only at the very first and very last day, square in the middle, customer name visible on every day so it never looks like two different jobs sitting next to each other.
+
+The implementation lives entirely inside `renderScheduleCalendar` at index.html:6580. I left `eventFor(jobId)` (index.html:6594) alone since its return shape already had everything I needed. Added a new `buildCells(days, cols)` helper (index.html:6623) that returns a per-cell array of events, each enriched with a `segClass` of `seg-solo` (single-day jobs), `seg-start` (rounded left, includes the colored accent stripe), `seg-end` (rounded right), `seg-mid` (square both sides), `seg-start-cont` (rounded left but signals "this row is a continuation of a span that started on a prior row"), or `seg-end-cont` (rounded right but signals "this span continues onto the next row"). The cont variants matter for the monthly view, where a Sat-to-Mon job crosses a week-row boundary; the Saturday cell ends visually on the right side of the row, and the Sunday cell begins visually on the left side of the next row, so the eye still tracks both as one job. A new `chipHtml(e, monthly)` helper (index.html:6648) renders a single shared template for both views: customer name always shown, crew + revenue meta shown only on the job's first day (so the bar reads "starts here with full detail, continues with just the name for orientation"). The click handler at index.html:6713 is unchanged; any segment of a multi-day bar still opens the same `openScheduleModal()` because every chip carries `data-event-job`.
+
+The CSS counterpart at index.html:8577 replaces the old `.pec-cal-event.cont` rule with the six segment classes and a few layout tweaks so adjacent days' bars actually visually touch. Specifically: the weekly grid's gap dropped from `4px` to `1px` (matching what monthly already had), the day cells' horizontal padding was removed (the day-num got its own `padding:0 6px` instead), and `seg-start` / `seg-end` chips touch the cell's far edge on their respective continuation sides while keeping a small `4px` outer margin on the side where the span actually starts or ends. The colored background uses `color-mix(in srgb, var(--ev-color) 18%, transparent)` so the bar is tinted with the system color at low opacity but the text stays readable. A 3px solid accent stripe on `seg-solo` / `seg-start` (via `::before`) is the "this is where the job begins" marker.
+
+Other small UX changes that came with the same ask:
+
+1. The calendar now defaults to monthly view. State init at index.html:4876 changed `scheduleView: 'weekly'` to `'monthly'`. Weekly is still one click away on the toolbar.
+
+2. Weekly day cells went from `min-height: 140px` to `min-height: 220px` (index.html:8565). Monthly cells went from `88px` to `110px` and added flex column so multiple chips stack predictably. Both were too cramped for the new wider chips that now show a customer name on every continuation day.
+
+3. The "+ Add Job" button on the schedule toolbar (index.html:6552) went from `.pec-btn primary sm` to `.pec-btn primary` (no more `sm`) so it stands out from the surrounding view-toggle buttons. The toolbar already had `flex-wrap: wrap` (index.html:8561), so the button can't get pushed off-screen on narrow viewports.
+
+Second, the recovery. While preparing to commit, I noticed `git status` showed the entire 2026-05-17 manual "+ Add Job" work (index.html, CLAUDE.md, and the 2026-05-17 PROJECT-LOG entry itself) still uncommitted in the working tree. The log entry was written as if the work had shipped, but the commit and push never happened. That is why Dylan reported he could not see the "+ Add Job" button on the live site this session: it was never deployed. This commit bundles those un-pushed changes (the manual entry path at index.html ~6913, the `loadTasks` numeric-cell `String()` cast at index.html:3074, the CLAUDE.md "Two parallel job tables" and "Manual job entries" sections) together with today's calendar work, so a single deploy lights both up. Nothing else needed editing in those un-committed files; they were already correct, just not committed. Treating this as a correction-by-action rather than a separate correction entry per standing rule 3, since the 2026-05-17 log entry is still factually accurate about what the code does, just not about when it became live.
+
+Files touched in this commit: index.html, CLAUDE.md, PROJECT-LOG.md.
+
+Verification deferred to Dylan because the Job Schedule view requires a signed-in admin session against live Supabase. Local sanity check: traced the segment-class branches by hand against a three-day span (Mon-Wed), a single-day job, a two-day job, and a Saturday-to-Monday span across a monthly week-row boundary; all six segment classes are reachable. The click handler still wires every segment (including continuation chips) to `openScheduleModal()`, so the existing edit flow stays intact.
+
+## Handoff to Dylan
+
+After Netlify auto-deploys this commit, hard-refresh hq-prescott.netlify.app (Cmd+Shift+R) and check:
+
+1. TopCoat -> Job Schedule loads on Monthly view by default. The orange "+ Add Job" button is now larger and visible to the right of the date label, before the Weekly / Monthly toggle.
+
+2. If there are existing multi-day jobs on the calendar, they should now render as one continuous colored bar across their days with the customer name on each day, rounded only at the first and last day. If a job spans a week-row boundary in monthly view (e.g. Saturday into Sunday), Saturday gets a right-rounded "end of row" treatment and Sunday gets a left-rounded "continuation" treatment.
+
+3. Use "+ Add Job" to enter the ten DripJobs jobs for the week of 2026-05-18 to 2026-05-24 that were the original motivation for the 2026-05-17 manual-entry flow. Two of those still need DripJobs clarification per the 2026-05-17 handoff (Ralph Cirzan dollar value cut off in original prompt; Samuel AE Reprographics crew was TBD); the other eight can be entered as-listed.
+
+4. Click any day of a multi-day bar (start, middle, or end) and confirm it opens the same schedule edit modal with the full date list, not just the clicked day.
+
+5. Toggle to Weekly view: day cells should be visibly taller (220px) and the same span behavior should apply.
+
+## Handoff to Cowork
+
+None.
+
+---
+
+## [2026-05-17 MST] dashboard: manual "+ Add Job" entry on Job Schedule (temporary DripJobs bridge) + loadTasks gviz-numeric trim fix
+
+By: Claude Code
+Changed: index.html, CLAUDE.md.
+
+Dylan needs ten booked PEC jobs on the Job Schedule calendar for the week of Mon 2026-05-18 to Sun 2026-05-24, but the automated DripJobs to HQ sync only covers proposals that already passed through the proposal-accepted webhook into `pec_prod_jobs`. The full DripJobs proposal-import script is still queued (per `docs/job-schedule-future-todos.md` and the 2026-05-17 friction-list handoff). This commit adds a manual entry path so jobs can be booked from the dashboard without round-tripping through DripJobs first, then bulk-removed in one SQL when the real import ships.
+
+Premise correction worth flagging because it changes how the next person should reason about this area: the user's original prompt said "the existing Google Sheets sync stays the source of truth." That is incorrect for the CRM. Customers, Jobs, and Job Schedule are all backed by **Supabase**, not Google Sheets. Google Sheets only backs the read-only Booked Jobs scorecard (the revenue summary on the dashboard). The CRM has had Supabase-backed write paths from day one; this commit just composes them behind a new form.
+
+Two parallel job tables exist in Supabase. `public.jobs` (paired with `public.customers`) is what the Jobs page renders (`renderJobs` at index.html:5613). `public.pec_prod_jobs` (paired with `pec_prod_job_schedule_days`, `pec_prod_crews`, `pec_prod_areas`) is what the Job Schedule calendar renders (`renderSchedule` / `loadScheduleData` at index.html:6494). They are siblings. The proposal-accepted webhook writes to both, but this manual flow intentionally only writes to `pec_prod_jobs` (+ a `customers` row) so manual entries appear on the calendar and in the Customers list without doubling the insert surface. Manual entries will NOT appear on the Jobs page; this is documented in the new "Two parallel job tables" Architecture Gotcha added to CLAUDE.md.
+
+What this commit ships:
+
+1. **Toolbar button on Job Schedule** at index.html:6553, a new `<button class="pec-btn primary sm" id="pecSchedAddJob">+ Add Job</button>` inserted into the schedule toolbar to the immediate left of the Weekly / Monthly toggle. Click handler wired at index.html:6561 to `openAddJobModal()`. Style matches the existing "+ Schedule" precedent on Pending Job cards (line 6541) so the action affordance is visually consistent.
+
+2. **`openAddJobModal()`** at index.html ~6902, a new function inserted between `openScheduleModal` and the Job Costing block. Renders a single modal that collects customer (name, phone, email), job (address, value, optional quote #, scope/notes), crew (dropdown of `state.crews` where `active=true`, populated by `loadScheduleData`), and a multi-day install-date picker that reuses the exact grid pattern from `openScheduleModal` (click toggles a date in/out of `draft.selectedDates`; day_index is assigned by sorted-date order so the calendar renders day 1 / day 2 left-to-right even if the PM clicked out of order). All inputs use the existing `pec-card` / `pec-field` / `pec-row-2` / `pec-modal-actions` / `prod-msg-err` density so the modal feels native.
+
+3. **Submit handler** in the same function. Client-side validation: name + address + positive numeric revenue + crew + at least one selected day. On submit it (a) does an exact-name + `company='prescott-epoxy'` lookup against `customers` and reuses the matched id, else inserts a new `customers` row with `token: randomToken()` per the existing pattern at index.html:5384; (b) generates a unique `proposal_number` of shape `MANUAL-YYYYMMDD-HHMMSS-XXXX` so the UNIQUE NOT NULL constraint on `pec_prod_jobs.proposal_number` is satisfied and there is zero collision risk with DripJobs's short-numeric deal_ids; (c) inserts the `pec_prod_jobs` row with `status='scheduled'`, the crew id, the first sorted date as `install_date`, and `notes` carrying the optional Quote # plus the scope text. Critically, `dripjobs_deal_id` stays null, the implicit marker for manual entries; (d) inserts N rows into `pec_prod_job_schedule_days` (one per selected date, with day_index = sorted position). On day-rows failure the orphan `pec_prod_jobs` row is rolled back via a delete so the next attempt does not collide on `proposal_number`. On success: toast, modal close, calendar anchor pinned to first scheduled day, `renderSchedule()` refresh.
+
+4. **`loadTasks` gviz-numeric bug fix** at index.html:3074. Changed `(r[0] || '').trim()` to `String(r[0] || '').trim()`. Root cause: `fetchSheet` returns gviz rows where numeric cells (the Tasks!A column holds integer task IDs) come back as JS Number, not String. `(r[0] || '')` evaluated to the Number (truthy), and `Number.prototype.trim` does not exist, so the loop threw `TypeError: (r[0] || '').trim is not a function` and `loadTasks` failed without populating the tasks cache. Independent of the manual-entry feature; surfaced because Dylan reported the console error during this session.
+
+5. **CLAUDE.md updates**: added a "Two parallel job tables" item under Architecture Gotchas explaining the `public.jobs` vs `pec_prod_jobs` split, and a new "Manual job entries (temporary bridge)" section right after Architecture Gotchas. The new section documents the implicit `dripjobs_deal_id IS NULL` marker, the `MANUAL-` prefix on `proposal_number`, and the one-SQL bulk-remove that the next person can run when the full DripJobs import ships.
+
+What is NOT in this commit:
+
+- Writing manual jobs to `public.jobs` (the Jobs-page table). Skipped on purpose; the Jobs page does not currently surface PEC production jobs (those live in `pec_prod_jobs`), and the user confirmed the calendar is the immediate need. Extending this flow to dual-write later is a one-function addition if it becomes important.
+- A `source` column or any schema change on `pec_prod_jobs`. The implicit marker (`dripjobs_deal_id IS NULL`) avoids the migration round-trip.
+- An entry path from the Jobs page. The button only lives on Job Schedule because that is where the calendar is rendered. The Jobs page is currently reported as hanging on "Loading…"; the `loadTasks` fix above may resolve that, but if it does not, that is a separate diagnosis.
+- DripJobs API sync. Still the real migration; this is the bridge, not the replacement.
+- Editing existing manual jobs. Add-only. Editing flows through the existing "+ Schedule" modal once the job exists.
+
+Verification deferred to Dylan because the Job Schedule view requires a signed-in admin session against the live Supabase project. Local verification done: read-through of every code path the new function touches against the existing `openScheduleModal` it mirrors; confirmed `state.crews` is populated by `loadScheduleData` before the Add Job button is reachable (the button only renders inside `renderSchedule`, which awaits `loadScheduleData` first at index.html:6514); confirmed `customers.token` requirement matches the existing insert at index.html:5384; confirmed `pec_prod_jobs.proposal_number` UNIQUE NOT NULL constraint is satisfied by the timestamped MANUAL- prefix; confirmed `pec_prod_job_schedule_days` cascade on `pec_prod_jobs.id` deletion (supabase/migrations/2026-05-04_job_schedule.sql:31) so the rollback path is clean.
+
+Files touched: index.html, CLAUDE.md, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+After pushing and Netlify auto-deploys, hard-refresh hq-prescott.netlify.app and walk:
+
+1. TopCoat -> Job Schedule. New orange "+ Add Job" button in the toolbar to the left of the Weekly / Monthly toggle. Click it.
+2. Modal opens with five cards: Customer (name + phone + email), Job (address + value + quote # + scope), Crew (dropdown showing whatever is in `pec_prod_crews` where `active=true`; Kyle / Landen / Justin assuming those are the active rows), Install days (the same multi-day grid picker used by "+ Schedule").
+3. Smoke test: customer "TEST_DELETEME", phone blank, email blank, address "0 Test Ln", quote # blank, value 1, scope "delete me", crew Kyle, dates Mon 2026-05-18 + Tue 2026-05-19, Save. Expect success toast and the calendar refresh showing a two-day pill spanning Mon/Tue (full pill day 1, continuation sliver day 2). Then in Supabase Studio: confirm the `pec_prod_jobs` row has `proposal_number` starting `MANUAL-`, `dripjobs_deal_id IS NULL`, `customer_id` set, `status='scheduled'`, `install_date='2026-05-18'`, and there are two `pec_prod_job_schedule_days` rows for this job with `day_index` 0 and 1. Confirm TEST_DELETEME shows in TopCoat -> Customers. Then delete the test row (`delete from pec_prod_jobs where customer_name='TEST_DELETEME'`; the schedule_days cascade-delete; then `delete from customers where name='TEST_DELETEME'`).
+4. Real data: enter the ten DripJobs jobs from the May 18-24 list one at a time. Two need clarification first: Ralph Cirzan (dollar value was cut off in the original prompt, pull the actual value from DripJobs before entering) and Samuel AE Reprographics (crew was TBD, confirm crew assignment in DripJobs first). The other eight can be entered as-listed.
+5. While the manual jobs are on the calendar, verify the Customers and Jobs pages render (not stuck on "Loading…"). The `loadTasks` fix in this commit was a real bug but lives in a different code path; if Customers/Jobs still hang, that is a separate problem worth a follow-up session, not a blocker for this week's calendar.
+6. When the full DripJobs proposal-import script ships (queued from the 2026-05-17 friction-list handoff), run `delete from pec_prod_jobs where dripjobs_deal_id is null` to remove every manual entry. The schedule_days will cascade-delete; review orphan `customers` rows manually (most should be no-ops because the manual flow reuses existing customer rows by exact name).
+
+## Handoff to Cowork
+
+None.
+
+---
+
+## [2026-05-17 MST] dripjobs: appointment-set Zap debugged through three bugs to a working end-to-end install_date sync
+
+By: Cowork
+Changed: netlify/functions/pec-webhook-appointment-set.cjs (date parser now accepts M/D/YYYY in addition to YYYY-MM-DD / ISO 8601). PROJECT-LOG.md (this entry). External systems touched: Zapier (one Zap, three published versions v1 to v3), Supabase pec_prod_jobs (Bill Nance row written and reverted twice during smoke-test).
+
+Continuation of the prior Cowork entry below. After Dylan moved a real DripJobs deal to the install-scheduling stage to verify the live path, three bugs surfaced in sequence. Each is documented here so the next person debugging this chain does not relearn them.
+
+Bug 1: deal_id mapped to the wrong DripJobs field. v1 of the Zap sent `deal_id = Lead Job Id` (a 30-char hex UUID like `110660438715da7fe7bf9e4b049ee5`). The CRM column `pec_prod_jobs.dripjobs_deal_id` actually stores the short numeric proposal number (e.g. `2836531`), which DripJobs exposes via the Zapier trigger as `Lead Job Number`, not `Lead Job Id`. v1 would have silently returned `matched:false` on every fire. Caught by reading the existing 5 PEC pending rows out of Supabase, noticing the short numbers, and tracing back to the trigger payload. v2 remapped to `Lead Job Number`. Anyone editing this Zap: keep `Lead Job Number`; do NOT switch to `Lead Job Id`.
+
+Bug 2: filter stage value did not match DripJobs's actual stage name. v2 filtered on `Lead New Deal Stage` exactly matches `Scheduled`. DripJobs's stage is actually named `Project Scheduled`. Dylan triggered the Zap by moving a deal to that stage; the Zap fired but the filter blocked it (Zap History showed status "Filtered", 0 tasks). v3 changed the filter value to `Project Scheduled`. Same lesson: filter values must match DripJobs labels exactly, including the `Project ` prefix.
+
+Bug 3: install_date format mismatch. After v3 the Zap fired and reached the webhook, but the webhook returned 400 with `install_date must be YYYY-MM-DD or ISO 8601 timestamp`. DripJobs's `Lead Job Start Date` field is serialized as US-slash format (`6/18/2026`) when Zapier ships it through. Fixed at the webhook layer rather than at the Zapier mapping: the handler now also accepts `M/D/YYYY` and converts it to `YYYY-MM-DD` before the Supabase write. This keeps the Zap config small (no Formatter step needed) and means any future caller can use either format. Commit 91174da. Dylan pushed; Netlify auto-deployed.
+
+End-to-end verification, after all three fixes were live:
+
+1. Direct curl to the webhook with `{"deal_id":"smoke-test-MDYYYY","install_date":"6/18/2026"}` returned `{success:true, data:{matched:false, deal_id:"smoke-test-MDYYYY"}}` HTTP 200. Confirms the new date parser is deployed.
+2. Direct curl with a real CRM `dripjobs_deal_id` (`2836531`, Bill Nance) plus install_date `6/18/2026` returned `{success:true, data:{matched:true, job_id:"77ffcec4-d5e9-4b17-8daf-2f9e00e4cab1", install_date:"2026-06-18", previous_install_date:null}}` HTTP 200. Confirms the full path including the Supabase PATCH and the date format conversion. Bill Nance's `install_date` was then reverted to null.
+3. The actual Zap replay (Dylan's real DripJobs deal, proposal #2791680) ran clean through filter and POST after v3 + the M/D/YYYY fix. The webhook responded 200 `matched:false` because deal `2791680` has not been imported into `pec_prod_jobs` yet (no proposal-accepted webhook has fired for it). This is correct behavior; the handler's design is to silently no-op on unknown deals so DripJobs does not retry forever.
+
+What works now: any DripJobs deal that already lives in `pec_prod_jobs` (via the proposal-accepted bridge), when moved to stage `Project Scheduled`, will have its DripJobs `Lead Job Start Date` synced into `pec_prod_jobs.install_date` within ~1 minute, with no manual intervention. The CRM Job Schedule modal then pre-fills that date next time the PM opens it (per Claude Code's commit 994b6cb).
+
+What does NOT work yet: deals that exist only in DripJobs (no `pec_prod_jobs` row) silently return `matched:false`. This was already on the friction list as F7 and the Claude Code task 5 (DripJobs proposal-import script). When that ships, the appointment-set flow will cover net-new deals too.
+
+Files touched: netlify/functions/pec-webhook-appointment-set.cjs, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+Two follow-up items.
+
+1. Verify the modal pre-fill end-to-end once. Move any of the 5 PEC pending jobs (Bill Nance / Haley Construction / Wayne Rhodes / Alex Medenica / Justin Wildman) to `Project Scheduled` in DripJobs with an install date set. Within a minute, that job in CRM Pending Jobs should pre-fill the date when you click `+ Schedule`. If it does, the F1 + F5 fixes plus this whole webhook chain are confirmed in production.
+
+2. Once Claude Code ships the DripJobs proposal-import (task 5 from the 2026-05-17 friction-list handoff below), the `matched:false` no-op path will start hitting matched:true for new deals too. Nothing for you to do until then; just expect more Pending Jobs to appear with install dates pre-filled.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-17 MST] dashboard: Phase 3, CRM views become the main sidebar; SOPs moves top-right; Cockpit is bottom-card only
 
 By: Claude Code

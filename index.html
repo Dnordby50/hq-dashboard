@@ -3071,7 +3071,7 @@ async function loadTasks() {
       const tasks = [];
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i];
-        if (!r || !(r[0] || '').trim()) continue;
+        if (!r || !String(r[0] || '').trim()) continue;
         tasks.push({
           id: parseInt(r[0]) || Date.now() + i,
           text: r[1] || '',
@@ -4873,7 +4873,7 @@ const state = {
   openJobId: null, openCustomerId: null,
   // Job Schedule + Job Costing (PEC production)
   crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {},
-  scheduleView: 'weekly', scheduleAnchor: null, scheduleEdit: null,
+  scheduleView: 'monthly', scheduleAnchor: null, scheduleEdit: null,
   costing: [], costingFilter: 'all',
 };
 window.pecState = state;
@@ -6549,6 +6549,7 @@ async function renderSchedule() {
           <button class="pec-btn sm" id="pecSchedNext">›</button>
           <span class="pec-sched-period" id="pecSchedPeriod"></span>
           <span style="margin-left:auto"></span>
+          <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
           <button class="pec-btn sm ${state.scheduleView==='weekly'?'primary':''}" id="pecSchedWeekly">Weekly</button>
           <button class="pec-btn sm ${state.scheduleView==='monthly'?'primary':''}" id="pecSchedMonthly">Monthly</button>
         </div>
@@ -6557,6 +6558,7 @@ async function renderSchedule() {
     </div>
   `;
 
+  $('pecSchedAddJob').addEventListener('click', () => openAddJobModal());
   $('pecSchedWeekly').addEventListener('click', () => { state.scheduleView = 'weekly'; renderSchedule(); });
   $('pecSchedMonthly').addEventListener('click', () => { state.scheduleView = 'monthly'; renderSchedule(); });
   $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
@@ -6586,10 +6588,9 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   for (const d of state.scheduleDays) (daysByJob[d.job_id] ||= []).push(d);
   for (const k in daysByJob) daysByJob[k].sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
 
-  // Helper: build event metadata for a job. The pill renders three lines on
-  // the first scheduled day (customer, crew, revenue) plus a continuation
-  // sliver on subsequent days, with a tooltip carrying the full one-line
-  // context so overflow stays accessible.
+  // Helper: build event metadata for a job. Full meta (customer, crew,
+  // revenue) shows on the day the job starts; continuation days show just
+  // the customer name. A tooltip carries the full one-line context.
   const eventFor = (jobId) => {
     const job = state.prodJobs.find(j => j.id === jobId); if (!job) return null;
     const sys = areaSystem(job);
@@ -6613,38 +6614,67 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     };
   };
 
+  // Compute per-cell events with segment metadata so multi-day spans render
+  // as ONE connected bar (rounded at the start of the job, rounded at the
+  // end of the job, square in the middle). The bar wraps cleanly at week
+  // boundaries: the last day of one week-row gets `seg-end-cont`, the
+  // first day of the next gets `seg-start-cont` so the eye still tracks it
+  // as the same job.
+  const buildCells = (days, cols) => {
+    const cellsRaw = days.map(d => {
+      const iso = isoDate(d);
+      return state.scheduleDays
+        .filter(sd => sd.scheduled_date === iso)
+        .map(sd => ({ sd, ev: eventFor(sd.job_id) }))
+        .filter(e => e.ev);
+    });
+    return cellsRaw.map((rawEvents, idx) => rawEvents.map(e => {
+      const all = daysByJob[e.sd.job_id] || [];
+      const isJobStart = all[0] && all[0].id === e.sd.id;
+      const isJobEnd = all.length > 0 && all[all.length - 1].id === e.sd.id;
+      const prevSame = idx % cols !== 0
+        && (cellsRaw[idx - 1] || []).some(p => p.sd.job_id === e.sd.job_id);
+      const nextSame = idx % cols !== cols - 1
+        && (cellsRaw[idx + 1] || []).some(p => p.sd.job_id === e.sd.job_id);
+      let segClass;
+      if (!prevSame && !nextSame) segClass = 'seg-solo';
+      else if (!prevSame) segClass = isJobStart ? 'seg-start' : 'seg-start-cont';
+      else if (!nextSame) segClass = isJobEnd ? 'seg-end' : 'seg-end-cont';
+      else segClass = 'seg-mid';
+      return { ...e, segClass, showMeta: isJobStart };
+    }));
+  };
+
+  const chipHtml = (e, monthly) => `
+    <div class="pec-cal-event ${e.segClass}${monthly ? ' month' : ''}"
+         data-event-job="${esc(e.sd.job_id)}"
+         title="${esc(e.ev.tooltip)}"
+         style="--ev-color:${esc(e.ev.color)}">
+      <div class="pec-cal-event-name">${esc(e.ev.customer || '(no name)')}</div>
+      ${e.showMeta ? `
+        ${e.ev.crew ? `<div class="pec-cal-event-meta">${esc(e.ev.crew)}</div>` : ''}
+        ${e.ev.revLabel ? `<div class="pec-cal-event-meta">${esc(e.ev.revLabel)}</div>` : ''}
+      ` : ''}
+    </div>
+  `;
+
   if (state.scheduleView === 'weekly') {
     const weekStart = startOfWeek(anchor);
     const weekEnd = addDays(weekStart, 6);
     periodEl.textContent = `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
     const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-    // For each day, find schedule_days that fall on it
-    const cells = days.map(d => {
-      const iso = isoDate(d);
-      const events = state.scheduleDays.filter(sd => sd.scheduled_date === iso).map(sd => {
-        const all = daysByJob[sd.job_id] || [];
-        const isFirst = all[0] && all[0].id === sd.id;
-        return { sd, isFirst, ev: eventFor(sd.job_id) };
-      }).filter(e => e.ev);
-      return { d, iso, events };
-    });
+    const eventsPerCell = buildCells(days, 7);
 
     host.innerHTML = `
       <div class="pec-cal-week">
         ${days.map(d => `<div class="day-h">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>`).join('')}
-        ${cells.map(c => `
-          <div class="day-c ${sameDay(c.d, today)?'today':''}">
-            <div class="day-num">${c.d.getDate()}</div>
-            ${c.events.map(e => `
-              <div class="pec-cal-event ${e.isFirst?'':'cont'}" data-event-job="${esc(e.sd.job_id)}" title="${esc(e.ev.tooltip)}" style="--ev-color:${esc(e.ev.color)};${e.isFirst ? '' : 'border-top-style:dashed'}">
-                ${e.isFirst ? `
-                  <div class="pec-cal-event-name">${esc(e.ev.customer)}</div>
-                  ${e.ev.crew ? `<div class="pec-cal-event-meta">${esc(e.ev.crew)}</div>` : ''}
-                  ${e.ev.revLabel ? `<div class="pec-cal-event-meta">${esc(e.ev.revLabel)}</div>` : ''}
-                ` : '·'}
-              </div>
-            `).join('')}
+        ${days.map((d, idx) => `
+          <div class="day-c ${sameDay(d, today)?'today':''}">
+            <div class="day-num">${d.getDate()}</div>
+            <div class="day-events">
+              ${eventsPerCell[idx].map(e => chipHtml(e, false)).join('')}
+            </div>
           </div>
         `).join('')}
       </div>
@@ -6656,32 +6686,23 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
     periodEl.textContent = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
+    const eventsPerCell = buildCells(days, 7);
+
     host.innerHTML = `
       <div class="pec-cal-month">
         ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
-        ${days.map(d => {
-          const iso = isoDate(d);
+        ${days.map((d, idx) => {
           const inMonth = d.getMonth() === first.getMonth();
-          const events = state.scheduleDays.filter(sd => sd.scheduled_date === iso).map(sd => {
-            const all = daysByJob[sd.job_id] || [];
-            const isFirst = all[0] && all[0].id === sd.id;
-            return { sd, isFirst, ev: eventFor(sd.job_id) };
-          }).filter(e => e.ev);
+          const events = eventsPerCell[idx];
           const visible = events.slice(0, 3);
           const more = events.length - visible.length;
           return `
             <div class="day-c ${inMonth?'':'dim'} ${sameDay(d, today)?'today':''}">
               <div class="day-num">${d.getDate()}</div>
-              ${visible.map(e => `
-                <div class="pec-cal-event ${e.isFirst?'':'cont'}" data-event-job="${esc(e.sd.job_id)}" title="${esc(e.ev.tooltip)}" style="--ev-color:${esc(e.ev.color)};font-size:.62rem;margin-top:2px">
-                  ${e.isFirst ? `
-                    <div class="pec-cal-event-name">${esc(e.ev.customer)}</div>
-                    ${e.ev.crew ? `<div class="pec-cal-event-meta">${esc(e.ev.crew)}</div>` : ''}
-                    ${e.ev.revLabel ? `<div class="pec-cal-event-meta">${esc(e.ev.revLabel)}</div>` : ''}
-                  ` : '·'}
-                </div>
-              `).join('')}
-              ${more > 0 ? `<div style="font-size:.6rem;color:var(--muted);margin-top:2px">+${more} more</div>` : ''}
+              <div class="day-events">
+                ${visible.map(e => chipHtml(e, true)).join('')}
+                ${more > 0 ? `<div class="day-more">+${more} more</div>` : ''}
+              </div>
             </div>
           `;
         }).join('')}
@@ -6892,6 +6913,255 @@ function openScheduleModal(jobId) {
         }
         closeModal();
         renderSchedule();
+      });
+    },
+  });
+}
+
+// ============================================================
+// Manual job entry (temporary DripJobs bridge)
+// ============================================================
+// Adds a customer + pec_prod_jobs row + N pec_prod_job_schedule_days rows in
+// one form so jobs that did not flow through the DripJobs proposal-accepted
+// webhook can still land on the calendar. Manual rows are marked implicitly:
+// dripjobs_deal_id stays null. Every webhook-sourced row has it set, so a
+// single SQL (delete from pec_prod_jobs where dripjobs_deal_id is null) wipes
+// every manual row when the full DripJobs import script ships. See CLAUDE.md
+// "Manual job entries (temporary bridge)" for the deletion procedure.
+function openAddJobModal() {
+  const today = new Date();
+  const draft = {
+    customer_name: '',
+    phone: '',
+    email: '',
+    address: '',
+    quote_number: '',
+    revenue: '',
+    crew_id: '',
+    selectedDates: [],
+    pickerMonth: new Date(today.getFullYear(), today.getMonth(), 1),
+    scope: '',
+  };
+
+  // Same multi-day picker shape as openScheduleModal. Click toggles a date in
+  // or out of selectedDates; the day_index of each scheduled day is the index
+  // of its iso string in the *sorted* selectedDates array at save time, so the
+  // click order does not have to be left-to-right.
+  const renderBody = (modal) => {
+    const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
+    const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
+    const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const idxFor = (iso) => {
+      const sorted = draft.selectedDates.slice().sort();
+      return sorted.indexOf(iso) + 1;
+    };
+    modal.querySelector('#addJobDayGrid').innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <button type="button" class="pec-btn sm ghost" id="addJobPickerPrev">‹</button>
+        <div style="flex:1;text-align:center;font-weight:600;font-size:.85rem">${monthLabel}</div>
+        <button type="button" class="pec-btn sm ghost" id="addJobPickerNext">›</button>
+      </div>
+      <div class="pec-day-grid">
+        ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
+        ${days.map(d => {
+          const iso = isoDate(d);
+          const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
+          const idx = idxFor(iso);
+          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add or remove. Multi-day jobs span all selected days on the calendar.</div>
+    `;
+    modal.querySelector('#addJobPickerPrev').addEventListener('click', () => {
+      draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() - 1, 1);
+      renderBody(modal);
+    });
+    modal.querySelector('#addJobPickerNext').addEventListener('click', () => {
+      draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() + 1, 1);
+      renderBody(modal);
+    });
+    modal.querySelectorAll('[data-pick]').forEach(c => c.addEventListener('click', () => {
+      const iso = c.dataset.pick;
+      const i = draft.selectedDates.indexOf(iso);
+      if (i >= 0) draft.selectedDates.splice(i, 1);
+      else draft.selectedDates.push(iso);
+      renderBody(modal);
+    }));
+  };
+
+  // The crew list comes from state.crews which loadScheduleData populated when
+  // the user first hit the schedule view. If they jumped straight to Add Job
+  // without rendering the schedule first the list could be empty, so include
+  // a defensive empty-state.
+  const crewOptions = (state.crews || []).filter(c => c.active).map(c =>
+    `<option value="${esc(c.id)}">${esc(c.name)}</option>`
+  ).join('');
+
+  openModal(`
+    <div class="prod-modal-wide" style="max-width:760px;margin:auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+        <div>
+          <h3 style="margin:0">Add job</h3>
+          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">Manually book a job and schedule its install days. Temporary bridge until full DripJobs sync ships.</div>
+        </div>
+        <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
+      </div>
+
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Customer</div>
+        <div class="pec-field" style="margin-bottom:8px"><label>Customer name <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobName" placeholder="e.g. Kevin Brown" autocomplete="off"></div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Phone</label><input id="addJobPhone" placeholder="Optional"></div>
+          <div class="pec-field"><label>Email</label><input id="addJobEmail" type="email" placeholder="Optional"></div>
+        </div>
+      </div>
+
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Job</div>
+        <div class="pec-field" style="margin-bottom:8px"><label>Service address <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobAddress" placeholder="Street, City, State"></div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Job value ($) <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobValue" type="number" min="0" step="0.01" placeholder="e.g. 8350"></div>
+          <div class="pec-field"><label>Proposal or quote #</label><input id="addJobQuote" placeholder="Optional, e.g. DripJobs proposal #"></div>
+        </div>
+        <div class="pec-field" style="margin-top:8px"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
+      </div>
+
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Crew</div>
+        <div class="pec-field">
+          <select id="addJobCrew">
+            <option value="">Pick a crew…</option>
+            ${crewOptions}
+          </select>
+        </div>
+        ${crewOptions ? '' : '<div style="font-size:.7rem;color:var(--muted);margin-top:6px">No active crews loaded. Open Settings → Crews first.</div>'}
+      </div>
+
+      <div class="pec-card" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Install days <span style="color:var(--accent,#D8531C)">*</span></div>
+        <div id="addJobDayGrid"></div>
+      </div>
+
+      <div class="pec-modal-actions">
+        <span style="flex:1"></span>
+        <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button class="pec-btn primary" id="addJobSave">Save job</button>
+      </div>
+      <div class="prod-msg-err" id="addJobError"></div>
+    </div>
+  `, {
+    onMount(modal) {
+      renderBody(modal);
+      modal.querySelector('#addJobName').addEventListener('input', e => { draft.customer_name = e.target.value; });
+      modal.querySelector('#addJobPhone').addEventListener('input', e => { draft.phone = e.target.value; });
+      modal.querySelector('#addJobEmail').addEventListener('input', e => { draft.email = e.target.value; });
+      modal.querySelector('#addJobAddress').addEventListener('input', e => { draft.address = e.target.value; });
+      modal.querySelector('#addJobValue').addEventListener('input', e => { draft.revenue = e.target.value; });
+      modal.querySelector('#addJobQuote').addEventListener('input', e => { draft.quote_number = e.target.value; });
+      modal.querySelector('#addJobScope').addEventListener('input', e => { draft.scope = e.target.value; });
+      modal.querySelector('#addJobCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
+
+      modal.querySelector('#addJobSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#addJobError'); errEl.textContent = '';
+        const name = draft.customer_name.trim();
+        const address = draft.address.trim();
+        const revenueNum = Number(draft.revenue);
+
+        if (!name) return errEl.textContent = 'Customer name is required.';
+        if (!address) return errEl.textContent = 'Service address is required.';
+        if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Job value must be a positive number.';
+        if (!draft.crew_id) return errEl.textContent = 'Pick a crew.';
+        if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+
+        const saveBtn = modal.querySelector('#addJobSave');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+
+        let createdJobId = null;
+        try {
+          // 1. Customer: reuse exact-name match within PEC company, else insert.
+          const lookup = await supabase.from('customers')
+            .select('id')
+            .eq('name', name)
+            .eq('company', 'prescott-epoxy')
+            .limit(1);
+          if (lookup.error) throw lookup.error;
+          let customerId;
+          if (lookup.data && lookup.data.length) {
+            customerId = lookup.data[0].id;
+          } else {
+            const custIns = await supabase.from('customers').insert({
+              name,
+              phone: draft.phone.trim() || null,
+              email: draft.email.trim() || null,
+              company: 'prescott-epoxy',
+              token: randomToken(),
+            }).select('id').single();
+            if (custIns.error) throw custIns.error;
+            customerId = custIns.data.id;
+          }
+
+          // 2. Generate a unique proposal_number. pec_prod_jobs.proposal_number
+          // is UNIQUE NOT NULL but DripJobs deal_ids are short numerics; the
+          // MANUAL- prefix guarantees no collision.
+          const n = new Date();
+          const pad = x => String(x).padStart(2, '0');
+          const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+          const proposalNumber = `MANUAL-${stamp}`;
+
+          // 3. Notes field carries the optional quote # and the scope text.
+          const notesParts = [];
+          if (draft.quote_number.trim()) notesParts.push(`Quote #${draft.quote_number.trim()}`);
+          if (draft.scope.trim()) notesParts.push(draft.scope.trim());
+          const notes = notesParts.join('\n\n') || null;
+
+          // 4. pec_prod_jobs row. dripjobs_deal_id stays null, the implicit
+          // marker for manual entries.
+          const sortedIso = draft.selectedDates.slice().sort();
+          const jobIns = await supabase.from('pec_prod_jobs').insert({
+            proposal_number: proposalNumber,
+            customer_id: customerId,
+            customer_name: name,
+            address,
+            revenue: revenueNum,
+            install_date: sortedIso[0],
+            status: 'scheduled',
+            crew_id: draft.crew_id,
+            notes,
+          }).select('id').single();
+          if (jobIns.error) throw jobIns.error;
+          createdJobId = jobIns.data.id;
+
+          // 5. One schedule_days row per selected date. day_index follows the
+          // sorted date order so the calendar renders day 1, day 2, etc.
+          // left-to-right.
+          const dayRows = sortedIso.map((iso, idx) => ({
+            job_id: createdJobId,
+            scheduled_date: iso,
+            day_index: idx,
+            crew_id: draft.crew_id,
+          }));
+          const dayIns = await supabase.from('pec_prod_job_schedule_days').insert(dayRows);
+          if (dayIns.error) {
+            // Clean up the orphan pec_prod_jobs row so the next attempt does
+            // not collide on proposal_number or leave dangling data. The
+            // customers row is left alone (harmless if orphaned, and may be
+            // a pre-existing customer we just looked up).
+            await supabase.from('pec_prod_jobs').delete().eq('id', createdJobId);
+            throw dayIns.error;
+          }
+
+          closeModal();
+          showToast(`Added job for ${esc(name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
+          // Pin the calendar to the first scheduled day so the new pill is
+          // visible without scrolling.
+          state.scheduleAnchor = sortedIso[0];
+          await renderSchedule();
+        } catch (err) {
+          errEl.textContent = 'Save failed: ' + (err.message || err);
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save job';
+        }
       });
     },
   });
@@ -8290,20 +8560,35 @@ if (portalToken) {
   .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
   .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
   .pec-sched-period { font-weight:600; font-size:.95rem; min-width:200px; text-align:center }
-  .pec-cal-week { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:4px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden }
+  .pec-cal-week { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden }
   .pec-cal-week .day-h { background:var(--rd-soft, var(--s2)); font-size:.7rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:8px; text-align:center; font-weight:600 }
-  .pec-cal-week .day-c { background:var(--rd-card, var(--s1)); min-height:140px; padding:6px; position:relative; display:flex; flex-direction:column; gap:4px }
+  .pec-cal-week .day-c { background:var(--rd-card, var(--s1)); min-height:220px; padding:6px 0; position:relative; display:flex; flex-direction:column }
   .pec-cal-week .day-c.today { box-shadow: inset 0 0 0 2px var(--rd-accent, var(--accent)) }
-  .pec-cal-week .day-c .day-num { font-size:.8rem; color:var(--muted); margin-bottom:2px }
+  .pec-cal-week .day-c .day-num { font-size:.8rem; color:var(--muted); margin-bottom:4px; padding:0 6px }
+  .pec-cal-week .day-events { display:flex; flex-direction:column; gap:4px }
   .pec-cal-month { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden }
   .pec-cal-month .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
-  .pec-cal-month .day-c { background:var(--rd-card, var(--s1)); min-height:88px; padding:4px; position:relative }
+  .pec-cal-month .day-c { background:var(--rd-card, var(--s1)); min-height:110px; padding:4px 0; position:relative; display:flex; flex-direction:column }
   .pec-cal-month .day-c.dim { background:var(--rd-softer, rgba(0,0,0,.03)) }
   .pec-cal-month .day-c.today .day-num { color:var(--rd-accent, var(--accent)); font-weight:700 }
-  .pec-cal-month .day-c .day-num { font-size:.7rem; color:var(--muted) }
-  .pec-cal-event { padding:4px 6px; border-radius:4px; font-size:.7rem; cursor:pointer; line-height:1.25; border-top:3px solid var(--ev-color, #888); background:var(--rd-soft, rgba(255,255,255,.04)); overflow:hidden }
-  .pec-cal-event.cont { color:transparent; user-select:none; padding:2px 6px }
-  .pec-cal-event:hover { filter:brightness(1.05) }
+  .pec-cal-month .day-c .day-num { font-size:.7rem; color:var(--muted); padding:0 4px; margin-bottom:2px }
+  .pec-cal-month .day-events { display:flex; flex-direction:column; gap:2px }
+  .pec-cal-month .day-more { font-size:.6rem; color:var(--muted); padding:0 4px; margin-top:2px }
+  /* Multi-day spanning bars: chips fill the cell horizontally and use the */
+  /* segment class to round only at the start / end of the job. Adjacent   */
+  /* day cells have only a 1px grid-gap divider, so consecutive bars read  */
+  /* as one continuous event.                                              */
+  .pec-cal-event { padding:4px 8px; font-size:.7rem; cursor:pointer; line-height:1.25; background:color-mix(in srgb, var(--ev-color, #6366f1) 18%, transparent); color:var(--fg, #0f172a); overflow:hidden; border-radius:0; position:relative }
+  .pec-cal-event.month { font-size:.62rem; padding:3px 6px }
+  .pec-cal-event:hover { filter:brightness(1.08) }
+  .pec-cal-event.seg-solo  { border-radius:6px; margin:0 4px }
+  .pec-cal-event.seg-start { border-radius:6px 0 0 6px; margin-left:4px }
+  .pec-cal-event.seg-end   { border-radius:0 6px 6px 0; margin-right:4px }
+  .pec-cal-event.seg-mid   { border-radius:0 }
+  .pec-cal-event.seg-start-cont { border-radius:2px 0 0 2px; margin-left:4px; opacity:.92 }
+  .pec-cal-event.seg-end-cont   { border-radius:0 2px 2px 0; margin-right:4px; opacity:.92 }
+  .pec-cal-event.seg-solo::before,
+  .pec-cal-event.seg-start::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--ev-color, #6366f1); border-radius:6px 0 0 6px }
   .pec-cal-event-name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .pec-cal-event-meta { font-size:.62rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   /* Toast notifications */
