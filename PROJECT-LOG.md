@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: loadTasks String() fix on the done column; job_areas migration confirmed applied; Cockpit failure re-diagnosed as Apps Script CORS
+
+By: Claude Code
+Changed: index.html.
+
+Three things, after Cowork reported back on the prior entry's handoffs.
+
+1. `loadTasks` bug fix at index.html:3084. The "done" column read `(r[2] || '').toLowerCase()`. When the Tasks sheet returns that cell as a boolean or number (gviz does this for non-string cells), `.toLowerCase()` throws because Number/Boolean has no such method, and `loadTasks` fails. Wrapped it: `String(r[2] || '').toLowerCase()`. This is the exact same gviz-numeric pattern fixed on 2026-05-17 for `r[0]` in the same function (index.html:3080); Cowork spotted that `r[2]` still had it. The other cells in the loop (`r[1]`, `r[3]`, `r[4]`) are only used as plain values or with `||`, so they do not need the cast.
+
+2. The `job_areas` migration from the previous entry was applied to the live Supabase project by Cowork; the acceptance query passed. The previous commit (06b65f7, the per-area job detail redesign) is therefore safe to deploy and is pushed together with this fix.
+
+3. Cockpit booked sales / booked jobs failure, corrected diagnosis. The previous entry called it an unreachable Apps Script proxy. Cowork checked: the Apps Script web app is alive and deployed. The real cause is CORS: the proxy's response is missing the `Access-Control-Allow-Origin: *` header, so the browser rejects it and `fetch()` surfaces "failed to fetch". The fix is in the Apps Script project itself (`Code.gs`, the `doGet` response headers), followed by redeploying a new version. That is not in this repo and not a Claude Code change; it stays a Cowork/Dylan task. `CONFIG.SHEETS_PROXY` (index.html:1930) does not need to change, the URL is correct.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan. Local sanity check: `String(r[2] || '')` is a one-token change mirroring the proven 2026-05-17 fix in the same loop.
+
+## Handoff to Cowork
+
+None. (Outstanding non-Claude-Code item: the Apps Script `Code.gs` CORS header fix + redeploy, per item 3 above. That is Cowork/Dylan's to carry; nothing for Claude Code to do in this repo.)
+
+---
+
 ## [2026-05-19 MST] dashboard: CRM job detail rebuilt around per-area boxes (sqft + system type + flake/basecoat), Colors section removed; Cockpit revenue outage triaged
 
 By: Claude Code

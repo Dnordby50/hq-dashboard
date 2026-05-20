@@ -3081,7 +3081,7 @@ async function loadTasks() {
         tasks.push({
           id: parseInt(r[0]) || Date.now() + i,
           text: r[1] || '',
-          done: (r[2] || '').toLowerCase() === 'true',
+          done: String(r[2] || '').toLowerCase() === 'true',
           source: r[3] || 'manual',
           created: r[4] || ''
         });
