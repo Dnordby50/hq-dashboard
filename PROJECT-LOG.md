@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: Sheets calls routed through a Netlify reverse-proxy function (fixes the Cockpit CORS failure)
+
+By: Claude Code
+Changed: index.html, netlify/functions/sheets-proxy.js (new).
+
+Carries out the Cowork handoff for the Cockpit booked-sales/jobs outage. Per the 2026-05-19 entries, the failure is CORS: the Google Apps Script `/exec` endpoint serves correct data but its responses lack `Access-Control-Allow-Origin`, so the browser rejects cross-origin GET reads and `fetch()` surfaces "failed to fetch". Rather than change the Apps Script, the fix moves the call server-side.
+
+1. New Netlify function `netlify/functions/sheets-proxy.js`. A reverse proxy: the browser hits it same-origin (no CORS), it fetches the Apps Script `/exec` URL server-side (no CORS applies server to server), and returns the result. GET requests forward the `id` + `range` query string (sheet reads); POST requests forward the JSON body (sheet writes). It always returns `Content-Type: application/json` and permissive CORS headers, and answers `OPTIONS` preflight. The Apps Script v5 deployment URL (the same `AKfycbx…/exec` value that used to sit in `CONFIG.SHEETS_PROXY`, already public in the committed HTML, so not a new secret) is the single hardcoded constant in the function. Uses `exports.handler` and global `fetch`, matching the existing `sop-chat.js` function (esbuild bundles it to CJS for the Netlify runtime, same as that sibling).
+
+2. `CONFIG.SHEETS_PROXY` (index.html:1930) changed from the direct `script.google.com/macros/s/AKfycbx…/exec` URL to the relative path `/.netlify/functions/sheets-proxy`. Every existing caller works unchanged: `fetchSheet` appends `?id=&range=` (GET reads, booked jobs, tasks, cowork tab, emails); `syncAllTasks`, `syncBrainDumpToSheet`, and `saveCoachSession` POST JSON bodies (writes). `sheetsApiReady()` still passes (the path is truthy). `syncBrainDumpToSheet`'s `.replace('/exec','/exec')` becomes a harmless no-op. The POST callers keep their `mode:'no-cors'` (harmless on a same-origin request; they do not read the response anyway).
+
+The second handoff item, the `loadTasks` numeric bug at index.html:3084, was already fixed and shipped in commit d37a516 (`String(r[2] || '').toLowerCase()`); confirmed still in place, no action needed.
+
+Files touched: index.html, netlify/functions/sheets-proxy.js, PROJECT-LOG.md.
+
+Verification deferred to Dylan. Local sanity check: `node --check` clean on the new function; traced that every `CONFIG.SHEETS_PROXY` call site (GET via `fetchSheet`, the three POST writers) keeps working against the relative path. After Netlify deploys, the Cockpit booked sales / booked jobs panels should populate; if they still fail, check the function logs in the Netlify dashboard for the upstream Apps Script response.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-19 MST] dashboard: loadTasks String() fix on the done column; job_areas migration confirmed applied; Cockpit failure re-diagnosed as Apps Script CORS
 
 By: Claude Code
