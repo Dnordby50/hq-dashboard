@@ -50,6 +50,13 @@ Run it in the Supabase SQL editor. Acceptance: `public.jobs` has a new `system_t
 
 After it succeeds: report back to Dylan that the migration is applied, and tell Claude Code (or Dylan) it is safe to push the commit. Append a note to this PROJECT-LOG entry with `By: Cowork` confirming the migration ran and the date.
 
+## Cowork confirmation
+
+By: Cowork
+Date: 2026-05-19 MST
+
+Migration applied to the live PEC Supabase project (HQ Dashboard, project id zdfpzmmrgotynrwkeakd) via the Supabase SQL editor. Ran the ALTER TABLE + CREATE INDEX block exactly as written in the handoff (the file at supabase/migrations/2026-05-19_jobs_system_type.sql). Editor reported "Success. No rows returned." Acceptance check `select system_type_id from public.jobs limit 1;` then returned 1 row with `system_type_id = NULL`, confirming the column exists, is nullable, and is not populated. No other tables or columns were touched. The local commit (6d4e7b4 on the hq-dashboard repo) is now safe to push.
+
 ## Handoff to Dylan
 
 This commit is staged locally but intentionally NOT pushed. Once Cowork confirms the migration above is applied, push it (or tell Claude Code to push). Then hard-refresh hq-prescott.netlify.app and check:
