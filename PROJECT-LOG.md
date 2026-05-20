@@ -4,6 +4,63 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: CRM Jobs card slimmed down (system type added, package/warranty/monthly-payment/timeline removed) + Customers page jobs-expansion and two bug fixes
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-19_jobs_system_type.sql (new).
+
+Dylan reviewed the CRM Jobs and Customers pages and asked for a cleanup pass on both. This commit covers all of it. IMPORTANT: this commit is NOT yet pushed. It depends on a Supabase migration that has to run first (see Handoff to Cowork). Pushing before the migration runs would break every job save, because the Jobs form now always sends a `system_type_id` field and Supabase rejects an insert/update naming a column that does not exist yet.
+
+Jobs page changes (`openNewJobForm` ~index.html:5669, `renderJobDetail` ~index.html:5827):
+
+1. Removed three fields PEC does not use from both the New Job modal and the job detail edit form: Package, Warranty, Monthly Payment. The underlying `public.jobs` columns (`package`, `warranty`, `monthly_payment`) are intentionally left in place; this is a UI-only removal, no destructive migration. Because both forms build their save payload with `Object.fromEntries(new FormData(...))`, dropping the inputs drops the keys automatically. The numeric-coercion loops that used to parse `price` and `monthly_payment` now parse `price` only.
+
+2. Added a System Type dropdown to both forms. It reuses the same list the production / ordering flow uses, `public.pec_prod_system_types` (the select markup mirrors the ordering select at index.html ~6795). `state.systemTypes` is only populated by `loadScheduleData` when the schedule view is visited, so the Jobs page cannot rely on it; both job functions now fetch `pec_prod_system_types` themselves (added to the `Promise.all` in each). The dropdown has a leading blank "No system type" option so it is optional. The selected value is stored in a new `public.jobs.system_type_id` column (see migration below).
+
+3. Removed the Timeline stepper entirely. The `timeline_stages` table is no longer read or written: the Timeline card is gone from the job detail, the per-stage change handler is gone, `timeline_stages(*)` is dropped from the job detail SELECT, and the New Job flow no longer seeds stage rows on create. The `timeline_stages` table itself is left in the database (non-destructive); it was referenced nowhere else (the customer portal does not read it, confirmed by grep). In its place, the job status now lives in a dedicated card pinned at the top of the job detail: a labeled status `<select>` plus a live badge. Changing it saves immediately (`jobs.update({status})`) and re-renders, the same instant-save pattern the old timeline selects used. The status field was removed from the Details form to avoid two controls writing the same column; the read-only status badge was removed from the toolbar for the same reason (the type badge stays).
+
+Customers page changes (`renderCustomers` ~index.html:5201):
+
+4. Bug fix: opening an existing customer left the first name / last name and the entire billing address blank. Root cause: the customers list SELECT only fetched `id,name,email,phone,company,token,created_at,archived_at,jobs(count)`, but `openCustomerForm` reads `c.first_name`, `c.last_name`, `c.company_name`, `c.billing_address_line1..billing_zip`, `c.lead_source`, and `c.tags` off the same row object. None of those were fetched, so the form always rendered them empty. Fixed by extending the SELECT to also fetch all of those columns. They have existed in the schema since the 2026-05-04_customer_fields migration; this was purely a missing-projection bug.
+
+5. New feature: clicking a customer's name expands a panel directly under their row listing that customer's jobs (address plus a type badge and a status badge). The name cell is now a chevron button; jobs are fetched lazily on first expand (`jobs` where `customer_id` matches and not archived, newest first) and cached on the in-memory customer object so re-expanding does not re-query. Clicking a job in the panel navigates to that job's detail in the Jobs view (the existing `state.view` / `state.openJobId` / `switchView` pattern). Because the whole-row click that used to open the edit form is now used for expansion, an explicit "Edit" button was added to each row's actions cell next to "Copy link"; the sixth column header is renamed from "Portal" to "Actions".
+
+Migration (new file, supabase/migrations/2026-05-19_jobs_system_type.sql): adds a nullable `system_type_id uuid` column to `public.jobs` referencing `public.pec_prod_system_types(id)` with `on delete set null`, plus a partial index. Idempotent, non-destructive, safe to re-run.
+
+Files touched: index.html, supabase/migrations/2026-05-19_jobs_system_type.sql, PROJECT-LOG.md.
+
+Verification deferred to Dylan because the CRM requires a signed-in admin session against live Supabase. Local sanity check: traced both job save paths (new + edit) and confirmed they now send `price` and `system_type_id` only from the changed set; confirmed the customers SELECT change is the complete fix for the populate bug because `openCustomerForm` already reads every one of the newly-fetched columns; traced the expand handler (toggle, lazy fetch, cache, job-link navigation).
+
+## Handoff to Cowork
+
+One database migration must run BEFORE this commit is pushed and deployed. Until it runs, every job save on the CRM Jobs page will fail (the form sends a `system_type_id` field for a column that does not exist yet).
+
+Task: Apply migration `supabase/migrations/2026-05-19_jobs_system_type.sql` to the live PEC Supabase project (the same project that backs `pec_prod_jobs`, `customers`, `jobs`). The file contents:
+
+```sql
+alter table public.jobs
+  add column if not exists system_type_id uuid
+  references public.pec_prod_system_types(id) on delete set null;
+
+create index if not exists idx_jobs_system_type
+  on public.jobs(system_type_id) where system_type_id is not null;
+```
+
+Run it in the Supabase SQL editor. Acceptance: `public.jobs` has a new `system_type_id` column (nullable, no rows populated), and `select system_type_id from public.jobs limit 1;` runs without error. It is idempotent, so re-running is harmless.
+
+After it succeeds: report back to Dylan that the migration is applied, and tell Claude Code (or Dylan) it is safe to push the commit. Append a note to this PROJECT-LOG entry with `By: Cowork` confirming the migration ran and the date.
+
+## Handoff to Dylan
+
+This commit is staged locally but intentionally NOT pushed. Once Cowork confirms the migration above is applied, push it (or tell Claude Code to push). Then hard-refresh hq-prescott.netlify.app and check:
+
+1. CRM -> Jobs -> open a job: no Package / Warranty / Monthly Payment fields, no Timeline card, a Job status control sits at the top. Change the status there; it should save instantly.
+2. Pick a System type on a job, Save, reopen: it should persist.
+3. CRM -> Customers -> open an existing customer with a known name and billing address: the name and billing fields should be pre-filled now.
+4. CRM -> Customers -> click a customer's name: their jobs expand underneath. Click a job to jump to it. The "Edit" button still opens the customer form.
+
+---
+
 ## [2026-05-19 MST] dashboard: "+ Add Job" requires picking an existing customer, plus an optional path to reschedule an existing PEC job for them
 
 By: Claude Code

@@ -523,6 +523,12 @@ textarea{resize:vertical;min-height:60px}
 .pec-badge.admin{background:rgba(248,113,113,.15);color:var(--danger)}
 .pec-badge.office{background:rgba(34,211,238,.15);color:var(--cyan)}
 .pec-badge.pm{background:rgba(251,191,36,.15);color:var(--warn)}
+.pec-cust-name{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.pec-cust-name:hover{color:var(--accent)}
+.pec-cust-chevron{font-size:.6rem;color:var(--muted)}
+.pec-cust-job{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--rd-ink, var(--text))}
+.pec-cust-job:hover{background:var(--rd-softer, rgba(255,255,255,.04))}
+.pec-cust-job+.pec-cust-job{margin-top:2px}
 .pec-field{display:block;margin-bottom:12px}
 .pec-field label{display:block;font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
 .pec-field input,.pec-field textarea,.pec-field select{width:100%}
@@ -5182,7 +5188,7 @@ async function renderCustomers() {
   const root = $('pecViewRoot');
   const from = (state.customersPage - 1) * PAGE;
   let q = supabase.from('customers')
-    .select('id,name,email,phone,company,token,created_at,archived_at,jobs(count)', { count: 'exact' })
+    .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip,jobs(count)', { count: 'exact' })
     .is('archived_at', null)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
@@ -5200,15 +5206,21 @@ async function renderCustomers() {
     </div>
     <div class="pec-card">
       <table class="pec-table">
-        <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Jobs</th><th>Portal</th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Jobs</th><th>Actions</th></tr></thead>
         <tbody>${state.customers.map(c => `
           <tr data-cust-id="${c.id}">
-            <td>${esc(c.name)}</td>
+            <td><button class="pec-cust-name" data-expand-cust="${c.id}"><span class="pec-cust-chevron" data-chevron-for="${c.id}">▶</span> ${esc(c.name)}</button></td>
             <td>${esc(c.email || '—')}</td>
             <td>${esc(c.phone || '—')}</td>
             <td><span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'}</span></td>
             <td>${c.jobs?.[0]?.count ?? 0}</td>
-            <td><button class="pec-btn sm" data-copy-token="${esc(c.token)}">Copy link</button></td>
+            <td style="white-space:nowrap">
+              <button class="pec-btn sm" data-edit-cust="${c.id}">Edit</button>
+              <button class="pec-btn sm" data-copy-token="${esc(c.token)}">Copy link</button>
+            </td>
+          </tr>
+          <tr class="nohover cust-jobs-row" data-jobs-for="${c.id}" style="display:none">
+            <td colspan="6" style="background:var(--rd-soft, var(--s2));padding:10px 16px"><div data-jobs-body="${c.id}" style="font-size:.8rem;color:var(--muted)">Loading jobs…</div></td>
           </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No customers</td></tr>'}</tbody>
       </table>
       ${renderPagination(state.customersPage, state.customersTotal, p => { state.customersPage = p; renderCustomers(); })}
@@ -5217,20 +5229,59 @@ async function renderCustomers() {
   $('pecCustSearch').addEventListener('input', debounce(e => { state.customersSearch = e.target.value.trim(); state.customersPage = 1; renderCustomers(); }, 250));
   $('pecCustNew').addEventListener('click', () => openCustomerForm());
   $('pecCustImport').addEventListener('click', () => openCustomerImportModal());
-  root.querySelectorAll('tr[data-cust-id]').forEach(tr => {
-    tr.addEventListener('click', e => {
-      if (e.target.closest('[data-copy-token]')) return;
-      openCustomerForm(state.customers.find(c => c.id === tr.dataset.custId));
-    });
+
+  root.querySelectorAll('[data-edit-cust]').forEach(b => {
+    b.addEventListener('click', () => openCustomerForm(state.customers.find(c => c.id === b.dataset.editCust)));
   });
   root.querySelectorAll('[data-copy-token]').forEach(b => {
-    b.addEventListener('click', e => {
-      e.stopPropagation();
+    b.addEventListener('click', () => {
       const link = `${portalBase()}/?portal=${b.dataset.copyToken}`;
       navigator.clipboard.writeText(link).then(() => {
         b.textContent = 'Copied';
         setTimeout(() => { b.textContent = 'Copy link'; }, 1500);
       });
+    });
+  });
+
+  // Clicking a customer name expands a panel under their row listing that
+  // customer's jobs. Jobs are fetched on first expand and cached on the
+  // in-memory customer object so collapsing/re-expanding does not re-query.
+  const renderCustJobs = (jobs) => {
+    if (!jobs.length) return '<div style="color:var(--muted)">No jobs for this customer yet.</div>';
+    return jobs.map(j => `
+      <div class="pec-cust-job" data-open-job="${esc(j.id)}">
+        <span style="flex:1">${esc(j.address || '(no address)')}</span>
+        <span class="pec-badge ${esc(j.type || '')}">${esc(j.type || '')}</span>
+        <span class="pec-badge ${esc(j.status || '')}">${esc((j.status || '').replace('_',' '))}</span>
+      </div>
+    `).join('');
+  };
+  const bindJobLinks = (bodyEl) => {
+    bodyEl.querySelectorAll('[data-open-job]').forEach(el => el.addEventListener('click', () => {
+      state.view = 'jobs';
+      state.openJobId = el.dataset.openJob;
+      switchView('jobs');
+    }));
+  };
+  root.querySelectorAll('[data-expand-cust]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const cid = btn.dataset.expandCust;
+      const jobsRow = root.querySelector(`[data-jobs-for="${cid}"]`);
+      const chevron = root.querySelector(`[data-chevron-for="${cid}"]`);
+      const bodyEl = root.querySelector(`[data-jobs-body="${cid}"]`);
+      const isOpen = jobsRow.style.display !== 'none';
+      if (isOpen) { jobsRow.style.display = 'none'; chevron.textContent = '▶'; return; }
+      jobsRow.style.display = ''; chevron.textContent = '▼';
+      const cust = state.customers.find(c => c.id === cid);
+      if (cust && cust._jobs) { bodyEl.innerHTML = renderCustJobs(cust._jobs); bindJobLinks(bodyEl); return; }
+      const { data, error } = await supabase.from('jobs')
+        .select('id,address,type,status,created_at')
+        .eq('customer_id', cid).is('archived_at', null)
+        .order('created_at', { ascending: false });
+      if (error) { bodyEl.innerHTML = `<div class="prod-msg-err">${esc(error.message)}</div>`; return; }
+      if (cust) cust._jobs = data || [];
+      bodyEl.innerHTML = renderCustJobs(data || []);
+      bindJobLinks(bodyEl);
     });
   });
 }
@@ -5668,13 +5719,18 @@ async function renderJobs() {
 
 async function openNewJobForm() {
   let customers = [];
+  let systemTypes = [];
   let loadErrMsg = '';
   try {
-    const { data, error } = await supabase
-      .from('customers').select('id,name,company,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
-      .is('archived_at', null).order('name');
-    if (error) throw error;
-    customers = data || [];
+    const [custRes, sysRes] = await Promise.all([
+      supabase.from('customers').select('id,name,company,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+        .is('archived_at', null).order('name'),
+      supabase.from('pec_prod_system_types').select('id,name,active').order('name'),
+    ]);
+    if (custRes.error) throw custRes.error;
+    if (sysRes.error) throw sysRes.error;
+    customers = custRes.data || [];
+    systemTypes = sysRes.data || [];
   } catch (e) {
     console.error('[pec] openNewJobForm load:', e);
     loadErrMsg = e?.message || String(e);
@@ -5705,7 +5761,6 @@ async function openNewJobForm() {
           </select>
         </div>
       </div>
-      <div class="pec-field"><label>Package</label><input name="package"></div>
       <div class="pec-field" style="margin-bottom:6px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="pecJobSameAsBilling" checked> Job address same as customer's billing address
@@ -5714,11 +5769,13 @@ async function openNewJobForm() {
       <div class="pec-field"><label>Job address</label><input name="address" id="pecJobAddress" placeholder="Will pre-fill from customer's billing once you pick one"></div>
       <div class="pec-row-2">
         <div class="pec-field"><label>Price</label><input name="price" type="number" step="0.01"></div>
-        <div class="pec-field"><label>Monthly Payment</label><input name="monthly_payment" type="number" step="0.01"></div>
-      </div>
-      <div class="pec-row-2">
         <div class="pec-field"><label>Sq Ft</label><input name="sqft"></div>
-        <div class="pec-field"><label>Warranty</label><input name="warranty"></div>
+      </div>
+      <div class="pec-field"><label>System type</label>
+        <select name="system_type_id">
+          <option value="">No system type</option>
+          ${systemTypes.filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}
+        </select>
       </div>
       <div class="pec-field"><label>Scope</label><textarea name="scope" rows="2"></textarea></div>
       <div id="pecJobFormError" class="prod-msg-err" style="min-height:18px"></div>
@@ -5752,20 +5809,10 @@ async function openNewJobForm() {
         // Re-enable the address input so FormData picks it up
         addrInput.disabled = false;
         const fd = Object.fromEntries(new FormData(e.target));
-        for (const k of ['price','monthly_payment']) fd[k] = fd[k] ? parseFloat(fd[k]) : null;
+        fd.price = fd.price ? parseFloat(fd.price) : null;
+        fd.system_type_id = fd.system_type_id || null;
         const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
         if (error) throw error;
-        const stages = (job.type === 'epoxy'
-          ? ['Proposal Accepted','Scheduled','Prep Day','Coating Day','Cure Period','Final Walkthrough','Complete']
-          : ['Proposal Accepted','Scheduled','Prep','Prime','Paint','Final Walkthrough','Complete']
-        ).map((name,i) => ({
-          job_id: job.id, stage_name: name,
-          status: i === 0 ? 'completed' : 'pending',
-          completed_at: i === 0 ? new Date().toISOString() : null,
-          sort_order: i,
-        }));
-        const stagesRes = await supabase.from('timeline_stages').insert(stages);
-        if (stagesRes.error) throw stagesRes.error;
         closeModal();
         state.openJobId = job.id;
         renderJobDetail(job.id);
@@ -5780,63 +5827,54 @@ async function openNewJobForm() {
 async function renderJobDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading job…</div>';
-  const [jobRes, colorsRes] = await Promise.all([
+  const [jobRes, colorsRes, sysRes] = await Promise.all([
     supabase.from('jobs')
-      .select('*,customers(id,name,email,company,token),timeline_stages(*),photos(*),job_colors(id,label,color_id,colors(name,type,hex,sku)),reviews(*)')
+      .select('*,customers(id,name,email,company,token),photos(*),job_colors(id,label,color_id,colors(name,type,hex,sku)),reviews(*)')
       .eq('id', id).single(),
     supabase.from('colors').select('*').order('type').order('name'),
+    supabase.from('pec_prod_system_types').select('id,name,active').order('name'),
   ]);
   if (jobRes.error) { root.innerHTML = `<div class="pec-empty">${esc(jobRes.error.message)}</div>`; return; }
   const job = jobRes.data;
   const allColors = colorsRes.data || [];
-  const timeline = (job.timeline_stages || []).sort((a,b) => a.sort_order - b.sort_order);
+  const systemTypes = sysRes.data || [];
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
+  const STATUSES = ['confirmed','scheduled','in_progress','completed'];
 
   root.innerHTML = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
-      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customers?.name || '—')} · <span class="pec-badge ${job.type}">${job.type}</span> · <span class="pec-badge ${job.status}">${job.status.replace('_',' ')}</span></span>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customers?.name || '—')} · <span class="pec-badge ${job.type}">${job.type}</span></span>
+    </div>
+
+    <div class="pec-card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <h3 style="margin:0">Job status</h3>
+      <select id="pecJobStatus" style="max-width:220px">
+        ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+      </select>
+      <span class="pec-badge ${job.status}" id="pecJobStatusBadge">${job.status.replace('_',' ')}</span>
+      <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
     </div>
 
     <div class="pec-card">
       <h3>Details</h3>
       <form id="pecJobEdit">
+        <div class="pec-field"><label>Address</label><input name="address" value="${esc(job.address || '')}"></div>
         <div class="pec-row-2">
-          <div class="pec-field"><label>Address</label><input name="address" value="${esc(job.address || '')}"></div>
-          <div class="pec-field"><label>Package</label><input name="package" value="${esc(job.package || '')}"></div>
-        </div>
-        <div class="pec-row-3">
-          <div class="pec-field"><label>Status</label>
-            <select name="status">${['confirmed','scheduled','in_progress','completed'].map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
-          </div>
           <div class="pec-field"><label>Price</label><input name="price" type="number" step="0.01" value="${job.price ?? ''}"></div>
-          <div class="pec-field"><label>Monthly Payment</label><input name="monthly_payment" type="number" step="0.01" value="${job.monthly_payment ?? ''}"></div>
-        </div>
-        <div class="pec-row-2">
           <div class="pec-field"><label>Sq Ft</label><input name="sqft" value="${esc(job.sqft || '')}"></div>
-          <div class="pec-field"><label>Warranty</label><input name="warranty" value="${esc(job.warranty || '')}"></div>
+        </div>
+        <div class="pec-field"><label>System type</label>
+          <select name="system_type_id">
+            <option value="">No system type</option>
+            ${systemTypes.filter(s => s.active !== false || s.id === job.system_type_id).map(s => `<option value="${esc(s.id)}" ${job.system_type_id===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}
+          </select>
         </div>
         <div class="pec-field"><label>Scope</label><textarea name="scope" rows="2">${esc(job.scope || '')}</textarea></div>
         <div class="pec-field"><label>DripJobs URL</label><input name="dripjobs_url" value="${esc(job.dripjobs_url || '')}"></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
-    </div>
-
-    <div class="pec-card">
-      <h3>Timeline</h3>
-      <div class="pec-timeline">
-        ${timeline.map(s => `
-          <div class="pec-timeline-stage ${s.status}">
-            <div class="pec-timeline-dot"></div>
-            <div style="flex:1">${esc(s.stage_name)}</div>
-            <div style="font-size:.7rem;color:var(--muted);margin-right:8px">${s.completed_at ? fmtDate(s.completed_at) : ''}</div>
-            <select data-stage-id="${s.id}">
-              ${['pending','in_progress','completed'].map(st => `<option value="${st}" ${s.status===st?'selected':''}>${st.replace('_',' ')}</option>`).join('')}
-            </select>
-          </div>
-        `).join('')}
-      </div>
     </div>
 
     <div class="pec-card">
@@ -5899,19 +5937,18 @@ async function renderJobDetail(id) {
   $('pecJobEdit').addEventListener('submit', async e => {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target));
-    for (const k of ['price','monthly_payment']) fd[k] = fd[k] ? parseFloat(fd[k]) : null;
+    fd.price = fd.price ? parseFloat(fd.price) : null;
+    fd.system_type_id = fd.system_type_id || null;
     const { error } = await supabase.from('jobs').update(fd).eq('id', id);
     if (error) { alert(error.message); return; }
     renderJobDetail(id);
   });
-  root.querySelectorAll('.pec-timeline-stage select').forEach(sel => {
-    sel.addEventListener('change', async () => {
-      const patch = { status: sel.value };
-      if (sel.value === 'completed') patch.completed_at = new Date().toISOString();
-      if (sel.value === 'pending') patch.completed_at = null;
-      await supabase.from('timeline_stages').update(patch).eq('id', sel.dataset.stageId);
-      renderJobDetail(id);
-    });
+  $('pecJobStatus').addEventListener('change', async e => {
+    const savedEl = $('pecJobStatusSaved');
+    savedEl.textContent = 'Saving…';
+    const { error } = await supabase.from('jobs').update({ status: e.target.value }).eq('id', id);
+    if (error) { savedEl.textContent = ''; alert(error.message); return; }
+    renderJobDetail(id);
   });
   root.querySelectorAll('[data-add-color]').forEach(sw => {
     sw.addEventListener('click', async () => {
