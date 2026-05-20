@@ -4,6 +4,62 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: CRM job detail rebuilt around per-area boxes (sqft + system type + flake/basecoat), Colors section removed; Cockpit revenue outage triaged
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-19_job_areas.sql (new).
+
+IMPORTANT: this commit is NOT yet pushed. It depends on a new Supabase migration (see Handoff to Cowork). The job detail page still loads fine without the migration, but saving a job's areas will fail until the `job_areas` table exists.
+
+Dylan asked for the CRM job detail card to be reworked from a flat field list into an area-based layout, mirroring the production ordering screen, plus the dead Colors section removed and the Cockpit booked-sales/jobs failure looked at.
+
+1. New table `public.job_areas` (migration supabase/migrations/2026-05-19_job_areas.sql). A CRM job can cover multiple areas, each with its own square footage and system type, and (for flake systems) a flake color + coordinating basecoat. `public.jobs` only has a single `sqft` / `system_type_id`, so this table holds the per-area rows. It is the CRM-side parallel of `pec_prod_areas` (which is keyed to the production `pec_prod_jobs` table). Columns: id, job_id (FK jobs, on delete cascade), name, sqft, system_type_id (FK pec_prod_system_types), flake_product_id + basecoat_product_id (FK pec_prod_products), order_index, created_at. Product/system FKs are `on delete set null` so catalog edits never delete an area. Idempotent, non-destructive.
+
+2. `renderJobDetail` (index.html) rebuilt. The data load now also pulls `job_areas` for the job, `pec_prod_products`, `pec_prod_color_pairings`, and `pec_prod_recipe_slots`, and stopped pulling `colors` / `job_colors` (Colors section gone). New card layout:
+   - Header card: customer name in bold + type badge + Proposal #, and Price moved up here as an editable input (per Dylan's pick "Price to header, keep URL"). The single system-type line was removed from the header since system type is per-area now. The instant-save status control stays.
+   - Details card: now ONLY Address, Customer notes (the `scope` column, relabeled), and DripJobs URL. No price, sqft, or system type.
+   - Areas section: a `renderAreas()` closure renders one card per area, first titled "Main Area" then "Area 2", "Area 3". Each area has square footage + a system-type select (half-width, no longer full-page-wide). When the area's system type is a flake system (detected via `requires_flake_color` or a Flake recipe slot, mirroring the production `showFlake` logic), a flake color picker appears: a collapsible swatch grid of catalog flake products showing each one's `image_url` chip. Picking a flake auto-fills the coordinating basecoat from the catalog's default color pairing (`pec_prod_color_pairings` where `is_default`), shown in an editable dropdown so it can be overridden. A "+ Add area" button appends areas; "Remove area" drops them (the last one cannot be removed).
+   - One "Save job" button at the bottom writes the `jobs` row (address, scope, dripjobs_url, price; first area's sqft + system_type mirrored back onto the legacy `jobs.sqft` / `jobs.system_type_id` columns) and replaces `job_areas` (delete-all then insert the draft). The old per-section Details form/Save was removed.
+   - Existing jobs (no `job_areas` rows yet) open with one "Main Area" pre-seeded from the job's legacy single sqft + system_type_id, so nothing needs a data backfill; the first Save persists it.
+   - The Colors card and its add/remove handlers were deleted. Photos / Signature / Review cards are unchanged. The `job_colors` and `colors` tables are left in the database (non-destructive).
+
+3. Cockpit booked sales / booked jobs failure: triaged, not code-fixable here. Dylan confirmed the revenue cards show dashes and the booked-jobs table says "failed to fetch". That whole panel is fed by `loadRevenue()` -> `fetchSheet(CONFIG.SHEETS.BOOKED_JOBS, ...)` (index.html ~2026/2015), which does a plain `fetch()` against the Google Apps Script proxy at `CONFIG.SHEETS_PROXY` (index.html:1930). "Failed to fetch" is a network-level rejection of that request: the Apps Script web app is unreachable. `fetchSheet` is correct and there is no CSP blocking it (checked netlify.toml and index.html). This is an infrastructure problem with the Apps Script deployment, not an index.html bug, so no frontend change ships for it. See Handoff to Cowork.
+
+Files touched: index.html, supabase/migrations/2026-05-19_job_areas.sql, PROJECT-LOG.md.
+
+Verification deferred to Dylan (needs the migration applied + a live admin session). Local sanity check: `node --check` passes on the module script block containing `renderJobDetail`; traced that the page still loads without the `job_areas` table (the select error degrades to an empty array and seeds a Main area); confirmed flake-system detection, flake-pick -> basecoat auto-fill, and the delete-then-insert save path.
+
+## Handoff to Cowork
+
+Two items.
+
+1. Migration (blocks the push of this commit). Apply `supabase/migrations/2026-05-19_job_areas.sql` to the live PEC Supabase project (the project backing `jobs`, `customers`, `pec_prod_*`). Contents:
+
+```sql
+create table if not exists public.job_areas (
+  id uuid primary key default gen_random_uuid(),
+  job_id uuid not null references public.jobs(id) on delete cascade,
+  name text default 'Main',
+  sqft numeric,
+  system_type_id uuid references public.pec_prod_system_types(id) on delete set null,
+  flake_product_id uuid references public.pec_prod_products(id) on delete set null,
+  basecoat_product_id uuid references public.pec_prod_products(id) on delete set null,
+  order_index int default 0,
+  created_at timestamptz default now()
+);
+create index if not exists idx_job_areas_job on public.job_areas(job_id);
+```
+
+Acceptance: `select * from public.job_areas limit 1;` runs without error. Idempotent, safe to re-run. After it succeeds, report back so this commit can be pushed, and append a `By: Cowork` confirmation line to this entry.
+
+2. Cockpit Sheets proxy outage. The Cockpit booked sales / booked jobs panels fail with "failed to fetch". The Google Apps Script proxy at the `script.google.com/macros/s/AKfycbx…/exec` URL in `CONFIG.SHEETS_PROXY` (index.html:1930) is unreachable. Verify the Apps Script web app is still deployed with "Anyone" access; redeploy if needed. Quick check: open that `/exec` URL in a browser, a working proxy returns a JSON/Apps Script response, a dead one fails to load. If redeploying produces a NEW `/exec` URL, capture it and report it back so `CONFIG.SHEETS_PROXY` can be updated (a one-line code change). Note: `loadTasks`, the Cowork tab, and the email tab use the same proxy, so they are likely failing too.
+
+## Handoff to Dylan
+
+This commit is staged locally but intentionally NOT pushed (waits on the migration above). Once Cowork confirms the `job_areas` migration, push it. Then hard-refresh and check: open a job, confirm Details holds only address + customer notes + DripJobs URL, Price is in the header, and a "Main Area" box is pre-filled; set an area to a flake system and confirm the flake color picker (with images) appears and picking a flake auto-fills the basecoat; add a second area, Save, reopen, confirm both persist; confirm the Colors section is gone.
+
+---
+
 ## [2026-05-19 MST] dashboard: job card gets a real header (customer name, system type, DripJobs proposal #) + webhook strips HTML from DripJobs notes
 
 By: Claude Code

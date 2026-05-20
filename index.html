@@ -5827,20 +5827,53 @@ async function openNewJobForm() {
 async function renderJobDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading job…</div>';
-  const [jobRes, colorsRes, sysRes] = await Promise.all([
+  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes] = await Promise.all([
     supabase.from('jobs')
-      .select('*,customers(id,name,email,company,token),photos(*),job_colors(id,label,color_id,colors(name,type,hex,sku)),reviews(*)')
+      .select('*,customers(id,name,email,company,token),photos(*),reviews(*)')
       .eq('id', id).single(),
-    supabase.from('colors').select('*').order('type').order('name'),
-    supabase.from('pec_prod_system_types').select('id,name,active').order('name'),
+    supabase.from('pec_prod_system_types').select('id,name,active,requires_flake_color').order('name'),
+    supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
+    supabase.from('pec_prod_products').select('id,name,color,material_type,image_url,active').order('name'),
+    supabase.from('pec_prod_color_pairings').select('flake_product_id,basecoat_product_id,is_default'),
+    supabase.from('pec_prod_recipe_slots').select('system_type_id,material_type'),
   ]);
   if (jobRes.error) { root.innerHTML = `<div class="pec-empty">${esc(jobRes.error.message)}</div>`; return; }
   const job = jobRes.data;
-  const allColors = colorsRes.data || [];
   const systemTypes = sysRes.data || [];
-  const jobSystemName = (systemTypes.find(s => s.id === job.system_type_id) || {}).name || '';
+  const products = prodRes.data || [];
+  const colorPairings = pairRes.data || [];
+  const recipeSlots = slotRes.data || [];
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
   const STATUSES = ['confirmed','scheduled','in_progress','completed'];
+
+  // A system "needs flake" when flagged requires_flake_color OR it has a Flake
+  // recipe slot (mirrors the production showFlake logic).
+  const flakeSlotSystems = new Set(recipeSlots.filter(s => s.material_type === 'Flake').map(s => s.system_type_id));
+  const systemNeedsFlake = (sysId) => {
+    if (!sysId) return false;
+    const st = systemTypes.find(s => s.id === sysId);
+    return !!(st && (st.requires_flake_color || flakeSlotSystems.has(sysId)));
+  };
+  // Default coordinating basecoat per flake color, from the catalog pairings.
+  const defaultBasecoatByFlake = {};
+  for (const cp of colorPairings) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+  const flakeProducts = products.filter(p => p.material_type === 'Flake' && p.active !== false && p.name !== 'Special Order Flake');
+  const basecoatProducts = products.filter(p => p.material_type === 'Basecoat' && p.active !== false);
+  const productById = {}; for (const p of products) productById[p.id] = p;
+
+  // Areas working draft. Seed from job_areas; if none yet, seed one Main area
+  // from the job's legacy single sqft / system_type_id so existing jobs open
+  // pre-filled and just need a Save to persist.
+  let areas = (areasRes.data || []).map(a => ({
+    name: a.name || 'Main',
+    sqft: a.sqft ?? '',
+    system_type_id: a.system_type_id || '',
+    flake_product_id: a.flake_product_id || '',
+    basecoat_product_id: a.basecoat_product_id || '',
+  }));
+  if (!areas.length) {
+    areas = [{ name: 'Main', sqft: job.sqft ?? '', system_type_id: job.system_type_id || '', flake_product_id: '', basecoat_product_id: '' }];
+  }
 
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -5853,10 +5886,16 @@ async function renderJobDetail(id) {
         <div>
           <div style="font-size:1.15rem;font-weight:700">${esc(job.customers?.name || '—')}</div>
           <div style="color:var(--muted);font-size:.8rem;margin-top:3px">
-            ${jobSystemName ? esc(jobSystemName) + ' · ' : ''}<span class="pec-badge ${job.type}">${job.type}</span>
+            <span class="pec-badge ${job.type}">${job.type}</span>
           </div>
         </div>
-        ${job.dripjobs_deal_id ? `<div style="font-weight:600;font-size:.85rem;white-space:nowrap">Proposal #${esc(job.dripjobs_deal_id)}</div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          ${job.dripjobs_deal_id ? `<div style="font-weight:600;font-size:.85rem;white-space:nowrap">Proposal #${esc(job.dripjobs_deal_id)}</div>` : ''}
+          <div style="display:flex;align-items:center;gap:6px">
+            <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
+            <input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">
+          </div>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
         <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Status</label>
@@ -5870,46 +5909,16 @@ async function renderJobDetail(id) {
 
     <div class="pec-card">
       <h3>Details</h3>
-      <form id="pecJobEdit">
-        <div class="pec-field"><label>Address</label><input name="address" value="${esc(job.address || '')}"></div>
-        <div class="pec-row-2">
-          <div class="pec-field"><label>Price</label><input name="price" type="number" step="0.01" value="${job.price ?? ''}"></div>
-          <div class="pec-field"><label>Sq Ft</label><input name="sqft" value="${esc(job.sqft || '')}"></div>
-        </div>
-        <div class="pec-field"><label>System type</label>
-          <select name="system_type_id">
-            <option value="">No system type</option>
-            ${systemTypes.filter(s => s.active !== false || s.id === job.system_type_id).map(s => `<option value="${esc(s.id)}" ${job.system_type_id===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pec-field"><label>Scope</label><textarea name="scope" rows="2">${esc(job.scope || '')}</textarea></div>
-        <div class="pec-field"><label>DripJobs URL</label><input name="dripjobs_url" value="${esc(job.dripjobs_url || '')}"></div>
-        <div><button class="pec-btn primary" type="submit">Save</button></div>
-      </form>
+      <div class="pec-field"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
+      <div class="pec-field"><label>Customer notes</label><textarea id="jobScope" rows="3">${esc(job.scope || '')}</textarea></div>
+      <div class="pec-field"><label>DripJobs URL</label><input id="jobDripUrl" value="${esc(job.dripjobs_url || '')}"></div>
     </div>
 
-    <div class="pec-card">
-      <h3>Colors</h3>
-      <div style="margin-bottom:10px">
-        ${(job.job_colors || []).map(jc => `
-          <span class="pec-badge" style="background:${esc(jc.colors?.hex || '#333')};color:#fff;padding:4px 10px;margin-right:6px">
-            ${esc(jc.label)}: ${esc(jc.colors?.name || '')}
-            <button data-remove-jc="${jc.id}" style="background:none;border:none;color:#fff;cursor:pointer;margin-left:6px">×</button>
-          </span>`).join('') || '<span style="color:var(--muted);font-size:.8rem">No colors selected</span>'}
-      </div>
-      <details><summary style="cursor:pointer;font-size:.85rem;color:var(--accent)">+ Add color</summary>
-        <div style="margin-top:10px">
-          <input id="pecColorLabel" placeholder="Label (e.g. Epoxy, Accent, Base)" style="max-width:260px;margin-bottom:8px">
-          <div class="pec-swatch-grid">
-            ${allColors.map(c => `
-              <div class="pec-swatch" data-add-color="${c.id}">
-                <div class="pec-swatch-chip" style="background:${esc(c.hex || '#333')}"></div>
-                <div class="pec-swatch-name">${esc(c.name)}</div>
-                <div class="pec-swatch-code">${esc(c.sku || '')}</div>
-              </div>`).join('')}
-          </div>
-        </div>
-      </details>
+    <div id="jobAreas"></div>
+
+    <div class="pec-card" style="display:flex;justify-content:flex-end;align-items:center;gap:12px">
+      <span id="jobSaveMsg" style="font-size:.75rem;color:var(--muted)"></span>
+      <button class="pec-btn primary" id="jobSaveBtn">Save job</button>
     </div>
 
     <div class="pec-card">
@@ -5945,15 +5954,6 @@ async function renderJobDetail(id) {
       setTimeout(() => { $('pecJobCopyPortal').textContent = 'Copy portal link'; }, 1500);
     });
   });
-  $('pecJobEdit').addEventListener('submit', async e => {
-    e.preventDefault();
-    const fd = Object.fromEntries(new FormData(e.target));
-    fd.price = fd.price ? parseFloat(fd.price) : null;
-    fd.system_type_id = fd.system_type_id || null;
-    const { error } = await supabase.from('jobs').update(fd).eq('id', id);
-    if (error) { alert(error.message); return; }
-    renderJobDetail(id);
-  });
   $('pecJobStatus').addEventListener('change', async e => {
     const savedEl = $('pecJobStatusSaved');
     savedEl.textContent = 'Saving…';
@@ -5961,20 +5961,122 @@ async function renderJobDetail(id) {
     if (error) { savedEl.textContent = ''; alert(error.message); return; }
     renderJobDetail(id);
   });
-  root.querySelectorAll('[data-add-color]').forEach(sw => {
-    sw.addEventListener('click', async () => {
-      const label = $('pecColorLabel').value.trim();
-      if (!label) { alert('Enter a label first'); return; }
-      await supabase.from('job_colors').insert({ job_id: id, color_id: sw.dataset.addColor, label });
-      renderJobDetail(id);
+
+  // Areas editor. The `areas` draft is mutated in place; system-type changes,
+  // flake picks, add and remove re-render; sqft / basecoat edits do not (so
+  // inputs keep focus). Persisted by the single Save job button below.
+  function renderAreas() {
+    const host = $('jobAreas'); if (!host) return;
+    const sysOptions = (sel) => `<option value="">Pick a system…</option>` +
+      systemTypes.filter(s => s.active !== false || s.id === sel)
+        .map(s => `<option value="${esc(s.id)}" ${s.id===sel?'selected':''}>${esc(s.name)}</option>`).join('');
+    host.innerHTML = areas.map((a, idx) => {
+      const title = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
+      const flake = a.flake_product_id ? productById[a.flake_product_id] : null;
+      let flakeBlock = '';
+      if (systemNeedsFlake(a.system_type_id)) {
+        flakeBlock = `
+          <div style="margin-top:10px;border-top:1px dashed var(--rd-line, var(--border));padding-top:10px">
+            <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:6px">Flake color</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              ${flake
+                ? `${flake.image_url ? `<img class="prod-chip-thumb" src="${esc(flake.image_url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`}<span style="font-weight:600;font-size:.85rem">${esc(flake.color || flake.name)}</span>`
+                : `<span style="color:var(--muted);font-size:.8rem">No flake color chosen</span>`}
+            </div>
+            <details>
+              <summary style="cursor:pointer;font-size:.8rem;color:var(--accent)">Choose flake color</summary>
+              <div class="pec-swatch-grid" style="margin-top:10px">
+                ${flakeProducts.map(p => `
+                  <div class="pec-swatch ${p.id===a.flake_product_id?'selected':''}" data-area-flake="${idx}" data-flake-id="${esc(p.id)}">
+                    ${p.image_url ? `<img class="prod-chip-thumb" style="width:100%;height:54px" src="${esc(p.image_url)}" alt="">` : `<div class="prod-chip-empty" style="width:100%;height:54px">no chip</div>`}
+                    <div class="pec-swatch-name">${esc(p.color || p.name)}</div>
+                  </div>`).join('') || '<div style="color:var(--muted);font-size:.78rem">No flake colors in the catalog.</div>'}
+              </div>
+            </details>
+            <div class="pec-field" style="margin-top:10px;max-width:280px">
+              <label>Coordinating basecoat</label>
+              <select data-area-basecoat="${idx}">
+                <option value="">No basecoat</option>
+                ${basecoatProducts.map(p => `<option value="${esc(p.id)}" ${p.id===a.basecoat_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>
+            </div>
+          </div>`;
+      }
+      return `
+        <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <h3 style="margin:0">${title}</h3>
+            ${areas.length > 1 ? `<button class="pec-btn ghost sm" data-area-remove="${idx}">Remove area</button>` : ''}
+          </div>
+          <div class="pec-row-2">
+            <div class="pec-field"><label>Square footage</label><input type="number" min="0" step="1" data-area-sqft="${idx}" value="${esc(a.sqft)}"></div>
+            <div class="pec-field"><label>System type</label><select data-area-system="${idx}">${sysOptions(a.system_type_id)}</select></div>
+          </div>
+          ${flakeBlock}
+        </div>`;
+    }).join('') + `<div style="margin-bottom:16px"><button class="pec-btn sm" id="jobAddArea">+ Add area</button></div>`;
+
+    host.querySelectorAll('[data-area-sqft]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaSqft].sqft = el.value; }));
+    host.querySelectorAll('[data-area-system]').forEach(el => el.addEventListener('change', () => {
+      const a = areas[+el.dataset.areaSystem];
+      a.system_type_id = el.value;
+      if (!systemNeedsFlake(a.system_type_id)) { a.flake_product_id = ''; a.basecoat_product_id = ''; }
+      renderAreas();
+    }));
+    host.querySelectorAll('[data-area-flake]').forEach(el => el.addEventListener('click', () => {
+      const a = areas[+el.dataset.areaFlake];
+      a.flake_product_id = el.dataset.flakeId;
+      a.basecoat_product_id = defaultBasecoatByFlake[el.dataset.flakeId] || '';
+      renderAreas();
+    }));
+    host.querySelectorAll('[data-area-basecoat]').forEach(el => el.addEventListener('change', () => { areas[+el.dataset.areaBasecoat].basecoat_product_id = el.value; }));
+    host.querySelectorAll('[data-area-remove]').forEach(el => el.addEventListener('click', () => {
+      if (areas.length <= 1) return;
+      areas.splice(+el.dataset.areaRemove, 1);
+      renderAreas();
+    }));
+    $('jobAddArea').addEventListener('click', () => {
+      areas.push({ name:'', sqft:'', system_type_id:'', flake_product_id:'', basecoat_product_id:'' });
+      renderAreas();
     });
-  });
-  root.querySelectorAll('[data-remove-jc]').forEach(b => {
-    b.addEventListener('click', async e => {
-      e.preventDefault();
-      await supabase.from('job_colors').delete().eq('id', b.dataset.removeJc);
+  }
+  renderAreas();
+
+  $('jobSaveBtn').addEventListener('click', async () => {
+    const msg = $('jobSaveMsg'); const btn = $('jobSaveBtn');
+    msg.textContent = 'Saving…'; btn.disabled = true;
+    const priceVal = $('jobPrice').value;
+    const jobPatch = {
+      address: $('jobAddress').value || null,
+      scope: $('jobScope').value || null,
+      dripjobs_url: $('jobDripUrl').value || null,
+      price: priceVal ? parseFloat(priceVal) : null,
+      sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
+      system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
+    };
+    try {
+      const upd = await supabase.from('jobs').update(jobPatch).eq('id', id);
+      if (upd.error) throw upd.error;
+      const del = await supabase.from('job_areas').delete().eq('job_id', id);
+      if (del.error) throw del.error;
+      const rows = areas.map((a, idx) => ({
+        job_id: id,
+        name: idx === 0 ? 'Main' : `Area ${idx+1}`,
+        sqft: (a.sqft === '' || a.sqft == null) ? null : Number(a.sqft),
+        system_type_id: a.system_type_id || null,
+        flake_product_id: a.flake_product_id || null,
+        basecoat_product_id: a.basecoat_product_id || null,
+        order_index: idx,
+      }));
+      if (rows.length) {
+        const ins = await supabase.from('job_areas').insert(rows);
+        if (ins.error) throw ins.error;
+      }
       renderJobDetail(id);
-    });
+    } catch (err) {
+      msg.textContent = ''; btn.disabled = false;
+      alert('Save failed: ' + (err.message || err));
+    }
   });
   root.querySelectorAll('.pec-gallery-item img').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
   root.querySelectorAll('[data-del-photo]').forEach(b => {
