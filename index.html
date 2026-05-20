@@ -5838,6 +5838,7 @@ async function renderJobDetail(id) {
   const job = jobRes.data;
   const allColors = colorsRes.data || [];
   const systemTypes = sysRes.data || [];
+  const jobSystemName = (systemTypes.find(s => s.id === job.system_type_id) || {}).name || '';
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
   const STATUSES = ['confirmed','scheduled','in_progress','completed'];
 
@@ -5845,16 +5846,26 @@ async function renderJobDetail(id) {
     <div class="pec-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
-      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customers?.name || '—')} · <span class="pec-badge ${job.type}">${job.type}</span></span>
     </div>
 
-    <div class="pec-card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <h3 style="margin:0">Job status</h3>
-      <select id="pecJobStatus" style="max-width:220px">
-        ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
-      </select>
-      <span class="pec-badge ${job.status}" id="pecJobStatusBadge">${job.status.replace('_',' ')}</span>
-      <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:1.15rem;font-weight:700">${esc(job.customers?.name || '—')}</div>
+          <div style="color:var(--muted);font-size:.8rem;margin-top:3px">
+            ${jobSystemName ? esc(jobSystemName) + ' · ' : ''}<span class="pec-badge ${job.type}">${job.type}</span>
+          </div>
+        </div>
+        ${job.dripjobs_deal_id ? `<div style="font-weight:600;font-size:.85rem;white-space:nowrap">Proposal #${esc(job.dripjobs_deal_id)}</div>` : ''}
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
+        <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Status</label>
+        <select id="pecJobStatus" style="max-width:220px">
+          ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+        </select>
+        <span class="pec-badge ${job.status}" id="pecJobStatusBadge">${job.status.replace('_',' ')}</span>
+        <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
+      </div>
     </div>
 
     <div class="pec-card">

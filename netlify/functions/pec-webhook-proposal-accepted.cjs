@@ -5,6 +5,28 @@
 
 const { sb, epoxyStages, paintStages, badSecret, json, randomToken } = require('./_pec-supabase.cjs');
 
+// DripJobs sends scope/notes wrapped in HTML (<p>...</p>, <br>, entities).
+// Stored raw, those tags show up as literal text in the CRM. Convert to plain
+// text on the way in: block tags become line breaks, other tags are dropped,
+// common entities are decoded. Returns null for empty input so callers can
+// keep their `|| null` semantics.
+function stripHtml(s) {
+  if (s == null) return null;
+  let out = String(s)
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\s*\/\s*(p|div)\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return out || null;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });
   if (badSecret(event)) return json(401, { success: false, error: 'Invalid webhook secret' });
@@ -20,6 +42,8 @@ exports.handler = async (event) => {
   } = body;
 
   if (!customer_name) return json(400, { success: false, error: 'customer_name is required' });
+
+  const cleanScope = stripHtml(scope);
 
   try {
     // Upsert by email (fall back to create if no email)
@@ -51,7 +75,7 @@ exports.handler = async (event) => {
       type,
       address: address || null,
       package: pkg || null,
-      scope: scope || null,
+      scope: cleanScope,
       sqft: sqft || null,
       price: price ? parseFloat(price) : null,
       monthly_payment: monthly_payment ? parseFloat(monthly_payment) : null,
@@ -100,7 +124,7 @@ exports.handler = async (event) => {
               status: 'unscheduled',
               sync_status: 'dirty',
               dripjobs_deal_id: deal_id,
-              notes: scope || null,
+              notes: cleanScope,
             }, true);
             prodJobId = created && created[0] ? created[0].id : null;
           } else {

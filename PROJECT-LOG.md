@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-19 MST] dashboard: job card gets a real header (customer name, system type, DripJobs proposal #) + webhook strips HTML from DripJobs notes
+
+By: Claude Code
+Changed: index.html, netlify/functions/pec-webhook-proposal-accepted.cjs.
+
+Two follow-ups Dylan asked for after the Jobs/Customers cleanup commit.
+
+1. Job card header (`renderJobDetail`, index.html). The job detail screen now opens with a proper header card instead of the bare "Job status" strip. Top row: the customer name in bold (1.15rem), with the system-type name and the epoxy/paint badge on a muted line under it, and `Proposal #<number>` on the right. The proposal number needed no schema change: the proposal-accepted webhook already stores the DripJobs deal/proposal number in `public.jobs.dripjobs_deal_id`, and `renderJobDetail` already does `select('*')`, so it was just a matter of displaying `job.dripjobs_deal_id`. Manually-created CRM jobs have no `dripjobs_deal_id`, so the Proposal # line is conditionally rendered and simply absent for them. The system-type name is resolved from the `systemTypes` list already fetched by the previous commit (`jobSystemName` lookup). Bottom row of the same card (under a divider): the existing status `<select>` plus its live badge and "Saving…" indicator, relocated unchanged. The instant-save change handler at `$('pecJobStatus')` was not touched. The redundant `customer name · type badge` text was removed from the toolbar since it now lives in the header.
+
+2. DripJobs notes HTML strip (`pec-webhook-proposal-accepted.cjs`). DripJobs sends the proposal `scope` text wrapped in HTML (`<p>...</p>`, `<br>`, entities). The webhook wrote it raw into `public.jobs.scope` and `public.pec_prod_jobs.notes`; the frontend then `esc()`-escapes it, so users saw literal `<p>` tags in the Scope textarea and the schedule Notes field. Added a module-scope `stripHtml()` helper: it turns `<br>` and closing `</p>`/`</div>` into line breaks, drops all other tags, decodes the common entities (`&nbsp; &amp; &lt; &gt; &quot; &#39;`), collapses 3+ newlines to 2, and trims; returns `null` for empty input so the existing `|| null` semantics hold. The handler now computes `cleanScope = stripHtml(scope)` once and writes that to both `jobs.scope` and `pec_prod_jobs.notes`.
+
+Per Dylan's call, this is a webhook-only fix: jobs already synced before this deploy keep their `<p>` tags in storage. They self-heal if someone edits and re-saves the job's Scope. No SQL cleanup of existing rows was done.
+
+Files touched: index.html, netlify/functions/pec-webhook-proposal-accepted.cjs, PROJECT-LOG.md.
+
+Verification deferred to Dylan (live admin session + a real or simulated DripJobs webhook fire). Local sanity check: `node -c` clean on the webhook file; traced that `jobSystemName` resolves from the already-fetched `systemTypes`, that `job.dripjobs_deal_id` is present via `select('*')`, and that the status control markup moved without changing its `id`s or handler.
+
+## Handoff to Dylan
+
+After Netlify auto-deploys, hard-refresh and check:
+1. CRM -> Jobs -> open a DripJobs-sourced job: header shows the customer name in bold, system type + type badge under it, and `Proposal #<number>` on the right. Open a manually-created job: same header, no Proposal # line.
+2. The status control still sits in that top card and saves instantly on change.
+3. Next time a DripJobs proposal is accepted, open that job: the Scope should be clean plain text with no `<p>` tags. Older jobs keep their tags until you edit and re-save their Scope.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-19 MST] dashboard: CRM Jobs card slimmed down (system type added, package/warranty/monthly-payment/timeline removed) + Customers page jobs-expansion and two bug fixes
 
 By: Claude Code
