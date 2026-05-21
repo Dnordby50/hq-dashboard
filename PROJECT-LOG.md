@@ -4,7 +4,48 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
-## [2026-05-20 MST] dashboard: TopCoat Customers/Jobs UI polish (Phase 1 of the recipe-formula plan)
+## [2026-05-20 MST] dashboard: recipe-driven system formulas for the job-area editor (Phases 2-4)
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-20_recipe_formula.sql (new), supabase/seed_recipe_formulas.sql (new).
+
+Phases 2-4 of the approved recipe-formula plan. The CRM job-area editor used to only ask for a flake color + a coordinating basecoat. It is now recipe-driven: each system type has a formula (an ordered list of "recipe slots") and the editor renders the right input per slot. NOT YET LIVE — the migration and seed must be applied to the Supabase project first (see Handoff).
+
+Phase 2 — schema (migration 2026-05-20_recipe_formula.sql):
+- pec_prod_recipe_slots gains: label, slot_kind ('product'|'multi_product'|'choice'|'text'), min_select, max_select, options (jsonb), product_filter (jsonb), editor_hidden. Existing rows default to slot_kind='product' so current behavior is unchanged.
+- material_type CHECK on pec_prod_products / pec_prod_recipe_slots / pec_prod_material_lines extended with 'Densifier' and 'Guard' (concrete polishing).
+- New table public.job_area_materials: one row per material pick on a job area (FK job_areas ON DELETE CASCADE, FK recipe slot ON DELETE SET NULL, snapshot columns, pick_index for multi picks, is_custom for ad-hoc rows). The legacy job_areas.flake_product_id/basecoat_product_id columns are kept and backfilled into the new table.
+- public.jobs gains companycam_project_id (text) for Phase 5.
+- RLS: job_areas has no RLS (not in policies.sql), so job_area_materials intentionally matches that open posture.
+
+Phase 3 — recipe-slot editor + seed:
+- The Material Catalog recipe-slot modal (openRecipeSlotModal) and the per-system slot table (renderSystemTypes) now expose the new slot fields: slot kind, label, min/max picks, choice options, and a "Show in job editor" toggle (editor_hidden).
+- _planForArea (the production material calculator) got a one-line guard: choice/text slots carry no product, so it skips them and they never trip the required-product check.
+- New seed seed_recipe_formulas.sql: labels/kinds the existing Metallic + Quartz slots (Metallic = basecoat + up-to-3 metallic colors + topcoat; Quartz = basecoat + quartz color + Single/Double broadcast choice + topcoat), marks the body-coat slots editor_hidden, adds a free-text scope slot to the Grind and Seal systems, and creates two new system types: "Concrete Polishing" (densifier + optional dye/stain + polish-grit choice + guard) and "Custom System". Concrete Polishing's densifier/guard product slots ship NOT required so CRM jobs can be saved before those SKUs are stocked.
+
+Phase 4 — recipe-driven area editor (renderJobDetail in index.html):
+- The data load widens the recipe_slots select to select('*') and fetches job_area_materials for the job's areas.
+- The per-area draft is now a slot-keyed picks map plus a customs array. Areas with no job_area_materials rows yet seed their picks from the legacy flake/basecoat columns, so existing jobs open pre-filled even before the SQL backfill runs.
+- renderAreas was rewritten: for the selected system it renders one control per editor-visible recipe slot (single product picker, up-to-N multi picker, choice buttons, free text), reusing the existing .pec-swatch grid for color-chip materials. Every area also has an always-on "Custom options" block to add ad-hoc materials/notes.
+- Save validates required slots (min_select), delete+re-inserts job_areas, then rebuilds job_area_materials from the draft; it also mirrors the first basecoat/flake pick into the legacy job_areas columns.
+
+Scope: this is the CRM job path only (public.jobs / job_areas / renderJobDetail). The production Job Schedule path (pec_prod_jobs / pec_prod_areas) is untouched; it still reads the same recipe slots and the new slot columns are backward-compatible there.
+
+Files touched: index.html, supabase/migrations/2026-05-20_recipe_formula.sql, supabase/seed_recipe_formulas.sql, PROJECT-LOG.md.
+
+Verification: embedded scripts syntax-checked clean (node --check on the extracted module scripts). Full verification deferred to Dylan after the migration + seed are applied: open a job, switch an area to Metallic (basecoat + 3-metallic picker + topcoat), Quartz (Single/Double broadcast), save and reload to confirm picks persist; check Material Catalog shows the new Concrete Polishing + Custom System types.
+
+## Handoff to Cowork
+
+The recipe-formula feature is committed but does NOT work until the database is migrated. Apply, in order, to the live PEC Supabase project (the same project behind CONFIG.SUPABASE_URL):
+
+1. Run supabase/migrations/2026-05-20_recipe_formula.sql (schema: recipe-slot columns, job_area_materials table, backfill, jobs.companycam_project_id).
+2. Run supabase/seed_recipe_formulas.sql (labels the Metallic/Quartz formulas, adds Concrete Polishing + Custom System).
+3. Run the verification queries in the comment block at the bottom of each file.
+
+Both files are idempotent and safe to re-run. Decision needed from Dylan: does PEC stock distinct densifier and guard-sealer SKUs? If yes, add those products to the Material Catalog with material_type 'Densifier' / 'Guard' and flip the Concrete Polishing densifier/guard recipe slots to Required. If no, leave them as-is for now.
+
+---
 
 By: Claude Code
 Changed: index.html.
