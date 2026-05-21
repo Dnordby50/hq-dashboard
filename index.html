@@ -1801,7 +1801,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
   <div class="pec-wrap">
     <!-- Auth gate: rendered when no Supabase session -->
     <div id="pecSigninPanel" class="pec-signin" style="display:none">
-      <h2>Prescott CRM</h2>
+      <h2>TopCoat</h2>
       <p>Sign in with your staff email and password.</p>
       <form id="pecSigninForm" style="width:100%;display:flex;flex-direction:column;gap:10px">
         <input type="email" name="email" placeholder="you@example.com" autocomplete="username" required>
@@ -7173,7 +7173,7 @@ function openAddJobModal() {
             <span id="addJobCustSelectedName" style="font-weight:600;font-size:.85rem;flex:1"></span>
             <button type="button" class="pec-btn ghost sm" id="addJobCustClear">Change</button>
           </div>
-          <div id="addJobCustHint" style="font-size:.7rem;color:var(--muted);margin-top:6px">Only customers already in the system can be scheduled. Create the customer in CRM &rarr; Customers first if they aren't here yet.</div>
+          <div id="addJobCustHint" style="font-size:.7rem;color:var(--muted);margin-top:6px">Only customers already in the system can be scheduled. Create the customer in TopCoat &rarr; Customers first if they aren't here yet.</div>
         </div>
       </div>
 
@@ -7264,7 +7264,7 @@ function openAddJobModal() {
           .slice(0, 15);
         if (!matches.length) {
           resultsEl.style.display = 'block';
-          resultsEl.innerHTML = `<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">No matches. Add this customer in CRM &rarr; Customers first.</div>`;
+          resultsEl.innerHTML = `<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">No matches. Add this customer in TopCoat &rarr; Customers first.</div>`;
           return;
         }
         resultsEl.style.display = 'block';
@@ -10655,7 +10655,7 @@ function _mergeAcrossAreas(areaPlans) {
     try {
       const ok = await ensureBooted();
       if (!ok) {
-        if (r) r.innerHTML = '<div class="pec-empty">Sign in to the CRM first.</div>';
+        if (r) r.innerHTML = '<div class="pec-empty">Sign in to TopCoat first.</div>';
         return;
       }
       state.view = mapView(crmView);

@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: master rename of the CRM to "TopCoat" (user-facing text)
+
+By: Claude Code
+Changed: index.html.
+
+Dylan asked for a master rename of the CRM to "TopCoat". The main tab button was already labeled "TopCoat" (from the f0568ee brand-chrome commit); this finishes the rename everywhere a user still saw "CRM" on screen. Four user-facing strings changed:
+
+1. The sign-in screen heading `<h2>Prescott CRM</h2>` -> `<h2>TopCoat</h2>` (index.html ~1804), matching the tab button.
+2. Add Job modal customer hint: "Create the customer in CRM -> Customers first" -> "in TopCoat -> Customers" (index.html ~7176).
+3. Add Job modal no-match message: "Add this customer in CRM -> Customers first." -> "in TopCoat -> Customers" (index.html ~7267).
+4. A sign-in empty state: "Sign in to the CRM first." -> "Sign in to TopCoat first." (index.html ~10658).
+
+Deliberately NOT changed: internal code identifiers (`data-tab="prescott-crm"`, `id="tab-prescott-crm"`, `.rd-crm-btn`, the `crm-light-theme` style block, `crmView` etc.) and HTML/JS comments that describe "the CRM tab" as an architectural area. Those are not user-facing, and renaming the IDs/selectors would be a risky cross-cutting refactor with zero user benefit; the comments stay accurate because the underlying ids are still literally `prescott-crm`. CLAUDE.md and PROJECT-LOG.md were left alone too (project docs, not product surface; PROJECT-LOG is append-only regardless).
+
+After this, no user-facing "CRM" text remains in index.html; every remaining occurrence is an internal identifier or a code comment.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan: after deploy, the sign-in screen reads "TopCoat" and the Add Job customer-picker hints say "TopCoat".
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-20 MST] dashboard: hide the SOPs hub from the owner front end (button removed, code kept)
 
 By: Claude Code
