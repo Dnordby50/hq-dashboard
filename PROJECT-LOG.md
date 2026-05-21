@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: CompanyCam photo integration on the job detail page (Phase 5)
+
+By: Claude Code
+Changed: index.html, netlify/functions/pec-companycam.cjs (new).
+
+Phase 5 (final) of the recipe-formula plan: pull a job's existing photos from CompanyCam instead of only re-uploading them.
+
+New Netlify function netlify/functions/pec-companycam.cjs. A read-only server-side proxy to the CompanyCam REST API (https://api.companycam.com/v2), so the API token never ships in client code and CORS does not apply. Two actions: `?action=projects` returns recent CompanyCam projects (id, name, one-line address); `?action=photos&project_id=X` returns that project's photos (display + thumbnail URLs). Uses the COMPANYCAM_API_TOKEN env var; returns a clear "not configured" 503 if it is unset. The .cjs extension is deliberate (package.json has "type":"module"), the same lesson as the earlier sheets-proxy fix.
+
+Job detail Photos card (renderJobDetail in index.html). Added a "CompanyCam project" dropdown below the existing upload gallery. On open it loads recent CompanyCam projects; picking one saves jobs.companycam_project_id (column added in the Phase 2 migration) and shows that project's photos read-only in a gallery, click-to-zoom via the existing lightbox. A saved project that has dropped off the recent list stays selectable. The local Supabase upload/delete flow is unchanged; CompanyCam photos sit alongside it.
+
+Files touched: index.html, netlify/functions/pec-companycam.cjs, PROJECT-LOG.md.
+
+Verification: pec-companycam.cjs passes node --check; the index.html module scripts parse clean. Full verification deferred to Dylan once the token is set: open a job, the CompanyCam dropdown lists recent projects, pick one, its photos appear and persist across reload.
+
+## Handoff to Cowork
+
+The CompanyCam integration is committed but inert until the API token is set:
+
+1. Dylan generates a CompanyCam API token (CompanyCam web app -> Account / Settings -> Integrations or Developers -> create an access token / API token).
+2. Cowork adds it to the Netlify environment for this site as COMPANYCAM_API_TOKEN (Netlify dashboard -> Site configuration -> Environment variables). It is a real secret, so it does NOT go in netlify.toml or any committed file.
+3. After the next deploy, on a job's Photos card the "CompanyCam project" dropdown should populate with recent projects. Until the token is set the dropdown shows "CompanyCam is not configured".
+
+This is separate from the recipe-formula migration handoff in the entry below — both are still outstanding.
+
+---
+
 ## [2026-05-20 MST] dashboard: recipe-driven system formulas for the job-area editor (Phases 2-4)
 
 By: Claude Code
