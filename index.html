@@ -497,7 +497,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-btn.ghost{background:transparent}
 .pec-btn.sm{padding:4px 10px;font-size:.7rem}
 .pec-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px}
-.pec-card h3{font-family:var(--sans);font-weight:600;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
+.pec-card h3{font-family:var(--sans);font-weight:700;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
 .pec-grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .pec-stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
 .pec-stat-label{font-size:.65rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
@@ -509,7 +509,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-table tr:hover td{background:rgba(255,255,255,.02)}
 .pec-table tr.nohover{cursor:default}
 .pec-table tr.nohover:hover td{background:transparent}
-.pec-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.62rem;letter-spacing:.5px;text-transform:uppercase;font-weight:500}
+.pec-badge{display:inline-block;padding:3px 9px;border-radius:4px;font-size:.68rem;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
 .pec-badge.confirmed{background:rgba(129,140,248,.15);color:var(--pec)}
 .pec-badge.scheduled{background:rgba(34,211,238,.15);color:var(--cyan)}
 .pec-badge.in_progress{background:rgba(251,191,36,.15);color:var(--warn)}
@@ -5263,9 +5263,9 @@ async function renderCustomers() {
     if (!jobs.length) return '<div style="color:var(--muted)">No jobs for this customer yet.</div>';
     return jobs.map(j => `
       <div class="pec-cust-job" data-open-job="${esc(j.id)}">
-        <span style="flex:1">${esc(j.address || '(no address)')}</span>
         <span class="pec-badge ${esc(j.type || '')}">${esc(j.type || '')}</span>
         <span class="pec-badge ${esc(j.status || '')}">${esc((j.status || '').replace('_',' '))}</span>
+        <span style="flex:1">${esc(j.address || '(no address)')}</span>
       </div>
     `).join('');
   };
@@ -5842,7 +5842,7 @@ async function renderJobDetail(id) {
   root.innerHTML = '<div class="pec-empty">Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes] = await Promise.all([
     supabase.from('jobs')
-      .select('*,customers(id,name,email,company,token),photos(*),reviews(*)')
+      .select('*,customers(id,name,email,company,token),photos(*)')
       .eq('id', id).single(),
     supabase.from('pec_prod_system_types').select('id,name,active,requires_flake_color').order('name'),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
@@ -5948,15 +5948,6 @@ async function renderJobDetail(id) {
       <h3>Signature & Confirmation</h3>
       <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">Confirmed: ${job.confirmed ? '✓ ' + fmtDate(job.confirmed_at) : 'Not yet'}</div>
       ${job.signature_data ? `<img src="${esc(job.signature_data)}" alt="Signature" style="max-width:300px;background:#fff;border-radius:6px;padding:4px">` : ''}
-    </div>
-
-    <div class="pec-card">
-      <h3>Review</h3>
-      ${job.reviews?.[0] ? `
-        <div>Rating: ${'★'.repeat(job.reviews[0].rating)}${'☆'.repeat(5-job.reviews[0].rating)}</div>
-        <div style="color:var(--muted);font-size:.85rem;margin-top:6px">${esc(job.reviews[0].feedback || '')}</div>
-        <div style="color:var(--dim);font-size:.7rem;margin-top:6px">${fmtDate(job.reviews[0].created_at)}</div>
-      ` : '<div class="pec-empty">No review yet</div>'}
     </div>
   `;
 

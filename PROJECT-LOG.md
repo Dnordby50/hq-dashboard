@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: TopCoat Customers/Jobs UI polish (Phase 1 of the recipe-formula plan)
+
+By: Claude Code
+Changed: index.html.
+
+First of five phases in the approved plan to overhaul the CRM Customers and Jobs surfaces (recipe-driven system formulas + CompanyCam photos follow in later phases). This phase is the standalone, no-schema UI polish, safe to deploy on its own.
+
+1. Customers tab, expanded job rows (`renderCustJobs`, index.html ~5264). The per-job row used to render `address | type badge | status badge`. Reordered to `type badge | status badge | address` so the badges sit at the left edge where they read first; the address keeps `flex:1` and fills the rest of the row.
+
+2. Badge weight (`.pec-badge`, index.html ~512). Bumped from `font-weight:500` / `.62rem` / `2px 8px` padding to `font-weight:700` / `.68rem` / `3px 9px`. This class is shared, so every badge (customer rows, job-detail header type/status, lead/role badges) gets bolder and easier to read in one change, which also covers the request to make the job-detail cards match the customer page.
+
+3. Card headings (`.pec-card h3`, index.html ~500). Weight 600 -> 700 so job-detail card titles read bolder.
+
+4. Removed the non-functional "Review" card from the job detail page (`renderJobDetail`). It was a read-only display of `job.reviews[0]` with zero JS wiring. Also dropped the now-dead `reviews(*)` join from the job detail query (index.html ~5845). The `reviews` table and the separate Reviews CRM view are untouched.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan: after deploy, expand a customer on the Customers tab (type/status badges now lead each job row, bolder); open a job (no Review card at the bottom; card titles and badges read bolder).
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-20 MST] dashboard: stop transient auth failures from blanking the CRM
 
 By: Claude Code
