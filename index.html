@@ -4889,8 +4889,16 @@ const PAGE = 20;
 async function initAuth() {
   const { data } = await supabase.auth.getSession();
   state.session = data.session;
-  supabase.auth.onAuthStateChange(async (_ev, session) => {
+  supabase.auth.onAuthStateChange(async (ev, session) => {
+    const prevUid = state.session?.user?.id;
     state.session = session;
+    // A plain token refresh keeps the same user signed in. Re-resolving the
+    // admin row and re-running renderAuthUI() (which calls switchView and wipes
+    // the current view back to "Loading…") on every refresh is needless churn,
+    // so short-circuit when nothing about the user actually changed.
+    if (ev === 'TOKEN_REFRESHED' && session?.user?.id === prevUid && state.adminUser) {
+      return;
+    }
     if (session) await resolveAdminUser();
     else { state.adminUser = null; }
     renderAuthUI();
@@ -4906,7 +4914,14 @@ async function resolveAdminUser() {
     .select('id, auth_user_id, email, name, role')
     .eq('auth_user_id', uid)
     .maybeSingle();
-  if (error) console.error('[pec] admin_users lookup:', error);
+  if (error) {
+    // A transient failure here (network blip, or an in-flight token refresh)
+    // must NOT clear a previously-resolved admin user. Doing so bounces the
+    // user to the "Access pending" panel and hides #pecApp, which reads as a
+    // blank page. Keep last-known-good and let the next event re-resolve.
+    console.error('[pec] admin_users lookup:', error);
+    return;
+  }
   state.adminUser = data || null;
 }
 

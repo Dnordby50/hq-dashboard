@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: stop transient auth failures from blanking the CRM
+
+By: Claude Code
+Changed: index.html.
+
+Dylan reported that switching between tabs sometimes shows a blank page, and a reload fixes it for a little while before it breaks again. Diagnosed from the code, not the tab-switching path: the cause is in the Supabase auth layer.
+
+Root cause: `resolveAdminUser()` (index.html ~4901) looked up the signed-in user's row in `admin_users`, and ended with `state.adminUser = data || null` even when the query returned an `error`. On a transient failure (network blip, or a token refresh in flight) `data` is null, so a previously-resolved admin user got wiped. This function re-runs inside the `onAuthStateChange` callback (index.html ~4892), which fires on EVERY auth event, including the `TOKEN_REFRESHED` events Supabase emits when you return to a backgrounded browser tab. When `adminUser` got cleared, `renderAuthUI()` hid `#pecApp` and showed the "Access pending" panel, i.e. the CRM vanished. A reload did a fresh `getSession()` and re-resolved with a settled token, so it worked again until the next refresh cycle. That matches the reported symptom precisely (intermittent, tied to switching tabs, "works for a bit," fixed by reload).
+
+Two fixes:
+
+1. `resolveAdminUser()`: on `error`, log and `return` early, keeping the last-known-good `state.adminUser`. The value is now only overwritten from `data` when the query actually succeeded. A clean "row not found" still correctly sets `null` (real not-approved state); only transient errors are now non-destructive.
+
+2. `onAuthStateChange`: it ignored the event type and ran a full `renderAuthUI()` (which calls `switchView` and wipes the current view back to "Loading…") on every event. Added a short-circuit: when the event is `TOKEN_REFRESHED`, the user id is unchanged, and an admin user is already resolved, just store the new session token and return. This removes the needless view re-render flash on every routine token refresh.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan: after deploy, the CRM should stay loaded when switching browser tabs or in-app tabs across a token-refresh cycle (roughly hourly). If a blank page recurs, open DevTools Console before reloading and check for a red `[pec] admin_users lookup:` error and whether `#pecApp` has `display:none`; that would confirm the path and point at a harder upstream failure (RLS, expired refresh token).
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-20 MST] dashboard: master rename of the CRM to "TopCoat" (user-facing text)
 
 By: Claude Code
