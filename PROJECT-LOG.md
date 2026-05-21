@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: hide the SOPs hub from the owner front end (button removed, code kept)
+
+By: Claude Code
+Changed: index.html.
+
+Dylan wants the SOPs hub off the dashboard for now: it is a larger project for a later phase, so the entry point comes off but the code stays.
+
+Removed the top-right "SOPs" button (`#rdBtnSops`, the `.rd-sops-btn` in the `.rd-user` chrome). That was the only visible owner-facing entry to the SOPs section. Both JS references to it are null-guarded (`if (sopsTop)` at index.html ~4685, `if (sopsTopBtn && sopsBtn)` at ~4736), so removing the markup needs no JS changes. A short HTML comment was left in its place noting the deferral.
+
+Everything else stays in code, untouched: the `sops-owner` tab section and its (already `display:none`) tab-btn, the SOP render functions, `filterSOPDept` / `searchSOPs` / `expandSOP` / `sendSOPChat`, the `.sop-*` CSS, and the `sop-chat` Netlify function. Nothing is deleted, so bringing the hub back later is just restoring the button.
+
+NOT touched: the separate employee-login view (`employee-nav`) still has its SOPs / Ask AI tabs. That is a different surface (employee logins, not the owner dashboard) and its default tab is SOPs, so removing it is a bigger change; left for the same later SOP phase unless Dylan wants it pulled now.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan: after deploy, the owner dashboard top bar no longer shows a SOPs button; the rest of the chrome (avatar, user info, refresh, theme, logout) is unchanged.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-20 MST] dashboard: fix sheets-proxy 502 by renaming the function .js -> .cjs
 
 By: Claude Code
