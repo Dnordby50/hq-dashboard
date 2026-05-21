@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-20 MST] dashboard: fix sheets-proxy 502 by renaming the function .js -> .cjs
+
+By: Claude Code
+Changed: netlify/functions/sheets-proxy.js renamed to netlify/functions/sheets-proxy.cjs (content unchanged).
+
+The reverse-proxy function shipped earlier today (commit bff23b3) returned 502 Bad Gateway and a `<!DOCTYPE` HTML page instead of JSON, so the Cockpit panels still failed (`Revenue load error: SyntaxError: Unexpected token '<'`, and `/.netlify/functions/sheets-proxy?...` 502 in the network tab).
+
+Root cause: `package.json` has `"type": "module"`, so every `.js` file in the repo is an ES module. `sheets-proxy.js` used CommonJS `exports.handler`, which is invalid under ESM (`exports` is not defined), so the function module failed to load and Netlify served its platform-level 502 page. A crash inside the handler would have returned the function's own JSON error body instead, so this was a load-time failure, i.e. the module system. The four webhook functions already use the `.cjs` extension for exactly this reason.
+
+Fix: renamed `sheets-proxy.js` to `sheets-proxy.cjs`. The `.cjs` extension forces CommonJS regardless of `"type": "module"`, so `exports.handler` is valid and the module loads. File contents are unchanged (global `fetch` works on Netlify's Node 18, proven by the `.cjs` webhooks). No index.html change: a Netlify function serves at `/.netlify/functions/<name-without-extension>`, so the URL is still `/.netlify/functions/sheets-proxy` and `CONFIG.SHEETS_PROXY` stays as-is.
+
+Files touched: netlify/functions/sheets-proxy.cjs (renamed from .js), PROJECT-LOG.md.
+
+Verification deferred to Dylan: after Netlify redeploys, the Cockpit booked sales / booked jobs panels should populate and `/.netlify/functions/sheets-proxy?id=...&range=...` should return 200 + JSON. Tasks, the Cowork tab, and the email tab use the same proxy and should also load.
+
+Known follow-up (not done here): `netlify/functions/sop-chat.js` has the identical `.js` + `exports.handler` pattern and is, by the same reasoning, also broken under `"type": "module"`. The SOP chat backend likely needs the same `.js` -> `.cjs` rename. Left out to keep this change scoped to the reported Cockpit bug.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-20 MST] dashboard: Sheets calls routed through a Netlify reverse-proxy function (fixes the Cockpit CORS failure)
 
 By: Claude Code
