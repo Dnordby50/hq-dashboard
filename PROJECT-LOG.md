@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] sheet: split Booked Jobs into source tabs + new union tab for dashboard
+
+By: Cowork
+Changed: live Google Sheet 1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4 only, no repo files.
+
+Earlier this session: renamed "PEC Booked Jobs Tracker" → "booked jobs" to restore the dashboard read after a prior split. Dylan then revised the call: the outer dashboard needs FTP numbers too, not just PEC.
+
+Reverted: renamed "booked jobs" back to "PEC Booked Jobs Tracker".
+Added: new tab named exactly "booked jobs" with a single A1 formula
+={'PEC Booked Jobs Tracker'!A1:G; 'FTP Booked Jobs Tracker'!A2:G}
+stacking PEC rows (with header) on FTP rows (header skipped). Source tabs stay the place where Dylan and Doug enter data; the new tab is a live view, no separate write.
+
+Verification: GET /.netlify/functions/sheets-proxy?id=...&range=booked%20jobs!A:G returned 1549 rows, headers row matches dashboard expectations, contains both PEC and FTP rows. Applying the dashboard's own loadRevenue filter logic (index.html:2056) to today's data yields PEC $117,739 / 22 jobs, FTP $69,480 / 11 jobs, Combined $187,219 for May 2026. Visual verification of the rendered widget on hq-prescott.netlify.app deferred because the new chrome session hit the Coating Operations password gate.
+
+Data quality flag: at least one FTP row has Date Booked "0206-03-04T..." (typo for 2026). Will silently drop from any windowed total. Sheet hygiene task for whoever owns FTP entry, not a code bug.
+
+Sheet edit access: tab bar shows "Shared externally" so there are other collaborators on the sheet beyond Dylan. Did not enumerate. If the "booked jobs" union tab gets overwritten / deleted again, the trigger is some external editor touching it.
+
+## Handoff to Cowork
+
+None. CompanyCam token still outstanding (deferred per Dylan earlier this session).
+
+---
+
 ## [2026-05-24 MST] dashboard: harden sheets-proxy + fetchSheet, fence CRM switchView renders, visible spinner
 
 By: Claude Code
