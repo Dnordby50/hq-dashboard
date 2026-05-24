@@ -567,6 +567,8 @@ textarea{resize:vertical;min-height:60px}
 .pec-google-btn{display:inline-flex;align-items:center;gap:10px;background:#fff;color:#1f1f1f;padding:10px 20px;border-radius:6px;font-size:.85rem;font-weight:500;border:none;cursor:pointer;transition:opacity .15s}
 .pec-google-btn:hover{opacity:.92}
 .pec-empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:.8rem}
+.pec-spinner{display:inline-block;width:13px;height:13px;border:2px solid color-mix(in srgb, var(--rd-accent, var(--accent)) 30%, transparent);border-top-color:var(--rd-accent, var(--accent));border-radius:50%;animation:pec-spin .8s linear infinite;vertical-align:-2px;margin-right:8px}
+@keyframes pec-spin{to{transform:rotate(360deg)}}
 .pec-stars{display:inline-flex;gap:4px;font-size:1.2rem;cursor:pointer;color:var(--dim)}
 .pec-stars .star.on{color:var(--warn)}
 .pec-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10010;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -2017,19 +2019,47 @@ function showSetup(el, msg) {
 async function fetchSheet(sheetId, range) {
   const url = `${CONFIG.SHEETS_PROXY}?id=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}`;
   const res = await fetch(url);
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const text = await res.text();
+  // Refuse non-JSON responses up front so a stray HTML error page (Apps
+  // Script exception, Netlify 5xx, etc.) surfaces as a real, readable error
+  // instead of "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON".
+  // The proxy now normalizes Apps Script exceptions to JSON, but this guard
+  // also protects against an older proxy build or an upstream Netlify error.
+  if (!ct.includes('application/json') || /^\s*</.test(text)) {
+    const stripped = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    throw new Error(stripped.slice(0, 200) || `Sheets proxy returned non-JSON (status ${res.status})`);
+  }
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error(`Sheets proxy returned malformed JSON (status ${res.status})`); }
+  // Proxy normalizes upstream failures to { error, message }. Surface the
+  // human-readable message; loadRevenue's catch logs it once.
+  if (data && typeof data === 'object' && data.error) {
+    throw new Error(data.message || data.error);
+  }
   if (!res.ok) throw new Error(`Sheets proxy error: ${res.status}`);
-  const data = await res.json();
   return data || [];
 }
 
 // ============================================================
 // REVENUE
 // ============================================================
-async function loadRevenue() {
+// State gate so a known-failed fetch (Apps Script exception, broken sheet
+// range, network blip) does not spam the console every 5 minutes from the
+// auto-refresh interval. Passive callers (the 5-min interval) skip the call
+// once it has failed; only an explicit user action (Refresh button) passes
+// `force: true` to retry.
+let revenueState = 'idle'; // 'idle' | 'loading' | 'success' | 'failed'
+
+async function loadRevenue({ force = false } = {}) {
+  if (revenueState === 'loading') return;
+  if (revenueState === 'failed' && !force) return;
   if (!sheetsApiReady()) {
     showSetup($('revSetup'), 'Add your Sheets proxy URL to <code>CONFIG.SHEETS_PROXY</code> to load revenue data.');
     return;
   }
+  revenueState = 'loading';
   try {
     const rows = await fetchSheet(CONFIG.SHEETS.BOOKED_JOBS, 'booked jobs!A:G');
     if (rows.length < 2) { $('jobsBody').innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:20px">No data found</td></tr>'; return; }
@@ -2085,10 +2115,12 @@ async function loadRevenue() {
     // Store all jobs for filtering
     allJobs = jobs.filter(j => j.date).sort((a, b) => b.date - a.date);
     renderJobsTable();
+    revenueState = 'success';
 
   } catch (e) {
     console.error('Revenue load error:', e);
-    $('jobsBody').innerHTML = `<tr><td colspan="6" style="color:var(--danger)">${esc(e.message)}</td></tr>`;
+    $('jobsBody').innerHTML = `<tr><td colspan="6" style="color:var(--danger)">${esc(e.message)}<br><span style="font-size:.75rem;color:var(--muted)">Click Refresh to retry.</span></td></tr>`;
+    revenueState = 'failed';
   }
 }
 
@@ -3935,9 +3967,13 @@ async function init() {
   loadEmail();
 }
 
-async function refreshAll() {
+// `force` defaults true so the on-page Refresh buttons (and any future
+// user-triggered callers) retry a known-failed revenue fetch. The 5-minute
+// auto-refresh interval below passes force=false so a broken sheet range
+// does not spam the console every cycle.
+async function refreshAll(force = true) {
   $('statusDot').style.background = 'var(--warn)';
-  await loadRevenue();
+  await loadRevenue({ force });
   renderGoals();
   loadCowork();
   loadEmail();
@@ -3951,8 +3987,8 @@ if (sessionStorage.getItem('hq_auth') === 'true') {
   $('loginPass').focus();
 }
 
-// Auto-refresh every 5 minutes
-setInterval(refreshAll, 5 * 60 * 1000);
+// Auto-refresh every 5 minutes — passive (do not retry known-failed widgets).
+setInterval(() => refreshAll(false), 5 * 60 * 1000);
 </script>
 
 <script type="module">
@@ -5066,12 +5102,19 @@ function switchView(v) {
   }
   if (prodRoot) prodRoot.style.display = 'none';
   pecRoot.style.display = '';
-  pecRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
+  // Visible spinner instead of bare text so slow renders read as activity,
+  // not a hang. CSS for .pec-spinner lives alongside .pec-empty in the
+  // global stylesheet.
+  pecRoot.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
   // Job Costing renders full-bleed; toggle a class on <main> so it can break
   // out of the standard CRM grid padding.
   const main = document.querySelector('#pecApp .pec-main');
   if (main) main.classList.toggle('pec-fullbleed', v === 'costing');
-  ({
+  // Fence the async render so a thrown / rejected render does not leave the
+  // panel stuck on "Loading…". Show the error message + a Retry button that
+  // re-enters switchView for the same view. Mirrors the prod-side pattern at
+  // `window.prodSwitchView` (search "[prod] switchView error:").
+  const renderFn = ({
     dashboard: renderDashboard,
     customers: renderCustomers,
     jobs: renderJobs,
@@ -5082,7 +5125,29 @@ function switchView(v) {
     reviews: renderReviews,
     team: renderTeam,
     settings: renderSettings,
-  }[v] || renderDashboard)();
+  })[v] || renderDashboard;
+  try {
+    const ret = renderFn();
+    if (ret && typeof ret.catch === 'function') {
+      ret.catch(err => showCrmRenderError(err, v));
+    }
+  } catch (err) {
+    showCrmRenderError(err, v);
+  }
+}
+
+function showCrmRenderError(err, view) {
+  console.error('[crm] switchView render error:', err);
+  const root = document.getElementById('pecViewRoot');
+  if (!root) return;
+  const msg = (err && err.message) || String(err || 'Unknown error');
+  root.innerHTML = `<div class="pec-empty" style="color:var(--danger);text-align:left">
+    <strong>Failed to load this view.</strong>
+    <div style="font-size:.75rem;color:var(--muted);margin-top:6px;white-space:pre-wrap">${esc(msg)}</div>
+    <button class="pec-btn sm" id="pecCrmRetry" style="margin-top:10px">Retry</button>
+  </div>`;
+  const btn = document.getElementById('pecCrmRetry');
+  if (btn) btn.addEventListener('click', () => switchView(view || (state && state.view) || 'dashboard'));
 }
 
 // ============================================================
@@ -5168,6 +5233,19 @@ function clearAllModalRoots() {
 }
 window.addEventListener('error', clearAllModalRoots);
 window.addEventListener('unhandledrejection', clearAllModalRoots);
+
+// Backstop for rejections that escape the switchView fence (or a downstream
+// async render that throws after first paint). Only surfaces a recovery UI
+// when the CRM view root is empty or stuck on the Loading spinner; never
+// hijacks a successfully-rendered page.
+window.addEventListener('unhandledrejection', (ev) => {
+  const root = document.getElementById('pecViewRoot');
+  if (!root || root.style.display === 'none') return;
+  const inner = root.innerHTML.trim();
+  const isStuck = inner === '' || /pec-spinner|Loading…/.test(inner);
+  if (!isStuck) return;
+  showCrmRenderError(ev.reason, (typeof state !== 'undefined' && state && state.view) || 'dashboard');
+});
 
 function openLightbox(src) {
   const wrap = document.createElement('div');

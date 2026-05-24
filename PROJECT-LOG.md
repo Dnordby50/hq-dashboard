@@ -4,6 +4,54 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: harden sheets-proxy + fetchSheet, fence CRM switchView renders, visible spinner
+
+By: Claude Code
+Changed: index.html, netlify/functions/sheets-proxy.cjs.
+
+Three fixes from Dylan's bug report. All client-side or proxy-side; nothing in this entry is a Supabase or RLS issue (the recent job_areas RLS work and the recipe-formula schema are unrelated and confirmed working end-to-end during diagnosis).
+
+### Bug 1: revenue widget spammed "SyntaxError: Unexpected token '<'"
+
+Symptom: every visit and every subsequent refresh logged `Revenue load error: SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON` from the outer HQ dashboard (index.html ~2089). Diagnosis (verified by hitting the live proxy URL): the Apps Script deployment is healthy, but the Booked Jobs sheet (id 1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4) no longer has a tab named `booked jobs`. The Apps Script returns its uncaught exception as an HTML page that says "Exception: Range not found (line 5, file 'Code')". netlify/functions/sheets-proxy.cjs forwarded that HTML body verbatim with `Content-Type: application/json`, so the dashboard's `res.json()` choked on `<`. Repeats came from `setInterval(refreshAll, 5 * 60 * 1000)` at index.html ~3955 plus two sidebar buttons that both call `refreshAll()`.
+
+Fix in three layers:
+
+(a) sheets-proxy.cjs sniffs the upstream content-type AND the first non-whitespace char of the body. If the upstream is HTML or any non-JSON-ish content-type, the proxy now strips tags and returns `{ statusCode: 502, body: { error: 'apps_script_exception', message: <stripped text>, upstream_status: <code> } }`. The happy path (JSON in, JSON out) is unchanged.
+
+(b) `fetchSheet` (index.html ~2017) now reads the response as text first, refuses non-JSON content-type or HTML-looking bodies, parses with try/catch, and throws `data.message` when the proxy returned a normalized error envelope. The caller's catch logs one readable line instead of a SyntaxError.
+
+(c) loadRevenue gained a `revenueState` gate (idle / loading / success / failed). Once a load fails, passive callers (the 5-minute interval) skip the retry; only an explicit user action (Refresh button) passes `force: true`. `refreshAll(force = true)` is the new signature; the setInterval call passes `false`. Result: a known-broken sheet logs once on first attempt and stops, the visible widget shows a "Click Refresh to retry" hint, and clicking Refresh genuinely retries.
+
+The sheet/tab rename itself is Dylan's call; this fix just makes the dashboard degrade cleanly until then. See "## Handoff to Dylan" below.
+
+### Bug 2: CRM blank page on render error
+
+Symptom: clicking a CRM sidebar tab sometimes left `#pecViewRoot` stuck on `<div class="pec-empty">Loading…</div>` with no visible error and no way to recover short of a full page reload. The 2026-05-20 auth fix addressed a different symptom (transient token-refresh blanking the whole CRM); this is the render path. Diagnosis: the dispatcher at index.html ~5074-5085 called the chosen render function but never awaited or `.catch()`-ed the returned promise. A thrown render (network blip, malformed Supabase row, schema drift) surfaced as an unhandled rejection caught only by the existing `clearAllModalRoots` listener at ~5169-5170, which silently cleared modal backdrops but left the view skeleton alone.
+
+Fix: wrap the render call in try / `.catch` (mirroring the existing prod-side pattern at `window.prodSwitchView`). On render failure a new helper `showCrmRenderError(err, view)` paints a small danger-colored panel into `#pecViewRoot` with the message and a Retry button that re-enters `switchView(view)`. A separate `unhandledrejection` listener (added alongside the existing one) acts as a backstop: it only fires when `#pecViewRoot` is empty or still showing the loading spinner, so it never hijacks a successful render.
+
+### UX upgrade: visible spinner instead of bare "Loading…"
+
+Replaced `<div class="pec-empty">Loading…</div>` in the CRM dispatcher with the same `.pec-empty` block plus a small inline `.pec-spinner` (13px CSS keyframe spinner using the accent color). 3 lines of CSS, no new dependencies. The slow renders (verified at ~500-1500ms for the Customers view in prod) now read as activity rather than a hang.
+
+### Diagnosis path (for future Claude Code sessions)
+
+The "SyntaxError" spam looks similar to JSON-parsing-RLS-errors that the prior 2026-05-23 entry chased, but this one is entirely outside Supabase. If you see `SyntaxError: Unexpected token '<'... is not valid JSON` from index.html:2089 again, check:
+
+1. Hit the proxy URL directly from a shell (no auth needed): `curl '<deploy>/.netlify/functions/sheets-proxy?id=<sheetId>&range=<range>'`. If the body starts with `<!DOCTYPE`, the upstream Apps Script is throwing — almost always a renamed/deleted sheet tab. Confirm by looking at the body text after `<!DOCTYPE`; Apps Script puts the error message in plain English.
+2. The Apps Script URL itself is healthy if its own root `/exec` returns either JSON or a typed error. Don't blame the script.
+
+Files touched: index.html, netlify/functions/sheets-proxy.cjs, PROJECT-LOG.md.
+
+Verification: `node --check` passes on sheets-proxy.cjs and on both modified script blocks in index.html (outer in script mode, CRM in module mode; an unrelated pre-existing `timeAgo` redeclaration in the outer script requires script-mode parsing to validate, which matches how the browser actually loads it). Three other `fetchSheet` callers (loadTasks, loadCowork, loadEmail) were audited and already have local try/catch, so the new hardened error messages flow through them cleanly.
+
+## Handoff to Dylan
+
+The Booked Jobs Sheet (1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4) is missing a tab named `booked jobs`. Either rename the existing tab back, or tell me what it is now called and I'll update `loadRevenue` at index.html ~2055 to use the new range. Until then the widget will show "Apps Script returned a non-JSON body" or the Apps Script's own "Exception: Range not found" message, and clicking Refresh will retry once per click instead of spamming.
+
+---
+
 ## [2026-05-24 MST] dashboard: continuous multi-day calendar bars, lane-packed and content-stretched (Phase 2)
 
 By: Claude Code

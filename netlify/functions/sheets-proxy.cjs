@@ -39,6 +39,27 @@ exports.handler = async (event) => {
       res = await fetch(APPS_SCRIPT_URL + (qs ? `?${qs}` : ''));
     }
     const text = await res.text();
+    const upstreamCt = (res.headers.get('content-type') || '').toLowerCase();
+
+    // Apps Script returns its uncaught exceptions as an HTML "Script function
+    // returned an exception" page (e.g. "Exception: Range not found"). That
+    // HTML body would slip through to the client and cause a confusing
+    // "Unexpected token <" SyntaxError when the dashboard tries res.json().
+    // Detect by content-type or a leading "<" and normalize to a 502 JSON
+    // error so the client gets one clean failure path. The happy path (JSON
+    // upstream, status 200) is untouched.
+    const looksHtml = /^\s*</.test(text);
+    const isJsonish = upstreamCt.includes('application/json') || upstreamCt.includes('text/plain');
+    if (looksHtml || !isJsonish) {
+      const stripped = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const message = stripped.slice(0, 400) || 'Apps Script returned a non-JSON body.';
+      return {
+        statusCode: 502,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'apps_script_exception', message, upstream_status: res.status }),
+      };
+    }
+
     return {
       statusCode: res.status,
       headers: { ...cors, 'Content-Type': 'application/json' },
