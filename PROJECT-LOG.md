@@ -48,6 +48,36 @@ This is separate from any still-outstanding handoffs in earlier entries.
 
 ---
 
+## [2026-05-23 MST] supabase: applied recipe-formula migration + seed + job_areas RLS to prod
+
+By: Cowork
+Changed: live PEC Supabase project (no repo files).
+
+Applied, in dependency order, via Supabase SQL editor on project zdfpzmmrgotynrwkeakd:
+1. supabase/migrations/2026-05-20_recipe_formula.sql, success.
+2. supabase/seed_recipe_formulas.sql, success.
+3. supabase/migrations/2026-05-23_job_areas_rls.sql, success.
+
+Correction to the previous log entry: the RLS handoff is NOT independent of the 2026-05-20 handoff. The RLS migration references public.job_area_materials, which is created by the 2026-05-20 migration. First attempt at the RLS migration failed with relation "public.job_area_materials" does not exist; running the migrations in the order above resolved it.
+
+Verification (single combined query, all 10 checks pass):
+- job_areas + job_area_materials: rowsecurity=true, staff policies in place
+- pec_prod_recipe_slots: 7 new columns present (editor_hidden, label, max_select, min_select, options, product_filter, slot_kind)
+- public.job_area_materials exists, row count 0 (no legacy job_areas with non-null flake/basecoat products to backfill)
+- public.jobs.companycam_project_id present
+- New system types Concrete Polishing and Custom System inserted
+- Metallic, Quartz, Concrete Polishing recipe slots labeled and shaped per seed
+
+Still outstanding: COMPANYCAM_API_TOKEN unset in Netlify, CompanyCam integration stays inert in prod.
+
+Collateral: Supabase auto-saved my editor edits over the saved query "Add Quartz to material_type constraints" while I was on its URL. Restored the inspection-SQL content from screenshots, but tail past the mvb_standalone block (if any) may be lost. Also, a saved query "Enable RLS and Admin-Only Policies" got auto-created from a failed first attempt, safe to delete.
+
+## Handoff to Cowork
+
+COMPANYCAM_API_TOKEN still outstanding (deferred per Dylan).
+
+---
+
 ## [2026-05-23 MST] dashboard: fix job-area RLS denial and bridge manual jobs to the schedule
 
 By: Claude Code
