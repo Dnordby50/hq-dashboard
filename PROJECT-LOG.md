@@ -4,6 +4,50 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: system-derived job badge, sales-team dropdown, settings entry points, calendar today highlight (Phase 1)
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-24_sales_team_members.sql (new).
+
+Phase 1 of an approved three-phase CRM evolution plan (system-derived flow, calendar polish, budgeted-materials + labor-budget). This phase is the quick wins; phases 2 and 3 follow in separate commits.
+
+1. Job badge derived from the first area's system instead of the legacy `jobs.type` Epoxy/Paint column. New helpers `firstAreaSystemId` and `systemBadgeHtml` (index.html near the existing `esc`/`fmtMoney` helpers). The badge label is the system name (Flake, G&S Urethane, Concrete Polishing, …); the badge tint is the existing `pec_prod_system_types.color` (the same column the calendar paints with) via a `--pec-badge-bg` CSS custom property added to `.pec-badge.system`. A neutral `—` badge renders when the job has no areas yet. Updated four render sites: dashboard Recent Jobs, Jobs page table, customer-expanded job rows (`renderCustJobs`), and the job detail header. The Jobs page filter dropdown also switched from "All types" (Epoxy/Paint) to "All systems" (every active `pec_prod_system_types`); `state.jobsFilter.type` is now `state.jobsFilter.system`. The Type select in the New Job form was removed; the submit handler still writes `jobs.type` (it is NOT NULL CHECK ('epoxy','paint')) by deriving it from the picked customer's brand (PEC → epoxy, FTP → paint), so the legacy column stays consistent for the portal + reviews paths without exposing the choice to the operator. Reviews page badge intentionally left alone — its query doesn't carry areas and the badge is a low-value surface there.
+
+2. Sales Team managed list. New migration `2026-05-24_sales_team_members.sql` adds `public.pec_sales_team_members (id, name unique, active, notes, timestamps)` with staff-only RLS and an `updated_at` trigger, mirroring the existing `pec_lead_sources` shape (supabase/migrations/2026-05-04_customer_fields.sql:57-97). Settings gains a collapsible Sales Team card alongside Lead Sources, with the same add/edit/delete modal pattern (new `openSalesTeamModal`). All four sales_team UI sites — schedule popup, the two job-costing detail forms, and the inline job-costing table row — swap from a free-text `<input>` to a `<select>` populated from `state.salesTeam`. A new helper `salesTeamSelectHtml(currentValue, attrs)` renders the select; if the saved value is no longer active (renamed/deleted), it is preserved as a trailing "(inactive)" option so historical jobs never go blank. `loadScheduleData` and `loadCostingData` now preload `state.salesTeam`; the inline costing rows reuse the existing `[data-cost]` 'change' handler, which a `<select>` triggers natively.
+
+3. Settings entry point for the System Types editor. New Settings card with a single "Open editor" button that sets `state.catalogTab = 'system_types'` and calls `switchView('catalog')`, landing the user on the existing canonical editor in `renderCatalog` (no duplicated CRUD). The card's note documents the FK posture (`job_areas.system_type_id` and `pec_prod_areas.system_type_id` are `on delete set null`), so renaming or deleting a system from this page is safe even with historical jobs referencing it.
+
+4. Today highlight on the monthly calendar. The `.today` class is already applied conditionally via `sameDay(d, today)` for both weekly and monthly day cells. Monthly previously only bolded the day number. Added a matching inset 2px outline and a 6% accent-color background to both weekly and monthly today cells, so the visual cue is consistent across views.
+
+Concrete Polishing stain visibility (Phase 1 item 1d in the plan) is purely a data check — no code change anticipated. Cowork handoff covers it.
+
+Files touched: index.html, supabase/migrations/2026-05-24_sales_team_members.sql (new), PROJECT-LOG.md.
+
+Verification deferred to Dylan: after migration applies, (a) the Jobs page badge column shows system names tinted by system color (no more "Epoxy" everywhere); change the system on an area and reload — the badge updates. (b) Settings has Sales Team + System Types cards; add a sales-team member, then check the Job Schedule popup and Job Costing — the new name appears as a dropdown option. (c) Settings "System Types → Open editor" lands on the catalog editor. (d) Today's date is highlighted on both weekly and monthly views with the accent inset.
+
+## Handoff to Cowork
+
+1. Apply `supabase/migrations/2026-05-24_sales_team_members.sql` to the live PEC Supabase project. Idempotent. Acceptance: `select to_regclass('public.pec_sales_team_members');` returns non-null and `select polname from pg_policy where polname = 'pec_sales_team_members_staff';` returns 1 row.
+
+2. Ask Dylan for the current PEC sales-team roster and seed it:
+   ```sql
+   insert into public.pec_sales_team_members (name) values
+     ('Dylan Nordby'),
+     ('<other rep>'),
+     ...
+   on conflict (name) do nothing;
+   ```
+
+3. Concrete Polishing stain catalog check (no code change required; the system has an optional Dye/Stain product slot, but the picker is only useful if there are seeded stain products):
+   ```sql
+   select id, name, active from public.pec_prod_products where material_type = 'Stain';
+   ```
+   If the result is empty or all inactive, ask Dylan which stain SKUs PEC stocks and seed 2-3 rows. Cohills Eco Stain may already exist from the recipe_formula seed; if so, just confirm `active = true`.
+
+This is separate from any still-outstanding handoffs in earlier entries.
+
+---
+
 ## [2026-05-23 MST] dashboard: fix job-area RLS denial and bridge manual jobs to the schedule
 
 By: Claude Code
