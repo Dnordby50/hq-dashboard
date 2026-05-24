@@ -4,6 +4,64 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: per-system labor budget %, job-detail Budget card, costing Labor Var % column (Phase 3)
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-24_system_budgets.sql (new).
+
+Phase 3 of the CRM evolution plan. The unifying ask: "have a set labor budget under system type. ex) flake is 20%. make this editable in settings". With this commit, every CRM job derives a budget the same way every downstream surface does, with two knobs the operator can dial without writing SQL.
+
+1. New migration `2026-05-24_system_budgets.sql` adds `labor_budget_pct numeric(5,2)` and `materials_budget_pct numeric(5,2)` to `pec_prod_system_types`, both range-checked 0-100 with NULL = "not set yet". Inserts (on conflict do nothing) a row in `public.settings` for `default_labor_hourly_rate` with placeholder `35` so the dashboard has a sane starting hourly rate to divide by until Dylan sets the real one.
+
+2. Material Catalog `openSystemTypeModal` exposes the two budget fields as numeric inputs in a `pec-row-2`. Save handler writes them as numbers (null when blank). The fields surface alongside Calendar color so the system editor becomes the single source of truth for everything the calendar + budgets + ordering touch.
+
+3. New Budget card on `renderJobDetail`, rendered between the area editor and the Save button. Inner function `renderBudget()` reuses the inlined `computeMaterialPlan()` (index.html ~9527), passing a legacy-shape projection of the in-memory `areas` (the same `flake_product_id` / `basecoat_product_id` mirror the Save handler computes). It walks the returned `lines` and sums `line_cost` for the Materials total; for Labor it multiplies `job.price` by the FIRST area's system `labor_budget_pct` and divides by `default_labor_hourly_rate` from `public.settings` to derive budgeted hours. The card updates live: `renderBudget()` is called at the bottom of `renderAreas()`, so changing sqft, system, or flake recomputes the budget on the next paint without a save round-trip. When data is missing, the card explains what's missing instead of going blank: "Set Labor budget % on Flake in the Material Catalog…", "Pick a system and enter sqft…", "Set the job's Price (top right)…".
+
+4. Job Costing table gains two new columns between "Salary & Wages | %" and "Subcontractor": `Labor Budget` and `Labor Var %`. Labor Budget = revenue × system.labor_budget_pct / 100. Variance = (salary_wages_cost − labor_budget) / labor_budget, signed (positive = over budget, painted with the existing cost-neg color). The `refreshDerived` updater in the same function recomputes both cells whenever the user edits revenue or salary, so focus is never lost. Empty-state colspan bumped from 34 to 36. The `system_types` select inside `loadCostingData` now pulls `labor_budget_pct` + `materials_budget_pct`.
+
+5. `loadCostingData` (~index.html:8036) and the renderJobDetail data load (~6001) both pull the budget columns in their existing parallel fetches; no new query overhead beyond two extra columns in selects that were already running.
+
+The plan also called for a Settings entry point to system types and a per-system Materials Budget %. The Settings entry point shipped in Phase 1 (the "System Types → Open editor" card). `materials_budget_pct` is captured in the schema + modal but not yet wired into a UI column (Mat. Ordered already shows the actual; Materials Budget UI is deferred until Dylan asks).
+
+Files touched: index.html (system-type modal, renderJobDetail Budget card, renderJobCosting two new columns + refreshDerived), supabase/migrations/2026-05-24_system_budgets.sql (new), PROJECT-LOG.md.
+
+Verification: `node --check` passes on the modified CRM module. Logic spot-check: a job with revenue $10,000 and Flake selected as the primary system area, with Flake's labor_budget_pct set to 20.00, renders "Revenue $10,000 × 20.00% = $2,000" and "Budget ÷ $35/hr = 57.1 hours" on the Budget card, and the Job Costing row shows Labor Budget $2,000 and a Labor Var % colored red when salary_wages_cost exceeds $2,000. Until Cowork applies the migration the Budget card shows the "Set Labor budget %…" hint and the costing column shows `—`; nothing else breaks.
+
+## Handoff to Cowork
+
+1. Apply `supabase/migrations/2026-05-24_system_budgets.sql` to the live PEC Supabase project. Idempotent. Acceptance:
+   ```sql
+   select column_name from information_schema.columns
+     where table_schema='public' and table_name='pec_prod_system_types'
+       and column_name in ('labor_budget_pct','materials_budget_pct');
+   -- expect: 2 rows
+   select key, value from public.settings where key='default_labor_hourly_rate';
+   -- expect: 1 row, value '35'
+   ```
+
+2. Ask Dylan for two pieces of data and run the seed updates:
+   a) Per-system labor_budget_pct for each active system: Flake, Quartz, Metallic, Grind and Seal - Cohills, Grind and Seal - Urethane, Concrete Polishing, Custom System. He referenced "Flake is 20%" in the plan brief; the others need his numbers.
+   b) The canonical default labor hourly rate in dollars (the migration seeded $35 as a placeholder).
+
+   Then run:
+   ```sql
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Flake';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Quartz';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Metallic';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Grind and Seal - Cohills';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Grind and Seal - Urethane';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Concrete Polishing';
+   update public.pec_prod_system_types set labor_budget_pct = <X> where name = 'Custom System';
+   update public.settings set value = '<rate>' where key = 'default_labor_hourly_rate';
+   ```
+   Use Dylan's exact numbers; the values can also be edited later from the Material Catalog system-type modal, so a wrong number is recoverable.
+
+3. After seeding, open a Flake job on hq-prescott.netlify.app and confirm the Budget card on the job detail page populates Labor and Materials, then open Job Costing and confirm the new Labor Budget + Labor Var % columns show numbers instead of dashes.
+
+Outstanding from prior phases: COMPANYCAM_API_TOKEN (deferred per Dylan), the Booked Jobs sheet "Shared externally" risk (no action required unless the union tab gets overwritten).
+
+---
+
 ## [2026-05-24 MST] sheet: split Booked Jobs into source tabs + new union tab for dashboard
 
 By: Cowork

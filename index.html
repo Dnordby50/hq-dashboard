@@ -5998,15 +5998,16 @@ async function openNewJobForm() {
 async function renderJobDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading job…</div>';
-  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes] = await Promise.all([
+  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await Promise.all([
     supabase.from('jobs')
       .select('*,customers(id,name,email,company,token),photos(*)')
       .eq('id', id).single(),
-    supabase.from('pec_prod_system_types').select('id,name,color,active').order('name'),
+    supabase.from('pec_prod_system_types').select('id,name,color,active,labor_budget_pct,materials_budget_pct').order('name'),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
-    supabase.from('pec_prod_products').select('id,name,color,material_type,image_url,active').order('name'),
+    supabase.from('pec_prod_products').select('id,name,color,material_type,image_url,active,spread_rate,kit_size,unit_cost').order('name'),
     supabase.from('pec_prod_color_pairings').select('flake_product_id,basecoat_product_id,is_default'),
     supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
+    supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
   ]);
   if (jobRes.error) { root.innerHTML = `<div class="pec-empty">${esc(jobRes.error.message)}</div>`; return; }
   const job = jobRes.data;
@@ -6014,6 +6015,7 @@ async function renderJobDetail(id) {
   const products = prodRes.data || [];
   const colorPairings = pairRes.data || [];
   const recipeSlots = slotRes.data || [];
+  const defaultLaborRate = Number(settingsRes?.data?.value) > 0 ? Number(settingsRes.data.value) : 35;
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
   const STATUSES = ['confirmed','scheduled','in_progress','completed'];
 
@@ -6127,6 +6129,8 @@ async function renderJobDetail(id) {
 
     <div id="jobAreas"></div>
 
+    <div id="jobBudget"></div>
+
     <div class="pec-card" style="display:flex;justify-content:flex-end;align-items:center;gap:12px">
       <span id="jobSaveMsg" style="font-size:.75rem;color:var(--muted)"></span>
       <button class="pec-btn primary" id="jobSaveBtn">Save job</button>
@@ -6192,6 +6196,107 @@ async function renderJobDetail(id) {
     const def = flId && defaultBasecoatByFlake[flId];
     if (def) bcPick.productIds = [def];
   };
+
+  // Compute a per-area material plan from the in-memory `areas` draft and
+  // multiply revenue x system.labor_budget_pct for the labor side. Re-renders
+  // whenever renderAreas() runs so the budget tracks the user's edits live.
+  // Materials side reuses the existing computeMaterialPlan() in this file so
+  // the budget shown here matches what the order-pull / costing surfaces use.
+  function renderBudget() {
+    const host = $('jobBudget'); if (!host) return;
+    // Derive the legacy area shape (flake_product_id / basecoat_product_id)
+    // that computeMaterialPlan expects, by walking each area's picks. Same
+    // logic the Save handler uses to mirror picks back onto job_areas.
+    const planAreas = areas.map(a => {
+      const firstSlotPick = (pred) => {
+        for (const slot of (slotsBySystem[a.system_type_id] || [])) {
+          if (!pred(slot.material_type)) continue;
+          const pid = (a.picks[slot.id]?.productIds || []).filter(Boolean)[0];
+          if (pid) return pid;
+        }
+        return null;
+      };
+      const sqftNum = Number(a.sqft);
+      return {
+        id: a.id, name: a.name,
+        sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+        system_type_id: a.system_type_id,
+        flake_product_id: firstSlotPick(t => SWATCH_TYPES.has(t)),
+        basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
+      };
+    });
+    // Recipe slots by system, INCLUDING editor_hidden ones (calculator-only
+    // body coats etc.). slotsBySystem above filters those out for the editor.
+    const fullSlotsBySystem = {};
+    for (const s of recipeSlots) (fullSlotsBySystem[s.system_type_id] ||= []).push(s);
+    for (const k in fullSlotsBySystem) fullSlotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+
+    let plan = null, planErr = null;
+    try {
+      plan = computeMaterialPlan({
+        areas: planAreas,
+        productsById: productById,
+        recipeSlotsBySystemType: fullSlotsBySystem,
+        defaultBasecoatByFlake,
+      });
+    } catch (err) {
+      planErr = err && err.message ? err.message : String(err);
+    }
+    const matLines = plan ? (plan.lines || []) : [];
+    const materialsBudget = matLines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0);
+
+    const primarySystem = planAreas[0] ? systemTypes.find(s => s.id === planAreas[0].system_type_id) : null;
+    const laborPct = primarySystem && primarySystem.labor_budget_pct != null ? Number(primarySystem.labor_budget_pct) : null;
+    const revenue = Number(job.price || 0);
+    const laborBudget = (laborPct != null && revenue > 0) ? (revenue * laborPct / 100) : null;
+    const budgetedHours = (laborBudget != null && defaultLaborRate > 0) ? (laborBudget / defaultLaborRate) : null;
+
+    const materialsBlock = planErr
+      ? `<div style="color:var(--danger);font-size:.78rem">${esc(planErr)}</div>`
+      : matLines.length
+        ? `<table class="pec-table" style="font-size:.75rem;margin:0">
+            <thead><tr><th>Product</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Line</th></tr></thead>
+            <tbody>
+              ${matLines.map(l => `<tr>
+                <td>${esc(l.product_name || '')}</td>
+                <td style="text-align:right">${l.qty_needed != null ? esc(l.qty_needed) : '—'}</td>
+                <td style="text-align:right">${l.unit_cost_snapshot != null ? fmtMoney(l.unit_cost_snapshot) : '—'}</td>
+                <td style="text-align:right">${l.line_cost != null ? fmtMoney(l.line_cost) : '—'}</td>
+              </tr>`).join('')}
+              <tr style="font-weight:600;background:var(--rd-soft, var(--s2))">
+                <td colspan="3" style="text-align:right">Materials total</td>
+                <td style="text-align:right">${fmtMoney(materialsBudget)}</td>
+              </tr>
+            </tbody>
+          </table>`
+        : `<div style="color:var(--muted);font-size:.78rem">Pick a system and enter sqft to compute the materials budget.</div>`;
+
+    const laborBlock = laborPct == null
+      ? `<div style="color:var(--muted);font-size:.78rem">Set <strong>Labor budget %</strong> on ${primarySystem ? esc(primarySystem.name) : 'the system'} in the Material Catalog to compute labor budget.</div>`
+      : revenue <= 0
+        ? `<div style="color:var(--muted);font-size:.78rem">Set the job's <strong>Price</strong> (top right) to compute labor budget.</div>`
+        : `<div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem;font-variant-numeric:tabular-nums">
+            <div><span style="color:var(--muted)">Revenue ${fmtMoney(revenue)} × ${laborPct.toFixed(2)}% =</span> <strong>${fmtMoney(laborBudget)}</strong></div>
+            <div><span style="color:var(--muted)">Budget ÷ $${defaultLaborRate}/hr =</span> <strong>${budgetedHours.toFixed(1)} hours</strong></div>
+            <div style="font-size:.7rem;color:var(--muted)">Hourly rate set in <em>public.settings.default_labor_hourly_rate</em>.</div>
+          </div>`;
+
+    host.innerHTML = `
+      <div class="pec-card">
+        <h3>Budget <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
+        <div class="pec-row-2" style="align-items:flex-start;gap:24px">
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>
+            ${materialsBlock}
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Labor</div>
+            ${laborBlock}
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   function renderAreas() {
     const host = $('jobAreas'); if (!host) return;
@@ -6353,6 +6458,9 @@ async function renderJobDetail(id) {
       areas.push({ id: null, name: '', sqft: '', system_type_id: '', picks: {}, customs: [] });
       renderAreas();
     });
+    // Budget recomputes any time renderAreas paints, so it tracks the user's
+    // sqft / system / flake edits live without waiting for a Save.
+    renderBudget();
   }
   renderAreas();
 
@@ -8037,7 +8145,7 @@ async function loadCostingData() {
   const [jobsRes, costRes, sysRes, crewsRes, membersRes, areasRes, linesRes, bonusesRes, schedRes, salesRes] = await Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
     supabase.from('pec_prod_job_costing').select('*'),
-    supabase.from('pec_prod_system_types').select('id,name,color'),
+    supabase.from('pec_prod_system_types').select('id,name,color,labor_budget_pct,materials_budget_pct'),
     supabase.from('pec_prod_crews').select('id,name'),
     supabase.from('pec_prod_crew_members').select('id,crew_id,name,busybusy_member_id,active').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,order_index'),
@@ -8855,6 +8963,7 @@ async function renderJobCosting() {
             <th>Mat. Ordered</th><th>%</th>
             <th>Mat. Used</th><th>%</th>
             <th>Salary &amp; Wages</th><th>%</th>
+            <th>Labor Budget</th><th>Labor Var %</th>
             <th>Subcontractor</th><th>%</th>
             <th>Bonus</th><th>%</th>
             <th>Commission</th><th>%</th>
@@ -8870,6 +8979,14 @@ async function renderJobCosting() {
               const cost = costByJob[j.id];
               const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
               const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
+              // Labor budget = revenue * system.labor_budget_pct. Variance is
+              // signed: positive = labor cost over budget (cost-neg coloring).
+              const laborPct = sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null;
+              const _revNum = Number(j.revenue || 0);
+              const laborBudget = (laborPct != null && _revNum > 0) ? (_revNum * laborPct / 100) : null;
+              const laborActual = Number(cost?.salary_wages_cost || 0);
+              const laborVar = (laborBudget != null && laborBudget > 0) ? ((laborActual - laborBudget) / laborBudget) : null;
+              const laborVarCls = laborVar == null ? '' : (laborVar > 0 ? 'cost-neg' : 'cost-pos');
               return `<tr data-job-id="${esc(j.id)}">
                 <td><strong>${esc(j.address || '—')}</strong><div style="color:var(--muted);font-size:.62rem">#${esc(j.proposal_number)}</div></td>
                 <td><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></td>
@@ -8891,6 +9008,8 @@ async function renderJobCosting() {
                 <td class="cost-pct" data-derived="pct-matused">${fmtPct(r.pct(r.buckets.materials_used_cost))}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="salary_wages_cost" data-table="cost" value="${esc(cost?.salary_wages_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-salary">${fmtPct(r.pct(r.buckets.salary_wages_cost))}</td>
+                <td class="cost-derived" data-derived="laborBudget" title="Revenue × system.labor_budget_pct. Set the % on the system in the Material Catalog.">${laborBudget == null ? '—' : fmtMoneyOrDash(laborBudget)}</td>
+                <td class="cost-pct ${laborVarCls}" data-derived="laborVarPct" title="(Salary & Wages − Labor Budget) ÷ Labor Budget. Positive = over budget.">${fmtPct(laborVar)}</td>
                 <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="subcontractor_cost" data-table="cost" value="${esc(cost?.subcontractor_cost ?? 0)}"></td>
                 <td class="cost-pct" data-derived="pct-sub">${fmtPct(r.pct(r.buckets.subcontractor_cost))}</td>
                 <td class="cost-derived" data-derived="bonus" title="Sum of pec_prod_job_bonuses.amount across crew members. Edit on the unified job page.">${fmtMoneyOrDash(r.buckets.bonus_cost)}</td>
@@ -8914,7 +9033,7 @@ async function renderJobCosting() {
                 </td>
                 <td><input class="cost-text" data-cost="notes" data-table="cost" value="${esc(cost?.notes || '')}"></td>
               </tr>`;
-            }).join('') || '<tr class="nohover"><td colspan="34" class="pec-empty">No jobs in this filter.</td></tr>'}
+            }).join('') || '<tr class="nohover"><td colspan="36" class="pec-empty">No jobs in this filter.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -8953,6 +9072,15 @@ async function renderJobCosting() {
     set('[data-derived="pct-matused"]',fmtPct(r.pct(r.buckets.materials_used_cost)));
     set('[data-derived="bonus"]',      fmtMoneyOrDash(r.buckets.bonus_cost));
     set('[data-derived="pct-salary"]', fmtPct(r.pct(r.buckets.salary_wages_cost)));
+    // Labor Budget + Variance: live-update so the row reflects revenue or
+    // salary_wages_cost edits without re-rendering the whole table.
+    const _laborPct = sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null;
+    const _revNum = Number(job.revenue || 0);
+    const _laborBudget = (_laborPct != null && _revNum > 0) ? (_revNum * _laborPct / 100) : null;
+    const _laborActual = Number(cost?.salary_wages_cost || 0);
+    const _laborVar = (_laborBudget != null && _laborBudget > 0) ? ((_laborActual - _laborBudget) / _laborBudget) : null;
+    set('[data-derived="laborBudget"]', _laborBudget == null ? '—' : fmtMoneyOrDash(_laborBudget));
+    set('[data-derived="laborVarPct"]', fmtPct(_laborVar), _laborVar == null ? '' : (_laborVar > 0 ? 'cost-neg' : 'cost-pos'));
     set('[data-derived="pct-sub"]',    fmtPct(r.pct(r.buckets.subcontractor_cost)));
     set('[data-derived="pct-bonus"]',  fmtPct(r.pct(r.buckets.bonus_cost)));
     set('[data-derived="pct-comm"]',   fmtPct(r.pct(r.buckets.commission_cost)));
@@ -11001,6 +11129,16 @@ function _mergeAcrossAreas(areaPlans) {
             <label>Calendar color <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">shown as the band on Job Schedule events</span></label>
             <input id="smColor" type="color" value="${esc(s.color || '#7c3aed')}" style="width:80px;height:36px;padding:2px;cursor:pointer">
           </div>
+          <div class="pec-row-2">
+            <div class="pec-field">
+              <label>Labor budget % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">of job revenue</span></label>
+              <input id="smLaborPct" type="number" min="0" max="100" step="0.01" value="${esc(s.labor_budget_pct ?? '')}" placeholder="e.g. 20">
+            </div>
+            <div class="pec-field">
+              <label>Materials budget % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">of job revenue, optional</span></label>
+              <input id="smMatPct" type="number" min="0" max="100" step="0.01" value="${esc(s.materials_budget_pct ?? '')}" placeholder="e.g. 25">
+            </div>
+          </div>
           <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
           <div class="pec-modal-actions">
             ${existing ? '<button class="pec-btn danger" id="smDelete">Delete</button>' : ''}
@@ -11016,6 +11154,8 @@ function _mergeAcrossAreas(areaPlans) {
     $('smCancel').addEventListener('click', closer);
     $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg') closer(); });
     $('smSave').addEventListener('click', async () => {
+      const laborPctRaw = $('smLaborPct').value;
+      const matPctRaw = $('smMatPct').value;
       const payload = {
         name: $('smName').value.trim(),
         description: $('smDesc').value || null,
@@ -11023,6 +11163,8 @@ function _mergeAcrossAreas(areaPlans) {
         requires_basecoat_color: $('smReqBase').value === 'true',
         active: $('smActive').value === 'true',
         color: $('smColor').value || null,
+        labor_budget_pct: laborPctRaw === '' ? null : Number(laborPctRaw),
+        materials_budget_pct: matPctRaw === '' ? null : Number(matPctRaw),
         notes: $('smNotes').value || null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
