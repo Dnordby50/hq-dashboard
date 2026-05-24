@@ -5826,6 +5826,39 @@ async function openNewJobForm() {
         fd.system_type_id = fd.system_type_id || null;
         const { data: job, error } = await supabase.from('jobs').insert(fd).select().single();
         if (error) throw error;
+
+        // Auto-bridge to pec_prod_jobs so the new job shows up in the PEC
+        // Job Schedule (Pending Jobs sidebar). Mirrors the proposal-accepted
+        // webhook's bridge (netlify/functions/pec-webhook-proposal-accepted.cjs).
+        // PEC-only: pec_prod_jobs is PEC-scoped; FTP jobs intentionally do
+        // not bridge (see docs/job-schedule-future-todos.md).
+        // dripjobs_deal_id stays null + proposal_number is prefixed MANUAL-
+        // so this row is identifiable as a manual entry (see CLAUDE.md
+        // "Manual job entries (temporary bridge)").
+        const picked = customers.find(c => c.id === fd.customer_id);
+        if (picked && (picked.company || 'prescott-epoxy') === 'prescott-epoxy') {
+          try {
+            const n = new Date();
+            const pad = x => String(x).padStart(2, '0');
+            const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+            const bridgeRes = await supabase.from('pec_prod_jobs').insert({
+              proposal_number: `MANUAL-${stamp}`,
+              customer_id: picked.id,
+              customer_name: picked.name,
+              address: fd.address || null,
+              revenue: fd.price,
+              status: 'unscheduled',
+              sync_status: 'dirty',
+              notes: fd.scope || null,
+            });
+            if (bridgeRes.error) {
+              console.error('[pec] create job: prod auto-bridge failed (non-fatal):', bridgeRes.error);
+            }
+          } catch (bridgeErr) {
+            console.error('[pec] create job: prod auto-bridge threw (non-fatal):', bridgeErr);
+          }
+        }
+
         closeModal();
         state.openJobId = job.id;
         renderJobDetail(job.id);

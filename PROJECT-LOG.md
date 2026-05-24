@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-23 MST] dashboard: fix job-area RLS denial and bridge manual jobs to the schedule
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-23_job_areas_rls.sql (new).
+
+Two bugs Anne reported in Slack while exercising the CRM:
+
+Bug 1/2 — saving sqft or a flake color on a job area threw `new row violates row-level security policy for table "job_areas"`. Diagnosed from the code (jobSaveBtn handler at index.html:6201-6300): the handler runs `update jobs` first, then `delete from job_areas` (silent no-op under RLS denial when there is nothing to delete), then `insert into job_areas`. The legacy mirror at index.html:6237 writes `areas[0].sqft` back onto `public.jobs.sqft`, which is why the sqft appeared persisted on reload (the `jobs` table has a staff policy from supabase/policies.sql:65-67). The insert against `job_areas` threw because RLS was enabled on the table in production without a matching policy — the 2026-05-19_job_areas.sql migration deliberately created the table without RLS, and the 2026-05-20_recipe_formula.sql comment explicitly notes "RLS note: job_areas and the pec_prod_* tables do not have RLS enabled... no policy is added," but at some point after those shipped, RLS got flipped on (most likely via Supabase Studio's "Enable RLS" warning button) without adding a policy. The flake color is not mirrored anywhere else, so it was genuinely lost.
+
+Bug 3 — a job created for Kathy Carmack via the CRM "+ New Job" button never showed up in the Job Schedule view. This is the "Two parallel job tables" gotcha already documented in CLAUDE.md: `public.jobs` (CRM) and `public.pec_prod_jobs` (Job Schedule) are siblings; the DripJobs proposal-accepted webhook (pec-webhook-proposal-accepted.cjs:99-137) writes to both, but `openNewJobForm` (index.html:5733-5838) only ever wrote to `public.jobs`.
+
+Fixes:
+
+1. New migration supabase/migrations/2026-05-23_job_areas_rls.sql. Enables RLS on `public.job_areas` and `public.job_area_materials` (idempotent), then adds a `for all using (public.is_admin_staff()) with check (public.is_admin_staff())` policy on each, matching the pattern every other CRM-writable table uses. `job_area_materials` is included because it is written one step later by the same save handler (index.html:6292) and would hit the same wall the moment someone clicks "Enable RLS" on it in Studio.
+
+2. index.html `openNewJobForm` submit handler now auto-bridges into `pec_prod_jobs` after the `public.jobs` insert succeeds, mirroring the webhook bridge: PEC-gated (`customer.company === 'prescott-epoxy'`, defaults to PEC if null), `proposal_number = MANUAL-<timestamp>-<rand>` (same format as the existing Job Schedule "+ Add Job" path at index.html:7680-7684, so the future `DELETE FROM pec_prod_jobs WHERE dripjobs_deal_id IS NULL` cleanup still catches these rows), `status='unscheduled'`, `sync_status='dirty'`, `dripjobs_deal_id` left null (the manual-entry marker). Bridge failure is logged but non-fatal: the `public.jobs` row is already saved, the modal still closes, the user still lands on the job detail page. FTP customers continue not to bridge (matches the current webhook behavior and the deferred-FTP note in docs/job-schedule-future-todos.md).
+
+Files touched: index.html, supabase/migrations/2026-05-23_job_areas_rls.sql, PROJECT-LOG.md.
+
+Verification deferred to Anne (needs the migration applied + a live admin session). Local sanity: the new migration is idempotent (alter table enable RLS + drop-if-exists + create policy); the new bridge code is fully scoped inside the existing try, only declares block-locals, and is gated on `picked` so a malformed customer_id can never throw.
+
+## Handoff to Cowork
+
+After this commit is pushed, apply supabase/migrations/2026-05-23_job_areas_rls.sql to the live PEC Supabase project (the project behind CONFIG.SUPABASE_URL). Idempotent and safe to re-run. Acceptance: `select tablename, rowsecurity from pg_tables where schemaname='public' and tablename in ('job_areas','job_area_materials');` returns rowsecurity=true for both, and `select polname from pg_policy where polname in ('job_areas_staff','job_area_materials_staff');` returns 2 rows. Until this runs, Bugs 1 and 2 stay broken in prod.
+
+This is independent of the still-outstanding 2026-05-20_recipe_formula.sql + seed_recipe_formulas.sql handoff and the COMPANYCAM_API_TOKEN handoff below.
+
+---
+
 ## [2026-05-20 MST] dashboard: CompanyCam photo integration on the job detail page (Phase 5)
 
 By: Claude Code
