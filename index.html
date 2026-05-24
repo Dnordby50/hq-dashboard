@@ -7312,17 +7312,22 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const dayCellsHtml = weekDays.map((d, i) => {
       const dim = monthFirst && d.getMonth() !== monthFirst.getMonth();
       const overflow = overflowByCol[i + 1];
-      // Day cells span the bar rows AND the trailing 1fr filler row so they
-      // fill the entire week's visual height. Bars sit on top via z-index.
+      // Day cells span the day-num row + bar rows + trailing filler so they
+      // form the entire week's vertical background. Day-num lives in row
+      // headerRowOffset+1 by itself; bars start on row headerRowOffset+2 so
+      // they never cover the date number.
       return `<div class="day-c ${dim?'dim':''} ${sameDay(d, today)?'today':''}" style="grid-column:${i+1};grid-row:${headerRowOffset + 1} / -1">
         <div class="day-num">${d.getDate()}</div>
         ${overflow ? `<div class="day-more">+${overflow} more</div>` : ''}
       </div>`;
     }).join('');
-    const barsHtml = visibleBars.map(b => barHtml(b, headerRowOffset + 1 + b.lane, !!monthFirst)).join('');
-    // Bar rows take their intrinsic 28/22 px; the trailing 1fr absorbs any
-    // leftover height so the grid's min-height doesn't stretch bars.
-    const rowTemplate = (showHeaders ? 'auto ' : '') + `repeat(${lanesShown}, minmax(${monthFirst ? 22 : 28}px, max-content)) 1fr`;
+    // Bars sit ONE row below the day-num row (headerRowOffset + 2 + lane).
+    const barsHtml = visibleBars.map(b => barHtml(b, headerRowOffset + 2 + b.lane, !!monthFirst)).join('');
+    // Row template: optional header, then a dedicated day-num row, then bar
+    // rows, then a 1fr filler that absorbs leftover height so bars stay tight.
+    const numRowHeight = monthFirst ? 22 : 28;
+    const barRowHeight = monthFirst ? 22 : 28;
+    const rowTemplate = (showHeaders ? 'auto ' : '') + `${numRowHeight}px repeat(${lanesShown}, minmax(${barRowHeight}px, max-content)) 1fr`;
     return `<div class="pec-cal-week-grid${monthFirst ? ' month' : ''}" style="grid-template-rows:${rowTemplate}">
       ${headersHtml}${dayCellsHtml}${barsHtml}
     </div>`;
