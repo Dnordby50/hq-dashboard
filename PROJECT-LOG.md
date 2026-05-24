@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: continuous multi-day calendar bars, lane-packed and content-stretched (Phase 2)
+
+By: Claude Code
+Changed: index.html.
+
+Phase 2 of the three-phase CRM evolution plan. Rewrites the Job Schedule calendar so multi-day jobs read as ONE continuous bar instead of per-day chips. Dylan reported in the plan brief that "day 2 is a different size" and "colors are intermingled" — both were artifacts of the old segment-chip model where each day had its own `<div>` with classes like `seg-start`, `seg-mid`, `seg-end-cont` and continuation cells used `opacity:.92`, no left stripe, and only showed metadata on day 1.
+
+New model. Each calendar week is its own CSS Grid (7 columns × N lane rows + a trailing `1fr` filler row). The day cells span `grid-row: 2 / -1` (or `1 / -1` in month view) so they form the background — today highlight, dim outside-month, day-num. Event bars sit on top via z-index, each with `grid-column: ${startCol} / span ${spanCols}` and `grid-row: ${lane + offset}`. A 3-day job is one `<div>` spanning 3 columns; no chips, no continuation classes, no opacity drop.
+
+Lane packing — `buildWeek` groups the week's schedule_days by job_id, walks each job's days in date order, and emits one bar per run of consecutive days. Bars are sorted by (startCol asc, spanCols desc) and greedy-packed into the lowest free lane that doesn't overlap. Two jobs that share days stack as separate grid rows with a 1px gap; long jobs lock into lane 0 so the layout stays stable week-over-week. Bars never cross week boundaries: a job spanning Sun→Mon renders as one bar per week, same color and customer label.
+
+Bar visual — single flex row with a 3px solid color stripe down the left edge (full bar height, not just day 1), 22% color-mix background (slightly more saturation than the old 18% so connected days read as continuous fill), 6px rounded ends, same height end-to-end. Content order: `Customer · System · Crew · Revenue`, ellipsis-overflowed. The bar is a CSS container (`container-type: inline-size`) so progressive hide kicks in based on bar WIDTH, not viewport width: below 320px hide Revenue, below 220px hide Crew, below 140px hide System. Customer always shows. A 5-day flake job on a wide monitor surfaces all four fields stretched across the bar; a 1-day job on a narrow column shows just the customer name.
+
+Month view — six week-grids stacked below a shared 7-cell header row. Each week has its own lane packing scoped to that week. Lanes are capped at 4; any overflow renders a `+N more` hint in the affected day cells (positioned at the bottom of the cell). Click handlers are unchanged: clicking any bar opens the existing `openScheduleModal`.
+
+Today highlight from Phase 1 remains underneath the bars (day-c gets the inset accent outline + 6% accent tint). Crew/customer color contrast is preserved because the bar text uses the page's `--fg`, not the system color.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification deferred to Dylan: open Job Schedule. (a) A 3-day job renders as ONE bar with no internal vertical seams, same height across all three days; the metadata stretches horizontally. (b) Two jobs that overlap days stack as separate rows in the same week with a 1px gap, no overlap. (c) Switch to monthly: same model, slightly smaller bars. A job that crosses Sunday→Monday shows as two bars (one per week), same color and customer label on both. (d) Narrow the browser; bars progressively drop revenue → crew → system as their width shrinks; customer always remains. (e) Today's cell still has the accent outline + tinted background underneath any bars sitting on it. (f) Clicking any bar still opens the schedule edit modal.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-24 MST] dashboard: system-derived job badge, sales-team dropdown, settings entry points, calendar today highlight (Phase 1)
 
 By: Claude Code
