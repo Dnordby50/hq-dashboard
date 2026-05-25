@@ -5023,15 +5023,26 @@ async function signOut() {
 window.pecAuthSignOut = signOut;
 
 function renderAuthUI() {
+  // Boot diagnostics for the blank-CRM bug. Cowork's 2026-05-24 diagnosis
+  // ruled out the "switchView throws" and "pecViewRoot is null" hypotheses;
+  // they confirmed in their repro that pecViewRoot was MOUNTED but never got
+  // written to (renderDashboard never fired) and the existing try/catch
+  // wrappers never tripped. These log lines let Dylan capture data the next
+  // time the bug happens by opening DevTools and checking the console for
+  // the gap between [crm] auth: rendered and [crm] auth: dispatching initial
+  // switchView.
+  console.log('[crm] auth: renderAuthUI', { hasSession: !!state.session, hasAdmin: !!state.adminUser, view: state.view });
   const signIn = $('pecSigninPanel');
   const pending = $('pecPendingPanel');
   const app = $('pecApp');
-  if (!signIn || !pending || !app) return;
+  if (!signIn || !pending || !app) { console.warn('[crm] auth: signin/pending/app element missing; bailing'); return; }
   if (!state.session) {
+    console.log('[crm] auth: no session, showing sign-in panel');
     signIn.style.display = ''; pending.style.display = 'none'; app.style.display = 'none';
     return;
   }
   if (!state.adminUser) {
+    console.log('[crm] auth: session present but no adminUser, showing pending panel');
     signIn.style.display = 'none';
     pending.style.display = '';
     $('pecPendingEmail').textContent = state.session.user.email || '';
@@ -5062,13 +5073,32 @@ function renderAuthUI() {
   if (costingBtn) {
     costingBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
   }
+  console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
 }
+
+// Internal staff debug shim. Cowork's 2026-05-24 diagnosis tried to call
+// switchView and state from the DevTools console and hit ReferenceError
+// because both live inside this module's IIFE closure. Exposing them here
+// (always on) lets future repro sessions run things like
+// `window.__debug.switchView(window.__debug.state.view)` from the console.
+// This is private internal tooling, not a public API.
+try {
+  window.__debug = window.__debug || {};
+  window.__debug.switchView = (v) => switchView(v);
+  window.__debug.state = state;
+  window.__debug.supabase = supabase;
+  window.__debug.renderAuthUI = () => renderAuthUI();
+} catch (e) { /* defensive; should never trip */ }
 
 // ============================================================
 // View switching
 // ============================================================
 function switchView(v) {
+  // Boot diagnostic: pairs with the [crm] auth: dispatching log in
+  // renderAuthUI. If the auth log fires but this one does NOT, the call is
+  // being intercepted between renderAuthUI and switchView (unlikely).
+  console.log('[crm] switchView entry ->', v);
   // Hard guard: every synchronous statement in this function used to assume
   // pecViewRoot exists. If the DOM is in a transient state (outer tab still
   // hidden, parent #tab-prescott-crm collapsed) `$('pecViewRoot')` returns
@@ -5132,9 +5162,13 @@ function switchView(v) {
       settings: renderSettings,
     })[v] || renderDashboard;
     try {
+      console.log('[crm] switchView calling renderFn:', renderFn.name || '(anon)');
       const ret = renderFn();
       if (ret && typeof ret.catch === 'function') {
-        ret.catch(err => showCrmRenderError(err, v));
+        ret.then(() => console.log('[crm] switchView render done ->', v))
+           .catch(err => showCrmRenderError(err, v));
+      } else {
+        console.log('[crm] switchView render returned (sync) ->', v);
       }
     } catch (err) {
       showCrmRenderError(err, v);

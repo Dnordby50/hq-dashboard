@@ -4,6 +4,45 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: Cowork blank-screen diagnostic + boot instrumentation + window.__debug
+
+By: Claude Code
+Changed: index.html.
+
+Cowork drove the live deploy with the diagnostic prompt from the previous entry. They ran ~45 click transitions across CRM subnav, outer tabs, rapid-fire clicks, idle waits, and Cockpit roundtrips, and could NOT reproduce Dylan's exact blank-screen bug. They did produce a DIFFERENT blank-pecViewRoot state by purging the Supabase auth token + reloading: the page-chrome painted, sidebar marked Dashboard active, but pecViewRoot was empty and stayed empty because the unauthenticated codepath shows the sign-in overlay instead (pecApp hidden, pecSigninPanel shown). Not the same bug Dylan has, but the data still ruled things in/out.
+
+**Findings**:
+- Candidate (a) "pecViewRoot is null at switchView entry" is RULED OUT. Element exists, computed display is `block`, parent `#tab-prescott-crm` is active.
+- Candidate (b) "prodSwitchView and switchView racing on display toggle" is RULED OUT. prodViewRoot was `display:none` as expected; no race winner.
+- Cowork could click a sidebar button programmatically and the panel painted correctly. So switchView itself works; the bug is in the INITIAL render trigger after page boot, not in the render function. The defensive try/catch wrappers from commits 84797a1 + 94c0793 cannot help: nothing throws.
+- The literal `switchView(window.state.view)` retry command in the previous Cowork prompt does NOT work. Both `switchView` and `state` live inside the CRM module's IIFE closure and are not on `window`. Cowork hit ReferenceError.
+
+**Secondary bug Cowork surfaced** (separate from the main blank-screen bug): after ~5 minutes of idle, clicking a CRM sidebar button leaves the panel showing the spinner indefinitely (~8+ seconds, never resolves). Consistent with a Supabase query awaiting a token-refresh that silently hangs. Different DOM signature from the main bug (this one HAS a spinner; the main one has nothing). Worth a separate investigation later.
+
+**Tertiary noise Cowork surfaced**: the Sheets proxy intermittently returns a 503 for the Cowork PM load, surfacing as `Cowork PMforPEC error: Error: Sheets proxy returned non-JSON (status 503)` in the console. `loadCowork` already catches it locally so no widget breaks, but if it happens during a render that depends on PM data, that view might short-render. Same family of issues as the 2026-05-24 sheets-proxy hardening; logged here so it's not chased again as new.
+
+This commit ships Cowork's three recommendations:
+
+1. **Boot diagnostics in `renderAuthUI` and `switchView`**. New console.log lines around the auth resolution and the initial dispatch: `[crm] auth: renderAuthUI`, `[crm] auth: no session` / `[crm] auth: session present but no adminUser` / `[crm] auth: dispatching initial switchView -> dashboard`, then `[crm] switchView entry -> dashboard`, `[crm] switchView calling renderFn: renderDashboard`, `[crm] switchView render done -> dashboard`. The next time Dylan hits the blank screen, he opens DevTools and the gaps between these logs pinpoint exactly which step is missing (auth never resolved, switchView never called, renderFn never returned, etc).
+
+2. **`window.__debug` shim** with `{ switchView, state, supabase, renderAuthUI }` exposed unconditionally. This is private internal tooling, not a public API; it lets future repro sessions (Cowork or otherwise) run things like `window.__debug.switchView(window.__debug.state.view)` from the DevTools console to drive a manual retry without re-engineering the page.
+
+3. **No new try/catch layers** added. Cowork was explicit: piling on more defensive code does nothing when the bug is "render trigger never fires", not "render crashes". Wait for the next repro with the new logs in place before any code fix.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification: `node --check` passes. The new log lines and the `window.__debug` shim don't affect existing behavior. After deploy, open DevTools on hq-prescott.netlify.app, sign in, and the console should show the full `[crm] auth: ...` -> `[crm] switchView entry` -> `[crm] switchView calling renderFn: renderDashboard` -> `[crm] switchView render done -> dashboard` sequence on every page load and on every CRM subnav click.
+
+## Handoff to Dylan
+
+Next time the blank-screen bug hits: open DevTools Console (no Preserve Log needed since the logs fire on the same page), click the affected subnav button if it isn't already failing, and screenshot the console. The exact log line that's MISSING from the sequence pinpoints the failure path. Send the screenshot back and a surgical fix becomes possible. If the console shows no `[crm]` lines at all, the CRM module never booted; if it shows auth lines but no `switchView entry`, renderAuthUI is bailing in the `!state.adminUser` branch (token expired or admin_users lookup failed); if it shows entry but no `render done`, the render is hanging on an unresolved promise (probably the same family as the stuck-spinner secondary bug).
+
+## Handoff to Cowork
+
+None. This is a pure instrumentation commit; no migration needed.
+
+---
+
 ## [2026-05-24 MST] dashboard: status "confirmed" -> "signed", Grind and Seal consolidated, "Coating Operations" + Colors/Referrals/Reviews removed, Back-to-jobs fenced, switchView defensive guards
 
 By: Claude Code
