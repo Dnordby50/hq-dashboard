@@ -510,7 +510,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-table tr.nohover{cursor:default}
 .pec-table tr.nohover:hover td{background:transparent}
 .pec-badge{display:inline-block;padding:3px 9px;border-radius:4px;font-size:.68rem;letter-spacing:.5px;text-transform:uppercase;font-weight:700}
-.pec-badge.confirmed{background:rgba(129,140,248,.15);color:var(--pec)}
+.pec-badge.signed{background:rgba(129,140,248,.15);color:var(--pec)}
 .pec-badge.scheduled{background:rgba(34,211,238,.15);color:var(--cyan)}
 .pec-badge.in_progress{background:rgba(251,191,36,.15);color:var(--warn)}
 .pec-badge.completed{background:rgba(52,211,153,.15);color:var(--success)}
@@ -1368,7 +1368,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-stars { color: var(--rd-line);
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-stars .star.on { color: var(--rd-warn); }
 
 /* Badges, retuned for light surfaces */
-body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.confirmed,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.signed,
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.booked,
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-badge.epoxy {
   background: #e9efff; color: #1e3fb3;
@@ -1443,7 +1443,6 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 <div id="loginGate" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center">
   <div style="text-align:center;width:min(360px,90vw)">
     <img src="assets/pec-logo.png" alt="Prescott Epoxy Company" style="width:96px;height:auto;margin:0 auto 12px;display:block">
-    <div style="color:var(--muted);font-size:.85rem;margin-bottom:8px">Coating Operations</div>
     <div style="color:var(--dim);font-size:.7rem;margin-bottom:32px">Owner password or employee code</div>
     <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password"
       style="text-align:center;font-size:1rem;padding:14px 20px;margin-bottom:12px"
@@ -1834,9 +1833,6 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
-          <button data-pec-view="colors">Colors</button>
-          <button data-pec-view="referrals">Referrals</button>
-          <button data-pec-view="reviews">Reviews</button>
           <button data-pec-view="team" class="pec-role-admin">Team</button>
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
         </nav>
@@ -4494,7 +4490,6 @@ if (document.readyState === 'loading') {
         <img class="rd-logo-img" src="assets/pec-logo.png" alt="Prescott Epoxy Company">
         <div>
           <div class="rd-logo-name">Prescott Epoxy</div>
-          <div class="rd-logo-sub">Coating Operations</div>
         </div>
       </div>
       <div>
@@ -5074,73 +5069,95 @@ function renderAuthUI() {
 // View switching
 // ============================================================
 function switchView(v) {
-  state.view = v;
-  document.querySelectorAll('#pecSubnav button').forEach(b => {
-    b.classList.toggle('active', b.dataset.pecView === v);
-  });
-  const pecRoot = $('pecViewRoot');
-  const prodRoot = $('prodViewRoot');
-  // Production-owned views (Ordering / Material Catalog) live in a sibling
-  // root rendered by the production module below. Hand off and bail.
-  if (v === 'ordering' || v === 'catalog') {
-    pecRoot.style.display = 'none';
-    if (prodRoot) {
-      prodRoot.style.display = 'block';
-      // Paint a visible loading state synchronously so the user never sees
-      // a black panel even if window.prodSwitchView is briefly undefined.
-      if (!prodRoot.innerHTML.trim()) {
-        prodRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
-      }
-    }
-    if (typeof window.prodSwitchView === 'function') {
-      window.prodSwitchView(v);
-    } else {
-      // Module not booted yet; it self-boots once available and re-reads state.view.
-      window.__pendingProdView = v;
-    }
-    return;
-  }
-  if (prodRoot) prodRoot.style.display = 'none';
-  pecRoot.style.display = '';
-  // Visible spinner instead of bare text so slow renders read as activity,
-  // not a hang. CSS for .pec-spinner lives alongside .pec-empty in the
-  // global stylesheet.
-  pecRoot.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
-  // Job Costing renders full-bleed; toggle a class on <main> so it can break
-  // out of the standard CRM grid padding.
-  const main = document.querySelector('#pecApp .pec-main');
-  if (main) main.classList.toggle('pec-fullbleed', v === 'costing');
-  // Fence the async render so a thrown / rejected render does not leave the
-  // panel stuck on "Loading…". Show the error message + a Retry button that
-  // re-enters switchView for the same view. Mirrors the prod-side pattern at
-  // `window.prodSwitchView` (search "[prod] switchView error:").
-  const renderFn = ({
-    dashboard: renderDashboard,
-    customers: renderCustomers,
-    jobs: renderJobs,
-    schedule: renderSchedule,
-    costing: renderJobCosting,
-    colors: renderColors,
-    referrals: renderReferrals,
-    reviews: renderReviews,
-    team: renderTeam,
-    settings: renderSettings,
-  })[v] || renderDashboard;
+  // Hard guard: every synchronous statement in this function used to assume
+  // pecViewRoot exists. If the DOM is in a transient state (outer tab still
+  // hidden, parent #tab-prescott-crm collapsed) `$('pecViewRoot')` returns
+  // null and the next line throws TypeError BEFORE the try/catch fence
+  // around the async render. The visible symptom: a blank panel with no
+  // recovery UI. This wrapper converts those cases into a single console
+  // line + a user-visible toast.
   try {
-    const ret = renderFn();
-    if (ret && typeof ret.catch === 'function') {
-      ret.catch(err => showCrmRenderError(err, v));
+    state.view = v;
+    document.querySelectorAll('#pecSubnav button').forEach(b => {
+      b.classList.toggle('active', b.dataset.pecView === v);
+    });
+    const pecRoot = $('pecViewRoot');
+    const prodRoot = $('prodViewRoot');
+    if (!pecRoot) {
+      console.error('[crm] switchView: pecViewRoot missing; DOM not ready or #tab-prescott-crm is hidden. view=', v);
+      try { showToast('CRM view root is missing. Try clicking the TopCoat tab again, or hard-refresh.', { ttl: 6000 }); } catch {}
+      return;
     }
-  } catch (err) {
-    showCrmRenderError(err, v);
+    // Production-owned views (Ordering / Material Catalog) live in a sibling
+    // root rendered by the production module below. Hand off and bail.
+    if (v === 'ordering' || v === 'catalog') {
+      pecRoot.style.display = 'none';
+      if (prodRoot) {
+        prodRoot.style.display = 'block';
+        // Paint a visible loading state synchronously so the user never sees
+        // a black panel even if window.prodSwitchView is briefly undefined.
+        if (!prodRoot.innerHTML.trim()) {
+          prodRoot.innerHTML = '<div class="pec-empty">Loading…</div>';
+        }
+      }
+      if (typeof window.prodSwitchView === 'function') {
+        window.prodSwitchView(v);
+      } else {
+        // Module not booted yet; it self-boots once available and re-reads state.view.
+        window.__pendingProdView = v;
+      }
+      return;
+    }
+    if (prodRoot) prodRoot.style.display = 'none';
+    pecRoot.style.display = '';
+    // Visible spinner instead of bare text so slow renders read as activity,
+    // not a hang. CSS for .pec-spinner lives alongside .pec-empty in the
+    // global stylesheet.
+    pecRoot.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
+    // Job Costing renders full-bleed; toggle a class on <main> so it can break
+    // out of the standard CRM grid padding.
+    const main = document.querySelector('#pecApp .pec-main');
+    if (main) main.classList.toggle('pec-fullbleed', v === 'costing');
+    // Fence the async render so a thrown / rejected render does not leave the
+    // panel stuck on "Loading…". Show the error message + a Retry button that
+    // re-enters switchView for the same view. Mirrors the prod-side pattern at
+    // `window.prodSwitchView` (search "[prod] switchView error:").
+    const renderFn = ({
+      dashboard: renderDashboard,
+      customers: renderCustomers,
+      jobs: renderJobs,
+      schedule: renderSchedule,
+      costing: renderJobCosting,
+      team: renderTeam,
+      settings: renderSettings,
+    })[v] || renderDashboard;
+    try {
+      const ret = renderFn();
+      if (ret && typeof ret.catch === 'function') {
+        ret.catch(err => showCrmRenderError(err, v));
+      }
+    } catch (err) {
+      showCrmRenderError(err, v);
+    }
+  } catch (outerErr) {
+    // Synchronous throw above the try/catch above (defensive net for the
+    // pecRoot null check itself or any DOM API that surprises us).
+    console.error('[crm] switchView outer error:', outerErr);
+    try { showToast('CRM failed to switch view: ' + (outerErr && outerErr.message || outerErr), { ttl: 6000 }); } catch {}
   }
 }
 
 function showCrmRenderError(err, view) {
   console.error('[crm] switchView render error:', err);
-  const root = document.getElementById('pecViewRoot');
-  if (!root) return;
   const msg = (err && err.message) || String(err || 'Unknown error');
+  const root = document.getElementById('pecViewRoot');
+  if (!root) {
+    // The view root vanished mid-render. Surface the error somewhere the user
+    // can actually see it instead of silently returning.
+    try { showToast('CRM render failed and the view root is gone: ' + msg, { ttl: 8000 }); } catch {}
+    try { document.title = '[CRM error] ' + msg; } catch {}
+    return;
+  }
   root.innerHTML = `<div class="pec-empty" style="color:var(--danger);text-align:left">
     <strong>Failed to load this view.</strong>
     <div style="font-size:.75rem;color:var(--muted);margin-top:6px;white-space:pre-wrap">${esc(msg)}</div>
@@ -5285,23 +5302,22 @@ async function renderDashboard() {
       <div class="pec-stat"><div class="pec-stat-label">Customers</div><div class="pec-stat-val">${custCount.count ?? 0}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Active Jobs</div><div class="pec-stat-val">${active}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Completed</div><div class="pec-stat-val">${completed}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Pending Confirm</div><div class="pec-stat-val">${pending}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Pending Sign</div><div class="pec-stat-val">${pending}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">New Referrals</div><div class="pec-stat-val">${refsNew.count ?? 0}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Avg Rating</div><div class="pec-stat-val">${avgRating}</div></div>
     </div>
     <div class="pec-card">
       <h3>Recent Jobs</h3>
       <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Confirmed</th><th>Created</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Created</th></tr></thead>
         <tbody>${jobs.slice(0,10).map(j => `
           <tr data-job-id="${j.id}">
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
             <td><span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span></td>
-            <td>${j.confirmed ? '✓' : '—'}</td>
             <td>${fmtDate(j.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs yet</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No jobs yet</td></tr>'}</tbody>
       </table>
     </div>
   `;
@@ -5817,7 +5833,7 @@ async function renderJobs() {
   root.innerHTML = `
     <div class="pec-toolbar">
       <select id="pecJobStatus"><option value="">All statuses</option>
-        ${['confirmed','scheduled','in_progress','completed'].map(s => `<option value="${s}" ${state.jobsFilter.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+        ${['signed','scheduled','in_progress','completed'].map(s => `<option value="${s}" ${state.jobsFilter.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
       </select>
       <select id="pecJobSystem"><option value="">All systems</option>
         ${sysOptions.map(s => `<option value="${esc(s.id)}" ${state.jobsFilter.system===s.id?'selected':''}>${esc(s.name)}</option>`).join('')}
@@ -5830,7 +5846,7 @@ async function renderJobs() {
     </div>
     <div class="pec-card">
       <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Confirmed</th><th>Price</th><th>Created</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Signed</th><th>Price</th><th>Created</th></tr></thead>
         <tbody>${jobs.map(j => `
           <tr data-job-id="${j.id}">
             <td>${esc(j.customers?.name || '—')}</td>
@@ -6017,7 +6033,7 @@ async function renderJobDetail(id) {
   const recipeSlots = slotRes.data || [];
   const defaultLaborRate = Number(settingsRes?.data?.value) > 0 ? Number(settingsRes.data.value) : 35;
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
-  const STATUSES = ['confirmed','scheduled','in_progress','completed'];
+  const STATUSES = ['signed','scheduled','in_progress','completed'];
 
   // Recipe slots grouped per system, ordered, editor-visible only. Slots with
   // editor_hidden = true (calculator-only internals like a fixed body coat)
@@ -6156,12 +6172,16 @@ async function renderJobDetail(id) {
 
     <div class="pec-card">
       <h3>Signature & Confirmation</h3>
-      <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">Confirmed: ${job.confirmed ? '✓ ' + fmtDate(job.confirmed_at) : 'Not yet'}</div>
+      <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">Signed: ${job.confirmed ? '✓ ' + fmtDate(job.confirmed_at) : 'Not yet'}</div>
       ${job.signature_data ? `<img src="${esc(job.signature_data)}" alt="Signature" style="max-width:300px;background:#fff;border-radius:6px;padding:4px">` : ''}
     </div>
   `;
 
-  $('pecJobBack').addEventListener('click', () => { state.openJobId = null; renderJobs(); });
+  // Route through the fenced dispatcher (commit 84797a1) so any renderJobs
+  // throw on a specific record shows the error block + Retry button instead
+  // of a silent spinner hang. Reported by Dylan: clicking "Back to jobs"
+  // from Kathy Carmack's job detail did nothing.
+  $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobCopyPortal').addEventListener('click', () => {
     navigator.clipboard.writeText(portalLink).then(() => {
       $('pecJobCopyPortal').textContent = 'Copied';
@@ -9169,7 +9189,7 @@ async function renderCustomerPortal(token) {
           <span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span>
         </div>
         <div style="color:var(--muted);font-size:.8rem">
-          ${j.package ? esc(j.package) : ''}${j.price ? ' · ' + fmtMoney(j.price) : ''}${j.confirmed ? ' · Confirmed ✓' : ''}
+          ${j.package ? esc(j.package) : ''}${j.price ? ' · ' + fmtMoney(j.price) : ''}${j.confirmed ? ' · Signed ✓' : ''}
         </div>
       </div>
     `).join('') || '<div class="pec-empty">No jobs yet — your account manager will add one soon.</div>'}
@@ -9238,7 +9258,7 @@ async function portalJobDetail(token, jobId, bundle) {
 
     ${!job.confirmed ? `
       <div class="pec-card">
-        <h3>Confirm your project</h3>
+        <h3>Sign your project</h3>
         ${job.type === 'paint' ? `
           <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
             Your project manager will finalize paint colors with you directly. Sign below to confirm the project scope.
@@ -9269,7 +9289,7 @@ async function portalJobDetail(token, jobId, bundle) {
         </div>
       </div>` : `
       <div class="pec-card">
-        <h3>Confirmed ✓</h3>
+        <h3>Signed ✓</h3>
         <div style="color:var(--muted);font-size:.85rem">${fmtDate(job.confirmed_at)}</div>
         ${job.signature_data ? `<img src="${esc(job.signature_data)}" style="margin-top:10px;max-width:260px;background:#fff;padding:4px;border-radius:6px">` : ''}
       </div>`}

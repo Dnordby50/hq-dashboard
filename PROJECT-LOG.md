@@ -4,6 +4,66 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: status "confirmed" -> "signed", Grind and Seal consolidated, "Coating Operations" + Colors/Referrals/Reviews removed, Back-to-jobs fenced, switchView defensive guards
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-24_status_signed.sql (new), supabase/migrations/2026-05-24_grind_and_seal_consolidation.sql (new).
+
+Eight asks from Dylan after walking the live deploy. All in one commit since they touch related surfaces and ship together cleanly.
+
+1. **Status rename `confirmed` -> `signed`.** Migration `2026-05-24_status_signed.sql` updates existing rows first, drops the CHECK on `jobs.status`, re-adds it with `('signed','scheduled','in_progress','completed')`, and changes the column default. index.html follows: `STATUSES` array, the status filter dropdown options, `.pec-badge.confirmed` CSS class (both the dark-theme rule + the light-theme override in `#tab-prescott-crm`), the CRM Jobs page header label, the job detail "Confirmed: timestamp" line, and the customer portal's "Confirm your project" / "Confirmed ✓" / job-list "Confirmed ✓" strings. The boolean column `jobs.confirmed` and the RPC `portal_confirm_job` are LEFT ALONE: only the user-visible label changes; the schema column stays as-is to keep portal callers + the policies.sql RPC body intact.
+
+2. **Outer HQ dashboard's Recent Jobs Confirmed column removed.** `renderDashboard` markup at ~5295 drops `<th>Confirmed</th>` and the `${j.confirmed ? '✓' : '—'}` cell; the empty-state colspan goes 6 -> 5. The "Pending Confirm" stat box (~5288) is renamed "Pending Sign" since the underlying boolean column is still what it counts.
+
+3. **Grind and Seal collapsed to one system.** Migration `2026-05-24_grind_and_seal_consolidation.sql` renames "Grind and Seal - Cohills" in place to "Grind and Seal" (preserves all FKs), deactivates the other two variants ("Grind and Seal - Urethane", "Grind Stain and Seal") instead of deleting them (the prod-side `pec_prod_areas.system_type_id` is `on delete restrict`, so any historical prod job would block delete and lose history; deactivation is reversible). Recipe slots are rewritten for the canonical row: Basecoat required (order 1), Stain optional (order 2), Topcoat required (order 3), each a plain `product` slot kind with no default_product_id so the PM picks per job from the Material Catalog. Old slots on the deactivated variants are deleted so the catalog view stays clean. The single existing "Cohills Eco Water-Based Stain" SKU stays the only Stain option until Dylan adds more via the Material Catalog UI. NO JS change needed in the editor: `'Stain'` is not in `SWATCH_TYPES`, so the slot already renders as a name-only `<select>` dropdown, exactly what Dylan asked for ("I only want the material names").
+
+4. **"Back to jobs" button now routes through the fenced dispatcher.** The handler at ~6164 was `() => { state.openJobId = null; renderJobs(); }`, calling `renderJobs` directly. If the render threw on a specific record (Kathy Carmack was the trigger Dylan reported), the spinner sat there forever because the error fence in `switchView` (commit 84797a1) wasn't on the call path. Now it's `switchView('jobs')`, so any render throw surfaces as the existing error block + Retry button.
+
+5. **"Coating Operations" stripped** from both the login gate subtitle (~1446) and the production sidebar logo (~4497).
+
+6. **Colors / Referrals / Reviews removed from the CRM left rail.** Three `<button>` rows pulled from `#pecSubnav`; three keys pulled from the `switchView` dispatcher map. The render functions themselves (`renderColors`, `renderReferrals`, `renderReviews`) are kept in place but unreachable, so re-enabling later is a one-line addback per view.
+
+7. **Defensive guards in `switchView` and `showCrmRenderError`** as a partial mitigation for the still-unresolved blank-screen bug. Two new outer try/catch wrappers convert the previously-silent TypeError into a console line (`[crm] switchView: pecViewRoot missing...`) + a toast. `showCrmRenderError` no longer silently returns when the view root is missing; it falls back to a toast + a document.title prefix so the user has SOME signal that a render failed. The root cause still needs the DevTools data the Cowork prompt below will collect — this commit just stops the silent failure mode.
+
+8. **Cowork prompt printed in chat (not logged here)** asking Cowork to drive the live deploy with DevTools open and capture the exact innerHTML / display state / console log of `#pecViewRoot` when the blank screen happens. Goal: pin down which of the four candidate causes (root missing, prod/CRM switchView race, CSS visibility, or MutationObserver clear) is firing in prod. Surgical fix will follow that data.
+
+### Diagnosis path (for future Claude Code sessions)
+
+- The status rename is purely a label change inside the CRM; the boolean `jobs.confirmed` column is a SEPARATE thing the portal sets via `portal_confirm_job`. Don't conflate them when grepping for "confirmed".
+- The Grind consolidation kept the deactivated variants because `pec_prod_areas.system_type_id` is `on delete restrict`. If the catalog UI ever shows "(inactive)" Grind variants that Dylan wants gone, the correct move is still deactivation, not delete — verify any prod-side references first.
+- The blank-screen bug has now had THREE attempted fixes (commits 315d1bf, 84797a1, this one). Each layer is correct but each one only addresses a specific symptom path. Until Cowork brings back DevTools data, don't pile on more defensive code; root-cause first.
+
+Files touched: index.html, supabase/migrations/2026-05-24_status_signed.sql (new), supabase/migrations/2026-05-24_grind_and_seal_consolidation.sql (new), PROJECT-LOG.md.
+
+Verification: `node --check` passes on the modified CRM module. Full verification deferred to Dylan once Cowork applies both migrations.
+
+## Handoff to Cowork
+
+Apply, in order, to the live PEC Supabase project (the same one behind hq-prescott.netlify.app):
+
+1. `supabase/migrations/2026-05-24_status_signed.sql`. Idempotent. Acceptance:
+   ```sql
+   select status, count(*) from public.jobs group by status order by status;
+   -- expect: no rows with status='confirmed'.
+   select pg_get_constraintdef(oid) from pg_constraint where conname='jobs_status_check';
+   -- expect: CHECK contains 'signed' and does NOT contain 'confirmed'.
+   ```
+
+2. `supabase/migrations/2026-05-24_grind_and_seal_consolidation.sql`. Idempotent. Acceptance:
+   ```sql
+   select name, active from public.pec_prod_system_types where name ilike '%grind%' order by name;
+   -- expect: Grind and Seal (t), Grind and Seal - Urethane (f), Grind Stain and Seal (f).
+   select rs.order_index, rs.material_type, rs.label, rs.required
+     from public.pec_prod_recipe_slots rs
+     join public.pec_prod_system_types st on st.id = rs.system_type_id
+    where st.name = 'Grind and Seal' order by rs.order_index;
+   -- expect 3 rows: Basecoat req, Stain opt, Topcoat req.
+   ```
+
+Outstanding from prior phases: COMPANYCAM_API_TOKEN (deferred per Dylan), the still-unrun Phase 1 sales_team migration handoff (separate Cowork run), and the blank-screen diagnostic Cowork prompt printed in chat by this session.
+
+---
+
 ## [2026-05-24 MST] supabase: applied system_budgets migration + per-system labor seeds
 
 By: Cowork
