@@ -6075,6 +6075,190 @@ async function openNewJobForm() {
   }});
 }
 
+// Printable Work Order. Mirrors the existing paper sheet ("MAKE SURE TO
+// ACCURATELY FILL OUT ALL SECTIONS") and prefills everything the CRM knows;
+// the crew fills the rest by hand. Opens a brand-new window with a full
+// self-contained HTML document (own styles, inline) so it doesn't disturb
+// the in-page CRM state and prints cleanly to PDF. window.print() fires on
+// load so the print dialog appears immediately.
+async function renderWorkOrder(ctx) {
+  const { job, areasFromState, systemTypes, productById, colorPairings, recipeSlots, defaultLaborRate } = ctx;
+  // Resolve the matching pec_prod_jobs row for install date + crew, plus
+  // the crew name (separate table). Misses are silent: the work order
+  // just shows blank for those fields, exactly like the paper sheet.
+  let installDate = null, crewName = null;
+  try {
+    if (job.dripjobs_deal_id) {
+      const [bridgeRes, crewsRes] = await Promise.all([
+        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle(),
+        supabase.from('pec_prod_crews').select('id,name'),
+      ]);
+      const pj = bridgeRes?.data;
+      if (pj) {
+        installDate = pj.install_date;
+        if (pj.crew_id) {
+          crewName = (crewsRes?.data || []).find(c => c.id === pj.crew_id)?.name || null;
+        }
+      }
+    }
+  } catch (e) { /* silent — work order still renders */ }
+
+  // Compute the material plan using the same calculator the Budget card +
+  // ordering surfaces use. Mirror the legacy area shape: in-memory picks
+  // carry flake/basecoat ids, so derive them via the same firstPick walk.
+  const areas = (areasFromState ? areasFromState() : []) || [];
+  const slotsBySystem = {};
+  for (const s of recipeSlots) (slotsBySystem[s.system_type_id] ||= []).push(s);
+  for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+  const planAreas = areas.map(a => {
+    const firstSlotPick = (pred) => {
+      for (const slot of (slotsBySystem[a.system_type_id] || [])) {
+        if (!pred(slot.material_type)) continue;
+        const pid = (a.picks?.[slot.id]?.productIds || []).filter(Boolean)[0];
+        if (pid) return pid;
+      }
+      return null;
+    };
+    const sqftNum = Number(a.sqft);
+    return {
+      id: a.id, name: a.name,
+      sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+      system_type_id: a.system_type_id,
+      flake_product_id: firstSlotPick(t => SWATCH.has(t)),
+      basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
+      topcoat_cure_speed: a.topcoat_cure_speed || null,
+    };
+  });
+  const defaultBasecoatByFlake = {};
+  for (const cp of (colorPairings || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+  let lines = [];
+  try {
+    const plan = computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
+    lines = (plan && plan.lines) || [];
+  } catch (e) { /* show blank materials table if the plan throws */ }
+
+  // Hour Budget: always computed (revenue x system.labor_budget_pct / hourly_rate)
+  // per Dylan's plan answer. Picks the FIRST area's system as the basis.
+  const primarySys = planAreas[0] ? systemTypes.find(s => s.id === planAreas[0].system_type_id) : null;
+  const laborPct = primarySys && primarySys.labor_budget_pct != null ? Number(primarySys.labor_budget_pct) : null;
+  const revenue = Number(job.price || 0);
+  const hourBudget = (laborPct != null && revenue > 0 && defaultLaborRate > 0)
+    ? ((revenue * laborPct / 100) / defaultLaborRate)
+    : null;
+  const totalSqft = planAreas.reduce((s, a) => s + (Number(a.sqft) || 0), 0);
+  const polyCureLine = planAreas.find(a => a.topcoat_cure_speed)?.topcoat_cure_speed || 'Slow';
+
+  const e = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const yn = (v) => v === true ? 'YES' : v === false ? 'NO' : '';
+  const dateFmt = (s) => s ? new Date(s).toLocaleDateString() : '';
+  const moneyOrBlank = (n) => Number.isFinite(n) ? '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '';
+
+  // Materials table: prefill product name + color + estimated qty (kits). Qty
+  // Used / Qty returned stay blank for the crew. Append the polyaspartic
+  // SLOW/FAST line at the bottom matching the paper sheet's pre-printed row.
+  const matRowsHtml = lines.map(l => `
+    <tr>
+      <td>${e(l.product_name || '')}</td>
+      <td>${e(l.color || '')}</td>
+      <td style="text-align:center">${l.qty_needed != null ? e(l.qty_needed) : ''}</td>
+      <td></td>
+      <td></td>
+    </tr>`).join('');
+
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Work Order — ${e(job.customers?.name || 'Job')}</title>
+<style>
+  @page { size: letter; margin: 0.4in; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; font-size: 11px; margin: 0; padding: 0; }
+  .wo-banner { background: #f97316; color: white; text-align: center; padding: 8px; font-weight: 700; font-size: 12px; letter-spacing: 0.5px; }
+  .wo-header { display: flex; justify-content: space-between; align-items: flex-end; margin: 12px 0 8px; }
+  .wo-brand { color: #ea580c; font-weight: 800; font-size: 18px; letter-spacing: 2px; line-height: 1.1; text-align: right; }
+  .wo-brand .sub { font-size: 9px; letter-spacing: 4px; font-weight: 600; color: #ea580c; }
+  .intake { display: grid; grid-template-columns: 90px 1fr 90px 1fr; gap: 4px 8px; align-items: stretch; margin-bottom: 12px; }
+  .intake .lbl { font-weight: 700; text-align: right; padding: 4px 6px; font-size: 11px; }
+  .intake .val { background: #e0e7ff; padding: 4px 8px; min-height: 18px; border-radius: 2px; }
+  table.mats { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+  table.mats th { background: #0f172a; color: white; padding: 6px 8px; text-align: left; font-size: 10px; }
+  table.mats td { background: #e0e7ff; border: 1px solid white; padding: 6px 8px; height: 28px; vertical-align: top; }
+  table.mats td:nth-child(1) { width: 30%; }
+  table.mats td:nth-child(2) { width: 20%; }
+  table.mats td:nth-child(3) { width: 16%; text-align: center; }
+  table.mats td:nth-child(4) { width: 17%; }
+  table.mats td:nth-child(5) { width: 17%; }
+  table.mats tr.poly td { background: white; font-weight: 600; }
+  .section h3 { color: #ea580c; font-size: 13px; margin: 12px 0 6px; letter-spacing: 0.5px; }
+  .prep-line { display: grid; grid-template-columns: 160px 1fr; gap: 8px; align-items: center; margin-bottom: 4px; }
+  .prep-line .lbl { font-weight: 700; }
+  .prep-line .val { background: #e0e7ff; padding: 4px 8px; min-height: 18px; border-radius: 2px; }
+  .checklist { margin: 6px 0 12px; font-size: 11px; line-height: 1.6; }
+  .checklist .item { display: flex; align-items: center; gap: 8px; }
+  .checklist .box { display: inline-block; width: 11px; height: 11px; border: 1px solid #0f172a; }
+  .notes-box { background: #e0e7ff; min-height: 90px; padding: 6px 8px; border-radius: 2px; white-space: pre-wrap; }
+  .wo-foot { color: #94a3b8; font-size: 8px; text-align: center; margin-top: 14px; }
+  @media print { button { display: none !important; } }
+</style></head><body>
+  <div class="wo-banner">MAKE SURE TO ACCURATELY FILL OUT ALL SECTIONS OF THIS SHEET. INCOMPLETE SHEETS = NO BONUS</div>
+  <div class="wo-header">
+    <div></div>
+    <div class="wo-brand">PRESCOTT<div class="sub">EPOXY COMPANY</div></div>
+  </div>
+  <div class="intake">
+    <div class="lbl">Crew:</div>           <div class="val">${e(crewName || '')}</div>
+    <div class="lbl">Moisture:</div>       <div class="val">${e(job.moisture ?? '')}</div>
+    <div class="lbl">Job Name:</div>       <div class="val">${e(job.customers?.name || '')}</div>
+    <div class="lbl">Date:</div>           <div class="val">${e(dateFmt(installDate))}</div>
+    <div class="lbl">Address:</div>        <div class="val">${e(job.address || '')}</div>
+    <div class="lbl">Location:</div>       <div class="val"></div>
+    <div class="lbl">DJ #:</div>           <div class="val">${e(job.dripjobs_deal_id || '')}</div>
+    <div class="lbl">Coat past garage:</div><div class="val">${yn(job.coat_past_garage)}</div>
+    <div class="lbl">MOHS:</div>           <div class="val">${e(job.mohs_hardness ?? '')}</div>
+    <div class="lbl">Moisture vapor barrier:</div><div class="val"></div>
+    <div class="lbl">Stem walls:</div>     <div class="val">${yn(job.stem_walls)}</div>
+    <div class="lbl">Gate Code#:</div>     <div class="val">${e(job.gate_code || '')}</div>
+    <div class="lbl">Sqft:</div>           <div class="val">${e(totalSqft || '')}</div>
+    <div class="lbl">Hours actual:</div>   <div class="val"></div>
+    <div class="lbl">Additional non slip:</div><div class="val">${e(job.additional_non_slip || '')}</div>
+    <div class="lbl"></div>                <div class="val"></div>
+    <div class="lbl">Hour Budget:</div>    <div class="val">${hourBudget != null ? hourBudget.toFixed(1) + ' hrs' : ''}</div>
+    <div class="lbl"></div>                <div class="val"></div>
+  </div>
+  <table class="mats">
+    <thead><tr><th>Material Required</th><th>Color or Sheen</th><th>Estimated/pulled for job</th><th>Qty Used (kits or boxes)</th><th>Qty returned to shop</th></tr></thead>
+    <tbody>
+      ${matRowsHtml}
+      <tr class="poly"><td>Polyaspartic 5g or 2g</td><td>${e(polyCureLine.toUpperCase())}</td><td></td><td></td><td></td></tr>
+    </tbody>
+  </table>
+  <div class="section">
+    <h3>SURFACE PREP</h3>
+    <div class="prep-line"><div class="lbl">Grinder tooling/grit used:</div><div class="val">${e(job.grinder_tooling_grit || '')}</div></div>
+  </div>
+  <div class="section">
+    <h3>CHECKLIST — Must be completed each job</h3>
+    <div class="checklist">
+      <div class="item"><span class="box"></span>Asked customer for a review — provide review card</div>
+      <div class="item"><span class="box"></span>"After" photos uploaded to Slack</div>
+      <div class="item"><span class="box"></span>Unused product returned to shop</div>
+      <div class="item"><span class="box"></span>Completed job card uploaded to Slack + dropped off at office</div>
+    </div>
+  </div>
+  <div class="section">
+    <h3>ISSUES / NOTES</h3>
+    <div class="notes-box">${e(job.scope || '')}</div>
+  </div>
+  <div class="wo-foot">Source: HQ CRM · Generated ${new Date().toLocaleString()} · Prescott Epoxy Company — Work Order (Sheets-fillable Template)</div>
+  <script>window.addEventListener('load', () => setTimeout(() => window.print(), 200));<\/script>
+</body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked. Allow pop-ups and try again to print the work order.'); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+
 async function renderJobDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading job…</div>';
@@ -6150,7 +6334,7 @@ async function renderJobDetail(id) {
       if (m.text_value != null) pk.text = m.text_value;
     }
     for (const k in picks) picks[k].productIds = picks[k].productIds.filter(Boolean);
-    const area = { id: a.id || null, name: a.name || 'Main', sqft: a.sqft ?? '', system_type_id: a.system_type_id || '', picks, customs };
+    const area = { id: a.id || null, name: a.name || 'Main', sqft: a.sqft ?? '', system_type_id: a.system_type_id || '', topcoat_cure_speed: a.topcoat_cure_speed || '', picks, customs };
     // No saved material rows yet (pre-migration job, or the SQL backfill did
     // not run): seed picks from the legacy flake/basecoat columns by matching
     // the system's recipe slots, so the editor opens pre-filled.
@@ -6178,8 +6362,9 @@ async function renderJobDetail(id) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
         <div>
           <div style="font-size:1.15rem;font-weight:700">${esc(job.customers?.name || '—')}</div>
-          <div style="color:var(--muted);font-size:.8rem;margin-top:3px">
+          <div style="color:var(--muted);font-size:.8rem;margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${systemBadgeHtml(areasRes.data || [], Object.fromEntries(systemTypes.map(s => [s.id, s])))}
+            <span id="jobInstallSummary" style="font-size:.78rem;color:var(--muted)"></span>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -6188,6 +6373,7 @@ async function renderJobDetail(id) {
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
             <input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">
           </div>
+          <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">Print Work Order</button>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
@@ -6195,15 +6381,55 @@ async function renderJobDetail(id) {
         <select id="pecJobStatus" style="max-width:220px">
           ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
         </select>
-        <span class="pec-badge ${job.status}" id="pecJobStatusBadge">${job.status.replace('_',' ')}</span>
         <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
       </div>
     </div>
 
     <div class="pec-card">
+      <h3>Issues / Notes</h3>
+      <textarea id="jobScope" rows="6" style="width:100%">${esc(job.scope || '')}</textarea>
+    </div>
+
+    <div class="pec-card">
+      <h3>Job Card <span style="color:var(--muted);font-size:.7rem;font-weight:400">prints onto the work order</span></h3>
+      <div class="pec-row-3">
+        <div class="pec-field"><label>Gate code</label><input id="jcGateCode" value="${esc(job.gate_code || '')}"></div>
+        <div class="pec-field"><label>Coat past garage</label>
+          <select id="jcCoatPast">
+            <option value="" ${job.coat_past_garage == null ? 'selected' : ''}>—</option>
+            <option value="true"  ${job.coat_past_garage === true ? 'selected' : ''}>Yes</option>
+            <option value="false" ${job.coat_past_garage === false ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+        <div class="pec-field"><label>Stem walls</label>
+          <select id="jcStemWalls">
+            <option value="" ${job.stem_walls == null ? 'selected' : ''}>—</option>
+            <option value="true"  ${job.stem_walls === true ? 'selected' : ''}>Yes</option>
+            <option value="false" ${job.stem_walls === false ? 'selected' : ''}>No</option>
+          </select>
+        </div>
+      </div>
+      <div class="pec-row-3">
+        <div class="pec-field"><label>Moisture (1-5)</label>
+          <select id="jcMoisture">
+            <option value="" ${job.moisture == null ? 'selected' : ''}>—</option>
+            ${[1,2,3,4,5].map(n => `<option value="${n}" ${Number(job.moisture)===n ? 'selected' : ''}>${n}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pec-field"><label>Mohs hardness (1-10)</label>
+          <select id="jcMohs">
+            <option value="" ${job.mohs_hardness == null ? 'selected' : ''}>—</option>
+            ${[1,2,3,4,5,6,7,8,9,10].map(n => `<option value="${n}" ${Number(job.mohs_hardness)===n ? 'selected' : ''}>${n}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pec-field"><label>Additional non-slip</label><input id="jcNonSlip" value="${esc(job.additional_non_slip || '')}"></div>
+      </div>
+      <div class="pec-field"><label>Grinder tooling / grit used</label><input id="jcGrinder" value="${esc(job.grinder_tooling_grit || '')}"></div>
+    </div>
+
+    <div class="pec-card">
       <h3>Details</h3>
       <div class="pec-field"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
-      <div class="pec-field"><label>Customer notes</label><textarea id="jobScope" rows="3">${esc(job.scope || '')}</textarea></div>
       <div class="pec-field"><label>DripJobs URL</label><input id="jobDripUrl" value="${esc(job.dripjobs_url || '')}"></div>
     </div>
 
@@ -6246,12 +6472,38 @@ async function renderJobDetail(id) {
   // of a silent spinner hang. Reported by Dylan: clicking "Back to jobs"
   // from Kathy Carmack's job detail did nothing.
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
+
+  // Bridge: if this public.jobs row came from DripJobs (has dripjobs_deal_id),
+  // look up the matching pec_prod_jobs row to show install_date + crew in
+  // the header. Non-blocking; the page has already painted. Misses are
+  // silent (manual entries, jobs whose bridge wasn't built yet).
+  (async () => {
+    const summaryEl = document.getElementById('jobInstallSummary');
+    if (!summaryEl || !job.dripjobs_deal_id) return;
+    try {
+      const [bridgeRes, crewsRes] = await Promise.all([
+        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle(),
+        supabase.from('pec_prod_crews').select('id,name'),
+      ]);
+      const pj = bridgeRes?.data;
+      if (!pj) return;
+      const crewName = pj.crew_id ? (crewsRes?.data || []).find(c => c.id === pj.crew_id)?.name : null;
+      const parts = [];
+      parts.push(pj.install_date ? 'Install ' + fmtDate(pj.install_date) : 'Unscheduled');
+      if (crewName) parts.push(esc(crewName) + ' crew');
+      summaryEl.innerHTML = '· ' + parts.join(' · ');
+    } catch (e) { /* silent — header summary is optional polish */ }
+  })();
   $('pecJobCopyPortal').addEventListener('click', () => {
     navigator.clipboard.writeText(portalLink).then(() => {
       $('pecJobCopyPortal').textContent = 'Copied';
       setTimeout(() => { $('pecJobCopyPortal').textContent = 'Copy portal link'; }, 1500);
     });
   });
+  $('pecJobPrintWO').addEventListener('click', () => renderWorkOrder({
+    job, areasFromState: () => areas, systemTypes, products, productById,
+    colorPairings, recipeSlots, defaultLaborRate,
+  }));
   $('pecJobStatus').addEventListener('change', async e => {
     const savedEl = $('pecJobStatusSaved');
     savedEl.textContent = 'Saving…';
@@ -6268,17 +6520,21 @@ async function renderJobDetail(id) {
   // place so inputs keep focus. Persisted by the Save job button below.
   const pickFor = (a, sid) => (a.picks[sid] ||= blankPick());
   const autofillBasecoat = (a) => {
-    // After a flake/quartz/metallic pick, default the system's basecoat slot
-    // (only if the user has not already chosen a basecoat).
+    // After a flake/quartz/metallic pick, set the system's basecoat slot to
+    // the paired default from pec_prod_color_pairings. ALWAYS overwrites so
+    // changing flake color re-pairs the basecoat; the operator can still
+    // manually pick a different basecoat from the slot dropdown after. The
+    // pairing is the catalog default rule per Dylan: "when flake color is
+    // selected, default to whatever the rule is in material catalog."
     const slots = slotsBySystem[a.system_type_id] || [];
     const bc = slots.find(s => s.material_type === 'Basecoat' && (s.slot_kind || 'product') === 'product');
     if (!bc) return;
-    const bcPick = pickFor(a, bc.id);
-    if (bcPick.productIds.filter(Boolean).length) return;
     const flSlot = slots.find(s => SWATCH_TYPES.has(s.material_type));
     const flId = flSlot && (a.picks[flSlot.id]?.productIds || []).filter(Boolean)[0];
-    const def = flId && defaultBasecoatByFlake[flId];
-    if (def) bcPick.productIds = [def];
+    if (!flId) return;
+    const def = defaultBasecoatByFlake[flId];
+    if (!def) return;
+    pickFor(a, bc.id).productIds = [def];
   };
 
   // Compute a per-area material plan from the in-memory `areas` draft and
@@ -6435,7 +6691,26 @@ async function renderJobDetail(id) {
       } else {
         body = dd(0, selectedIds[0] || '');
       }
-      return `<div style="margin-top:12px">${head}${body}</div>`;
+      // Topcoat cure speed: if the chosen topcoat product matches polyaspartic
+      // (per cureSpeedSpec at index.html ~9823), render a speed dropdown to
+      // the right of the product picker. Default to 'Slow' when nothing is
+      // picked, per Dylan's "default to slow cure whenever it is selected."
+      let cureBlock = '';
+      if (slot.material_type === 'Topcoat' && !isMulti) {
+        const resolvedId = selectedIds[0] || slot.default_product_id;
+        const resolved = resolvedId ? productById[resolvedId] : null;
+        const spec = resolved ? cureSpeedSpec(resolved) : null;
+        if (spec && spec.areaField === 'topcoat_cure_speed') {
+          if (!a.topcoat_cure_speed) a.topcoat_cure_speed = 'Slow';
+          cureBlock = `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Cure speed</label>
+            <select data-area-topcure="${idx}" style="max-width:180px">
+              ${spec.options.map(o => `<option value="${esc(o)}" ${o===a.topcoat_cure_speed?'selected':''}>${esc(o)}</option>`).join('')}
+            </select>
+          </div>`;
+        }
+      }
+      return `<div style="margin-top:12px">${head}${body}${cureBlock}</div>`;
     };
 
     const customHtml = (a, idx) => {
@@ -6458,9 +6733,24 @@ async function renderJobDetail(id) {
       </div>`;
     };
 
+    // For flake/quartz/metallic systems, render the Basecoat slot immediately
+    // under the swatch grid so the user sees "flake color -> matching
+    // basecoat" together. Recipe order_index is untouched (calculator + order
+    // pull keep their existing sequence); this is a pure UI reorder.
+    const reorderForFlakeSystem = (slots) => {
+      const swatchIdx = slots.findIndex(s => SWATCH_TYPES.has(s.material_type));
+      const bcIdx = slots.findIndex(s => s.material_type === 'Basecoat' && (s.slot_kind || 'product') === 'product');
+      if (swatchIdx === -1 || bcIdx === -1 || bcIdx === swatchIdx + 1) return slots;
+      const out = slots.slice();
+      const [bc] = out.splice(bcIdx, 1);
+      const newSwatchIdx = out.findIndex(s => SWATCH_TYPES.has(s.material_type));
+      out.splice(newSwatchIdx + 1, 0, bc);
+      return out;
+    };
+
     host.innerHTML = areas.map((a, idx) => {
       const title = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
-      const slots = slotsBySystem[a.system_type_id] || [];
+      const slots = reorderForFlakeSystem(slotsBySystem[a.system_type_id] || []);
       const slotsBody = a.system_type_id
         ? (slots.map(s => slotHtml(a, idx, s)).join('') || '<div style="margin-top:10px;color:var(--muted);font-size:.78rem">This system has no recipe slots yet — use Custom options below, or add slots in Material Catalog.</div>')
         : '';
@@ -6482,6 +6772,9 @@ async function renderJobDetail(id) {
     const parse = (v) => { const p = v.split('|'); return { a: areas[+p[0]], rest: p.slice(1) }; };
 
     host.querySelectorAll('[data-area-sqft]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaSqft].sqft = el.value; }));
+    host.querySelectorAll('[data-area-topcure]').forEach(el => el.addEventListener('change', () => {
+      areas[+el.dataset.areaTopcure].topcoat_cure_speed = el.value;
+    }));
     host.querySelectorAll('[data-area-system]').forEach(el => el.addEventListener('change', () => {
       areas[+el.dataset.areaSystem].system_type_id = el.value;
       renderAreas();
@@ -6579,6 +6872,8 @@ async function renderJobDetail(id) {
       }
       return null;
     };
+    const jcBool = (sel) => { const v = $(sel).value; return v === '' ? null : v === 'true'; };
+    const jcInt  = (sel) => { const v = $(sel).value; return v === '' ? null : Number(v); };
     const jobPatch = {
       address: $('jobAddress').value || null,
       scope: $('jobScope').value || null,
@@ -6586,6 +6881,16 @@ async function renderJobDetail(id) {
       price: priceVal ? parseFloat(priceVal) : null,
       sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
       system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
+      // Job Card fields (printed onto the work order). Migration
+      // 2026-05-24_job_card_fields.sql adds these columns; before it runs
+      // these inputs don't exist in the DOM and the lookups return null safely.
+      gate_code: $('jcGateCode')?.value || null,
+      coat_past_garage: $('jcCoatPast') ? jcBool('jcCoatPast') : null,
+      stem_walls: $('jcStemWalls') ? jcBool('jcStemWalls') : null,
+      moisture: $('jcMoisture') ? jcInt('jcMoisture') : null,
+      mohs_hardness: $('jcMohs') ? jcInt('jcMohs') : null,
+      additional_non_slip: $('jcNonSlip')?.value || null,
+      grinder_tooling_grit: $('jcGrinder')?.value || null,
     };
     try {
       const upd = await supabase.from('jobs').update(jobPatch).eq('id', id);
@@ -6600,6 +6905,7 @@ async function renderJobDetail(id) {
         system_type_id: a.system_type_id || null,
         flake_product_id: firstPick(a, t => SWATCH_TYPES.has(t)),
         basecoat_product_id: firstPick(a, t => t === 'Basecoat'),
+        topcoat_cure_speed: a.topcoat_cure_speed || null,
         order_index: idx,
       }));
       let saved = [];

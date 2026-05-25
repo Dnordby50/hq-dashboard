@@ -4,6 +4,54 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: job-card intake fields, Polyaspartic consolidated, printable Work Order, area editor polish
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-24_job_card_fields.sql (new), supabase/migrations/2026-05-24_polyaspartic_consolidation.sql (new).
+
+Major job-detail rework matching the paper "MAKE SURE TO ACCURATELY FILL OUT ALL SECTIONS" work order so the office can generate the printed sheet straight from the CRM. Five sub-changes ship together.
+
+1. **New "Job Card" intake fields on `public.jobs`.** Migration `2026-05-24_job_card_fields.sql` adds 7 nullable columns: `gate_code text`, `coat_past_garage boolean`, `stem_walls boolean`, `moisture int`, `mohs_hardness int`, `additional_non_slip text`, `grinder_tooling_grit text`. Two CHECK constraints clamp the dropdowns (`moisture 1-5`, `mohs_hardness 1-10`). `renderJobDetail` exposes these as a new "Job Card" pec-card under the moved Issues/Notes card; layout is two `.pec-row-3` grids so the seven fields stay compact. The save handler reads each via `$('jcGateCode')`, `$('jcCoatPast')`, etc., guarded with optional chaining so the page doesn't break before the migration is applied (the inputs just won't render until then).
+
+2. **Layout polish on the job detail.** Status dropdown no longer renders a duplicate `<span class="pec-badge">` to its right; the dropdown is the single source of truth. Issues/Notes textarea (renamed from "Customer notes") was pulled out of the Details card into its own card directly under the header, with `rows="6"` instead of 3. Header now has a small "Print Work Order" button next to the "Copy portal link" button. A new inline summary slot (`#jobInstallSummary`) in the header gets populated asynchronously: when the job has a `dripjobs_deal_id` we look up the matching `pec_prod_jobs` row + crew name and render `· Install {date} · {crew} crew`. Misses are silent (manual entries that have no `public.jobs` row, jobs whose bridge wasn't built).
+
+3. **Area editor reorder + flake-pick auto-fill.** For flake/quartz/metallic systems, the Basecoat slot now renders immediately below the swatch grid so the operator sees "pick flake → matching basecoat" together (recipe `order_index` is unchanged; this is a pure UI reorder via a `reorderForFlakeSystem` helper). `autofillBasecoat` was changed from "only fill if empty" to "always overwrite when a pairing default exists", per Dylan's "when flake color is selected, default to whatever the rule is in material catalog". The operator can still manually pick a different basecoat from the slot dropdown afterward.
+
+4. **Polyaspartic catalog consolidated to one SKU.** Migration `2026-05-24_polyaspartic_consolidation.sql` upserts one canonical row `Simiron Polyaspartic 2gal Kit` (Topcoat, Simiron, 120 sqft/gal, 2-gal kit, $132 = $66/gal × 2), repoints every recipe slot's `default_product_id` and every historical `pec_prod_material_lines.product_id` (+ `product_name` snapshot) from the 5 legacy variants to the canonical row, and deactivates the legacy rows so they disappear from the Material Catalog UI but the FKs stay intact (FK posture from earlier consolidation work: deactivation is reversible, deletion would block on history). The migration also adds `topcoat_cure_speed text` to `job_areas` so the CRM area editor can record the cure speed per-area; the new selector renders to the right of the topcoat product whenever the resolved topcoat matches `/polyaspartic/i` (per the existing `cureSpeedSpec()` helper). Default selection is `Slow` whenever nothing is set, per Dylan's "default to slow cure whenever it is selected." The save handler now writes `topcoat_cure_speed` into the area row.
+
+5. **New `renderWorkOrder` printable view.** Click "Print Work Order" → opens a fresh window with a self-contained HTML document modeled on the paper sheet: orange "MAKE SURE TO ACCURATELY FILL OUT ALL SECTIONS" banner, PRESCOTT EPOXY COMPANY wordmark, a four-column intake grid prefilled with everything we have (Crew, Job Name, Address, DJ #, MOHS, Stem walls, Sqft, Additional non slip, Hour Budget, Moisture, Date, Coat past garage, Gate Code; Location, Moisture vapor barrier, Hours actual blank for crew), a materials table sourced from `computeMaterialPlan()` with Estimated qty prefilled and Qty Used / Qty returned blank, a hardcoded "Polyaspartic 5g or 2g · {SLOW}" row at the bottom matching the chosen cure speed, Surface Prep with the grinder grit prefilled, the four checklist items as unticked boxes, and an Issues/Notes block prefilled from `job.scope`. CSS is inline so the print works offline; `window.print()` fires on load so the dialog appears immediately. Hour Budget is always computed (`revenue × labor_budget_pct ÷ default_labor_hourly_rate`) per Dylan's plan answer; if those pieces aren't set the cell stays blank.
+
+Files touched: index.html, supabase/migrations/2026-05-24_job_card_fields.sql (new), supabase/migrations/2026-05-24_polyaspartic_consolidation.sql (new), PROJECT-LOG.md.
+
+Verification: `node --check` passes on the modified CRM module. Logic spot-check: open a Flake job, the area editor renders flake-color swatches then a Basecoat slot directly below; picking a flake whose pairing has a default basecoat auto-overwrites the basecoat. The topcoat slot now shows a cure-speed selector defaulting to Slow. The Job Card card persists all 7 new fields on save. Click Print Work Order: a new window opens with the printable form matching the paper sheet, prefilled with the customer/address/job-card values.
+
+## Handoff to Cowork
+
+Apply both migrations to the live PEC Supabase project, in order:
+
+1. `supabase/migrations/2026-05-24_job_card_fields.sql`. Idempotent. Acceptance:
+   ```sql
+   select column_name from information_schema.columns
+     where table_schema='public' and table_name='jobs'
+       and column_name in ('gate_code','coat_past_garage','stem_walls','moisture',
+                           'mohs_hardness','additional_non_slip','grinder_tooling_grit');
+   -- expect 7 rows.
+   ```
+
+2. `supabase/migrations/2026-05-24_polyaspartic_consolidation.sql`. Idempotent. Acceptance:
+   ```sql
+   select name, active, unit_cost, kit_size from public.pec_prod_products
+     where lower(name) like '%polyaspartic%' order by active desc, name;
+   -- expect 1 active row (Simiron Polyaspartic 2gal Kit, $132, 2gal) and the 5 legacy rows inactive.
+   select column_name from information_schema.columns
+     where table_schema='public' and table_name='job_areas' and column_name='topcoat_cure_speed';
+   -- expect 1 row.
+   ```
+
+Outstanding from prior phases: COMPANYCAM_API_TOKEN (deferred per Dylan), the still-unrun Phase 1 sales_team migration handoff, the blank-screen diagnostic Cowork prompt (Cowork already ran one but the bug is render-trigger-missing; future repro should leverage the new `[crm] ...` boot logs + `window.__debug` shim).
+
+---
+
 ## [2026-05-24 MST] dashboard: render timeout for stuck spinner, fetchSheet retry on 5xx
 
 By: Claude Code
