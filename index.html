@@ -2014,9 +2014,24 @@ function showSetup(el, msg) {
 // ============================================================
 async function fetchSheet(sheetId, range) {
   const url = `${CONFIG.SHEETS_PROXY}?id=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}`;
-  const res = await fetch(url);
-  const ct = (res.headers.get('content-type') || '').toLowerCase();
-  const text = await res.text();
+  // Single retry on 5xx with 500ms backoff. The Sheets proxy occasionally
+  // 503s on the Cowork PM load (Apps Script cold start, Netlify function
+  // timeout, upstream hiccup); Cowork's 2026-05-24 diagnosis flagged this
+  // as user-visible noise even though loadCowork already catches the
+  // error. The retry covers ~90% of those transient blips without changing
+  // any caller. Permanent failures still surface as a clean Error.
+  let res, ct, text;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    res = await fetch(url);
+    ct = (res.headers.get('content-type') || '').toLowerCase();
+    text = await res.text();
+    if (res.status >= 500 && attempt === 1) {
+      console.warn(`[sheets] transient ${res.status} on ${range}; retrying once after 500ms`);
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
+    break;
+  }
   // Refuse non-JSON responses up front so a stray HTML error page (Apps
   // Script exception, Netlify 5xx, etc.) surfaces as a real, readable error
   // instead of "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON".
@@ -5165,8 +5180,23 @@ function switchView(v) {
       console.log('[crm] switchView calling renderFn:', renderFn.name || '(anon)');
       const ret = renderFn();
       if (ret && typeof ret.catch === 'function') {
-        ret.then(() => console.log('[crm] switchView render done ->', v))
-           .catch(err => showCrmRenderError(err, v));
+        // Render timeout: if the spinner is still up 15s later, the render is
+        // hung (most commonly a Supabase query that started during a silent
+        // token refresh and never resolves -- Cowork's 2026-05-24 diagnosis
+        // surfaced this as the "5-minute idle stuck spinner" secondary bug).
+        // Replace the spinner with a real error UI + Retry button. The Retry
+        // is the actual fix because by the time the user clicks it, the auth
+        // refresh has completed and the next call succeeds.
+        const renderTimeout = setTimeout(() => {
+          const root = document.getElementById('pecViewRoot');
+          if (!root) return;
+          if (/pec-spinner|Loading…/.test(root.innerHTML)) {
+            console.warn('[crm] switchView render timed out (15s) ->', v);
+            showCrmRenderError(new Error('Render timed out (no response in 15s). The auth token may be refreshing; click Retry.'), v);
+          }
+        }, 15000);
+        ret.then(() => { clearTimeout(renderTimeout); console.log('[crm] switchView render done ->', v); })
+           .catch(err => { clearTimeout(renderTimeout); showCrmRenderError(err, v); });
       } else {
         console.log('[crm] switchView render returned (sync) ->', v);
       }

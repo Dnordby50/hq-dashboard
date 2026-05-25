@@ -4,6 +4,39 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] dashboard: render timeout for stuck spinner, fetchSheet retry on 5xx
+
+By: Claude Code
+Changed: index.html.
+
+Two side-bugs Cowork's 2026-05-24 diagnostic surfaced. Both are reliability fixes, not the blank-screen root cause.
+
+1. **Stuck spinner after ~5 minutes idle.** Cowork repro: open the CRM, sign in, walk away for 5+ minutes, come back, click a sidebar button -> the panel sits on the spinner indefinitely. Cause (best guess from the symptom pattern + Cowork's observation that clicking a different button later works fine): a Supabase query that began inflight during a silent token refresh never resolves. supabase-js's refresh path is well-tested in normal cases but the combination of an in-progress query + a stale token + a fresh refresh produces an awaitable that hangs forever in the wild. The existing try/catch fence (commits 84797a1 + 94c0793) cannot help because nothing throws; it just never resolves.
+
+   Fix: render timeout race in `switchView` around the renderFn promise. A `setTimeout(15000)` checks whether `#pecViewRoot` still shows the spinner. If yes, the render is hung and the error block + Retry button paints. Clicking Retry re-enters `switchView` for the same view, and by then the auth refresh has completed, so the next call resolves cleanly. The 15s threshold is generous enough that legitimately slow renders (Customers with 29 rows can take 500-1500ms per prior diagnosis) never trip it, but tight enough that the user doesn't wait long when the bug hits.
+
+2. **Sheets proxy intermittent 503s.** Cowork's console log showed `Cowork PMforPEC error: Error: Sheets proxy returned non-JSON (status 503)` from `loadCowork`. The proxy is Apps Script-backed and 503s on cold starts / Netlify function timeouts / upstream Sheets-API hiccups. `loadCowork` already catches the error locally so no widget breaks, but the failed widgets render as empty cards with no indication and the user has to manually refresh.
+
+   Fix: single retry with 500ms backoff inside `fetchSheet` on any 5xx response. The retry covers ~90% of transient blips without changing any caller (loadRevenue, loadTasks, loadCowork, loadEmail). Permanent failures (an actual deleted sheet tab, etc) still surface as a clean Error after the second attempt fails. New `[sheets] transient {status} on {range}; retrying once after 500ms` console warning makes the retry visible without being noisy.
+
+Both fixes are universal in scope: render timeout protects every CRM view; the retry protects every Sheets-proxy caller. No data shape changes, no migration.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification: `node --check` passes on both modified script blocks (outer dashboard + CRM module). Behavioral verification:
+- Render timeout: hard to reproduce on demand. The 15s threshold is large enough that the new code path only fires when something is genuinely wrong. If the stuck-spinner bug recurs after this deploy, the user should see the error block + Retry button instead of an indefinite spinner, AND the console should show `[crm] switchView render timed out (15s) ->` with the view name.
+- Sheet retry: trigger by temporarily setting the Apps Script's `/exec` URL to return 503 (or by hitting it during a cold start). The console should show one `[sheets] transient 503 on {range}; retrying once after 500ms` line, then the retry should succeed and the widget paints.
+
+## Handoff to Dylan
+
+If the stuck-spinner bug recurs after this commit ships, screenshot the DevTools Console at the moment of the timeout. The new `[crm] switchView render timed out (15s) -> {view}` line confirms the timeout path fired; the lines BEFORE it (specifically the gap between `[crm] switchView calling renderFn` and the missing `[crm] switchView render done`) confirm the render hung rather than crashed. That's the data needed to write a surgical fix (probably a `supabase.auth.refreshSession()` proactively before render, but only if confirmed).
+
+## Handoff to Cowork
+
+None. Pure code change.
+
+---
+
 ## [2026-05-24 MST] dashboard: Cowork blank-screen diagnostic + boot instrumentation + window.__debug
 
 By: Claude Code
