@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] supabase: applied system_budgets migration + per-system labor seeds
+
+By: Cowork
+Changed: live PEC Supabase project (no repo files).
+
+Applied supabase/migrations/2026-05-24_system_budgets.sql via SQL editor on project zdfpzmmrgotynrwkeakd. Migration returned "Success. No rows returned"; verification queries confirm:
+- public.pec_prod_system_types now has labor_budget_pct + materials_budget_pct columns
+- public.settings has key='default_labor_hourly_rate' value='35'
+
+Collected per-system labor_budget_pct values from Dylan and ran the seed UPDATE block. Post-seed state of active system types:
+- Flake 20, Quartz 25, Metallic 25
+- Grind and Seal - Cohills 30, Grind and Seal - Urethane 30, Grind Stain and Seal 30
+- Concrete Polishing 40, Custom System 25
+default_labor_hourly_rate confirmed at 35 (placeholder matched real value).
+
+Correction to Phase 3 handoff text: it listed 7 active systems, but the live DB has 8. The missing one was "Grind Stain and Seal". Seeded at 30 to match the Grind and Seal family per Dylan's "all 30" rule for grind-and-seal variants. If that grouping is wrong, future Claude session should ask Dylan for an explicit value.
+
+materials_budget_pct intentionally left NULL for all 8 systems. Phase 3 plan deferred the materials-budget UI; column exists in the schema and modal for when it's wired up.
+
+Visual verification of the Budget card + Job Costing Labor columns deferred. New chrome session hits the Coating Operations employee password gate, same blocker as prior verification attempts.
+
+Still outstanding: COMPANYCAM_API_TOKEN (deferred per Dylan), Phase 1 handoff (supabase/migrations/2026-05-24_sales_team_members.sql + sales-team roster seed + Concrete Polishing stain catalog check) - was not part of "the new handoff" so was not run this session.
+
+## Handoff to Cowork
+
+None.
+
+---
+
 ## [2026-05-24 MST] dashboard: per-system labor budget %, job-detail Budget card, costing Labor Var % column (Phase 3)
 
 By: Claude Code
