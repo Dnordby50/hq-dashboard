@@ -5313,7 +5313,12 @@ function switchView(v) {
         const renderTimeout = setTimeout(() => {
           const root = document.getElementById('pecViewRoot');
           if (!root) return;
-          if (/pec-spinner|Loading…/.test(root.innerHTML)) {
+          // Loosened from /Loading…/ to /Loading/ so child placeholders like
+          // "Loading job…" / "Loading schedule…" / "Loading job costing…"
+          // (text between "Loading" and the ellipsis) also trip the fence.
+          // Previously they slipped through and left the user stuck with no
+          // Retry button.
+          if (/pec-spinner|Loading/.test(root.innerHTML)) {
             console.warn('[crm] switchView render timed out (15s) ->', v);
             showCrmRenderError(new Error('Render timed out (no response in 15s). The auth token may be refreshing; click Retry.'), v);
           }
