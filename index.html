@@ -4915,6 +4915,129 @@ const fmtMoney = n => n == null ? '—' : '$' + Number(n).toLocaleString(undefin
 const fmtDate = s => s ? new Date(s).toLocaleDateString() : '—';
 const $ = id => document.getElementById(id);
 
+// ============================================================
+// Activity log (per-job audit_log helpers)
+// ============================================================
+// Migration 2026-05-25_audit_log_job_actions.sql adds the SELECT/INSERT
+// policies and the partial index that make these helpers work. Until that
+// migration is applied, inserts will fail RLS and reads will return [];
+// both paths swallow errors so the page never breaks on a missing policy.
+
+// Human-readable labels for the diff fields surfaced in the Activity feed.
+// Keys match the column names in public.jobs (plus the synthetic
+// areas_count / total_sqft summary keys produced by diffJobSnapshot).
+const ACTIVITY_FIELD_LABELS = {
+  price: 'price',
+  scope: 'notes',
+  address: 'address',
+  dripjobs_url: 'DripJobs URL',
+  sqft: 'sqft',
+  system_type_id: 'system',
+  gate_code: 'gate code',
+  coat_past_garage: 'coat past garage',
+  stem_walls: 'stem walls',
+  moisture: 'moisture',
+  mohs_hardness: 'mohs hardness',
+  additional_non_slip: 'additional non-slip',
+  grinder_tooling_grit: 'grinder grit',
+  areas_count: 'areas',
+  total_sqft: 'total sqft',
+  status: 'status',
+};
+
+// Insert one row into public.audit_log attributed to the current session.
+// Best-effort: a failure here MUST NOT block the user-facing mutation that
+// already succeeded. Logs to console and moves on.
+async function logJobActivity(jobId, action, beforeJson, afterJson) {
+  try {
+    const uid = state.session?.user?.id;
+    if (!uid) return;
+    const email = state.adminUser?.email || state.session?.user?.email || null;
+    const { error } = await supabase.from('audit_log').insert({
+      auth_user_id: uid,
+      admin_email: email,
+      action,
+      entity_type: 'jobs',
+      entity_id: jobId,
+      before_json: beforeJson,
+      after_json: afterJson,
+    });
+    if (error) console.warn('[pec] audit_log insert failed:', error.message);
+  } catch (e) {
+    console.warn('[pec] audit_log insert threw:', e);
+  }
+}
+
+// Pure diff helper. Returns only the fields whose value changed between the
+// original job snapshot + areasBefore and the about-to-be-written jobPatch +
+// areasAfter. Areas are summarized (count + total sqft) so the feed stays
+// readable; per-slot edits would dominate the feed otherwise.
+function diffJobSnapshot(jobBefore, jobPatch, areasBefore, areasAfter) {
+  const before = {}, after = {};
+  for (const k of Object.keys(jobPatch)) {
+    const b = jobBefore ? jobBefore[k] : undefined;
+    const a = jobPatch[k];
+    // Treat null and '' as equivalent so empty-input edits aren't noise.
+    const norm = v => (v === '' || v === undefined) ? null : v;
+    if (norm(b) !== norm(a)) { before[k] = b ?? null; after[k] = a ?? null; }
+  }
+  const sumSqft = arr => (arr || []).reduce((s, a) => {
+    const n = Number(a.sqft); return s + (Number.isFinite(n) ? n : 0);
+  }, 0);
+  const bc = (areasBefore || []).length, ac = (areasAfter || []).length;
+  if (bc !== ac) { before.areas_count = bc; after.areas_count = ac; }
+  const bs = sumSqft(areasBefore), as = sumSqft(areasAfter);
+  if (bs !== as) { before.total_sqft = bs; after.total_sqft = as; }
+  return { before, after };
+}
+
+// Human-readable "<time ago>" for activity rows. Falls back to a full date
+// string once an event is older than a week.
+function fmtRelativeTime(iso) {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  const diff = Date.now() - then;
+  const m = 60 * 1000, h = 60 * m, d = 24 * h;
+  if (diff < m)        return 'just now';
+  if (diff < h)        return Math.floor(diff / m) + 'm ago';
+  if (diff < d)        return Math.floor(diff / h) + 'h ago';
+  if (diff < 7 * d)    return Math.floor(diff / d) + 'd ago';
+  return new Date(iso).toLocaleDateString();
+}
+
+// Render the Activity card body from a list of audit_log rows (newest first).
+function renderActivityCard(rows) {
+  const inner = !rows.length
+    ? `<div class="pec-empty">No activity yet.</div>`
+    : `<ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px">
+        ${rows.map(r => {
+          const who = esc(r.admin_email || 'unknown');
+          const phrase = activityPhrase(r);
+          const when = fmtRelativeTime(r.created_at);
+          return `<li style="font-size:.85rem;line-height:1.45;border-bottom:1px solid var(--rd-line, var(--border));padding-bottom:8px">
+            <strong>${who}</strong> ${phrase}
+            <span style="color:var(--muted);font-size:.75rem;margin-left:6px">· ${esc(when)}</span>
+          </li>`;
+        }).join('')}
+      </ul>`;
+  return `<div class="pec-card"><h3>Activity</h3>${inner}</div>`;
+}
+
+// Build the human-readable phrase for one audit_log row.
+function activityPhrase(row) {
+  const b = row.before_json || {}, a = row.after_json || {};
+  if (row.action === 'status_change') {
+    return `changed status from <strong>${esc(b.status ?? '—')}</strong> to <strong>${esc(a.status ?? '—')}</strong>`;
+  }
+  if (row.action === 'save') {
+    const keys = Object.keys(a);
+    if (!keys.length) return 'saved (no field changes)';
+    const labels = keys.map(k => ACTIVITY_FIELD_LABELS[k] || k);
+    return 'updated ' + labels.join(', ');
+  }
+  return `${esc(row.action)} ${esc(JSON.stringify(a))}`;
+}
+
 // First area's system_type_id by lowest order_index. Used to render the
 // system-derived job badge in place of the legacy jobs.type column.
 const firstAreaSystemId = (areas) => {
@@ -6383,57 +6506,54 @@ async function renderJobDetail(id) {
         </select>
         <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
       </div>
+      <div class="pec-row-2" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
+        <div class="pec-field"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
+        <div class="pec-field"><label>DripJobs URL</label><input id="jobDripUrl" value="${esc(job.dripjobs_url || '')}"></div>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
+        <h4 style="margin:0 0 8px;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600">Job Card <span style="font-size:.7rem;font-weight:400;text-transform:none;letter-spacing:0">prints onto the work order</span></h4>
+        <div class="pec-row-3">
+          <div class="pec-field"><label>Gate code</label><input id="jcGateCode" value="${esc(job.gate_code || '')}"></div>
+          <div class="pec-field"><label>Coat past garage</label>
+            <select id="jcCoatPast">
+              <option value="" ${job.coat_past_garage == null ? 'selected' : ''}>—</option>
+              <option value="true"  ${job.coat_past_garage === true ? 'selected' : ''}>Yes</option>
+              <option value="false" ${job.coat_past_garage === false ? 'selected' : ''}>No</option>
+            </select>
+          </div>
+          <div class="pec-field"><label>Stem walls</label>
+            <select id="jcStemWalls">
+              <option value="" ${job.stem_walls == null ? 'selected' : ''}>—</option>
+              <option value="true"  ${job.stem_walls === true ? 'selected' : ''}>Yes</option>
+              <option value="false" ${job.stem_walls === false ? 'selected' : ''}>No</option>
+            </select>
+          </div>
+        </div>
+        <div class="pec-row-3">
+          <div class="pec-field"><label>Moisture (1-5)</label>
+            <select id="jcMoisture">
+              <option value="" ${job.moisture == null ? 'selected' : ''}>—</option>
+              ${[1,2,3,4,5].map(n => `<option value="${n}" ${Number(job.moisture)===n ? 'selected' : ''}>${n}</option>`).join('')}
+            </select>
+          </div>
+          <div class="pec-field"><label>Mohs hardness (1-10)</label>
+            <select id="jcMohs">
+              <option value="" ${job.mohs_hardness == null ? 'selected' : ''}>—</option>
+              ${[1,2,3,4,5,6,7,8,9,10].map(n => `<option value="${n}" ${Number(job.mohs_hardness)===n ? 'selected' : ''}>${n}</option>`).join('')}
+            </select>
+          </div>
+          <div class="pec-field"><label>Additional non-slip</label><input id="jcNonSlip" value="${esc(job.additional_non_slip || '')}"></div>
+        </div>
+        <div class="pec-field"><label>Grinder tooling / grit used</label><input id="jcGrinder" value="${esc(job.grinder_tooling_grit || '')}"></div>
+      </div>
     </div>
+
+    <div id="jobAreas"></div>
 
     <div class="pec-card">
       <h3>Issues / Notes</h3>
       <textarea id="jobScope" rows="6" style="width:100%">${esc(job.scope || '')}</textarea>
     </div>
-
-    <div class="pec-card">
-      <h3>Job Card <span style="color:var(--muted);font-size:.7rem;font-weight:400">prints onto the work order</span></h3>
-      <div class="pec-row-3">
-        <div class="pec-field"><label>Gate code</label><input id="jcGateCode" value="${esc(job.gate_code || '')}"></div>
-        <div class="pec-field"><label>Coat past garage</label>
-          <select id="jcCoatPast">
-            <option value="" ${job.coat_past_garage == null ? 'selected' : ''}>—</option>
-            <option value="true"  ${job.coat_past_garage === true ? 'selected' : ''}>Yes</option>
-            <option value="false" ${job.coat_past_garage === false ? 'selected' : ''}>No</option>
-          </select>
-        </div>
-        <div class="pec-field"><label>Stem walls</label>
-          <select id="jcStemWalls">
-            <option value="" ${job.stem_walls == null ? 'selected' : ''}>—</option>
-            <option value="true"  ${job.stem_walls === true ? 'selected' : ''}>Yes</option>
-            <option value="false" ${job.stem_walls === false ? 'selected' : ''}>No</option>
-          </select>
-        </div>
-      </div>
-      <div class="pec-row-3">
-        <div class="pec-field"><label>Moisture (1-5)</label>
-          <select id="jcMoisture">
-            <option value="" ${job.moisture == null ? 'selected' : ''}>—</option>
-            ${[1,2,3,4,5].map(n => `<option value="${n}" ${Number(job.moisture)===n ? 'selected' : ''}>${n}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pec-field"><label>Mohs hardness (1-10)</label>
-          <select id="jcMohs">
-            <option value="" ${job.mohs_hardness == null ? 'selected' : ''}>—</option>
-            ${[1,2,3,4,5,6,7,8,9,10].map(n => `<option value="${n}" ${Number(job.mohs_hardness)===n ? 'selected' : ''}>${n}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pec-field"><label>Additional non-slip</label><input id="jcNonSlip" value="${esc(job.additional_non_slip || '')}"></div>
-      </div>
-      <div class="pec-field"><label>Grinder tooling / grit used</label><input id="jcGrinder" value="${esc(job.grinder_tooling_grit || '')}"></div>
-    </div>
-
-    <div class="pec-card">
-      <h3>Details</h3>
-      <div class="pec-field"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
-      <div class="pec-field"><label>DripJobs URL</label><input id="jobDripUrl" value="${esc(job.dripjobs_url || '')}"></div>
-    </div>
-
-    <div id="jobAreas"></div>
 
     <div id="jobBudget"></div>
 
@@ -6465,6 +6585,8 @@ async function renderJobDetail(id) {
       <div style="font-size:.8rem;color:var(--muted);margin-bottom:8px">Signed: ${job.confirmed ? '✓ ' + fmtDate(job.confirmed_at) : 'Not yet'}</div>
       ${job.signature_data ? `<img src="${esc(job.signature_data)}" alt="Signature" style="max-width:300px;background:#fff;border-radius:6px;padding:4px">` : ''}
     </div>
+
+    <div id="jobActivity"></div>
   `;
 
   // Route through the fenced dispatcher (commit 84797a1) so any renderJobs
@@ -6494,6 +6616,26 @@ async function renderJobDetail(id) {
       summaryEl.innerHTML = '· ' + parts.join(' · ');
     } catch (e) { /* silent — header summary is optional polish */ }
   })();
+
+  // Activity feed: populate #jobActivity after the page paints. Best-effort
+  // read; if the audit_log RLS policy hasn't been applied yet (migration
+  // 2026-05-25_audit_log_job_actions.sql) the result is treated as empty
+  // and the empty-state renders instead of breaking the page.
+  (async () => {
+    const host = document.getElementById('jobActivity');
+    if (!host) return;
+    try {
+      const { data } = await supabase
+        .from('audit_log')
+        .select('id, action, before_json, after_json, admin_email, created_at')
+        .eq('entity_type', 'jobs').eq('entity_id', id)
+        .order('created_at', { ascending: false }).limit(50);
+      host.innerHTML = renderActivityCard(data || []);
+    } catch (e) {
+      host.innerHTML = renderActivityCard([]);
+    }
+  })();
+
   $('pecJobCopyPortal').addEventListener('click', () => {
     navigator.clipboard.writeText(portalLink).then(() => {
       $('pecJobCopyPortal').textContent = 'Copied';
@@ -6507,8 +6649,13 @@ async function renderJobDetail(id) {
   $('pecJobStatus').addEventListener('change', async e => {
     const savedEl = $('pecJobStatusSaved');
     savedEl.textContent = 'Saving…';
-    const { error } = await supabase.from('jobs').update({ status: e.target.value }).eq('id', id);
+    const beforeStatus = job.status;
+    const newStatus = e.target.value;
+    const { error } = await supabase.from('jobs').update({ status: newStatus }).eq('id', id);
     if (error) { savedEl.textContent = ''; alert(error.message); return; }
+    if (beforeStatus !== newStatus) {
+      await logJobActivity(id, 'status_change', { status: beforeStatus }, { status: newStatus });
+    }
     renderJobDetail(id);
   });
 
@@ -6947,6 +7094,10 @@ async function renderJobDetail(id) {
       if (matRows.length) {
         const mins = await supabase.from('job_area_materials').insert(matRows);
         if (mins.error) throw mins.error;
+      }
+      const diff = diffJobSnapshot(job, jobPatch, areasRes.data, areas);
+      if (Object.keys(diff.after).length) {
+        await logJobActivity(id, 'save', diff.before, diff.after);
       }
       renderJobDetail(id);
     } catch (err) {

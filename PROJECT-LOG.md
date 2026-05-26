@@ -4,6 +4,83 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-25 MST] dashboard: job-detail restructure + activity log, status_signed migration fixed
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-24_status_signed.sql (corrected in place), supabase/migrations/2026-05-25_audit_log_job_actions.sql (new).
+
+Three things land together:
+
+1. **`status_signed` migration ordering bug fixed.** Cowork's 2026-05-24 attempt (see entry directly below) failed with `ERROR 23514: jobs_status_check` because the UPDATE ran before the constraint drop, so every row of `update public.jobs set status='signed' where status='confirmed'` was rejected by the still-active old constraint and the transaction rolled back. The previous header comment claimed "Order matters: existing rows are updated first" -- that's correct about the new constraint but ignores that the old one is still active. Edited the file in place (DB state is unchanged, the file was never effectively applied) to drop the constraint FIRST, then UPDATE, then add the new constraint, then change the default. Header rewritten to call out the actual reason and reference Cowork's failure entry. Re-running the same SQL now lands cleanly. The two newer migrations (`job_card_fields`, `polyaspartic_consolidation`) are still unapplied and are bundled into the Cowork handoff at the bottom of this entry.
+
+2. **Job-detail view restructured.** `renderJobDetail` (index.html ~6262) was customer-header / notes / job-card / details / areas / budget / save / photos / signature -- intake fields were split across three cards and the eye had to bounce. New order, top to bottom:
+   - **Top card (one merged pec-card):** customer name + system badges + install summary on the left; Proposal # + Price + Print Work Order on the right; below the divider: Status; below another divider: Address + DripJobs URL in a `.pec-row-2`; below another divider: the entire Job Card (all 7 intake fields -- gate code, coat past garage, stem walls, moisture, mohs, additional non-slip, grinder grit) under a small `<h4>Job Card</h4>` subheading. All `$('jc*')`/`$('jobAddress')`/`$('jobDripUrl')` IDs preserved so the existing save/status handlers and the Print Work Order renderer keep working without selector changes.
+   - **Areas** (unchanged renderer at `#jobAreas`).
+   - **Issues / Notes** (moved here from the original third position).
+   - **Budget** (unchanged renderer at `#jobBudget`).
+   - **Save**, **Photos**, **Signature & Confirmation** (unchanged positions and renderers).
+   - **NEW Activity** card at the very bottom (`#jobActivity`).
+
+3. **Activity feed wired through `public.audit_log`.** Reused the existing `audit_log` table (schema.sql:160-173) -- no new table. Added migration `2026-05-25_audit_log_job_actions.sql` that (a) adds a partial index `idx_audit_log_job_entity` keyed on `(entity_type, entity_id, created_at desc) where entity_type='jobs'` so the feed query is a single index lookup, (b) replaces the admin-only SELECT policy with a staff-wide `is_admin_staff()` SELECT so office and PM users can see the feed, and (c) adds an INSERT policy `with check (is_admin_staff() and auth_user_id = auth.uid())` so staff can write rows but can't forge attribution to another user. Without this migration the existing client side can't write to audit_log at all (no insert policy existed) and only admins could read.
+
+   Write side: two mutation points log to `audit_log`:
+   - Status dropdown change handler captures before/after status and inserts an `action='status_change'` row.
+   - Job Save handler runs the existing job/area/material writes, then `diffJobSnapshot()` against the original job snapshot and the in-memory areas array to produce a minimal `{ before, after }` diff (only fields that actually changed; areas summarized as `areas_count` + `total_sqft` to avoid per-slot noise), then inserts a single `action='save'` row. Both writes are best-effort: a failure is logged to console and the user-facing mutation completes regardless.
+
+   Read side: a second async IIFE next to the existing install-summary IIFE queries the last 50 `audit_log` rows for this job (`entity_type='jobs' and entity_id=$id` ordered desc) and renders them as a `.pec-card` with one row per event. Each row is `<admin_email> <human phrase> · <relative time>`, where the phrase is built from before/after JSON: status changes read "changed status from X to Y" and saves read "updated price, notes, ..." via an `ACTIVITY_FIELD_LABELS` map. Unknown actions fall back to JSON.stringify so nothing is silently dropped. Empty state: "No activity yet."
+
+   Helpers added near `esc`/`fmtMoney` (index.html ~4915): `logJobActivity`, `diffJobSnapshot`, `fmtRelativeTime`, `renderActivityCard`, `activityPhrase`, `ACTIVITY_FIELD_LABELS`. Auth identity for the audit row is read from the already-cached `state.session.user.id` + `state.adminUser.email` -- no extra `auth.getUser()` round-trip.
+
+Files touched: index.html, supabase/migrations/2026-05-24_status_signed.sql, supabase/migrations/2026-05-25_audit_log_job_actions.sql (new), PROJECT-LOG.md.
+
+Verification: syntax-checked the inline module script via `node` + Function() (after stripping ESM imports/exports) -- 279,690 chars, zero parse errors. Spot-check on a job: top card now shows customer + status + address/url + all 7 Job Card fields condensed; Areas / Notes / Budget render in the new order; Activity card paints at the bottom with the empty-state copy. Changing status writes a `status_change` row (visible after page refresh); editing price + Save writes a `save` row listing "price". Failure paths (RLS denial) leave the page intact.
+
+## Handoff to Cowork
+
+Apply all four pending migrations to the live PEC Supabase project, in order. Stop on any failure and report which migration failed; rerunning is safe (all four are idempotent).
+
+```
+## Context
+HQ-Dashboard repo (https://github.com/<owner>/HQ-Dashboard, main branch as of this commit). Live PEC Supabase project: zdfpzmmrgotynrwkeakd. Three migrations from 2026-05-24 are still unapplied or partially-applied, plus one new migration from 2026-05-25 that enables the new in-app Activity feed:
+- 2026-05-24_status_signed.sql: previously failed (see your 2026-05-24 PROJECT-LOG entry); now corrected in place. Drops the old jobs_status_check BEFORE the UPDATE, then re-adds the new one. DB state was rolled back fully, so this is a fresh run.
+- 2026-05-24_job_card_fields.sql: never applied. Adds 7 nullable columns + 2 CHECK constraints to public.jobs (gate_code, coat_past_garage, stem_walls, moisture, mohs_hardness, additional_non_slip, grinder_tooling_grit).
+- 2026-05-24_polyaspartic_consolidation.sql: never applied. Upserts one canonical Simiron Polyaspartic 2gal Kit row, repoints recipe-slot defaults and historical material_lines, deactivates 5 legacy SKUs, adds public.job_areas.topcoat_cure_speed.
+- 2026-05-25_audit_log_job_actions.sql: NEW. Adds the partial index idx_audit_log_job_entity for the per-job activity feed, plus replaces the audit_log SELECT policy with a staff-wide one and adds an INSERT policy gated on auth.uid(). Without this, the Activity card on every job will render "No activity yet" and clicking Save / changing status will silently fail to log (the page still works).
+
+The live deploy of index.html already renders 'signed' in the status dropdown, so the status_signed fix is urgent: any staff user picking Signed today triggers the same 23514.
+
+## Tasks
+1. Apply supabase/migrations/2026-05-24_status_signed.sql in Supabase Studio's SQL Editor. Acceptance:
+   - select status, count(*) from public.jobs group by status order by status;  -- expect: signed=25, in_progress=1, scheduled=2 (was: confirmed=25, in_progress=1, scheduled=2).
+   - select pg_get_constraintdef(oid) from pg_constraint where conname='jobs_status_check';  -- expect: contains 'signed' in the IN list, no 'confirmed'.
+   - select column_default from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='status';  -- expect: 'signed'::text.
+   Do NOT touch any other public.jobs rows or constraints.
+
+2. Apply supabase/migrations/2026-05-24_job_card_fields.sql. Acceptance:
+   - select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('gate_code','coat_past_garage','stem_walls','moisture','mohs_hardness','additional_non_slip','grinder_tooling_grit');  -- expect 7 rows.
+   - select conname from pg_constraint where conrelid='public.jobs'::regclass and conname in ('jobs_moisture_range','jobs_mohs_range');  -- expect 2 rows.
+
+3. Apply supabase/migrations/2026-05-24_polyaspartic_consolidation.sql. Studio will show a destructive-operations warning on the UPDATEs -- click through. Acceptance:
+   - select name, active, unit_cost, kit_size from public.pec_prod_products where lower(name) like '%polyaspartic%' order by active desc, name;  -- expect 1 active row (Simiron Polyaspartic 2gal Kit, $132, 2gal) and 5 inactive legacy rows.
+   - select rs.id, rs.system_type_id, rs.label, pp.name as default_product from public.pec_prod_recipe_slots rs left join public.pec_prod_products pp on pp.id = rs.default_product_id where rs.material_type='Topcoat' order by rs.system_type_id;  -- every Topcoat slot that had a polyaspartic default now points at 'Simiron Polyaspartic 2gal Kit'.
+   - select column_name from information_schema.columns where table_schema='public' and table_name='job_areas' and column_name='topcoat_cure_speed';  -- expect 1 row.
+
+4. Apply supabase/migrations/2026-05-25_audit_log_job_actions.sql. Acceptance:
+   - select indexname from pg_indexes where schemaname='public' and tablename='audit_log' and indexname='idx_audit_log_job_entity';  -- expect 1 row.
+   - select polname, polcmd from pg_policy where polrelid='public.audit_log'::regclass order by polname;  -- expect: audit_staff (r), audit_staff_insert (a). No other policies.
+
+Take tasks in order. If task 1 fails again, STOP and report; do not run 2-4 (the activity feed migration's RLS swap should not land before its dependencies are stable). Do NOT skip the destructive warning in task 3 without reading the SQL first -- it's the legacy-SKU deactivation, not deletion.
+
+## After
+Append a PROJECT-LOG entry titled "supabase: applied status_signed (fixed), job_card_fields, polyaspartic_consolidation, audit_log_job_actions" with By: Cowork, listing per-task pass/fail + the actual numbers from each acceptance query (statuses count, polyaspartic row counts, policy list). Report back to Dylan when all 4 are green.
+```
+
+## Handoff to Dylan
+
+None directly. Once Cowork lands the four migrations, open any job in the dashboard and confirm: (a) the status dropdown change persists without error, (b) the Activity card shows your status change with your email + a relative timestamp, (c) the merged top card displays the 7 Job Card fields, (d) the Polyaspartic per-area cure-speed selector still renders.
+
+---
+
 ## [2026-05-24 MST] supabase: applied grind_and_seal_consolidation, status_signed FAILED (ordering bug)
 
 By: Cowork

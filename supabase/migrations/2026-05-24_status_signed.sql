@@ -13,24 +13,32 @@
 -- left alone. Renaming it would cascade through the RPC and the portal HTML
 -- with no operational benefit. Only the status enum changes here.
 --
--- Order matters: existing rows are updated first so the new CHECK constraint
--- has no orphaned 'confirmed' values to reject.
+-- Order matters: the OLD CHECK constraint must be dropped BEFORE the UPDATE,
+-- because the old constraint only allows ('confirmed','scheduled','in_progress',
+-- 'completed'). Updating any row to 'signed' while the old constraint is
+-- still active raises 23514 and rolls back the transaction (this is exactly
+-- how Cowork's 2026-05-24 first attempt failed; see PROJECT-LOG entry titled
+-- "supabase: applied grind_and_seal_consolidation, status_signed FAILED").
+-- With the old constraint dropped, the column is unconstrained for the
+-- UPDATE, then the new constraint goes on and only accepts the new value set.
 --
 -- Idempotent. Safe to re-run.
 -- ============================================================================
 
 begin;
 
--- 1) Migrate existing data
+-- 1) Drop the old constraint so the UPDATE doesn't violate it
+alter table public.jobs drop constraint if exists jobs_status_check;
+
+-- 2) Migrate existing data
 update public.jobs set status = 'signed' where status = 'confirmed';
 
--- 2) Swap the CHECK constraint
-alter table public.jobs drop constraint if exists jobs_status_check;
+-- 3) Add the new constraint
 alter table public.jobs
   add constraint jobs_status_check
   check (status in ('signed','scheduled','in_progress','completed'));
 
--- 3) New default
+-- 4) New default
 alter table public.jobs alter column status set default 'signed';
 
 commit;
