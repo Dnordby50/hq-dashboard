@@ -12,6 +12,12 @@
 [functions]
   node_bundler = "esbuild"
 
+# Daily auto-status sweep: flips public.jobs.status from 'scheduled' to
+# 'in_progress' for jobs whose pec_prod_jobs.install_date is today.
+# 13:00 UTC = 06:00 MST (project is single-timezone, no DST).
+[functions."pec-auto-progress"]
+  schedule = "0 13 * * *"
+
 # Clean URL for the MCP server so the Claude.ai connector and Claude Code
 # .mcp.json can point at https://<site>/mcp instead of /.netlify/functions/mcp.
 [[redirects]]

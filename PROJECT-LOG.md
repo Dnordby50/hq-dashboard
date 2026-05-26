@@ -4,6 +4,80 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-25 MST] dashboard: job-detail polish, customer profile page, install-day auto-status, signed column removed
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-25_non_slip_boolean.sql (new), netlify/functions/pec-auto-progress.cjs (new), netlify.toml.
+
+A 10-item batch from Dylan, grouped below.
+
+**Job-detail intake row.** Proposal number is now editable (the read-only `Proposal #` div at the top-right became an `<input id="jobProposal">` that Save persists into `jobs.dripjobs_deal_id`, so the office can fill it in or fix it on jobs transferred from DripJobs manually). `Coat past garage` and `Stem walls` dropdowns now render `N/A` instead of `—` for the null state (label-only; jcBool still writes null). `Additional non-slip` was promoted from free text to a Yes/No/N/A dropdown matching the other two; migration `2026-05-25_non_slip_boolean.sql` recasts `public.jobs.additional_non_slip` from text to boolean via `using case lower(trim(...)) when 'yes'/'y'/'true'/'t'/'1' then true ...`. LOSSY: free-text notes that didn't match the yes/no map collapse to null (called out in the migration header). The printed Work Order renderer at index.html ~6350 now uses the shared `yn()` helper like the other booleans.
+
+**Stain dropdown.** Cohills Eco Water-Based Stain (and other stain SKUs shipping with `pec_prod_products.color = 'Per-job pick'`) used to render as `Per-job pick — Cohills ...` in the recipe-slot dropdown. The slot-dropdown renderer at index.html:6845 and the custom-product picker at 6883 now guard with `p.color && p.color !== 'Per-job pick'`, so those products read as just the product name. All other catalog rows keep their real color label. UI-only, no migration.
+
+**Jobs tab.** Removed the `Signed` column (`<th>Signed</th>` + `<td>${j.confirmed ? '✓' : '—'}</td>`) from `renderJobs`. Empty-state row colspan dropped 7 → 6. The `jobs.confirmed` boolean and the Signature card on the job detail are untouched; only the list column went away.
+
+**Install-day auto-status, both paths.** Dylan said "both for clients and for us on the back end" so this lands twice:
+1. **Client-side** (`runAutoProgressSweep` at index.html ~5040): runs once at app boot from `initAuth` immediately after `resolveAdminUser()`. Queries `pec_prod_jobs` for `install_date = today (MST)` AND `dripjobs_deal_id is not null`, bridges deal IDs to `public.jobs` rows in `status='scheduled'`, flips each to `in_progress`, and writes a `status_change` audit row with `after_json.source='auto_install_day'`. Idempotent (only 'scheduled' rows flip). Best-effort: any failure logs to console and boot continues.
+2. **Backend scheduled function** (`netlify/functions/pec-auto-progress.cjs` + `netlify.toml [functions."pec-auto-progress"] schedule = "0 13 * * *"`): same logic, runs at 06:00 MST whether or not anyone has opened the dashboard. Uses the existing service-role `sb()` helper from `_pec-supabase.cjs`. Writes audit rows attributed to `admin_email='system@pec-auto'`, `auth_user_id=null` (service-role bypasses the `auth.uid()` INSERT check on `audit_log`). Returns `{ ok, today, flipped, skipped, failures }` so manual invocations surface counts. Callable on demand via GET for verification.
+
+**Customer profile page (new).** Clicking a customer's NAME in the Customers list now opens `renderCustomerDetail(id)` (the chevron next to the name still expands the inline jobs preview for the old behavior). Dispatched the same way `renderJobDetail` is: `renderCustomers()` checks `state.openCustomerId` at the top and returns the detail render if set. Layout:
+- Toolbar: Back, `Edit customer` (opens the existing `openCustomerForm` modal -- reuses the Individual/Business toggle at index.html:5650, so business-name-only is supported via the same modal), `Copy portal link`.
+- Header card: resolved customer name (the denormalized `customers.name`, already resolving to `company_name` for businesses and `first_name + last_name` for individuals via the modal's save logic), brand badge (PEC/FTP), email, phone, tags, lead source, billing address.
+- Lifetime revenue card: `total = SUM(jobs.price)`, `jobs with price`, `average ticket`.
+- Active jobs card: jobs where status is in (signed, scheduled, in_progress).
+- Completed / other: collapsible (default closed when active jobs exist), same row shape with price column.
+
+All four lower cards read from a single `supabase.from('jobs').select(...).eq('customer_id', cid)` round-trip; everything else filters client-side. Per-row click sets `state.openJobId` and switches to the Jobs tab (same pattern as the inline expand list).
+
+The business-name-only request (#8 in Dylan's list) was already implemented end-to-end by `openCustomerForm` (Individual/Business toggle + conditional field groups + denormalized name resolution at index.html:5746-5760). The profile page surfaces it correctly; no new code for that item.
+
+Files touched: index.html, supabase/migrations/2026-05-25_non_slip_boolean.sql (new), netlify/functions/pec-auto-progress.cjs (new), netlify.toml, PROJECT-LOG.md.
+
+Verification: `node` + Function() check on script #6 of index.html passes at 290,054 chars. `require()` of the new netlify function loads without throwing. Spot-checks: editable Proposal # input next to Price; coat past garage / stem walls / additional non-slip all read N/A by default and persist Yes/No when chosen; concrete-polishing stain dropdown no longer prefixes "Per-job pick — "; Jobs tab table has no Signed column; clicking a customer name opens a profile page with revenue total + active/completed job splits; back returns to the customer list.
+
+## Handoff to Cowork
+
+```
+## Context
+HQ-Dashboard repo, main branch as of this commit. Live PEC Supabase project: zdfpzmmrgotynrwkeakd. Live Netlify site: hq-prescott.netlify.app. One new migration to apply, and one new scheduled Netlify function to verify after the next deploy.
+
+## Tasks
+1. Apply supabase/migrations/2026-05-25_non_slip_boolean.sql in Supabase Studio's SQL Editor. LOSSY conversion: text values that don't match the yes/no/true/false/1/0 map collapse to NULL. If you want a backup, run `select id, additional_non_slip from public.jobs where additional_non_slip is not null;` BEFORE applying and paste the result into the PROJECT-LOG entry. Acceptance:
+   - `select data_type from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='additional_non_slip';` -- expect: boolean.
+   - `select additional_non_slip, count(*) from public.jobs group by 1 order by 1 nulls last;` -- expect counts split across true / false / null with no obvious surprises.
+
+2. After Netlify deploys this commit, open Netlify -> Site overview -> Functions and confirm `pec-auto-progress` appears in the Scheduled functions list with cron `0 13 * * *`. Then trigger one manual invocation:
+   - From Netlify Functions UI, hit `pec-auto-progress` directly, OR
+   - Run `curl https://hq-prescott.netlify.app/.netlify/functions/pec-auto-progress`.
+   Expect JSON shaped `{ ok: true, today: "YYYY-MM-DD", flipped: N, skipped: M, failures: [] }`. `flipped` will be 0 unless an install is scheduled for today in pec_prod_jobs with a bridged public.jobs row in status='scheduled'. A 500 with `{ ok: false, error: "..." }` means SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY env vars aren't set or the service-role key can't reach the tables -- escalate to Dylan.
+
+## After
+Append a PROJECT-LOG entry titled "supabase: applied non_slip_boolean + verified pec-auto-progress schedule" with By: Cowork, the actual count split from acceptance query 1, the manual-invocation response body from task 2, and a note on whether you took a pre-migration backup. Report back to Dylan when both are green.
+```
+
+## Handoff to Dylan
+
+None directly.
+
+---
+
+## [2026-05-25 MST] dashboard: switchView fence regex now catches "Loading X…" placeholders
+
+By: Claude Code
+Changed: index.html.
+
+The 15s stuck-spinner fence at `switchView` (~index.html:5316) was matching the literal substring `Loading…` only. Child placeholders like "Loading job…" / "Loading schedule…" / "Loading job costing…" contain text between "Loading" and the ellipsis, so the regex missed them and the timeout fired without doing anything -- the user stayed stuck on "Loading job…" with no Retry button. Reported by Dylan: clicking between tabs landed on a job-detail view that hung. Broadened the regex from `/pec-spinner|Loading…/` to `/pec-spinner|Loading/` so every "Loading X…" placeholder trips the fence and shows the Retry UI.
+
+Files touched: index.html.
+
+Verification: `node` + Function() check on script #6 passes. Any render that uses a "Loading X…" placeholder will now surface `showCrmRenderError` after 15s instead of hanging silently.
+
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-25 MST] supabase: applied status_signed (fixed), job_card_fields, polyaspartic_consolidation, audit_log_job_actions
 
 By: Cowork

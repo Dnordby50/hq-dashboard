@@ -5023,6 +5023,42 @@ function renderActivityCard(rows) {
   return `<div class="pec-card"><h3>Activity</h3>${inner}</div>`;
 }
 
+// Client-side auto-status sweep. Flips public.jobs.status from 'scheduled' to
+// 'in_progress' for every job whose bridged pec_prod_jobs.install_date is
+// today. Runs at app boot from initAuth so any staffer opening the dashboard
+// on install morning sees the new status without waiting for the daily
+// scheduled function. Idempotent: only status='scheduled' rows flip.
+// Best-effort: errors logged to console, never block boot.
+async function runAutoProgressSweep() {
+  try {
+    if (!state.adminUser) return;
+    // Today in MST. Project is single-timezone per CLAUDE.md context; no DST.
+    const now = new Date();
+    const mst = new Date(now.getTime() - 7 * 60 * 60 * 1000);
+    const today = mst.toISOString().slice(0, 10);
+    const dueRes = await supabase.from('pec_prod_jobs')
+      .select('dripjobs_deal_id, install_date')
+      .eq('install_date', today)
+      .not('dripjobs_deal_id', 'is', null);
+    const due = dueRes.data || [];
+    if (!due.length) return;
+    const dealIds = [...new Set(due.map(r => r.dripjobs_deal_id))];
+    const jobsRes = await supabase.from('jobs')
+      .select('id, status, dripjobs_deal_id')
+      .in('dripjobs_deal_id', dealIds)
+      .eq('status', 'scheduled');
+    const jobs = jobsRes.data || [];
+    for (const j of jobs) {
+      const upd = await supabase.from('jobs').update({ status: 'in_progress' }).eq('id', j.id);
+      if (upd.error) { console.warn('[pec] auto-progress update failed:', j.id, upd.error.message); continue; }
+      await logJobActivity(j.id, 'status_change', { status: 'scheduled' }, { status: 'in_progress', source: 'auto_install_day' });
+    }
+    if (jobs.length) console.log('[pec] auto-progress: flipped', jobs.length, 'job(s) to in_progress for', today);
+  } catch (e) {
+    console.warn('[pec] auto-progress sweep threw:', e);
+  }
+}
+
 // Build the human-readable phrase for one audit_log row.
 function activityPhrase(row) {
   const b = row.before_json || {}, a = row.after_json || {};
@@ -5109,6 +5145,10 @@ async function initAuth() {
     renderAuthUI();
   });
   if (state.session) await resolveAdminUser();
+  // Fire-and-forget the install-day auto-progress sweep. Best-effort: any
+  // failure is swallowed inside runAutoProgressSweep() so it cannot delay
+  // or break the first paint.
+  runAutoProgressSweep();
 }
 
 async function resolveAdminUser() {
@@ -5522,6 +5562,7 @@ async function renderDashboard() {
 // Customers
 // ============================================================
 async function renderCustomers() {
+  if (state.openCustomerId) return renderCustomerDetail(state.openCustomerId);
   const root = $('pecViewRoot');
   const from = (state.customersPage - 1) * PAGE;
   let q = supabase.from('customers')
@@ -5546,7 +5587,10 @@ async function renderCustomers() {
         <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Jobs</th><th>Actions</th></tr></thead>
         <tbody>${state.customers.map(c => `
           <tr data-cust-id="${c.id}">
-            <td><button class="pec-cust-name" data-expand-cust="${c.id}"><span class="pec-cust-chevron" data-chevron-for="${c.id}">▶</span> ${esc(c.name)}</button></td>
+            <td style="display:flex;align-items:center;gap:6px">
+              <button data-expand-cust="${c.id}" aria-label="Toggle jobs preview" style="background:none;border:none;cursor:pointer;color:var(--muted);padding:0 4px;font-size:.85rem"><span class="pec-cust-chevron" data-chevron-for="${c.id}">▶</span></button>
+              <button class="pec-cust-name" data-open-cust="${c.id}">${esc(c.name)}</button>
+            </td>
             <td>${esc(c.email || '—')}</td>
             <td>${esc(c.phone || '—')}</td>
             <td><span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'}</span></td>
@@ -5569,6 +5613,12 @@ async function renderCustomers() {
 
   root.querySelectorAll('[data-edit-cust]').forEach(b => {
     b.addEventListener('click', () => openCustomerForm(state.customers.find(c => c.id === b.dataset.editCust)));
+  });
+  root.querySelectorAll('[data-open-cust]').forEach(b => {
+    b.addEventListener('click', () => {
+      state.openCustomerId = b.dataset.openCust;
+      switchView('customers');
+    });
   });
   root.querySelectorAll('[data-copy-token]').forEach(b => {
     b.addEventListener('click', () => {
@@ -5625,6 +5675,135 @@ async function renderCustomers() {
       bindJobLinks(bodyEl);
     });
   });
+}
+
+// Customer profile page. Reached by clicking the customer name in the list
+// (the chevron preserves the legacy inline-expand behavior). Layout: back +
+// edit + copy-link toolbar; header card with the resolved name + brand +
+// contact + billing; lifetime revenue card with total + won_count +
+// avg_ticket; active jobs card (status in signed/scheduled/in_progress);
+// completed/archived jobs collapsible. One supabase round-trip beyond the
+// customer fetch (jobs query feeds revenue + both job lists).
+async function renderCustomerDetail(id) {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading customer…</div>';
+  const [custRes, jobsRes, sysRes] = await Promise.all([
+    supabase.from('customers')
+      .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      .eq('id', id).single(),
+    supabase.from('jobs')
+      .select('id,address,type,status,price,created_at,archived_at,job_areas(system_type_id,order_index)')
+      .eq('customer_id', id).is('archived_at', null)
+      .order('created_at', { ascending: false }),
+    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+  ]);
+  if (custRes.error) { root.innerHTML = `<div class="pec-empty">${esc(custRes.error.message)}</div>`; return; }
+  const c = custRes.data;
+  const allJobs = jobsRes.data || [];
+  const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
+
+  const ACTIVE_STATUSES = new Set(['signed','scheduled','in_progress']);
+  const activeJobs    = allJobs.filter(j => ACTIVE_STATUSES.has(j.status));
+  const completedJobs = allJobs.filter(j => !ACTIVE_STATUSES.has(j.status));
+  const wonJobs       = allJobs.filter(j => Number(j.price) > 0);
+  const lifetimeRev   = wonJobs.reduce((s, j) => s + Number(j.price || 0), 0);
+  const avgTicket     = wonJobs.length ? (lifetimeRev / wonJobs.length) : 0;
+
+  const portalLink = c.token ? `${portalBase()}/?portal=${c.token}` : '';
+  const brand = c.company === 'finishing-touch' ? 'FTP' : 'PEC';
+  const billingLines = [c.billing_address_line1, c.billing_address_line2,
+    [c.billing_city, c.billing_state].filter(Boolean).join(', ') + (c.billing_zip ? ' ' + c.billing_zip : '')].filter(s => s && s.trim());
+
+  const jobRowsHtml = (jobs) => jobs.length
+    ? jobs.map(j => `
+        <div class="pec-cust-job" data-open-job="${esc(j.id)}">
+          ${systemBadgeHtml(j.job_areas, sysById)}
+          <span class="pec-badge ${esc(j.status || '')}">${esc((j.status || '').replace('_',' '))}</span>
+          <span style="flex:1">${esc(j.address || '(no address)')}</span>
+          <span style="color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums">${fmtMoney(j.price)}</span>
+        </div>
+      `).join('')
+    : '<div style="color:var(--muted);font-size:.85rem">None.</div>';
+
+  root.innerHTML = `
+    <div class="pec-toolbar">
+      <button class="pec-btn ghost" id="pecCustBack">← Back to customers</button>
+      <button class="pec-btn sm" id="pecCustEdit">Edit customer</button>
+      ${portalLink ? `<button class="pec-btn sm" id="pecCustCopyLink">Copy portal link</button>` : ''}
+    </div>
+
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:1.2rem;font-weight:700">${esc(c.name || '—')}</div>
+          <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${brand}</span>
+            ${c.lead_source ? `<span style="font-size:.72rem;color:var(--muted)">${esc(c.lead_source)}</span>` : ''}
+            ${(c.tags || []).map(t => `<span style="font-size:.7rem;background:var(--rd-soft, var(--s3));padding:2px 8px;border-radius:999px">${esc(t)}</span>`).join('')}
+          </div>
+        </div>
+        <div style="text-align:right;font-size:.85rem;line-height:1.5">
+          ${c.email ? `<div>${esc(c.email)}</div>` : ''}
+          ${c.phone ? `<div>${esc(c.phone)}</div>` : ''}
+        </div>
+      </div>
+      ${billingLines.length ? `
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border));font-size:.85rem;color:var(--muted)">
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">Billing</div>
+          ${billingLines.map(l => `<div>${esc(l)}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="pec-card">
+      <h3>Lifetime revenue</h3>
+      <div class="pec-row-3" style="align-items:flex-end">
+        <div>
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Total</div>
+          <div style="font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums">${fmtMoney(lifetimeRev)}</div>
+        </div>
+        <div>
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Jobs with price</div>
+          <div style="font-size:1.2rem;font-weight:600">${wonJobs.length}</div>
+        </div>
+        <div>
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Average ticket</div>
+          <div style="font-size:1.2rem;font-weight:600;font-variant-numeric:tabular-nums">${fmtMoney(avgTicket)}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pec-card">
+      <h3>Active jobs <span style="color:var(--muted);font-size:.7rem;font-weight:400">(${activeJobs.length})</span></h3>
+      <div style="display:flex;flex-direction:column;gap:6px">${jobRowsHtml(activeJobs)}</div>
+    </div>
+
+    <div class="pec-card">
+      <details ${completedJobs.length ? '' : 'open'}>
+        <summary style="cursor:pointer;font-weight:600">Completed / other (${completedJobs.length})</summary>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">${jobRowsHtml(completedJobs)}</div>
+      </details>
+    </div>
+  `;
+
+  $('pecCustBack').addEventListener('click', () => {
+    state.openCustomerId = null;
+    switchView('customers');
+  });
+  $('pecCustEdit').addEventListener('click', () => openCustomerForm(c));
+  if (portalLink) {
+    $('pecCustCopyLink').addEventListener('click', () => {
+      navigator.clipboard.writeText(portalLink).then(() => {
+        $('pecCustCopyLink').textContent = 'Copied';
+        setTimeout(() => { $('pecCustCopyLink').textContent = 'Copy portal link'; }, 1500);
+      });
+    });
+  }
+  root.querySelectorAll('[data-open-job]').forEach(el => el.addEventListener('click', () => {
+    state.view = 'jobs';
+    state.openJobId = el.dataset.openJob;
+    switchView('jobs');
+  }));
 }
 
 async function openCustomerForm(c) {
@@ -6038,17 +6217,16 @@ async function renderJobs() {
     </div>
     <div class="pec-card">
       <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Signed</th><th>Price</th><th>Created</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Price</th><th>Created</th></tr></thead>
         <tbody>${jobs.map(j => `
           <tr data-job-id="${j.id}">
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
             <td><span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span></td>
-            <td>${j.confirmed ? '✓' : '—'}</td>
             <td>${fmtMoney(j.price)}</td>
             <td>${fmtDate(j.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs</td></tr>'}</tbody>
       </table>
       ${renderPagination(state.jobsPage, state.jobsTotal, p => { state.jobsPage = p; renderJobs(); })}
     </div>
@@ -6347,7 +6525,7 @@ async function renderWorkOrder(ctx) {
     <div class="lbl">Gate Code#:</div>     <div class="val">${e(job.gate_code || '')}</div>
     <div class="lbl">Sqft:</div>           <div class="val">${e(totalSqft || '')}</div>
     <div class="lbl">Hours actual:</div>   <div class="val"></div>
-    <div class="lbl">Additional non slip:</div><div class="val">${e(job.additional_non_slip || '')}</div>
+    <div class="lbl">Additional non slip:</div><div class="val">${yn(job.additional_non_slip)}</div>
     <div class="lbl"></div>                <div class="val"></div>
     <div class="lbl">Hour Budget:</div>    <div class="val">${hourBudget != null ? hourBudget.toFixed(1) + ' hrs' : ''}</div>
     <div class="lbl"></div>                <div class="val"></div>
@@ -6496,7 +6674,10 @@ async function renderJobDetail(id) {
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
-          ${job.dripjobs_deal_id ? `<div style="font-weight:600;font-size:.85rem;white-space:nowrap">Proposal #${esc(job.dripjobs_deal_id)}</div>` : ''}
+          <div style="display:flex;align-items:center;gap:6px">
+            <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Proposal #</label>
+            <input id="jobProposal" type="text" value="${esc(job.dripjobs_deal_id || '')}" placeholder="DripJobs deal #" style="max-width:160px">
+          </div>
           <div style="display:flex;align-items:center;gap:6px">
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
             <input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">
@@ -6521,14 +6702,14 @@ async function renderJobDetail(id) {
           <div class="pec-field"><label>Gate code</label><input id="jcGateCode" value="${esc(job.gate_code || '')}"></div>
           <div class="pec-field"><label>Coat past garage</label>
             <select id="jcCoatPast">
-              <option value="" ${job.coat_past_garage == null ? 'selected' : ''}>—</option>
+              <option value="" ${job.coat_past_garage == null ? 'selected' : ''}>N/A</option>
               <option value="true"  ${job.coat_past_garage === true ? 'selected' : ''}>Yes</option>
               <option value="false" ${job.coat_past_garage === false ? 'selected' : ''}>No</option>
             </select>
           </div>
           <div class="pec-field"><label>Stem walls</label>
             <select id="jcStemWalls">
-              <option value="" ${job.stem_walls == null ? 'selected' : ''}>—</option>
+              <option value="" ${job.stem_walls == null ? 'selected' : ''}>N/A</option>
               <option value="true"  ${job.stem_walls === true ? 'selected' : ''}>Yes</option>
               <option value="false" ${job.stem_walls === false ? 'selected' : ''}>No</option>
             </select>
@@ -6547,7 +6728,13 @@ async function renderJobDetail(id) {
               ${[1,2,3,4,5,6,7,8,9,10].map(n => `<option value="${n}" ${Number(job.mohs_hardness)===n ? 'selected' : ''}>${n}</option>`).join('')}
             </select>
           </div>
-          <div class="pec-field"><label>Additional non-slip</label><input id="jcNonSlip" value="${esc(job.additional_non_slip || '')}"></div>
+          <div class="pec-field"><label>Additional non-slip</label>
+            <select id="jcNonSlip">
+              <option value="" ${job.additional_non_slip == null ? 'selected' : ''}>N/A</option>
+              <option value="true"  ${job.additional_non_slip === true ? 'selected' : ''}>Yes</option>
+              <option value="false" ${job.additional_non_slip === false ? 'selected' : ''}>No</option>
+            </select>
+          </div>
         </div>
         <div class="pec-field"><label>Grinder tooling / grit used</label><input id="jcGrinder" value="${esc(job.grinder_tooling_grit || '')}"></div>
       </div>
@@ -6833,7 +7020,7 @@ async function renderJobDetail(id) {
       }
       const dd = (pi, val) => `<select data-slot-select="${idx}|${esc(slot.id)}|${pi}" style="max-width:340px;margin-bottom:6px">
         <option value="">— none —</option>
-        ${list.map(p => `<option value="${esc(p.id)}" ${p.id===val?'selected':''}>${esc(p.color ? p.color + ' — ' + p.name : p.name)}</option>`).join('')}
+        ${list.map(p => `<option value="${esc(p.id)}" ${p.id===val?'selected':''}>${esc(p.color && p.color !== 'Per-job pick' ? p.color + ' — ' + p.name : p.name)}</option>`).join('')}
       </select>`;
       let body;
       if (isMulti) {
@@ -6871,7 +7058,7 @@ async function renderJobDetail(id) {
           <input data-custom-label="${idx}|${ci}" value="${esc(c.label || '')}" placeholder="Material / step">
           <select data-custom-prod="${idx}|${ci}">
             <option value="">No catalog product</option>
-            ${activeProducts.map(p => `<option value="${esc(p.id)}" ${p.id===c.productId?'selected':''}>${esc(p.color ? p.color + ' — ' + p.name : p.name)}</option>`).join('')}
+            ${activeProducts.map(p => `<option value="${esc(p.id)}" ${p.id===c.productId?'selected':''}>${esc(p.color && p.color !== 'Per-job pick' ? p.color + ' — ' + p.name : p.name)}</option>`).join('')}
           </select>
           <div style="display:flex;gap:6px">
             <input data-custom-text="${idx}|${ci}" value="${esc(c.text || '')}" placeholder="Notes" style="flex:1">
@@ -7030,6 +7217,7 @@ async function renderJobDetail(id) {
       address: $('jobAddress').value || null,
       scope: $('jobScope').value || null,
       dripjobs_url: $('jobDripUrl').value || null,
+      dripjobs_deal_id: $('jobProposal')?.value?.trim() || null,
       price: priceVal ? parseFloat(priceVal) : null,
       sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
       system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
@@ -7041,7 +7229,7 @@ async function renderJobDetail(id) {
       stem_walls: $('jcStemWalls') ? jcBool('jcStemWalls') : null,
       moisture: $('jcMoisture') ? jcInt('jcMoisture') : null,
       mohs_hardness: $('jcMohs') ? jcInt('jcMohs') : null,
-      additional_non_slip: $('jcNonSlip')?.value || null,
+      additional_non_slip: $('jcNonSlip') ? jcBool('jcNonSlip') : null,
       grinder_tooling_grit: $('jcGrinder')?.value || null,
     };
     try {
