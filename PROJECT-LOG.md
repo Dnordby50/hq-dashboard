@@ -4,6 +4,94 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-24 MST] supabase: applied grind_and_seal_consolidation, status_signed FAILED (ordering bug)
+
+By: Cowork
+Changed: live PEC Supabase project (no repo files).
+
+Dylan said "run the handoff". I read PROJECT-LOG before the newest Claude Code entry was added, so I executed the EARLIER handoff (status_signed + grind_and_seal_consolidation, from the entry titled "dashboard: status confirmed -> signed, Grind and Seal consolidated, ...") rather than the most-recent one (job_card_fields + polyaspartic_consolidation). The newer handoff was NOT executed this session. Flagging up front so it doesn't get lost.
+
+What I actually did, in order, via Supabase Studio's SQL Editor on project zdfpzmmrgotynrwkeakd (signed in as Dylan, drove Monaco + the `Run Query` action programmatically from a Chrome MCP session because the Supabase tab was background-throttled and the Studio UI is the only path I have to a session-authenticated query endpoint):
+
+### 1. supabase/migrations/2026-05-24_status_signed.sql -- FAILED
+
+Pasted verbatim, hit Run. Error:
+
+```
+Failed to run sql query: ERROR:  23514: new row for relation "jobs" violates check constraint "jobs_status_check"
+```
+
+The transaction rolled back. Post-attempt sanity query:
+
+```sql
+select status, count(*) from public.jobs group by status order by status;
+-- confirmed     | 25
+-- in_progress   |  1
+-- scheduled     |  2
+-- (zero 'signed' rows; identical to pre-attempt state)
+```
+
+Root cause: the migration runs `update public.jobs set status='signed' where status='confirmed'` BEFORE dropping the old `jobs_status_check` constraint (`status in ('confirmed','scheduled','in_progress','completed')`). 'signed' is not in that IN list, so every row of that UPDATE is rejected at the check-constraint phase, the transaction aborts, and the constraint swap that comes later never runs. The header comment in the migration says "Order matters: existing rows are updated first so the new CHECK constraint has no orphaned 'confirmed' values to reject" -- that's correct about the NEW constraint, but ignores that the OLD constraint is still active during the UPDATE and rejects 'signed'.
+
+Fix needs to come from Claude Code: swap step 1 and step 2 (drop the old constraint before the update). Same SQL, different order. Once the constraint is dropped, the column is unconstrained; UPDATE runs cleanly; then the new constraint goes on and accepts only the new values.
+
+### 2. supabase/migrations/2026-05-24_grind_and_seal_consolidation.sql -- SUCCEEDED
+
+Pasted verbatim, hit Run. Supabase Studio threw its "Potential issue detected -- destructive operations" warning (the DELETE statements trigger it), clicked through, query returned "Success. No rows returned".
+
+Acceptance queries from the handoff, all passed:
+
+```sql
+select name, active from public.pec_prod_system_types where name ilike '%grind%' order by name;
+-- Grind and Seal              | t
+-- Grind and Seal - Urethane   | f
+-- Grind Stain and Seal        | f
+
+select rs.order_index, rs.material_type, rs.label, rs.required, rs.min_select, rs.max_select
+  from public.pec_prod_recipe_slots rs
+  join public.pec_prod_system_types st on st.id = rs.system_type_id
+ where st.name = 'Grind and Seal' order by rs.order_index;
+-- 1 | Basecoat | Basecoat | true  | 1 | 1
+-- 2 | Stain    | Stain    | false | 0 | 1
+-- 3 | Topcoat  | Topcoat  | true  | 1 | 1
+
+select count(*) from public.pec_prod_recipe_slots rs
+  join public.pec_prod_system_types st on st.id = rs.system_type_id
+ where st.name in ('Grind and Seal - Urethane', 'Grind Stain and Seal');
+-- 0
+```
+
+Studio side effect to be aware of: a new private SQL snippet was auto-created and auto-titled "Simple Probe Query" (it currently holds the bonus orphan-check query above). Dylan can delete it from the SQL Editor's Private list when convenient; it's not load-bearing.
+
+### Notes for the next session
+
+- The live deploy of `index.html` already renders 'signed' in the status dropdown options (saw it earlier today in Tisha Schuller's job-detail status `<select>`). So as of right now there's a UI/DB skew: any user who picks "signed" and saves will trigger the same 23514 the migration hit. Treat the fixed migration as urgent.
+- The "Add budget percentage columns" snippet (id `f1ed9b33-0b1d-48ca-97f7-7f100000871d`) from Cowork's prior run is untouched; my edits were on a freshly-created snippet.
+- Outstanding handoffs as of this entry: (a) fixed status_signed retry, (b) the WHOLE newest Claude Code handoff (job_card_fields + polyaspartic_consolidation, both UNRUN), (c) the prior outstanding Phase 1 sales_team migration, (d) COMPANYCAM_API_TOKEN (still deferred per Dylan).
+
+## Handoff to Claude Code
+
+Rewrite `supabase/migrations/2026-05-24_status_signed.sql` to drop the constraint BEFORE the update, then write a brief correction entry pointing here. Suggested order:
+
+```sql
+begin;
+alter table public.jobs drop constraint if exists jobs_status_check;
+update public.jobs set status = 'signed' where status = 'confirmed';
+alter table public.jobs
+  add constraint jobs_status_check
+  check (status in ('signed','scheduled','in_progress','completed'));
+alter table public.jobs alter column status set default 'signed';
+commit;
+```
+
+After the fix is committed, re-issue the Cowork handoff with the same acceptance queries.
+
+## Handoff to Dylan
+
+Confirm whether the newer handoff (job_card_fields + polyaspartic_consolidation, from the "dashboard: job-card intake fields..." entry below) should be the next Cowork run, or whether Cowork should wait for the fixed status_signed first and do all three together.
+
+---
+
 ## [2026-05-24 MST] dashboard: job-card intake fields, Polyaspartic consolidated, printable Work Order, area editor polish
 
 By: Claude Code
