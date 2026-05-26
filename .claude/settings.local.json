@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"^function \\\\$\\\\|^const \\\\$\\\\|^\\\\s*\\\\$ = \" /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(grep *)",
+      "Bash(awk '/id=\"redesign-theme\"/,/\\\\/style>/' /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(node --check /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(awk '/<script\\(>| [^>]*type=[\"'\\\\'']text\\\\/javascript[\"'\\\\'']| [^>]*[^=]>\\)/{flag=1;next} /<\\\\/script>/{flag=0} flag' /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(node --check /tmp/dashboard-extracted.js)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(rm /Users/dylannordby/Claude-Code/HQ-Dashboard/.git/HEAD.lock)",
+      "Bash(git push *)",
+      "WebFetch(domain:shop.simiron.com)",
+      "Bash(npm test *)",
+      "Bash(git commit *)",
+      "Bash(awk 'NR>=6770 && NR<=6810' index.html)",
+      "mcp__claude_ai_Google_Drive__get_file_metadata",
+      "mcp__claude_ai_Google_Drive__read_file_content",
+      "Bash(cat)",
+      "Bash(python3 /tmp/detailed_parse.py)",
+      "Bash(python3 /tmp/extract_bonus.py)",
+      "Bash(python3 /tmp/smart_parse.py)",
+      "Bash(python3 /tmp/final_extract.py)",
+      "Bash(python3 /tmp/main_table.py)",
+      "Bash(awk '/^<script/,/^<\\\\/script>/{if\\(/addEventListener.*tab-btn|\\\\.tab-btn|document\\\\.querySelector.*tab-btn/\\)print NR\": \"$0}' /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(awk '/id=\"tab-jarvis\"/,/^<\\\\/section>/{if\\(/<\\\\/section>/\\)print NR\": \"$0}' /Users/dylannordby/Claude-Code/HQ-Dashboard/index.html)",
+      "Bash(git -C /Users/dylannordby/Claude-Code/HQ-Dashboard status --short)",
+      "Bash(git -C /Users/dylannordby/Claude-Code/HQ-Dashboard log --oneline -5)",
+      "Bash(git -C /Users/dylannordby/Claude-Code/HQ-Dashboard/ diff --unified=0 -- CLAUDE.md index.html)",
+      "Bash(awk 'NR>=1 && NR<=80' /Users/dylannordby/Claude-Code/HQ-Dashboard/PROJECT-LOG.md)",
+      "Bash(git -C /Users/dylannordby/Claude-Code/HQ-Dashboard/ diff -- CLAUDE.md)"
+    ]
+  }
+}

@@ -4,6 +4,91 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-25 MST] supabase: applied status_signed (fixed), job_card_fields, polyaspartic_consolidation, audit_log_job_actions
+
+By: Cowork
+Changed: live PEC Supabase project zdfpzmmrgotynrwkeakd (no repo files).
+
+Ran the four-migration handoff from the Claude Code entry directly below this one. Drove Supabase Studio's SQL Editor via Chrome MCP, reusing the same "Simple Probe Query" private snippet the prior Cowork session left behind (rewriting its contents per step, not creating new snippets). All four landed clean and every acceptance query passed.
+
+### 1. supabase/migrations/2026-05-24_status_signed.sql, SUCCEEDED
+
+Pasted the corrected SQL (drop constraint before update), hit Run. "Success. No rows returned". The 23514 that bit the 2026-05-24 run is gone.
+
+Acceptance:
+
+```
+status_counts: signed=25, in_progress=1, scheduled=2 (was confirmed=25, in_progress=1, scheduled=2)
+constraint_def: CHECK ((status = ANY (ARRAY['signed'::text, 'scheduled'::text, 'in_progress'::text, 'completed'::text])))
+column_default: 'signed'::text
+```
+
+### 2. supabase/migrations/2026-05-24_job_card_fields.sql, SUCCEEDED
+
+"Success. No rows returned".
+
+Acceptance:
+
+```
+cols_count = 7   (gate_code, coat_past_garage, stem_walls, moisture, mohs_hardness, additional_non_slip, grinder_tooling_grit all present on public.jobs)
+constraints_count = 2   (jobs_moisture_range, jobs_mohs_range)
+```
+
+### 3. supabase/migrations/2026-05-24_polyaspartic_consolidation.sql, SUCCEEDED
+
+"Success. No rows returned". The destructive-operations modal did NOT fire on this one (only UPDATEs, no DELETEs); it fired later on the audit_log migration's `drop policy` statements instead.
+
+Acceptance:
+
+```
+polyaspartic products:
+  ACTIVE   Simiron Polyaspartic 2gal Kit              $132.00 / 2 gal
+  inactive Polyaspartic Clear Gloss                   $153.02 / 2 gal
+  inactive Simiron Polyaspartic Fast Cure 2gal Kit    $153.02 / 2 gal
+  inactive Simiron Polyaspartic HS Medium Cure 10gal Kit  $856.16 / 10 gal
+  inactive Simiron Polyaspartic HS Slow Cure 10gal Kit    $765.10 / 10 gal
+  inactive Simiron Polyaspartic Medium Cure 2gal Kit  $122.41 / 2 gal
+
+Topcoat recipe slot defaults:
+  Flake          / (slot label NULL) -> Simiron Polyaspartic 2gal Kit
+  Grind and Seal / Topcoat           -> (no default)   [unchanged, not a polyaspartic system]
+  Metallic       / Topcoat           -> Simiron High Wear Urethane  [unchanged, not polyaspartic]
+  Quartz         / Topcoat           -> Simiron Polyaspartic 2gal Kit
+  Standard Flake / (slot label NULL) -> Simiron Polyaspartic 2gal Kit
+
+job_areas.topcoat_cure_speed column present (count=1).
+```
+
+### 4. supabase/migrations/2026-05-25_audit_log_job_actions.sql, SUCCEEDED
+
+Studio threw the "Potential issue detected, this query includes destructive operations" warning on the `drop policy` statements. Reviewed the SQL (matches the migration file verbatim, only drops the two named policies before re-creating them), clicked Run query. "Success. No rows returned".
+
+Acceptance:
+
+```
+idx_audit_log_job_entity index present (count=1)
+audit_log policies:
+  audit_staff         polcmd=r  (SELECT)
+  audit_staff_insert  polcmd=a  (INSERT)
+  no other policies
+```
+
+### Notes for the next session
+
+- The live UI/DB skew flagged in the 2026-05-24 entry (UI rendered 'signed' but DB rejected it) is resolved. Any staff user can now pick "Signed" without tripping 23514.
+- The "Simple Probe Query" private SQL snippet now contains the audit_log acceptance query, not the polyaspartic SQL. Dylan can delete it from the SQL Editor's Private list when convenient; it's not load-bearing.
+- Outstanding from prior phases: Phase 1 sales_team migration handoff (still unrun); COMPANYCAM_API_TOKEN (deferred per Dylan); the stuck-spinner secondary bug (still no new repro since the 2026-05-24 render-timeout fix shipped).
+
+## Handoff to Dylan
+
+Open any job in the dashboard and confirm: (a) the status dropdown change persists without error, (b) the Activity card shows your status change with your email and a relative timestamp, (c) the merged top card displays the 7 Job Card fields, (d) the Polyaspartic per-area cure-speed selector still renders.
+
+## Handoff to Cowork
+
+None. The four-migration handoff is fully landed.
+
+---
+
 ## [2026-05-25 MST] dashboard: job-detail restructure + activity log, status_signed migration fixed
 
 By: Claude Code
