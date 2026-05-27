@@ -569,6 +569,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-empty{text-align:center;color:var(--muted);padding:40px 20px;font-size:.8rem}
 .pec-spinner{display:inline-block;width:13px;height:13px;border:2px solid color-mix(in srgb, var(--rd-accent, var(--accent)) 30%, transparent);border-top-color:var(--rd-accent, var(--accent));border-radius:50%;animation:pec-spin .8s linear infinite;vertical-align:-2px;margin-right:8px}
 @keyframes pec-spin{to{transform:rotate(360deg)}}
+.pec-slot-missing{border:2px solid var(--danger,#e3342f) !important;background:color-mix(in srgb, var(--danger,#e3342f) 8%, transparent);border-radius:6px;padding:8px;margin:-2px}
 .pec-stars{display:inline-flex;gap:4px;font-size:1.2rem;cursor:pointer;color:var(--dim)}
 .pec-stars .star.on{color:var(--warn)}
 .pec-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10010;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -5023,6 +5024,28 @@ function renderActivityCard(rows) {
   return `<div class="pec-card"><h3>Activity</h3>${inner}</div>`;
 }
 
+// Run an async DB call with a hard timeout. On timeout, force-refresh the
+// auth session (the most common hang cause -- supabase-js auth refresh fetch
+// hanging through the noop-lock override at line ~4904) and retry the call
+// once. Surfaces a real Error if the second attempt also times out, which
+// the switchView fence at line ~5316 will then render as a Retry UI.
+// 10s timeout is intentional: shorter than the 15s switchView fence so the
+// in-place retry happens BEFORE the user-facing error fires.
+async function withFreshSession(fn, { timeoutMs = 10000, label = 'query' } = {}) {
+  const race = (p) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label}] timed out after ${timeoutMs}ms`)), timeoutMs)),
+  ]);
+  try {
+    return await race(fn());
+  } catch (e) {
+    if (!String(e && e.message || '').includes('timed out')) throw e;
+    console.warn(`[pec] ${label} timed out; refreshing session and retrying once`);
+    try { await race(supabase.auth.refreshSession()); } catch (_) { /* swallow; the retry will surface the real error */ }
+    return await race(fn());
+  }
+}
+
 // Client-side auto-status sweep. Flips public.jobs.status from 'scheduled' to
 // 'in_progress' for every job whose bridged pec_prod_jobs.install_date is
 // today. Runs at app boot from initAuth so any staffer opening the dashboard
@@ -5396,7 +5419,16 @@ function showCrmRenderError(err, view) {
     <button class="pec-btn sm" id="pecCrmRetry" style="margin-top:10px">Retry</button>
   </div>`;
   const btn = document.getElementById('pecCrmRetry');
-  if (btn) btn.addEventListener('click', () => switchView(view || (state && state.view) || 'dashboard'));
+  if (btn) btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Retrying…';
+    // Force-refresh the auth session before re-entering the render. The
+    // "Retry usually works" pattern relied on the user waiting long enough
+    // for an in-flight token refresh to settle; doing it explicitly here
+    // makes the retry deterministic.
+    try { await supabase.auth.refreshSession(); } catch (_) { /* swallow; switchView will surface any real error */ }
+    switchView(view || (state && state.view) || 'dashboard');
+  });
 }
 
 // ============================================================
@@ -5571,7 +5603,7 @@ async function renderCustomers() {
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.customersSearch) q = q.or(`name.ilike.%${state.customersSearch}%,email.ilike.%${state.customersSearch}%,phone.ilike.%${state.customersSearch}%`);
-  const { data, count, error } = await q;
+  const { data, count, error } = await withFreshSession(() => q, { label: 'renderCustomers' });
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
   state.customers = data || [];
   state.customersTotal = count || 0;
@@ -5687,7 +5719,7 @@ async function renderCustomers() {
 async function renderCustomerDetail(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading customer…</div>';
-  const [custRes, jobsRes, sysRes] = await Promise.all([
+  const [custRes, jobsRes, sysRes] = await withFreshSession(() => Promise.all([
     supabase.from('customers')
       .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
       .eq('id', id).single(),
@@ -5696,8 +5728,13 @@ async function renderCustomerDetail(id) {
       .eq('customer_id', id).is('archived_at', null)
       .order('created_at', { ascending: false }),
     supabase.from('pec_prod_system_types').select('id,name,color,active'),
-  ]);
-  if (custRes.error) { root.innerHTML = `<div class="pec-empty">${esc(custRes.error.message)}</div>`; return; }
+  ]), { label: 'renderCustomerDetail' });
+  if (custRes.error) {
+    console.warn('[pec] customer fetch failed; clearing openCustomerId:', custRes.error.message);
+    state.openCustomerId = null;
+    renderCustomers();
+    return;
+  }
   const c = custRes.data;
   const allJobs = jobsRes.data || [];
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
@@ -6187,10 +6224,10 @@ async function renderJobs() {
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.jobsFilter.status) q = q.eq('status', state.jobsFilter.status);
-  const [jobsRes, sysRes] = await Promise.all([
+  const [jobsRes, sysRes] = await withFreshSession(() => Promise.all([
     q,
     supabase.from('pec_prod_system_types').select('id,name,color,active'),
-  ]);
+  ]), { label: 'renderJobs' });
   const { data, count, error } = jobsRes;
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
   let jobs = data || [];
@@ -6567,8 +6604,8 @@ async function renderWorkOrder(ctx) {
 
 async function renderJobDetail(id) {
   const root = $('pecViewRoot');
-  root.innerHTML = '<div class="pec-empty">Loading job…</div>';
-  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await Promise.all([
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
+  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
       .select('*,customers(id,name,email,company,token),photos(*)')
       .eq('id', id).single(),
@@ -6578,8 +6615,13 @@ async function renderJobDetail(id) {
     supabase.from('pec_prod_color_pairings').select('flake_product_id,basecoat_product_id,is_default'),
     supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
-  ]);
-  if (jobRes.error) { root.innerHTML = `<div class="pec-empty">${esc(jobRes.error.message)}</div>`; return; }
+  ]), { label: 'renderJobDetail' });
+  if (jobRes.error) {
+    console.warn('[pec] job fetch failed; clearing openJobId:', jobRes.error.message);
+    state.openJobId = null;
+    renderJobs();
+    return;
+  }
   const job = jobRes.data;
   const systemTypes = sysRes.data || [];
   const products = prodRes.data || [];
@@ -6876,6 +6918,24 @@ async function renderJobDetail(id) {
     pickFor(a, bc.id).productIds = [def];
   };
 
+  // Pre-fill every required slot from its recipe-slot default_product_id
+  // when the user adds a new area (or changes an area's system). Only seeds
+  // slots that are currently empty -- never overwrites a user pick. This
+  // eliminates the "I added an area, hit Save, and it told me basecoat was
+  // required" surprise, since most required slots ship with a sensible
+  // default in the catalog.
+  const seedAreaDefaults = (a) => {
+    if (!a.system_type_id) return;
+    for (const slot of (slotsBySystem[a.system_type_id] || [])) {
+      if (!(slot.min_select > 0)) continue;
+      if (!slot.default_product_id) continue;
+      const pk = (a.picks[slot.id] ||= blankPick());
+      const have = (pk.productIds || []).filter(Boolean).length;
+      if (have > 0) continue;
+      pk.productIds = [slot.default_product_id];
+    }
+  };
+
   // Compute a per-area material plan from the in-memory `areas` draft and
   // multiply revenue x system.labor_budget_pct for the labor side. Re-renders
   // whenever renderAreas() runs so the budget tracks the user's edits live.
@@ -7018,10 +7078,22 @@ async function renderJobDetail(id) {
                 </div>`).join('') || '<div style="color:var(--muted);font-size:.78rem">No products in the catalog for this slot.</div>'}
             </div></details></div>`;
       }
-      const dd = (pi, val) => `<select data-slot-select="${idx}|${esc(slot.id)}|${pi}" style="max-width:340px;margin-bottom:6px">
+      const dd = (pi, val) => {
+        // If the picked product is not in the slot's allowed list (catalog
+        // change after the pick was saved -- deactivated, material_type
+        // reclassified, etc.), surface it as an explicit "(not in catalog
+        // -- pick again)" option instead of silently defaulting the
+        // dropdown to "— none —" while leaving the orphan id in picks.
+        // That silent default was the prime suspect for the recurring
+        // "Basecoat is required" false-positive: the dropdown looked OK
+        // but the underlying picks were misaligned.
+        const inList = !val || list.some(p => p.id === val);
+        return `<select data-slot-select="${idx}|${esc(slot.id)}|${pi}" style="max-width:340px;margin-bottom:6px">
         <option value="">— none —</option>
+        ${!inList ? `<option value="${esc(val)}" selected>(not in catalog — pick again)</option>` : ''}
         ${list.map(p => `<option value="${esc(p.id)}" ${p.id===val?'selected':''}>${esc(p.color && p.color !== 'Per-job pick' ? p.color + ' — ' + p.name : p.name)}</option>`).join('')}
       </select>`;
+      };
       let body;
       if (isMulti) {
         const rows = [];
@@ -7115,7 +7187,9 @@ async function renderJobDetail(id) {
       areas[+el.dataset.areaTopcure].topcoat_cure_speed = el.value;
     }));
     host.querySelectorAll('[data-area-system]').forEach(el => el.addEventListener('change', () => {
-      areas[+el.dataset.areaSystem].system_type_id = el.value;
+      const a = areas[+el.dataset.areaSystem];
+      a.system_type_id = el.value;
+      seedAreaDefaults(a);
       renderAreas();
     }));
     host.querySelectorAll('[data-slot-text]').forEach(el => el.addEventListener('input', () => {
@@ -7171,7 +7245,15 @@ async function renderJobDetail(id) {
       renderAreas();
     }));
     $('jobAddArea').addEventListener('click', () => {
-      areas.push({ id: null, name: '', sqft: '', system_type_id: '', picks: {}, customs: [] });
+      // Inherit the previous area's system so the new area opens with
+      // defaults already seeded -- the most common case is "add a second
+      // area for the same system". User can change the system from the
+      // dropdown if they need a different one (seedAreaDefaults re-fires).
+      const prev = areas[areas.length - 1];
+      const inheritSystem = prev?.system_type_id || '';
+      const next = { id: null, name: '', sqft: '', system_type_id: inheritSystem, picks: {}, customs: [] };
+      seedAreaDefaults(next);
+      areas.push(next);
       renderAreas();
     });
     // Budget recomputes any time renderAreas paints, so it tracks the user's
@@ -7182,7 +7264,11 @@ async function renderJobDetail(id) {
 
   $('jobSaveBtn').addEventListener('click', async () => {
     const msg = $('jobSaveMsg'); const btn = $('jobSaveBtn');
-    // Validate required recipe slots before writing anything.
+    // Validate required recipe slots before writing anything. On failure,
+    // dump full state to the console (for next-time debugging), outline the
+    // offending slot in red, scroll it into view, and surface a precise
+    // alert that names the area + the slot.
+    root.querySelectorAll('.pec-slot-missing').forEach(el => el.classList.remove('pec-slot-missing'));
     for (let i = 0; i < areas.length; i++) {
       const a = areas[i];
       for (const slot of (slotsBySystem[a.system_type_id] || [])) {
@@ -7194,7 +7280,29 @@ async function renderJobDetail(id) {
           : pk.productIds.filter(Boolean).length >= slot.min_select;
         if (!ok) {
           msg.textContent = '';
-          alert(`Area ${i+1}: "${slot.label || slot.material_type}" is required.`);
+          console.warn('[pec] save validation failed', {
+            areaIndex: i, areaName: a.name, slotId: slot.id,
+            slotLabel: slot.label, materialType: slot.material_type,
+            slotKind: kind, minSelect: slot.min_select,
+            picksForSlot: pk,
+            picksSnapshot: JSON.parse(JSON.stringify(a.picks || {})),
+            allAreas: areas.map(x => ({
+              id: x.id, name: x.name, system_type_id: x.system_type_id,
+              picks: x.picks,
+            })),
+          });
+          // Find a DOM anchor: a child element whose data-slot-* attr
+          // contains this slot id. Walk up to the area container for a
+          // less surgical outline (slot blocks vary by slot_kind).
+          const sel = `[data-slot-select^="${i}|${slot.id}"], [data-slot-choice^="${i}|${slot.id}"], [data-slot-text^="${i}|${slot.id}"], [data-slot-swatch^="${i}|${slot.id}"]`;
+          const anchor = root.querySelector(sel);
+          const target = anchor ? (anchor.closest('div[style*="margin-top"]') || anchor) : null;
+          if (target) {
+            target.classList.add('pec-slot-missing');
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+          const areaLabel = (a.name && a.name.trim()) ? `"${a.name}"` : `#${i+1}`;
+          alert(`Area ${i+1} ${areaLabel}: "${slot.label || slot.material_type}" is required.`);
           return;
         }
       }
@@ -8031,14 +8139,14 @@ function sameDay(a, b) {
 }
 
 async function loadScheduleData() {
-  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await Promise.all([
+  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
     supabase.from('pec_prod_system_types').select('id,name,color,active'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
-  ]);
+  ]), { label: 'loadScheduleData' });
   state.prodJobs = jobsRes.data || [];
   state.scheduleDays = daysRes.data || [];
   state.systemTypes = sysRes.data || [];
@@ -8876,7 +8984,7 @@ function openAddJobModal() {
 // Job Costing (full-bleed)
 // ============================================================
 async function loadCostingData() {
-  const [jobsRes, costRes, sysRes, crewsRes, membersRes, areasRes, linesRes, bonusesRes, schedRes, salesRes] = await Promise.all([
+  const [jobsRes, costRes, sysRes, crewsRes, membersRes, areasRes, linesRes, bonusesRes, schedRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
     supabase.from('pec_prod_job_costing').select('*'),
     supabase.from('pec_prod_system_types').select('id,name,color,labor_budget_pct,materials_budget_pct'),
@@ -8887,7 +8995,7 @@ async function loadCostingData() {
     supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
     supabase.from('pec_prod_job_schedule_days').select('id,job_id,scheduled_date,day_index,crew_id,crew_lead,notes').order('scheduled_date'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
-  ]);
+  ]), { label: 'loadCostingData' });
   state.prodJobs = jobsRes.data || [];
   state.costing = costRes.data || [];
   state.systemTypes = sysRes.data || [];

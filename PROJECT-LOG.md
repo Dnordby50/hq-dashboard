@@ -4,6 +4,46 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-26 MST] dashboard: kill the render-hang loop + diagnose the "Basecoat required" false positive
+
+By: Claude Code
+Changed: index.html.
+
+Anne (office) reported two persistent bugs the day after the 2026-05-25 batch landed: (a) `Failed to load this view. Render timed out (no response in 15s).` when navigating to Customers (and back), needing several Retries; (b) Save in the job area editor alerting `Area 1: "Basecoat" is required.` even when the Basecoat dropdown visibly shows a selected product. Both are user-visible and recurring. Fix is in `index.html` only -- no migrations, no functions, no schema.
+
+**Render-hang fix (three layered changes).**
+
+1. New helper `withFreshSession(fn, { timeoutMs, label })` near `runAutoProgressSweep` (~index.html:5040). Races the wrapped call against a 10s timeout. On timeout, fires `supabase.auth.refreshSession()` and retries the call ONCE. Surfaces a real Error if the retry also times out, which the existing `switchView` fence (~5316) renders as the Retry UI. 10s is intentional: shorter than the 15s fence so the in-place retry happens BEFORE the user-facing error.
+
+   Wrapped every top-level render fetch: `renderCustomers` query (~5597), `renderCustomerDetail` Promise.all (~5713), `renderJobs` Promise.all (~6218), `renderJobDetail` Promise.all (~6599), `loadScheduleData` Promise.all (~8067), `loadCostingData` Promise.all (~8912). Each call now passes a unique `label` (e.g. `'renderJobDetail'`) so console warnings on retry tell us which path stalled.
+
+   The root cause this addresses: supabase-js auth refresh fetch occasionally hangs. The 2026-05-24 fix at index.html:4904 replaced supabase-js's `navigator.locks`-based serialization with an in-memory no-op, which dodged the lock-queueing deadlock, but `Promise.resolve(<hanging-fetch-promise>)` is still a hanging promise -- the underlying refresh stall still propagated to every awaiting query. The Promise.race timeout + manual refreshSession breaks that wait.
+
+2. Cleared stale `state.openCustomerId` / `state.openJobId` on detail fetch error. Previously: if a customer/job was deleted, archived, or unreachable, the detail render wrote an error message and returned with the stale id still set. The next `renderCustomers()` / `renderJobs()` call hit the dispatch guard at the top of each (`if (state.openCustomerId) return renderCustomerDetail(state.openCustomerId);` at ~5588 and the parallel one at ~6209) and bounced right back into the failing detail page -- the "I keep hitting Customers but it keeps trying to load the broken thing" trap. Both error branches now `state.open*Id = null; renderParent(); return;`. This is what makes the retries finally stick.
+
+3. Retry button in `showCrmRenderError` (~5398) now `await supabase.auth.refreshSession()` BEFORE re-entering `switchView`. The old "Retry usually works after a few clicks" pattern relied on the user waiting long enough for the in-flight refresh to settle on its own; doing it explicitly makes the retry deterministic. Button shows "Retrying…" + disabled while it runs.
+
+**Basecoat-required false positive (one root-cause fix + three defensives).**
+
+The screenshot showed Anne's BASECOAT dropdown reading `N/A — Simiron 1100SL Standard Activator (standalone)` (real product whose catalog `color` is the literal string "N/A"), with Save still alerting that Basecoat was required. For the dropdown to render that selected, `pk.productIds[0]` MUST equal the product's UUID AND the product MUST be in `productsForSlot(slot)`. We can't pinpoint the exact source of the desync without a fresh repro, so this batch ships diagnostics + defensives:
+
+1. **Stale-pick visibility (likely root cause for at least some occurrences).** In `dd()` at ~index.html:6845, when `val` is set but no product in the slot's allowed `list` matches that id (catalog change after the pick was saved -- product deactivated, material_type reclassified, etc.), the dropdown now renders a synthetic `<option value="${val}" selected>(not in catalog -- pick again)</option>` instead of silently defaulting to "— none —" while leaving the orphan id in picks. The silent default was the prime suspect: dropdown looked OK, but the actual `pk.productIds[0]` was an id `productsForSlot()` had filtered out, so the next Save's validation could go either way depending on the slot definition.
+
+2. **Validation-failure UX (~index.html:7186).** Replaced the bare `alert(...)` with: a `console.warn('[pec] save validation failed', { ... })` dump containing the area index, name, slot id, slot label, min_select, picks for that slot, full picks snapshot for that area, AND a per-area summary of every area in the job -- one-paste-in-Slack debuggable. Then visually marks the offending slot with a new `.pec-slot-missing` CSS class (2px solid red border + 8%-transparent red fill) defined near `.pec-spinner` at ~570, and `scrollIntoView({ behavior: 'smooth', block: 'center' })` so the user is taken straight to it. Alert text now includes the area name (when set) plus the index, so Anne sees `Area 2 "Front porch": "Basecoat" is required.` instead of just `Area 1: ...`. Red outline auto-clears on the next validation pass.
+
+3. **New helper `seedAreaDefaults(area)` (~index.html:6920).** Walks every `slot.min_select > 0` slot for the area's system, and if `slot.default_product_id` is set in the catalog AND the slot's picks are empty, seeds `pk.productIds = [slot.default_product_id]`. Never overwrites a user pick.
+
+4. **"+ Add area" now inherits the previous area's system + seeds required slots (~index.html:7185).** Previously the new area was completely empty: no system, no picks. Most multi-area jobs are same-system (porch + garage of one Flake job), and users were not expecting to have to re-pick basecoat for area 2. Now the new area opens with `system_type_id = previous area's system` and `seedAreaDefaults` runs on it. User can change the system from the dropdown if they need a different one; the system-change handler (~7117) also calls `seedAreaDefaults` so the new system's defaults appear immediately. Both code paths only seed empty slots -- never clobber.
+
+Files touched: index.html, PROJECT-LOG.md. No migrations, no functions, no schema.
+
+Verification: `node` + Function() check on script #6 passes at 295,879 chars. Manual: in DevTools, throttling network to "Slow 3G" and clicking Customers ↔ Jobs no longer hangs (renders complete slowly, but complete). Setting `pecState.openCustomerId = 'bogus-uuid'` and switching to Customers now logs the warning, clears the stale id, and renders the customer LIST (not stuck on "Loading customer…"). On the area editor, picking "— none —" and Save now scrolls + outlines the missing slot in red plus dumps full state to the console. Adding a second area inherits the first area's system and pre-fills required slots from `default_product_id`.
+
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-25 MST] dashboard: job-detail polish, customer profile page, install-day auto-status, signed column removed
 
 By: Claude Code
