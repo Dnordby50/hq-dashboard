@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-26 MST] dashboard: schedule view -> rolling 3-week calendar, uncapped events, per-week revenue tally
+
+By: Claude Code
+Changed: index.html.
+
+Anne (office) wanted the Schedule tab to (a) stop hiding events past 4-per-day, (b) read as a rolling list of the next ~3 weeks instead of a month grid that resets when navigating, (c) show how much revenue is scheduled per week, right next to each week, outside the 7-day calendar.
+
+Today's `renderSchedule` (index.html:8160) + `renderScheduleCalendar` (~8229) toggled between two layouts: Weekly (1 week, full detail, no event cap) and Monthly (6-week grid, capped at 4 lanes per day via `maxLanes: 4` at ~8376, extra jobs collapsed to "+N more"). The cap was the root of complaint (a). The monthly grid's calendar-aligned layout (Mon-first weeks starting at the first of the month) was the root of (b) -- it doesn't follow "today" so users had to keep clicking around to see the next two weeks. Neither view ever surfaced a per-week dollar number.
+
+**Changes:**
+
+1. **Removed the Weekly + Monthly buttons** and `state.scheduleView`. There is now ONE layout: a rolling 3-week list. Prev / Next / Today are unchanged in spirit; Prev/Next move the anchor by 7 days (replaces the conditional weekly-vs-monthly date math at ~8216 and 8221); Today snaps to today's week.
+
+2. **Rolling 3-week renderer.** `renderScheduleCalendar` now builds 3 weeks: `startOfWeek(scheduleAnchor)`, then +7, then +14 days. Period label reads `Week of May 25 – Jun 14, 2026` (first day of week 1 -> last day of week 3). Each week is a `.pec-cal-week-row` with `grid-template-columns: 1fr 150px`: the 7-day grid on the left, a revenue panel on the right. Each day shows ALL its scheduled bars; the row grows vertically as needed.
+
+3. **`renderWeekGrid` simplification.** Dropped the `maxLanes`, `monthFirst`, `showHeaders` args -- only one variant now. Day headers (Mon, Tue, ...) render ONCE in the calendar header row above all weeks (widened to 8 columns: 7 days + "Revenue"). The "+N more" overflow path is gone (no cap). The `.month` size variant on bars + grid was deleted from CSS. Single 28px row height across the board.
+
+4. **New `weekRevenue(weekDays)` helper.** Pro-rates each job's `pec_prod_jobs.revenue` by `(days in this week) / (total scheduled_days for that job across the whole table)`. So a 4-day Fri->Mon job with $10k revenue and 4 scheduled_days total contributes $5k to each touched week (2 days × $2,500/day). `totalDaysByJob` is pre-computed once per `renderScheduleCalendar` call so the per-week pass is O(jobs touching the week) rather than O(scheduleDays × jobs). Displayed via the existing `fmtMoney` helper (no decimals) in `.pec-cal-week-rev .rev-amount`.
+
+5. **CSS rewrite for `.pec-cal-month-head`, new `.pec-cal-week-row`, `.pec-cal-week-rev`, `.pec-cal-week-grid`.** Deleted `.pec-cal-week-grid.month`, `.pec-cal-event-bar.month`, `.pec-cal-week-grid .day-c.dim`, and `.pec-cal-week-grid.month .day-c .day-num` -- all dead now. Today highlight, weekly grid borders, bar styling unchanged.
+
+Files touched: index.html, PROJECT-LOG.md. No migrations, no functions, no schema.
+
+Verification: `node` + Function() check on script #6 passes at 295,056 chars. Manual: Schedule tab opens to today's week at the top with the next two weeks under it. A day with >4 scheduled jobs renders all bars vertically (the "+N more" cap is gone). Prev/Next steps by 7 days; Today resets. Each week row shows a "Week of <Mon>" label + dollar total to the right; a job spanning Fri->Mon contributes pro-rated revenue to both touched weeks (2/4 of its total to each). Clicking a bar still opens the schedule modal; +Add Job still works.
+
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-26 MST] dashboard: kill the render-hang loop + diagnose the "Basecoat required" false positive
 
 By: Claude Code

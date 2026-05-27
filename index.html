@@ -5141,7 +5141,7 @@ const state = {
   openJobId: null, openCustomerId: null,
   // Job Schedule + Job Costing (PEC production)
   crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {}, salesTeam: [],
-  scheduleView: 'monthly', scheduleAnchor: null, scheduleEdit: null,
+  scheduleAnchor: null, scheduleEdit: null,
   costing: [], costingFilter: 'all',
 };
 window.pecState = state;
@@ -8199,8 +8199,6 @@ async function renderSchedule() {
           <span class="pec-sched-period" id="pecSchedPeriod"></span>
           <span style="margin-left:auto"></span>
           <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
-          <button class="pec-btn sm ${state.scheduleView==='weekly'?'primary':''}" id="pecSchedWeekly">Weekly</button>
-          <button class="pec-btn sm ${state.scheduleView==='monthly'?'primary':''}" id="pecSchedMonthly">Monthly</button>
         </div>
         <div id="pecSchedCalendar"></div>
       </main>
@@ -8208,17 +8206,13 @@ async function renderSchedule() {
   `;
 
   $('pecSchedAddJob').addEventListener('click', () => openAddJobModal());
-  $('pecSchedWeekly').addEventListener('click', () => { state.scheduleView = 'weekly'; renderSchedule(); });
-  $('pecSchedMonthly').addEventListener('click', () => { state.scheduleView = 'monthly'; renderSchedule(); });
   $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
   $('pecSchedPrev').addEventListener('click', () => {
-    const d = parseISO(state.scheduleAnchor);
-    state.scheduleAnchor = isoDate(state.scheduleView === 'weekly' ? addDays(d, -7) : new Date(d.getFullYear(), d.getMonth() - 1, d.getDate()));
+    state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), -7));
     renderSchedule();
   });
   $('pecSchedNext').addEventListener('click', () => {
-    const d = parseISO(state.scheduleAnchor);
-    state.scheduleAnchor = isoDate(state.scheduleView === 'weekly' ? addDays(d, 7) : new Date(d.getFullYear(), d.getMonth() + 1, d.getDate()));
+    state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), 7));
     renderSchedule();
   });
   root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
@@ -8261,6 +8255,31 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       label: `${sys ? sys.name + ' · ' : ''}${job.customer_name}`,
       tooltip,
     };
+  };
+
+  // Per-week revenue, pro-rated by scheduled days. A 4-day Fri->Mon job
+  // with $10k revenue and 4 total scheduled_days contributes $5k to each
+  // touched week (2 days × $2,500/day). Jobs with no scheduled_days
+  // contribute 0 (fallback prevents divide-by-zero).
+  // Pre-compute totalDays per job ONCE per call so the inner loops are
+  // O(jobs in week) rather than O(scheduleDays × jobs).
+  const totalDaysByJob = {};
+  for (const d of state.scheduleDays) totalDaysByJob[d.job_id] = (totalDaysByJob[d.job_id] || 0) + 1;
+  const weekRevenue = (weekDays) => {
+    const weekIsos = new Set(weekDays.map(isoDate));
+    const daysInWeekByJob = {};
+    for (const d of state.scheduleDays) {
+      if (weekIsos.has(d.scheduled_date)) daysInWeekByJob[d.job_id] = (daysInWeekByJob[d.job_id] || 0) + 1;
+    }
+    let total = 0;
+    for (const [jobId, daysInWeek] of Object.entries(daysInWeekByJob)) {
+      const job = state.prodJobs.find(j => j.id === jobId);
+      if (!job) continue;
+      const rev = Number(job.revenue || 0);
+      const totalDays = totalDaysByJob[jobId] || 1;
+      total += rev * (daysInWeek / totalDays);
+    }
+    return total;
   };
 
   // Each calendar week is rendered as its own CSS Grid (7 columns × N rows).
@@ -8309,77 +8328,63 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     return { bars, laneCount: lanes.length };
   };
 
-  const barHtml = (bar, gridRow, monthly) => {
+  const barHtml = (bar, gridRow) => {
     const parts = [];
     parts.push(`<span class="bar-customer">${esc(bar.ev.customer || '(no name)')}</span>`);
     if (bar.ev.sys && bar.ev.sys.name) parts.push(`<span class="bar-system">${esc(bar.ev.sys.name)}</span>`);
     if (bar.ev.crew) parts.push(`<span class="bar-crew">${esc(bar.ev.crew)}</span>`);
     if (bar.ev.revLabel) parts.push(`<span class="bar-rev">${esc(bar.ev.revLabel)}</span>`);
-    return `<div class="pec-cal-event-bar${monthly ? ' month' : ''}"
+    return `<div class="pec-cal-event-bar"
       data-event-job="${esc(bar.jobId)}"
       title="${esc(bar.ev.tooltip)}"
       style="grid-column:${bar.startCol} / span ${bar.spanCols};grid-row:${gridRow};--ev-color:${esc(bar.ev.color)}">${parts.join('')}</div>`;
   };
 
-  const renderWeekGrid = (weekDays, { showHeaders, maxLanes, monthFirst }) => {
+  // No per-day cap: every bar in the week is shown. The week row grows
+  // vertically as needed. Headers are rendered once above all weeks at the
+  // calendar level, not per-row.
+  const renderWeekGrid = (weekDays) => {
     const { bars, laneCount } = buildWeek(weekDays);
-    const lanesShown = Math.max(1, maxLanes ? Math.min(laneCount, maxLanes) : laneCount || 1);
-    // Per-column overflow count for the "+N" hint when month view caps lanes.
-    const overflowByCol = {};
-    if (laneCount > lanesShown) {
-      for (const b of bars) {
-        if (b.lane < lanesShown) continue;
-        for (let c = b.startCol; c < b.startCol + b.spanCols; c++) overflowByCol[c] = (overflowByCol[c] || 0) + 1;
-      }
-    }
-    const visibleBars = bars.filter(b => b.lane < lanesShown);
-    const headerRowOffset = showHeaders ? 1 : 0;
-    const headersHtml = showHeaders
-      ? weekDays.map(d => `<div class="day-h" style="grid-row:1">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>`).join('')
-      : '';
+    const lanesShown = Math.max(1, laneCount || 1);
     const dayCellsHtml = weekDays.map((d, i) => {
-      const dim = monthFirst && d.getMonth() !== monthFirst.getMonth();
-      const overflow = overflowByCol[i + 1];
-      // Day cells span the day-num row + bar rows + trailing filler so they
-      // form the entire week's vertical background. Day-num lives in row
-      // headerRowOffset+1 by itself; bars start on row headerRowOffset+2 so
-      // they never cover the date number.
-      return `<div class="day-c ${dim?'dim':''} ${sameDay(d, today)?'today':''}" style="grid-column:${i+1};grid-row:${headerRowOffset + 1} / -1">
+      return `<div class="day-c ${sameDay(d, today)?'today':''}" style="grid-column:${i+1};grid-row:1 / -1">
         <div class="day-num">${d.getDate()}</div>
-        ${overflow ? `<div class="day-more">+${overflow} more</div>` : ''}
       </div>`;
     }).join('');
-    // Bars sit ONE row below the day-num row (headerRowOffset + 2 + lane).
-    const barsHtml = visibleBars.map(b => barHtml(b, headerRowOffset + 2 + b.lane, !!monthFirst)).join('');
-    // Row template: optional header, then a dedicated day-num row, then bar
-    // rows, then a 1fr filler that absorbs leftover height so bars stay tight.
-    const numRowHeight = monthFirst ? 22 : 28;
-    const barRowHeight = monthFirst ? 22 : 28;
-    const rowTemplate = (showHeaders ? 'auto ' : '') + `${numRowHeight}px repeat(${lanesShown}, minmax(${barRowHeight}px, max-content)) 1fr`;
-    return `<div class="pec-cal-week-grid${monthFirst ? ' month' : ''}" style="grid-template-rows:${rowTemplate}">
-      ${headersHtml}${dayCellsHtml}${barsHtml}
+    // Bars start at row 2 (row 1 is the day-num row).
+    const barsHtml = bars.map(b => barHtml(b, 2 + b.lane)).join('');
+    const ROW = 28;
+    const rowTemplate = `${ROW}px repeat(${lanesShown}, minmax(${ROW}px, max-content)) 1fr`;
+    return `<div class="pec-cal-week-grid" style="grid-template-rows:${rowTemplate}">
+      ${dayCellsHtml}${barsHtml}
     </div>`;
   };
 
-  if (state.scheduleView === 'weekly') {
-    const weekStart = startOfWeek(anchor);
-    const weekEnd = addDays(weekStart, 6);
-    periodEl.textContent = `${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${weekEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
-    const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-    host.innerHTML = `<div class="pec-cal-week">${renderWeekGrid(days, { showHeaders: true })}</div>`;
-  } else {
-    const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
-    const monthStart = startOfWeek(first);
-    periodEl.textContent = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-    const weekRowsHtml = Array.from({ length: 6 }, (_, w) => {
-      const weekDays = Array.from({ length: 7 }, (_, i) => addDays(monthStart, w * 7 + i));
-      return renderWeekGrid(weekDays, { showHeaders: false, maxLanes: 4, monthFirst: first });
-    }).join('');
-    host.innerHTML = `<div class="pec-cal-month">
-      <div class="pec-cal-month-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}</div>
-      ${weekRowsHtml}
-    </div>`;
-  }
+  // Rolling 3-week view: week containing the anchor at top, then the next
+  // two weeks. Prev/Next moves the anchor by 7 days; Today resets to today.
+  // No per-day event cap, no monthly clipping. Each week row has the 7-day
+  // grid on the left and a pro-rated revenue tally panel on the right.
+  const weekStart = startOfWeek(anchor);
+  const weeks = Array.from({ length: 3 }, (_, w) => {
+    const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, w * 7 + i));
+    return { days };
+  });
+  const firstDay = weeks[0].days[0], lastDay = weeks[2].days[6];
+  periodEl.textContent = `Week of ${firstDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${lastDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+  host.innerHTML = `
+    <div class="pec-cal-month">
+      <div class="pec-cal-month-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}<div class="day-h pec-cal-revhead">Revenue</div></div>
+      ${weeks.map(w => `
+        <div class="pec-cal-week-row">
+          ${renderWeekGrid(w.days)}
+          <div class="pec-cal-week-rev">
+            <div class="rev-label">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+            <div class="rev-amount">${fmtMoney(weekRevenue(w.days))}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
 
   host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
 }
@@ -10395,21 +10400,20 @@ if (portalToken) {
   .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
   .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
   .pec-sched-period { font-weight:600; font-size:.95rem; min-width:200px; text-align:center }
-  .pec-cal-week, .pec-cal-month { border:1px solid var(--rd-line, var(--border)); border-radius:8px; overflow:hidden; background:var(--rd-line, var(--border)) }
-  .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; margin-bottom:1px }
+  .pec-cal-month { border:1px solid var(--rd-line, var(--border)); border-radius:8px; padding:8px; background:var(--rd-card, var(--s1)) }
+  .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)) 150px; gap:1px; margin-bottom:8px; padding-left:0 }
   .pec-cal-month-head .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
-  .pec-cal-week-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)) }
-  .pec-cal-week-grid + .pec-cal-week-grid { margin-top:1px }
-  .pec-cal-week-grid .day-h { background:var(--rd-soft, var(--s2)); font-size:.7rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:8px; text-align:center; font-weight:600 }
-  .pec-cal-week-grid { min-height:220px }
-  .pec-cal-week-grid.month { min-height:90px }
+  .pec-cal-revhead { text-align:left !important; padding-left:12px !important }
+  .pec-cal-week-row { display:grid; grid-template-columns: 1fr 150px; gap:8px; margin-bottom:8px; align-items:stretch }
+  .pec-cal-week-row:last-child { margin-bottom:0 }
+  .pec-cal-week-rev { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:10px 14px; background:var(--rd-soft, var(--s2)); border:1px solid var(--rd-line, var(--border)); border-radius:6px }
+  .pec-cal-week-rev .rev-label { font-size:.65rem; letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-bottom:4px }
+  .pec-cal-week-rev .rev-amount { font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--fg, #0f172a) }
+  .pec-cal-week-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:6px; overflow:hidden; min-height:140px }
   .pec-cal-week-grid .day-c { background:var(--rd-card, var(--s1)); padding:6px 0; position:relative; display:flex; flex-direction:column }
-  .pec-cal-week-grid .day-c.dim { background:var(--rd-softer, rgba(0,0,0,.03)) }
   .pec-cal-week-grid .day-c.today { box-shadow: inset 0 0 0 2px var(--rd-accent, var(--accent)); background: color-mix(in srgb, var(--rd-accent, var(--accent)) 6%, var(--rd-card, var(--s1))) }
   .pec-cal-week-grid .day-c.today .day-num { color:var(--rd-accent, var(--accent)); font-weight:700 }
   .pec-cal-week-grid .day-c .day-num { font-size:.8rem; color:var(--muted); margin-bottom:4px; padding:0 6px }
-  .pec-cal-week-grid.month .day-c .day-num { font-size:.7rem; padding:0 4px; margin-bottom:2px }
-  .pec-cal-week-grid .day-c .day-more { margin-top:auto; padding:0 6px 4px; font-size:.6rem; color:var(--muted) }
   /* Multi-day spanning bars: chips fill the cell horizontally and use the */
   /* segment class to round only at the start / end of the job. Adjacent   */
   /* day cells have only a 1px grid-gap divider, so consecutive bars read  */
@@ -10421,7 +10425,6 @@ if (portalToken) {
      whole bar; the body uses a 22% color-mix of the same color so the
      connected days read as continuous fill rather than per-day chips. */
   .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; gap:6px; align-items:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--fg, #0f172a); container-type:inline-size }
-  .pec-cal-event-bar.month { font-size:.62rem; padding:3px 8px 3px 12px; margin:1px 2px }
   .pec-cal-event-bar::before { content:''; position:absolute; left:3px; top:2px; bottom:2px; width:3px; background:var(--ev-color, #6366f1); border-radius:2px }
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
