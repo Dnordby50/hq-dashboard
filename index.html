@@ -8239,12 +8239,19 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const sys = areaSystem(job);
     const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
     const revNum = Number(job.revenue || 0);
-    const revLabel = revNum > 0 ? '$' + Math.round(revNum).toLocaleString() : '';
+    // Compact format ($12.5k, $10k, $850) so the bar can fit revenue even on
+    // narrow 1-day cells. Full amount stays in the tooltip below.
+    const revLabel = revNum > 0
+      ? (revNum >= 10000 ? '$' + Math.round(revNum / 1000) + 'k'
+         : revNum >= 1000 ? '$' + (revNum / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+         : '$' + Math.round(revNum).toLocaleString())
+      : '';
+    const revFull = revNum > 0 ? '$' + Math.round(revNum).toLocaleString() : '';
     const tooltip = [
       job.customer_name || '',
       sys ? sys.name : '',
       crew ? crew + ' crew' : '',
-      revLabel,
+      revFull,
       job.proposal_number ? '#' + job.proposal_number : '',
     ].filter(Boolean).join(' · ');
     return {
@@ -8331,9 +8338,11 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   const barHtml = (bar, gridRow) => {
     const parts = [];
     parts.push(`<span class="bar-customer">${esc(bar.ev.customer || '(no name)')}</span>`);
+    // Revenue first after customer so it survives the progressive collapse
+    // (sys + crew drop out on narrow bars before rev does).
+    if (bar.ev.revLabel) parts.push(`<span class="bar-rev">${esc(bar.ev.revLabel)}</span>`);
     if (bar.ev.sys && bar.ev.sys.name) parts.push(`<span class="bar-system">${esc(bar.ev.sys.name)}</span>`);
     if (bar.ev.crew) parts.push(`<span class="bar-crew">${esc(bar.ev.crew)}</span>`);
-    if (bar.ev.revLabel) parts.push(`<span class="bar-rev">${esc(bar.ev.revLabel)}</span>`);
     return `<div class="pec-cal-event-bar"
       data-event-job="${esc(bar.jobId)}"
       title="${esc(bar.ev.tooltip)}"
@@ -10429,15 +10438,15 @@ if (portalToken) {
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
   .pec-cal-event-bar > .bar-customer { font-weight:600; flex:1 1 auto }
+  .pec-cal-event-bar > .bar-rev { flex:0 0 auto; color:var(--fg, #0f172a); font-weight:700; font-variant-numeric:tabular-nums }
   .pec-cal-event-bar > .bar-system,
-  .pec-cal-event-bar > .bar-crew,
-  .pec-cal-event-bar > .bar-rev { flex:0 1 auto; color:var(--fg, #0f172a) }
+  .pec-cal-event-bar > .bar-crew { flex:0 1 auto; color:var(--fg, #0f172a) }
   .pec-cal-event-bar > :not(:first-child) { position:relative; padding-left:11px }
   .pec-cal-event-bar > :not(:first-child)::before { content:'·'; position:absolute; left:2px; color:var(--muted) }
-  /* Progressive collapse: narrow bars (1-day spans) show only the customer
-     name; wider spans surface system, crew, and revenue in turn. */
-  @container (max-width: 320px) { .pec-cal-event-bar .bar-rev { display:none } }
-  @container (max-width: 220px) { .pec-cal-event-bar .bar-crew { display:none } }
+  /* Progressive collapse: narrow bars drop system + crew but always keep
+     the revenue compact (e.g. $10k) -- the office wants to see dollars at
+     a glance even on a 1-day cell. */
+  @container (max-width: 200px) { .pec-cal-event-bar .bar-crew { display:none } }
   @container (max-width: 140px) { .pec-cal-event-bar .bar-system { display:none } }
   /* Toast notifications */
   .pec-toast-host { position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:10000; pointer-events:none }
