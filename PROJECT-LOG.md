@@ -4,6 +4,41 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] crm: Flake picker Special Order option + notes; diagnosed empty flake-color picker
+
+By: Claude Code
+Changed: index.html.
+
+Dylan reported that selecting the Flake system on a job blocked the save with `Area 1 "Main": "Flake" is required.` and that the flake-color picker would not let him pick a color (basecoat and topcoat populated from defaults). He wanted the picker to show the catalog's flake colors plus a Special Order option that captures notes.
+
+**Root cause of the empty picker (data, not code).** The job's flake swatch grid is fed by `productsForSlot` (index.html:7138), which filters `material_type==='Flake' AND active!==false`. The Material Catalog (`renderCatalog`, index.html ~12149) groups by material_type with NO active filter and shows an Active Yes/No column. Dylan confirmed his flake colors sit under the catalog's "Flake Materials" section but the job picker is empty. Same table, same material_type filter, so the only differentiator is `active`: the flake colors are inactive (active=false), which is why they show in the catalog but are hidden from the picker (by design, inactive = discontinued). Fix is a one-time data action: set those flake colors to Active = Yes. No code change makes inactive products appear, and they should not. See Handoff to Dylan.
+
+**Code shipped: Special Order option with required notes (index.html only).**
+- New helper `specialOrderFor(slot)` (index.html ~7143) finds the existing "Special Order Flake" / "Special Order Quartz" placeholder for a swatch slot (these are otherwise filtered out of the picker by `isSpecialOrder`).
+- The swatch branch of `slotHtml` (index.html ~7556) now renders a distinct dashed "Special Order" tile after the color swatches. Selecting it (via the existing `[data-slot-swatch]` click handler, no new handler needed) reveals a notes textarea bound to the pick's `text` field via a new `[data-slot-sonote]` input handler (index.html ~7706). The swatch `<details>` now opens by default when nothing is chosen, so the picker is not hidden behind a collapsed summary.
+- Because Flake/Quartz always have a Special Order tile, a Flake job is never hard-blocked even when the catalog has no active color (the "No products in the catalog" message now only shows for a swatch slot with neither active products nor a special-order placeholder).
+- Persistence: the save loop (index.html ~7898) writes the note into `job_area_materials.text_value`, but only on a special-order pick, so a normal color pick never carries a stale note. Hydration already reads `text_value` back into `pk.text` (index.html:7168), so the Special Order choice and its note reappear on reopen and are available to the work-order printout.
+- Validation (index.html ~7789): a special-order pick with an empty note is blocked with `Area N "name": add the Special Order details for "<slot>".` (the normal required-slot message is unchanged otherwise). Picking a real color or Special-Order-with-note both satisfy the requirement.
+- CSS: `.pec-swatch-so` (dashed) + `.pec-swatch-so-chip` near the existing `.pec-swatch` rules (index.html ~596).
+
+No migration, no schema, no calculator changes (a special-order pick resolves through the existing flake product id; spread rate comes from the Special Order Flake product).
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification: static only. `node` + Function() parse of the main module script (#6) passes at 327,610 chars. LIVE verification needs a staff login (which this session does not have) and the Part 1 data fix; handed to Dylan/Cowork below. Once the flake colors are active: open a Flake job, confirm the picker lists the catalog flake colors, pick one and save (no "Flake is required"); separately pick Special Order, confirm the note field is required, save, reopen, confirm it persists.
+
+## Handoff to Dylan
+
+- Activate the flake colors so they show in the job picker. Easiest: in the Material Catalog, open "Flake Materials", Edit each flake color PEC offers, set Active = Yes, Save. Or run one update in Supabase:
+  `update public.pec_prod_products set active = true where material_type = 'Flake' and name <> 'Special Order Flake';`
+- Optional diagnostic to confirm before/after:
+  `select name, color, active from public.pec_prod_products where material_type = 'Flake' order by active, name;`
+- Approve the push when ready (this commit is local only).
+
+Handoff to Cowork: None (the activation can be done in the app UI; only escalate the SQL to Cowork if you prefer a bulk update).
+
+---
+
 ## [2026-05-27 MST] supabase: applied invoicing_ar migration; verified schema; baseline AR snapshot captured
 
 By: Cowork

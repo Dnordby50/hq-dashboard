@@ -593,6 +593,8 @@ textarea{resize:vertical;min-height:60px}
 .pec-swatch-chip{width:100%;height:54px;border-radius:6px;border:1px solid var(--border);margin-bottom:8px}
 .pec-swatch-name{font-size:.78rem;font-weight:500}
 .pec-swatch-code{font-size:.65rem;color:var(--muted);margin-top:2px}
+.pec-swatch-so{border-style:dashed}
+.pec-swatch-so-chip{display:flex;align-items:center;justify-content:center;text-align:center;font-size:.68rem;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--rd-muted,var(--muted));line-height:1.15}
 .pec-signature-wrap{background:var(--s2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px}
 .pec-signature-canvas{width:100%;height:180px;background:#fff;border-radius:var(--radius-sm);touch-action:none;cursor:crosshair;display:block}
 .pec-signin{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;max-width:420px;margin:0 auto;text-align:center}
@@ -7138,6 +7140,11 @@ async function renderJobDetail(id) {
   const productsForSlot = (slot) => products.filter(p =>
     p.material_type === slot.material_type && p.active !== false && !isSpecialOrder(p));
   const activeProducts = products.filter(p => p.active !== false && !isSpecialOrder(p));
+  // The Special Order placeholder for a swatch material_type (Flake / Quartz).
+  // Surfaced as a distinct tile in the swatch picker so a color that is not in
+  // the catalog can still be chosen, with the specifics captured as a note.
+  const specialOrderFor = (slot) => products.find(p =>
+    isSpecialOrder(p) && p.material_type === slot.material_type && p.active !== false);
 
   // The per-area material picks live in job_area_materials. Fetch them for
   // this job's areas (area ids are only known once job_areas has returned).
@@ -7549,20 +7556,35 @@ async function renderJobDetail(id) {
       const isMulti = kind === 'multi_product';
       const max = isMulti ? Math.max(1, slot.max_select || 3) : 1;
       if (SWATCH_TYPES.has(slot.material_type)) {
+        const soProd = specialOrderFor(slot);
+        const soSelected = !!(soProd && selectedIds.includes(soProd.id));
         const chosen = selectedIds.map(pid => productById[pid]).filter(Boolean);
         const summary = chosen.length
-          ? chosen.map(p => `<span style="font-weight:600">${esc(p.color || p.name)}</span>`).join(', ')
+          ? chosen.map(p => `<span style="font-weight:600">${esc(isSpecialOrder(p) ? 'Special Order' : (p.color || p.name))}</span>`).join(', ')
           : '<span style="color:var(--muted)">none chosen</span>';
+        const soTile = soProd ? `
+              <div class="pec-swatch pec-swatch-so ${soSelected?'selected':''}" data-slot-swatch="${idx}|${esc(slot.id)}" data-pid="${esc(soProd.id)}">
+                <div class="prod-chip-empty pec-swatch-so-chip" style="width:100%;height:54px">Special<br>Order</div>
+                <div class="pec-swatch-name">Special Order</div>
+              </div>` : '';
+        const emptyMsg = (!list.length && !soProd) ? '<div style="color:var(--muted);font-size:.78rem">No products in the catalog for this slot.</div>' : '';
+        const soNote = soSelected ? `
+          <div style="margin-top:10px">
+            <div style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Special order details <span style="color:var(--danger)">*</span></div>
+            <textarea data-slot-sonote="${idx}|${esc(slot.id)}" rows="2" style="width:100%" placeholder="Color name, supplier, blend, chip size, etc.">${esc(pk.text || '')}</textarea>
+          </div>` : '';
         return `<div style="margin-top:12px">${head}
           <div style="font-size:.83rem;margin-bottom:6px">${summary}${isMulti?` <span style="color:var(--muted)">(${chosen.length} of ${max})</span>`:''}</div>
-          <details><summary style="cursor:pointer;font-size:.8rem;color:var(--accent)">Choose ${label.toLowerCase()}</summary>
+          <details ${selectedIds.length ? '' : 'open'}><summary style="cursor:pointer;font-size:.8rem;color:var(--accent)">Choose ${label.toLowerCase()}</summary>
             <div class="pec-swatch-grid" style="margin-top:10px">
               ${list.map(p => `
                 <div class="pec-swatch ${selectedIds.includes(p.id)?'selected':''}" data-slot-swatch="${idx}|${esc(slot.id)}" data-pid="${esc(p.id)}">
                   ${p.image_url ? `<img class="prod-chip-thumb" style="width:100%;height:54px" src="${esc(p.image_url)}" alt="">` : `<div class="prod-chip-empty" style="width:100%;height:54px">no chip</div>`}
                   <div class="pec-swatch-name">${esc(p.color || p.name)}</div>
-                </div>`).join('') || '<div style="color:var(--muted);font-size:.78rem">No products in the catalog for this slot.</div>'}
-            </div></details></div>`;
+                </div>`).join('')}
+              ${soTile}
+              ${emptyMsg}
+            </div></details>${soNote}</div>`;
       }
       const dd = (pi, val) => {
         // If the picked product is not in the slot's allowed list (catalog
@@ -7681,6 +7703,9 @@ async function renderJobDetail(id) {
     host.querySelectorAll('[data-slot-text]').forEach(el => el.addEventListener('input', () => {
       const { a, rest } = parse(el.dataset.slotText); pickFor(a, rest[0]).text = el.value;
     }));
+    host.querySelectorAll('[data-slot-sonote]').forEach(el => el.addEventListener('input', () => {
+      const { a, rest } = parse(el.dataset.slotSonote); pickFor(a, rest[0]).text = el.value;
+    }));
     host.querySelectorAll('[data-slot-choice]').forEach(el => el.addEventListener('click', () => {
       const { a, rest } = parse(el.dataset.slotChoice);
       const pk = pickFor(a, rest[0]);
@@ -7761,9 +7786,11 @@ async function renderJobDetail(id) {
         if (!(slot.min_select > 0)) continue;
         const pk = a.picks[slot.id] || blankPick();
         const kind = slot.slot_kind || 'product';
+        const firstPid = pk.productIds.filter(Boolean)[0];
+        const soPick = firstPid && productById[firstPid] && isSpecialOrder(productById[firstPid]);
         const ok = kind === 'choice' ? !!pk.choice
           : kind === 'text' ? true
-          : pk.productIds.filter(Boolean).length >= slot.min_select;
+          : pk.productIds.filter(Boolean).length >= slot.min_select && !(soPick && !(pk.text || '').trim());
         if (!ok) {
           msg.textContent = '';
           console.warn('[pec] save validation failed', {
@@ -7788,7 +7815,10 @@ async function renderJobDetail(id) {
             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
           const areaLabel = (a.name && a.name.trim()) ? `"${a.name}"` : `#${i+1}`;
-          alert(`Area ${i+1} ${areaLabel}: "${slot.label || slot.material_type}" is required.`);
+          const slotName = slot.label || slot.material_type;
+          alert(soPick
+            ? `Area ${i+1} ${areaLabel}: add the Special Order details for "${slotName}".`
+            : `Area ${i+1} ${areaLabel}: "${slotName}" is required.`);
           return;
         }
       }
@@ -7865,7 +7895,12 @@ async function renderJobDetail(id) {
           } else if (kind === 'text') {
             if (pk.text) matRows.push({ ...base, pick_index: 0, text_value: pk.text });
           } else {
-            pk.productIds.filter(Boolean).forEach((pid, pi) => matRows.push({ ...base, pick_index: pi, product_id: pid }));
+            pk.productIds.filter(Boolean).forEach((pid, pi) => {
+              // Carry the special-order note (pk.text) only on a special-order
+              // pick, so a normal color pick never persists a stale note.
+              const isSO = pi === 0 && productById[pid] && isSpecialOrder(productById[pid]);
+              matRows.push({ ...base, pick_index: pi, product_id: pid, text_value: isSO ? (pk.text || null) : null });
+            });
           }
         }
         a.customs.forEach((c, ci) => {
