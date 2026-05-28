@@ -38,12 +38,16 @@ exports.handler = async (event) => {
   const {
     customer_name, customer_email, customer_phone, company,
     deal_id, address, job_type, package: pkg, scope, sqft,
-    price, monthly_payment, dripjobs_url, warranty,
+    price, monthly_payment, dripjobs_url, warranty, salesperson,
   } = body;
 
   if (!customer_name) return json(400, { success: false, error: 'customer_name is required' });
 
   const cleanScope = stripHtml(scope);
+  // The proposal-accepted event fires the day the proposal is signed, so
+  // today (America/Phoenix, no DST) is the signed date for AR aging. Mirrors
+  // the MST date math in pec-auto-progress.cjs.
+  const signedDate = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   try {
     // Upsert by email (fall back to create if no email)
@@ -82,6 +86,8 @@ exports.handler = async (event) => {
       warranty: warranty || null,
       dripjobs_url: dripjobs_url || null,
       dripjobs_deal_id: deal_id || null,
+      salesperson: salesperson || null,
+      signed_date: signedDate,
       source: 'dripjobs',
     }, true);
     const job = createdJobs[0];
@@ -124,6 +130,7 @@ exports.handler = async (event) => {
               status: 'unscheduled',
               sync_status: 'dirty',
               dripjobs_deal_id: deal_id,
+              sales_team: salesperson || null,
               notes: cleanScope,
             }, true);
             prodJobId = created && created[0] ? created[0].id : null;

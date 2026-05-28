@@ -525,6 +525,40 @@ textarea{resize:vertical;min-height:60px}
 .pec-badge.admin{background:rgba(248,113,113,.15);color:var(--danger)}
 .pec-badge.office{background:rgba(34,211,238,.15);color:var(--cyan)}
 .pec-badge.pm{background:rgba(251,191,36,.15);color:var(--warn)}
+/* Invoicing & AR module (Invoicing / Metrics / Docs tabs) */
+.pec-scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pec-age{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.66rem;font-weight:700;white-space:nowrap}
+.pec-age-green{background:color-mix(in srgb,var(--rd-success,#10b981) 14%,transparent);color:var(--rd-success,#10b981)}
+.pec-age-yellow{background:color-mix(in srgb,var(--rd-warn,#f59e0b) 18%,transparent);color:#b45309}
+.pec-age-red{background:color-mix(in srgb,var(--rd-danger,#ef4444) 14%,transparent);color:var(--rd-danger,#ef4444)}
+.pec-ar-headline{font-family:var(--mono);font-size:2rem;font-weight:600;color:var(--rd-ink,var(--text));line-height:1.1}
+.pec-ar-sub{color:var(--rd-muted,var(--muted));font-size:.82rem;margin-top:3px}
+.pec-card.pec-ar-sec{padding:0}
+.pec-ar-sec>summary{list-style:none;cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:.9rem;color:var(--rd-ink,var(--text))}
+.pec-ar-sec>summary::-webkit-details-marker{display:none}
+.pec-ar-sec>summary::before{content:'▸';color:var(--rd-muted,var(--muted));font-size:.78rem;transition:transform .15s}
+.pec-ar-sec[open]>summary::before{transform:rotate(90deg)}
+.pec-ar-sec>summary:hover{background:var(--rd-softer,rgba(255,255,255,.03))}
+.pec-ar-meta{margin-left:auto;color:var(--rd-muted,var(--muted));font-weight:500;font-size:.8rem;text-align:right}
+.pec-ar-sec[open]>summary{border-bottom:1px solid var(--rd-line,var(--border))}
+.pec-bars{display:flex;align-items:flex-end;gap:8px;height:150px;padding-top:20px}
+.pec-bar{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:pointer;position:relative;background:none;border:0;padding:0;font:inherit}
+.pec-bar-fill{width:100%;max-width:46px;background:var(--rd-accent,var(--accent));border-radius:5px 5px 0 0;min-height:3px;transition:opacity .15s}
+.pec-bar:hover .pec-bar-fill{opacity:.78}
+.pec-bar-v{font-size:.62rem;color:var(--rd-muted,var(--muted));position:absolute;top:2px;font-family:var(--mono)}
+.pec-bar-l{font-size:.6rem;color:var(--rd-muted,var(--muted));margin-top:7px;text-align:center;white-space:nowrap;line-height:1.2}
+.pec-metric-h{font-size:.7rem;letter-spacing:.8px;text-transform:uppercase;color:var(--rd-muted,var(--muted));margin:0 0 4px;font-weight:700}
+.pec-radios{display:flex;gap:8px;flex-wrap:wrap}
+.pec-radios label{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border:1px solid var(--rd-line,var(--border));border-radius:8px;cursor:pointer;font-size:.82rem;flex:1;min-width:90px}
+.pec-radios input{width:auto!important;margin:0}
+.pec-doc{color:var(--rd-ink,var(--text));font-size:.86rem;line-height:1.6;max-width:900px}
+.pec-doc h3{font-family:var(--sans);font-size:1.05rem;margin:22px 0 8px;color:var(--rd-ink,var(--text))}
+.pec-doc h4{font-size:.92rem;margin:16px 0 6px;color:var(--rd-ink,var(--text))}
+.pec-doc code{background:var(--rd-soft,var(--s2));padding:1px 6px;border-radius:5px;font-family:var(--mono);font-size:.82em}
+.pec-doc ul{margin:6px 0 10px;padding-left:20px}
+.pec-doc li{margin:3px 0}
+.pec-doc table{border-collapse:collapse;font-size:.82rem;margin:10px 0;width:100%}
+.pec-doc th,.pec-doc td{border:1px solid var(--rd-line,var(--border));padding:6px 10px;text-align:left;vertical-align:top}
 .pec-cust-name{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:600}
 .pec-cust-name:hover{color:var(--accent)}
 .pec-cust-chevron{font-size:.6rem;color:var(--muted)}
@@ -1830,6 +1864,9 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
+          <button data-pec-view="invoicing">Invoicing</button>
+          <button data-pec-view="metrics">Metrics</button>
+          <button data-pec-view="docs">Invoicing Docs</button>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
@@ -5143,6 +5180,8 @@ const state = {
   crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {}, salesTeam: [],
   scheduleAnchor: null, scheduleEdit: null,
   costing: [], costingFilter: 'all',
+  // Invoicing & AR module
+  arRows: [], metricsWindow: '4w', metricsSalesperson: '',
 };
 window.pecState = state;
 const PAGE = 20;
@@ -5357,6 +5396,9 @@ function switchView(v) {
       dashboard: renderDashboard,
       customers: renderCustomers,
       jobs: renderJobs,
+      invoicing: renderInvoicing,
+      metrics: renderMetrics,
+      docs: renderInvoicingDocs,
       schedule: renderSchedule,
       costing: renderJobCosting,
       team: renderTeam,
@@ -6276,6 +6318,450 @@ async function renderJobs() {
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
     tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
   );
+}
+
+// ============================================================
+// Invoicing & AR module (Invoicing / Metrics / Docs tabs)
+// Source of truth is public.jobs (+ pec_payments ledger). The
+// pec_job_ar view (2026-05-27 migration) rolls up balances. All
+// date math is America/Phoenix (UTC-7, no DST) per project rule.
+// Helpers are inv*-prefixed to avoid clashing with the schedule's
+// parseISO / addDays / isoDate.
+// ============================================================
+const invNum = v => (v == null || v === '') ? 0 : Number(v);
+const invRound2 = n => Math.round(n * 100) / 100;
+const invUSD = n => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const invUSD0 = n => n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
+const invDays = n => n == null ? '—' : (Math.round(n * 10) / 10) + 'd';
+const invPct = n => n == null ? '—' : Math.round(n * 100) + '%';
+const invToday = () => new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+const invParse = d => d ? new Date(String(d).slice(0, 10) + 'T00:00:00Z') : null;
+function invDaysBetween(a, b) { const da = invParse(a), db = invParse(b); if (!da || !db) return null; return Math.round((db - da) / 86400000); }
+const invDaysSince = d => d ? invDaysBetween(d, invToday()) : null;
+function invAddDays(d, n) { const x = invParse(d); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); }
+function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
+const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
+const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
+const invInWeek = (d, wk) => d && d >= wk.start && d <= wk.end;
+function invBuildWeeks(key) {
+  const todayWeek = invWeekStart(invToday());
+  let n = 4;
+  if (key === '12w') n = 12;
+  else if (key === 'ytd') {
+    const firstWeek = invWeekStart(invToday().slice(0, 4) + '-01-01');
+    n = Math.max(1, Math.min(53, Math.floor(invDaysBetween(firstWeek, todayWeek) / 7) + 1));
+  }
+  const weeks = [];
+  for (let i = n - 1; i >= 0; i--) { const start = invAddDays(todayWeek, -7 * i); weeks.push({ start, end: invAddDays(start, 6), label: invShortDate(start) }); }
+  return weeks;
+}
+function invAgeCompleted(days) {
+  if (days == null) return '<span class="pec-age">—</span>';
+  const cls = days <= 7 ? 'green' : days <= 14 ? 'yellow' : 'red';
+  return `<span class="pec-age pec-age-${cls}">${days}d</span>`;
+}
+function invAgeSigned(days) {
+  if (days == null) return '<span class="pec-age">—</span>';
+  const cls = days <= 3 ? 'green' : days <= 7 ? 'yellow' : 'red';
+  return `<span class="pec-age pec-age-${cls}">${days}d</span>`;
+}
+const invFindRow = id => (state.arRows || []).find(r => r.id === id);
+
+async function renderInvoicing() {
+  const root = $('pecViewRoot');
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
+      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
+    ]), { label: 'renderInvoicing' });
+  } catch (e) { res = [{ error: e }, {}]; }
+  const [arRes, prodRes] = res;
+  if (arRes.error) {
+    const hint = /pec_job_ar/.test(arRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
+    root.innerHTML = `<div class="pec-empty">${esc(arRes.error.message)}${hint}</div>`;
+    return;
+  }
+  const installByDeal = {};
+  (prodRes.data || []).forEach(p => { if (p.dripjobs_deal_id) installByDeal[p.dripjobs_deal_id] = p.install_date; });
+  const rows = (arRes.data || []).map(r => ({
+    ...r,
+    price: invNum(r.price),
+    paid_to_date: invNum(r.paid_to_date),
+    balance: invNum(r.balance_remaining),
+    deposit_amount: r.deposit_amount == null ? null : invNum(r.deposit_amount),
+    install_date: r.dripjobs_deal_id ? (installByDeal[r.dripjobs_deal_id] || null) : null,
+  }));
+  state.arRows = rows;
+
+  const EPS = 0.005;
+  const open = rows.filter(r => r.balance > EPS);
+  const totalAR = open.reduce((s, r) => s + r.balance, 0);
+  const today = invToday();
+
+  const completed = rows.filter(r => r.status === 'completed' && r.balance > EPS)
+    .sort((a, b) => (a.completed_date || '').localeCompare(b.completed_date || ''));
+  const signedNoDep = rows.filter(r => !r.deposit_collected && r.status !== 'completed' && r.balance > EPS)
+    .sort((a, b) => (a.signed_date || '').localeCompare(b.signed_date || ''));
+  const active = rows.filter(r => r.deposit_collected && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS)
+    .sort((a, b) => (a.install_date || a.signed_date || '').localeCompare(b.install_date || b.signed_date || ''));
+  const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 30)
+    .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
+
+  const completedOwed = completed.reduce((s, r) => s + r.balance, 0);
+  const depositOwed = r => r.deposit_amount != null ? r.deposit_amount : invRound2(r.price * 0.5);
+  const pendingDeposits = signedNoDep.reduce((s, r) => s + depositOwed(r), 0);
+  const activeBalance = active.reduce((s, r) => s + r.balance, 0);
+
+  const payBtn = r => `<button class="pec-btn sm primary" data-pay="${r.id}">Mark Paid</button>`;
+  const viewBtn = `<button class="pec-btn sm" disabled title="Available in Phase 2">View Invoice</button>`;
+
+  const completedRows = completed.map(r => `<tr class="nohover">
+    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
+    <td>${invAgeCompleted(invDaysSince(r.completed_date))}</td>
+    <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.completed_date)}</td>
+    <td style="white-space:nowrap">${payBtn(r)} ${viewBtn}</td></tr>`).join('')
+    || '<tr class="nohover"><td colspan="8" class="pec-empty">Nothing here. Nice.</td></tr>';
+
+  const signedRows = signedNoDep.map(r => `<tr class="nohover">
+    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td>${invUSD(r.price)}</td><td><strong>${invUSD(depositOwed(r))}</strong></td>
+    <td>${invAgeSigned(invDaysSince(r.signed_date))}</td>
+    <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.signed_date)}</td>
+    <td style="white-space:nowrap"><button class="pec-btn sm primary" data-dep="${r.id}">Mark Deposit Paid</button></td></tr>`).join('')
+    || '<tr class="nohover"><td colspan="8" class="pec-empty">No pending deposits.</td></tr>';
+
+  const activeRows = active.map(r => `<tr class="nohover">
+    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td>${invUSD(r.price)}</td><td>${invUSD(r.paid_to_date)}</td>
+    <td>${r.install_date ? invFmtDate(r.install_date) : '—'}</td>
+    <td>${esc(r.salesperson || '—')}</td><td><span class="pec-badge ${esc(r.status)}">${esc(String(r.status).replace('_', ' '))}</span></td>
+    <td style="white-space:nowrap"><button class="pec-btn sm" data-complete="${r.id}">Mark Complete</button> ${payBtn(r)}</td></tr>`).join('')
+    || '<tr class="nohover"><td colspan="8" class="pec-empty">No active jobs with a deposit on file.</td></tr>';
+
+  const closedRows = closed.map(r => `<tr class="nohover">
+    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td>${invUSD(r.price)}</td><td>${invFmtDate(r.completed_date)}</td>
+    <td>${invFmtDate(r.last_payment_date)}</td><td>${esc(r.salesperson || '—')}</td></tr>`).join('')
+    || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs closed in the last 30 days.</td></tr>';
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="justify-content:space-between">
+      <div>
+        <div class="pec-ar-headline">Total AR: ${invUSD(totalAR)}</div>
+        <div class="pec-ar-sub">across ${open.length} job${open.length === 1 ? '' : 's'} (Prescott Epoxy)</div>
+      </div>
+      <button class="pec-btn" id="pecArRefresh">Refresh</button>
+    </div>
+
+    <details class="pec-card pec-ar-sec" open>
+      <summary>Completed work, not paid in full <span class="pec-ar-meta">${completed.length} job${completed.length === 1 ? '' : 's'} · ${invUSD(completedOwed)} owed</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Salesperson</th><th>Completed</th><th></th></tr></thead>
+        <tbody>${completedRows}</tbody></table></div>
+    </details>
+
+    <details class="pec-card pec-ar-sec" open>
+      <summary>Signed proposal, no deposit collected <span class="pec-ar-meta">${signedNoDep.length} job${signedNoDep.length === 1 ? '' : 's'} · ${invUSD(pendingDeposits)} in pending deposits</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Deposit owed</th><th>Age</th><th>Salesperson</th><th>Signed</th><th></th></tr></thead>
+        <tbody>${signedRows}</tbody></table></div>
+    </details>
+
+    <details class="pec-card pec-ar-sec">
+      <summary>Active jobs, deposit paid, in progress <span class="pec-ar-meta">${active.length} job${active.length === 1 ? '' : 's'} · ${invUSD(activeBalance)} remaining</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Paid to date</th><th>Scheduled</th><th>Salesperson</th><th>Status</th><th></th></tr></thead>
+        <tbody>${activeRows}</tbody></table></div>
+    </details>
+
+    <details class="pec-card pec-ar-sec">
+      <summary>Recently closed (last 30 days) <span class="pec-ar-meta">${closed.length} job${closed.length === 1 ? '' : 's'}</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Completed</th><th>Last payment</th><th>Salesperson</th></tr></thead>
+        <tbody>${closedRows}</tbody></table></div>
+    </details>
+  `;
+
+  $('pecArRefresh').addEventListener('click', () => renderInvoicing());
+  root.querySelectorAll('[data-pay]').forEach(b => b.addEventListener('click', () => openPaymentModal(invFindRow(b.dataset.pay), { deposit: false })));
+  root.querySelectorAll('[data-dep]').forEach(b => b.addEventListener('click', () => openPaymentModal(invFindRow(b.dataset.dep), { deposit: true })));
+  root.querySelectorAll('[data-complete]').forEach(b => b.addEventListener('click', () => markJobComplete(invFindRow(b.dataset.complete))));
+}
+
+function openPaymentModal(row, { deposit }) {
+  if (!row) return;
+  const bal = invNum(row.balance);
+  const defAmt = deposit ? (row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5)) : bal;
+  const title = deposit ? 'Record deposit' : 'Record payment';
+  openModal(`
+    <h3>${esc(title)}</h3>
+    <div class="pec-ar-sub" style="margin-bottom:14px">
+      <strong>${esc(row.customer_name || '—')}</strong>${row.address ? ' · ' + esc(row.address) : ''}<br>
+      Balance: <strong>${invUSD(bal)}</strong>${deposit ? ' · Default deposit ' + invUSD(defAmt) : ''}
+    </div>
+    <form id="pecPayForm">
+      <div class="pec-field"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" value="${defAmt.toFixed(2)}" required></div>
+      <div class="pec-field"><label>Method</label>
+        <div class="pec-radios">
+          <label><input type="radio" name="method" value="check" checked> Check</label>
+          <label><input type="radio" name="method" value="cash"> Cash</label>
+          <label><input type="radio" name="method" value="zelle"> Zelle</label>
+        </div>
+      </div>
+      <div class="pec-field"><label>Reference (check # / Zelle confirmation)</label><input name="reference" placeholder="optional"></div>
+      <div class="pec-field"><label>Received date</label><input name="received_date" type="date" value="${invToday()}" required></div>
+      <div class="prod-msg-err" id="pecPayErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
+        <button type="submit" class="pec-btn primary">Submit</button>
+      </div>
+    </form>
+  `, { onMount: modal => {
+    modal.querySelector('#pecPayForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const errEl = modal.querySelector('#pecPayErr'); errEl.textContent = '';
+      const fd = new FormData(e.target);
+      const amount = parseFloat(fd.get('amount'));
+      if (!(amount > 0)) { errEl.textContent = 'Enter an amount greater than 0.'; return; }
+      const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const ins = await supabase.from('pec_payments').insert({
+          job_id: row.id,
+          amount,
+          method: fd.get('method'),
+          reference: (fd.get('reference') || '').trim() || null,
+          received_date: fd.get('received_date'),
+          recorded_by: state.adminUser?.name || state.adminUser?.email || 'Unknown',
+        });
+        if (ins.error) throw ins.error;
+        if (deposit && !row.deposit_collected) {
+          const upd = await supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id);
+          if (upd.error) throw upd.error;
+        }
+        closeModal();
+        showToast(`Recorded ${invUSD(amount)} for <strong>${esc(row.customer_name || 'job')}</strong>`, { ttl: 4000 });
+        renderInvoicing();
+      } catch (err) {
+        console.error('[pec] payment insert failed', err);
+        errEl.textContent = err.message || String(err);
+        btn.disabled = false; btn.textContent = 'Submit';
+      }
+    });
+  } });
+}
+
+async function markJobComplete(row) {
+  if (!row) return;
+  if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
+  const today = invToday();
+  try {
+    const upd = await supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id);
+    if (upd.error) throw upd.error;
+    try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
+    showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
+    renderInvoicing();
+  } catch (err) {
+    console.error('[pec] mark complete failed', err);
+    showToast(`Could not mark complete: ${esc(err.message || String(err))}`, { ttl: 6000 });
+  }
+}
+
+function invBarChart(values, weeks, metricKey, fmt) {
+  const max = Math.max(1, ...values);
+  return `<div class="pec-bars">${values.map((v, i) => {
+    const h = max > 0 ? Math.round((v / max) * 100) : 0;
+    return `<button class="pec-bar" data-metric="${metricKey}" data-week="${i}" title="${esc(weeks[i].label + ': ' + fmt(v))}">
+      <span class="pec-bar-v">${v ? esc(fmt(v)) : ''}</span>
+      <span class="pec-bar-fill" style="height:${h}%"></span>
+      <span class="pec-bar-l">${esc(weeks[i].label)}</span>
+    </button>`;
+  }).join('')}</div>`;
+}
+
+async function renderMetrics() {
+  const root = $('pecViewRoot');
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,balance_remaining,paid_to_date,last_payment_date,status,customer_company').eq('customer_company', 'prescott-epoxy'),
+      supabase.from('pec_payments').select('job_id,amount,method,received_date'),
+    ]), { label: 'renderMetrics' });
+  } catch (e) { res = [{ error: e }, {}]; }
+  const [jobsRes, payRes] = res;
+  if (jobsRes.error) {
+    const hint = /pec_job_ar/.test(jobsRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
+    root.innerHTML = `<div class="pec-empty">${esc(jobsRes.error.message)}${hint}</div>`; return;
+  }
+  const jobs = (jobsRes.data || []).map(j => ({ ...j, price: invNum(j.price), balance: invNum(j.balance_remaining), paid_to_date: invNum(j.paid_to_date) }));
+  const jobById = Object.fromEntries(jobs.map(j => [j.id, j]));
+  const payments = (payRes.data || []).filter(p => jobById[p.job_id]).map(p => ({ ...p, amount: invNum(p.amount) }));
+  const payByJob = {};
+  for (const p of payments) { (payByJob[p.job_id] = payByJob[p.job_id] || []).push(p); }
+  for (const k in payByJob) payByJob[k].sort((a, b) => (a.received_date || '').localeCompare(b.received_date || ''));
+  state.metricsData = { jobs, payments, payByJob, jobById };
+
+  const spList = [...new Set(jobs.map(j => j.salesperson).filter(Boolean))].sort();
+  const sp = state.metricsSalesperson;
+  const jobOk = j => !sp || j.salesperson === sp;
+  const payOk = p => !sp || (jobById[p.job_id]?.salesperson === sp);
+
+  const weeks = invBuildWeeks(state.metricsWindow);
+  const wStart = weeks[0].start, wEnd = weeks[weeks.length - 1].end;
+  const bucketOf = d => { if (!d || d < wStart || d > wEnd) return -1; return Math.min(weeks.length - 1, Math.floor(invDaysBetween(wStart, d) / 7)); };
+
+  const revCompleted = Array(weeks.length).fill(0);
+  const revCollected = Array(weeks.length).fill(0);
+  const deposits = Array(weeks.length).fill(0);
+  const jobsCompleted = Array(weeks.length).fill(0);
+  const jobsSold = Array(weeks.length).fill(0);
+
+  for (const j of jobs) {
+    if (!jobOk(j)) continue;
+    const cb = bucketOf(j.completed_date); if (cb >= 0) { revCompleted[cb] += j.price; jobsCompleted[cb] += 1; }
+    const sb = bucketOf(j.signed_date); if (sb >= 0) jobsSold[sb] += 1;
+  }
+  for (const p of payments) { if (!payOk(p)) continue; const b = bucketOf(p.received_date); if (b >= 0) revCollected[b] += p.amount; }
+  for (const k in payByJob) { const j = jobById[k]; if (!jobOk(j)) continue; const first = payByJob[k][0]; const b = bucketOf(first.received_date); if (b >= 0) deposits[b] += first.amount; }
+
+  const inWin = d => d && d >= wStart && d <= wEnd;
+  const soldInWin = jobs.filter(j => jobOk(j) && inWin(j.signed_date));
+  const avgJobSize = soldInWin.length ? soldInWin.reduce((s, j) => s + j.price, 0) / soldInWin.length : null;
+
+  let s2dN = 0, s2dSum = 0;
+  for (const k in payByJob) {
+    const j = jobById[k]; if (!jobOk(j) || !j.signed_date) continue;
+    const first = payByJob[k][0];
+    if (inWin(first.received_date)) { const d = invDaysBetween(j.signed_date, first.received_date); if (d != null && d >= 0) { s2dSum += d; s2dN++; } }
+  }
+  const avgSignToDep = s2dN ? s2dSum / s2dN : null;
+
+  let c2fN = 0, c2fSum = 0;
+  for (const j of jobs) {
+    if (!jobOk(j) || !j.completed_date || j.balance > 0.005) continue;
+    if (!j.last_payment_date || !inWin(j.last_payment_date)) continue;
+    const d = invDaysBetween(j.completed_date, j.last_payment_date); if (d != null && d >= 0) { c2fSum += d; c2fN++; }
+  }
+  const avgComplToFinal = c2fN ? c2fSum / c2fN : null;
+
+  const compInWin = jobs.filter(j => jobOk(j) && inWin(j.completed_date));
+  const paidOnDay = compInWin.filter(j => j.balance <= 0.005 && j.last_payment_date === j.completed_date);
+  const pctPaidOnDay = compInWin.length ? paidOnDay.length / compInWin.length : null;
+
+  let arAged30 = 0;
+  for (const j of jobs) {
+    if (!jobOk(j) || j.balance <= 0.005) continue;
+    const ageDate = (j.status === 'completed' && j.completed_date) ? j.completed_date : j.signed_date;
+    const age = invDaysSince(ageDate);
+    if (age != null && age >= 30) arAged30 += j.balance;
+  }
+
+  const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
+  root.innerHTML = `
+    <div class="pec-toolbar">
+      <select id="pecMetWin">${winOpts.map(([v, l]) => `<option value="${v}" ${state.metricsWindow === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <select id="pecMetSp"><option value="">All salespeople</option>${spList.map(n => `<option value="${esc(n)}" ${sp === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    </div>
+    <div class="pec-card"><div class="pec-metric-h">Revenue completed per week</div>${invBarChart(revCompleted, weeks, 'revCompleted', invUSD0)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>${invBarChart(revCollected, weeks, 'revCollected', invUSD0)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, 'deposits', invUSD0)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>${invBarChart(jobsCompleted, weeks, 'jobsCompleted', String)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, 'jobsSold', String)}</div>
+    <div class="pec-grid-stats">
+      <div class="pec-stat"><div class="pec-stat-label">Average job size</div><div class="pec-stat-val">${invUSD0(avgJobSize)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Avg days sign to deposit</div><div class="pec-stat-val">${invDays(avgSignToDep)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Avg days completion to paid</div><div class="pec-stat-val">${invDays(avgComplToFinal)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Paid in full on completion day</div><div class="pec-stat-val">${invPct(pctPaidOnDay)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">AR aged 30+ days</div><div class="pec-stat-val">${invUSD0(arAged30)}</div></div>
+    </div>
+  `;
+
+  $('pecMetWin').addEventListener('change', e => { state.metricsWindow = e.target.value; renderMetrics(); });
+  $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
+  root.querySelectorAll('.pec-bar').forEach(b => b.addEventListener('click', () => openMetricDrilldown(b.dataset.metric, parseInt(b.dataset.week, 10))));
+}
+
+function openMetricDrilldown(metricKey, wi) {
+  const d = state.metricsData; if (!d) return;
+  const weeks = invBuildWeeks(state.metricsWindow); const wk = weeks[wi]; if (!wk) return;
+  const sp = state.metricsSalesperson;
+  const jobOk = j => !sp || j.salesperson === sp;
+  let title = '', rows = [];
+  if (metricKey === 'revCompleted' || metricKey === 'jobsCompleted') {
+    title = metricKey === 'revCompleted' ? 'Revenue completed' : 'Jobs completed';
+    rows = d.jobs.filter(j => jobOk(j) && invInWeek(j.completed_date, wk)).map(j => ({ name: j.customer_name, date: j.completed_date, val: invUSD(j.price) }));
+  } else if (metricKey === 'jobsSold') {
+    title = 'Jobs sold';
+    rows = d.jobs.filter(j => jobOk(j) && invInWeek(j.signed_date, wk)).map(j => ({ name: j.customer_name, date: j.signed_date, val: invUSD(j.price) }));
+  } else if (metricKey === 'revCollected') {
+    title = 'Revenue collected';
+    rows = d.payments.filter(p => { const j = d.jobById[p.job_id]; return j && jobOk(j) && invInWeek(p.received_date, wk); })
+      .map(p => ({ name: d.jobById[p.job_id].customer_name, date: p.received_date, val: invUSD(p.amount) + ' · ' + p.method }));
+  } else if (metricKey === 'deposits') {
+    title = 'Deposits collected';
+    for (const k in d.payByJob) { const j = d.jobById[k]; if (!j || !jobOk(j)) continue; const first = d.payByJob[k][0]; if (invInWeek(first.received_date, wk)) rows.push({ name: j.customer_name, date: first.received_date, val: invUSD(first.amount) + ' · ' + first.method }); }
+  }
+  rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  openModal(`<h3>${esc(title)}, week of ${esc(wk.label)}</h3>
+    <div class="pec-scroll-x"><table class="pec-table"><thead><tr><th>Customer</th><th>Date</th><th>Amount</th></tr></thead>
+    <tbody>${rows.map(r => `<tr class="nohover"><td>${esc(r.name || '—')}</td><td>${invFmtDate(r.date)}</td><td>${esc(r.val)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="3" class="pec-empty">No items this week.</td></tr>'}</tbody></table></div>
+    <div class="pec-modal-actions"><button class="pec-btn ghost" onclick="pecCloseModal()">Close</button></div>`);
+}
+
+function renderInvoicingDocs() {
+  const root = $('pecViewRoot');
+  root.innerHTML = `<div class="pec-card"><div class="pec-doc">
+    <h3>Invoicing &amp; AR module</h3>
+    <p>This module is the source of truth for Prescott Epoxy invoicing and accounts receivable. It answers one question the team could not answer before: who owes us money right now. The goal is collect-on-completion, like an electrician: hand the customer an invoice the day work is done and collect before leaving.</p>
+
+    <h4>Data model</h4>
+    <p>The module reuses the existing <code>public.jobs</code> row (already created by the DripJobs proposal-accepted webhook) and adds a payment ledger. No separate invoice table.</p>
+    <table>
+      <thead><tr><th>Invoicing concept</th><th>Where it lives</th></tr></thead>
+      <tbody>
+        <tr><td>Total invoice amount</td><td><code>jobs.price</code></td></tr>
+        <tr><td>Scope of work</td><td><code>jobs.scope</code></td></tr>
+        <tr><td>DripJobs invoice number</td><td><code>jobs.dripjobs_deal_id</code></td></tr>
+        <tr><td>Deposit (amount / collected)</td><td><code>jobs.deposit_amount</code>, <code>jobs.deposit_collected</code></td></tr>
+        <tr><td>Signed / completed dates</td><td><code>jobs.signed_date</code>, <code>jobs.completed_date</code></td></tr>
+        <tr><td>Salesperson</td><td><code>jobs.salesperson</code></td></tr>
+        <tr><td>Each payment received</td><td><code>pec_payments</code> (one row per payment)</td></tr>
+        <tr><td>Voided invoice</td><td><code>jobs.voided_at</code> (excluded from AR)</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Computed fields (derived, never stored)</h4>
+    <ul>
+      <li><code>paid_to_date</code> = sum of all <code>pec_payments.amount</code> for the job.</li>
+      <li><code>balance_remaining</code> = <code>price</code> minus <code>paid_to_date</code>.</li>
+      <li>Payment state is derived: a job is "paid in full" when balance reaches zero. We do not store a paid_in_full status, so <code>jobs.status</code> stays the production lifecycle (signed, scheduled, in_progress, completed).</li>
+      <li>Aging counts are computed in America/Phoenix time (no daylight saving).</li>
+    </ul>
+    <p>All of this is exposed by the <code>pec_job_ar</code> Postgres view, which the Invoicing and Metrics tabs read.</p>
+
+    <h4>The four AR buckets</h4>
+    <ul>
+      <li><strong>Completed work, not paid in full</strong>: status is completed and balance &gt; 0. Aging from <code>completed_date</code>: green 0 to 7 days, yellow 8 to 14, red 15+.</li>
+      <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected and not yet completed. Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+.</li>
+      <li><strong>Active jobs, deposit paid, in progress</strong>: deposit collected and status signed, scheduled, or in_progress, with a balance remaining.</li>
+      <li><strong>Recently closed</strong>: balance is zero and the last payment landed within the last 30 days.</li>
+    </ul>
+
+    <h4>Workflows</h4>
+    <ul>
+      <li><strong>Intake</strong>: the DripJobs proposal-accepted webhook creates the job (customer, price, scope, signed_date, salesperson when sent). The office pastes the line items and confirms the scope, and sets a non-default deposit if needed.</li>
+      <li><strong>Completion</strong>: the crew lead taps Mark Complete on the job after the final walkthrough. That sets <code>completed_date</code> to today and moves the job into the "Completed, not paid" bucket.</li>
+      <li><strong>Payment</strong>: tap Mark Paid, enter amount (defaults to the balance), method (check, cash, Zelle), reference, and date. This inserts a <code>pec_payments</code> row. When the balance hits zero the job moves to Recently closed.</li>
+      <li><strong>Deposit</strong>: same form from the "Signed, no deposit" bucket. The first recorded payment flips <code>deposit_collected</code> to true so the job is ready to schedule.</li>
+    </ul>
+
+    <h4>Metrics tab</h4>
+    <p>Default view is the rolling last 4 weeks, week by week, with toggles for last 12 weeks and year to date, plus a salesperson filter. The five weekly bar charts (revenue completed, revenue collected, deposits collected, jobs completed, jobs sold) are clickable: tap a bar to see the contributing jobs. The five summary cards (average job size, average days sign to deposit, average days completion to paid, percent paid in full on completion day, AR aged 30+) cover the whole window, except AR aged 30+ which is a live snapshot.</p>
+
+    <h4>Phase notes</h4>
+    <p>Phase 1 (this) is AR visibility only. Phase 2 adds branded PDF invoices, a customer-facing hosted invoice page, and Stripe Checkout with a webhook that auto-records card payments. Phase 3 adds internal aging alerts, edge cases (refunds, returned checks, change orders, disputes, invoice corrections), and full retirement of DripJobs invoicing for PEC.</p>
+  </div></div>`;
 }
 
 async function openNewJobForm() {

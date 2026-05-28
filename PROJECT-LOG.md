@@ -4,6 +4,74 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-27 MST] invoicing: Phase 1 AR module (Invoicing + Metrics + Docs tabs, pec_payments ledger, webhook fields)
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-27_invoicing_ar.sql (new), netlify/functions/pec-webhook-proposal-accepted.cjs, netlify/functions/pec-webhook-project-completed.cjs.
+
+Phase 1 of the Invoicing & AR module from Dylan's build spec. Goal: make HQ the source of truth for "who owes us PEC money right now," replacing the DripJobs + Google Sheet + notepad + calendar patchwork. This is AR visibility only. No PDF, no Stripe, no customer-facing pages, no automated emails (those are Phase 2 and 3).
+
+**Key decision (confirmed with Dylan in-session): reuse public.jobs, do not create a new jobs table.** The spec assumed a brand-new `jobs` table, but `public.jobs` already exists and is already populated by the proposal-accepted webhook with customer, price (= total), scope (= scope of work), status, and dripjobs_deal_id (= DJ invoice number). So the module extends that row and adds a payments ledger on the side. AR balances and buckets are derived in queries, never stored. Also confirmed: add a `salesperson` column (manual for now, Zapier passthrough later).
+
+**Migration `2026-05-27_invoicing_ar.sql` (NOT yet applied; Cowork handoff below).**
+- Adds 9 columns to public.jobs: deposit_amount, deposit_collected (default false), signed_date, completed_date, salesperson, bill_to_address, line_items (jsonb), hq_invoice_number (reserved for Phase 2 PEC-NNNNNN numbering), voided_at.
+- Backfills (idempotent, NULLs only): signed_date = created_at::date; completed_date bridged from pec_prod_jobs.completed_at for already-completed jobs; deposit_amount = 50% of price.
+- New table public.pec_payments (job_id FK cascade, amount, method check in stripe/check/cash/zelle, reference, received_date default America/Phoenix today, recorded_by, recorded_at, notes).
+- Indexes on jobs(status, salesperson, completed_date, signed_date) and pec_payments(job_id, received_date).
+- RLS: pec_payments staff-wide via is_admin_staff() (mirrors every other PEC table). Adds 'crew' to admin_users.role check for forward-compat (crew login + crew RLS land in Phase 3).
+- View public.pec_job_ar (security_invoker = on) rolls up paid_to_date, balance_remaining, last_payment_date, days_outstanding, days_since_signed per non-voided job, joined to the customer. Granted to authenticated. The Invoicing and Metrics tabs read this view.
+
+We deliberately did NOT add paid_in_full / voided to the jobs_status_check constraint. jobs.status stays the production lifecycle (signed/scheduled/in_progress/completed) that the webhooks and pec-auto-progress already drive; payment state is derived from the ledger, and voided invoices are flagged via jobs.voided_at.
+
+**index.html (all UI lives here, single-file convention).**
+- Three new subnav buttons (Invoicing, Metrics, Invoicing Docs) wired into the existing #pecSubnav (auto-clones into the sidebar) and the switchView dispatch map. Metrics is visible to all current staff (admin/office/pm) since Dusty (office) is a primary AR user; crew gating is a Phase 3 concern.
+- renderInvoicing: Total AR headline + four collapsible buckets (Completed-not-paid and Signed-no-deposit open by default; Active and Recently-closed collapsed). Aging color chips: completed bucket green 0 to 7 / yellow 8 to 14 / red 15+ from completed_date; signed bucket green 0 to 3 / yellow 4 to 7 / red 8+ from signed_date. Active bucket pulls the scheduled date from pec_prod_jobs.install_date (mapped by dripjobs_deal_id). View Invoice button is present but disabled (Phase 2).
+- Payment modal (openPaymentModal): amount (defaults to balance, or deposit for the deposit flow), method radios (check/cash/zelle), reference, received date (defaults to MST today). Inserts pec_payments; the deposit flow also flips deposit_collected. Mobile-first.
+- markJobComplete: confirm, then set completed_date = MST today and status = completed, log a status_change audit row, toast "Don't forget to send the invoice."
+- renderMetrics: window selector (4w default / 12w / YTD) + salesperson filter. Five weekly CSS bar charts (no charting library): revenue completed, revenue collected, deposits collected, jobs completed, jobs sold. Bars are clickable for a per-week contributing-jobs drilldown. Five summary cards: average job size, avg days sign to deposit, avg days completion to paid, percent paid in full on completion day, AR aged 30+ (live snapshot). All weeks computed in America/Phoenix (Monday-start).
+- renderInvoicingDocs: the module's Documentation tab (project rule) covering the data model, derived fields, the four buckets and thresholds, workflows, and phase notes.
+- New CSS (aging chips, AR section/summary, bar charts, radios, doc styling) using var(--rd-*, var(--*)) fallbacks so it themes correctly in the light dashboard and the dark base.
+- New date/format helpers are inv*-prefixed to avoid clashing with the schedule's parseISO / addDays / isoDate.
+
+**Webhooks (in-repo, no Cowork needed for the code; they deploy with the next push).**
+- pec-webhook-proposal-accepted.cjs: now accepts an optional `salesperson` field and sets signed_date (MST today) on the public.jobs insert, and sets pec_prod_jobs.sales_team for consistency. Wiring Zapier to actually SEND salesperson is a separate Cowork task.
+- pec-webhook-project-completed.cjs: now also sets completed_date (MST today) when flipping a job to completed, so DripJobs-driven completions age correctly (the crew Mark Complete button is the primary path).
+
+Files touched: index.html, supabase/migrations/2026-05-27_invoicing_ar.sql (new), netlify/functions/pec-webhook-proposal-accepted.cjs, netlify/functions/pec-webhook-project-completed.cjs, PROJECT-LOG.md.
+
+Verification: static only so far. `node` + Function() parse of the main module script (#6) passes at 325,170 chars; both edited webhooks `require()` without throwing. LIVE verification is blocked until the migration is applied (the pec_job_ar view and new columns do not exist yet, so the tabs show a friendly "apply the migration first" message), and it needs a staff login. Both tabs degrade gracefully until then. Acceptance-criteria testing (buckets populate, aging thresholds, under-60-second complete-then-pay on a phone, 10 metrics, salesperson slice) should run after the Cowork apply + backfill.
+
+## Handoff to Cowork
+
+```
+## Context
+HQ-Dashboard repo, main branch. Live PEC Supabase project: zdfpzmmrgotynrwkeakd. Live Netlify site: hq-prescott.netlify.app. Claude Code shipped Phase 1 of the Invoicing & AR module (new Invoicing / Metrics / Invoicing Docs tabs in the TopCoat CRM). The code is committed locally but NOT pushed and the database migration is NOT applied, so the new tabs currently show "apply the migration first." Three things are needed: apply the migration, verify it, then migrate the ~50 open PEC jobs.
+
+## Tasks
+1. Apply supabase/migrations/2026-05-27_invoicing_ar.sql in Supabase Studio's SQL Editor (paste the whole file, run). It is idempotent and safe to re-run. Acceptance (run the verify queries at the bottom of the file):
+   - 9 new columns exist on public.jobs.
+   - null_signed = 0 and null_deposit = 0.
+   - admin_users_role_check includes 'crew'.
+   - `select * from public.pec_job_ar limit 5;` returns rows with balance_remaining / days_outstanding / days_since_signed.
+2. After Dylan approves the push and Netlify deploys, open the TopCoat CRM, sign in, and confirm the Invoicing, Metrics, and Invoicing Docs tabs load without error. Record a test check payment on any completed job and confirm the balance drops and the row moves to Recently closed; then delete that test payment row in Supabase (`delete from public.pec_payments where reference = 'TEST';`) so it does not pollute metrics.
+3. Migrate the ~50 currently-open PEC jobs. Most are ALREADY in public.jobs (the proposal-accepted webhook has been writing them), so this is mostly backfill, not import:
+   - For each open job, set salesperson (Dylan or Aron), paste line_items (jsonb array of {name, qty, unit_price, tax, total, is_change_order, is_optional_addon}) and confirm scope, and adjust deposit_amount if it is not 50%.
+   - For any partial payments already collected in DripJobs, insert a public.pec_payments row (job_id, amount, method, reference, received_date, recorded_by = 'DripJobs migration').
+   - For any open PEC job that predates the webhook and is missing from public.jobs, create the public.jobs row first (with customer_id, price, status, signed_date, salesperson), then its payments.
+   - Reconciliation: total HQ AR (sum of balance_remaining across non-voided, non-closed jobs) should equal total open AR in DripJobs. Spot-check 5 per-job balances against DJ.
+4. Wire the "PEC Proposal Accepted" Zap to pass the DripJobs salesperson into the webhook payload as `salesperson` (the webhook already reads it). Until then, salesperson is whatever the office sets by hand.
+
+## After
+Append a PROJECT-LOG entry "supabase: applied invoicing_ar migration + migrated N open PEC jobs" with By: Cowork, the verify-query results from task 1, the reconciliation total (HQ AR vs DJ AR) and any discrepancies, and how many jobs you backfilled. Report back to Dylan.
+```
+
+## Handoff to Dylan
+
+- Approve the push to origin (code is committed locally only, per house rule).
+- Phase 3 decision (later, not blocking): crew login mechanism (magic link vs PIN vs shared) and the column-level crew RLS that goes with it. The 'crew' role value is already in the schema for when you want it.
+
+---
+
 ## [2026-05-26 MST] dashboard: schedule view -> rolling 3-week calendar, uncapped events, per-week revenue tally
 
 By: Claude Code
