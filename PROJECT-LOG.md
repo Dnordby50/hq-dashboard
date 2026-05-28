@@ -4,6 +4,46 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-27 MST] supabase: applied invoicing_ar migration; verified schema; baseline AR snapshot captured
+
+By: Cowork
+Changed: live PEC Supabase project zdfpzmmrgotynrwkeakd (schema only, no data inserts beyond the idempotent backfills baked into the migration). No repo files modified beyond this PROJECT-LOG entry.
+
+Ran Task 1 of the 2026-05-27 invoicing handoff. Pasted supabase/migrations/2026-05-27_invoicing_ar.sql into Supabase Studio SQL Editor and executed it. Supabase flagged the destructive-ops warning (expected for ALTER TABLE / CREATE TABLE / DROP CONSTRAINT) and I confirmed. Migration returned "Success. No rows returned." All four verify queries from the bottom of the migration file pass:
+
+1. 9 new columns present on public.jobs (bill_to_address text, completed_date date, deposit_amount numeric, deposit_collected boolean, hq_invoice_number text, line_items jsonb, salesperson text, signed_date date, voided_at timestamptz).
+2. Backfill clean: null_signed = 0, null_deposit = 0, total_jobs = 42.
+3. admin_users_role_check now includes 'crew' (pg_get_constraintdef confirms ARRAY['admin','office','pm','crew']).
+4. public.pec_job_ar view returns rows with balance_remaining, days_outstanding, days_since_signed populated. Spot check on top 5 by signed_date shows price = balance_remaining (no pec_payments rows exist yet, correct), days_since_signed = 2, days_outstanding NULL for scheduled jobs (correct, no completed_date).
+
+Pre-backfill baseline snapshot for the AR view:
+- voided_jobs: 0
+- visible_jobs (non-voided): 42
+- open_jobs (status != 'completed'): 42  (signed = 24, scheduled = 18)
+- completed_jobs (status = 'completed'): 0
+- null_salesperson: 42
+- null_line_items: 42
+- total_ar (sum balance_remaining): $199,216.25
+- ar_completed_unpaid: NULL (no completed jobs yet)
+- pec_prod_jobs status mix: scheduled = 28, unscheduled = 6 (34 rows; differs from public.jobs count because pec_prod_jobs is the production-side view)
+
+Important observation that the handoff did not anticipate: zero rows in public.jobs are in 'completed' status. So the migration's completed_date backfill bridge from pec_prod_jobs.completed_at had nothing to update. Production completions appear to be tracked on pec_prod_jobs only; the public.jobs status lifecycle for those rows has not yet been flipped to 'completed' by pec-auto-progress for any current job. This is not a migration problem (the migration is correct as written), but it changes how Task 3 of the handoff should be executed and means the "Recently closed" bucket and Metrics cards that depend on completed_date will be empty until either a job is genuinely completed via the Mark Complete button or pec-auto-progress catches up. Worth a closer look at whether the auto-progress rules ever transition public.jobs to completed, or whether that only happens through the crew Mark Complete button in renderJobDetail.
+
+Push status: confirmed via Netlify dashboard that commit 8ec6f6e ("invoicing: Phase 1 AR module") is **Production: Published** today at 10:42 PM (16s deploy). The 2026-05-27 entry's note "code is committed locally but NOT pushed" is now superseded; the push happened before this Cowork run.
+
+Tasks 2, 3, 4 of the handoff were NOT executed by Cowork. See "Handoff back to Dylan" below for why and what is needed.
+
+## Handoff back to Dylan
+
+- Task 2 (smoke test) blocked: hq-prescott.netlify.app requires the owner password to enter, and Cowork cannot enter credentials on your behalf. Also, the original test ("record a test payment on a completed job, confirm it moves to Recently closed") cannot run as written because there are zero completed jobs. Suggest revising to: sign in, open Invoicing and confirm 24 signed + 18 scheduled jobs appear in Signed-no-deposit and Active buckets, open Metrics and confirm it renders (all weekly bars will be empty since no completed/paid history yet), open Invoicing Docs and confirm content renders. The deposit-collection flow on a signed job is the substantive payment-modal test you can run end-to-end today.
+- Task 3 (backfill 42 open jobs) blocked: requires source data Cowork does not have. Specifically (a) salesperson per job (Dylan or Aron), (b) line_items JSON from DripJobs per job, (c) any partial-payment records from DripJobs to insert into pec_payments, (d) per-job deposit_amount adjustments if any job is not 50%. Recommend turning this into its own structured task: export the open-job list from DripJobs (or share access), then either Cowork drives a row-by-row update with you, or Claude Code writes a one-shot bulk-update SQL once the source data is in a flat file.
+- Task 4 (Zapier salesperson wiring) blocked: Zapier session in Chrome is logged out. Log in, then point Cowork at the "PEC Proposal Accepted" Zap and the right webhook field, and Cowork can map salesperson in one pass.
+- The reconciliation check from the original handoff (HQ AR total vs DripJobs open AR) is also blocked on Task 3 since DripJobs is the only source for partial payments. Baseline HQ "total AR" today is $199,216.25 with zero payments recorded.
+
+Files touched: PROJECT-LOG.md only. Supabase schema changed per migration file already in repo. No code, no functions, no other docs.
+
+---
+
 ## [2026-05-27 MST] invoicing: Phase 1 AR module (Invoicing + Metrics + Docs tabs, pec_payments ledger, webhook fields)
 
 By: Claude Code
