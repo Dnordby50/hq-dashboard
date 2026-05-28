@@ -4,6 +4,55 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] ops: consolidated open-loops handoff (invoicing backfill, flake colors, smoke tests)
+
+By: Claude Code
+Changed: PROJECT-LOG.md only (no code, schema, or functions).
+
+Re-packages every open loose end from the 2026-05-27 invoicing build and the 2026-05-28 flake fix into ONE handoff, because the pieces are currently scattered across three entries and several were bounced back to Dylan as blocked. Nothing here is new work; it is a single source of truth for what is left and who unblocks what. Split into "Dylan unblocks first" (access and source data only Dylan has) and "Cowork executes after."
+
+Status recap: the invoicing migration is applied and live (Cowork, cf0f264); baseline HQ total AR is $199,216.25 with zero payments recorded and zero jobs in 'completed' status. The flake Special Order picker code is pushed (669d1de). The remaining items below are data, access, and verification, not code.
+
+Open question for a future Claude Code session (not Cowork): confirm whether `pec-auto-progress` ever transitions public.jobs to 'completed', or whether 'completed' only happens via the crew Mark Complete button. Until a job reaches 'completed', the Invoicing "Recently closed" bucket and the completion-based Metrics cards stay empty. This is expected, not a bug, but worth verifying the lifecycle is wired the way we think.
+
+## Handoff to Dylan (unblock these first)
+
+1. Site access for Cowork: hq-prescott.netlify.app sits behind the owner password, so Cowork cannot sign in to smoke-test. Give Cowork the site password (or a staff login). Without this, Tasks B is blocked.
+2. DripJobs source data for the 42 open jobs: export (or share access to) the open-invoice list with, per job: salesperson (Dylan or Aron), line items, any partial payments already collected, and any deposit that is not 50%. A flat CSV is ideal; Claude Code can then turn it into one bulk-update SQL. Without this, Tasks C and the reconciliation are blocked.
+3. Zapier login: log into Zapier in Chrome so Cowork can map the salesperson field on the "PEC Proposal Accepted" Zap. Without this, Task D is blocked.
+4. Flake colors: confirm whether Cowork should activate ALL inactive material_type='Flake' products (except Special Order Flake), or only a specific list (some inactive colors may be intentionally retired). Default if you do not specify: activate all of them.
+
+## Handoff to Cowork (execute once the matching item above is unblocked)
+
+```
+## Context
+HQ-Dashboard, main branch. Live PEC Supabase project zdfpzmmrgotynrwkeakd, live site hq-prescott.netlify.app. The invoicing migration is already applied and the flake Special Order code is already deployed. These tasks are the remaining data/verification loose ends. Do each only after its prerequisite (see the per-task "Needs" line) is satisfied; if a prerequisite is still missing, skip that task and note it.
+
+## Tasks
+A. Activate flake colors (Needs: Dylan's item 4 answer). In Supabase SQL Editor run, unless Dylan gave a specific list:
+   update public.pec_prod_products set active = true where material_type = 'Flake' and name <> 'Special Order Flake';
+   Acceptance: select name, color, active from public.pec_prod_products where material_type = 'Flake' order by active, name;  -- the colors PEC offers now read active = true.
+
+B. Smoke test (Needs: Dylan's item 1 site access). Sign in to the TopCoat CRM and confirm:
+   - Invoicing tab loads: ~24 jobs in "Signed proposal, no deposit collected", ~18 in "Active jobs". "Completed, not paid" and "Recently closed" will be empty (no completed jobs yet) -- that is expected.
+   - Metrics tab renders (weekly bars will be empty / near-empty since there is no completed or payment history yet).
+   - Invoicing Docs tab renders.
+   - Open a job, set system = Flake: after Task A the flake-color swatches appear; the "Special Order" tile is present; selecting it requires a note; saving works; reopening shows the saved color/note.
+   - Substantive payment test you CAN run today: on a "Signed, no deposit" job, use Mark Deposit Paid, record a check, confirm deposit_collected flips and the job moves to Active. Then remove that test payment: delete from public.pec_payments where reference = 'TEST';  (use reference 'TEST' when recording it).
+
+C. Backfill the 42 open jobs (Needs: Dylan's item 2 DripJobs data). Per job: set salesperson, paste line_items JSON ({name, qty, unit_price, tax, total, is_change_order, is_optional_addon}), confirm scope, adjust deposit_amount if not 50%, and insert a public.pec_payments row for any partial payment already collected (recorded_by = 'DripJobs migration'). For any open job missing from public.jobs, create the public.jobs row first. Prefer asking Claude Code to generate one bulk-update SQL from the export rather than hand-editing 42 rows.
+   Reconciliation: sum(balance_remaining) over non-voided, non-closed jobs in public.pec_job_ar should equal total open AR in DripJobs (baseline today is $199,216.25 with no payments). Spot-check 5 per-job balances against DripJobs.
+
+D. Zapier salesperson passthrough (Needs: Dylan's item 3 Zapier login). On the "PEC Proposal Accepted" Zap, map the DripJobs salesperson into the webhook payload field named salesperson (the Netlify webhook already reads it). Test-fire one proposal and confirm public.jobs.salesperson populates.
+
+## After
+Append a PROJECT-LOG entry "By: Cowork" recording which tasks ran, the acceptance-query outputs, the reconciliation total vs DripJobs (with any discrepancies), how many of the 42 jobs were backfilled, and which tasks remain blocked and why. Report back to Dylan.
+```
+
+Handoff to Dylan: see "unblock these first" above. The single fastest win, with no Cowork dependency, is activating the flake colors (Task A) so your live flake palette shows in the job picker.
+
+---
+
 ## [2026-05-28 MST] crm: Flake picker Special Order option + notes; diagnosed empty flake-color picker
 
 By: Claude Code
