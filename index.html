@@ -5183,7 +5183,7 @@ const state = {
   scheduleAnchor: null, scheduleEdit: null,
   costing: [], costingFilter: 'all',
   // Invoicing & AR module
-  arRows: [], metricsWindow: '4w', metricsSalesperson: '',
+  arRows: [], metricsWindow: '4w', metricsSalesperson: '', openInvoiceJobId: null,
 };
 window.pecState = state;
 const PAGE = 20;
@@ -6370,6 +6370,7 @@ function invAgeSigned(days) {
 const invFindRow = id => (state.arRows || []).find(r => r.id === id);
 
 async function renderInvoicing() {
+  if (state.openInvoiceJobId) return renderJobInvoice(state.openInvoiceJobId);
   const root = $('pecViewRoot');
   let res;
   try {
@@ -6416,37 +6417,38 @@ async function renderInvoicing() {
   const activeBalance = active.reduce((s, r) => s + r.balance, 0);
 
   const payBtn = r => `<button class="pec-btn sm primary" data-pay="${r.id}">Mark Paid</button>`;
-  const viewBtn = `<button class="pec-btn sm" disabled title="Available in Phase 2">View Invoice</button>`;
+  const viewBtn = r => `<button class="pec-btn sm" data-invoice="${r.id}">View Invoice</button>`;
 
   const completedRows = completed.map(r => `<tr class="nohover">
-    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
     <td>${invAgeCompleted(invDaysSince(r.completed_date))}</td>
     <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.completed_date)}</td>
-    <td style="white-space:nowrap">${payBtn(r)} ${viewBtn}</td></tr>`).join('')
+    <td style="white-space:nowrap">${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="8" class="pec-empty">Nothing here. Nice.</td></tr>';
 
   const signedRows = signedNoDep.map(r => `<tr class="nohover">
-    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td><strong>${invUSD(depositOwed(r))}</strong></td>
     <td>${invAgeSigned(invDaysSince(r.signed_date))}</td>
     <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.signed_date)}</td>
-    <td style="white-space:nowrap"><button class="pec-btn sm primary" data-dep="${r.id}">Mark Deposit Paid</button></td></tr>`).join('')
+    <td style="white-space:nowrap"><button class="pec-btn sm primary" data-dep="${r.id}">Mark Deposit Paid</button> ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="8" class="pec-empty">No pending deposits.</td></tr>';
 
   const activeRows = active.map(r => `<tr class="nohover">
-    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td>${invUSD(r.paid_to_date)}</td>
     <td>${r.install_date ? invFmtDate(r.install_date) : '—'}</td>
     <td>${esc(r.salesperson || '—')}</td><td><span class="pec-badge ${esc(r.status)}">${esc(String(r.status).replace('_', ' '))}</span></td>
-    <td style="white-space:nowrap"><button class="pec-btn sm" data-complete="${r.id}">Mark Complete</button> ${payBtn(r)}</td></tr>`).join('')
+    <td style="white-space:nowrap"><button class="pec-btn sm" data-complete="${r.id}">Mark Complete</button> ${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="8" class="pec-empty">No active jobs with a deposit on file.</td></tr>';
 
   const closedRows = closed.map(r => `<tr class="nohover">
-    <td>${esc(r.customer_name || '—')}</td><td>${esc(r.address || '—')}</td>
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td>${invFmtDate(r.completed_date)}</td>
-    <td>${invFmtDate(r.last_payment_date)}</td><td>${esc(r.salesperson || '—')}</td></tr>`).join('')
-    || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs closed in the last 30 days.</td></tr>';
+    <td>${invFmtDate(r.last_payment_date)}</td><td>${esc(r.salesperson || '—')}</td>
+    <td style="white-space:nowrap">${viewBtn(r)}</td></tr>`).join('')
+    || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs closed in the last 30 days.</td></tr>';
 
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
@@ -6481,7 +6483,7 @@ async function renderInvoicing() {
     <details class="pec-card pec-ar-sec">
       <summary>Recently closed (last 30 days) <span class="pec-ar-meta">${closed.length} job${closed.length === 1 ? '' : 's'}</span></summary>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Completed</th><th>Last payment</th><th>Salesperson</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Completed</th><th>Last payment</th><th>Salesperson</th><th></th></tr></thead>
         <tbody>${closedRows}</tbody></table></div>
     </details>
   `;
@@ -6490,6 +6492,98 @@ async function renderInvoicing() {
   root.querySelectorAll('[data-pay]').forEach(b => b.addEventListener('click', () => openPaymentModal(invFindRow(b.dataset.pay), { deposit: false })));
   root.querySelectorAll('[data-dep]').forEach(b => b.addEventListener('click', () => openPaymentModal(invFindRow(b.dataset.dep), { deposit: true })));
   root.querySelectorAll('[data-complete]').forEach(b => b.addEventListener('click', () => markJobComplete(invFindRow(b.dataset.complete))));
+  root.querySelectorAll('[data-openjob]').forEach(b => b.addEventListener('click', () => { state.openJobId = b.dataset.openjob; state.openInvoiceJobId = null; switchView('jobs'); }));
+  root.querySelectorAll('[data-invoice]').forEach(b => b.addEventListener('click', () => { state.openInvoiceJobId = b.dataset.invoice; renderInvoicing(); }));
+}
+
+// Per-job invoice view. Reached from the Invoicing list ("View Invoice"), the
+// job card ("View Invoice"), via state.openInvoiceJobId + the renderInvoicing
+// short-circuit. Read-only summary of one job's invoice: totals, line items,
+// payments. Mark Paid / Mark Complete reuse the shared modals, which re-call
+// renderInvoicing() and land back here while openInvoiceJobId is set.
+async function renderJobInvoice(jobId) {
+  const root = $('pecViewRoot');
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_job_ar').select('*').eq('id', jobId).maybeSingle(),
+      supabase.from('pec_payments').select('*').eq('job_id', jobId).order('received_date'),
+    ]), { label: 'renderJobInvoice' });
+  } catch (e) { res = [{ error: e }, {}]; }
+  const [arRes, payRes] = res;
+  const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
+  if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
+  const r = arRes.data;
+  if (!r) { root.innerHTML = backBar + '<div class="pec-empty">Invoice not found. It may have been voided.</div>'; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
+  const row = {
+    ...r,
+    price: invNum(r.price),
+    paid_to_date: invNum(r.paid_to_date),
+    balance: invNum(r.balance_remaining),
+    deposit_amount: r.deposit_amount == null ? null : invNum(r.deposit_amount),
+  };
+  const payments = payRes.data || [];
+  const items = Array.isArray(row.line_items) ? row.line_items : [];
+  const invNo = row.hq_invoice_number || row.dripjobs_deal_id || '—';
+  const ageChip = row.completed_date ? invAgeCompleted(invDaysSince(row.completed_date)) : invAgeSigned(invDaysSince(row.signed_date));
+  const tag = it => [
+    it.is_change_order ? '<span class="pec-age pec-age-yellow">Change order</span>' : '',
+    it.is_optional_addon ? '<span class="pec-age pec-age-green">Add-on</span>' : '',
+  ].join(' ');
+  const itemRows = items.length ? items.map(it => `<tr class="nohover">
+      <td>${esc(it.name || '—')} ${tag(it)}</td>
+      <td style="text-align:right">${esc(it.qty ?? '')}</td>
+      <td style="text-align:right">${it.unit_price != null ? invUSD(invNum(it.unit_price)) : '—'}</td>
+      <td style="text-align:right">${it.tax != null ? invUSD(invNum(it.tax)) : '—'}</td>
+      <td style="text-align:right">${it.total != null ? invUSD(invNum(it.total)) : '—'}</td></tr>`).join('')
+    : '<tr class="nohover"><td colspan="5" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
+  const payRows = payments.length ? payments.map(p => `<tr class="nohover">
+      <td>${invFmtDate(p.received_date)}</td>
+      <td>${esc(String(p.method || '').replace('_', ' '))}</td>
+      <td>${esc(p.reference || '—')}</td>
+      <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
+      <td>${esc(p.recorded_by || '—')}</td></tr>`).join('')
+    : '<tr class="nohover"><td colspan="5" class="pec-empty">No payments recorded yet.</td></tr>';
+  const canComplete = ['scheduled', 'in_progress'].includes(row.status);
+  root.innerHTML = `
+    <div class="pec-toolbar" style="justify-content:space-between">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button>
+        <button class="pec-btn sm" id="pecInvOpenJob">Open job card</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
+        ${row.balance > 0.005 ? '<button class="pec-btn sm primary" id="pecInvPay">Mark Paid</button>' : ''}
+      </div>
+    </div>
+    <div class="pec-card">
+      <div class="pec-ar-headline" style="font-size:1.4rem">${esc(row.customer_name || '—')}</div>
+      <div class="pec-ar-sub">${esc(row.address || '')}</div>
+      <div class="pec-ar-sub" style="margin-top:4px">Invoice ${esc(invNo)} · <span class="pec-badge ${esc(row.status)}">${esc(String(row.status).replace('_', ' '))}</span> · ${ageChip}</div>
+    </div>
+    <div class="pec-grid-stats">
+      <div class="pec-stat"><div class="pec-stat-label">Invoice total</div><div class="pec-stat-val">${invUSD(row.price)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_amount != null ? invUSD(row.deposit_amount) : '—'}</div><div class="pec-ar-sub">${row.deposit_collected ? 'collected' : 'not collected'}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Paid to date</div><div class="pec-stat-val">${invUSD(row.paid_to_date)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Balance</div><div class="pec-stat-val">${invUSD(row.balance)}</div></div>
+    </div>
+    <div class="pec-card">
+      <h3>Line items</h3>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Tax</th><th style="text-align:right">Total</th></tr></thead>
+        <tbody>${itemRows}</tbody></table></div>
+    </div>
+    <div class="pec-card">
+      <h3>Payments</h3>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right">Amount</th><th>Recorded by</th></tr></thead>
+        <tbody>${payRows}</tbody></table></div>
+    </div>
+  `;
+  $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); });
+  $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+  const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
+  const compB = $('pecInvComplete'); if (compB) compB.addEventListener('click', () => markJobComplete(row));
 }
 
 function openPaymentModal(row, { deposit }) {
@@ -7196,6 +7290,7 @@ async function renderJobDetail(id) {
   root.innerHTML = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
+      <button class="pec-btn sm" id="pecJobViewInvoice">View Invoice</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
     </div>
 
@@ -7321,6 +7416,7 @@ async function renderJobDetail(id) {
   // of a silent spinner hang. Reported by Dylan: clicking "Back to jobs"
   // from Kathy Carmack's job detail did nothing.
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
+  $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
 
   // Bridge: if this public.jobs row came from DripJobs (has dripjobs_deal_id),
   // look up the matching pec_prod_jobs row to show install_date + crew in
@@ -8993,7 +9089,10 @@ function openScheduleModal(jobId) {
           <h3 style="margin:0">Schedule job</h3>
           <div style="color:var(--muted);font-size:.78rem;margin-top:4px">${esc(job.customer_name)} · ${esc(job.address || 'No address')} · #${esc(job.proposal_number)}</div>
         </div>
-        <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
+        <div style="display:flex;gap:8px">
+          <button class="pec-btn sm" id="schedOpenJob">Open job</button>
+          <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
+        </div>
       </div>
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">System type</div>
@@ -9035,6 +9134,15 @@ function openScheduleModal(jobId) {
   `, {
     onMount(modal) {
       renderBody(modal);
+      const openJobBtn = modal.querySelector('#schedOpenJob');
+      if (openJobBtn) openJobBtn.addEventListener('click', async () => {
+        if (!job.dripjobs_deal_id) { showToast('No CRM job is linked to this schedule entry (manual entry).', { ttl: 4000 }); return; }
+        const { data, error } = await supabase.from('jobs').select('id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle();
+        if (error || !data) { showToast('Could not find the CRM job for this schedule entry.', { ttl: 4000 }); return; }
+        window.pecCloseModal();
+        state.openJobId = data.id; state.openInvoiceJobId = null;
+        switchView('jobs');
+      });
       modal.querySelector('#schedSystem').addEventListener('change', e => { draft.system_type_id = e.target.value; });
       modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
       modal.querySelector('#schedLead').addEventListener('input', e => { draft.crew_lead = e.target.value; });

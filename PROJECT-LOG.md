@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] crm: seamless job navigation + per-job invoice view
+
+By: Claude Code
+Changed: index.html.
+
+Dylan wanted to reach a job from anywhere in the CRM and see its invoice: click into a job from the Job Schedule and from the Invoicing tab, and a "View Invoice" link off the job card. All in index.html; no schema, migration, or functions (reuses the pec_job_ar view, pec_payments, and jobs.line_items).
+
+**New per-job invoice view `renderJobInvoice(jobId)` (index.html ~6504).** Read-only summary of one job's invoice: header (customer, address, status, invoice number = hq_invoice_number or dripjobs_deal_id, aging chip), four summary stat cards (invoice total, deposit + collected flag, paid to date, balance), a line-items table (from jobs.line_items jsonb, with Change order / Add-on tags; friendly empty state when null since most jobs have no line items yet), and a payments table (from pec_payments). Actions reuse the existing shared modals: Mark Paid -> openPaymentModal, Mark Complete -> markJobComplete. Toolbar has "Back to invoicing" and "Open job card".
+
+**Routing.** Added state.openInvoiceJobId and a short-circuit at the top of renderInvoicing: `if (state.openInvoiceJobId) return renderJobInvoice(...)`, mirroring renderJobs -> renderJobDetail. Because openPaymentModal and markJobComplete already call renderInvoicing() after a change, recording a payment or completing from the invoice view refreshes the invoice view (and from the list refreshes the list) with no change to those functions. Cross-stickiness rule: every navigation that sets state.openJobId or state.openInvoiceJobId clears the other, so bouncing Jobs <-> Invoicing never strands a stale detail/invoice view.
+
+**Click into a job from Invoicing (index.html ~6420-6492).** Each AR row's customer name is now a `.pec-cust-name` button (data-openjob) that opens the job card (state.openJobId; switchView('jobs')). The previously-disabled "View Invoice" placeholder is now an enabled per-row button (data-invoice) that opens the per-job invoice view; added it to all four buckets (the Recently-closed table gained an action column + header cell). Handlers wired in the existing post-render delegation block.
+
+**Job card "View Invoice" (index.html ~7293, handler ~7419).** New toolbar button between Back and Copy portal link; opens the per-job invoice view (state.openInvoiceJobId = id; switchView('invoicing')).
+
+**Schedule "Open job" (index.html ~9093, handler in openScheduleModal onMount).** The scheduling popup (opened by clicking a calendar bar) gains an "Open job" button next to Close. It bridges the schedule row (pec_prod_jobs) to the CRM job via dripjobs_deal_id (`supabase.from('jobs').select('id').eq('dripjobs_deal_id', ...).maybeSingle()`), then opens the job card. Manual schedule entries (dripjobs_deal_id null, no public.jobs row) get a graceful toast instead. The bar-click still opens the scheduling popup; the scheduling workflow is unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification: static only. `node` + Function() parse of the main module script (#6) passes at 335,664 chars. LIVE verification needs a staff login (not available this session): from the Schedule popup "Open job" on a DripJobs-sourced bar opens the job card (manual entry shows the toast); Invoicing customer name opens the job card and "View Invoice" opens the invoice view with correct totals / line items (or empty state) / payments; the job card "View Invoice" opens the same view; Mark Paid / Mark Complete from the invoice view refresh it; bouncing Jobs <-> Invoicing never strands a stale view.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Approve the push when ready (committed locally only). The per-job invoice line-items table will be empty until the open-job backfill (the 2026-05-28 consolidated handoff, Task C) populates jobs.line_items; the totals still show from jobs.price.
+
+---
+
 ## [2026-05-28 MST] ops: consolidated open-loops handoff (invoicing backfill, flake colors, smoke tests)
 
 By: Claude Code
