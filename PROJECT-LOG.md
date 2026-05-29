@@ -4,6 +4,42 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 12:55 MST] cowork: applied polish_grit_optional + prod_jobs_line_items migrations
+
+By: Cowork
+
+Picked up the Cowork handoff from the 2026-05-29 12:44 MST Claude Code entry. Applied both 2026-05-29 migrations to live PEC Supabase project zdfpzmmrgotynrwkeakd (Primary Database, postgres role). Source files unchanged on main (commit 9bd87e4). No repo edits beyond this PROJECT-LOG entry.
+
+**Migration 1: 2026-05-29_polish_grit_optional.sql.** Pasted the body (begin; update pec_prod_recipe_slots set required=false, min_select=0 where system_type_id is Concrete Polishing and slot_kind='choice' and label in ('Polish grit','Finish grit'); commit;) into the SQL Editor and ran. Result: "Success. No rows returned" (UPDATE returns no rows from the editor, as expected). Acceptance query result, all four Concrete Polishing slots in order_index order:
+
+```
+name                 label                       slot_kind   required   min_select
+Concrete Polishing   Densifier / hardener        product     false      0
+Concrete Polishing   Dye / stain (optional)      product     false      0
+Concrete Polishing   Polish grit                 choice      false      0
+Concrete Polishing   Guard sealer                product     false      0
+```
+
+The grit row is labeled "Polish grit" (not "Finish grit") in prod, and it now reads required=false, min_select=0, matching Densifier and Guard. The Job-list editor's min_select > 0 check at index.html ~7988 will no longer block save for Concrete Polishing jobs.
+
+**Migration 2: 2026-05-29_prod_jobs_line_items.sql.** Pasted (begin; alter table public.pec_prod_jobs add column if not exists line_items jsonb; commit;) and ran. Result: "Success. No rows returned". Acceptance query result:
+
+```
+column_name   data_type
+line_items    jsonb
+```
+
+Exactly one row, type jsonb. The manual Add Job modal can now persist the pasted DripJobs line-item breakdown alongside the summed revenue; existing rows and webhook-sourced jobs keep null. The graceful fallback in the insert (retry without line_items) is no longer needed but remains harmless.
+
+Touched no other slots and no other columns. Both migrations are idempotent per their own headers; re-running is safe.
+
+Files touched: PROJECT-LOG.md only.
+
+Handoff to Cowork: None.
+Handoff to Dylan: After the next reload of the live dashboard, (a) try saving a Concrete Polishing job from the Job list to confirm the save no longer blocks on Polish grit, and (b) try the manual Add Job modal with line items pasted in to confirm line_items now persists on pec_prod_jobs.
+
+---
+
 ## [2026-05-29 12:44 MST] schedule: crew lead removed, Open job fixed, system-type persists; ordering: Add Job line items; recipe: Concrete Polishing grit optional (Cowork)
 
 By: Claude Code
