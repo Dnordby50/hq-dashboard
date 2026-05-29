@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] crm: fix "Add product does nothing" (stale modal backdrop swallows clicks); reproduced via Playwright
+
+By: Claude Code
+Changed: index.html.
+
+Dylan: clicking "+ Add product" on a flake material in the Material Catalog did nothing (no message, modal never opened). Reproduced with Playwright (playwright-core + system Chrome, serving the repo locally, signed in with Dylan's staff account and the hq2026 gate). Findings:
+- In a CLEAN session the catalog Add-product flow works: clicking "+ Add product" opens the modal and clicking "Add product" fires the handler (console `[prod] pmSave click`) and validates ("Spread rate must be > 0."). So the save code is fine.
+- Root cause: a leftover `.pec-modal-bg` modal backdrop in `#pecModalRoot`. It is `position:fixed; inset:0; z-index:10000`, so if a CRM modal is left open and the user navigates away, the backdrop lingers over the next view and silently swallows every click. Playwright confirmed it: injecting a stale `.pec-modal-bg` into `#pecModalRoot` made the "+ Add product" click fail with `<div class="pec-modal-bg"> from <div id="pecModalRoot"> subtree intercepts pointer events`, and the modal never opened, exactly matching the report. The likely trigger is opening a CRM modal (e.g. a payment/invoice modal) and then clicking a nav tab without closing it, because `switchView` did not clear modal backdrops.
+
+Fix (treat navigation as an implicit modal close):
+- `switchView` (index.html ~5344) now calls `clearAllModalRoots()` at the top, so navigating to any CRM view (including the catalog) wipes a stale backdrop before rendering.
+- `window.prodSwitchView` (index.html ~12930) inlines the same clear of both `#pecModalRoot` and `#prodModalRoot` (the `clearAllModalRoots` helper lives in the other module block).
+
+Verified with Playwright: inject a stale `#pecModalRoot` backdrop, re-navigate (jobs -> catalog), confirm `#pecModalRoot` is emptied (length 0), then "+ Add product" opens the modal and Save fires normally. No production data was written or deleted during testing (the Spread-rate field was left blank so the save handler's own validation halted before any insert).
+
+Files touched: index.html, PROJECT-LOG.md. No schema, migration, or functions.
+
+Verification: static, all 3 `<script type="module">` blocks parse via node + Function(). Live repro + fix confirmed via the Playwright harness described above. After deploy, if a user still sees a dead button, a hard refresh clears any backdrop from the pre-fix session.
+
+Handoff to Cowork: None.
+Handoff to Dylan: Approve the push (committed locally only). If you hit a dead/unclickable area again before the deploy lands, a hard refresh (Cmd+Shift+R) clears it.
+
+---
+
 ## [2026-05-28 MST] crm: FIX area-editor crash (cross-module cureSpeedSpec/computeMaterialPlan) + condense job card
 
 By: Claude Code

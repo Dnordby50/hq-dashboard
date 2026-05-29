@@ -5341,6 +5341,12 @@ function switchView(v) {
   // renderAuthUI. If the auth log fires but this one does NOT, the call is
   // being intercepted between renderAuthUI and switchView (unlikely).
   console.log('[crm] switchView entry ->', v);
+  // Clear any modal backdrop left open when the user navigates away. A modal
+  // (.pec-modal-bg) is position:fixed inset:0 z-index:10000; if it lingers it
+  // covers the next view and silently swallows every click (the "Add product
+  // button does nothing" report traced to a stale #pecModalRoot backdrop).
+  // Navigating is an implicit "close", so wipe both roots before rendering.
+  try { clearAllModalRoots(); } catch (_) {}
   // Hard guard: every synchronous statement in this function used to assume
   // pecViewRoot exists. If the DOM is in a transient state (outer tab still
   // hidden, parent #tab-prescott-crm collapsed) `$('pecViewRoot')` returns
@@ -12922,6 +12928,11 @@ function _mergeAcrossAreas(areaPlans) {
   // Wrapped in try/catch so any runtime error surfaces visibly instead of
   // leaving the panel blank.
   window.prodSwitchView = async function (crmView) {
+    // Clear any lingering modal backdrop from either root so it can't sit
+    // invisibly over the catalog/ordering view and swallow clicks (e.g. the
+    // "+ Add product" button). Mirrors the clearAllModalRoots() call in the
+    // CRM switchView; inlined here because that helper is in the other module.
+    ['pecModalRoot', 'prodModalRoot'].forEach(id => { const m = document.getElementById(id); if (m) m.innerHTML = ''; });
     const r = root();
     if (r) {
       r.style.display = 'block';
