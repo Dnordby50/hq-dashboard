@@ -88,6 +88,32 @@ Handoff to Cowork: None (the activation can be done in the app UI; only escalate
 
 ---
 
+## [2026-05-28 MST] cowork: smoke-tested new Invoicing tabs; published Zap v5 with salesperson mapping
+
+By: Cowork
+Changed: live PEC Proposal Accepted Zap in Zapier (now v5 "v5: add salesperson to webhook payload"). No repo files modified beyond this PROJECT-LOG entry.
+
+Picked up Tasks 2 and 4 from the 2026-05-27 handoff after Dylan signed me in to the CRM and Zapier.
+
+**Task 2 (smoke test) DONE.** Signed in to hq-prescott.netlify.app as Dylan Nordby (admin) and opened each new tab:
+- Invoicing: renders. Header "Total AR: $310,017.25 across 45 jobs (Prescott Epoxy)". "Completed work, not paid in full" bucket = 0 jobs / $0.00 (correct, zero completed jobs exist). "Signed proposal, no deposit collected" bucket = 45 jobs / $155,008.63 pending deposits. Mark Deposit Paid buttons rendered on each row, salesperson column shows "—" for all (matches DB state).
+- Metrics: renders with "Last 4 weeks" + "All salespeople" filters. All 3 visible weekly bar charts (Revenue Completed, Revenue Collected, Deposits Collected) are empty as expected since there is no completed or collected history yet.
+- Invoicing Docs: renders the full module documentation table.
+- Payment modal: clicked Mark Deposit Paid on David Owens row. Modal opens "Record deposit" with job header, Balance $2,250.00, Default deposit $1,125.00, Amount pre-filled $1,125.00, CHECK method radio selected, Received Date 05/28/2026 (MST today). Cancelled cleanly without submitting. No data written.
+
+Note on the AR delta: my pre-backfill snapshot from the 2026-05-27 entry reported total AR $199,216.25 across 42 visible jobs from `public.pec_job_ar`. The Invoicing tab shows $310,017.25 across 45 jobs. Difference is bucket scope and/or company filter applied client-side in renderInvoicing that the raw view does not apply. Worth a closer look but not blocking.
+
+**Task 4 (Zapier salesperson wiring) DONE.** Opened the PEC Proposal Accepted Zap (id 353945579), entered the draft editor on step 4 (Webhooks by Zapier POST to /pec-webhook-proposal-accepted). Confirmed no salesperson field existed in the payload before. Added new key/value pair: `salesperson` → "Job Sales Person Name" from the DripJobs trigger (sample value "Dylan Nordby"). Published as v5 named "v5: add salesperson to webhook payload". Header now reads "v5 is in use by Dylan N. just now", URL switched from /draft to /published.
+
+**Task 3 (backfill 42 existing jobs) DEFERRED.** Per Dylan: the VA will transfer over payment and salesperson data tomorrow. Tracked as future work, not a Cowork action.
+
+Files touched: PROJECT-LOG.md. Zap config changed in Zapier (out of repo).
+
+Handoff to Cowork: None.
+Handoff to Dylan: None. VA backfill is the next moving piece.
+
+---
+
 ## [2026-05-27 MST] supabase: applied invoicing_ar migration; verified schema; baseline AR snapshot captured
 
 By: Cowork
