@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 22:03 MST] ordering: remove Google Sheets sync; Mark complete now Supabase-only
+
+By: Claude Code
+Changed: index.html (Ordering/Production module), deleted netlify/functions/pec-prod-sync-sheet.cjs.
+Why: The team is past the sheet-based ordering workflow. Ordering data lives in Supabase now, so the sheet round-trip (and the "Sync to Order Sheet" button, the per-job sync badges, and the sync_status bookkeeping) was dead weight Dylan asked to retire.
+
+What was removed:
+1. **Jobs table "Sync" column.** Dropped the `<th>Sync</th>` header and the sync_status/last_synced_at badge cell from the Ordering jobs list; empty-state colspan 7 -> 6.
+2. **Job-detail sync UI.** Removed the sync_status badge, "Last synced" stamp, and sync_error line from the job-detail modal header, and the "Sync to Order Sheet" primary button (promoted "Save line edits" to primary in its place).
+3. **Dead JS.** Deleted `callSyncFunction` (the fetch to the Netlify function) and `syncActiveJob`.
+4. **Mark complete rewritten.** `completeActiveJob` previously called the sheets function with action `mark_complete` (which moved rows to a COMPLETED JOBS sheet AND set status). It now does a direct `supabase.from('pec_prod_jobs').update({ status: 'completed' })` — same useful lifecycle action, no sheet. Confirm/success text updated to drop the sheet wording.
+5. **Stopped writing `sync_status: 'dirty'`** at all 5 sites (job auto-bridge insert ~7033, new-job insert, line-edit change handler, saveActiveJobLineEdits, recalcActiveJob). The "Saved. Click Sync..." message is now just "Saved."
+6. **Deleted the endpoint** `netlify/functions/pec-prod-sync-sheet.cjs`. Kept `sheets-proxy.cjs` (still used by the main dashboard at index.html:1970 for other sheets) and `PEC_SHEETS_PROXY_*` env vars (only this removed function read them).
+
+How it works now: marking a job complete and editing/recalculating material lines write straight to Supabase; nothing touches Google Sheets in the Ordering flow.
+
+Files touched: index.html, netlify/functions/pec-prod-sync-sheet.cjs (deleted), PROJECT-LOG.md.
+Next steps: The `pec_prod_jobs` columns `sync_status`, `sync_error`, `last_synced_at` are now unused but left in place (dropping them is a prod migration). Optional cleanup later. The docs under docs/pm-module-ordering-*.md still describe the sheet sync and are now stale (historical, left as-is).
+Handoff to Cowork: Optional — drop the three unused columns from `public.pec_prod_jobs` in Supabase Studio when convenient: `ALTER TABLE public.pec_prod_jobs DROP COLUMN IF EXISTS sync_status, DROP COLUMN IF EXISTS sync_error, DROP COLUMN IF EXISTS last_synced_at;`. Not urgent; nothing reads them anymore.
+Handoff to Dylan: After deploy, open Ordering -> a job -> "Mark complete" and confirm the status flips to completed and persists on reload.
+
+---
+
 ## [2026-05-28 MST] cowork: applied payment_method_card migration; constraint now includes 'card'
 
 By: Cowork

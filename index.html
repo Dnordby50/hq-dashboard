@@ -7030,7 +7030,6 @@ async function openNewJobForm() {
               address: fd.address || null,
               revenue: fd.price,
               status: 'unscheduled',
-              sync_status: 'dirty',
               notes: fd.scope || null,
             });
             if (bridgeRes.error) {
@@ -11523,7 +11522,7 @@ function _mergeAcrossAreas(areaPlans) {
         <table class="pec-table">
           <thead><tr>
             <th>Install Date</th><th>Customer</th><th>Proposal #</th>
-            <th>System</th><th>Sqft</th><th>Status</th><th>Sync</th>
+            <th>System</th><th>Sqft</th><th>Status</th>
           </tr></thead>
           <tbody>
             ${jobs.map(j => `
@@ -11534,11 +11533,7 @@ function _mergeAcrossAreas(areaPlans) {
                 <td>${esc(summary(j))}</td>
                 <td>${sumSqft(j).toLocaleString()}</td>
                 <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
-                <td>
-                  <span class="pec-badge ${j.sync_status === 'clean' ? 'completed' : j.sync_status === 'error' ? 'admin' : 'submitted'}">${esc(j.sync_status)}</span>
-                  ${j.last_synced_at ? `<div style="color:var(--muted);font-size:.65rem;margin-top:2px">${esc(fmtDateTime(j.last_synced_at))}</div>` : ''}
-                </td>
-              </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No production jobs yet. Click + New Job to add one.</td></tr>'}
+              </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No production jobs yet. Click + New Job to add one.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -12089,7 +12084,7 @@ function _mergeAcrossAreas(areaPlans) {
         notes: j.notes || null,
         job_class: j.job_class || null,
         standalone_mvb: !!j.standalone_mvb,
-        status, sync_status: 'dirty',
+        status,
       }).select().single();
       if (insJob.error) return setErr(insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message);
       const jobId = insJob.data.id;
@@ -12193,10 +12188,7 @@ function _mergeAcrossAreas(areaPlans) {
               <div style="color:var(--muted);font-size:.75rem">Install ${j.install_date ? esc(fmtDate(j.install_date)) : 'unscheduled'} · Crew ${esc(j.crew || '—')} · Total ${totalSqft.toLocaleString()} sqft</div>
               <div style="margin-top:8px">
                 <span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span>
-                <span class="pec-badge ${j.sync_status==='clean'?'completed':j.sync_status==='error'?'admin':'submitted'}" style="margin-left:6px">${esc(j.sync_status)}</span>
-                ${j.last_synced_at ? `<span style="color:var(--muted);font-size:.7rem;margin-left:8px">Last synced ${esc(fmtDateTime(j.last_synced_at))}</span>` : ''}
               </div>
-              ${j.sync_error ? `<div class="prod-msg-err">${esc(j.sync_error)}</div>` : ''}
             </div>
             <button class="pec-btn ghost sm" id="prodDetailClose">Close</button>
           </div>
@@ -12219,8 +12211,7 @@ function _mergeAcrossAreas(areaPlans) {
             <button class="pec-btn danger ghost"   id="prodDetailRecalc">Recalculate from catalog</button>
             <span style="flex:1"></span>
             <button class="pec-btn"                id="prodDetailComplete">Mark complete</button>
-            <button class="pec-btn"                id="prodDetailSaveLines">Save line edits</button>
-            <button class="pec-btn primary"        id="prodDetailSync">Sync to Order Sheet</button>
+            <button class="pec-btn primary"        id="prodDetailSaveLines">Save line edits</button>
           </div>
           <div class="prod-msg-err" id="prodDetailError"></div>
           <div class="prod-msg-ok"  id="prodDetailOk"></div>
@@ -12232,7 +12223,6 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg') closeJobDetail(); });
     $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
     $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
-    $('prodDetailSync').addEventListener('click', syncActiveJob);
     $('prodDetailComplete').addEventListener('click', completeActiveJob);
   }
 
@@ -12291,7 +12281,6 @@ function _mergeAcrossAreas(areaPlans) {
           if (inp.type === 'checkbox') line[prop] = inp.checked;
           else if (inp.type === 'number') line[prop] = inp.value === '' ? 0 : Number(inp.value);
           else line[prop] = inp.value;
-          state.activeJob.sync_status = 'dirty';
         });
       });
     });
@@ -12309,8 +12298,7 @@ function _mergeAcrossAreas(areaPlans) {
       }).eq('id', l.id);
       if (error) return errEl.textContent = error.message;
     }
-    await supabase.from('pec_prod_jobs').update({ sync_status: 'dirty' }).eq('id', j.id);
-    okEl.textContent = 'Saved. Click Sync to push to the Order Sheet.';
+    okEl.textContent = 'Saved.';
     await loadJobs();
   }
 
@@ -12348,50 +12336,21 @@ function _mergeAcrossAreas(areaPlans) {
       const ins = await supabase.from('pec_prod_material_lines').insert(payload);
       if (ins.error) return $('prodDetailError').textContent = ins.error.message;
     }
-    await supabase.from('pec_prod_jobs').update({ sync_status: 'dirty' }).eq('id', j.id);
     await loadJobs();
     state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
     renderJobDetail();
   }
 
-  async function callSyncFunction(jobId, action) {
-    const session = window.pecState && window.pecState.session;
-    if (!session) throw new Error('Not signed in');
-    const res = await fetch('/.netlify/functions/pec-prod-sync-sheet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-      body: JSON.stringify({ action, job_id: jobId }),
-    });
-    let payload = null;
-    try { payload = await res.json(); } catch {}
-    if (!res.ok || !payload || payload.ok !== true) throw new Error((payload && payload.error) || `Sync failed (${res.status})`);
-    return payload;
-  }
-
-  async function syncActiveJob() {
-    const j = state.activeJob;
-    const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
-    errEl.textContent = ''; okEl.textContent = '';
-    const btn = $('prodDetailSync'); btn.disabled = true;
-    try {
-      const result = await callSyncFunction(j.id, 'sync');
-      okEl.textContent = `Synced ${result.rows_written} row${result.rows_written===1?'':'s'} to ${result.used_sheet==='test'?'TEST sheet':'production sheet'}.`;
-      await loadJobs();
-      state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
-      renderJobDetail();
-    } catch (err) { errEl.textContent = err.message; }
-    finally { btn.disabled = false; }
-  }
-
   async function completeActiveJob() {
     const j = state.activeJob;
-    if (!confirm(`Mark job #${j.proposal_number} complete? This moves the rows from NEW ORDER SHEET to COMPLETED JOBS and sets the job status to completed. Material line data is preserved for future job costing.`)) return;
+    if (!confirm(`Mark job #${j.proposal_number} complete? Sets the job status to completed. Material line data is preserved for future job costing.`)) return;
     const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
     errEl.textContent = ''; okEl.textContent = '';
     const btn = $('prodDetailComplete'); btn.disabled = true;
     try {
-      const result = await callSyncFunction(j.id, 'mark_complete');
-      okEl.textContent = `Marked complete. Moved ${result.moved_rows} row${result.moved_rows===1?'':'s'} to COMPLETED JOBS.`;
+      const { error } = await supabase.from('pec_prod_jobs').update({ status: 'completed' }).eq('id', j.id);
+      if (error) throw error;
+      okEl.textContent = 'Marked complete.';
       await loadJobs();
       state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
       renderJobDetail();
