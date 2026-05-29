@@ -7059,7 +7059,7 @@ async function renderWorkOrder(ctx) {
   for (const cp of (colorPairings || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
   let lines = [];
   try {
-    const plan = computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
+    const plan = window.computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
     lines = (plan && plan.lines) || [];
   } catch (e) { /* show blank materials table if the plan throws */ }
 
@@ -7315,16 +7315,14 @@ async function renderJobDetail(id) {
           <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">Print Work Order</button>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
-        <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Status</label>
-        <select id="pecJobStatus" style="max-width:220px">
-          ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
-        </select>
-        <span id="pecJobStatusSaved" style="font-size:.72rem;color:var(--muted)"></span>
-      </div>
-      <div class="pec-row-2" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
-        <div class="pec-field"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
-        <div class="pec-field"><label>DripJobs URL</label><input id="jobDripUrl" value="${esc(job.dripjobs_url || '')}"></div>
+      <div class="pec-row-2" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line, var(--border));align-items:end">
+        <div class="pec-field" style="margin-bottom:0">
+          <label>Status <span id="pecJobStatusSaved" style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)"></span></label>
+          <select id="pecJobStatus">
+            ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pec-field" style="margin-bottom:0"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
         <h4 style="margin:0 0 8px;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600">Job Card <span style="font-size:.7rem;font-weight:400;text-transform:none;letter-spacing:0">prints onto the work order</span></h4>
@@ -7561,7 +7559,7 @@ async function renderJobDetail(id) {
 
     let plan = null, planErr = null;
     try {
-      plan = computeMaterialPlan({
+      plan = window.computeMaterialPlan({
         areas: planAreas,
         productsById: productById,
         recipeSlotsBySystemType: fullSlotsBySystem,
@@ -7714,7 +7712,10 @@ async function renderJobDetail(id) {
       if (slot.material_type === 'Topcoat' && !isMulti) {
         const resolvedId = selectedIds[0] || slot.default_product_id;
         const resolved = resolvedId ? productById[resolvedId] : null;
-        const spec = resolved ? cureSpeedSpec(resolved) : null;
+        // cureSpeedSpec lives in the second module block; reach it via window
+        // (see the bridge near computeMaterialPlan). Guarded so a missing
+        // bridge can never crash the whole area render again.
+        const spec = (resolved && window.cureSpeedSpec) ? window.cureSpeedSpec(resolved) : null;
         if (spec && spec.areaField === 'topcoat_cure_speed') {
           if (!a.topcoat_cure_speed) a.topcoat_cure_speed = 'Slow';
           cureBlock = `<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -7936,7 +7937,6 @@ async function renderJobDetail(id) {
     const jobPatch = {
       address: $('jobAddress').value || null,
       scope: $('jobScope').value || null,
-      dripjobs_url: $('jobDripUrl').value || null,
       dripjobs_deal_id: $('jobProposal')?.value?.trim() || null,
       price: priceVal ? parseFloat(priceVal) : null,
       sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
@@ -11160,6 +11160,13 @@ function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, def
   const lines = _mergeAcrossAreas(areaPlans);
   return { lines, areaPlans };
 }
+// Bridge the calculator to the first <script type="module"> block (the CRM
+// app). slotHtml / renderBudget / renderWorkOrder live there and call these,
+// but module scopes are isolated, so expose them on window (same pattern as
+// window.prodSwitchView). A past refactor moved these out of the CRM module;
+// this keeps the CRM callers working without duplicating the whole calculator.
+window.cureSpeedSpec = cureSpeedSpec;
+window.computeMaterialPlan = computeMaterialPlan;
 function _planForArea(area, ctx) {
   const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake } = ctx;
   const sqft = Number(area.sqft);

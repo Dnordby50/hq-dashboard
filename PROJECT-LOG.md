@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] crm: FIX area-editor crash (cross-module cureSpeedSpec/computeMaterialPlan) + condense job card
+
+By: Claude Code
+Changed: index.html.
+
+**Correction to the 2026-05-28 "Flake picker Special Order option" entry.** That entry diagnosed the empty Flake picker as inactive catalog colors and handed off an "activate the flake colors" task. That was a red herring. The real cause (Dylan's console trace, verified in code) is a JavaScript crash: the area editor renders nothing for ANY system because of a cross-module scope error. The flake colors were already active. The activate-the-colors handoff (and the related item in the 2026-05-28 consolidated handoff) can be dropped.
+
+**Root cause.** index.html has two separate `<script type="module">` blocks: the CRM app (4928-11006) and the production/calculator module (11120-12958). Module scopes are isolated. A past refactor moved the calculator helpers into the second block, but three call sites in the first block still called them directly:
+- `slotHtml` -> `cureSpeedSpec(resolved)` (the Topcoat slot's cure-speed dropdown). Every system has a Topcoat slot, so `renderAreas`'s `slots.map(slotHtml)` threw `ReferenceError: cureSpeedSpec is not defined` on that slot and aborted the whole render before any swatch (or the Special Order tile shipped earlier) was built. That is why the picker looked empty and Save then said "Flake is required" (the data model existed, the DOM did not).
+- `renderBudget` and `renderWorkOrder` -> `computeMaterialPlan(...)`. That was the red error in the Budget card.
+
+**Fix (window bridge, matching the existing window.prodSwitchView pattern).** Exposed `window.cureSpeedSpec` and `window.computeMaterialPlan` in the second module right after `computeMaterialPlan` is defined (index.html ~11168). Repointed the three first-module call sites: slotHtml (~7718, hardened to `(resolved && window.cureSpeedSpec) ? window.cureSpeedSpec(resolved) : null` so a missing bridge can never take down the render again), renderWorkOrder (~7062), renderBudget (~7562). A literal "move" was rejected because the calculator's own callers (11189/11653/11654) live in the second module and would break, and duplicating the whole calculator (CalculatorError, _planForArea, _mergeAcrossAreas) is fragile. Load order is safe: both modules run at page load before any user opens a job.
+
+Effect: the Flake (and every) system's material editor now renders: flake color swatches, the dashed Special Order tile + required notes, basecoat/topcoat dropdowns, and the topcoat cure-speed dropdown. The Budget card and Work Order compute without erroring. No data work needed.
+
+**Condensed the job-card top box + dropped DripJobs URL.** Removed the DripJobs URL field (PEC has its own invoice now) and its save reference (`jobs.dripjobs_url` column stays, still set by the webhook; we just stopped showing/editing it). Merged Status + Address onto one `pec-row-2` and tightened the dividers/margins so the first card is more compact. All ids (`pecJobStatus`, `pecJobStatusSaved`, `jobAddress`, `jobProposal`, `jobPrice`) and their handlers are preserved.
+
+Files touched: index.html, PROJECT-LOG.md. No schema, migration, or functions.
+
+Verification: static. All three `<script type="module">` blocks parse via `node` + Function() (CRM block 335,613 chars, calculator block 104,016 chars). `jobDripUrl` has zero remaining references. LIVE verification (Dylan gave the site password hq2026; the app additionally needs a Supabase staff login, so I could not fully drive it this session): open a job -> set system Flake -> the material editor renders with swatches + Special Order tile + cure-speed dropdown and no console ReferenceError; the Budget card computes; Save persists with no jobDripUrl error; the top box is more compact with no DripJobs URL field.
+
+Handoff to Cowork: None. Drop the "activate the flake colors" task from the prior handoffs (it was based on the wrong diagnosis).
+Handoff to Dylan: Approve the push (committed locally only).
+
+---
+
 ## [2026-05-28 MST] crm: seamless job navigation + per-job invoice view
 
 By: Claude Code
