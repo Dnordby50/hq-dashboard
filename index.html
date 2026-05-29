@@ -9186,7 +9186,6 @@ function openScheduleModal(jobId) {
       : (job.install_date ? [job.install_date] : []),
     pickerMonth: new Date(seedDate.getFullYear(), seedDate.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
-    crew_lead: existingDays[0]?.crew_lead || job.crew_lead || '',
     estimated_hours: job.estimated_hours || '',
     sales_team: job.sales_team || '',
     // Inline system pick. If the job already has an area its system wins,
@@ -9261,14 +9260,11 @@ function openScheduleModal(jobId) {
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Pick install days</div>
         <div id="schedDayGrid"></div>
       </div>
-      <div class="pec-row-2">
-        <div class="pec-field"><label>Crew</label>
-          <select id="schedCrew">
-            <option value="">Pick a crew…</option>
-            ${state.crews.filter(c => c.active).map(c => `<option value="${esc(c.id)}" ${c.id===draft.crew_id?'selected':''}>${esc(c.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pec-field"><label>Crew lead</label><input id="schedLead" value="${esc(draft.crew_lead)}" placeholder="Who's leading"></div>
+      <div class="pec-field"><label>Crew</label>
+        <select id="schedCrew">
+          <option value="">Pick a crew…</option>
+          ${state.crews.filter(c => c.active).map(c => `<option value="${esc(c.id)}" ${c.id===draft.crew_id?'selected':''}>${esc(c.name)}</option>`).join('')}
+        </select>
       </div>
       <div class="pec-row-2">
         <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
@@ -9286,17 +9282,18 @@ function openScheduleModal(jobId) {
     onMount(modal) {
       renderBody(modal);
       const openJobBtn = modal.querySelector('#schedOpenJob');
-      if (openJobBtn) openJobBtn.addEventListener('click', async () => {
-        if (!job.dripjobs_deal_id) { showToast('No CRM job is linked to this schedule entry (manual entry).', { ttl: 4000 }); return; }
-        const { data, error } = await supabase.from('jobs').select('id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle();
-        if (error || !data) { showToast('Could not find the CRM job for this schedule entry.', { ttl: 4000 }); return; }
+      // Open the Unified Job page for this job. It is keyed by pec_prod_jobs.id
+      // (the id this schedule row already has), so it works for manual entries
+      // too -- unlike the old path, which looked up a public.jobs row by
+      // dripjobs_deal_id and dead-ended on manual jobs. Same mechanism the Job
+      // Costing list row uses. NOTE: renderUnifiedJob is admin/PM-gated.
+      if (openJobBtn) openJobBtn.addEventListener('click', () => {
         window.pecCloseModal();
-        state.openJobId = data.id; state.openInvoiceJobId = null;
-        switchView('jobs');
+        state.openUnifiedJobId = job.id;
+        switchView('costing');
       });
       modal.querySelector('#schedSystem').addEventListener('change', e => { draft.system_type_id = e.target.value; });
       modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
-      modal.querySelector('#schedLead').addEventListener('input', e => { draft.crew_lead = e.target.value; });
       modal.querySelector('#schedHours').addEventListener('input', e => { draft.estimated_hours = e.target.value; });
       modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
       modal.querySelector('#schedSave').addEventListener('click', async () => {
@@ -9322,7 +9319,6 @@ function openScheduleModal(jobId) {
             scheduled_date: iso,
             day_index: idx,
             crew_id: draft.crew_id || null,
-            crew_lead: draft.crew_lead || null,
           }));
           const ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
           if (ins.error) return errEl.textContent = ins.error.message;
@@ -9332,25 +9328,38 @@ function openScheduleModal(jobId) {
             install_date: sortedIso[0],
             status: 'scheduled',
             crew_id: draft.crew_id || null,
-            crew_lead: draft.crew_lead || null,
             estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
             sales_team: draft.sales_team || null,
           }).eq('id', job.id);
           if (update.error) return errEl.textContent = update.error.message;
-          // If the job has no area yet AND the user picked a system from the
-          // modal dropdown, insert a default "Main" area so this job can carry
-          // material lines authored later from the Unified Job page. sqft=0 is
-          // valid per the pec_prod_areas.sqft check (>= 0). Skip silently if
-          // the area already exists (re-scheduling shouldn't add areas).
-          if (!areas.length && draft.system_type_id) {
-            const areaIns = await supabase.from('pec_prod_areas').insert({
-              job_id: job.id,
-              system_type_id: draft.system_type_id,
-              name: 'Main',
-              sqft: 0,
-              order_index: 0,
-            });
-            if (areaIns.error) return errEl.textContent = 'Area create failed: ' + areaIns.error.message;
+          // Persist the system pick. Two cases:
+          //  - No area yet: insert a default "Main" area so this job can carry
+          //    material lines authored later from the Unified Job page. sqft=0
+          //    is valid per the pec_prod_areas.sqft check (>= 0).
+          //  - Area already exists and the system changed: update it in place.
+          //    The old code only handled the first case, so re-picking the
+          //    system on a job that already had an area was silently dropped
+          //    and looked like "the change didn't save" until a page refresh.
+          // WHY safe to overwrite: schedule-origin areas are sqft 0 with no
+          // recipe picks. An area that already carries Ordering picks/material
+          // lines would keep those tied to the old system -- acceptable here
+          // since the schedule only ever creates the bare "Main" area.
+          if (draft.system_type_id) {
+            if (!areas.length) {
+              const areaIns = await supabase.from('pec_prod_areas').insert({
+                job_id: job.id,
+                system_type_id: draft.system_type_id,
+                name: 'Main',
+                sqft: 0,
+                order_index: 0,
+              });
+              if (areaIns.error) return errEl.textContent = 'Area create failed: ' + areaIns.error.message;
+            } else if (areas[0].system_type_id !== draft.system_type_id) {
+              const areaUpd = await supabase.from('pec_prod_areas')
+                .update({ system_type_id: draft.system_type_id })
+                .eq('id', areas[0].id);
+              if (areaUpd.error) return errEl.textContent = 'System update failed: ' + areaUpd.error.message;
+            }
           }
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
@@ -9370,7 +9379,7 @@ function openScheduleModal(jobId) {
         try {
           const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
           if (del.error) return errEl.textContent = del.error.message;
-          const upd = await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null, crew_lead: null }).eq('id', job.id);
+          const upd = await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null }).eq('id', job.id);
           if (upd.error) return errEl.textContent = upd.error.message;
         } catch (err) {
           errEl.textContent = 'Clear failed: ' + err.message;
@@ -9407,6 +9416,10 @@ function openAddJobModal() {
     address: '',
     quote_number: '',
     revenue: '',
+    // Line items the user pastes from a DripJobs proposal. Each is { name, price };
+    // their prices sum to the job total, which is mirrored into draft.revenue so
+    // the existing validation + insert keep working unchanged. Seed two blank rows.
+    lineItems: [{ name: '', price: '' }, { name: '', price: '' }],
     crew_id: '',
     selectedDates: [],
     pickerMonth: new Date(today.getFullYear(), today.getMonth(), 1),
@@ -9504,11 +9517,17 @@ function openAddJobModal() {
         </div>
         <div id="addJobFields">
           <div class="pec-field" style="margin-bottom:8px"><label>Service address <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobAddress" placeholder="Street, City, State"></div>
-          <div class="pec-row-2">
-            <div class="pec-field"><label>Job value ($) <span style="color:var(--accent,#D8531C)">*</span></label><input id="addJobValue" type="number" min="0" step="0.01" placeholder="e.g. 8350"></div>
-            <div class="pec-field"><label>Proposal or quote #</label><input id="addJobQuote" placeholder="Optional, e.g. DripJobs proposal #"></div>
+          <div class="pec-field" style="margin-bottom:8px">
+            <label>Line items <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">paste each line + price from the DripJobs proposal</span> <span style="color:var(--accent,#D8531C)">*</span></label>
+            <div id="addJobLines"></div>
+            <button type="button" class="pec-btn ghost sm" id="addJobAddLine" style="margin-top:2px">+ Add line</button>
+            <div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin-top:8px;border-top:1px solid var(--rd-line, var(--border));padding-top:8px">
+              <span style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Job total</span>
+              <span id="addJobTotal" style="font-weight:700;font-size:1.05rem;font-variant-numeric:tabular-nums">$0.00</span>
+            </div>
           </div>
-          <div class="pec-field" style="margin-top:8px"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
+          <div class="pec-field" style="margin-bottom:8px"><label>Proposal or quote #</label><input id="addJobQuote" placeholder="Optional, e.g. DripJobs proposal #"></div>
+          <div class="pec-field"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
         </div>
         <div id="addJobLinkedNote" style="display:none;font-size:.72rem;color:var(--muted);margin-top:6px"></div>
       </div>
@@ -9540,6 +9559,47 @@ function openAddJobModal() {
     onMount(modal) {
       renderBody(modal);
 
+      // --- Line items -> job total ---------------------------------------
+      // Rows are re-rendered only on add/remove so typing in a field never
+      // steals focus; per-field input handlers mutate draft.lineItems in place.
+      // recomputeTotal() keeps draft.revenue in sync (full precision) so the
+      // existing positive-value validation and the insert payload are untouched.
+      const linesHost = modal.querySelector('#addJobLines');
+      const totalEl = modal.querySelector('#addJobTotal');
+      const fmtUSD = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const recomputeTotal = () => {
+        const total = draft.lineItems.reduce((s, l) => s + (Number(l.price) || 0), 0);
+        draft.revenue = total > 0 ? String(total) : '';
+        totalEl.textContent = fmtUSD(total);
+      };
+      const renderLines = () => {
+        linesHost.innerHTML = draft.lineItems.map((l, i) => `
+          <div style="display:flex;gap:8px;margin-bottom:6px;align-items:center">
+            <input class="addjob-line-name" data-idx="${i}" value="${esc(l.name)}" placeholder="Description (e.g. Garage floor, Metallic)" style="flex:1">
+            <input class="addjob-line-price" data-idx="${i}" type="number" min="0" step="0.01" value="${esc(l.price)}" placeholder="0.00" style="width:110px;text-align:right">
+            <button type="button" class="pec-btn ghost sm addjob-line-del" data-idx="${i}" title="Remove line" ${draft.lineItems.length <= 1 ? 'disabled' : ''}>✕</button>
+          </div>`).join('');
+        linesHost.querySelectorAll('.addjob-line-name').forEach(inp => inp.addEventListener('input', e => {
+          draft.lineItems[Number(e.target.dataset.idx)].name = e.target.value;
+        }));
+        linesHost.querySelectorAll('.addjob-line-price').forEach(inp => inp.addEventListener('input', e => {
+          draft.lineItems[Number(e.target.dataset.idx)].price = e.target.value;
+          recomputeTotal();
+        }));
+        linesHost.querySelectorAll('.addjob-line-del').forEach(btn => btn.addEventListener('click', e => {
+          draft.lineItems.splice(Number(e.currentTarget.dataset.idx), 1);
+          if (!draft.lineItems.length) draft.lineItems.push({ name: '', price: '' });
+          renderLines();
+          recomputeTotal();
+        }));
+      };
+      modal.querySelector('#addJobAddLine').addEventListener('click', () => {
+        draft.lineItems.push({ name: '', price: '' });
+        renderLines();
+      });
+      renderLines();
+      recomputeTotal();
+
       const queryEl = modal.querySelector('#addJobCustQuery');
       const resultsEl = modal.querySelector('#addJobCustResults');
       const selectedEl = modal.querySelector('#addJobCustSelected');
@@ -9549,7 +9609,6 @@ function openAddJobModal() {
       const fieldsBox = modal.querySelector('#addJobFields');
       const linkedNote = modal.querySelector('#addJobLinkedNote');
       const addrEl = modal.querySelector('#addJobAddress');
-      const valueEl = modal.querySelector('#addJobValue');
       const quoteEl = modal.querySelector('#addJobQuote');
       const scopeEl = modal.querySelector('#addJobScope');
       const crewEl = modal.querySelector('#addJobCrew');
@@ -9671,7 +9730,6 @@ function openAddJobModal() {
       modal.querySelector('#addJobCustClear').addEventListener('click', clearCustomer);
       existingSel.addEventListener('change', applyExistingPick);
       addrEl.addEventListener('input', e => { draft.address = e.target.value; });
-      valueEl.addEventListener('input', e => { draft.revenue = e.target.value; });
       quoteEl.addEventListener('input', e => { draft.quote_number = e.target.value; });
       scopeEl.addEventListener('input', e => { draft.scope = e.target.value; });
       crewEl.addEventListener('change', e => { draft.crew_id = e.target.value; });
@@ -9687,7 +9745,7 @@ function openAddJobModal() {
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
         if (!isReschedule) {
           if (!address) return errEl.textContent = 'Service address is required.';
-          if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Job value must be a positive number.';
+          if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Add at least one line item with a price.';
         }
 
         const saveBtn = modal.querySelector('#addJobSave');
@@ -9729,17 +9787,31 @@ function openAddJobModal() {
             const pad = x => String(x).padStart(2, '0');
             const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
             const proposalNumber = `MANUAL-${stamp}`;
-            const jobIns = await supabase.from('pec_prod_jobs').insert({
+            // Persist the line-item breakdown alongside the summed revenue.
+            // Drop fully-empty rows; keep name/price as entered (price -> number).
+            const cleanLines = draft.lineItems
+              .map(l => ({ name: (l.name || '').trim(), price: Number(l.price) || 0 }))
+              .filter(l => l.name || l.price);
+            const jobRow = {
               proposal_number: proposalNumber,
               customer_id: draft.customer_id,
               customer_name: draft.customer_name,
               address,
               revenue: revenueNum,
+              line_items: cleanLines,
               install_date: sortedIso[0],
               status: 'scheduled',
               crew_id: draft.crew_id,
               notes,
-            }).select('id').single();
+            };
+            let jobIns = await supabase.from('pec_prod_jobs').insert(jobRow).select('id').single();
+            // Graceful fallback if the line_items column migration
+            // (2026-05-29_prod_jobs_line_items.sql) hasn't run yet: retry without
+            // it so the job still saves. revenue already carries the summed total.
+            if (jobIns.error && /line_items/.test(jobIns.error.message || '')) {
+              delete jobRow.line_items;
+              jobIns = await supabase.from('pec_prod_jobs').insert(jobRow).select('id').single();
+            }
             if (jobIns.error) throw jobIns.error;
             jobId = jobIns.data.id;
           }

@@ -4,6 +4,50 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 12:44 MST] schedule: crew lead removed, Open job fixed, system-type persists; ordering: Add Job line items; recipe: Concrete Polishing grit optional (Cowork)
+
+By: Claude Code
+Changed: index.html (Job Schedule + manual Add Job modules), two new supabase/migrations files.
+Why: Dylan asked for two UI changes plus the loading/saving issues Anne Villalba reported in Slack (2026-05-29): Concrete Polishing won't save from the Job list, schedule system-type edits don't stick without a refresh, and "Open job" does nothing.
+
+What changed (all confirmed by reading the code first, per Bug Diagnosis Workflow):
+
+1. **Crew lead box removed from the "Schedule job" popup** (`openScheduleModal`). Dropped the input markup, the `draft.crew_lead` field, its input listener, and `crew_lead` from the `pec_prod_job_schedule_days` insert. Also OMITTED `crew_lead` from the `pec_prod_jobs` update (so an existing lead is preserved, not clobbered) and removed `crew_lead: null` from the Clear handler (clearing a schedule no longer wipes the lead). The Crew select is now a full-width field. WHY this is safe: the `pec_prod_jobs.crew_lead` column stays, and the Job Costing "Crew lead bonus" toggle (index.html ~10512) is untouched. CONSEQUENCE to know: new schedule entries no longer capture a crew lead, so that bonus toggle only has a name for jobs whose `crew_lead` was already set elsewhere.
+
+2. **"Open job" button fixed.** It used to look up a `public.jobs` row by `dripjobs_deal_id` and dead-end on manual entries (just a toast), which is why Anne saw it "not work" — most schedule rows are manual. It now opens the Unified Job page, which is keyed by `pec_prod_jobs.id` (the id the schedule row already has) via `state.openUnifiedJobId = job.id; switchView('costing')` — the same mechanism the Job Costing list row uses. Works for manual AND DripJobs jobs. CAVEAT: `renderUnifiedJob` is admin/PM-gated (index.html ~10147); a non-admin/PM user will see "Admins and PMs only." See Handoff to Dylan.
+
+3. **System-type changes in the schedule now persist.** Root cause: the save handler only created an area when the job had NONE (`if (!areas.length && draft.system_type_id)`); for a job that already had an area, the system pick was silently dropped, so it looked like "the update didn't save" until a page refresh re-read state. Now: no area -> insert the default "Main" area (unchanged); area exists and the system changed -> UPDATE `pec_prod_areas.system_type_id` in place. `renderSchedule()` re-fetches everything, so the calendar updates with no refresh. CAVEAT: changing the system on an area that already carries Ordering recipe picks/material lines leaves those tied to the old system; schedule-origin areas are sqft 0 with no picks, so this is safe in practice.
+
+4. **Add Job modal: line items -> job total.** Replaced the single "Job value ($)" field in the manual Add Job modal with a line-items table (description + price per row, + Add line, ✕ remove, live "Job total" readout). Lets Dylan paste a DripJobs proposal's lines and get the total. HOW it works: rows re-render only on add/remove (so typing never steals focus); price edits update `draft.lineItems` in place and recompute the total, which is mirrored into `draft.revenue` (full precision) so the existing positive-value validation and the insert keep working unchanged. The breakdown is persisted to a new `pec_prod_jobs.line_items` JSONB column (shape `{name, price}`, mirroring `public.jobs.line_items`). The insert has a graceful fallback: if the column doesn't exist yet (migration not run), it retries without `line_items` so the job still saves with its summed revenue.
+
+5. **Concrete Polishing save fix (data, handed to Cowork).** Root cause: Concrete Polishing's recipe has a REQUIRED "Polish grit" choice slot (seed_recipe_formulas.sql step 5); the Job-list editor blocks save on unfilled required slots (index.html ~7988) while the Job Schedule skips that validation — hence "saves from the schedule, not the Job list." Per Dylan, made grit optional (matches Densifier/Guard, shipped "not required so CRM jobs save before SKUs are stocked"). The SQL change lives in a migration file; Claude Code can't run prod SQL from this session, so it's a Cowork handoff.
+
+Migrations added (NOT yet run — see Handoff to Cowork):
+- supabase/migrations/2026-05-29_polish_grit_optional.sql — sets the Polish/Finish grit choice slot to `required=false, min_select=0`.
+- supabase/migrations/2026-05-29_prod_jobs_line_items.sql — `alter table public.pec_prod_jobs add column if not exists line_items jsonb`.
+
+Syntax-checked the edited inline script blocks against HEAD: failure set is identical (only pre-existing ESM-import and a `new Function`-wrapper false positive), so no new syntax errors.
+
+Files touched: index.html, supabase/migrations/2026-05-29_polish_grit_optional.sql (new), supabase/migrations/2026-05-29_prod_jobs_line_items.sql (new), PROJECT-LOG.md.
+Next steps: After Cowork runs both migrations, the line-item breakdown will persist and Concrete Polishing will save from the Job list.
+
+## Handoff to Cowork
+**Context:** Two prod Supabase changes for the PEC project (`zdfpzmmrgotynrwkeakd`) that Claude Code cannot run from its session. Both migration files are committed on `main` under supabase/migrations/. The dashboard is the single-file index.html (Netlify). The line-items code already ships with a fallback, so nothing is broken if the column lags, but Concrete Polishing will keep failing to save from the Job list until the grit migration runs.
+
+**Tasks (either order, both independent):**
+1. Run `supabase/migrations/2026-05-29_polish_grit_optional.sql` in the Supabase Studio SQL Editor (Primary Database, postgres role).
+   - Acceptance: `select st.name, rs.label, rs.slot_kind, rs.required, rs.min_select from public.pec_prod_recipe_slots rs join public.pec_prod_system_types st on st.id = rs.system_type_id where st.name = 'Concrete Polishing' order by rs.order_index;` — the grit choice row should read `required=false, min_select=0`.
+   - Do NOT touch any other system's slots.
+2. Run `supabase/migrations/2026-05-29_prod_jobs_line_items.sql`.
+   - Acceptance: `select column_name, data_type from information_schema.columns where table_schema='public' and table_name='pec_prod_jobs' and column_name='line_items';` returns one row `line_items | jsonb`.
+   - Do NOT alter any other column.
+
+**After:** Append a `By: Cowork` PROJECT-LOG entry capturing the grit slot's `required`/`min_select` after running, and confirming the `line_items` column exists. Report back to Dylan that Concrete Polishing now saves from the Job list and manual job line items persist.
+
+## Handoff to Dylan
+1. Confirm Anne's role is admin or PM. The Job Schedule "Open job" button now opens the Unified Job page, which is admin/PM-only; if Anne is neither, she'll see "Admins and PMs only" instead of the job. Tell me and I'll wire a non-gated destination.
+2. After deploy: open the Job Schedule, click a scheduled job -> the Crew lead box is gone and "Open job" opens the job. Change a job's system type, save, change it again, and confirm both stick without refreshing. Then "+ Add Job" -> add a couple of line items with prices and confirm the Job total sums correctly and the saved job's value matches.
+
 ## [2026-05-29 10:28 MST] crm: harden writes + recovery against the idle-JWT supabase-js wedge
 
 By: Claude Code
