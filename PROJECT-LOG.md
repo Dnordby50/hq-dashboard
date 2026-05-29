@@ -4,6 +4,52 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] crm: batch of 8 tweaks (catalog collapse, AR styling, payments, metrics, costing, password reset, crew bonus)
+
+By: Claude Code
+Changed: index.html, supabase/migrations/2026-05-28_payment_method_card.sql (new), netlify/functions/pec-reset-password.cjs (new).
+
+A batch from Dylan. All in index.html except one small migration (new payment method) and one new Netlify function (admin password reset). Confirmed this session: the $50 crew-lead bonus is a manual Yes/No toggle (not auto from reviews), and the new collected-revenue metric is grouped by crew lead.
+
+1. **Material Catalog: all sections collapsed by default.** Generalized the Flake/Quartz-only collapse to every material_type. Replaced `state.catalogFlakeOpen`/`catalogQuartzOpen` with a single `state.catalogOpen` map (absent key = collapsed); `isCollapsible` is now always true; toggle handler flips `state.catalogOpen[type]`. Every section starts collapsed with a chevron; click expands.
+
+2. **AR headline matches UI text.** `.pec-ar-headline` changed from `var(--mono)` 2rem to `var(--sans)` 1.25rem/700 (verified live: now Syne 18.75px). The giant monospace number is gone.
+
+3. **Invoice view: always-available "Record payment."** In `renderJobInvoice` the pay button was gated on `balance > 0.005`; it is now an always-shown "Record payment" button (calls `openPaymentModal(row, {deposit:false})`), so interim/extra payments can be logged any time. The ledger already supports multiple rows.
+
+4. **Credit card payment method.** Added a "Credit card" radio (`value="card"`) to `openPaymentModal`. New migration `2026-05-28_payment_method_card.sql` extends the `pec_payments.method` CHECK to include `'card'` (distinct from `'stripe'`, which stays reserved for the Phase 2 Stripe webhook). Card payments cannot save until that migration is applied (handoff).
+
+5. **Metrics: revenue collected by crew lead + reviews.** `renderMetrics` now also fetches `pec_prod_jobs(dripjobs_deal_id,crew_lead)` (bridge to crew, since crew is not on public.jobs/the AR view) and `reviews(created_at,rating,job_id)` (PEC-only via job membership). Added: a "Revenue collected by crew lead (this window)" table (payments grouped by the job's crew lead via deal-id bridge, salesperson filter applies, "Unassigned" fallback), a "Reviews per week" bar (clickable drill-down lists that week's reviews with rating), an "Average review rating" stat, and a "Reviews (window)" count. Review timestamps bucketed in America/Phoenix.
+
+6. **Job Costing title = customer name.** The costing table row title was the address; it is now `customer_name`, with the address demoted to the subtitle line (kept the proposal #). Verified live: first row now reads a customer name.
+
+7. **Admin password reset.** New `netlify/functions/pec-reset-password.cjs` mirrors `pec-create-staff.cjs` authorization (caller's JWT -> `/auth/v1/user` -> require `admin_users.role='admin'`), confirms the target is a real staff row, then `PUT /auth/v1/admin/users/{id}` with the service role to set the new password. The browser anon key cannot do this, hence the function. Team tab gained a "Reset password" button per provisioned staff row, opening a modal that posts the new password with the caller's Bearer token. Deploys with the next push.
+
+8. **Crew bonus "Bonus received? Yes/No" -> $50 crew lead.** In the job-costing bonus area, a checkbox models the bonus as the presence of a single sentinel row in `pec_prod_job_bonuses` (`note='Crew lead bonus'`, `amount=50`, `crew_member_name` = the job's `crew_lead`). Checking inserts the row (new `addCrewLeadBonus`); unchecking deletes it. It sums into `bonus_cost` like any bonus and shows transparently in the bonus table. No schema change.
+
+Plus: saved a memory that Dylan likes the short "how it works" notes; will keep adding them.
+
+Files touched: index.html, supabase/migrations/2026-05-28_payment_method_card.sql (new), netlify/functions/pec-reset-password.cjs (new), PROJECT-LOG.md.
+
+Verification: static (all 3 module blocks parse; pec-reset-password.cjs requires clean) plus a read-only Playwright pass (Dylan's login + gate hq2026, repo served locally) confirming: catalog all-collapsed (9 sections, all chevrons ▶); Metrics renders the crew-lead + reviews cards with no console errors; Job Costing titled by customer name; AR headline restyled. NO production writes during automated checks. The write-path items (card payment, crew-lead bonus toggle, password reset) were code-reviewed but not exercised against prod; verify by hand after deploy.
+
+## Handoff to Cowork
+
+```
+## Context
+HQ-Dashboard main, live Supabase zdfpzmmrgotynrwkeakd. One new migration to apply for credit-card payments to save.
+
+## Tasks
+1. Apply supabase/migrations/2026-05-28_payment_method_card.sql in Supabase Studio (extends pec_payments.method to allow 'card'). Idempotent. Acceptance: `select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.pec_payments'::regclass and conname='pec_payments_method_check';` includes 'card'.
+
+## After
+Append a By: Cowork PROJECT-LOG line confirming the constraint now includes 'card'.
+```
+
+Handoff to Dylan: Approve the push (committed locally). After deploy: the "Reset password" button (Team tab) and the crew-lead bonus toggle (Job Costing) write to prod, so give those a quick manual check. Credit-card payments need the migration above applied first.
+
+---
+
 ## [2026-05-28 MST] crm: fix "Add product does nothing" (stale modal backdrop swallows clicks); reproduced via Playwright
 
 By: Claude Code

@@ -531,7 +531,7 @@ textarea{resize:vertical;min-height:60px}
 .pec-age-green{background:color-mix(in srgb,var(--rd-success,#10b981) 14%,transparent);color:var(--rd-success,#10b981)}
 .pec-age-yellow{background:color-mix(in srgb,var(--rd-warn,#f59e0b) 18%,transparent);color:#b45309}
 .pec-age-red{background:color-mix(in srgb,var(--rd-danger,#ef4444) 14%,transparent);color:var(--rd-danger,#ef4444)}
-.pec-ar-headline{font-family:var(--mono);font-size:2rem;font-weight:600;color:var(--rd-ink,var(--text));line-height:1.1}
+.pec-ar-headline{font-family:var(--sans);font-size:1.25rem;font-weight:700;color:var(--rd-ink,var(--text));line-height:1.2;letter-spacing:.3px}
 .pec-ar-sub{color:var(--rd-muted,var(--muted));font-size:.82rem;margin-top:3px}
 .pec-card.pec-ar-sec{padding:0}
 .pec-ar-sec>summary{list-style:none;cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:.9rem;color:var(--rd-ink,var(--text))}
@@ -6559,7 +6559,7 @@ async function renderJobInvoice(jobId) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
-        ${row.balance > 0.005 ? '<button class="pec-btn sm primary" id="pecInvPay">Mark Paid</button>' : ''}
+        <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
     </div>
     <div class="pec-card">
@@ -6610,6 +6610,7 @@ function openPaymentModal(row, { deposit }) {
           <label><input type="radio" name="method" value="check" checked> Check</label>
           <label><input type="radio" name="method" value="cash"> Cash</label>
           <label><input type="radio" name="method" value="zelle"> Zelle</label>
+          <label><input type="radio" name="method" value="card"> Credit card</label>
         </div>
       </div>
       <div class="pec-field"><label>Reference (check # / Zelle confirmation)</label><input name="reference" placeholder="optional"></div>
@@ -6687,11 +6688,13 @@ async function renderMetrics() {
   let res;
   try {
     res = await withFreshSession(() => Promise.all([
-      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,balance_remaining,paid_to_date,last_payment_date,status,customer_company').eq('customer_company', 'prescott-epoxy'),
+      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
+      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,crew_lead').not('dripjobs_deal_id', 'is', null),
+      supabase.from('reviews').select('created_at,rating,job_id'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}]; }
-  const [jobsRes, payRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}]; }
+  const [jobsRes, payRes, prodRes, revRes] = res;
   if (jobsRes.error) {
     const hint = /pec_job_ar/.test(jobsRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(jobsRes.error.message)}${hint}</div>`; return;
@@ -6702,7 +6705,15 @@ async function renderMetrics() {
   const payByJob = {};
   for (const p of payments) { (payByJob[p.job_id] = payByJob[p.job_id] || []).push(p); }
   for (const k in payByJob) payByJob[k].sort((a, b) => (a.received_date || '').localeCompare(b.received_date || ''));
-  state.metricsData = { jobs, payments, payByJob, jobById };
+  // Bridge each job's DripJobs deal id -> crew lead (crew lives on pec_prod_jobs,
+  // not on public.jobs / the AR view). Used for the revenue-by-crew-lead metric.
+  const dealToLead = {};
+  (prodRes.data || []).forEach(r => { if (r.dripjobs_deal_id) dealToLead[r.dripjobs_deal_id] = r.crew_lead || null; });
+  // Reviews are PEC-only by virtue of their job being in jobById (the AR view is
+  // already filtered to prescott-epoxy). created_at is UTC; bucket in America/Phoenix.
+  const mstDay = ts => ts ? new Date(new Date(ts).getTime() - 7 * 3600e3).toISOString().slice(0, 10) : null;
+  const reviews = (revRes.data || []).filter(r => jobById[r.job_id]);
+  state.metricsData = { jobs, payments, payByJob, jobById, reviews };
 
   const spList = [...new Set(jobs.map(j => j.salesperson).filter(Boolean))].sort();
   const sp = state.metricsSalesperson;
@@ -6759,6 +6770,27 @@ async function renderMetrics() {
     if (age != null && age >= 30) arAged30 += j.balance;
   }
 
+  // Reviews per week + average rating (salesperson filter applies via the job).
+  const reviewsPerWeek = Array(weeks.length).fill(0);
+  let ratingN = 0, ratingSum = 0;
+  for (const rv of reviews) {
+    const j = jobById[rv.job_id]; if (!j || !jobOk(j)) continue;
+    const day = mstDay(rv.created_at);
+    const b = bucketOf(day); if (b >= 0) reviewsPerWeek[b]++;
+    if (inWin(day) && rv.rating != null) { ratingSum += Number(rv.rating); ratingN++; }
+  }
+  const avgRating = ratingN ? ratingSum / ratingN : null;
+
+  // Revenue collected grouped by crew lead (window total; salesperson filter applies).
+  const crewLeadRev = {};
+  for (const p of payments) {
+    if (!payOk(p) || !inWin(p.received_date)) continue;
+    const deal = jobById[p.job_id]?.dripjobs_deal_id;
+    const lead = (deal && dealToLead[deal]) ? dealToLead[deal] : 'Unassigned';
+    crewLeadRev[lead] = (crewLeadRev[lead] || 0) + p.amount;
+  }
+  const crewLeadRows = Object.entries(crewLeadRev).sort((a, b) => b[1] - a[1]);
+
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -6770,12 +6802,21 @@ async function renderMetrics() {
     <div class="pec-card"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, 'deposits', invUSD0)}</div>
     <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>${invBarChart(jobsCompleted, weeks, 'jobsCompleted', String)}</div>
     <div class="pec-card"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, 'jobsSold', String)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Reviews per week</div>${invBarChart(reviewsPerWeek, weeks, 'reviews', String)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Crew lead</th><th style="text-align:right">Collected</th></tr></thead>
+        <tbody>${crewLeadRows.map(([lead, amt]) => `<tr class="nohover"><td>${esc(lead)}</td><td style="text-align:right">${invUSD0(amt)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No payments in this window.</td></tr>'}</tbody>
+      </table></div>
+    </div>
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Average job size</div><div class="pec-stat-val">${invUSD0(avgJobSize)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Avg days sign to deposit</div><div class="pec-stat-val">${invDays(avgSignToDep)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Avg days completion to paid</div><div class="pec-stat-val">${invDays(avgComplToFinal)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Paid in full on completion day</div><div class="pec-stat-val">${invPct(pctPaidOnDay)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">AR aged 30+ days</div><div class="pec-stat-val">${invUSD0(arAged30)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Average review rating</div><div class="pec-stat-val">${avgRating == null ? '—' : avgRating.toFixed(1)}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Reviews (window)</div><div class="pec-stat-val">${ratingN}</div></div>
     </div>
   `;
 
@@ -6803,6 +6844,11 @@ function openMetricDrilldown(metricKey, wi) {
   } else if (metricKey === 'deposits') {
     title = 'Deposits collected';
     for (const k in d.payByJob) { const j = d.jobById[k]; if (!j || !jobOk(j)) continue; const first = d.payByJob[k][0]; if (invInWeek(first.received_date, wk)) rows.push({ name: j.customer_name, date: first.received_date, val: invUSD(first.amount) + ' · ' + first.method }); }
+  } else if (metricKey === 'reviews') {
+    title = 'Reviews';
+    const day = ts => ts ? new Date(new Date(ts).getTime() - 7 * 3600e3).toISOString().slice(0, 10) : null;
+    rows = (d.reviews || []).filter(rv => { const j = d.jobById[rv.job_id]; return j && jobOk(j) && invInWeek(day(rv.created_at), wk); })
+      .map(rv => ({ name: d.jobById[rv.job_id].customer_name, date: day(rv.created_at), val: (rv.rating != null ? rv.rating + '★' : '—') }));
   }
   rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   openModal(`<h3>${esc(title)}, week of ${esc(wk.label)}</h3>
@@ -8288,6 +8334,7 @@ async function renderTeam() {
             <td>${t.auth_user_id ? '✓' : '—'}</td>
             <td>
               <button class="pec-btn sm" data-edit-team="${t.id}">Edit</button>
+              ${t.auth_user_id ? `<button class="pec-btn sm" data-reset-team="${t.id}">Reset password</button>` : ''}
               ${t.id !== state.adminUser.id ? `<button class="pec-btn sm danger" data-del-team="${t.id}">Delete</button>` : ''}
             </td>
           </tr>`).join('')}</tbody>
@@ -8312,6 +8359,9 @@ async function renderTeam() {
   root.querySelectorAll('[data-edit-team]').forEach(b =>
     b.addEventListener('click', () => openTeamForm(state.team.find(t => t.id === b.dataset.editTeam)))
   );
+  root.querySelectorAll('[data-reset-team]').forEach(b =>
+    b.addEventListener('click', () => openResetPasswordForm(state.team.find(t => t.id === b.dataset.resetTeam)))
+  );
   root.querySelectorAll('[data-del-team]').forEach(b =>
     b.addEventListener('click', async () => {
       if (!confirm('Delete this staff row? (This does not delete the linked Google account.)')) return;
@@ -8323,6 +8373,48 @@ async function renderTeam() {
       renderTeam();
     })
   );
+}
+
+// Admin sets a new password for a staff member. Goes through the
+// pec-reset-password Netlify function (service role + admin check); the browser
+// anon key cannot change another user's password. The caller's session JWT is
+// passed so the function can confirm the caller is an admin.
+function openResetPasswordForm(t) {
+  if (!t || !t.auth_user_id) return;
+  openModal(`
+    <h3>Reset password</h3>
+    <div class="pec-ar-sub" style="margin-bottom:14px">Set a new password for <strong>${esc(t.name || t.email)}</strong> (${esc(t.email)}). Share it with them; they can change it after signing in.</div>
+    <form id="pecResetForm">
+      <div class="pec-field"><label>New password (min 8 characters)</label><input name="password" type="text" minlength="8" required autocomplete="new-password"></div>
+      <div class="prod-msg-err" id="pecResetErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
+        <button type="submit" class="pec-btn primary">Set password</button>
+      </div>
+    </form>
+  `, { onMount: modal => {
+    modal.querySelector('#pecResetForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const errEl = modal.querySelector('#pecResetErr'); errEl.textContent = '';
+      const pw = String(new FormData(e.target).get('password') || '');
+      if (pw.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; return; }
+      const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Setting…';
+      try {
+        const res = await fetch('/.netlify/functions/pec-reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (state.session?.access_token || '') },
+          body: JSON.stringify({ auth_user_id: t.auth_user_id, password: pw }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || !out.ok) throw new Error(out.error || ('HTTP ' + res.status));
+        closeModal();
+        showToast(`Password reset for <strong>${esc(t.name || t.email)}</strong>.`, { ttl: 4000 });
+      } catch (err) {
+        errEl.textContent = err.message || String(err);
+        btn.disabled = false; btn.textContent = 'Set password';
+      }
+    });
+  } });
 }
 
 function openTeamForm(t) {
@@ -9970,6 +10062,21 @@ async function addBonusRow(jobId, crewMember) {
   (state.bonusesByJob[jobId] ||= []).push(data);
   return data;
 }
+async function addCrewLeadBonus(jobId, leadName) {
+  const payload = {
+    job_id: jobId,
+    crew_member_id: null,
+    crew_member_name: (leadName && leadName.trim()) ? leadName.trim() : 'Crew lead',
+    amount: 50,
+    hours_actual: null,
+    note: 'Crew lead bonus',
+  };
+  const { data, error } = await supabase.from('pec_prod_job_bonuses').insert(payload).select().single();
+  if (error) { console.error('[bonus] crew-lead insert', error); return null; }
+  (state.bonusesByJob ||= {});
+  (state.bonusesByJob[jobId] ||= []).push(data);
+  return data;
+}
 async function saveBonusField(rowId, jobId, field, value) {
   const { error } = await supabase.from('pec_prod_job_bonuses').update({ [field]: value }).eq('id', rowId);
   if (error) console.error('[bonus] update', field, error);
@@ -10161,6 +10268,10 @@ async function renderUnifiedJob(jobId) {
 
       <div class="pec-card" id="sec-bonuses">
         <h3>Crew Bonuses <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span></h3>
+        <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;margin:2px 0 12px">
+          <input type="checkbox" id="bonusReceivedToggle" ${bonuses.some(b => b.note === 'Crew lead bonus') ? 'checked' : ''} style="width:auto">
+          Bonus received? Crew lead <strong>${esc(job.crew_lead || '(unset)')}</strong> gets a $50 bonus.
+        </label>
         ${bonusesHtml}
         <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
           <select id="bonusAddSelect" style="max-width:240px">${bonusOptions}</select>
@@ -10336,6 +10447,20 @@ async function renderUnifiedJob(jobId) {
       renderUnifiedJob(jobId);
     });
   }
+
+  // Crew-lead "bonus received?" toggle. Modeled as the presence of a single
+  // sentinel bonus row (note='Crew lead bonus', $50) attributed to the job's
+  // crew_lead, so it sums into bonus_cost like any other bonus and shows in the
+  // table. Checking adds the row; unchecking deletes it.
+  const clToggle = root.querySelector('#bonusReceivedToggle');
+  if (clToggle) {
+    clToggle.addEventListener('change', async () => {
+      const existing = (state.bonusesByJob?.[jobId] || []).find(b => b.note === 'Crew lead bonus');
+      if (clToggle.checked && !existing) await addCrewLeadBonus(jobId, job.crew_lead);
+      else if (!clToggle.checked && existing) await deleteBonusRow(existing.id, jobId);
+      renderUnifiedJob(jobId);
+    });
+  }
 }
 
 async function renderJobCosting() {
@@ -10479,7 +10604,7 @@ async function renderJobCosting() {
               const laborVar = (laborBudget != null && laborBudget > 0) ? ((laborActual - laborBudget) / laborBudget) : null;
               const laborVarCls = laborVar == null ? '' : (laborVar > 0 ? 'cost-neg' : 'cost-pos');
               return `<tr data-job-id="${esc(j.id)}">
-                <td><strong>${esc(j.address || '—')}</strong><div style="color:var(--muted);font-size:.62rem">#${esc(j.proposal_number)}</div></td>
+                <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number)}</div></td>
                 <td><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></td>
                 <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
                 <td>${salesTeamSelectHtml(j.sales_team, 'class="cost-text" data-cost="sales_team" data-table="job"')}</td>
@@ -11293,7 +11418,7 @@ function _mergeAcrossAreas(areaPlans) {
   const state = {
     view: 'jobs', // 'jobs' | 'new-job' | 'catalog'
     catalogTab: 'products',
-    catalogFlakeOpen: false, catalogQuartzOpen: false,
+    catalogOpen: {}, // material_type -> open?; absent = collapsed (all sections start collapsed)
     products: [], systemTypes: [], recipeSlots: [], colorPairings: [],
     jobs: [],
     jobFilter: { status: '' },
@@ -12347,14 +12472,13 @@ function _mergeAcrossAreas(areaPlans) {
         <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost is per kit. Manufacturer = who makes it; Supplier = who you order it from.</span>
       </div>
       ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => {
-        const isCollapsible = g.type === 'Flake' || g.type === 'Quartz';
-        const isOpen = !isCollapsible || (g.type === 'Flake' ? state.catalogFlakeOpen : state.catalogQuartzOpen);
-        const header = isCollapsible
-          ? `<div class="prod-cat-section prod-cat-toggle" data-cat-toggle="${g.type}" role="button" tabindex="0">
+        // Every material section is collapsible and starts collapsed; the open
+        // state lives in state.catalogOpen keyed by material_type (absent = closed).
+        const isOpen = !!(state.catalogOpen && state.catalogOpen[g.type]);
+        const header = `<div class="prod-cat-section prod-cat-toggle" data-cat-toggle="${g.type}" role="button" tabindex="0">
                <span class="prod-cat-chevron">${isOpen ? '▼' : '▶'}</span>
                ${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span>
-             </div>`
-          : `<div class="prod-cat-section">${esc(g.label)} <span style="color:var(--muted);font-weight:400">· ${g.rows.length}</span></div>`;
+             </div>`;
         return `
           ${header}
           <div class="pec-card" style="margin-top:6px;${isOpen ? '' : 'display:none'}">
@@ -12375,8 +12499,8 @@ function _mergeAcrossAreas(areaPlans) {
     host.querySelectorAll('[data-cat-toggle]').forEach(btn => {
       btn.addEventListener('click', () => {
         const t = btn.dataset.catToggle;
-        if (t === 'Flake')  state.catalogFlakeOpen  = !state.catalogFlakeOpen;
-        if (t === 'Quartz') state.catalogQuartzOpen = !state.catalogQuartzOpen;
+        state.catalogOpen = state.catalogOpen || {};
+        state.catalogOpen[t] = !state.catalogOpen[t];
         renderProducts(host);
       });
     });
