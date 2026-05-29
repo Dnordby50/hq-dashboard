@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 MST] cowork: applied payment_method_card migration; constraint now includes 'card'
+
+By: Cowork
+Changed: live PEC Supabase project zdfpzmmrgotynrwkeakd (constraint only). No repo files modified beyond this PROJECT-LOG entry.
+
+Picked up Task 1 from the 2026-05-28 "batch of 8 tweaks" handoff. Pasted the body of supabase/migrations/2026-05-28_payment_method_card.sql into the Supabase Studio SQL Editor (Primary Database, postgres role) and executed: drop constraint if exists pec_payments_method_check, then add it back with the new method set ('stripe','check','cash','zelle','card'). Wrapped in begin/commit, returned no error.
+
+Acceptance query result (`select pg_get_constraintdef(oid) from pg_constraint where conrelid='public.pec_payments'::regclass and conname='pec_payments_method_check';`):
+
+```
+CHECK ((method = ANY (ARRAY['stripe'::text, 'check'::text, 'cash'::text, 'zelle'::text, 'card'::text])))
+```
+
+'card' is the fifth value, matching the migration's expected output. The Invoicing payment modal's "Credit card" radio (method='card') can now save without violating the CHECK constraint. The 'stripe' value is still reserved for the Phase 2 Stripe Checkout webhook (unchanged).
+
+Files touched: PROJECT-LOG.md only. Did NOT run any payment writes (read-only verification).
+
+Handoff to Cowork: None.
+Handoff to Dylan: Once the push is deployed, exercise the three write paths Claude Code flagged in the prior entry: Team -> Reset password, Job Costing "Bonus received?" toggle, and recording a Credit card payment (which now persists thanks to this migration).
+
+---
+
 ## [2026-05-28 MST] crm: batch of 8 tweaks (catalog collapse, AR styling, payments, metrics, costing, password reset, crew bonus)
 
 By: Claude Code
