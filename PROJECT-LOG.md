@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 10:28 MST] crm: harden writes + recovery against the idle-JWT supabase-js wedge
+
+By: Claude Code
+Changed: index.html (payment/complete write path, render-fence Retry, new idle probe + `withDeadline` helper), CLAUDE.md (new Architecture Gotchas bullet).
+Why: Cowork's 2026-05-29 diagnosis (see entry below) confirmed the deposit-not-saving + "Render timed out" blocker was a stale-JWT wedge: after ~57 min idle, supabase-js's auth-refresh queue wedges and the first call hangs with ZERO requests on the wire; `refreshSession()` hangs too. The existing render fence caught reads, but the money-write path had no timeout (Submit hung silently on "Saving…") and the Retry button relied on `refreshSession()`, which itself hangs in this state.
+
+How it works now:
+1. **New `withDeadline(fn, {timeoutMs,label})`** (index.html ~5106): races one async op against a hard deadline with NO retry, throwing a `SESSION_TIMEOUT:`-tagged Error. Deliberately no auto-retry, unlike `withFreshSession` (reads), because a retried INSERT could double-record a payment if the first request actually landed.
+2. **Payment writes fail loud, not silent.** `openPaymentModal`'s `pec_payments` insert + the `deposit_collected` update (index.html ~6683) and `markJobComplete` (~6715) now go through `withDeadline`. On timeout the user sees "did NOT save — hard-reload, check Invoicing, only re-enter if missing" and the Submit button re-enables, instead of a forever-stuck spinner.
+3. **Render-fence Retry now reloads.** `showCrmRenderError` (index.html ~5466): the button is relabeled "Reload" and calls `location.reload()` instead of `refreshSession()` + re-render, because a full reload is the only thing that reliably clears the wedge.
+4. **Proactive idle probe** (index.html ~5113): a `visibilitychange` listener fires after ~15 min+ of hidden idle (signed-in only); it runs a 7s-deadline probe read and, if it times out (wedge), shows a persistent toast with a "Reload" action so the wedge is cleared BEFORE the user tries to save anything.
+5. **CLAUDE.md** gained an Architecture Gotchas bullet documenting the wedge, its tell-tale signature (zero network requests, no 401), and all the mitigations so they stay coherent.
+
+Note: these harden the user-facing symptom and recovery; they do not change supabase-js's internal refresh behavior (the root cause). The no-op auth lock at ~4955 remains the primary structural mitigation; reload remains the escape hatch.
+
+Files touched: index.html, CLAUDE.md, PROJECT-LOG.md.
+Verification: extracted the CRM module script and ran `node --check` (syntax OK); confirmed `state`/`withDeadline`/`isSessionTimeout` resolve in-module and are only referenced from callbacks that run post-init (no TDZ). NOT browser-tested this session (no automation tooling here; app needs login + gate).
+Next steps: None required.
+Handoff to Cowork: When convenient, verify in the live app after deploy: (a) the render-fence Retry button now reads "Reload" and reloads; (b) recording a payment still works normally (one row, no duplicate). If you can force a wedge (leave a tab idle ~20 min, then act), confirm the idle toast appears and a payment attempt fails loud rather than hanging.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-29 10:15 MST] cowork: resolved Supabase session hang + recovered Peter Cilliers deposit
 
 By: Cowork

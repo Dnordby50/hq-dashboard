@@ -5096,6 +5096,43 @@ async function withFreshSession(fn, { timeoutMs = 10000, label = 'query' } = {})
   }
 }
 
+// Race a single async op against a hard deadline WITHOUT retrying it. For
+// non-idempotent writes (payments, status changes) where withFreshSession's
+// auto-retry would risk a DUPLICATE insert. In the wedge this guards against
+// (stale-JWT auth-refresh queue) the underlying fetch never leaves the client
+// -- zero network traffic -- so the op won't silently land later either; a full
+// reload is the only real fix. On timeout this throws a SESSION_TIMEOUT-tagged
+// Error so callers can show reload guidance instead of a raw message.
+function withDeadline(fn, { timeoutMs = 12000, label = 'request' } = {}) {
+  return Promise.race([
+    fn(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`SESSION_TIMEOUT:${label}`)), timeoutMs)),
+  ]);
+}
+const isSessionTimeout = (err) => String(err && err.message || '').startsWith('SESSION_TIMEOUT:');
+
+// Proactive stale-session detection. supabase-js's auth-refresh queue can wedge
+// after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
+// zero network traffic (diagnosed live: ~57min idle, then the next click wedged
+// inside the refresh queue). Rather than let that first call be a user action
+// like saving a payment, probe on tab re-focus after a long idle with a short
+// deadline. If it times out the session is wedged, and only a reload clears it,
+// so prompt one. Registered once at module load.
+let _pecHiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { _pecHiddenAt = Date.now(); return; }
+  if (!_pecHiddenAt || (Date.now() - _pecHiddenAt) < 15 * 60 * 1000) return; // only after ~15min+ idle
+  if (!state || !state.adminUser) return; // signed-in views only
+  withDeadline(() => supabase.from('admin_users').select('id').limit(1), { timeoutMs: 7000, label: 'idle-probe' })
+    .catch(err => {
+      if (!isSessionTimeout(err)) return; // a real error is not the wedge we're watching for
+      console.warn('[pec] idle-probe timed out; session likely wedged -> prompting reload');
+      showToast('Your session went idle and may be stale. Reload to reconnect before saving anything.', {
+        ttl: 0, actionLabel: 'Reload', onAction: () => location.reload(),
+      });
+    });
+});
+
 // Client-side auto-status sweep. Flips public.jobs.status from 'scheduled' to
 // 'in_progress' for every job whose bridged pec_prod_jobs.install_date is
 // today. Runs at app boot from initAuth so any staffer opening the dashboard
@@ -5444,7 +5481,7 @@ function switchView(v) {
           // Retry button.
           if (/pec-spinner|Loading/.test(root.innerHTML)) {
             console.warn('[crm] switchView render timed out (15s) ->', v);
-            showCrmRenderError(new Error('Render timed out (no response in 15s). The auth token may be refreshing; click Retry.'), v);
+            showCrmRenderError(new Error('Render timed out (no response in 15s) — the session may have gone stale while idle. Click Reload to reconnect.'), v);
           }
         }, 15000);
         ret.then(() => { clearTimeout(renderTimeout); console.log('[crm] switchView render done ->', v); })
@@ -5477,18 +5514,17 @@ function showCrmRenderError(err, view) {
   root.innerHTML = `<div class="pec-empty" style="color:var(--danger);text-align:left">
     <strong>Failed to load this view.</strong>
     <div style="font-size:.75rem;color:var(--muted);margin-top:6px;white-space:pre-wrap">${esc(msg)}</div>
-    <button class="pec-btn sm" id="pecCrmRetry" style="margin-top:10px">Retry</button>
+    <button class="pec-btn sm" id="pecCrmRetry" style="margin-top:10px">Reload</button>
   </div>`;
   const btn = document.getElementById('pecCrmRetry');
-  if (btn) btn.addEventListener('click', async () => {
+  if (btn) btn.addEventListener('click', () => {
     btn.disabled = true;
-    btn.textContent = 'Retrying…';
-    // Force-refresh the auth session before re-entering the render. The
-    // "Retry usually works" pattern relied on the user waiting long enough
-    // for an in-flight token refresh to settle; doing it explicitly here
-    // makes the retry deterministic.
-    try { await supabase.auth.refreshSession(); } catch (_) { /* swallow; switchView will surface any real error */ }
-    switchView(view || (state && state.view) || 'dashboard');
+    btn.textContent = 'Reloading…';
+    // A wedged supabase-js auth-refresh queue cannot be cleared by
+    // refreshSession() -- that call queues behind the same stuck refresh and
+    // hangs too (diagnosed live). A full reload re-instantiates the client with
+    // a fresh refresh cycle and is the only reliable fix, so Retry now reloads.
+    location.reload();
   });
 }
 
@@ -6641,17 +6677,20 @@ function openPaymentModal(row, { deposit }) {
       if (!(amount > 0)) { errEl.textContent = 'Enter an amount greater than 0.'; return; }
       const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
       try {
-        const ins = await supabase.from('pec_payments').insert({
+        // No auto-retry on these writes: a retried insert could double-record a
+        // payment if the first request actually landed. withDeadline fails loud
+        // instead, and the wedge it guards against never reaches the network.
+        const ins = await withDeadline(() => supabase.from('pec_payments').insert({
           job_id: row.id,
           amount,
           method: fd.get('method'),
           reference: (fd.get('reference') || '').trim() || null,
           received_date: fd.get('received_date'),
           recorded_by: state.adminUser?.name || state.adminUser?.email || 'Unknown',
-        });
+        }), { label: 'payment' });
         if (ins.error) throw ins.error;
         if (deposit && !row.deposit_collected) {
-          const upd = await supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id);
+          const upd = await withDeadline(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
           if (upd.error) throw upd.error;
         }
         closeModal();
@@ -6659,7 +6698,9 @@ function openPaymentModal(row, { deposit }) {
         renderInvoicing();
       } catch (err) {
         console.error('[pec] payment insert failed', err);
-        errEl.textContent = err.message || String(err);
+        errEl.innerHTML = isSessionTimeout(err)
+          ? 'The server did not respond, so this did <strong>not</strong> save (your session may have gone stale while idle). Hard-reload the page (Cmd+Shift+R), check Invoicing to see whether it already saved, and only re-enter it if it did not.'
+          : esc(err.message || String(err));
         btn.disabled = false; btn.textContent = 'Submit';
       }
     });
@@ -6671,14 +6712,16 @@ async function markJobComplete(row) {
   if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
   const today = invToday();
   try {
-    const upd = await supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id);
+    const upd = await withDeadline(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
     if (upd.error) throw upd.error;
     try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
     showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
     renderInvoicing();
   } catch (err) {
     console.error('[pec] mark complete failed', err);
-    showToast(`Could not mark complete: ${esc(err.message || String(err))}`, { ttl: 6000 });
+    showToast(isSessionTimeout(err)
+      ? 'The server did not respond (your session may be stale). Hard-reload the page and try again.'
+      : `Could not mark complete: ${esc(err.message || String(err))}`, { ttl: 7000 });
   }
 }
 
