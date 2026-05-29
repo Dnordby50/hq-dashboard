@@ -817,6 +817,7 @@ body { padding: 18px; min-height: 100vh; }
 .rd-ico { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; }
 #rdSidebarNav .tab-btn.active .rd-ico,
 #rdSidebarEmpNav .tab-btn.active .rd-ico { opacity: 1; }
+#rdSidebarNav .rd-crm-divider { height: 1px; background: var(--rd-line); margin: 8px 12px; }
 
 /* Sidebar promo card */
 .rd-promo {
@@ -1864,14 +1865,16 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
       <aside class="pec-side">
         <nav class="pec-subnav" id="pecSubnav" style="display:none">
           <button data-pec-view="dashboard" class="active">Dashboard</button>
+          <button data-pec-view="metrics">Metrics</button>
+          <div class="pec-subnav-divider"></div>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
-          <button data-pec-view="invoicing">Invoicing</button>
-          <button data-pec-view="metrics">Metrics</button>
-          <button data-pec-view="docs">Invoicing Docs</button>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
+          <button data-pec-view="invoicing">Invoicing</button>
+          <button data-pec-view="docs">Invoicing Docs</button>
+          <div class="pec-subnav-divider"></div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="team" class="pec-role-admin">Team</button>
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
@@ -4646,7 +4649,15 @@ if (document.readyState === 'loading') {
     const crmNav = document.getElementById('pecSubnav');
     const crmButtons = [];
     if (crmNav) {
-      Array.from(crmNav.querySelectorAll('button[data-pec-view]')).forEach(srcBtn => {
+      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider')).forEach(srcBtn => {
+        // #pecSubnav is the hidden source of truth; the sidebar is a clone. Carry
+        // the section dividers across in document order so they render here too.
+        if (srcBtn.classList.contains('pec-subnav-divider')) {
+          const div = document.createElement('div');
+          div.className = 'rd-crm-divider';
+          navHost.appendChild(div);
+          return;
+        }
         const sidebarBtn = document.createElement('button');
         sidebarBtn.className = 'tab-btn rd-crm-btn';
         sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;

@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 22:20 MST] nav: reorder sidebar by workflow lifecycle with section dividers
+
+By: Claude Code
+Changed: index.html — `#pecSubnav` markup (button order + 2 dividers), the sidebar clone loop (~4656), and one new CSS rule (`#rdSidebarNav .rd-crm-divider`).
+Why: Dylan wanted the CRM sidebar ordered by workflow lifecycle (setup/insight, then the job pipeline, then admin) with thin dividers between the three sections. Invoicing Docs was kept (per Dylan's preference) and placed adjacent to Invoicing rather than buried.
+
+New order: Dashboard, Metrics / Customers, Jobs, Ordering, Job Schedule, Job Costing (admin) / Invoicing, Invoicing Docs / Price & Material Catalog (admin), Team (admin), Settings (admin). Pure UI reorder — no schema, no view handlers, no data-pec-view changes, no label changes. The data-pec-view bindings are untouched so every item still loads its view for free.
+
+Deviation from the original spec (important): the spec assumed `#pecSubnav` is the visible nav and that a `#tab-prescott-crm .pec-subnav-divider` CSS rule would render the dividers. It isn't. As of "Phase 3", `#pecSubnav` is permanently `display:none` and serves only as the source of truth; the visible nav is a clone rebuilt into the main HQ sidebar (`#rdSidebarNav`) by the loop at index.html ~4656, which iterated only `button[data-pec-view]`. So:
+- The two `<div class="pec-subnav-divider">` markers were added to `#pecSubnav` (clone source).
+- The clone loop now selects `button[data-pec-view], .pec-subnav-divider` (document order preserved) and, for a divider, appends a `<div class="rd-crm-divider">` to the sidebar.
+- Styling lives in a new rule `#rdSidebarNav .rd-crm-divider { height:1px; background:var(--rd-line); margin:8px 12px; }` next to the sidebar button styles. The spec's `#tab-prescott-crm .pec-subnav-divider` rule was NOT added (it would target the hidden source and never render); a single working rule avoids dead CSS.
+The MutationObserver/active-state logic is unaffected (dividers are not buttons, so they never enter `crmButtons` or match `.rd-crm-btn`).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy, confirm the sidebar shows the new order with two thin horizontal lines between the three sections, and that each item still opens its view.
+
+---
+
 ## [2026-05-28 22:10 MST] branding: browser tab title is now "TopCoat"
 
 By: Claude Code
