@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 22:22 MST] ui: remove over-explaining placeholder from top search bar
+
+By: Claude Code
+Changed: index.html — `#rdSearch` placeholder (line ~4566) set to empty.
+Why: Dylan found the "Search tasks, SOPs, jobs…" placeholder over-explained; the magnifier icon makes the field self-explanatory. Note: the field is actually wired to a live client-side filter (input handler that hides non-matching `.task-item`, `.sop-card`, `.email-card`, jobs rows, `.project-card`), so despite his "not active" read it does work — only the placeholder text was removed; the handler is untouched.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-28 22:20 MST] nav: reorder sidebar by workflow lifecycle with section dividers
 
 By: Claude Code
