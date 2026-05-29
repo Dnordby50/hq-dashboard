@@ -4,6 +4,57 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 10:15 MST] cowork: resolved Supabase session hang + recovered Peter Cilliers deposit
+
+By: Cowork
+
+Picked up the Cowork prompt for Dylan's blocker on the Invoicing screen (Peter Cilliers "Mark deposit paid" hung on Saving, and CRM tabs showing "Failed to load this view"). All four tasks completed. No code or schema changes; only a single payment row written through the normal UI.
+
+**Task 1 (Supabase health).** Project zdfpzmmrgotynrwkeakd is healthy. Compute NANO, status "Healthy", no Paused/Restoring banner, advisor clean. Not the cause.
+
+**Task 2 (deposit verification, read-only).** Confirmed the deposit was missing before the fix.
+- Customer: Peter Cilliers (id b38b3dd6-62a1-40cd-bb96-e3f13c37808c)
+- Job: 66a269b0-1fd5-4485-b77a-06bc3222f5fd at 1612 Bent Tree Trail, Prescott AZ 86303
+- Status: signed, price $3,555.00, deposit_amount $1,777.50, deposit_collected = **false**
+- pec_payments rows for this job before: **0** ("Success. No rows returned")
+- Schema note for future Cowork prompts: the column in the original prompt (jobs.customer_name) does not exist. Name lives on public.customers and is joined via jobs.customer_id. pec_payments has no created_at column (uses received_date). I substituted the join and reran the queries.
+
+**Task 3 (live app repro + fix, with failure signature).** Reproduced on https://hq-prescott.netlify.app while Dylan was already signed in. The bug is a **stale-session hang after extended idle**, not a network block or paused project. Captured signature before the fix from the page console (the Network panel showed zero in-flight Supabase requests, which is itself a signal that supabase-js is queueing internally waiting on a token refresh that never completes, not that requests are failing on the wire):
+- 09:00:06 session loaded clean, switchView render done -> dashboard
+- 09:00:31 switchView render done -> invoicing (still healthy)
+- ~57 minutes idle
+- 09:57:54 user navigated to Jobs, then immediately:
+  - 5x EXCEPTION "A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received" (Chrome-extension message ports closed during the idle period)
+  - WARNING "[pec] renderJobDetail timed out; refreshing session and retrying once" (the app's own defensive retry at index.html:5092 fired, then also timed out)
+  - WARNING "[crm] switchView render timed out (15s) -> jobs" (the 15s switchView fence at index.html:5437 tripped)
+  - ERROR "Render timed out (no response in 15s). The auth token may be refreshing; click Retry." (the user-facing message Dylan saw)
+  - ERROR "[renderJobDetail] timed out after 10000ms" (the 10s detail fence)
+- Clicking the in-app Retry button stayed stuck on "Retrying..." indefinitely (the retry path is exercising the same wedged client and inherits the same hang).
+
+Fix: Cmd+Shift+R hard reload. After reload, Dashboard rendered cleanly (45 customers, 47 active jobs, 46 pending sign), Jobs tab rendered with all rows, and the network panel showed healthy 200/206 responses against https://zdfpzmmrgotynrwkeakd.supabase.co (sample: GET /rest/v1/jobs?select=... -> 206, GET /rest/v1/pec_prod_system_types?select=... -> 200).
+
+**Task 4 (re-record deposit through UI).** Dylan confirmed amount/method/date out of band (check #996744 for $1,780.00 received 2026-05-14, slightly higher than the $1,777.50 default). Used the Invoicing UI's "Mark Deposit Paid" modal on Peter Cilliers' row, set Amount 1780, Method Check, Reference 996744, Received Date 05/14/2026, Submit. Toast confirmed "Logged $1,780 for Peter Cilliers". Before/after live-UI deltas verified: Total AR $313,142.25 -> $311,362.25 (a $1,780.00 drop), "Signed proposal, no deposit collected" bucket 45 jobs / $155,396.13 -> 44 jobs / $153,618.13, and Peter no longer appears in that bucket. Supabase verification re-run:
+- pec_payments row count for this job: **1** (no duplicate)
+- jobs.deposit_collected: **true**
+- Payment row: id cae43848-2464-4c15-90fc-14ec82ecca77, amount 1780.00, method check, reference 996744, received_date 2026-05-14
+
+Files touched: PROJECT-LOG.md only.
+
+## Handoff to Claude Code
+
+Network-tab signature for the no-double-insert timeout decision at index.html:6644: when the session was wedged, supabase-js requests were NOT visible in the Network panel at all (zero entries to *.supabase.co for the Jobs render attempt), and the console showed no 401/403 from the API. The hang is happening inside the client library before the fetch leaves, almost certainly inside the auth refresh flow that supabase-js queues writes behind. Practical implications for index.html:6644:
+1. A network-level abort/timeout (AbortController on the fetch) will not catch this hang, because there is no fetch yet. The timeout has to wrap the `.insert(...)` Promise itself.
+2. The defensive retry already present at index.html:5092 ("renderJobDetail timed out; refreshing session and retrying once") calls into the same wedged client, so it also hangs. Worth auditing whether the retry forces a hard `supabase.auth.signOut({scope:'local'})` + `signInWithPassword(...)` cycle (it should not silently keep using the same client instance whose refresh promise is stuck).
+3. The double-insert worry is real but narrow here: if the user clicks Submit, the Promise hangs, and the user clicks Submit again, the second click could enqueue a duplicate write that fires later when the client unwedges. Recommend a per-modal in-flight flag flipped on click and only cleared by either the Promise settling OR a Promise.race timeout that rejects loudly (so the spinner stops and the user sees an error rather than a silent "Saving" forever). On reject, do NOT auto-retry; surface a "Reload the page and try again" message, since the underlying state is the wedged client.
+
+Not implementing any of this from Cowork (per project rules code edits are Claude Code's lane); just passing the diagnosis through.
+
+Handoff to Dylan: Dashboard is working again and Peter Cilliers' $1,780 check deposit is on the books (payment row cae43848-2464-4c15-90fc-14ec82ecca77, jobs.deposit_collected now true, Total AR dropped by $1,780). Two things to watch:
+1. If you see the "Render timed out" message again after leaving the tab open for an hour+, the cheap fix is still Cmd+Shift+R until the timeout/retry path at index.html:5092 + 6644 gets hardened. The Invoicing payment Submit button is the most painful place this can bite because it silently hangs on what looks like a successful click; until that is fixed, treat a Saving... spinner that does not clear within ~5 seconds as a hang and reload before clicking again.
+2. The deposit you recorded was $1,780, which is $2.50 over the $1,777.50 the system expected as the canonical 50%. Not an error (recorded exactly as you said the check was written), just flagging in case that gap matters downstream for the AR rollup or for whatever Peter's contract actually says.
+
+---
+
 ## [2026-05-28 22:22 MST] ui: remove over-explaining placeholder from top search bar
 
 By: Claude Code
