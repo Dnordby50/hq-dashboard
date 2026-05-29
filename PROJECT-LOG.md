@@ -114,6 +114,60 @@ Handoff to Cowork: None (the activation can be done in the app UI; only escalate
 
 ---
 
+## [2026-05-28 MST] cowork: flake-color "activate" was already done; surfaced real cause - cross-module ReferenceError in slotHtml
+
+By: Cowork
+Changed: PROJECT-LOG.md only.
+
+Picked up Task A from the consolidated handoff ("activate flake colors") after Dylan flagged the flake portion as really important. Ran the BEFORE check first instead of just executing the UPDATE.
+
+Query result (Supabase, primary):
+- `select active, count(*) from public.pec_prod_products where material_type='Flake' group by active` → only one row: `active=true, n=20`.
+- Precise breakdown: `active_true=20, active_false=0, active_null=0, total=20`. Spot-check on the full list: Autumn Brown Flake, Cabin Fever, Coyote, Creekbed, Domino, Feather Gray, Garnet, Glacier, Gravel, Nightfall (10 visible) and 10 more, ALL with active=true.
+
+So the handoff's `update public.pec_prod_products set active=true where material_type='Flake' and name<>'Special Order Flake'` would have been a zero-row no-op. Either Dylan or a prior session already activated them since the 2026-05-28 flake-fix entry was written, or the 2026-05-28 diagnosis ("the flake colors are inactive") was incorrect at the time.
+
+Sanity-tested in the live CRM anyway. Opened Pam Duncan's job, set System Type = Flake. Result: no swatch picker, no Special Order tile, no "No products in the catalog" message either. Just the System Type dropdown, then Custom Options. Picker is just gone.
+
+Pulled the console:
+
+```
+ReferenceError: cureSpeedSpec is not defined
+    at slotHtml (https://hq-prescott.netlify.app/:7621:22)
+    at https://hq-prescott.netlify.app/:7674:27   (Array.map)
+    at renderAreas (https://hq-prescott.netlify.app/:7670:28)
+    at HTMLSelectElement.<anonymous> (https://hq-prescott.netlify.app/:7701:7)
+```
+
+That throws on EVERY slot iteration inside renderAreas, which is why no slots render and the picker is empty. Activating colors in the DB cannot fix this because the render explodes before it ever asks productsForSlot what to show.
+
+Diagnosed in the local source (HEAD = db780b3, matches origin/main and the deploy):
+- `slotHtml` arrow function: index.html line 7635, inside the `<script type="module">` that spans lines 4928 to 11006.
+- `function cureSpeedSpec(product)`: index.html line 11127, inside a SEPARATE `<script type="module">` that spans lines 11120 to 12958.
+- Two `<script type="module">` blocks are independent ES modules. Top-level declarations in one are NOT accessible from the other. So the call at line 7717 (`const spec = resolved ? cureSpeedSpec(resolved) : null;`) inside `slotHtml` will always be a ReferenceError, every time renderAreas runs.
+
+Likely introduced when one of the area-editor swatch slot improvements was placed in the first module while `cureSpeedSpec` was kept in the second (the calculator/PM module). 669d1de ("Flake picker Special Order option + notes") is the most plausible candidate but not confirmed; could also have come in earlier.
+
+Files touched: PROJECT-LOG.md only. Did NOT run the UPDATE (no-op). Did NOT modify index.html (code fix is Claude Code's domain per project rules).
+
+## Handoff to Claude Code (please pick this up next)
+
+The flake picker is broken because of a cross-module reference. Pick ONE of:
+
+1. Move `function cureSpeedSpec(product)` (index.html line 11127) up into the same `<script type="module">` block as `slotHtml` (the module that spans 4928 to 11006). That module also contains every other call site for cureSpeedSpec in the area-editor code, so this is a no-behavior change unless another module also needs it.
+2. Or: import/export cureSpeedSpec between modules. Riskier given the single-file convention, less aligned with how this codebase is organized.
+3. Or: stop calling cureSpeedSpec from slotHtml and inline whatever it returns. Smallest blast radius if the cure-speed dropdown is the only consumer.
+
+Verification: after the fix, open any job, set System Type = Flake, confirm the basecoat/flake/topcoat slot UI renders with swatches, the Special Order tile is present, and no console error. Should also unblock any other system whose slots reference cureSpeedSpec (likely all of them via the topcoat slot).
+
+While in there: the same render also fails with `computeMaterialPlan is not defined` in the Budget card (visible on Pam Duncan's job). Worth checking if that's the same cross-module shape and can be fixed in the same pass.
+
+## Handoff to Dylan
+
+Nothing for you on this one. Once Claude Code lands the fix and you push, the picker will populate from the catalog (everything is already active). No data action needed.
+
+---
+
 ## [2026-05-28 MST] cowork: smoke-tested new Invoicing tabs; published Zap v5 with salesperson mapping
 
 By: Cowork
