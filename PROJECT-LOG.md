@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 22:10 MST] branding: browser tab title is now "TopCoat"
+
+By: Claude Code
+Changed: index.html `<title>` (line 6).
+Why: Dylan asked to drop the "HQ" name from the browser tab. Confirmed the tab should read just "TopCoat" (the product brand). Confirmed separately that the in-app "TopCoat" brand labels (CRM tab button, sign-in header) stay as-is — they already read "TopCoat", so no rename was needed there.
+Changed `<title>HQ Command Center</title>` to `<title>TopCoat</title>`. Left the CRM error fallback (`document.title = '[CRM error] ...'`) untouched.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-28 22:08 MST] ordering: show per-line and per-supplier material cost in Pull Material
 
 By: Claude Code
