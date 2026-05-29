@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-28 22:08 MST] ordering: show per-line and per-supplier material cost in Pull Material
+
+By: Claude Code
+Changed: index.html, `renderMaterialPull`.
+Why: Dylan wanted the Pull Material report to surface material cost for the selected period, not just quantities. The aggregate already carried `unit_cost` per row (from `unit_cost_snapshot`) and a small grand-total was shown in the toolbar, but the table had no cost at all.
+
+What changed:
+1. Added two right-aligned columns to each supplier table: **Unit $** (per kit/box, 2-decimal) and **Line $** (unit_cost x total_qty, whole dollars). Lines with no cost snapshot show "—".
+2. Each supplier section header now shows its **subtotal** ("· N lines · $X") next to the line count.
+3. The toolbar grand total ("est $X") is kept and made bolder/inked so it reads as the headline number.
+4. Factored the cost math into one `lineCost(r)` helper reused by the grand total, the per-supplier subtotal, and the per-line cell, plus `money`/`money2` formatters (whole-dollar vs 2-decimal). Null-cost lines contribute 0 everywhere, matching prior behavior.
+
+How it works: all cost data was already on the aggregated rows, so this is presentation only — no new query, no schema change. The Print button prints the modal, so the printed pull sheet now carries the cost columns and subtotals automatically.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-05-28 22:03 MST] ordering: remove Google Sheets sync; Mark complete now Supabase-only
 
 By: Claude Code

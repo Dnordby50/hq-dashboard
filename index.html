@@ -11615,7 +11615,10 @@ function _mergeAcrossAreas(areaPlans) {
     }, {});
     const supplierKeys = Object.keys(groupedBySupplier);
     const totalLines = rows.length;
-    const totalCost = rows.reduce((s, r) => s + (r.unit_cost == null ? 0 : Number(r.unit_cost) * Number(r.total_qty)), 0);
+    const lineCost = (r) => (r.unit_cost == null ? 0 : Number(r.unit_cost) * Number(r.total_qty));
+    const totalCost = rows.reduce((s, r) => s + lineCost(r), 0);
+    const money  = (n) => '$' + Math.round(Number(n)).toLocaleString();
+    const money2 = (n) => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPullBg">
@@ -11634,27 +11637,32 @@ function _mergeAcrossAreas(areaPlans) {
             <button class="pec-btn sm" id="prodPullPreset7">Next 7 days</button>
             <button class="pec-btn sm" id="prodPullPreset14">Next 14 days</button>
             <button class="pec-btn sm" id="prodPullPreset30">Next 30 days</button>
-            <span style="margin-left:auto;color:var(--muted);font-size:.7rem">${totalLines} line${totalLines===1?'':'s'}${totalCost > 0 ? ` · est $${totalCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : ''}</span>
+            <span style="margin-left:auto;color:var(--muted);font-size:.7rem">${totalLines} line${totalLines===1?'':'s'}${totalCost > 0 ? ` · est <strong style="color:var(--rd-ink)">${money(totalCost)}</strong>` : ''}</span>
             <button class="pec-btn primary sm" id="prodPullPrint">Print</button>
           </div>
 
           ${supplierKeys.length === 0
             ? '<div class="pec-empty" style="margin-top:14px">No outstanding material in this window. Either no jobs are scheduled, or every line is already marked delivered.</div>'
-            : supplierKeys.map(sup => `
-              <div class="pec-pull-supplier">${esc(sup)} <span style="color:var(--muted);font-weight:400;font-size:.75rem">· ${groupedBySupplier[sup].length} line${groupedBySupplier[sup].length===1?'':'s'}</span></div>
+            : supplierKeys.map(sup => {
+              const supRows = groupedBySupplier[sup];
+              const supCost = supRows.reduce((s, r) => s + lineCost(r), 0);
+              return `
+              <div class="pec-pull-supplier">${esc(sup)} <span style="color:var(--muted);font-weight:400;font-size:.75rem">· ${supRows.length} line${supRows.length===1?'':'s'}${supCost > 0 ? ` · ${money(supCost)}` : ''}</span></div>
               <div class="pec-table-wrap">
               <table class="pec-table pec-pull-table">
                 <thead><tr>
-                  <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits/boxes)</th><th>Per-job breakdown</th>
+                  <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits/boxes)</th><th style="text-align:right">Unit $</th><th style="text-align:right">Line $</th><th>Per-job breakdown</th>
                 </tr></thead>
                 <tbody>
-                  ${groupedBySupplier[sup].map(row => `
+                  ${supRows.map(row => `
                     <tr class="nohover">
                       <td>${esc(row.material_type)}</td>
                       <td>${esc(row.product_name)}</td>
                       <td>${esc(row.color || '')}</td>
                       <td>${esc(row.cure_speed || '')}</td>
                       <td><strong>${esc(row.total_qty)}</strong></td>
+                      <td style="text-align:right">${row.unit_cost == null ? '—' : money2(row.unit_cost)}</td>
+                      <td style="text-align:right">${row.unit_cost == null ? '—' : money(lineCost(row))}</td>
                       <td style="font-size:.7rem;color:var(--muted)">
                         ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}`).join('<br>')}
                       </td>
@@ -11663,7 +11671,8 @@ function _mergeAcrossAreas(areaPlans) {
                 </tbody>
               </table>
               </div>
-            `).join('')
+            `;
+            }).join('')
           }
         </div>
       </div>
