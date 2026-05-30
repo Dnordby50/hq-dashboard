@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 21:30 MST] invoicing: refresh session before payment/status writes so the idle JWT wedge can't fail them
+
+By: Claude Code
+Changed: index.html — new `withFreshWrite` helper; the three Invoicing writes (record payment, deposit-collected flag, mark complete) now use it instead of `withDeadline`.
+Why: Dylan hit "The server did not respond, so this did not save (your session may have gone stale while idle)…" when recording payments on the Invoicing tab and the full invoice section.
+
+Root cause: those writes were wrapped in `withDeadline` (index.html ~5147), a 12s hard timeout with NO session refresh. After the tab sits idle, supabase-js's auth-refresh queue wedges (the idle-JWT wedge documented in the e1d1191 work / Architecture Gotchas) and the next write hangs with zero network traffic until the deadline fires, surfacing the "did not respond, hard-reload" message. Reads use `withFreshSession`, which refreshes and auto-reloads on the wedge, so they self-heal; the three writes deliberately skipped that (auto-retry could double-record a payment), so they failed loud and forced a manual hard-reload every time.
+
+Fix: added `withFreshWrite`, which refreshes the session BEFORE the write:
+- refresh hangs -> that IS the wedge -> `_pecWedgeReload()` (one-shot reload), and the write is NEVER attempted, so there's zero chance it silently landed (no double-record risk).
+- refresh resolves -> the client is fresh -> the single write won't hang.
+This keeps the no-retry safety (the write still runs exactly once) while clearing/handling the wedge instead of dead-ending on it. If a write somehow still hangs after a good refresh, `withDeadline`'s inner SESSION_TIMEOUT still surfaces so the "check whether it saved" guidance remains as a last-resort fallback.
+
+How it differs from `withFreshSession`: that helper retries the operation after refresh (safe for idempotent reads); `withFreshWrite` refreshes first and runs the write once (safe for non-idempotent writes). The idle-probe at index.html ~5169 stays on `withDeadline` (it's a read probe; correct as-is).
+
+Tradeoff: each payment/status write now does a session refresh (~a few hundred ms) before committing. Negligible for these low-frequency actions, and it eliminates the wedge failure.
+
+Syntax-checked the inline script blocks against HEAD: failure set unchanged (only the pre-existing ESM-import and `new Function`-wrapper false positives), so no new syntax errors.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy, record a test payment after leaving the tab idle 15+ min. It should either save cleanly or briefly auto-reload (then save on retry), instead of showing the "did not respond" message. If you still see that message, capture the console line tagged `[pec]` and send it over.
+
 ## [2026-05-29 21:05 MST] crm: auto-reload on session wedge + wall-clock idle probe (Cowork, by request)
 
 By: Cowork

@@ -5152,6 +5152,35 @@ function withDeadline(fn, { timeoutMs = 12000, label = 'request' } = {}) {
 }
 const isSessionTimeout = (err) => String(err && err.message || '').startsWith('SESSION_TIMEOUT:');
 
+// For non-idempotent writes (payments, status flips) that must survive the idle
+// JWT wedge WITHOUT risking a duplicate. Unlike withDeadline (which just races a
+// cold write against a deadline and fails loud on the wedge), this refreshes the
+// session FIRST:
+//   - refresh hangs  -> that's the wedge signature -> reload, and crucially the
+//     write is NEVER attempted, so there is zero chance it silently landed.
+//   - refresh resolves -> the client is fresh -> the single write won't hang.
+// withFreshSession's auto-retry can't be used here because retrying a write that
+// may have already committed could double-record. Refresh-then-write-once does.
+// If the write still hangs after a good refresh (rare), withDeadline's
+// SESSION_TIMEOUT surfaces so the caller can show "check whether it saved".
+async function withFreshWrite(fn, { timeoutMs = 12000, label = 'write' } = {}) {
+  const raceRefresh = Promise.race([
+    supabase.auth.refreshSession(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
+  ]);
+  try {
+    await raceRefresh;
+  } catch (rerr) {
+    if (String(rerr && rerr.message || '').includes('timed out')) {
+      _pecWedgeReload(`${label} refreshSession timed out (pre-write)`);
+      throw new Error(`SESSION_WEDGED:${label}`);
+    }
+    // Non-timeout refresh error (e.g. transient): fall through and let the write
+    // run; it will surface the real error to the caller if anything is wrong.
+  }
+  return await withDeadline(fn, { timeoutMs, label });
+}
+
 // Proactive stale-session detection. supabase-js's auth-refresh queue can wedge
 // after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
 // zero network traffic (diagnosed live: ~57min idle, then the next click wedged
@@ -6742,10 +6771,12 @@ function openPaymentModal(row, { deposit }) {
       if (!(amount > 0)) { errEl.textContent = 'Enter an amount greater than 0.'; return; }
       const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
       try {
-        // No auto-retry on these writes: a retried insert could double-record a
-        // payment if the first request actually landed. withDeadline fails loud
-        // instead, and the wedge it guards against never reaches the network.
-        const ins = await withDeadline(() => supabase.from('pec_payments').insert({
+        // Refresh the session before writing so an idle-JWT wedge is cleared (or
+        // detected and reloaded) WITHOUT ever sending the insert into a wedged
+        // client. No auto-retry: a retried insert could double-record a payment
+        // if the first request actually landed, so withFreshWrite refreshes
+        // first and runs the write exactly once.
+        const ins = await withFreshWrite(() => supabase.from('pec_payments').insert({
           job_id: row.id,
           amount,
           method: fd.get('method'),
@@ -6755,7 +6786,7 @@ function openPaymentModal(row, { deposit }) {
         }), { label: 'payment' });
         if (ins.error) throw ins.error;
         if (deposit && !row.deposit_collected) {
-          const upd = await withDeadline(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
+          const upd = await withFreshWrite(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
           if (upd.error) throw upd.error;
         }
         closeModal();
@@ -6777,7 +6808,7 @@ async function markJobComplete(row) {
   if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
   const today = invToday();
   try {
-    const upd = await withDeadline(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
+    const upd = await withFreshWrite(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
     if (upd.error) throw upd.error;
     try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
     showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
