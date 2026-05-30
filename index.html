@@ -8181,10 +8181,11 @@ async function renderJobDetail(id) {
       grinder_tooling_grit: $('jcGrinder')?.value || null,
     };
     try {
-      // Clear the idle-JWT wedge ONCE before the write sequence (reloads if the
-      // session is wedged). Without this the first write below could hang
-      // forever on a stale session, leaving the button stuck on "Saving…".
-      await ensureFreshSession('job-save');
+      // Writes are bounded by withDeadline + the client-level timedFetch, so a
+      // stale session fails cleanly within seconds (and the client self-heals on
+      // retry) instead of hanging the button on "Saving…". No pre-refresh step:
+      // it added latency and, on a slow refresh, surfaced a confusing
+      // SESSION_WEDGED error without saving.
       const upd = await withDeadline(() => supabase.from('jobs').update(jobPatch).eq('id', id), { label: 'job-save' });
       if (upd.error) throw upd.error;
       // Delete + re-insert job_areas; the cascade clears job_area_materials.
@@ -8245,10 +8246,14 @@ async function renderJobDetail(id) {
         const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRows), { label: 'job-save-materials' });
         if (mins.error) throw mins.error;
       }
-      const diff = diffJobSnapshot(job, jobPatch, areasRes.data, areas);
-      if (Object.keys(diff.after).length) {
-        await logJobActivity(id, 'save', diff.before, diff.after);
-      }
+      // The data writes are done and confirmed at this point. Show an explicit
+      // success confirmation so the save is unambiguous, then do the
+      // best-effort activity log and re-render (neither can undo the save).
+      showToast('Saved ✓', { ttl: 2500 });
+      try {
+        const diff = diffJobSnapshot(job, jobPatch, areasRes.data, areas);
+        if (Object.keys(diff.after).length) await logJobActivity(id, 'save', diff.before, diff.after);
+      } catch (_) { /* activity log is best-effort; never block a successful save */ }
       renderJobDetail(id);
     } catch (err) {
       console.error('[pec] job save failed', err);
