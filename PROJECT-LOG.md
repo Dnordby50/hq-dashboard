@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] jobs migration: ran 2026-05-31_job_finalize.sql; finalized + finalized_at are live in prod
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior 2026-05-30 entry. Pasted `supabase/migrations/2026-05-31_job_finalize.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and clicked Run.
+
+Run result: `Success. No rows returned`, no error. Two `add column if not exists` calls inside `begin; ... commit;`, no view touched.
+
+Acceptance check: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('finalized','finalized_at');` returned 2 rows. Confirmed `public.jobs.finalized boolean not null default false` and `public.jobs.finalized_at timestamptz` are present.
+
+Net behavior for Dylan: the new "Finalize job" / "Reopen" buttons on the Job detail now write through to the database. Line items + price still work without finalize (they only touch `line_items` and `price`, which existed already), but locking them via Finalize is now persistent.
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+Hard-reload. On a job: add line items (title + detail + price), confirm Job total + Price update; click "Finalize job" and confirm the rows go read-only and "Reopen" appears. Then on the invoice for that job, "Add change order" should raise both the invoice total and the AR balance. Confirm the dashboard "Recently Sold Jobs" shows the new Price column and "Colors NOT confirmed" sorts by install date with rows turning red within 14 days.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-30 MST] jobs/invoicing: line items + finalize/price-lock, change orders, install dates + urgency, dashboard price, condensed header
 
 By: Claude Code
