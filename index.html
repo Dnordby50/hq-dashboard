@@ -5059,6 +5059,7 @@ const ACTIVITY_FIELD_LABELS = {
   mohs_hardness: 'mohs hardness',
   additional_non_slip: 'additional non-slip',
   grinder_tooling_grit: 'grinder grit',
+  colors_confirmed: 'colors confirmed',
   areas_count: 'areas',
   total_sqft: 'total sqft',
   status: 'status',
@@ -5806,14 +5807,21 @@ function randomToken() {
 // ============================================================
 async function renderDashboard() {
   const root = $('pecViewRoot');
-  const [custCount, jobsAll, refsNew, reviews, sysRes] = await Promise.all([
+  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc] = await Promise.all([
     supabase.from('customers').select('id', { count: 'exact', head: true }).is('archived_at', null),
     supabase.from('jobs').select('id,status,confirmed,created_at,address,type,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
     supabase.from('reviews').select('rating'),
     supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    // Active sold jobs whose colors aren't confirmed yet. Kept as its own query
+    // (not folded into the Recent Jobs select) so that before the
+    // 2026-05-30_colors_confirmed.sql migration runs, the missing column errors
+    // ONLY this query -- it resolves with {error}, we fall back to [], and the
+    // rest of the dashboard is unaffected. completed/archived jobs excluded.
+    supabase.from('jobs').select('id,address,status,created_at,customers(name)').eq('colors_confirmed', false).is('archived_at', null).in('status', ['confirmed', 'scheduled', 'in_progress']).order('created_at', { ascending: false }),
   ]);
   const jobs = jobsAll.data || [];
+  const colorsPending = colorsCnc.error ? [] : (colorsCnc.data || []);
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
   const active = jobs.filter(j => j.status !== 'completed').length;
   const completed = jobs.filter(j => j.status === 'completed').length;
@@ -5830,7 +5838,20 @@ async function renderDashboard() {
       <div class="pec-stat"><div class="pec-stat-label">Avg Rating</div><div class="pec-stat-val">${avgRating}</div></div>
     </div>
     <div class="pec-card">
-      <h3>Recent Jobs</h3>
+      <h3>Colors NOT confirmed <span style="color:var(--muted);font-weight:400;font-size:.8rem">${colorsPending.length}</span></h3>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody>${colorsPending.map(j => `
+          <tr data-job-id="${esc(j.id)}">
+            <td>${esc(j.customers?.name || '—')}</td>
+            <td>${esc(j.address || '—')}</td>
+            <td><span class="pec-badge ${esc(j.status)}">${esc(j.status.replace('_',' '))}</span></td>
+            <td>${fmtDate(j.created_at)}</td>
+          </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">All colors confirmed ✓</td></tr>'}</tbody>
+      </table></div>
+    </div>
+    <div class="pec-card">
+      <h3>Recently Sold Jobs</h3>
       <table class="pec-table">
         <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Created</th></tr></thead>
         <tbody>${jobs.slice(0,10).map(j => `
@@ -7677,7 +7698,18 @@ async function renderJobDetail(id) {
             </select>
           </div>
         </div>
-        <div class="pec-field"><label>Grinder tooling / grit used</label><input id="jcGrinder" value="${esc(job.grinder_tooling_grit || '')}"></div>
+      </div>
+    </div>
+
+    <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : '#d97706'}">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <strong>Colors ${job.colors_confirmed ? 'confirmed' : 'not confirmed'}</strong>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${job.colors_confirmed
+            ? ('Confirmed' + (job.colors_confirmed_at ? ' ' + fmtDate(job.colors_confirmed_at) : ''))
+            : 'Customer has not finalized colors yet. Mark confirmed once colors are locked in.'}</div>
+        </div>
+        <button class="pec-btn ${job.colors_confirmed ? 'ghost' : 'primary'} sm" id="jobColorsToggle">${job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed'}</button>
       </div>
     </div>
 
@@ -8183,6 +8215,27 @@ async function renderJobDetail(id) {
   }
   renderAreas();
 
+  // Colors-confirmed toggle (under the job card). Writes immediately and
+  // re-renders -- deliberately NOT part of the big Save (which runs full recipe
+  // validation + an area delete/reinsert), so confirming colors can never be
+  // blocked by that or overwritten. Mirrors the invoice deposit-flag pattern.
+  const colorsToggle = $('jobColorsToggle');
+  if (colorsToggle) colorsToggle.addEventListener('click', async () => {
+    const next = !job.colors_confirmed;
+    colorsToggle.disabled = true; colorsToggle.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('jobs').update({ colors_confirmed: next, colors_confirmed_at: next ? new Date().toISOString() : null }).eq('id', id), { label: 'colors-confirmed' });
+      if (upd.error) throw upd.error;
+      try { await logJobActivity(id, 'save', { colors_confirmed: job.colors_confirmed }, { colors_confirmed: next }); } catch (_) {}
+      showToast(next ? 'Colors confirmed ✓' : 'Colors marked not confirmed', { ttl: 3000 });
+      renderJobDetail(id);
+    } catch (err) {
+      console.error('[pec] colors_confirmed toggle failed', err);
+      colorsToggle.disabled = false; colorsToggle.textContent = job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed';
+      alert(isSessionStale(err) ? 'The session briefly stalled — tap the button again.' : 'Could not update: ' + (err.message || err));
+    }
+  });
+
   $('jobSaveBtn').addEventListener('click', async () => {
     const msg = $('jobSaveMsg'); const btn = $('jobSaveBtn');
     // Validate required recipe slots before writing anything. On failure,
@@ -8263,7 +8316,9 @@ async function renderJobDetail(id) {
       moisture: $('jcMoisture') ? jcInt('jcMoisture') : null,
       mohs_hardness: $('jcMohs') ? jcInt('jcMohs') : null,
       additional_non_slip: $('jcNonSlip') ? jcBool('jcNonSlip') : null,
-      grinder_tooling_grit: $('jcGrinder')?.value || null,
+      // grinder_tooling_grit is intentionally NOT written here: it was moved off
+      // the job detail and lives only on the crew's job-complete work order.
+      // Omitting it leaves the column untouched on a job-detail save.
     };
     // Auto-retry once. A job save is a REPLACE (update job, then rebuild its
     // areas & materials), so re-running it is idempotent and safe. If attempt 1

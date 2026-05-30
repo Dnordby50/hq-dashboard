@@ -4,6 +4,39 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] jobs: colors-confirmed tracking (dashboard worklist + job-detail toggle); rename "Recent Jobs" -> "Recently Sold Jobs"; remove grinder grit from job detail
+
+By: Claude Code
+Changed: index.html (dashboard + job detail), new supabase/migrations/2026-05-30_colors_confirmed.sql.
+Why: Color selection is a manual process and jobs were reaching the crew without colors confirmed, with nothing tracking it. Dylan wanted a flag the office can set now (future: customer portal), a dashboard worklist of unconfirmed jobs, the "Recent Jobs" rename, and (follow-up) the grinder-grit field pulled off the job detail.
+
+Data model (Cowork migration): adds `public.jobs.colors_confirmed boolean not null default false` and `colors_confirmed_at timestamptz`. No view change — the dashboard (`renderDashboard`) and job detail both read `public.jobs` directly, and `pec_job_ar` doesn't need it. Existing `jobs_staff` RLS already allows staff UPDATE.
+
+Dashboard (`renderDashboard`):
+- Renamed the "Recent Jobs" heading to "Recently Sold Jobs" (label only).
+- Added a "Colors NOT confirmed" card ABOVE it, listing active sold jobs (status confirmed/scheduled/in_progress, not archived) with `colors_confirmed = false`. Rows reuse `data-job-id`, so the existing row-click handler opens the job detail for free. Empty state: "All colors confirmed ✓".
+- The worklist is its OWN query added to the dashboard `Promise.all`, read as `colorsCnc.error ? [] : data`. Supabase resolves (doesn't reject) with `{error}` when the column is missing, so BEFORE the migration runs the rest of the dashboard is unaffected and the section just shows empty. The shared Recent Jobs select was left untouched on purpose (adding the column there would blank the dashboard pre-migration).
+
+Job detail (`renderJobDetail`):
+- New "Colors confirmed" banner directly under the top job card (green/confirmed with date, or amber/not-confirmed). It writes IMMEDIATELY via `withFreshWrite` and re-renders — deliberately NOT part of the big "Save job" button, which runs full recipe-slot validation + an area delete/reinsert; confirming colors shouldn't be blocked by that, and decoupling means the toggle can't be overwritten. So `colors_confirmed` is not in `jobPatch`. Best-effort `logJobActivity` records the change; added a `colors_confirmed: 'colors confirmed'` label to ACTIVITY_FIELD_LABELS.
+- Pre-migration the banner reads `job.colors_confirmed` as undefined -> shows "not confirmed"; the toggle write errors until the column exists (friendly alert), then works.
+
+Grinder grit removal (follow-up request): removed the "Grinder tooling / grit used" input (`#jcGrinder`) from the job detail AND removed `grinder_tooling_grit` from the save's `jobPatch`. Dropping it from jobPatch is important — leaving it would write null on every job-detail save and wipe the value. The column stays; it now belongs only to the crew's job-complete work order. (Left the `grinder_tooling_grit` ACTIVITY_FIELD_LABELS entry in place; harmless.)
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only).
+
+Files touched: index.html, supabase/migrations/2026-05-30_colors_confirmed.sql (new), PROJECT-LOG.md.
+Next steps: When the work order UI is built, that's where grinder grit gets captured.
+
+## Handoff to Cowork
+Run `supabase/migrations/2026-05-30_colors_confirmed.sql` in Supabase Studio (PEC project `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). It adds two columns to `public.jobs` (`colors_confirmed boolean not null default false`, `colors_confirmed_at timestamptz`). No view change.
+- Acceptance: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('colors_confirmed','colors_confirmed_at');` returns 2 rows.
+- Do NOT touch any view. The UI ships and degrades gracefully until this runs (the "Colors NOT confirmed" worklist shows empty; the job-detail toggle errors until the column exists).
+After: append a `By: Cowork` PROJECT-LOG entry confirming the 2 columns, and tell Dylan the feature is live.
+
+## Handoff to Dylan
+After deploy + the Cowork migration, hard-reload. Open a job detail: the "Colors confirmed" banner sits under the job card — "Mark colors confirmed" flips it green with today's date; "Unconfirm" reverts. The dashboard "Colors NOT confirmed" card lists unconfirmed active jobs and they drop off as you confirm them. Confirm the grinder-grit field is gone from the job detail.
+
 ## [2026-05-30 MST] invoicing migration: patched and re-ran 2026-05-30_deposit_waived.sql; deposit_waived is live in prod
 
 By: Cowork
