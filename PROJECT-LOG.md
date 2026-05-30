@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 21:45 MST] jobs: harden the Job detail "Save job" sequence against the idle JWT wedge (was stuck on "Saving…")
+
+By: Claude Code
+Changed: index.html — extracted `ensureFreshSession` helper (shared with `withFreshWrite`); the Job detail save now refreshes the session once up front and wraps its writes in `withDeadline`. Improved the save's catch message for session timeouts.
+Why: Dylan reported the "Save job" button on the Job detail page stuck on "Saving…" and never saving.
+
+Root cause: same idle-JWT wedge as the Invoicing writes (see the 21:30 entry), but on the one write path that wasn't hardened. The save handler (renderJobDetail, ~index.html:8156) fired five sequential raw `supabase` writes (jobs.update, job_areas delete + insert, job_area_materials insert, logJobActivity) with NO deadline and NO session refresh. On a wedged session the first `jobs.update` hangs with zero network traffic and never resolves OR throws, so the button sits on "Saving…" forever and the catch (which would re-enable it and alert) never runs.
+
+Fix:
+1. Refactored the refresh-or-reload preamble out of `withFreshWrite` into a shared `ensureFreshSession(label)` (refresh hangs -> wedge -> `_pecWedgeReload`; refresh resolves -> proceed). `withFreshWrite` now just calls it then `withDeadline`.
+2. Job save calls `await ensureFreshSession('job-save')` at the top of its try, so the whole multi-write sequence runs against a fresh client (or the page reloads if wedged, before any write is attempted).
+3. Wrapped the four data writes (jobs.update, job_areas del/ins, job_area_materials ins) in `withDeadline` so none can hang indefinitely even if something stalls after the refresh — a stall now throws and re-enables the button instead of freezing it.
+4. Catch now detects `isSessionTimeout` and shows reload-and-recheck guidance instead of a raw error.
+
+Note on partial writes: the area save is a delete-then-reinsert, so a stall BETWEEN the delete and the insert could leave areas wiped (pre-existing risk, not introduced here). The new timeout message tells the user to reload and reopen the job to see what saved; a future hardening could move this to a single RPC/transaction.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only), so no new syntax errors.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: If the job-save delete/reinsert partial-write risk ever bites, wrap area replacement in a Postgres function (single transaction).
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy, edit a job after leaving the tab idle 15+ min and Save. It should save (or briefly auto-reload, then save), not freeze on "Saving…". If it ever still hangs, send the console line tagged `[pec]`.
+
 ## [2026-05-29 21:30 MST] invoicing: refresh session before payment/status writes so the idle JWT wedge can't fail them
 
 By: Claude Code

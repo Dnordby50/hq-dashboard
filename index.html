@@ -5163,21 +5163,30 @@ const isSessionTimeout = (err) => String(err && err.message || '').startsWith('S
 // may have already committed could double-record. Refresh-then-write-once does.
 // If the write still hangs after a good refresh (rare), withDeadline's
 // SESSION_TIMEOUT surfaces so the caller can show "check whether it saved".
-async function withFreshWrite(fn, { timeoutMs = 12000, label = 'write' } = {}) {
-  const raceRefresh = Promise.race([
-    supabase.auth.refreshSession(),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
-  ]);
+// Refresh the auth session, distinguishing a WEDGED client (refresh hangs ->
+// reload, the only fix) from a healthy one (refresh resolves -> proceed). Shared
+// by withFreshWrite and by any multi-write sequence (e.g. the job-detail save)
+// that wants to clear the idle-JWT wedge ONCE up front before running several
+// writes against the now-fresh client. Throws SESSION_WEDGED on the wedge (the
+// caller is mid-reload at that point); swallows non-timeout refresh errors so a
+// transient blip doesn't block the write that follows.
+async function ensureFreshSession(label = 'session') {
   try {
-    await raceRefresh;
+    await Promise.race([
+      supabase.auth.refreshSession(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
+    ]);
   } catch (rerr) {
     if (String(rerr && rerr.message || '').includes('timed out')) {
       _pecWedgeReload(`${label} refreshSession timed out (pre-write)`);
       throw new Error(`SESSION_WEDGED:${label}`);
     }
-    // Non-timeout refresh error (e.g. transient): fall through and let the write
-    // run; it will surface the real error to the caller if anything is wrong.
+    // Non-timeout refresh error (e.g. transient): ignore; the write that follows
+    // will surface any real problem to the caller.
   }
+}
+async function withFreshWrite(fn, { timeoutMs = 12000, label = 'write' } = {}) {
+  await ensureFreshSession(label);
   return await withDeadline(fn, { timeoutMs, label });
 }
 
@@ -8154,10 +8163,14 @@ async function renderJobDetail(id) {
       grinder_tooling_grit: $('jcGrinder')?.value || null,
     };
     try {
-      const upd = await supabase.from('jobs').update(jobPatch).eq('id', id);
+      // Clear the idle-JWT wedge ONCE before the write sequence (reloads if the
+      // session is wedged). Without this the first write below could hang
+      // forever on a stale session, leaving the button stuck on "Saving…".
+      await ensureFreshSession('job-save');
+      const upd = await withDeadline(() => supabase.from('jobs').update(jobPatch).eq('id', id), { label: 'job-save' });
       if (upd.error) throw upd.error;
       // Delete + re-insert job_areas; the cascade clears job_area_materials.
-      const del = await supabase.from('job_areas').delete().eq('job_id', id);
+      const del = await withDeadline(() => supabase.from('job_areas').delete().eq('job_id', id), { label: 'job-save-areas-del' });
       if (del.error) throw del.error;
       const areaRows = areas.map((a, idx) => ({
         job_id: id,
@@ -8171,7 +8184,7 @@ async function renderJobDetail(id) {
       }));
       let saved = [];
       if (areaRows.length) {
-        const ins = await supabase.from('job_areas').insert(areaRows).select();
+        const ins = await withDeadline(() => supabase.from('job_areas').insert(areaRows).select(), { label: 'job-save-areas-ins' });
         if (ins.error) throw ins.error;
         saved = ins.data || [];
       }
@@ -8211,7 +8224,7 @@ async function renderJobDetail(id) {
         });
       }
       if (matRows.length) {
-        const mins = await supabase.from('job_area_materials').insert(matRows);
+        const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRows), { label: 'job-save-materials' });
         if (mins.error) throw mins.error;
       }
       const diff = diffJobSnapshot(job, jobPatch, areasRes.data, areas);
@@ -8220,8 +8233,11 @@ async function renderJobDetail(id) {
       }
       renderJobDetail(id);
     } catch (err) {
+      console.error('[pec] job save failed', err);
       msg.textContent = ''; btn.disabled = false;
-      alert('Save failed: ' + (err.message || err));
+      alert(isSessionTimeout(err)
+        ? 'The server did not respond (your session may have gone stale while idle). Hard-reload the page (Cmd+Shift+R), reopen this job to see what saved, and re-enter anything missing.'
+        : 'Save failed: ' + (err.message || err));
     }
   });
   root.querySelectorAll('.pec-gallery-item img').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
