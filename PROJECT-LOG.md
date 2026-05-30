@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] jobs migration: ran 2026-05-30_colors_confirmed.sql; colors_confirmed flag is live in prod
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior 2026-05-30 entry. Pasted `supabase/migrations/2026-05-30_colors_confirmed.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and clicked Run.
+
+Run result: `Success. No rows returned`, no error. This was a plain `alter table public.jobs add column if not exists ...` for two columns inside `begin; ... commit;` — no view touched, so none of the 42P16 / view-replace surprises from the prior deposit_waived run applied here.
+
+Acceptance check: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('colors_confirmed','colors_confirmed_at');` returned 2 rows. So both `public.jobs.colors_confirmed boolean not null default false` and `public.jobs.colors_confirmed_at timestamptz` are now present.
+
+Net behavior for Dylan: the new "Colors confirmed" banner on Job detail and the dashboard "Colors NOT confirmed" worklist are now functional. Toggling on the job detail writes `colors_confirmed = true` (with `colors_confirmed_at = now()`, set by the UI's write) and the job drops off the dashboard worklist.
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+Hard-reload the dashboard. Open a job detail: "Mark colors confirmed" should flip the banner green with today's date; "Unconfirm" should revert. The Dashboard "Colors NOT confirmed" card should list active sold jobs that aren't yet confirmed and drop them as you confirm. Confirm grinder grit is gone from the job detail.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-30 MST] jobs: colors-confirmed tracking (dashboard worklist + job-detail toggle); rename "Recent Jobs" -> "Recently Sold Jobs"; remove grinder grit from job detail
 
 By: Claude Code
