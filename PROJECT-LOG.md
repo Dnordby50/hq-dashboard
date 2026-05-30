@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 22:40 MST] jobs: simplify Job detail save, add "Saved ✓" confirmation (Dylan still reports the button not saving)
+
+By: Claude Code
+Changed: index.html — removed the pre-save `ensureFreshSession('job-save')` step; added a "Saved ✓" toast on success; made the activity-log call best-effort inside its own try.
+Why: Dylan reported a third time that the Job detail Save button does not save his changes (after the 21:45 hardening and the 22:05 timedFetch / 22:20 fail-and-retry changes).
+
+Reasoning: The save sequence itself is logically correct (validate -> update jobs -> replace job_areas -> rebuild job_area_materials -> reload). The original symptom ("just says Saving…") is the idle session wedge hanging the first write. The 22:05 `timedFetch` change bounds that at the source — BUT timedFetch is installed at createClient time, so it only takes effect on a freshly loaded page. A tab left open (the exact idle scenario) keeps running the old client, so no deploy can help until the user hard-reloads. netlify.toml sets no cache headers (HTML revalidates), so deploys do reach the browser on reload.
+
+Changes made to remove any remaining failure modes I may have introduced:
+- Dropped `await ensureFreshSession('job-save')` from the save. It added latency and, on a slow refresh, surfaced SESSION_WEDGED without saving. Writes are already bounded by withDeadline + timedFetch, so this is unnecessary.
+- Added `showToast('Saved ✓')` the moment the data writes are confirmed, so a successful save is unambiguous (no more "did it work?").
+- Wrapped the activity-log call in its own try so a logging failure can never mask or roll back a successful save.
+
+Open: I cannot see Dylan's browser, so the exact current symptom (spinner forever / a specific alert / saves-then-reverts) is unconfirmed. Asked him to hard-reload (load the timedFetch build) and, if it still fails, send the exact alert text or the console line tagged `[pec]`.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: Get the exact failure signal from Dylan if a hard-reloaded build still won't save.
+Handoff to Cowork: None.
+Handoff to Dylan: 1) Hard-reload the dashboard (Cmd+Shift+R) — this is required to load the new connection code. 2) Edit a job and Save; you should see "Saved ✓". 3) If it STILL doesn't save, open DevTools Console, click Save, and send me (a) any red error line, (b) the line starting with `[pec] job save failed`, and (c) what the button does (spins forever, shows an alert, or looks saved but reverts). That pinpoints it immediately.
+
 ## [2026-05-29 22:20 MST] jobs/core: stop auto-reloading writes on a stale session (fixes "Save failed: SESSION_WEDGED:job-save"); fail-and-retry instead
 
 By: Claude Code
