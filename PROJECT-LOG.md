@@ -4,6 +4,46 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 21:05 MST] crm: auto-reload on session wedge + wall-clock idle probe (Cowork, by request)
+
+By: Cowork
+
+Dylan reported the spinning loading circle on tab switches was still happening despite the 62032cb hardening (which had shipped and was confirmed live: withDeadline, the Reload-relabeled retry button, and the visibilitychange idle probe all present in the served index.html). He authorized Cowork to write and push the code change directly in chat ("you do it and push"), which is why this is a code commit from a By: Cowork entry rather than a Claude Code handoff.
+
+**Why 62032cb did not eliminate the spinner.** It hardened WRITES (payment Submit no longer hangs silently) and gave the user a Reload button on the 15s render fence. It did NOT fix the READ path: withFreshSession (index.html:5084-5097, pre-change) still self-healed by calling supabase.auth.refreshSession() and retrying. Per the CLAUDE.md gotcha, refreshSession also hangs in the wedge state because it queues behind the same stuck auth refresh, so the retry burned a second 10s timeout against the same wedged client and the render fence fired anyway. End user experience: every tab switch on a stale session = ~10-20s spinner, then the Reload message, indefinitely until the user clicked Reload (instead of another sidebar tab).
+
+Also: the proactive probe only triggered on visibilitychange (tab hidden->visible after 15+ min). On a multi-monitor setup where the TopCoat tab stays foregrounded while the user works in other windows, visibilitychange never fires and the wedge sneaks up.
+
+**What changed (index.html, commit e1d1191, local-only until pushed):**
+
+1. **withFreshSession now uses refreshSession itself as the wedge probe.** On the first call timeout it races refreshSession against a 3s deadline. If refreshSession ALSO times out, that is the unambiguous wedge signature (legit slow queries do not make refreshSession hang). Instead of retrying through the wedged client, it calls a new `_pecWedgeReload()` helper which triggers `location.reload()` and throws `SESSION_WEDGED:<label>` so the render fence stops spinning. A non-timeout refresh error or success falls through to the existing one-retry behavior, preserving current semantics for transient errors. If the retry-after-refresh ALSO times out, that is also a wedge -> reload.
+
+2. **One-shot guard against reload loops.** `_pecReloadingForWedge` flips to true on the first reload trigger and short-circuits any subsequent `_pecWedgeReload` calls within the same page life. If the reloaded page IMMEDIATELY re-wedges (genuinely broken state, not just stale JWT), the next call still throws SESSION_WEDGED but does NOT loop reloads, surfacing the render-fence error so a real debugger can investigate.
+
+3. **Wall-clock idle probe added alongside the visibilitychange probe.** Tracks last user interaction via pointerdown/keydown (passive listeners). A setInterval fires every 60s; if tab is visible AND no user input for 15+ min, runs the same short-deadline probe (throttled to once per 5 min so a truly-idle browser does not hammer Postgres). Catches the multi-monitor / foregrounded-but-idle case where visibilitychange never fires.
+
+4. **Both probes auto-reload now, not toast.** The visibilitychange probe used to call showToast with a Reload action; now it calls `_pecWedgeReload` directly. Same for the new wall-clock probe. Refactored both into one `_pecProbeSession(triggerLabel)` helper so the labels distinguish them in console logs.
+
+Caveats and known limits: (a) The first stale-session tab switch will still show a spinner for ~13s before auto-reloading (10s initial timeout + 3s refresh probe), but it now self-heals without any user click. The wall-clock probe should usually catch the wedge BEFORE the user clicks, eliminating the spinner entirely in the common case. (b) Auto-reload during an open modal will lose unsaved form input, but in the wedge state nothing was saving anyway (zero network traffic per the gotcha), so the data was already lost; reload is at worst neutral, at best self-healing. (c) Does not change supabase-js internals; the auth-refresh queue can still wedge. This is mitigation, not root-cause fix.
+
+Files touched: index.html, PROJECT-LOG.md.
+
+Verification: ran `node --check` on each of the 3 `<script type="module">` blocks extracted from index.html; all parse clean (0 errors, including the previously-noted false-positives are now also clean). Did NOT browser-test the wedge behavior live since reproducing requires ~57 min of idle.
+
+## Handoff to Dylan
+
+The commit landed locally as e1d1191 but the sandbox cannot push to git@github.com:Dnordby50/hq-dashboard.git (no SSH key in the sandbox; "Permission denied (publickey)"). To deploy, from your terminal in the repo root:
+
+```
+git push origin main
+```
+
+That sends e1d1191 (the code fix) plus the next commit with this PROJECT-LOG entry. Netlify auto-deploys on push to main. After it deploys: leave a tab open for 20+ min, then click a sidebar tab. If you see a spinner, it should auto-reload within ~13s instead of needing your click. If the wall-clock probe catches it first you should not see a spinner at all, just a brief reload flash.
+
+Handoff to Claude Code: None. The mitigation path is now exhausted at the app layer; the next root-cause investigation would be against supabase-js itself (version pinning, the auth lock pattern, or replacing the client instance without a full reload). Not urgent unless this auto-reload turns out to be too disruptive in practice.
+
+---
+
 ## [2026-05-29 12:55 MST] cowork: applied polish_grit_optional + prod_jobs_line_items migrations
 
 By: Cowork
