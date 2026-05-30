@@ -5807,9 +5807,9 @@ function randomToken() {
 // ============================================================
 async function renderDashboard() {
   const root = $('pecViewRoot');
-  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc] = await Promise.all([
+  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc, prodInstall] = await Promise.all([
     supabase.from('customers').select('id', { count: 'exact', head: true }).is('archived_at', null),
-    supabase.from('jobs').select('id,status,confirmed,created_at,address,type,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
+    supabase.from('jobs').select('id,status,confirmed,created_at,address,type,price,dripjobs_deal_id,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
     supabase.from('reviews').select('rating'),
     supabase.from('pec_prod_system_types').select('id,name,color,active'),
@@ -5818,10 +5818,25 @@ async function renderDashboard() {
     // 2026-05-30_colors_confirmed.sql migration runs, the missing column errors
     // ONLY this query -- it resolves with {error}, we fall back to [], and the
     // rest of the dashboard is unaffected. completed/archived jobs excluded.
-    supabase.from('jobs').select('id,address,status,created_at,customers(name)').eq('colors_confirmed', false).is('archived_at', null).in('status', ['confirmed', 'scheduled', 'in_progress']).order('created_at', { ascending: false }),
+    supabase.from('jobs').select('id,address,status,created_at,dripjobs_deal_id,customers(name)').eq('colors_confirmed', false).is('archived_at', null).in('status', ['confirmed', 'scheduled', 'in_progress']).order('created_at', { ascending: false }),
+    // Install dates for joining onto jobs (same bridge pattern renderInvoicing uses).
+    supabase.from('pec_prod_jobs').select('dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
   ]);
   const jobs = jobsAll.data || [];
-  const colorsPending = colorsCnc.error ? [] : (colorsCnc.data || []);
+  const installByDeal = {};
+  ((prodInstall && !prodInstall.error) ? (prodInstall.data || []) : []).forEach(p => { if (p.dripjobs_deal_id) installByDeal[p.dripjobs_deal_id] = p.install_date; });
+  const cncToday = invToday();
+  // Join install dates, then order: jobs WITH an install date first (soonest ->
+  // latest), then undated jobs by newest. So a job installing next week with no
+  // colors confirmed floats to the top.
+  const colorsPending = (colorsCnc.error ? [] : (colorsCnc.data || []))
+    .map(j => ({ ...j, install_date: j.dripjobs_deal_id ? (installByDeal[j.dripjobs_deal_id] || null) : null }))
+    .sort((a, b) => {
+      if (a.install_date && b.install_date) return a.install_date.localeCompare(b.install_date);
+      if (a.install_date) return -1;
+      if (b.install_date) return 1;
+      return (b.created_at || '').localeCompare(a.created_at || '');
+    });
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
   const active = jobs.filter(j => j.status !== 'completed').length;
   const completed = jobs.filter(j => j.status === 'completed').length;
@@ -5840,28 +5855,33 @@ async function renderDashboard() {
     <div class="pec-card">
       <h3>Colors NOT confirmed <span style="color:var(--muted);font-weight:400;font-size:.8rem">${colorsPending.length}</span></h3>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Customer</th><th>Address</th><th>Status</th><th>Created</th></tr></thead>
-        <tbody>${colorsPending.map(j => `
-          <tr data-job-id="${esc(j.id)}">
+        <thead><tr><th>Customer</th><th>Address</th><th>Status</th><th>Install</th></tr></thead>
+        <tbody>${colorsPending.map(j => {
+          const du = j.install_date ? invDaysBetween(cncToday, j.install_date) : null;
+          const urgent = du != null && du <= 14;
+          const when = j.install_date ? (invFmtDate(j.install_date) + (du != null ? ' · ' + (du < 0 ? Math.abs(du) + 'd ago' : du === 0 ? 'today' : 'in ' + du + 'd') : '')) : '—';
+          return `<tr data-job-id="${esc(j.id)}"${urgent ? ' style="background:color-mix(in srgb,#dc2626 9%,transparent)"' : ''}>
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${esc(j.address || '—')}</td>
             <td><span class="pec-badge ${esc(j.status)}">${esc(j.status.replace('_',' '))}</span></td>
-            <td>${fmtDate(j.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">All colors confirmed ✓</td></tr>'}</tbody>
+            <td style="${urgent ? 'color:#dc2626;font-weight:600' : ''}">${when}</td>
+          </tr>`;
+        }).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">All colors confirmed ✓</td></tr>'}</tbody>
       </table></div>
     </div>
     <div class="pec-card">
       <h3>Recently Sold Jobs</h3>
       <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Created</th></tr></thead>
+        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th style="text-align:right">Price</th><th>Status</th><th>Created</th></tr></thead>
         <tbody>${jobs.slice(0,10).map(j => `
           <tr data-job-id="${j.id}">
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
+            <td style="text-align:right">${invUSD(j.price)}</td>
             <td><span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span></td>
             <td>${fmtDate(j.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No jobs yet</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs yet</td></tr>'}</tbody>
       </table>
     </div>
   `;
@@ -6773,13 +6793,14 @@ async function renderJobInvoice(jobId) {
     it.is_change_order ? '<span class="pec-age pec-age-yellow">Change order</span>' : '',
     it.is_optional_addon ? '<span class="pec-age pec-age-green">Add-on</span>' : '',
   ].join(' ');
+  // Standardized line shape is { name, description, price }; tolerate legacy
+  // rows that used total / unit_price.
+  const invLinePrice = it => { const v = it.price ?? it.total ?? it.unit_price; return v == null ? null : invNum(v); };
   const itemRows = items.length ? items.map(it => `<tr class="nohover">
       <td>${esc(it.name || '—')} ${tag(it)}</td>
-      <td style="text-align:right">${esc(it.qty ?? '')}</td>
-      <td style="text-align:right">${it.unit_price != null ? invUSD(invNum(it.unit_price)) : '—'}</td>
-      <td style="text-align:right">${it.tax != null ? invUSD(invNum(it.tax)) : '—'}</td>
-      <td style="text-align:right">${it.total != null ? invUSD(invNum(it.total)) : '—'}</td></tr>`).join('')
-    : '<tr class="nohover"><td colspan="5" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
+      <td style="white-space:pre-wrap;font-size:.85rem;color:var(--muted)">${esc(it.description || '')}</td>
+      <td style="text-align:right">${invLinePrice(it) != null ? invUSD(invLinePrice(it)) : '—'}</td></tr>`).join('')
+    : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
   const payRows = payments.length ? payments.map(p => `<tr class="nohover">
       <td>${invFmtDate(p.received_date)}</td>
       <td>${esc(String(p.method || '').replace('_', ' '))}</td>
@@ -6796,6 +6817,7 @@ async function renderJobInvoice(jobId) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
+        <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
@@ -6818,7 +6840,7 @@ async function renderJobInvoice(jobId) {
     <div class="pec-card">
       <h3>Line items</h3>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Tax</th><th style="text-align:right">Total</th></tr></thead>
+        <thead><tr><th>Item</th><th>Scope</th><th style="text-align:right">Price</th></tr></thead>
         <tbody>${itemRows}</tbody></table></div>
     </div>
     <div class="pec-card">
@@ -6832,6 +6854,49 @@ async function renderJobInvoice(jobId) {
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
+  // Change order: an add-on after the job begins. Appends an is_change_order
+  // line to jobs.line_items AND bumps jobs.price by the amount, so the AR
+  // balance (price - paid_to_date) increases. Works even on a finalized job --
+  // this is the sanctioned way to change a locked total.
+  const coB = $('pecInvChangeOrder');
+  if (coB) coB.addEventListener('click', () => {
+    openModal(`
+      <h3>Add change order</h3>
+      <div class="pec-ar-sub" style="margin-bottom:12px">Adds a billable line and increases the invoice total / balance owed.</div>
+      <div class="pec-field"><label>Title</label><input id="coName" placeholder="e.g. Add floor drain"></div>
+      <div class="pec-field"><label>Detail (optional)</label><textarea id="coDesc" rows="2" placeholder="Scope of the add-on" style="resize:vertical"></textarea></div>
+      <div class="pec-field"><label>Amount ($)</label><input id="coAmt" type="number" step="0.01" placeholder="0.00"></div>
+      <div class="prod-msg-err" id="coErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="coSave">Add change order</button>
+      </div>
+    `, { onMount: modal => {
+      modal.querySelector('#coSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#coErr'); errEl.textContent = '';
+        const name = modal.querySelector('#coName').value.trim();
+        const description = modal.querySelector('#coDesc').value.trim();
+        const amt = parseFloat(modal.querySelector('#coAmt').value);
+        if (!name) { errEl.textContent = 'Enter a title.'; return; }
+        if (!Number.isFinite(amt) || amt === 0) { errEl.textContent = 'Enter a non-zero amount.'; return; }
+        const sb = modal.querySelector('#coSave'); sb.disabled = true; sb.textContent = 'Saving…';
+        const existing = Array.isArray(row.line_items) ? row.line_items : [];
+        const nextItems = existing.concat([{ name, description, price: invRound2(amt), is_change_order: true }]);
+        const nextPrice = invRound2(invNum(row.price) + amt);
+        try {
+          const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', row.id), { label: 'change-order' });
+          if (upd.error) throw upd.error;
+          closeModal();
+          showToast('Change order added (' + invUSD(amt) + ')', { ttl: 3500 });
+          renderInvoicing();
+        } catch (err) {
+          console.error('[pec] change order failed', err);
+          sb.disabled = false; sb.textContent = 'Add change order';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+        }
+      });
+    } });
+  });
   // Flag-only deposit updates (no payment row, so they can't double-charge):
   //  - mark collected: a payment was already recorded but the flag wasn't set.
   //  - no deposit needed: waive the deposit for commercial / special-case jobs.
@@ -7523,7 +7588,7 @@ async function renderJobDetail(id) {
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
-      .select('*,customers(id,name,email,company,token),photos(*)')
+      .select('*,customers(id,name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
     supabase.from('pec_prod_system_types').select('id,name,color,active,labor_budget_pct,materials_budget_pct').order('name'),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
@@ -7539,6 +7604,27 @@ async function renderJobDetail(id) {
     return;
   }
   const job = jobRes.data;
+  // Scheduled install date lives on the linked pec_prod_jobs row (matched by
+  // dripjobs_deal_id). Fetched here (blocking) so the header + the colors-urgency
+  // banner can use it at render time. Misses are silent (manual entries, etc.).
+  let jobInstallDate = null;
+  if (job.dripjobs_deal_id) {
+    try {
+      const br = await supabase.from('pec_prod_jobs').select('install_date').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle();
+      jobInstallDate = br?.data?.install_date || null;
+    } catch (_) { /* optional polish */ }
+  }
+  // Job-level line items (scope title + detail + price); their prices sum to
+  // jobs.price. Locked once finalized; only a change order (invoice) can then
+  // alter the total. Tolerate legacy shapes (total/unit_price) on read.
+  const jobLineItems = Array.isArray(job.line_items) ? job.line_items : [];
+  const lineItemPrice = li => { const v = li.price ?? li.total ?? li.unit_price; return v == null ? 0 : Number(v) || 0; };
+  const hasLineItems = jobLineItems.length > 0;
+  const lineItemsTotal = invRound2(jobLineItems.reduce((s, li) => s + lineItemPrice(li), 0));
+  const jobFinalized = !!job.finalized;
+  // Colors urgency: unconfirmed AND install within 14 days (or overdue).
+  const installDaysUntil = jobInstallDate ? invDaysBetween(invToday(), jobInstallDate) : null;
+  const colorsUrgent = !job.colors_confirmed && installDaysUntil != null && installDaysUntil <= 14;
   const systemTypes = sysRes.data || [];
   const products = prodRes.data || [];
   const colorPairings = pairRes.data || [];
@@ -7632,9 +7718,10 @@ async function renderJobDetail(id) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
         <div>
           <div style="font-size:1.15rem;font-weight:700">${esc(job.customers?.name || '—')}</div>
-          <div style="color:var(--muted);font-size:.8rem;margin-top:3px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <div style="color:var(--muted);font-size:.82rem;margin-top:2px">${esc(job.address || 'No address on file')} <button class="pec-btn ghost sm" id="pecJobEditContact" style="padding:1px 8px;font-size:.68rem;vertical-align:middle">Edit</button></div>
+          <div style="color:var(--muted);font-size:.8rem;margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${systemBadgeHtml(areasRes.data || [], Object.fromEntries(systemTypes.map(s => [s.id, s])))}
-            <span id="jobInstallSummary" style="font-size:.78rem;color:var(--muted)"></span>
+            <span style="font-size:.78rem;color:var(--muted)">${jobInstallDate ? 'Install ' + fmtDate(jobInstallDate) : 'Unscheduled'}</span>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -7644,19 +7731,18 @@ async function renderJobDetail(id) {
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
-            <input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">
+            ${hasLineItems
+              ? `<input id="jobPrice" type="number" value="${lineItemsTotal}" readonly title="Set by the line items below" style="max-width:130px;background:var(--bg-soft,#f1f3f5);color:var(--muted)">`
+              : `<input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">`}
           </div>
           <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">Print Work Order</button>
         </div>
       </div>
-      <div class="pec-row-2" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line, var(--border));align-items:end">
-        <div class="pec-field" style="margin-bottom:0">
-          <label>Status <span id="pecJobStatusSaved" style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)"></span></label>
-          <select id="pecJobStatus">
-            ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
-          </select>
-        </div>
-        <div class="pec-field" style="margin-bottom:0"><label>Address</label><input id="jobAddress" value="${esc(job.address || '')}"></div>
+      <div class="pec-field" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line, var(--border));margin-bottom:0;max-width:260px">
+        <label>Status <span id="pecJobStatusSaved" style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)"></span></label>
+        <select id="pecJobStatus">
+          ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+        </select>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
         <h4 style="margin:0 0 8px;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600">Job Card <span style="font-size:.7rem;font-weight:400;text-transform:none;letter-spacing:0">prints onto the work order</span></h4>
@@ -7701,16 +7787,44 @@ async function renderJobDetail(id) {
       </div>
     </div>
 
-    <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : '#d97706'}">
+    <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : (colorsUrgent ? '#dc2626' : '#d97706')}">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div>
-          <strong>Colors ${job.colors_confirmed ? 'confirmed' : 'not confirmed'}</strong>
-          <div style="font-size:.75rem;color:var(--muted);margin-top:2px">${job.colors_confirmed
+          <strong${colorsUrgent ? ' style="color:#dc2626"' : ''}>Colors ${job.colors_confirmed ? 'confirmed' : 'not confirmed'}</strong>
+          <div style="font-size:.75rem;color:${colorsUrgent ? '#dc2626' : 'var(--muted)'};margin-top:2px">${job.colors_confirmed
             ? ('Confirmed' + (job.colors_confirmed_at ? ' ' + fmtDate(job.colors_confirmed_at) : ''))
-            : 'Customer has not finalized colors yet. Mark confirmed once colors are locked in.'}</div>
+            : (colorsUrgent
+                ? ('Install ' + (installDaysUntil < 0 ? Math.abs(installDaysUntil) + ' days ago' : 'in ' + installDaysUntil + ' day' + (installDaysUntil === 1 ? '' : 's')) + ' and colors are still not confirmed.')
+                : 'Customer has not finalized colors yet. Mark confirmed once colors are locked in.')}</div>
         </div>
         <button class="pec-btn ${job.colors_confirmed ? 'ghost' : 'primary'} sm" id="jobColorsToggle">${job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed'}</button>
       </div>
+    </div>
+
+    <div class="pec-card" id="jobLineItemsCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+        <h3 style="margin:0">Line items ${jobFinalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
+        <div style="font-size:.8rem;color:var(--muted)">Total <strong id="jobLiTotal" style="font-size:1rem">${invUSD(lineItemsTotal)}</strong></div>
+      </div>
+      ${jobFinalized ? `
+        <div class="pec-scroll-x"><table class="pec-table">
+          <thead><tr><th>Scope</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
+          <tbody>${jobLineItems.length ? jobLineItems.map(li => `<tr class="nohover">
+            <td>${esc(li.name || '—')}${li.is_change_order ? ' <span class="pec-age pec-age-yellow">Change order</span>' : ''}</td>
+            <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(li.description || '')}</td>
+            <td style="text-align:right">${invUSD(lineItemPrice(li))}</td></tr>`).join('') : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items.</td></tr>'}</tbody>
+        </table></div>
+        <div style="margin-top:10px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. Price is locked — add a change order from the invoice to adjust the total. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>
+      ` : `
+        <div style="font-size:.78rem;color:var(--muted);margin-bottom:8px">Paste each line from the signed DripJobs proposal: a scope title, the detail, and its price (negatives allowed, e.g. a discount). The prices sum to the job price.</div>
+        <div id="jobLineItemsBody"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <button type="button" class="pec-btn ghost sm" id="jobLiAdd">+ Add line</button>
+          <span style="flex:1"></span>
+          <button type="button" class="pec-btn sm" id="jobLiSave">Save line items</button>
+          <button type="button" class="pec-btn primary sm" id="jobLiFinalize">Finalize job</button>
+        </div>
+      `}
     </div>
 
     <div id="jobAreas"></div>
@@ -8236,6 +8350,116 @@ async function renderJobDetail(id) {
     }
   });
 
+  // --- Header "Edit" panel: customer phone/email + job address --------------
+  const editContactBtn = $('pecJobEditContact');
+  if (editContactBtn) editContactBtn.addEventListener('click', () => {
+    const c = job.customers || {};
+    openModal(`
+      <h3>Edit contact &amp; address</h3>
+      <div class="pec-ar-sub" style="margin-bottom:12px">${esc(c.name || '')}</div>
+      <div class="pec-field"><label>Phone</label><input id="ecPhone" value="${esc(c.phone || '')}" placeholder="(555) 555-5555"></div>
+      <div class="pec-field"><label>Email</label><input id="ecEmail" type="email" value="${esc(c.email || '')}" placeholder="name@example.com"></div>
+      <div class="pec-field"><label>Service address</label><input id="ecAddress" value="${esc(job.address || '')}" placeholder="Street, City, State"></div>
+      <div class="prod-msg-err" id="ecErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="ecSave">Save</button>
+      </div>
+    `, { onMount: modal => {
+      modal.querySelector('#ecSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#ecErr'); errEl.textContent = '';
+        const sb = modal.querySelector('#ecSave'); sb.disabled = true; sb.textContent = 'Saving…';
+        const phone = modal.querySelector('#ecPhone').value.trim() || null;
+        const email = modal.querySelector('#ecEmail').value.trim() || null;
+        const address = modal.querySelector('#ecAddress').value.trim() || null;
+        try {
+          if (job.customer_id) {
+            const cu = await withFreshWrite(() => supabase.from('customers').update({ phone, email }).eq('id', job.customer_id), { label: 'edit-contact' });
+            if (cu.error) throw cu.error;
+          }
+          const ju = await withFreshWrite(() => supabase.from('jobs').update({ address }).eq('id', id), { label: 'edit-address' });
+          if (ju.error) throw ju.error;
+          closeModal();
+          showToast('Contact updated', { ttl: 2500 });
+          renderJobDetail(id);
+        } catch (err) {
+          console.error('[pec] edit contact failed', err);
+          sb.disabled = false; sb.textContent = 'Save';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+        }
+      });
+    } });
+  });
+
+  // --- Line items editor (editable mode only; #jobLineItemsBody absent when finalized)
+  const liBody = $('jobLineItemsBody');
+  if (liBody) {
+    const liDraft = jobLineItems.length
+      ? jobLineItems.map(l => ({ name: l.name || '', description: l.description || '', price: (l.price ?? l.total ?? l.unit_price ?? ''), is_change_order: !!l.is_change_order }))
+      : [{ name: '', description: '', price: '', is_change_order: false }];
+    const liTotalEl = $('jobLiTotal');
+    const recalcLi = () => { const t = invRound2(liDraft.reduce((s, l) => s + (Number(l.price) || 0), 0)); if (liTotalEl) liTotalEl.textContent = invUSD(t); };
+    const renderLi = () => {
+      liBody.innerHTML = liDraft.map((l, i) => `
+        <div style="display:flex;gap:8px;margin-bottom:8px;align-items:flex-start">
+          <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+            <input class="jobLiName" data-idx="${i}" value="${esc(l.name)}" placeholder="Scope (e.g. Grind and Seal - No Stain)">
+            <textarea class="jobLiDesc" data-idx="${i}" rows="2" placeholder="Detail / scope of work (paste from the proposal)" style="resize:vertical">${esc(l.description)}</textarea>
+          </div>
+          <input class="jobLiPrice" data-idx="${i}" type="number" step="0.01" value="${esc(l.price)}" placeholder="0.00" style="width:120px;text-align:right">
+          <button type="button" class="pec-btn ghost sm jobLiDel" data-idx="${i}" title="Remove" ${liDraft.length <= 1 ? 'disabled' : ''}>✕</button>
+        </div>`).join('');
+      liBody.querySelectorAll('.jobLiName').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].name = e.target.value; }));
+      liBody.querySelectorAll('.jobLiDesc').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].description = e.target.value; }));
+      liBody.querySelectorAll('.jobLiPrice').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].price = e.target.value; recalcLi(); }));
+      liBody.querySelectorAll('.jobLiDel').forEach(b => b.addEventListener('click', e => { liDraft.splice(+e.currentTarget.dataset.idx, 1); if (!liDraft.length) liDraft.push({ name: '', description: '', price: '', is_change_order: false }); renderLi(); recalcLi(); }));
+    };
+    renderLi(); recalcLi();
+    $('jobLiAdd').addEventListener('click', () => { liDraft.push({ name: '', description: '', price: '', is_change_order: false }); renderLi(); });
+
+    const cleanLi = () => liDraft
+      .map(l => ({ name: (l.name || '').trim(), description: (l.description || '').trim(), price: Number(l.price) || 0, ...(l.is_change_order ? { is_change_order: true } : {}) }))
+      .filter(l => l.name || l.description || l.price);
+    const writeLi = async (extra, okMsg, btnEl) => {
+      const lines = cleanLi();
+      const total = invRound2(lines.reduce((s, l) => s + (Number(l.price) || 0), 0));
+      const orig = btnEl.textContent; btnEl.disabled = true; btnEl.textContent = 'Saving…';
+      try {
+        const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: lines, price: total, ...extra }).eq('id', id), { label: 'job-line-items' });
+        if (upd.error) throw upd.error;
+        showToast(okMsg, { ttl: 2500 });
+        renderJobDetail(id);
+      } catch (err) {
+        console.error('[pec] line items save failed', err);
+        btnEl.disabled = false; btnEl.textContent = orig;
+        alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not save: ' + (err.message || err));
+      }
+    };
+    $('jobLiSave').addEventListener('click', () => writeLi({}, 'Line items saved', $('jobLiSave')));
+    $('jobLiFinalize').addEventListener('click', () => {
+      if (!cleanLi().length) { alert('Add at least one line item before finalizing.'); return; }
+      if (!confirm('Finalize this job? Line items and price will be locked. Add a change order from the invoice to adjust the total afterward.')) return;
+      writeLi({ finalized: true, finalized_at: new Date().toISOString() }, 'Job finalized', $('jobLiFinalize'));
+    });
+  }
+
+  // --- Reopen (finalized mode) ----------------------------------------------
+  const reopenBtn = $('jobReopen');
+  if (reopenBtn) reopenBtn.addEventListener('click', async () => {
+    if (!confirm('Reopen line items for editing? The price will become editable again.')) return;
+    reopenBtn.disabled = true; reopenBtn.textContent = 'Reopening…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('jobs').update({ finalized: false, finalized_at: null }).eq('id', id), { label: 'job-reopen' });
+      if (upd.error) throw upd.error;
+      showToast('Reopened for editing', { ttl: 2500 });
+      renderJobDetail(id);
+    } catch (err) {
+      console.error('[pec] reopen failed', err);
+      reopenBtn.disabled = false; reopenBtn.textContent = 'Reopen';
+      alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not reopen: ' + (err.message || err));
+    }
+  });
+
   $('jobSaveBtn').addEventListener('click', async () => {
     const msg = $('jobSaveMsg'); const btn = $('jobSaveBtn');
     // Validate required recipe slots before writing anything. On failure,
@@ -8301,10 +8525,15 @@ async function renderJobDetail(id) {
     const jcBool = (sel) => { const v = $(sel).value; return v === '' ? null : v === 'true'; };
     const jcInt  = (sel) => { const v = $(sel).value; return v === '' ? null : Number(v); };
     const jobPatch = {
-      address: $('jobAddress').value || null,
+      // Address is edited via the header "Edit" panel now (writes jobs.address
+      // directly); the #jobAddress input no longer exists, so writing it here
+      // would null the address -- omit it.
       scope: $('jobScope').value || null,
       dripjobs_deal_id: $('jobProposal')?.value?.trim() || null,
-      price: priceVal ? parseFloat(priceVal) : null,
+      // Price only in manual mode. When line items exist the price is derived
+      // from them (set by "Save line items" / change orders) and locked, so we
+      // omit it here to avoid clobbering that value.
+      ...(hasLineItems ? {} : { price: priceVal ? parseFloat(priceVal) : null }),
       sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
       system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
       // Job Card fields (printed onto the work order). Migration

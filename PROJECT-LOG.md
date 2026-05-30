@@ -4,6 +4,44 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] jobs/invoicing: line items + finalize/price-lock, change orders, install dates + urgency, dashboard price, condensed header
+
+By: Claude Code
+Changed: index.html (dashboard, job detail, invoice detail), new supabase/migrations/2026-05-31_job_finalize.sql.
+Why: Dylan's batch of Invoicing/CRM asks (planned via /plan). Decisions captured: lock via an explicit Finalize button; red when install ≤14 days; change orders add to the total; line items = scope title + detail + price.
+
+Data model (Cowork migration): adds `public.jobs.finalized boolean not null default false` + `finalized_at timestamptz`. `line_items` (JSONB) already exists. No view change (job detail uses select('*'); dashboard reads public.jobs directly). Standardized line-item shape everywhere: `{ name: <scope title>, description: <detail>, price: <number>, is_change_order?: bool }`; reads tolerate legacy `total`/`unit_price`.
+
+Job detail (`renderJobDetail`):
+- **Line items card** (under the colors banner). Editable rows of scope title + detail textarea + price (negatives allowed); live total; "Save line items" writes `jobs.line_items` + `jobs.price = sum` in one withFreshWrite. When line items exist, the header Price field is read-only (derived). "Finalize job" saves + locks (sets finalized/finalized_at); finalized mode shows a read-only table + "Reopen" (admin un-lock).
+- The big "Save job" now omits `price` when line items exist (so it can't clobber the derived/locked value) and omits `address` entirely (see header).
+- **Condensed header:** customer name, then **address directly under the name** (display) with an **"Edit"** button + the install date ("Install m/d/yyyy"). Removed the always-on address input.
+- **"Edit" panel** (modal): edit customer **phone/email** (writes public.customers) and **address** (writes public.jobs) in one place. Added `phone` to the job's customers() select.
+- **Install date** is now fetched in the initial load (bridge to pec_prod_jobs by dripjobs_deal_id) so the header shows it and the **colors banner turns red** when colors are unconfirmed and install is ≤14 days out (incl. overdue).
+
+Invoice detail (`renderJobInvoice`):
+- Line-items table reworked to **Item / Scope / Price** (was qty/unit/tax/total), with the existing Change order / Add-on tags. Price reads `price ?? total ?? unit_price`.
+- **"Add change order"** button → modal (title + detail + amount). Appends an `is_change_order` line to `jobs.line_items` AND bumps `jobs.price` by the amount, so the AR balance (`price - paid_to_date`) increases. Works on a finalized job (the sanctioned way to change a locked total).
+
+Dashboard (`renderDashboard`):
+- **Recently Sold Jobs** gains a **Price** column (added `price` to the jobs select).
+- **Colors NOT confirmed:** added a `pec_prod_jobs` install bridge (installByDeal), joined install dates onto the list, replaced the Created column with **Install** (shows date + "in N d"/"Nd ago"/"today"), **sorted soonest-install first then undated**, and rows with install **≤14 days are red**. Added `dripjobs_deal_id` to that query for the join.
+
+Graceful pre-migration: `finalized` reads as undefined -> not-finalized (editable); line-item saves and change orders only touch `line_items`/`price` (already exist) so they work now; only **Finalize/Reopen** need the new column (friendly error until it runs). The dashboard/job-detail still load.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only).
+
+Files touched: index.html, supabase/migrations/2026-05-31_job_finalize.sql (new), PROJECT-LOG.md.
+Next steps: Phase-2 invoicing (PDF, hosted invoice, Stripe) and customer-portal color confirmation remain future work.
+
+## Handoff to Cowork
+Run `supabase/migrations/2026-05-31_job_finalize.sql` in Supabase Studio (PEC `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). Adds `public.jobs.finalized boolean not null default false` + `finalized_at timestamptz`. No view change.
+- Acceptance: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name in ('finalized','finalized_at');` returns 2 rows.
+After: append a `By: Cowork` PROJECT-LOG entry confirming the 2 columns and tell Dylan Finalize/Reopen are live.
+
+## Handoff to Dylan
+After deploy + Cowork migration, hard-reload. On a job: add line items (title + detail + price, incl. a negative discount) → Job total + Price update; Finalize locks them (Reopen un-locks). Header shows address under the name with an Edit button (phone/email/address) and the install date. On the invoice: "Add change order" raises the total/balance. Dashboard: Recently Sold Jobs shows Price; Colors NOT confirmed shows Install, is sorted soonest-first, and red within 14 days.
+
 ## [2026-05-30 MST] jobs migration: ran 2026-05-30_colors_confirmed.sql; colors_confirmed flag is live in prod
 
 By: Cowork
