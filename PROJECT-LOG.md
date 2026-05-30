@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 23:05 MST] core+jobs: rebuild the Supabase client to recover from wedged auth; job save auto-retries (the actual fix)
+
+By: Claude Code
+Changed: index.html — `supabase` is now a reassignable binding with `makeClient()` + `recoverWedgedClient()`; the Job detail save auto-retries once through a client rebuild.
+Why: Dylan's console confirmed the real failure: `[pec] job save failed Error: SESSION_TIMEOUT:job-save`, with ZERO network traffic for the write (the unrelated sheets-proxy 502s in the same console prove the network itself was fine).
+
+Corrected diagnosis: I was wrong that timedFetch (22:05) would fix the writes. The idle wedge is a stuck internal token-refresh promise inside supabase-js's GoTrue auth client — created when the tab idled. Every later write calls getSession(), which awaits that stuck promise and never resolves, so the write hangs BEFORE any fetch is made. timedFetch only bounds fetches that actually happen, so it can't catch this; the write just sits until withDeadline's 12s SESSION_TIMEOUT. A page reload clears it (fresh client), which is why "reload then save" worked — but reloading loses unsaved edits.
+
+Fix (no reload, no lost edits): build the client via a `makeClient()` factory and hold it in a `let supabase` binding (was `const`). `recoverWedgedClient()` reads the persisted session straight from localStorage (sb-<ref>-auth-token — getSession() can't be trusted, it may be wedged), constructs a fresh client, `setSession()`s the stored access/refresh tokens (bounded 8s), and reassigns `supabase` + `window.pecSupabase`. Because every call site references the `supabase` binding, all subsequent calls use the healthy client.
+
+Job-detail save now runs in a retry-once loop: attempt 1; on a stale-session error (`isSessionStale`) it shows "Reconnecting…", calls `recoverWedgedClient()`, and re-runs the whole save. The save is a REPLACE (update job, delete+reinsert areas, rebuild materials), so re-running is idempotent — no double-write. Success shows "Saved ✓". If reconnect still fails, the message asks the user to reload and sign in (session genuinely expired).
+
+Unrelated note: the console also showed `sheets-proxy ... 502 (Bad Gateway)` on the email/Google Sheets load. That's a separate Netlify-function issue (it already retries once); not part of this fix. Flagged to Dylan.
+
+Caveat: a rebuilt client's auth-state listeners (onAuthStateChange) are on the old instance, so cross-tab/sign-out events won't propagate after a recovery until the next full page load. Acceptable trade-off to keep the user working without losing edits.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: If the rebuilt-client recovery proves out, route the payment/mark-complete writes (withFreshWrite) and ideally reads (withFreshSession, currently reload-on-wedge) through recoverWedgedClient too, so nothing ever needs a manual reload.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-reload once (Cmd+Shift+R) to load this build. Then, even after the tab sits idle, saving a job should show a brief "Reconnecting…" then "Saved ✓" — no second tap, no reload, edits intact. If you ever still get the "reload and sign in" message, send the `[pec]` console lines. Separately: the email widget is erroring with a 502 from sheets-proxy; tell me if you want me to look at that next.
+
 ## [2026-05-29 22:40 MST] jobs: simplify Job detail save, add "Saved ✓" confirmation (Dylan still reports the button not saving)
 
 By: Claude Code
