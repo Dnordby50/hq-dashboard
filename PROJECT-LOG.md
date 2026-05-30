@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 22:20 MST] jobs/core: stop auto-reloading writes on a stale session (fixes "Save failed: SESSION_WEDGED:job-save"); fail-and-retry instead
+
+By: Claude Code
+Changed: index.html — `ensureFreshSession` is now best-effort (no reload, no throw); job-save catch shows a retry message; added `isSessionStale` helper.
+Why: After the 21:45 job-save hardening, Dylan hit "Save failed: SESSION_WEDGED:job-save" when saving a job. Correction to that entry's approach.
+
+What went wrong: `ensureFreshSession('job-save')` probed `refreshSession()` with a 5s race; on a slow refresh it called `_pecWedgeReload()` (location.reload) AND threw `SESSION_WEDGED`. The throw hit the save's catch, which `alert()`ed — and a blocking alert fights the reload, so instead of a clean reload the user got the raw "SESSION_WEDGED" text. Worse, auto-reloading on a *Save* would discard the unsaved edits in the form. That reload-on-wedge behavior made sense for reads/navigation but is wrong for a write with unsaved input.
+
+Why it's now unnecessary: the 22:05 `timedFetch` change bounds every request at the source, so a stalled write fails CLEANLY within a few seconds and the client self-heals on the next attempt. So writes should fail-and-let-the-user-retry, never reload-and-lose-input.
+
+Fix:
+- `ensureFreshSession` no longer reloads or throws. It does a bounded best-effort token warm-up (5s race) and, on a slow/failed refresh, just logs and proceeds. The following write is bounded by withDeadline + timedFetch, so it either goes through or fails cleanly. This removes the SESSION_WEDGED throw from all write paths (job-save and withFreshWrite/payments).
+- Job-save catch now uses the new `isSessionStale(err)` (matches SESSION_TIMEOUT or the legacy SESSION_WEDGED tag) and shows: "The save did not go through — your session briefly stalled… Your edits are still here; just tap Save again." No reload, no lost input. The save is a full replace-by-id, so retrying is safe/idempotent.
+- `withFreshSession` (reads) still auto-reloads on the wedge — correct there, nothing to lose. The payment catch keeps its cautionary "check whether it already saved" message (a payment insert could have landed before a deadline abort, so double-record caution stays).
+
+Net: nothing auto-reloads on a write anymore; stalls surface as a one-tap retry, and timedFetch guarantees the retry isn't a forever-hang.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: Pull the latest deploy (hard-reload once to get this build), then try the job that failed. If the session is stale you'll now get a "tap Save again" message with your edits intact, and the second tap should save. Let me know if a first-tap save still fails after the tab's been sitting.
+
 ## [2026-05-29 22:05 MST] core: kill the idle session wedge at the source with a timed fetch (covers every read AND write)
 
 By: Claude Code

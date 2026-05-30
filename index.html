@@ -5178,25 +5178,18 @@ function withDeadline(fn, { timeoutMs = 12000, label = 'request' } = {}) {
   ]);
 }
 const isSessionTimeout = (err) => String(err && err.message || '').startsWith('SESSION_TIMEOUT:');
+// True for any "the session briefly stalled" error (deadline OR the legacy
+// wedge tag). Callers use it to tell the user to retry rather than showing a
+// raw message; the client self-heals so the next attempt works.
+const isSessionStale = (err) => { const m = String(err && err.message || ''); return m.startsWith('SESSION_TIMEOUT:') || m.startsWith('SESSION_WEDGED:'); };
 
-// For non-idempotent writes (payments, status flips) that must survive the idle
-// JWT wedge WITHOUT risking a duplicate. Unlike withDeadline (which just races a
-// cold write against a deadline and fails loud on the wedge), this refreshes the
-// session FIRST:
-//   - refresh hangs  -> that's the wedge signature -> reload, and crucially the
-//     write is NEVER attempted, so there is zero chance it silently landed.
-//   - refresh resolves -> the client is fresh -> the single write won't hang.
-// withFreshSession's auto-retry can't be used here because retrying a write that
-// may have already committed could double-record. Refresh-then-write-once does.
-// If the write still hangs after a good refresh (rare), withDeadline's
-// SESSION_TIMEOUT surfaces so the caller can show "check whether it saved".
-// Refresh the auth session, distinguishing a WEDGED client (refresh hangs ->
-// reload, the only fix) from a healthy one (refresh resolves -> proceed). Shared
-// by withFreshWrite and by any multi-write sequence (e.g. the job-detail save)
-// that wants to clear the idle-JWT wedge ONCE up front before running several
-// writes against the now-fresh client. Throws SESSION_WEDGED on the wedge (the
-// caller is mid-reload at that point); swallows non-timeout refresh errors so a
-// transient blip doesn't block the write that follows.
+// Best-effort session warm-up before a write. Bounded so it can't hang; we
+// deliberately do NOT reload or throw on a slow/failed refresh. Why: timedFetch
+// (the client's global fetch) already bounds EVERY request, and the write that
+// follows is bounded by withDeadline too, so a stale session makes the write
+// fail CLEANLY within a few seconds and self-heal on the next attempt. Auto-
+// reloading here (the old behavior) discarded the user's unsaved form input on a
+// Save, which is worse than a one-tap retry now that the client recovers itself.
 async function ensureFreshSession(label = 'session') {
   try {
     await Promise.race([
@@ -5204,14 +5197,12 @@ async function ensureFreshSession(label = 'session') {
       new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
     ]);
   } catch (rerr) {
-    if (String(rerr && rerr.message || '').includes('timed out')) {
-      _pecWedgeReload(`${label} refreshSession timed out (pre-write)`);
-      throw new Error(`SESSION_WEDGED:${label}`);
-    }
-    // Non-timeout refresh error (e.g. transient): ignore; the write that follows
-    // will surface any real problem to the caller.
+    console.warn(`[pec] ${label} pre-write refresh skipped:`, (rerr && rerr.message) || rerr);
   }
 }
+// Bounded, no-retry write that first warms the session. Safe for non-idempotent
+// writes (payments): the op runs at most once, and on a stale session it fails
+// with SESSION_TIMEOUT so the caller can tell the user to retry (not reload).
 async function withFreshWrite(fn, { timeoutMs = 12000, label = 'write' } = {}) {
   await ensureFreshSession(label);
   return await withDeadline(fn, { timeoutMs, label });
@@ -8262,8 +8253,8 @@ async function renderJobDetail(id) {
     } catch (err) {
       console.error('[pec] job save failed', err);
       msg.textContent = ''; btn.disabled = false;
-      alert(isSessionTimeout(err)
-        ? 'The server did not respond (your session may have gone stale while idle). Hard-reload the page (Cmd+Shift+R), reopen this job to see what saved, and re-enter anything missing.'
+      alert(isSessionStale(err)
+        ? 'The save did not go through — your session briefly stalled (common after the tab sits idle). Your edits are still here; just tap Save again to retry.'
         : 'Save failed: ' + (err.message || err));
     }
   });
