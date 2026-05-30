@@ -4953,10 +4953,37 @@ if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_URL.includes('YO
 // this dashboard is a single-user app; worst case is two tabs both refreshing the
 // token at once, which supabase tolerates (last-write-wins, both end up authenticated).
 const noopLock = (_name, _acquireTimeout, fn) => Promise.resolve(fn());
+
+// ROOT-CAUSE guard for the idle "wedge". With the lock no-op'd above, the
+// remaining way the client hangs forever is supabase-js's auth token-refresh
+// FETCH stalling (backgrounded tab, flaky network): because the in-flight
+// refresh promise is shared, every later getSession()/query/write awaits it and
+// never settles -- the reported "stuck on Saving…" / "did not respond" symptoms.
+// Fix at the source: give every request a hard AbortController deadline so a
+// stalled fetch REJECTS instead of hanging. supabase-js treats a rejected
+// refresh as a transient failure and recovers on the next call, so the wedge
+// self-heals. Auth gets a tighter 8s ceiling (refresh should be quick and is
+// the usual culprit); other requests get 20s -- above the app-level
+// withDeadline (12s) / withFreshSession (10s) fences so those fire first and
+// can show friendly guidance, with this as the last-resort backstop. Covers
+// EVERY read and write, current and future, with no per-call wrapping. If a
+// caller already passed its own signal (e.g. a future .abortSignal()), defer to
+// it untouched.
+const timedFetch = (input, init = {}) => {
+  if (init && init.signal) return fetch(input, init);
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  // Auth 8s (refresh is quick and the usual culprit); storage 120s (photo
+  // uploads are legitimately slow, only a dead upload should trip); everything
+  // else (REST) 20s, above the app-level fences.
+  const ms = /\/auth\/v1\//.test(url) ? 8000 : /\/storage\/v1\//.test(url) ? 120000 : 20000;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(t));
+};
 const supabase = createClient(
   CFG.SUPABASE_URL || 'https://missing.supabase.co',
   CFG.SUPABASE_ANON_KEY || 'missing',
-  { auth: { lock: noopLock } }
+  { auth: { lock: noopLock }, global: { fetch: timedFetch } }
 );
 window.pecSupabase = supabase;
 

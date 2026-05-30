@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-29 22:05 MST] core: kill the idle session wedge at the source with a timed fetch (covers every read AND write)
+
+By: Claude Code
+Changed: index.html — the Supabase client now uses a custom `timedFetch` (`global.fetch`) that puts a hard AbortController deadline on every request.
+Why: Dylan asked to fix the recurring "loading/stuck on Saving…/server did not respond" class of bug for good, not one write path at a time. The prior fixes (withDeadline, withFreshSession, withFreshWrite, ensureFreshSession, the idle probes, and the no-op auth lock) were all downstream band-aids on individual call sites; ~81 write call sites existed, most unguarded, plus every future one.
+
+Root cause (final): the no-op auth lock (added earlier at index.html ~4955) fixed the navigator.locks contention, but the remaining wedge is supabase-js's auth token-refresh FETCH stalling. Because supabase-js shares the in-flight refresh promise, once that fetch hangs, every later getSession() / query / write awaits it and never settles — exactly the "stuck on Saving…" and "did not respond" reports.
+
+Fix (one change, global): pass `global: { fetch: timedFetch }` to createClient. `timedFetch` wraps the native fetch with an AbortController timeout:
+- /auth/v1/ -> 8s (refresh is quick and is the usual culprit),
+- /storage/v1/ -> 120s (photo uploads are legitimately slow; only a dead upload trips it),
+- everything else (REST) -> 20s (above the app-level withDeadline 12s / withFreshSession 10s fences, so those still fire first and show friendly guidance; this is the last-resort backstop).
+A stalled fetch now REJECTS instead of hanging; supabase-js treats a failed refresh as transient and recovers on the next call, so the wedge self-heals. If a caller ever passes its own AbortSignal, timedFetch defers to it untouched. Verified the abort/timeout mechanism in isolation (hangs bounded, fast calls pass through).
+
+Why this is the "for good" fix: it bounds EVERY read and write — all ~81 existing write sites and any added later — without per-call wrapping and without touching the PostgREST query-builder internals (which would have been high-risk). The existing helpers stay as defense-in-depth: timedFetch guarantees nothing hangs past the ceiling; the helpers proactively refresh + auto-reload on the wedge signature for a smoother UX, and the targeted payment/job-save wrappers still provide friendly "check whether it saved" messaging. Layered: no-op lock (no lock contention) + timed fetch (no infinite fetch) + helpers (proactive refresh/reload + messaging).
+
+Note: with infinite hangs gone, the remaining un-wrapped write sites can at worst now error within ~8-20s and surface through their existing error handling instead of freezing a button. No need to wrap all 81 by hand.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None. If a specific slow query ever legitimately needs >20s, give that call its own AbortSignal (timedFetch will defer to it).
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy, the idle-stall symptoms (stuck Save, "server did not respond") should be gone across the app — Invoicing, Job detail, Job Schedule, Settings, everything. Leave a tab idle 20+ min, then save something to confirm. If anything still stalls, send the console line tagged `[pec]` and the network tab (look for a request stuck pending).
+
 ## [2026-05-29 21:45 MST] jobs: harden the Job detail "Save job" sequence against the idle JWT wedge (was stuck on "Saving…")
 
 By: Claude Code
