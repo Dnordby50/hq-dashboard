@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] invoicing migration: attempted to run 2026-05-30_deposit_waived.sql, aborted on a Postgres view-replace error
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior 2026-05-30 entry (run `supabase/migrations/2026-05-30_deposit_waived.sql` against PEC Supabase `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role).
+
+What happened: opened the SQL Editor in Supabase Studio, pasted the migration file verbatim, clicked Run. The transaction aborted with:
+
+```
+ERROR:  42P16: cannot change name of view column "signed_date" to "deposit_waived"
+HINT:  Use ALTER VIEW ... RENAME COLUMN ... to change name of view column instead.
+```
+
+Root cause: the `create or replace view public.pec_job_ar` block in the migration inserts `j.deposit_waived` between `j.deposit_collected` and `j.signed_date` in the SELECT list. The existing view (from `2026-05-27_invoicing_ar.sql`) has `signed_date` at column position 13. `CREATE OR REPLACE VIEW` in Postgres cannot reorder or insert mid-list, only append at the end. The new view tries to put `deposit_waived` at position 13, Postgres sees that as renaming `signed_date` -> `deposit_waived`, and refuses.
+
+Rollback confirmation: the migration's `begin; ... commit;` block aborted as a unit. Ran the first acceptance check (`select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='deposit_waived';`) -> `Success. No rows returned`. So the `alter table ... add column` did NOT take effect either. Skipped the second acceptance check (`select deposit_waived from pec_job_ar`) — view is unchanged, column doesn't exist in the table, so the check would have errored for the wrong reason. Net DB state: identical to before the attempt.
+
+Did not patch the migration. The fix is a one-line move (append `j.deposit_waived` at the END of the SELECT list rather than mid-list), but stopping here per project rules rather than expanding scope on a Claude Code-authored migration without sign-off.
+
+Files touched: PROJECT-LOG.md. The migration file `supabase/migrations/2026-05-30_deposit_waived.sql` was NOT modified.
+
+## Handoff to Claude Code
+
+Patch `supabase/migrations/2026-05-30_deposit_waived.sql`: move `j.deposit_waived,` from its current position (after `j.deposit_collected,`, around line 35) to the end of the SELECT list — easiest spot is right before `c.name as customer_name,` (i.e., make it the last `j.*` column). That preserves all existing column positions, so `create or replace view` will succeed. The application's `select('*')` doesn't care about column order, so the UI behavior is unchanged. Re-issue the Cowork handoff after the patch is committed; the prior handoff's acceptance criteria still apply.
+
+## Handoff to Dylan
+
+The "no deposit needed" button on invoices is NOT live yet. The dashboard already shipped the UI gracefully (jobs read as not-waived), so nothing is broken — clicking the link will still surface a "could not update" alert until a fixed migration runs. Decide whether you want Claude Code to patch the migration as above, or whether you'd rather I edit it directly in a Cowork session and re-run.
+
 ## [2026-05-30 MST] invoicing: "no deposit needed" waiver for commercial / special-case jobs
 
 By: Claude Code
