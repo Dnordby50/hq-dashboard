@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] invoicing migration: patched and re-ran 2026-05-30_deposit_waived.sql; deposit_waived is live in prod
+
+By: Cowork
+
+Dylan said "patch and re run" after the prior entry flagged the 42P16 view-replace error. Patched the migration and re-executed against PEC Supabase (`zdfpzmmrgotynrwkeakd`, Primary Database, postgres role).
+
+Patch: moved `j.deposit_waived` to be the LAST column in the `pec_job_ar` view's SELECT list (after `days_since_signed`), and updated the surrounding comment. First fix attempt put it between `j.created_at` and `c.name as customer_name` — that still failed with the same 42P16 (renaming `customer_name` -> `deposit_waived`). Confirmed the actual rule the hard way: `CREATE OR REPLACE VIEW` requires every existing column to keep its exact ordinal position, so any added column has to go AT THE VERY END, after the last existing column. Second attempt (deposit_waived at position 26, after days_since_signed) succeeded.
+
+Run result: `Success. No rows returned` (no error). Then both acceptance checks ran clean against the post-migration state:
+
+1. `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='deposit_waived';` -> 1 row.
+2. `select deposit_waived from public.pec_job_ar limit 1;` -> 1 row, no error.
+
+So `public.jobs.deposit_waived boolean not null default false` is live, and the `pec_job_ar` view exposes it.
+
+Net behavior for Dylan: the "no deposit needed" link on the Invoice detail page is now functional. Clicking it on a commercial job flips `deposit_waived = true`, drops the job out of the "Signed, no deposit collected" AR bucket, and stops it counting toward Total AR. "require deposit" undoes it.
+
+Files touched: `supabase/migrations/2026-05-30_deposit_waived.sql` (edited: deposit_waived moved to end of view SELECT list; comment rewritten to record what the constraint actually is), PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+On the live dashboard, open a commercial job's invoice and click "no deposit needed" on the Deposit stat. Confirm it flips to "Waived" and the job drops out of the AR pending-deposits bucket. If anything misbehaves, send a screenshot and the `[pec]` console line.
+
+## Handoff to Claude Code
+
+None. The committed migration file matches what was actually run in prod.
+
 ## [2026-05-30 MST] invoicing migration: attempted to run 2026-05-30_deposit_waived.sql, aborted on a Postgres view-replace error
 
 By: Cowork

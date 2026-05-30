@@ -16,8 +16,13 @@ begin;
 alter table public.jobs
   add column if not exists deposit_waived boolean not null default false;
 
--- Recreate the AR view to add j.deposit_waived. (Definition copied from
--- 2026-05-27_invoicing_ar.sql with the one new column.)
+-- Recreate the AR view to add j.deposit_waived. It must be the VERY LAST
+-- column of the new SELECT list (after days_since_signed) so every existing
+-- column keeps its current ordinal position. create-or-replace-view in
+-- Postgres only allows APPENDING columns; placing deposit_waived anywhere
+-- in the middle (either between deposit_collected/signed_date, or between
+-- j.created_at/customer_name) triggers ERROR 42P16 because Postgres reads
+-- that as renaming the column that previously occupied that slot.
 create or replace view public.pec_job_ar with (security_invoker = on) as
 select
   j.id,
@@ -32,7 +37,6 @@ select
   j.bill_to_address,
   j.deposit_amount,
   j.deposit_collected,
-  j.deposit_waived,
   j.signed_date,
   j.completed_date,
   j.line_items,
@@ -45,7 +49,8 @@ select
   coalesce(j.price, 0) - coalesce(p.paid_to_date, 0)   as balance_remaining,
   p.last_payment_date,
   (current_date - j.completed_date)                    as days_outstanding,
-  (current_date - j.signed_date)                       as days_since_signed
+  (current_date - j.signed_date)                       as days_since_signed,
+  j.deposit_waived
 from public.jobs j
 left join public.customers c on c.id = j.customer_id
 left join (
