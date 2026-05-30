@@ -4980,12 +4980,53 @@ const timedFetch = (input, init = {}) => {
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(t));
 };
-const supabase = createClient(
+const makeClient = () => createClient(
   CFG.SUPABASE_URL || 'https://missing.supabase.co',
   CFG.SUPABASE_ANON_KEY || 'missing',
   { auth: { lock: noopLock }, global: { fetch: timedFetch } }
 );
+// `let`, not `const`: when the auth client wedges (a stuck internal token-refresh
+// promise from an idle tab — the hang happens BEFORE any fetch, so timedFetch
+// can't catch it), the only real cure is a brand-new client. recoverWedgedClient
+// rebuilds it from the persisted login and reassigns this binding, so every
+// `supabase.*` call made afterward uses the healthy client. No page reload, no
+// lost edits.
+let supabase = makeClient();
 window.pecSupabase = supabase;
+
+let _pecRecovering = null;
+async function recoverWedgedClient() {
+  if (_pecRecovering) return _pecRecovering;        // de-dupe concurrent recoveries
+  _pecRecovering = (async () => {
+    try {
+      // getSession() may itself be wedged (it awaits the stuck refresh), so read
+      // the persisted session straight from localStorage. supabase-js v2 stores
+      // it under sb-<project-ref>-auth-token as the session object.
+      const ref = ((CFG.SUPABASE_URL || '').match(/https:\/\/([^.]+)\./) || [])[1] || '';
+      let access_token, refresh_token;
+      try {
+        const raw = localStorage.getItem(`sb-${ref}-auth-token`);
+        const s = raw ? JSON.parse(raw) : null;
+        const sess = s?.currentSession || s;          // v2 = flat, tolerate v1 nesting
+        access_token = sess?.access_token;
+        refresh_token = sess?.refresh_token;
+      } catch (_) { /* fall through with undefined tokens */ }
+      const fresh = makeClient();
+      if (access_token && refresh_token) {
+        await Promise.race([
+          fresh.auth.setSession({ access_token, refresh_token }),
+          new Promise((_, r) => setTimeout(() => r(new Error('setSession timed out')), 8000)),
+        ]).catch(() => {});
+      }
+      supabase = fresh;
+      window.pecSupabase = fresh;
+      console.warn('[pec] rebuilt Supabase client to clear wedged auth');
+    } finally {
+      _pecRecovering = null;
+    }
+  })();
+  return _pecRecovering;
+}
 
 const portalBase = () => (CFG.PORTAL_BASE_URL || (location.origin + location.pathname)).replace(/\/+$/, '');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -8180,12 +8221,13 @@ async function renderJobDetail(id) {
       additional_non_slip: $('jcNonSlip') ? jcBool('jcNonSlip') : null,
       grinder_tooling_grit: $('jcGrinder')?.value || null,
     };
-    try {
-      // Writes are bounded by withDeadline + the client-level timedFetch, so a
-      // stale session fails cleanly within seconds (and the client self-heals on
-      // retry) instead of hanging the button on "Saving…". No pre-refresh step:
-      // it added latency and, on a slow refresh, surfaced a confusing
-      // SESSION_WEDGED error without saving.
+    // Auto-retry once. A job save is a REPLACE (update job, then rebuild its
+    // areas & materials), so re-running it is idempotent and safe. If attempt 1
+    // fails because the auth client wedged after the tab idled, rebuild the
+    // client (recoverWedgedClient) and run the whole sequence again; the user
+    // just sees "Saved ✓" with no second tap and no lost edits.
+    for (let attempt = 1; ; attempt++) {
+     try {
       const upd = await withDeadline(() => supabase.from('jobs').update(jobPatch).eq('id', id), { label: 'job-save' });
       if (upd.error) throw upd.error;
       // Delete + re-insert job_areas; the cascade clears job_area_materials.
@@ -8255,12 +8297,24 @@ async function renderJobDetail(id) {
         if (Object.keys(diff.after).length) await logJobActivity(id, 'save', diff.before, diff.after);
       } catch (_) { /* activity log is best-effort; never block a successful save */ }
       renderJobDetail(id);
-    } catch (err) {
+      return; // saved successfully
+     } catch (err) {
+      if (attempt === 1 && isSessionStale(err)) {
+        // The auth client wedged after idle (the write never even reached the
+        // network). Rebuild the client from the stored login and retry once.
+        console.warn('[pec] job save stalled; rebuilding client and retrying once', err);
+        msg.textContent = 'Reconnecting…';
+        await recoverWedgedClient();
+        msg.textContent = 'Saving…';
+        continue;
+      }
       console.error('[pec] job save failed', err);
       msg.textContent = ''; btn.disabled = false;
       alert(isSessionStale(err)
-        ? 'The save did not go through — your session briefly stalled (common after the tab sits idle). Your edits are still here; just tap Save again to retry.'
+        ? 'Your session expired while the tab sat idle, and reconnecting did not clear it. Please reload the page (Cmd+Shift+R) and sign in again, then re-enter this change.'
         : 'Save failed: ' + (err.message || err));
+      return;
+     }
     }
   });
   root.querySelectorAll('.pec-gallery-item img').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
