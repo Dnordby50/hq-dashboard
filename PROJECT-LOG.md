@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] invoicing: record a payment as the deposit from anywhere; redefine Total AR to exclude deposit-paid-in-progress jobs
+
+By: Claude Code
+Changed: index.html — payment modal, invoice-detail view (`renderJobInvoice`), and AR list (`renderInvoicing`).
+Why: Dylan recorded a payment for Stephen Prescott from the invoice-detail view; it landed in paid_to_date but `deposit_collected` stayed "—". And he clarified the AR definition.
+
+Bug root cause: `deposit_collected` was only flipped when the payment modal was opened via the AR "Mark Deposit Paid" button (which passes `{deposit:true}`). The invoice-detail "Record payment" button passes `{deposit:false}`, and there was no deposit option inside the modal — so a deposit recorded from the invoice detail never set the flag.
+
+Deposit fixes:
+1. Payment modal now has a "Record this as the deposit (marks the job's deposit collected)" checkbox, shown whenever `!deposit_collected`. The submit handler flips `deposit_collected` based on the checkbox (`fd.get('is_deposit')`), not on which button opened the modal — so a deposit can be recorded from any entry point. Checkbox defaults checked when opened via a deposit button.
+2. Invoice-detail view gains a "Record deposit" button (opens the modal pre-filled as a deposit) when the deposit isn't collected yet.
+3. For the "payment already recorded but flag never set" case (Stephen): the invoice-detail Deposit stat shows a "mark collected" link when `paid_to_date > 0` and `!deposit_collected`. It sets `deposit_collected = true` only (no new payment row), so it can't double-charge.
+
+AR redefinition (per Dylan: "AR is jobs completed and not collected, and jobs signed but payment not collected; jobs do not hit AR once the deposit is paid until marked complete"):
+- **Total AR** was `sum of every open balance` (included deposit-paid, in-progress jobs). Now **Total AR = completed-not-paid balances + deposits-owed on signed-no-deposit jobs**. The in-progress/deposit-paid bucket is excluded from the total.
+- Headline subtext now reads "N jobs due now · completed unpaid + deposits owed".
+- The "Active jobs, deposit paid, in progress" section is kept for visibility but relabeled "In progress (deposit paid — not yet AR) · $X not due until complete".
+- Updated the in-app "how AR works" explainer (buckets + workflows) to match.
+
+Note: `markJobComplete` already moves a job into the "Completed, not paid in full" bucket, so a deposit-paid job correctly (re-)enters AR when completed.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy (hard-reload), open Stephen Prescott's invoice: the Deposit stat will show "not collected · mark collected" — click it to flag the deposit without re-charging. Going forward, record deposits via the new "Record deposit" button in an invoice, or tick "Record this as the deposit" in the payment form. Confirm Total AR now excludes deposit-paid in-progress jobs.
+
 ## [2026-05-29 23:05 MST] core+jobs: rebuild the Supabase client to recover from wedged auth; job save auto-retries (the actual fix)
 
 By: Claude Code

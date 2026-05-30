@@ -6613,8 +6613,6 @@ async function renderInvoicing() {
   state.arRows = rows;
 
   const EPS = 0.005;
-  const open = rows.filter(r => r.balance > EPS);
-  const totalAR = open.reduce((s, r) => s + r.balance, 0);
   const today = invToday();
 
   const completed = rows.filter(r => r.status === 'completed' && r.balance > EPS)
@@ -6630,6 +6628,12 @@ async function renderInvoicing() {
   const depositOwed = r => r.deposit_amount != null ? r.deposit_amount : invRound2(r.price * 0.5);
   const pendingDeposits = signedNoDep.reduce((s, r) => s + depositOwed(r), 0);
   const activeBalance = active.reduce((s, r) => s + r.balance, 0);
+  // AR = what's actually due now: completed work not paid in full, plus signed
+  // jobs whose deposit hasn't come in. Deposit-paid, in-progress jobs are NOT
+  // AR -- their balance isn't due until the job is marked complete (Dylan's
+  // rule: "jobs do not hit AR once the deposit is paid until marked complete").
+  const totalAR = completedOwed + pendingDeposits;
+  const arJobs = completed.length + signedNoDep.length;
 
   const payBtn = r => `<button class="pec-btn sm primary" data-pay="${r.id}">Mark Paid</button>`;
   const viewBtn = r => `<button class="pec-btn sm" data-invoice="${r.id}">View Invoice</button>`;
@@ -6669,7 +6673,7 @@ async function renderInvoicing() {
     <div class="pec-toolbar" style="justify-content:space-between">
       <div>
         <div class="pec-ar-headline">Total AR: ${invUSD(totalAR)}</div>
-        <div class="pec-ar-sub">across ${open.length} job${open.length === 1 ? '' : 's'} (Prescott Epoxy)</div>
+        <div class="pec-ar-sub">${arJobs} job${arJobs === 1 ? '' : 's'} due now · completed unpaid + deposits owed (Prescott Epoxy)</div>
       </div>
       <button class="pec-btn" id="pecArRefresh">Refresh</button>
     </div>
@@ -6689,7 +6693,7 @@ async function renderInvoicing() {
     </details>
 
     <details class="pec-card pec-ar-sec">
-      <summary>Active jobs, deposit paid, in progress <span class="pec-ar-meta">${active.length} job${active.length === 1 ? '' : 's'} · ${invUSD(activeBalance)} remaining</span></summary>
+      <summary>In progress (deposit paid — not yet AR) <span class="pec-ar-meta">${active.length} job${active.length === 1 ? '' : 's'} · ${invUSD(activeBalance)} not due until complete</span></summary>
       <div class="pec-scroll-x"><table class="pec-table">
         <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Paid to date</th><th>Scheduled</th><th>Salesperson</th><th>Status</th><th></th></tr></thead>
         <tbody>${activeRows}</tbody></table></div>
@@ -6768,6 +6772,7 @@ async function renderJobInvoice(jobId) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
+        ${!row.deposit_collected ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
     </div>
@@ -6778,7 +6783,7 @@ async function renderJobInvoice(jobId) {
     </div>
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Invoice total</div><div class="pec-stat-val">${invUSD(row.price)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_amount != null ? invUSD(row.deposit_amount) : '—'}</div><div class="pec-ar-sub">${row.deposit_collected ? 'collected' : 'not collected'}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_amount != null ? invUSD(row.deposit_amount) : '—'}</div><div class="pec-ar-sub">${row.deposit_collected ? 'collected' : `not collected${invNum(row.paid_to_date) > 0 ? ' · <button type="button" id="pecInvMarkDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">mark collected</button>' : ''}`}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Paid to date</div><div class="pec-stat-val">${invUSD(row.paid_to_date)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Balance</div><div class="pec-stat-val">${invUSD(row.balance)}</div></div>
     </div>
@@ -6798,6 +6803,24 @@ async function renderJobInvoice(jobId) {
   $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
+  const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
+  // Flag-only fix for "payment already recorded but deposit_collected never set"
+  // (e.g. a payment logged via Record payment without the deposit checkbox). Sets
+  // the flag WITHOUT recording another payment, so it can't double-charge.
+  const markDepB = $('pecInvMarkDep');
+  if (markDepB) markDepB.addEventListener('click', async () => {
+    markDepB.disabled = true; markDepB.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
+      if (upd.error) throw upd.error;
+      showToast('Deposit marked collected', { ttl: 3000 });
+      state.openInvoiceJobId = row.id; renderInvoicing();
+    } catch (err) {
+      console.error('[pec] mark deposit collected failed', err);
+      markDepB.disabled = false; markDepB.textContent = 'mark collected';
+      alert(isSessionStale(err) ? 'The session briefly stalled — tap "mark collected" again.' : 'Could not update: ' + (err.message || err));
+    }
+  });
   const compB = $('pecInvComplete'); if (compB) compB.addEventListener('click', () => markJobComplete(row));
 }
 
@@ -6824,6 +6847,7 @@ function openPaymentModal(row, { deposit }) {
       </div>
       <div class="pec-field"><label>Reference (check # / Zelle confirmation)</label><input name="reference" placeholder="optional"></div>
       <div class="pec-field"><label>Received date</label><input name="received_date" type="date" value="${invToday()}" required></div>
+      ${row.deposit_collected ? '' : `<div class="pec-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none"><input type="checkbox" name="is_deposit" ${deposit ? 'checked' : ''}> Record this as the deposit (marks the job's deposit collected)</label></div>`}
       <div class="prod-msg-err" id="pecPayErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
@@ -6853,7 +6877,12 @@ function openPaymentModal(row, { deposit }) {
           recorded_by: state.adminUser?.name || state.adminUser?.email || 'Unknown',
         }), { label: 'payment' });
         if (ins.error) throw ins.error;
-        if (deposit && !row.deposit_collected) {
+        // Flip deposit_collected when the user marked this payment as the deposit
+        // (the modal checkbox), regardless of which button opened the modal. This
+        // is what lets a deposit be recorded from the invoice-detail view too, not
+        // just the AR "Mark Deposit Paid" button.
+        const markDeposit = !row.deposit_collected && !!fd.get('is_deposit');
+        if (markDeposit) {
           const upd = await withFreshWrite(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
           if (upd.error) throw upd.error;
         }
@@ -7106,11 +7135,12 @@ function renderInvoicingDocs() {
     </ul>
     <p>All of this is exposed by the <code>pec_job_ar</code> Postgres view, which the Invoicing and Metrics tabs read.</p>
 
-    <h4>The four AR buckets</h4>
+    <h4>The AR buckets</h4>
+    <p><strong>Total AR</strong> = the "Completed, not paid in full" balances plus the deposits owed on "Signed, no deposit" jobs. A job whose deposit is in but that isn't completed yet is NOT counted in AR; its remaining balance isn't due until it's marked complete.</p>
     <ul>
-      <li><strong>Completed work, not paid in full</strong>: status is completed and balance &gt; 0. Aging from <code>completed_date</code>: green 0 to 7 days, yellow 8 to 14, red 15+.</li>
-      <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected and not yet completed. Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+.</li>
-      <li><strong>Active jobs, deposit paid, in progress</strong>: deposit collected and status signed, scheduled, or in_progress, with a balance remaining.</li>
+      <li><strong>Completed work, not paid in full</strong>: status is completed and balance &gt; 0. Counts toward AR. Aging from <code>completed_date</code>: green 0 to 7 days, yellow 8 to 14, red 15+.</li>
+      <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected and not yet completed. Counts toward AR (the deposit owed). Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+.</li>
+      <li><strong>In progress (deposit paid)</strong>: deposit collected and status signed, scheduled, or in_progress, with a balance remaining. Shown for visibility but NOT counted in AR until the job is completed.</li>
       <li><strong>Recently closed</strong>: balance is zero and the last payment landed within the last 30 days.</li>
     </ul>
 
@@ -7118,8 +7148,8 @@ function renderInvoicingDocs() {
     <ul>
       <li><strong>Intake</strong>: the DripJobs proposal-accepted webhook creates the job (customer, price, scope, signed_date, salesperson when sent). The office pastes the line items and confirms the scope, and sets a non-default deposit if needed.</li>
       <li><strong>Completion</strong>: the crew lead taps Mark Complete on the job after the final walkthrough. That sets <code>completed_date</code> to today and moves the job into the "Completed, not paid" bucket.</li>
-      <li><strong>Payment</strong>: tap Mark Paid, enter amount (defaults to the balance), method (check, cash, Zelle), reference, and date. This inserts a <code>pec_payments</code> row. When the balance hits zero the job moves to Recently closed.</li>
-      <li><strong>Deposit</strong>: same form from the "Signed, no deposit" bucket. The first recorded payment flips <code>deposit_collected</code> to true so the job is ready to schedule.</li>
+      <li><strong>Payment</strong>: tap Mark Paid (or Record payment inside an open invoice), enter amount (defaults to the balance), method (check, cash, Zelle, credit card), reference, and date. This inserts a <code>pec_payments</code> row. When the balance hits zero the job moves to Recently closed.</li>
+      <li><strong>Deposit</strong>: record it from the "Signed, no deposit" bucket's Mark Deposit Paid button, the Record deposit button inside an open invoice, or by ticking "Record this as the deposit" in the payment form. Any of these flips <code>deposit_collected</code> to true so the job is ready to schedule. If a payment was already recorded without that tick, the open invoice shows a "mark collected" link that sets the flag without recording a second payment.</li>
     </ul>
 
     <h4>Metrics tab</h4>
