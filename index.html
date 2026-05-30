@@ -5081,18 +5081,59 @@ function renderActivityCard(rows) {
 // the switchView fence at line ~5316 will then render as a Retry UI.
 // 10s timeout is intentional: shorter than the 15s switchView fence so the
 // in-place retry happens BEFORE the user-facing error fires.
+// One-shot guard so a wedge never triggers more than one reload per page life.
+// If the page reloads and IMMEDIATELY re-wedges, the next withFreshSession
+// call will still throw SESSION_WEDGED but won't trigger a second reload that
+// session, surfacing the render-fence error so the user can debug rather than
+// looping reloads forever.
+let _pecReloadingForWedge = false;
+function _pecWedgeReload(reason) {
+  if (_pecReloadingForWedge) return;
+  _pecReloadingForWedge = true;
+  console.warn(`[pec] session wedge detected (${reason}) -> auto-reload`);
+  try { location.reload(); } catch (_) {}
+}
+
 async function withFreshSession(fn, { timeoutMs = 10000, label = 'query' } = {}) {
-  const race = (p) => Promise.race([
+  const race = (p, ms = timeoutMs, lbl = label) => Promise.race([
     p,
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label}] timed out after ${timeoutMs}ms`)), timeoutMs)),
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`[${lbl}] timed out after ${ms}ms`)), ms)),
   ]);
   try {
     return await race(fn());
   } catch (e) {
     if (!String(e && e.message || '').includes('timed out')) throw e;
-    console.warn(`[pec] ${label} timed out; refreshing session and retrying once`);
-    try { await race(supabase.auth.refreshSession()); } catch (_) { /* swallow; the retry will surface the real error */ }
-    return await race(fn());
+    console.warn(`[pec] ${label} timed out; probing for session wedge`);
+    // Wedge signature: supabase.auth.refreshSession() ALSO hangs because it
+    // queues behind the same stuck auth refresh (see CLAUDE.md Architecture
+    // Gotchas: idle JWT wedge). A short-deadline probe distinguishes a wedged
+    // client (force reload, the only real fix) from a legit slow query
+    // (proceed to one retry as before).
+    let refreshTimedOut = false;
+    try {
+      await race(supabase.auth.refreshSession(), 3000, `${label} refresh`);
+    } catch (rerr) {
+      if (String(rerr && rerr.message || '').includes('timed out')) refreshTimedOut = true;
+      // Non-timeout refresh errors fall through to retry, which will surface
+      // the real error to the caller.
+    }
+    if (refreshTimedOut) {
+      _pecWedgeReload(`${label} + refreshSession both timed out`);
+      throw new Error(`SESSION_WEDGED:${label}`);
+    }
+    // Refresh resolved (or errored non-timeout); one retry against a
+    // hopefully-fresh client.
+    try {
+      return await race(fn());
+    } catch (e2) {
+      if (String(e2 && e2.message || '').includes('timed out')) {
+        // Refresh succeeded but the retry still hangs -> wedged after
+        // refresh, reload.
+        _pecWedgeReload(`${label} timed out again after successful refresh`);
+        throw new Error(`SESSION_WEDGED:${label}`);
+      }
+      throw e2;
+    }
   }
 }
 
@@ -5115,23 +5156,47 @@ const isSessionTimeout = (err) => String(err && err.message || '').startsWith('S
 // after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
 // zero network traffic (diagnosed live: ~57min idle, then the next click wedged
 // inside the refresh queue). Rather than let that first call be a user action
-// like saving a payment, probe on tab re-focus after a long idle with a short
-// deadline. If it times out the session is wedged, and only a reload clears it,
-// so prompt one. Registered once at module load.
+// like saving a payment, probe in the background; if it times out the session
+// is wedged and only a reload clears it, so auto-reload via _pecWedgeReload
+// (which is one-shot to avoid reload loops). withFreshSession also auto-reloads
+// on the same wedge signature, but these probes catch it BEFORE the user
+// clicks something. Two triggers: (a) visibilitychange after the tab was
+// backgrounded for 15+ min, and (b) a wall-clock check that fires when the
+// tab stayed foregrounded but had no user input for 15+ min (the
+// multi-monitor case where visibilitychange never fires).
+function _pecProbeSession(triggerLabel) {
+  if (!state || !state.adminUser) return; // signed-in views only
+  withDeadline(() => supabase.from('admin_users').select('id').limit(1), { timeoutMs: 7000, label: `idle-probe-${triggerLabel}` })
+    .catch(err => {
+      if (!isSessionTimeout(err)) return; // a real error is not the wedge we're watching for
+      _pecWedgeReload(`idle-probe (${triggerLabel}) timed out`);
+    });
+}
+
+// Trigger A: tab hidden->visible after 15+ min idle.
 let _pecHiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { _pecHiddenAt = Date.now(); return; }
-  if (!_pecHiddenAt || (Date.now() - _pecHiddenAt) < 15 * 60 * 1000) return; // only after ~15min+ idle
-  if (!state || !state.adminUser) return; // signed-in views only
-  withDeadline(() => supabase.from('admin_users').select('id').limit(1), { timeoutMs: 7000, label: 'idle-probe' })
-    .catch(err => {
-      if (!isSessionTimeout(err)) return; // a real error is not the wedge we're watching for
-      console.warn('[pec] idle-probe timed out; session likely wedged -> prompting reload');
-      showToast('Your session went idle and may be stale. Reload to reconnect before saving anything.', {
-        ttl: 0, actionLabel: 'Reload', onAction: () => location.reload(),
-      });
-    });
+  if (!_pecHiddenAt || (Date.now() - _pecHiddenAt) < 15 * 60 * 1000) return;
+  _pecProbeSession('visibilitychange');
 });
+
+// Trigger B: wall-clock idle detection. Tracks last user interaction; if the
+// tab is visible AND the user hasn't touched it in 15+ min, run the probe.
+// Throttled to once per 5 min so a truly-idle session doesn't hammer Postgres.
+let _pecLastInteraction = Date.now();
+['pointerdown', 'keydown'].forEach(ev =>
+  document.addEventListener(ev, () => { _pecLastInteraction = Date.now(); }, { passive: true })
+);
+let _pecLastWallClockProbe = 0;
+setInterval(() => {
+  if (document.hidden) return;
+  const idleMs = Date.now() - _pecLastInteraction;
+  if (idleMs < 15 * 60 * 1000) return;
+  if (Date.now() - _pecLastWallClockProbe < 5 * 60 * 1000) return;
+  _pecLastWallClockProbe = Date.now();
+  _pecProbeSession('wall-clock');
+}, 60 * 1000);
 
 // Client-side auto-status sweep. Flips public.jobs.status from 'scheduled' to
 // 'in_progress' for every job whose bridged pec_prod_jobs.install_date is
