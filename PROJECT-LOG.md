@@ -4,6 +4,41 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-30 MST] invoicing: "no deposit needed" waiver for commercial / special-case jobs
+
+By: Claude Code
+Changed: index.html (Invoicing AR + invoice detail + payment modal + explainer); new supabase/migrations/2026-05-30_deposit_waived.sql.
+Why: Dylan wanted a way to mark that a job needs no deposit (commercial clients, special arrangements) so it stops sitting in the AR "Signed, no deposit collected" bucket and isn't counted as owing a deposit.
+
+Data model: new `public.jobs.deposit_waived boolean not null default false`, exposed through the `pec_job_ar` view (the view selects explicit columns, so the migration recreates it with `j.deposit_waived` added — copied verbatim from 2026-05-27_invoicing_ar.sql plus the one column). The AR list/detail read the view via `select('*')`, so the new column flows through automatically.
+
+UI (index.html):
+- Invoice detail Deposit stat: when not collected and not waived, shows a "no deposit needed" link (sets `deposit_waived=true`); when waived, shows "Waived" + "no deposit needed · require deposit" (undo). The existing "mark collected" link (flag-only, for an already-paid deposit) is unchanged. All three go through one `depFlag` helper — flag-only boolean flips via withFreshWrite, no payment row, so they can't double-charge.
+- "Record deposit" button and the payment modal's "Record this as the deposit" checkbox are hidden when the deposit is waived (no deposit concept).
+- AR buckets: `signedNoDep` now excludes `deposit_waived` jobs (so they're not in "Signed, no deposit collected" and don't add to pending-deposits / Total AR). The in-progress bucket treats `deposit_collected || deposit_waived` as "deposit handled," so a waived job shows there with its balance (still not AR until completed, per the prior entry).
+- Updated the in-app "how AR works" explainer (schema table, buckets, deposit workflow).
+
+Graceful pre-migration behavior: before the column exists, `select('*')` simply omits it (undefined -> falsy), so jobs read as not-waived and the UI behaves exactly as before. The waive/undo write will error until the migration runs (handled with an alert); see handoff.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged.
+
+Files touched: index.html, supabase/migrations/2026-05-30_deposit_waived.sql (new), PROJECT-LOG.md.
+Next steps: None.
+
+## Handoff to Cowork
+**Context:** One prod Supabase change for the PEC project (`zdfpzmmrgotynrwkeakd`), committed on main under supabase/migrations/. Adds a deposit-waiver flag and re-exposes the AR view. The Invoicing UI already ships and degrades gracefully until this runs (jobs just read as not-waived; the new "no deposit needed" link errors until the column exists).
+
+**Task:** Run `supabase/migrations/2026-05-30_deposit_waived.sql` in the Supabase Studio SQL Editor (Primary Database, postgres role). It adds `public.jobs.deposit_waived boolean not null default false` and runs `create or replace view public.pec_job_ar ...` (definition copied from the 2026-05-27 migration plus the new column).
+- Acceptance:
+  1. `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='deposit_waived';` returns one row.
+  2. `select deposit_waived from public.pec_job_ar limit 1;` runs without error (column present in the view).
+- Do NOT change any other column or view logic; the view body is otherwise identical to 2026-05-27_invoicing_ar.sql.
+
+**After:** Append a `By: Cowork` PROJECT-LOG entry confirming both acceptance checks, and tell Dylan the "no deposit needed" button on invoices is now live.
+
+## Handoff to Dylan
+After deploy + the Cowork migration: open a commercial job's invoice, click "no deposit needed" on the Deposit stat. It should flip to "Waived," drop out of the "Signed, no deposit collected" AR bucket, and stop counting toward Total AR. "require deposit" undoes it. Until Cowork runs the migration, clicking the link will show a "could not update" error (the column won't exist yet).
+
 ## [2026-05-30 MST] invoicing: record a payment as the deposit from anywhere; redefine Total AR to exclude deposit-paid-in-progress jobs
 
 By: Claude Code

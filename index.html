@@ -6617,9 +6617,12 @@ async function renderInvoicing() {
 
   const completed = rows.filter(r => r.status === 'completed' && r.balance > EPS)
     .sort((a, b) => (a.completed_date || '').localeCompare(b.completed_date || ''));
-  const signedNoDep = rows.filter(r => !r.deposit_collected && r.status !== 'completed' && r.balance > EPS)
+  // A waived deposit (commercial / special case) counts as "deposit handled":
+  // the job is NOT owed a deposit, so it drops out of signedNoDep and is treated
+  // like a deposit-collected job for the in-progress bucket.
+  const signedNoDep = rows.filter(r => !r.deposit_collected && !r.deposit_waived && r.status !== 'completed' && r.balance > EPS)
     .sort((a, b) => (a.signed_date || '').localeCompare(b.signed_date || ''));
-  const active = rows.filter(r => r.deposit_collected && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS)
+  const active = rows.filter(r => (r.deposit_collected || r.deposit_waived) && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS)
     .sort((a, b) => (a.install_date || a.signed_date || '').localeCompare(b.install_date || b.signed_date || ''));
   const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 30)
     .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
@@ -6772,7 +6775,7 @@ async function renderJobInvoice(jobId) {
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
-        ${!row.deposit_collected ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
+        ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
     </div>
@@ -6783,7 +6786,11 @@ async function renderJobInvoice(jobId) {
     </div>
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Invoice total</div><div class="pec-stat-val">${invUSD(row.price)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_amount != null ? invUSD(row.deposit_amount) : '—'}</div><div class="pec-ar-sub">${row.deposit_collected ? 'collected' : `not collected${invNum(row.paid_to_date) > 0 ? ' · <button type="button" id="pecInvMarkDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">mark collected</button>' : ''}`}</div></div>
+      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_waived ? 'Waived' : (row.deposit_amount != null ? invUSD(row.deposit_amount) : '—')}</div><div class="pec-ar-sub">${
+        row.deposit_collected ? 'collected'
+        : row.deposit_waived ? 'no deposit needed · <button type="button" id="pecInvRequireDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">require deposit</button>'
+        : `not collected${invNum(row.paid_to_date) > 0 ? ' · <button type="button" id="pecInvMarkDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">mark collected</button>' : ''} · <button type="button" id="pecInvWaiveDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">no deposit needed</button>`
+      }</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Paid to date</div><div class="pec-stat-val">${invUSD(row.paid_to_date)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Balance</div><div class="pec-stat-val">${invUSD(row.balance)}</div></div>
     </div>
@@ -6804,23 +6811,30 @@ async function renderJobInvoice(jobId) {
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
-  // Flag-only fix for "payment already recorded but deposit_collected never set"
-  // (e.g. a payment logged via Record payment without the deposit checkbox). Sets
-  // the flag WITHOUT recording another payment, so it can't double-charge.
-  const markDepB = $('pecInvMarkDep');
-  if (markDepB) markDepB.addEventListener('click', async () => {
-    markDepB.disabled = true; markDepB.textContent = 'Saving…';
+  // Flag-only deposit updates (no payment row, so they can't double-charge):
+  //  - mark collected: a payment was already recorded but the flag wasn't set.
+  //  - no deposit needed: waive the deposit for commercial / special-case jobs.
+  //  - require deposit: undo a waiver.
+  const depFlag = async (btn, patch, okMsg) => {
+    if (!btn) return;
+    const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
+      const upd = await withFreshWrite(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'deposit-flag' });
       if (upd.error) throw upd.error;
-      showToast('Deposit marked collected', { ttl: 3000 });
+      showToast(okMsg, { ttl: 3000 });
       state.openInvoiceJobId = row.id; renderInvoicing();
     } catch (err) {
-      console.error('[pec] mark deposit collected failed', err);
-      markDepB.disabled = false; markDepB.textContent = 'mark collected';
-      alert(isSessionStale(err) ? 'The session briefly stalled — tap "mark collected" again.' : 'Could not update: ' + (err.message || err));
+      console.error('[pec] deposit flag update failed', err);
+      btn.disabled = false; btn.textContent = orig;
+      alert(isSessionStale(err) ? 'The session briefly stalled — try again.' : 'Could not update: ' + (err.message || err));
     }
-  });
+  };
+  const markDepB = $('pecInvMarkDep');
+  if (markDepB) markDepB.addEventListener('click', () => depFlag(markDepB, { deposit_collected: true }, 'Deposit marked collected'));
+  const waiveDepB = $('pecInvWaiveDep');
+  if (waiveDepB) waiveDepB.addEventListener('click', () => depFlag(waiveDepB, { deposit_waived: true }, 'Marked: no deposit needed'));
+  const requireDepB = $('pecInvRequireDep');
+  if (requireDepB) requireDepB.addEventListener('click', () => depFlag(requireDepB, { deposit_waived: false }, 'Deposit required again'));
   const compB = $('pecInvComplete'); if (compB) compB.addEventListener('click', () => markJobComplete(row));
 }
 
@@ -6847,7 +6861,7 @@ function openPaymentModal(row, { deposit }) {
       </div>
       <div class="pec-field"><label>Reference (check # / Zelle confirmation)</label><input name="reference" placeholder="optional"></div>
       <div class="pec-field"><label>Received date</label><input name="received_date" type="date" value="${invToday()}" required></div>
-      ${row.deposit_collected ? '' : `<div class="pec-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none"><input type="checkbox" name="is_deposit" ${deposit ? 'checked' : ''}> Record this as the deposit (marks the job's deposit collected)</label></div>`}
+      ${(row.deposit_collected || row.deposit_waived) ? '' : `<div class="pec-field"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none"><input type="checkbox" name="is_deposit" ${deposit ? 'checked' : ''}> Record this as the deposit (marks the job's deposit collected)</label></div>`}
       <div class="prod-msg-err" id="pecPayErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Cancel</button>
@@ -7118,7 +7132,7 @@ function renderInvoicingDocs() {
         <tr><td>Total invoice amount</td><td><code>jobs.price</code></td></tr>
         <tr><td>Scope of work</td><td><code>jobs.scope</code></td></tr>
         <tr><td>DripJobs invoice number</td><td><code>jobs.dripjobs_deal_id</code></td></tr>
-        <tr><td>Deposit (amount / collected)</td><td><code>jobs.deposit_amount</code>, <code>jobs.deposit_collected</code></td></tr>
+        <tr><td>Deposit (amount / collected / waived)</td><td><code>jobs.deposit_amount</code>, <code>jobs.deposit_collected</code>, <code>jobs.deposit_waived</code></td></tr>
         <tr><td>Signed / completed dates</td><td><code>jobs.signed_date</code>, <code>jobs.completed_date</code></td></tr>
         <tr><td>Salesperson</td><td><code>jobs.salesperson</code></td></tr>
         <tr><td>Each payment received</td><td><code>pec_payments</code> (one row per payment)</td></tr>
@@ -7139,7 +7153,7 @@ function renderInvoicingDocs() {
     <p><strong>Total AR</strong> = the "Completed, not paid in full" balances plus the deposits owed on "Signed, no deposit" jobs. A job whose deposit is in but that isn't completed yet is NOT counted in AR; its remaining balance isn't due until it's marked complete.</p>
     <ul>
       <li><strong>Completed work, not paid in full</strong>: status is completed and balance &gt; 0. Counts toward AR. Aging from <code>completed_date</code>: green 0 to 7 days, yellow 8 to 14, red 15+.</li>
-      <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected and not yet completed. Counts toward AR (the deposit owed). Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+.</li>
+      <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected, not waived, and not yet completed. Counts toward AR (the deposit owed). Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+. A job marked "no deposit needed" (<code>deposit_waived</code>) drops out of this bucket and owes no deposit.</li>
       <li><strong>In progress (deposit paid)</strong>: deposit collected and status signed, scheduled, or in_progress, with a balance remaining. Shown for visibility but NOT counted in AR until the job is completed.</li>
       <li><strong>Recently closed</strong>: balance is zero and the last payment landed within the last 30 days.</li>
     </ul>
@@ -7149,7 +7163,7 @@ function renderInvoicingDocs() {
       <li><strong>Intake</strong>: the DripJobs proposal-accepted webhook creates the job (customer, price, scope, signed_date, salesperson when sent). The office pastes the line items and confirms the scope, and sets a non-default deposit if needed.</li>
       <li><strong>Completion</strong>: the crew lead taps Mark Complete on the job after the final walkthrough. That sets <code>completed_date</code> to today and moves the job into the "Completed, not paid" bucket.</li>
       <li><strong>Payment</strong>: tap Mark Paid (or Record payment inside an open invoice), enter amount (defaults to the balance), method (check, cash, Zelle, credit card), reference, and date. This inserts a <code>pec_payments</code> row. When the balance hits zero the job moves to Recently closed.</li>
-      <li><strong>Deposit</strong>: record it from the "Signed, no deposit" bucket's Mark Deposit Paid button, the Record deposit button inside an open invoice, or by ticking "Record this as the deposit" in the payment form. Any of these flips <code>deposit_collected</code> to true so the job is ready to schedule. If a payment was already recorded without that tick, the open invoice shows a "mark collected" link that sets the flag without recording a second payment.</li>
+      <li><strong>Deposit</strong>: record it from the "Signed, no deposit" bucket's Mark Deposit Paid button, the Record deposit button inside an open invoice, or by ticking "Record this as the deposit" in the payment form. Any of these flips <code>deposit_collected</code> to true so the job is ready to schedule. If a payment was already recorded without that tick, the open invoice shows a "mark collected" link that sets the flag without recording a second payment. For commercial clients or special cases that never pay a deposit, use the "no deposit needed" link on the invoice to waive it (<code>deposit_waived</code>) so the job isn't flagged as owing one; "require deposit" undoes it.</li>
     </ul>
 
     <h4>Metrics tab</h4>
