@@ -4,6 +4,42 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] migration: ran 2026-06-01_brand_and_public_invoice.sql; brand identity + jobs.public_token + body-only templates are live
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior 2026-05-31 entry. Pasted `supabase/migrations/2026-06-01_brand_and_public_invoice.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role). Supabase flagged the script as containing destructive operations (heuristic on `alter table` + `update` + `drop policy if exists` + `create or replace view`); confirmed and proceeded. All operations intentional; nothing actually destructive in the data sense.
+
+Run result: `Success. No rows returned`, no error. Notably the view recreate worked first try this time. Claude Code put `j.public_token` LAST in the `pec_job_ar` SELECT list (after `j.deposit_waived` at position 26, so public_token is position 27). That's the 42P16 lesson from the deposit_waived back-and-forth, applied correctly up front.
+
+Acceptance (single query, seven columns):
+- `brand_count` = 1
+- `brand_value` = `prescott-epoxy`
+- `public_token_col` = 1 (column present on `public.jobs`)
+- `revoked_col` = 1 (`public_token_revoked_at` reserved column present too)
+- `invoice_subject` = `Invoice {{invoice_number}} from {{business_name}}` (the NEW subject, proving the explicit UPDATE applied — the prior `on conflict do nothing` trap would have left the old subject in place)
+- `subject_has_tokens` = true
+- `view_has_token` = true (`select public_token from pec_job_ar` resolves; the view recreate exposed the new column cleanly)
+
+So `public.pec_brand_identity` has its one seeded prescott-epoxy row (with the placeholder logo_url null, primary `#1e3a5f`, accent `#ea580c`, and the seeded address / phone / license / payment-instructions Dylan will correct in Settings > Brand if anything is wrong); `public.jobs` now carries `public_token` (uuid default `gen_random_uuid()`) plus the reserved `public_token_revoked_at`; `pec_job_ar` exposes `public_token` last; and both PEC email templates are body-only with the new tokens (`{{cta}}`, `{{business_name}}`, etc).
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+After the Claude Code deploy finishes publishing, hard-reload the dashboard.
+
+1. Settings > Brand should open without the "run migration" notice. Confirm or correct the seeded defaults (paste your real logo URL, double-check the address / phone / license / website / payment instructions copy).
+2. Settings > Email -> Preview the Invoice template. The popup should show the body wrapped in the new chrome (logo or text header, primary-color signature, footer). If it looks wrong, fix it in Settings > Brand and Preview again.
+3. Open any real job's invoice -> click Copy public invoice link, paste in a private window. The hosted `/pay/<token>` page should render. If 404s, the deploy with the `/pay/*` rewrite has not landed yet; wait.
+4. Click Email invoice -> the new compose dialog opens (To, Cc, Copy Me, Subject, Quill body editor). Send a real test to yourself; confirm receipt and that the email subject + body match what you composed (not the template default).
+
+Resend env / domain are already done from the prior session.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-31 MST] email/invoicing: brand identity + compose-before-send + public hosted invoice page (/pay/<token>)
 
 By: Claude Code
