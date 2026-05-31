@@ -9507,6 +9507,16 @@ function ensureQuill() {
   return _quillLoading;
 }
 
+// Payment instructions are edited as PLAIN TEXT (the public invoice page converts
+// to HTML on render). Show stored values as text; convert any legacy HTML back.
+function paymentInstructionsToText(raw) {
+  const s = String(raw || '');
+  if (!/<\w+[^>]*>/.test(s)) return s; // already plain text
+  let t = s.replace(/<\/p>/gi, '\n\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+  const ta = document.createElement('textarea'); ta.innerHTML = t; t = ta.value; // decode entities
+  return t.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 async function renderSettingsBrand() {
   const root = $('pecViewRoot');
   let bi = null, notReady = false;
@@ -9534,8 +9544,8 @@ async function renderSettingsBrand() {
       <div class="pec-row-2">${field('Phone', 'biPhone', b.phone, '(928) 800-8154')}${field('License #', 'biLicense', b.license_number, 'ROC…')}</div>
       ${field('Website', 'biWebsite', b.website, 'prescottepoxy.com')}
       <div class="pec-field"><label>Footer disclaimer</label><textarea id="biDisclaimer" rows="2">${esc(b.footer_disclaimer || '')}</textarea></div>
-      <div class="pec-field"><label>Payment instructions (HTML; shown on the public invoice page)</label><textarea id="biPayInstr" rows="6" style="font-family:ui-monospace,monospace;font-size:.78rem">${esc(b.payment_instructions_html || '')}</textarea>
-        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Plain HTML. Example: a paragraph telling customers to mail a check, call, or reply.</div></div>
+      <div class="pec-field"><label>Payment instructions (shown on the public invoice page)</label><textarea id="biPayInstr" rows="6">${esc(paymentInstructionsToText(b.payment_instructions_html))}</textarea>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Just type normally — leave a blank line between paragraphs. We handle the formatting; no HTML needed.</div></div>
       <button class="pec-btn primary sm" id="biSave">Save brand identity</button>
       <span id="biMsg" style="margin-left:10px;font-size:.8rem"></span>
     </div>`;

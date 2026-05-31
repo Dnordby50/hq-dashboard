@@ -49,7 +49,13 @@ values
   ('prescott-epoxy', null, '#1e3a5f', '#ea580c', 'Prescott Epoxy Company',
    '1030 Sandretto Dr Suite K, Prescott, AZ 86305', '(928) 800-8154', 'ROC353243', 'prescottepoxy.com',
    'This is a transactional message about your job, not a marketing email.',
-   '<p>To pay by check, mail to Prescott Epoxy Company, 1030 Sandretto Dr Suite K, Prescott, AZ 86305.</p><p>To pay by phone, call (928) 800-8154.</p><p>To pay by reply, hit Reply on the email we sent you with your preferred method and we will follow up.</p>')
+   -- Plain text (NOT html): the public invoice page converts blank lines to
+   -- paragraphs on render. Stored as text so staff can edit it safely.
+   'To pay by check, mail to Prescott Epoxy Company, 1030 Sandretto Dr Suite K, Prescott, AZ 86305.
+
+To pay by phone, call (928) 800-8154.
+
+To pay by reply, hit Reply on the email we sent you with your preferred method and we will follow up.')
 on conflict (brand) do nothing;
 
 -- 2. Public token on jobs -----------------------------------------------------

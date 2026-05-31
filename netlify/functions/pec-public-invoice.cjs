@@ -11,6 +11,17 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '
 const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (s) => s ? new Date(String(s).slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC' }) : '';
 
+// Payment instructions are stored as PLAIN TEXT (so non-technical staff can edit
+// them without breaking the page). Convert to safe HTML here on the way out:
+// blank lines become paragraphs, single newlines become <br>, everything is
+// escaped. Legacy values that already contain HTML tags pass through unchanged.
+function paymentInstructionsHtml(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (/<\w+[^>]*>/.test(s)) return s; // legacy HTML, trust it
+  return s.split(/\n{2,}/).map(p => '<p style="margin:0 0 10px">' + esc(p).replace(/\n/g, '<br>') + '</p>').join('');
+}
+
 const BRAND_DEFAULTS = {
   logo_url: null, primary_color: '#1e3a5f', accent_color: '#ea580c',
   business_name: 'Prescott Epoxy Company', address_line: '', phone: '',
@@ -126,7 +137,7 @@ function invoicePage(row, brand) {
 
     ${b.payment_instructions_html ? `<div class="card" style="margin-top:16px;padding:20px 22px">
       <h3 style="margin:0 0 8px;color:${esc(b.primary_color)};font-size:16px">How to pay</h3>
-      <div style="font-size:14px;color:#334155;line-height:1.5">${b.payment_instructions_html}</div>
+      <div style="font-size:14px;color:#334155;line-height:1.5">${paymentInstructionsHtml(b.payment_instructions_html)}</div>
     </div>` : ''}
 
     <div class="noprint" style="text-align:center;margin-top:22px">

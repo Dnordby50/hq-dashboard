@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] brand: payment instructions are now plain text (HTML conversion moved to the server)
+
+By: Claude Code
+Changed: index.html (Settings > Brand field + a `paymentInstructionsToText` helper), netlify/functions/pec-public-invoice.cjs (a `paymentInstructionsHtml` render-time converter), supabase/migrations/2026-06-01_brand_and_public_invoice.sql (seed is now plain text).
+Why: Dylan wanted payment instructions editable in "human talk," not HTML, so a non-technical edit can't break the invoice page. Conversion happens on the backend only.
+
+- Settings > Brand: the payment-instructions field is now a normal textarea showing PLAIN TEXT (label "just type normally; leave a blank line between paragraphs; no HTML needed"). On load, `paymentInstructionsToText` converts any legacy HTML back to readable text; on save it stores the text as-is. (The other brand fields are unchanged.)
+- pec-public-invoice.cjs: `paymentInstructionsHtml(raw)` converts the stored plain text to safe HTML at render — escape everything, blank line -> `<p>`, single newline -> `<br>`. Legacy values that already contain HTML tags pass through unchanged, so nothing already stored breaks. This is the only consumer of the field (the email chrome does not use it).
+- Migration seed changed from HTML to the same content as plain text.
+
+Net: staff edit plain text, the server makes it HTML, and a stray `<` or unclosed tag can't break the page (it's escaped). Idempotent and backward-compatible with whatever the 2026-06-01 migration already seeded.
+
+Verified: node --check passes on the function; converter checked in isolation (text -> paragraphs/<br>, legacy HTML passthrough); inline <script> failure set unchanged.
+
+Files touched: index.html, netlify/functions/pec-public-invoice.cjs, supabase/migrations/2026-06-01_brand_and_public_invoice.sql, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None beyond the existing 2026-06-01 migration run (it now seeds plain-text payment instructions; if you already ran the earlier HTML-seed version, no action needed — the page renders legacy HTML fine and the first Brand save normalizes it to text).
+Handoff to Dylan: In Settings > Brand the payment instructions now read as plain text; edit freely and save. The public invoice page formats it automatically.
+
 ## [2026-06-01 MST] migration: ran 2026-06-01_brand_and_public_invoice.sql; brand identity + jobs.public_token + body-only templates are live
 
 By: Cowork
