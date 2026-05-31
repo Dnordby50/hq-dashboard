@@ -12,7 +12,7 @@
 -- staff READ the log but never insert/update it directly; senders + templates
 -- are staff-editable from Settings. Reuses public.is_admin_staff() (policies.sql).
 --
--- Brands use the same strings as customers.company: 'prescott-epoxy', 'finishing-touch'.
+-- PEC only: brand is always 'prescott-epoxy' (matches customers.company).
 -- Seeded from-emails are placeholders Dylan replaces in Settings once the Resend
 -- domains are verified.
 --
@@ -90,10 +90,15 @@ grant select on public.pec_email_senders, public.pec_email_templates, public.pec
 grant insert, update on public.pec_email_senders, public.pec_email_templates to authenticated;
 
 -- 5. Seeds --------------------------------------------------------------------
--- Sender identities (placeholder from-emails; Dylan sets real ones in Settings).
+-- PEC ONLY. This CRM is Prescott Epoxy only; no Finishing Touch email identity.
+-- Clean up any finishing-touch rows in case an earlier version of this migration
+-- (which seeded FTP) was already applied.
+delete from public.pec_email_templates where brand = 'finishing-touch';
+delete from public.pec_email_senders   where brand = 'finishing-touch';
+
+-- Sender identity (placeholder from-email; Dylan sets the real one in Settings).
 insert into public.pec_email_senders (brand, from_name, from_email, reply_to) values
-  ('prescott-epoxy',  'Prescott Epoxy Company',  'invoices@prescottepoxy.com',         null),
-  ('finishing-touch', 'Finishing Touch Painting', 'invoices@finishingtouchpainting.com', null)
+  ('prescott-epoxy', 'Prescott Epoxy Company', 'invoices@prescottepoxy.com', null)
 on conflict (brand) do nothing;
 
 -- Templates. Tokens are filled by pec-send-email.cjs: {{customer_name}},
@@ -112,26 +117,7 @@ insert into public.pec_email_templates (key, brand, name, subject, html, vars) v
    || '</div>',
    '["customer_name","invoice_number","line_items_table","total","balance","portal_link","brand_name","from_name","year"]'::jsonb),
 
-  ('invoice', 'finishing-touch', 'Invoice', 'Your invoice from Finishing Touch Painting',
-   '<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#0f172a">'
-   || '<h2 style="color:#ea580c;margin:0 0 4px">{{brand_name}}</h2>'
-   || '<p>Hi {{customer_name}},</p>'
-   || '<p>Thank you for your business. Here is your invoice <strong>{{invoice_number}}</strong>.</p>'
-   || '{{line_items_table}}'
-   || '<p style="font-size:15px;margin-top:16px"><strong>Total: {{total}}</strong><br>Balance due: <strong>{{balance}}</strong></p>'
-   || '<p>Questions about this invoice? Just reply to this email.</p>'
-   || '<p style="color:#64748b;font-size:12px;border-top:1px solid #e2e8f0;padding-top:10px;margin-top:18px">{{from_name}} &middot; This is a transactional message about your job, not a marketing email.</p>'
-   || '</div>',
-   '["customer_name","invoice_number","line_items_table","total","balance","portal_link","brand_name","from_name","year"]'::jsonb),
-
   ('test', 'prescott-epoxy', 'Test', 'TopCoat test email (Prescott Epoxy)',
-   '<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#0f172a">'
-   || '<h2 style="color:#ea580c">{{brand_name}} &middot; test email</h2>'
-   || '<p>This is a test send from TopCoat. If you received it, transactional email is working.</p>'
-   || '<p style="color:#64748b;font-size:12px">{{from_name}}</p></div>',
-   '["brand_name","from_name","year"]'::jsonb),
-
-  ('test', 'finishing-touch', 'Test', 'TopCoat test email (Finishing Touch)',
    '<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#0f172a">'
    || '<h2 style="color:#ea580c">{{brand_name}} &middot; test email</h2>'
    || '<p>This is a test send from TopCoat. If you received it, transactional email is working.</p>'
@@ -141,7 +127,8 @@ on conflict (key, brand) do nothing;
 
 commit;
 
--- Verify after running:
---   select count(*) from public.pec_email_senders;    -- expect 2
---   select count(*) from public.pec_email_templates;  -- expect >= 4
+-- Verify after running (PEC only):
+--   select count(*) from public.pec_email_senders;    -- expect 1 (prescott-epoxy)
+--   select count(*) from public.pec_email_templates;  -- expect 2 (invoice + test, prescott-epoxy)
+--   select count(*) from public.pec_email_senders where brand='finishing-touch';  -- expect 0
 --   select to_regclass('public.pec_email_log');        -- not null

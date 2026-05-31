@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] email: PEC-only (drop Finishing Touch); template editor shows readable text + a real-view preview popup
+
+By: Claude Code
+Changed: supabase/migrations/2026-05-31_email_platform.sql, index.html.
+Why: This CRM is Prescott Epoxy only, so the email system should not carry a Finishing Touch identity; and the raw-HTML template editor was hard to read.
+
+PEC-only: the email migration now seeds ONLY prescott-epoxy (1 sender, 2 templates: invoice + test) and includes idempotent `delete ... where brand='finishing-touch'` cleanup so re-running removes FTP rows if an earlier version (which seeded FTP) was already applied. The invoice "Email invoice" button hardcodes brand `prescott-epoxy`. Corrects the prior entry's Cowork acceptance (now 1 sender / 2 templates, not 2 / 4). Cowork should RE-RUN the migration (it's idempotent) so the FTP rows are removed if they were seeded.
+
+Readable template editor: each template card now shows an auto-derived **"Email text (how it reads)"** plain-text box (HTML stripped, {{tokens}} filled with sample data) that updates live as you edit; the raw HTML moved into a collapsible **"Edit HTML source"** `<details>`; and a **"Preview email"** button opens a popup window rendering the real email with sample data. Added client helpers `emailSampleVars` / `emailRenderTokens` / `emailHtmlToText` / `emailPreviewPopup`.
+
+Syntax: node --check still passes on the functions (unchanged); inline <script> failure set unchanged vs HEAD.
+
+Files touched: supabase/migrations/2026-05-31_email_platform.sql, index.html, PROJECT-LOG.md.
+Next steps: None.
+
+## Handoff to Cowork
+Re-run `supabase/migrations/2026-05-31_email_platform.sql` (PEC `zdfpzmmrgotynrwkeakd`, Primary DB). It is idempotent and now removes any finishing-touch sender/template rows and seeds PEC only. Acceptance: `select count(*) from pec_email_senders;` = 1; `select count(*) from pec_email_templates;` = 2; `select count(*) from pec_email_senders where brand='finishing-touch';` = 0.
+
+## Handoff to Dylan
+No change to the env/domain steps from the prior email entry — only the PEC domain (`prescottepoxy.com`) matters now; you can skip the Finishing Touch domain. In Settings > Email you'll see one PEC sender and two templates; each template shows readable text with a "Preview email" popup, and HTML editing is under "Edit HTML source".
+
 ## [2026-05-31 MST] email migration: ran 2026-05-31_email_platform.sql; pec_email_senders / pec_email_templates / pec_email_log are live in prod
 
 By: Cowork

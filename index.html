@@ -6875,10 +6875,10 @@ async function renderJobInvoice(jobId) {
   // working modals.
   const emailB = $('pecInvEmail');
   if (emailB) emailB.addEventListener('click', () => {
-    const brand = row.customer_company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
+    const brand = 'prescott-epoxy'; // PEC-only CRM
     openModal(`
       <h3>Email invoice</h3>
-      <div class="pec-ar-sub" style="margin-bottom:12px">To <strong>${esc(row.customer_name || 'customer')}</strong> · ${esc(emailBrandLabel(brand))} · invoice ${esc(row.hq_invoice_number || row.dripjobs_deal_id || '')}</div>
+      <div class="pec-ar-sub" style="margin-bottom:12px">To <strong>${esc(row.customer_name || 'customer')}</strong> · invoice ${esc(row.hq_invoice_number || row.dripjobs_deal_id || '')}</div>
       <div class="pec-field"><label>Recipient email</label><input id="emInvTo" type="email" value="${esc(row.customer_email || '')}" placeholder="customer@example.com"></div>
       <div class="prod-msg-err" id="emInvErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
@@ -9317,6 +9317,44 @@ async function pecSendEmail(payload) {
 
 const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
 
+// Sample values so a template's {{tokens}} render to something realistic in the
+// readable-text view and the preview popup (the live send fills the real data).
+function emailSampleVars() {
+  return {
+    customer_name: 'Sample Customer',
+    invoice_number: 'INV-1042',
+    total: '$12,400.00',
+    balance: '$6,200.00',
+    portal_link: '#',
+    brand_name: 'Prescott Epoxy Company',
+    from_name: 'Prescott Epoxy Company',
+    year: String(new Date().getFullYear()),
+    line_items_table: '<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px"><thead><tr><th style="text-align:left;padding:6px 8px;background:#0f172a;color:#fff">Item</th><th style="text-align:right;padding:6px 8px;background:#0f172a;color:#fff">Price</th></tr></thead><tbody><tr><td style="padding:6px 8px;border:1px solid #e2e8f0">Garage floor, Metallic<div style="color:#64748b;font-size:12px">Grind, patch, 2-coat metallic, polyaspartic topcoat</div></td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">$8,400.00</td></tr><tr><td style="padding:6px 8px;border:1px solid #e2e8f0">Front patio, Flake</td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">$4,000.00</td></tr></tbody></table>',
+  };
+}
+function emailRenderTokens(html) {
+  const v = emailSampleVars();
+  return String(html || '').replace(/\{\{(\w+)\}\}/g, (_, k) => (v[k] != null ? v[k] : ''));
+}
+// Strip HTML to human-readable text (tokens filled with sample data) so the
+// template reads like the actual email instead of a wall of markup.
+function emailHtmlToText(html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = emailRenderTokens(html);
+  return (tmp.innerText || tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+// Open the real rendered email in a popup window (sample data).
+function emailPreviewPopup(subject, html) {
+  const win = window.open('', '_blank');
+  if (!win) { alert('Pop-up blocked. Allow pop-ups to preview the email.'); return; }
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(subject || 'Email preview')}</title></head>`
+    + `<body style="margin:0;background:#f1f5f9;padding:20px;font-family:Arial,Helvetica,sans-serif">`
+    + `<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.12)">`
+    + `<div style="font-size:12px;color:#64748b;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px">Subject: ${esc(subject || '')}</div>`
+    + `${emailRenderTokens(html)}</div></body></html>`;
+  win.document.open(); win.document.write(doc); win.document.close();
+}
+
 function emailLogRowsHtml(log) {
   if (!log.length) return '<tr class="nohover"><td colspan="6" class="pec-empty">No emails sent yet.</td></tr>';
   const statusColor = s => s === 'bounced' || s === 'failed' || s === 'complained' ? '#dc2626' : (s === 'opened' || s === 'clicked' || s === 'delivered' ? '#16a34a' : 'var(--muted)');
@@ -9367,9 +9405,17 @@ async function renderSettingsEmail() {
     <div style="border:1px solid var(--rd-line, var(--border));border-radius:8px;padding:12px;margin-bottom:10px" data-template-id="${esc(t.id)}">
       <div style="font-weight:600;margin-bottom:8px">${esc(t.name)} <span style="color:var(--muted);font-weight:400;font-size:.78rem">· ${esc(t.key)} · ${esc(emailBrandLabel(t.brand))}</span></div>
       <div class="pec-field"><label>Subject</label><input class="te-subject" value="${esc(t.subject || '')}"></div>
-      <div class="pec-field"><label>HTML body</label><textarea class="te-html" rows="8" style="font-family:ui-monospace,monospace;font-size:.78rem;resize:vertical">${esc(t.html || '')}</textarea></div>
-      <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px">Tokens: {{customer_name}} {{invoice_number}} {{line_items_table}} {{total}} {{balance}} {{portal_link}} {{brand_name}} {{from_name}} {{year}}</div>
-      <button class="pec-btn primary sm" data-save-template="${esc(t.id)}">Save template</button>
+      <div class="pec-field"><label>Email text (how it reads)</label><div class="te-readable" style="white-space:pre-wrap;background:var(--bg-soft,#f1f3f5);border-radius:6px;padding:10px;font-size:.82rem;color:#334155;max-height:220px;overflow:auto"></div></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <button class="pec-btn sm" data-preview-template="${esc(t.id)}">Preview email</button>
+        <span style="font-size:.7rem;color:var(--muted)">Opens the real rendered email in a popup (sample data).</span>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-size:.78rem;color:var(--muted)">Edit HTML source</summary>
+        <div class="pec-field" style="margin-top:6px"><textarea class="te-html" rows="8" style="font-family:ui-monospace,monospace;font-size:.78rem;resize:vertical">${esc(t.html || '')}</textarea></div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px">Tokens: {{customer_name}} {{invoice_number}} {{line_items_table}} {{total}} {{balance}} {{portal_link}} {{brand_name}} {{from_name}} {{year}}</div>
+      </details>
+      <button class="pec-btn primary sm" style="margin-top:8px" data-save-template="${esc(t.id)}">Save template</button>
     </div>`).join('') || '<div class="pec-empty">No templates seeded.</div>';
 
   const templateOpts = templates.map(t => `<option value="${esc(t.id)}">${esc(t.name)} · ${esc(emailBrandLabel(t.brand))}</option>`).join('');
@@ -9449,6 +9495,23 @@ async function renderSettingsEmail() {
       return;
     }
     renderSettingsEmail();
+  }));
+
+  // Readable-text view: derive plain text from each template's HTML source and
+  // keep it in sync as the source is edited.
+  root.querySelectorAll('[data-template-id]').forEach(card => {
+    const ta = card.querySelector('.te-html');
+    const readable = card.querySelector('.te-readable');
+    if (!ta || !readable) return;
+    const sync = () => { readable.textContent = emailHtmlToText(ta.value); };
+    ta.addEventListener('input', sync);
+    sync();
+  });
+  // Preview popup: real rendered email with sample data.
+  root.querySelectorAll('[data-preview-template]').forEach(btn => btn.addEventListener('click', () => {
+    const card = root.querySelector(`[data-template-id="${btn.dataset.previewTemplate}"]`);
+    if (!card) return;
+    emailPreviewPopup(card.querySelector('.te-subject').value, card.querySelector('.te-html').value);
   }));
 
   // Send test
