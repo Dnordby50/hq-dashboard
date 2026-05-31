@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] email migration: ran 2026-05-31_email_platform.sql; pec_email_senders / pec_email_templates / pec_email_log are live in prod
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior 2026-05-31 entry (the transactional email pipeline build). Pasted `supabase/migrations/2026-05-31_email_platform.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and ran it.
+
+Run result: `Success. No rows returned`, no error. The migration is wrapped in `begin; ... commit;` and is idempotent (create table if not exists, drop/create policy, insert ... on conflict do nothing). No view was touched, so the 42P16 view-ordinal issues from prior runs did not apply.
+
+Acceptance check (single query): senders=2, templates=4, log_exists=1. So `public.pec_email_senders` has the two seeded brand rows (prescott-epoxy, finishing-touch), `public.pec_email_templates` has the four seeded rows (invoice + test per brand), and `public.pec_email_log` exists.
+
+Net behavior for Dylan: the Email panel under Settings now reads the seeded senders and templates (no more "run the email-platform migration" message), and the invoice page's "Email invoice" button will pass the function's preflight checks once `RESEND_API_KEY` and the verified Resend domains are in place (still in the Dylan handoff below).
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+Standing Dylan items from the prior entry are still open:
+1. Resend account: verify `prescottepoxy.com` and `finishingtouchpainting.com` (SPF / DKIM / DMARC).
+2. Netlify env (Production + Deploy contexts): set `RESEND_API_KEY` and `RESEND_WEBHOOK_SECRET`, then redeploy.
+3. Resend webhook: point at `https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-resend` (events: delivered, bounced, opened, clicked); paste the signing secret into Netlify env as `RESEND_WEBHOOK_SECRET`.
+4. Settings > Email: after deploy + a hard-reload, open the panel, replace the seeded placeholder from_email values with the real addresses, run a test send, then try "Email invoice" from a job.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-31 MST] email: transactional email pipeline (Resend) — send-invoice + Settings > Email panel
 
 By: Claude Code
