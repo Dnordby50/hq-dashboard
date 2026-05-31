@@ -8346,26 +8346,33 @@ async function renderJobDetail(id) {
     const cleanLi = () => liDraft
       .map(l => ({ name: (l.name || '').trim(), description: (l.description || '').trim(), price: Number(l.price) || 0, ...(l.is_change_order ? { is_change_order: true } : {}) }))
       .filter(l => l.name || l.description || l.price);
-    const writeLi = async (extra, okMsg, btnEl) => {
+    const writeLi = async (extra, okMsg, btnEl, reload = false) => {
       const lines = cleanLi();
       const total = invRound2(lines.reduce((s, l) => s + (Number(l.price) || 0), 0));
       const orig = btnEl.textContent; btnEl.disabled = true; btnEl.textContent = 'Saving…';
       try {
         const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ line_items: lines, price: total, ...extra }).eq('id', id), { label: 'job-line-items' });
         if (upd.error) throw upd.error;
+        // Keep the in-memory job in sync so any later render is correct.
+        job.line_items = lines; job.price = total; Object.assign(job, extra);
         showToast(okMsg, { ttl: 2500 });
-        renderJobDetail(id);
+        // Finalize/reopen change the locked layout, so re-render. A plain save
+        // does not -- update the derived header price in place and restore the
+        // button so there is no jarring full-page reload (and no CompanyCam refetch).
+        if (reload) { renderJobDetail(id); return; }
+        const pf = $('jobPrice'); if (pf) pf.value = total;
+        btnEl.disabled = false; btnEl.textContent = orig;
       } catch (err) {
         console.error('[pec] line items save failed', err);
         btnEl.disabled = false; btnEl.textContent = orig;
         alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not save: ' + (err.message || err));
       }
     };
-    $('jobLiSave').addEventListener('click', () => writeLi({}, 'Line items saved', $('jobLiSave')));
+    $('jobLiSave').addEventListener('click', () => writeLi({}, 'Line items saved ✓', $('jobLiSave'), false));
     $('jobLiFinalize').addEventListener('click', () => {
       if (!cleanLi().length) { alert('Add at least one line item before finalizing.'); return; }
       if (!confirm('Finalize this job? Line items and price will be locked. Add a change order from the invoice to adjust the total afterward.')) return;
-      writeLi({ finalized: true, finalized_at: new Date().toISOString() }, 'Job finalized', $('jobLiFinalize'));
+      writeLi({ finalized: true, finalized_at: new Date().toISOString() }, 'Job finalized', $('jobLiFinalize'), true);
     });
   }
 

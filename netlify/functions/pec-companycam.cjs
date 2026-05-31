@@ -41,13 +41,15 @@ exports.handler = async (event) => {
   };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
 
+  // Return HTTP 200 with an { error } body for every failure (unconfigured,
+  // upstream error, exception). The dashboard reads res.error and shows a
+  // graceful "CompanyCam unavailable" state; returning a non-2xx here only adds
+  // a red error to the browser console on every job-detail open for no benefit.
+  const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, projects: [], photos: [], ...extra }) });
+
   const token = process.env.COMPANYCAM_API_TOKEN;
   if (!token) {
-    return {
-      statusCode: 503,
-      headers: cors,
-      body: JSON.stringify({ error: 'CompanyCam is not configured. Set COMPANYCAM_API_TOKEN in the Netlify environment.' }),
-    };
+    return fail('CompanyCam is not configured. Set COMPANYCAM_API_TOKEN in the Netlify environment.');
   }
 
   const params = event.queryStringParameters || {};
@@ -62,7 +64,7 @@ exports.handler = async (event) => {
       const res = await ccGet('/projects?per_page=100');
       const data = await res.json();
       if (!res.ok) {
-        return { statusCode: res.status, headers: cors, body: JSON.stringify({ error: data && data.message ? data.message : 'CompanyCam projects fetch failed' }) };
+        return fail(data && data.message ? data.message : 'CompanyCam projects fetch failed');
       }
       const projects = (Array.isArray(data) ? data : []).map((p) => ({
         id: String(p.id),
@@ -80,7 +82,7 @@ exports.handler = async (event) => {
       const res = await ccGet(`/projects/${encodeURIComponent(projectId)}/photos?per_page=100`);
       const data = await res.json();
       if (!res.ok) {
-        return { statusCode: res.status, headers: cors, body: JSON.stringify({ error: data && data.message ? data.message : 'CompanyCam photos fetch failed' }) };
+        return fail(data && data.message ? data.message : 'CompanyCam photos fetch failed');
       }
       const photos = (Array.isArray(data) ? data : []).map((ph) => {
         const { url, thumb } = photoUrls(ph.uris);
@@ -89,12 +91,8 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers: cors, body: JSON.stringify({ photos }) };
     }
 
-    return { statusCode: 400, headers: cors, body: JSON.stringify({ error: `Unknown action "${action}"` }) };
+    return fail(`Unknown action "${action}"`);
   } catch (err) {
-    return {
-      statusCode: 502,
-      headers: cors,
-      body: JSON.stringify({ error: 'CompanyCam request failed: ' + (err && err.message ? err.message : String(err)) }),
-    };
+    return fail('CompanyCam request failed: ' + (err && err.message ? err.message : String(err)));
   }
 };

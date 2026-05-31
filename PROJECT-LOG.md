@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] jobs: line-items save is now in-place (no full reload); CompanyCam proxy stops logging console errors
+
+By: Claude Code
+Changed: index.html (writeLi), netlify/functions/pec-companycam.cjs.
+Why: After the wedge fix, the line-items Save worked but felt unpolished — it called the full `renderJobDetail(id)` (spinner flash + re-fetch of 7 queries, which also re-triggered the CompanyCam call), and that CompanyCam call logged a `503` in the console.
+
+Save in place: `writeLi` now takes a `reload` flag. Plain "Save line items" (reload=false) updates the in-memory `job` (line_items + price), updates the derived header price field, restores the button, and shows the toast — NO full re-render, so it's instant and doesn't re-flash or re-fetch CompanyCam. "Finalize" (reload=true) still re-renders because it changes the locked layout. Reopen unchanged (rare, structural).
+
+CompanyCam 503 noise: `pec-companycam.cjs` returned HTTP 503 (no token) / upstream status / 502 on failure, so the browser logged a red error on every job-detail open even though the client already handled the `{error}` body gracefully. Changed every failure branch to return HTTP **200** with `{ error, projects:[], photos:[] }` (new `fail()` helper). The dashboard still shows "CompanyCam unavailable"; the console error is gone. (Root cause of the 503 is that COMPANYCAM_API_TOKEN isn't set in Netlify — that's fine; it's an optional integration. Setting it later will light up the widget with no code change.)
+
+Verified: node --check on the function; inline `<script>` parse vs HEAD unchanged.
+
+Files touched: index.html, netlify/functions/pec-companycam.cjs, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy + hard-reload, saving line items is instant (toast, no page flash) and the CompanyCam `503` is gone from the console. If you want the CompanyCam photo widget to actually work, set COMPANYCAM_API_TOKEN in Netlify env; otherwise it just stays a quiet "unavailable".
+
 ## [2026-06-01 MST] jobs: recover+retry idempotent writes on the idle-session wedge (fixes line-items SESSION_TIMEOUT)
 
 By: Claude Code
