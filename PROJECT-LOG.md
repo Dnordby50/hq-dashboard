@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] work order: "View Work Order" (no auto-print); manual Print button in the WO window
+
+By: Claude Code
+Changed: index.html (`renderWorkOrder` + the job-detail button label).
+Why: Dylan wanted the job-detail button to open the work order for viewing, not fire the browser print dialog immediately.
+
+- Renamed the job-detail button `#pecJobPrintWO` from "Print Work Order" to "View Work Order".
+- Removed the auto-print script (`window.addEventListener('load', () => setTimeout(window.print, 200))`) from the generated work-order HTML, so opening it just shows the sheet.
+- Added a "Print work order" button at the top of the work-order window (calls `window.print()`), so printing is one click when ready. The existing `@media print { button { display:none } }` rule keeps that button off the printed page.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy + hard-reload, "View Work Order" opens the sheet (now 1-2 pages) without launching print; click "Print work order" at the top when you want to print.
+
 ## [2026-05-31 MST] work order: line items on a 2nd page; core: stop the tab-back auto-refresh (recover instead of reload)
 
 By: Claude Code
