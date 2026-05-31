@@ -5158,6 +5158,15 @@ function renderActivityCard(rows) {
 let _pecReloadingForWedge = false;
 function _pecWedgeReload(reason) {
   if (_pecReloadingForWedge) return;
+  // Never blow away in-progress work: if a modal/editor is open, heal the session
+  // in place (rebuild the client) instead of reloading the page. The reload is a
+  // last resort only when nothing is open to lose.
+  const modalOpen = ($('pecModalRoot')?.children.length || 0) > 0 || ($('prodModalRoot')?.children.length || 0) > 0;
+  if (modalOpen) {
+    console.warn(`[pec] session wedge detected (${reason}) but a modal is open -> recovering client without reload`);
+    try { recoverWedgedClient(); } catch (_) {}
+    return;
+  }
   _pecReloadingForWedge = true;
   console.warn(`[pec] session wedge detected (${reason}) -> auto-reload`);
   try { location.reload(); } catch (_) {}
@@ -5267,7 +5276,11 @@ function _pecProbeSession(triggerLabel) {
   withDeadline(() => supabase.from('admin_users').select('id').limit(1), { timeoutMs: 7000, label: `idle-probe-${triggerLabel}` })
     .catch(err => {
       if (!isSessionTimeout(err)) return; // a real error is not the wedge we're watching for
-      _pecWedgeReload(`idle-probe (${triggerLabel}) timed out`);
+      // Heal the wedge by rebuilding the client IN PLACE -- no page reload. This
+      // is what stops "tab away, come back, page refreshed and I lost my work":
+      // returning to the tab after idle silently fixes the session instead.
+      console.warn(`[pec] idle-probe (${triggerLabel}) timed out -> recovering client without reload`);
+      recoverWedgedClient();
     });
 }
 
@@ -7490,6 +7503,32 @@ async function renderWorkOrder(ctx) {
       <td></td>
     </tr>`).join('');
 
+  // Page 2: line items (scope title + detail + price) from job.line_items. Only
+  // emitted when there's at least one line, so a job without line items still
+  // prints a single page. Tolerates legacy total/unit_price shapes.
+  const woLineItems = Array.isArray(job.line_items) ? job.line_items : [];
+  const woLinePrice = (li) => { const v = li.price ?? li.total ?? li.unit_price; return v == null ? null : Number(v); };
+  const woLineTotal = woLineItems.reduce((s, li) => s + (woLinePrice(li) || 0), 0);
+  const lineItemsPage = woLineItems.length ? `
+  <div class="li-page">
+    <div class="li-head">
+      <div class="wo-brand" style="text-align:left;font-size:15px">PRESCOTT<div class="sub">EPOXY COMPANY</div></div>
+      <div class="li-meta">${e(job.customers?.name || '')}${job.address ? ' · ' + e(job.address) : ''}${installDate ? ' · Install ' + e(dateFmt(installDate)) : ''}${job.dripjobs_deal_id ? ' · DJ #' + e(job.dripjobs_deal_id) : ''}</div>
+    </div>
+    <h3 style="color:#ea580c;font-size:14px;margin:4px 0 8px;letter-spacing:.5px">LINE ITEMS / SCOPE OF WORK</h3>
+    <table class="li-tbl">
+      <thead><tr><th>Scope</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
+      <tbody>
+        ${woLineItems.map(li => `<tr>
+          <td>${e(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}</td>
+          <td>${e(li.description || '')}</td>
+          <td style="text-align:right">${woLinePrice(li) != null ? invUSD(woLinePrice(li)) : ''}</td>
+        </tr>`).join('')}
+        <tr class="li-total"><td colspan="2" style="text-align:right">Total</td><td style="text-align:right">${invUSD(woLineTotal)}</td></tr>
+      </tbody>
+    </table>
+  </div>` : '';
+
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>Work Order — ${e(job.customers?.name || 'Job')}</title>
 <style>
@@ -7521,6 +7560,15 @@ async function renderWorkOrder(ctx) {
   .checklist .box { display: inline-block; width: 11px; height: 11px; border: 1px solid #0f172a; }
   .notes-box { background: #e0e7ff; min-height: 90px; padding: 6px 8px; border-radius: 2px; white-space: pre-wrap; }
   .wo-foot { color: #94a3b8; font-size: 8px; text-align: center; margin-top: 14px; }
+  .li-page { page-break-before: always; }
+  .li-head { display: flex; justify-content: space-between; align-items: flex-end; margin: 4px 0 10px; }
+  .li-meta { font-size: 10px; color: #475569; text-align: right; max-width: 60%; }
+  table.li-tbl { width: 100%; border-collapse: collapse; }
+  table.li-tbl th { background: #0f172a; color: #fff; padding: 6px 8px; text-align: left; font-size: 10px; }
+  table.li-tbl td { border: 1px solid #cbd5e1; padding: 6px 8px; vertical-align: top; }
+  table.li-tbl td:nth-child(2) { white-space: pre-wrap; color: #334155; }
+  table.li-tbl th:nth-child(3), table.li-tbl td:nth-child(3) { width: 110px; }
+  table.li-tbl tr.li-total td { font-weight: 700; background: #f1f5f9; }
   @media print { button { display: none !important; } }
 </style></head><body>
   <div class="wo-banner">MAKE SURE TO ACCURATELY FILL OUT ALL SECTIONS OF THIS SHEET. INCOMPLETE SHEETS = NO BONUS</div>
@@ -7572,6 +7620,7 @@ async function renderWorkOrder(ctx) {
     <h3>ISSUES / NOTES</h3>
     <div class="notes-box">${e(job.scope || '')}</div>
   </div>
+  ${lineItemsPage}
   <div class="wo-foot">Source: HQ CRM · Generated ${new Date().toLocaleString()} · Prescott Epoxy Company — Work Order (Sheets-fillable Template)</div>
   <script>window.addEventListener('load', () => setTimeout(() => window.print(), 200));<\/script>
 </body></html>`;

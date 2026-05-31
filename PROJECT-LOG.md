@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] work order: line items on a 2nd page; core: stop the tab-back auto-refresh (recover instead of reload)
+
+By: Claude Code
+Changed: index.html only (no migration, no Cowork).
+Why: Dylan wanted the work order to carry the line-item/scope breakdown on a second page, and the page to STOP refreshing (losing open work) when he tabs away and comes back.
+
+Work order (`renderWorkOrder`, ~7408):
+- Added a **page 2** (`page-break-before: always`) emitted only when `job.line_items` has entries (no blank 2nd page otherwise). It has a compact standalone header (customer · address · install · DJ #) and a **Scope / Detail / Price** table with a **Total** row. Reuses `job.line_items` (already in scope), the function's `e()` escaper, `dateFmt`, and the global `invUSD`; tolerates legacy `total`/`unit_price`. Change-order lines are marked "(change order)". Added matching print CSS (`.li-page`, `table.li-tbl`) next to the existing work-order styles; the existing `@page` rule paginates.
+
+Tab-back auto-refresh (the idle/visibility wedge probe):
+- Root cause: after the 15-min idle threshold, `visibilitychange`/wall-clock → `_pecProbeSession` → on a wedged session it called `_pecWedgeReload()` → `location.reload()`, blowing away whatever was open.
+- Fix: `_pecProbeSession` now calls **`recoverWedgedClient()`** (rebuilds the Supabase client in place, NO reload) instead of `_pecWedgeReload`. Returning to the tab silently heals the session and leaves open editors/modals intact. A healthy session still does nothing; recovery only runs when the probe actually times out.
+- Safety net: `_pecWedgeReload` now **refuses to reload while a modal is open** (`#pecModalRoot`/`#prodModalRoot` has children) and recovers in place instead — this also protects the `withFreshSession` last-resort reload paths from clobbering in-progress work.
+
+Syntax-checked inline script blocks against HEAD: failure set unchanged (pre-existing false positives only).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy + a hard-reload (to load this build once), Print Work Order on a job with line items shows the sheet on page 1 and the line items on page 2. Tabbing away 15+ min and back should no longer refresh the page while you have something open; if the session had wedged you'll see `[pec] ... recovering client without reload` in the console and your next save just works.
+
 ## [2026-05-30 MST] jobs migration: ran 2026-05-31_job_finalize.sql; finalized + finalized_at are live in prod
 
 By: Cowork
