@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] migration: ran 2026-06-01_system_type_sort_order.sql; sort_order column live + backfilled
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior entry. Pasted `supabase/migrations/2026-06-01_system_type_sort_order.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and ran it. The script is wrapped in `begin; ... commit;` and contains an `alter table ... add column if not exists` plus a `with`-driven `update` to backfill by name order. No view touched, no policy change, so the 42P16 ordinal trap from prior runs did not apply. Supabase did not flag a destructive-operation warning this time.
+
+Run result: `Success. No rows returned`, no error.
+
+Acceptance (both verify queries from the migration footer):
+- `select column_name from information_schema.columns where table_schema='public' and table_name='pec_prod_system_types' and column_name='sort_order';` returned 1 row (`sort_order`).
+- `select name, sort_order from public.pec_prod_system_types order by sort_order;` returned 9 rows with sequential `sort_order` 0..8 in current name order: Concrete Polishing (0), Custom System (1), Flake (2), Grind and Seal (3), Grind and Seal - Urethane (4), Grind Stain and Seal (5), Metallic (6), Quartz (7), Standard Garage Flake (8).
+
+Net for Dylan: the Settings > System Types drag handles will now persist their order without the "run the migration" alert, and the same order flows through the job-detail system picker, the schedule modal system select, and the Jobs filter dropdown.
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+Hard-reload the dashboard. In Settings > System Types, drag a card by the handle to reorder. Confirm the order persists across a refresh and shows up at the top of the job-detail "System type" picker, the schedule modal system select, and the Jobs filter dropdown.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-06-01 MST] settings: drag-to-reorder system types (popular ones to the top of the pickers)
 
 By: Claude Code
