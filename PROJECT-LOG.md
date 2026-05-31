@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] dashboard: drop the email triage widget; self-host supabase-js (kill the esm.sh dependency)
+
+By: Claude Code
+Changed: index.html, netlify.toml, new vendor/supabase-js-2.106.2.umd.js.
+Why: Two console-error sources Dylan hit on tab switches. (1) The old "Inbox" email-triage tab loaded a Google Sheet (CLAUDE_ZAPIER_EMAILS) via sheets-proxy on every render; Apps Script cold starts surfaced as 502 noise, and he no longer uses it. (2) supabase-js was imported from esm.sh, which returned ERR_CONNECTION_CLOSED and took the whole dashboard down when that CDN was unreachable.
+
+Two specs were provided; the second (remove the widget) supersedes the first (harden fetchSheet + non-blocking loadEmail) — removing the widget makes that hardening moot, so it was not done. sheets-proxy.cjs is untouched (booked sales/jobs/tasks still use it). No DB change.
+
+Email triage widget removed (fully isolated from the transactional email platform, verified): deleted the `EMAIL TRIAGE` function block (`parseEmailJson`, `loadEmail`, `renderEmails`, `filterEmail`, `filterEmailBiz`, `toggleHideJunk`, `PRIORITY_ORDER`, and a DUPLICATE `timeAgo` — the real `timeAgo` at the top of the file remains and still serves its other caller); the `#tab-email` "Inbox" section; the `CLAUDE_ZAPIER_EMAILS` CONFIG key (+ comma fix); the four module-scope state vars; both `loadEmail()` calls (init + refreshAll); the two nav buttons (`data-tab="email"` and the `rd-cockpit-tab data-cockpit="email"`); the TITLES + COCKPIT_IDS + cockpit `targetKey` list entries for `email`; and the whole `/* Email */` CSS block (plus `.email-card` dropped from two shared multi-selector rules). Final grep: zero remaining references. Untouched and confirmed intact: Settings > Email + Settings > Brand, the Email-invoice compose dialog, `pec-send-email.cjs`/`pec-webhook-resend.cjs`, the `pec_email_*` tables, and the `emailWrapChrome`/`emailComposeValues`/`renderSettingsEmail`/etc. helpers.
+
+Self-hosted supabase-js: vendored the official UMD build (`@supabase/supabase-js@2.106.2`, the current latest 2.x) into `vendor/`. jsdelivr's `/+esm` and esm.sh's `?bundle` both turned out NOT to be self-contained (they reference sub-packages via more CDN URLs), so the UMD — the one truly standalone, zero-external-import artifact — was used. Loaded via a classic `<script src="./vendor/...">` (its documented usage; sets `window.supabase`), and the module now does `const { createClient } = window.supabase;` instead of the esm.sh `import`. Verified the file is self-contained (no `from "https://…"` / `/npm/`), evaluated it in a stubbed browser context, and confirmed `createClient()` returns a working client (`.from`/`.auth`). netlify.toml gets a `/vendor/*` `Cache-Control: immutable` header (filename is version-pinned). Nothing about the auth lifecycle (no-op lock, timedFetch, withFreshSession, recoverWedgedClient) changed.
+
+Note: the Chrome-extension "A listener indicated an asynchronous response… message channel closed" console warning is NOT page code (it's a browser extension). Not touched; do not chase it.
+
+Verified: inline `<script>` parse vs HEAD shows no NEW failures (one pre-existing false positive actually cleared, because the supabase module block no longer has a top-level `import`).
+
+Files touched: index.html, netlify.toml, vendor/supabase-js-2.106.2.umd.js (new), PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/third-party config).
+Handoff to Dylan: After deploy + hard-reload, the dashboard "Inbox"/email-triage tab is gone on purpose, and supabase-js loads from `/vendor/...` (no esm.sh request, no Sheet1!A:E 502). Settings > Email, Settings > Brand, and the "Email invoice" compose dialog must look identical — flag immediately if any differ.
+
 ## [2026-05-31 MST] brand: payment instructions are now plain text (HTML conversion moved to the server)
 
 By: Claude Code

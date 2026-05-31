@@ -33,3 +33,11 @@
   to = "/.netlify/functions/pec-public-invoice?token=:splat"
   status = 200
   force = true
+
+# Vendored, version-pinned libraries (e.g. self-hosted supabase-js). The
+# filename carries the version, so a new version means a new filename -- cache
+# hard. Served as a normal static file (no redirect intercepts /vendor/*).
+[[headers]]
+  for = "/vendor/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

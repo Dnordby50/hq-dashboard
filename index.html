@@ -274,42 +274,6 @@ textarea{resize:vertical;min-height:60px}
 .cowork-card-toggle.visible{display:inline}
 .cowork-empty{color:var(--dim);font-style:italic;font-size:.78rem}
 
-/* Email */
-.email-filters{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
-.email-filters .task-filters{margin:0}
-.email-hide-junk{display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--muted);cursor:pointer;user-select:none;margin-left:auto}
-.email-hide-junk input{width:auto;padding:0;margin:0}
-.email-section-label{font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);margin:20px 0 10px;display:flex;align-items:center;gap:8px}
-.email-section-label .count{font-size:.65rem;color:var(--dim);font-weight:400}
-.email-card{display:flex;align-items:flex-start;gap:12px;padding:16px;
-  background:var(--s1);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:8px;transition:border-color .2s}
-.email-card:hover{border-color:var(--border-light)}
-.email-priority{width:10px;height:10px;border-radius:50%;flex-shrink:0;margin-top:6px}
-.email-priority.high{background:var(--danger)}
-.email-priority.medium{background:var(--warn)}
-.email-priority.low{background:var(--s3)}
-.email-content{flex:1;min-width:0}
-.email-tags{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
-.email-tag{font-size:.6rem;letter-spacing:.5px;text-transform:uppercase;padding:2px 8px;border-radius:10px;font-weight:500}
-.email-tag.cat-lead{background:rgba(34,211,238,.12);color:var(--cyan)}
-.email-tag.cat-customer{background:rgba(129,140,248,.12);color:var(--pec)}
-.email-tag.cat-vendor{background:rgba(251,191,36,.12);color:var(--warn)}
-.email-tag.cat-internal{background:rgba(100,116,139,.12);color:var(--muted)}
-.email-tag.cat-junk,.email-tag.cat-marketing{background:rgba(71,85,105,.08);color:var(--dim)}
-.email-tag.biz-pec{background:rgba(129,140,248,.12);color:var(--pec)}
-.email-tag.biz-ftp{background:rgba(52,211,153,.12);color:var(--ftp)}
-.email-from-subject{font-size:.85rem;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.email-from-subject .from{color:var(--text);font-weight:500}
-.email-from-subject .subject{color:var(--muted)}
-.email-summary{font-size:.75rem;color:var(--dim);line-height:1.5;margin-top:4px}
-.email-meta{display:flex;align-items:center;gap:8px;flex-shrink:0}
-.email-time{font-size:.65rem;color:var(--dim);white-space:nowrap}
-.email-draft-toggle{font-size:.6rem;color:var(--accent);cursor:pointer;padding:2px 6px;border:1px solid var(--border);border-radius:4px;white-space:nowrap}
-.email-draft-toggle:hover{border-color:var(--accent)}
-.email-draft{font-size:.75rem;color:var(--muted);line-height:1.6;margin-top:8px;padding:10px 12px;
-  background:var(--s2);border-radius:var(--radius-sm);white-space:pre-wrap;display:none}
-.email-draft.open{display:block}
-
 /* JARVIS */
 .jarvis-layout{display:grid;grid-template-columns:1fr 360px;gap:20px;height:calc(100vh - 140px)}
 .jarvis-chat-col{display:flex;flex-direction:column;background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;position:relative}
@@ -1008,7 +972,7 @@ input:focus, textarea:focus, select:focus {
 .biz-tag.pec { background: var(--rd-accent-soft) !important; color: var(--rd-accent) !important; }
 .biz-tag.ftp { background: rgba(16,185,129,.12) !important; color: var(--rd-success) !important; }
 
-.rock-list-item, .rhythm-list-item, .task-item, .project-card, .email-card, .brain-item, .cowork-card, .sop-card {
+.rock-list-item, .rhythm-list-item, .task-item, .project-card, .brain-item, .cowork-card, .sop-card {
   background: var(--rd-card) !important;
   border: 1px solid var(--rd-line) !important;
   border-radius: var(--rd-r-md) !important;
@@ -1510,7 +1474,6 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
   <button class="tab-btn active" data-tab="prescott-crm">TopCoat</button>
   <button class="tab-btn" data-tab="command" data-cockpit-child="true">Dashboard</button>
   <button class="tab-btn" data-tab="execution" data-cockpit-child="true">Execution</button>
-  <button class="tab-btn" data-tab="email" data-cockpit-child="true">Inbox</button>
   <button class="tab-btn" data-tab="jarvis" data-cockpit-child="true">JARVIS</button>
   <button class="tab-btn" data-tab="sops-owner">SOPs</button>
 </nav>
@@ -1698,27 +1661,6 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
   </div>
 </section>
 
-<!-- EMAIL TAB -->
-<section class="tab-content" id="tab-email">
-  <div class="email-filters">
-    <div class="task-filters">
-      <button class="filter-btn active" data-ecat="all" onclick="filterEmail('all',this)">All</button>
-      <button class="filter-btn" data-ecat="lead" onclick="filterEmail('lead',this)">Leads</button>
-      <button class="filter-btn" data-ecat="customer" onclick="filterEmail('customer',this)">Customers</button>
-      <button class="filter-btn" data-ecat="vendor" onclick="filterEmail('vendor',this)">Vendors</button>
-      <button class="filter-btn" data-ecat="action" onclick="filterEmail('action',this)">Action Needed</button>
-    </div>
-    <div class="task-filters">
-      <button class="filter-btn active" data-ebiz="both" onclick="filterEmailBiz('both',this)">Both</button>
-      <button class="filter-btn" data-ebiz="pec" onclick="filterEmailBiz('pec',this)">PEC</button>
-      <button class="filter-btn" data-ebiz="ftp" onclick="filterEmailBiz('ftp',this)">FTP</button>
-    </div>
-    <label class="email-hide-junk"><input type="checkbox" checked onchange="toggleHideJunk(this.checked)"> Hide Junk</label>
-  </div>
-  <div id="emailList">
-    <div class="loading"><div class="spinner"></div>Loading...</div>
-  </div>
-</section>
 
 <!-- JARVIS TAB -->
 <section class="tab-content" id="tab-jarvis">
@@ -1957,8 +1899,7 @@ const CONFIG = {
   SHEETS: {
     BOOKED_JOBS: '1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4',
     DASHBOARD_DATA: '1445T0CPavFCWEj2soegc599nCZrbWLgDsCnjQGChI74',
-    MBP_2026: '1vlumbi2mh_mjtmO1ZiTxMy0BTXbtNCNV-FOM-LVZ_s0',
-    CLAUDE_ZAPIER_EMAILS: '121xxdQcAbRPWnnyxcrc6-3npvi6_1tTf7BZUozChIWY'
+    MBP_2026: '1vlumbi2mh_mjtmO1ZiTxMy0BTXbtNCNV-FOM-LVZ_s0'
   },
   TARGETS: {
     PEC_MONTHLY: 151333,
@@ -2004,10 +1945,6 @@ let sopDeptFilter = 'all';
 let sopSearchQuery = '';
 let currentEmployee = null;
 let sopsLoaded = false;
-let emailCatFilter = 'all';
-let emailBizFilter = 'both';
-let emailHideJunk = true;
-let emailData = [];
 let coachHistory = [];
 let allJobs = [];
 let jobBizFilter = 'all';
@@ -3368,167 +3305,6 @@ async function loadCowork() {
 }
 
 // ============================================================
-// EMAIL TRIAGE
-// ============================================================
-function parseEmailJson(raw) {
-  if (!raw || !raw.trim()) return null;
-  try {
-    let parsed = JSON.parse(raw);
-    if (parsed.output && typeof parsed.output === 'string') {
-      parsed = JSON.parse(parsed.output);
-    }
-    // Normalize legacy "Action Needed" key
-    if (parsed['Action Needed'] !== undefined && parsed.ActionNeeded === undefined) {
-      parsed.ActionNeeded = parsed['Action Needed'];
-    }
-    return parsed;
-  } catch (e) {
-    return null;
-  }
-}
-
-function timeAgo(dateStr) {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return mins + 'm ago';
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return hrs + 'h ago';
-  const days = Math.floor(hrs / 24);
-  if (days === 1) return 'yesterday';
-  return days + 'd ago';
-}
-
-const PRIORITY_ORDER = { High: 0, Medium: 1, Low: 2 };
-
-async function loadEmail() {
-  if (!sheetsApiReady()) {
-    $('emailList').innerHTML = '<div class="setup-notice"><h3>Setup Required</h3>Add your Sheets proxy URL to load email triage.</div>';
-    return;
-  }
-  try {
-    const rows = await fetchSheet(CONFIG.SHEETS.CLAUDE_ZAPIER_EMAILS, 'Sheet1!A:E');
-    if (rows.length < 2) {
-      $('emailList').innerHTML = '<div class="empty-state"><p>No email triage items</p></div>';
-      return;
-    }
-
-    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
-    emailData = rows.slice(1)
-      .filter(r => r && r[1] && new Date(r[1]).getTime() > cutoff)
-      .map(r => {
-        const ai = parseEmailJson(r[4] || '');
-        return {
-          biz: (r[0] || '').trim().toUpperCase(),
-          date: r[1],
-          from: (r[2] || '').trim(),
-          subject: (r[3] || '').trim(),
-          category: ai ? (ai.Category || 'Unknown') : 'Unknown',
-          priority: ai ? (ai.Priority || 'Low') : 'Low',
-          summary: ai ? (ai.Summary || '') : '',
-          draft: ai ? (ai.DraftResponse || '') : '',
-          actionNeeded: ai ? !!ai.ActionNeeded : false
-        };
-      })
-      .sort((a, b) => {
-        // Action needed + high priority first
-        const aUrgent = a.actionNeeded || a.priority === 'High' ? 0 : 1;
-        const bUrgent = b.actionNeeded || b.priority === 'High' ? 0 : 1;
-        if (aUrgent !== bUrgent) return aUrgent - bUrgent;
-        const pa = PRIORITY_ORDER[a.priority] ?? 2;
-        const pb = PRIORITY_ORDER[b.priority] ?? 2;
-        if (pa !== pb) return pa - pb;
-        return new Date(b.date) - new Date(a.date);
-      });
-
-    renderEmails();
-  } catch (e) {
-    $('emailList').innerHTML = `<div style="color:var(--danger);padding:20px">${esc(e.message)}</div>`;
-  }
-}
-
-function renderEmails() {
-  let items = emailData;
-
-  // Apply filters
-  if (emailHideJunk) {
-    items = items.filter(e => e.category !== 'Junk' && e.category !== 'Marketing');
-  }
-  if (emailBizFilter !== 'both') {
-    items = items.filter(e => e.biz === emailBizFilter.toUpperCase());
-  }
-  if (emailCatFilter === 'action') {
-    items = items.filter(e => e.actionNeeded || e.priority === 'High');
-  } else if (emailCatFilter !== 'all') {
-    items = items.filter(e => e.category.toLowerCase() === emailCatFilter);
-  }
-
-  if (!items.length) {
-    $('emailList').innerHTML = '<div class="empty-state"><p>No emails match current filters</p></div>';
-    return;
-  }
-
-  items = items.slice(0, 30);
-
-  const actionItems = items.filter(e => e.actionNeeded || e.priority === 'High');
-  const recentItems = items.filter(e => !e.actionNeeded && e.priority !== 'High');
-
-  function cardHtml(e, idx) {
-    const catClass = 'cat-' + e.category.toLowerCase();
-    const bizClass = e.biz ? 'biz-' + e.biz.toLowerCase() : '';
-    const draftBtn = e.draft ? `<span class="email-draft-toggle" onclick="this.parentElement.parentElement.querySelector('.email-draft').classList.toggle('open')">Draft</span>` : '';
-    const draftBlock = e.draft ? `<div class="email-draft">${esc(e.draft)}</div>` : '';
-    return `<div class="email-card">
-      <span class="email-priority ${e.priority.toLowerCase()}"></span>
-      <div class="email-content">
-        <div class="email-tags">
-          <span class="email-tag ${catClass}">${esc(e.category)}</span>
-          ${e.biz ? `<span class="email-tag ${bizClass}">${esc(e.biz)}</span>` : ''}
-        </div>
-        <div class="email-from-subject"><span class="from">${esc(e.from)}</span> <span class="subject">${esc(e.subject)}</span></div>
-        ${e.summary ? `<div class="email-summary">${esc(e.summary)}</div>` : ''}
-        ${draftBlock}
-      </div>
-      <div class="email-meta">
-        ${draftBtn}
-        <span class="email-time">${timeAgo(e.date)}</span>
-      </div>
-    </div>`;
-  }
-
-  let html = '';
-  if (actionItems.length) {
-    html += `<div class="email-section-label">Action Needed <span class="count">(${actionItems.length})</span></div>`;
-    html += actionItems.map(cardHtml).join('');
-  }
-  if (recentItems.length) {
-    html += `<div class="email-section-label">All Recent <span class="count">(${recentItems.length})</span></div>`;
-    html += recentItems.map(cardHtml).join('');
-  }
-
-  $('emailList').innerHTML = html;
-}
-
-function filterEmail(cat, btn) {
-  emailCatFilter = cat;
-  document.querySelectorAll('[data-ecat]').forEach(b => b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-  renderEmails();
-}
-
-function filterEmailBiz(biz, btn) {
-  emailBizFilter = biz;
-  document.querySelectorAll('[data-ebiz]').forEach(b => b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-  renderEmails();
-}
-
-function toggleHideJunk(checked) {
-  emailHideJunk = checked;
-  renderEmails();
-}
-
-// ============================================================
 // COACH
 // ============================================================
 const COACH_SYSTEM = `You are J.A.R.V.I.S., Dylan's AI executive assistant and accountability system. You speak like JARVIS from Iron Man: composed, dry wit, British-inflected precision, occasionally sardonic but always loyal and mission-focused. Address Dylan as "sir" naturally but not excessively.
@@ -4018,7 +3794,6 @@ async function init() {
 
   // Load remaining async data
   loadCowork();
-  loadEmail();
 }
 
 // `force` defaults true so the on-page Refresh buttons (and any future
@@ -4030,7 +3805,6 @@ async function refreshAll(force = true) {
   await loadRevenue({ force });
   renderGoals();
   loadCowork();
-  loadEmail();
   setTimeout(() => { $('statusDot').style.background = 'var(--success)'; }, 2000);
 }
 
@@ -4603,7 +4377,6 @@ if (document.readyState === 'loading') {
       <div id="rdCockpitSubnav" style="display:none">
         <button class="rd-cockpit-tab" data-cockpit="command">Dashboard</button>
         <button class="rd-cockpit-tab" data-cockpit="execution">Execution</button>
-        <button class="rd-cockpit-tab" data-cockpit="email">Inbox</button>
         <button class="rd-cockpit-tab" data-cockpit="jarvis">JARVIS</button>
       </div>
       <div id="rdContentHost"></div>
@@ -4729,7 +4502,6 @@ if (document.readyState === 'loading') {
     const TITLES = {
       'tab-command':   { t: 'Dashboard',   s: 'Plan, prioritize, and ship the day.' },
       'tab-execution': { t: 'Execution',   s: 'Tasks, projects, and daily cowork.' },
-      'tab-email':     { t: 'Inbox',       s: 'Email triage across PEC & FTP.' },
       'tab-jarvis':    { t: 'JARVIS',      s: 'Your strategic sparring partner.' },
       'tab-sops-owner':{ t: 'SOPs',        s: 'Standard operating procedures library.' },
       'tab-prescott-crm':{ t: 'TopCoat',     s: 'Customers, jobs, ordering, schedule, and costing for PEC.' },
@@ -4762,7 +4534,7 @@ if (document.readyState === 'loading') {
       // show the sub-nav, highlight the Cockpit promo card as the current
       // location, mark the matching sub-nav tab as active, and persist
       // last-viewed child for next launch.
-      const COCKPIT_IDS = { 'tab-command': 'command', 'tab-execution': 'execution', 'tab-email': 'email', 'tab-jarvis': 'jarvis' };
+      const COCKPIT_IDS = { 'tab-command': 'command', 'tab-execution': 'execution', 'tab-jarvis': 'jarvis' };
       const cockpitKey = COCKPIT_IDS[active.id];
       const subnav = document.getElementById('rdCockpitSubnav');
       const promoCard = document.querySelector('.rd-promo');
@@ -4823,7 +4595,7 @@ if (document.readyState === 'loading') {
       // only Cockpit launcher. Restore last-viewed child from localStorage, or
       // fall back to Dashboard, by clicking the matching hidden tab-btn.
       const last = (() => { try { return localStorage.getItem('cockpit_last_child'); } catch { return null; } })();
-      const targetKey = ['command', 'execution', 'email', 'jarvis'].includes(last) ? last : 'command';
+      const targetKey = ['command', 'execution', 'jarvis'].includes(last) ? last : 'command';
       const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey);
       if (targetBtn) targetBtn.click();
     });
@@ -4839,7 +4611,7 @@ if (document.readyState === 'loading') {
     });
     document.getElementById('rdSearch').addEventListener('input', (e) => {
       const v = e.target.value.toLowerCase();
-      document.querySelectorAll('.task-item, .sop-card, .email-card, .jobs-table tbody tr, .project-card').forEach(el => {
+      document.querySelectorAll('.task-item, .sop-card, .jobs-table tbody tr, .project-card').forEach(el => {
         const t = (el.textContent || '').toLowerCase();
         el.style.display = (!v || t.includes(v)) ? '' : 'none';
       });
@@ -4936,8 +4708,12 @@ if (document.readyState === 'loading') {
      PRESCOTT EPOXY / FINISHING TOUCH — CRM + CUSTOMER PORTAL
      Supabase-backed. Scoped under .pec-* so it doesn't touch HQ.
      ============================================================ -->
+<!-- supabase-js is self-hosted (vendor/) and loaded as a classic script so it
+     is never a third-party CDN dependency on the critical path. It sets
+     window.supabase; the module below reads createClient off it. -->
+<script src="./vendor/supabase-js-2.106.2.umd.js"></script>
 <script type="module">
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+const { createClient } = window.supabase;
 
 const CFG = window.CONFIG || {};
 if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_URL.includes('YOUR-')) {
