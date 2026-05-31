@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] settings: drag-to-reorder system types (popular ones to the top of the pickers)
+
+By: Claude Code
+Changed: index.html (Settings > System Types editor + the system-type pickers), new supabase/migrations/2026-06-01_system_type_sort_order.sql.
+Why: Dylan wanted to drag system types in Settings to control the order they appear when picking a system for a job.
+
+Data model (Cowork migration): adds `pec_prod_system_types.sort_order int`, backfilled sequentially by current name order so existing rows have a defined order. Staff RLS on the table already allows the reorder UI's update.
+
+UI:
+- Settings > System Types (renderSystemTypes in the catalog): each system card now has a drag handle (&#9776;); dragging reorders the cards and persists `sort_order` on every row (Promise.all of updates), with instant re-render and a revert-on-error. A hint explains the order drives the pickers.
+- A module-level `sortSystemTypes(arr)` helper sorts by `sort_order` (nulls last) then name. Applied at the render points that matter: the job-detail area "System type" select, the schedule modal system select, the Jobs filter dropdown, and the editor list itself.
+- The system-type fetches that feed those lists were widened to `select('*')` so `sort_order` flows through (loadCatalog already used `select('*')`).
+
+Graceful pre-migration: `sortSystemTypes` treats a missing `sort_order` as "last", so before the migration runs everything stays in name order (current behavior) and `select('*')` simply omits the column; the drag persist will error with a friendly "run the migration" alert until the column exists.
+
+Verified: inline `<script>` parse vs HEAD unchanged (no new errors).
+
+Files touched: index.html, supabase/migrations/2026-06-01_system_type_sort_order.sql (new), PROJECT-LOG.md.
+Next steps: None.
+
+## Handoff to Cowork
+Run `supabase/migrations/2026-06-01_system_type_sort_order.sql` (PEC `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). Idempotent. Acceptance: `select column_name from information_schema.columns where table_schema='public' and table_name='pec_prod_system_types' and column_name='sort_order';` returns 1 row; `select name, sort_order from public.pec_prod_system_types order by sort_order;` shows sequential values.
+
+## Handoff to Dylan
+After deploy + the Cowork migration, hard-reload. In Settings > System Types, drag the &#9776; handle on a system card to reorder; the order persists and shows up in the job and schedule system-type pickers (most-used at the top). Before the migration runs, dragging will show a "run the migration" error and the list stays in name order.
+
 ## [2026-05-31 MST] dashboard: drop the email triage widget; self-host supabase-js (kill the esm.sh dependency)
 
 By: Claude Code

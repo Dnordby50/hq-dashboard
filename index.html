@@ -4809,6 +4809,11 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&l
 const fmtMoney = n => n == null ? '—' : '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const fmtDate = s => s ? new Date(s).toLocaleDateString() : '—';
 const $ = id => document.getElementById(id);
+// System types display in custom order (Settings > System Types drag-reorder):
+// by sort_order (nulls last), then name. Safe before the sort_order migration
+// runs -- a missing sort_order falls back to name order.
+const sortSystemTypes = arr => [...(arr || [])].sort((a, b) =>
+  ((a.sort_order ?? 1e9) - (b.sort_order ?? 1e9)) || String(a.name || '').localeCompare(String(b.name || '')));
 
 // ============================================================
 // Activity log (per-job audit_log helpers)
@@ -5601,7 +5606,7 @@ async function renderDashboard() {
     supabase.from('jobs').select('id,status,confirmed,created_at,address,type,price,dripjobs_deal_id,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
     supabase.from('reviews').select('rating'),
-    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    supabase.from('pec_prod_system_types').select('*'),
     // Active sold jobs whose colors aren't confirmed yet. Kept as its own query
     // (not folded into the Recent Jobs select) so that before the
     // 2026-05-30_colors_confirmed.sql migration runs, the missing column errors
@@ -5787,7 +5792,7 @@ async function renderCustomers() {
           .select('id,address,type,status,created_at,job_areas(system_type_id,order_index)')
           .eq('customer_id', cid).is('archived_at', null)
           .order('created_at', { ascending: false }),
-        supabase.from('pec_prod_system_types').select('id,name,color,active'),
+        supabase.from('pec_prod_system_types').select('*'),
       ]);
       if (error) { bodyEl.innerHTML = `<div class="prod-msg-err">${esc(error.message)}</div>`; return; }
       const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
@@ -5816,7 +5821,7 @@ async function renderCustomerDetail(id) {
       .select('id,address,type,status,price,created_at,archived_at,job_areas(system_type_id,order_index)')
       .eq('customer_id', id).is('archived_at', null)
       .order('created_at', { ascending: false }),
-    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    supabase.from('pec_prod_system_types').select('*'),
   ]), { label: 'renderCustomerDetail' });
   if (custRes.error) {
     console.warn('[pec] customer fetch failed; clearing openCustomerId:', custRes.error.message);
@@ -6315,7 +6320,7 @@ async function renderJobs() {
   if (state.jobsFilter.status) q = q.eq('status', state.jobsFilter.status);
   const [jobsRes, sysRes] = await withFreshSession(() => Promise.all([
     q,
-    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    supabase.from('pec_prod_system_types').select('*'),
   ]), { label: 'renderJobs' });
   const { data, count, error } = jobsRes;
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
@@ -6325,7 +6330,7 @@ async function renderJobs() {
   state.jobs = jobs;
   state.jobsTotal = count || 0;
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
-  const sysOptions = (sysRes.data || []).filter(s => s.active !== false);
+  const sysOptions = sortSystemTypes(sysRes.data || []).filter(s => s.active !== false);
 
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -7497,7 +7502,7 @@ async function renderJobDetail(id) {
     supabase.from('jobs')
       .select('*,customers(id,name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
-    supabase.from('pec_prod_system_types').select('id,name,color,active,labor_budget_pct,materials_budget_pct').order('name'),
+    supabase.from('pec_prod_system_types').select('*').order('name'),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
     supabase.from('pec_prod_products').select('id,name,color,material_type,image_url,active,spread_rate,kit_size,unit_cost').order('name'),
     supabase.from('pec_prod_color_pairings').select('flake_product_id,basecoat_product_id,is_default'),
@@ -7993,7 +7998,7 @@ async function renderJobDetail(id) {
   function renderAreas() {
     const host = $('jobAreas'); if (!host) return;
     const sysOptions = (sel) => `<option value="">Pick a system…</option>` +
-      systemTypes.filter(s => s.active !== false || s.id === sel)
+      sortSystemTypes(systemTypes).filter(s => s.active !== false || s.id === sel)
         .map(s => `<option value="${esc(s.id)}" ${s.id===sel?'selected':''}>${esc(s.name)}</option>`).join('');
 
     const slotHtml = (a, idx, slot) => {
@@ -9778,7 +9783,7 @@ async function loadScheduleData() {
   const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
-    supabase.from('pec_prod_system_types').select('id,name,color,active'),
+    supabase.from('pec_prod_system_types').select('*'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
@@ -10117,7 +10122,7 @@ function openScheduleModal(jobId) {
         <div style="margin-top:6px">
           <select id="schedSystem" style="width:100%">
             <option value="">${sys ? 'Keep current system' : 'Pick a system'}</option>
-            ${state.systemTypes.filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}" ${sys && sys.id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+            ${sortSystemTypes(state.systemTypes).filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}" ${sys && sys.id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
           </select>
         </div>
         ${sys
@@ -13633,13 +13638,17 @@ function _mergeAcrossAreas(areaPlans) {
       <div class="pec-toolbar">
         <button class="pec-btn primary" id="prodAddSystemBtn">+ Add system type</button>
       </div>
-      ${state.systemTypes.map(s => `
-        <div class="pec-card">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div>
+      <div style="font-size:.72rem;color:var(--muted);margin:0 0 10px">Drag the &#9776; handle to reorder. The order here sets the order systems appear in the job and schedule pickers, so put the most-used ones at the top.</div>
+      ${sortSystemTypes(state.systemTypes).map(s => `
+        <div class="pec-card" data-sys-id="${esc(s.id)}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="display:flex;align-items:flex-start;gap:10px;min-width:0">
+              <span class="sys-drag-handle" draggable="true" title="Drag to reorder" style="cursor:grab;color:var(--muted);font-size:1.1rem;line-height:1.2;user-select:none;padding:2px 2px 0">&#9776;</span>
+              <div>
               <h3 style="margin:0">${esc(s.name)} ${s.active?'':'<span style="color:var(--muted);font-size:.7rem">(inactive)</span>'}</h3>
               <div style="color:var(--muted);font-size:.75rem">${esc(s.description || '')}</div>
               <div style="color:var(--muted);font-size:.7rem">Requires flake: ${s.requires_flake_color?'yes':'no'} · requires basecoat: ${s.requires_basecoat_color?'yes':'no'}</div>
+              </div>
             </div>
             <button class="pec-btn sm" data-edit-system="${esc(s.id)}">Edit</button>
           </div>
@@ -13685,6 +13694,42 @@ function _mergeAcrossAreas(areaPlans) {
       if (error) return alert(error.message);
       await loadCatalog(); render();
     }));
+
+    // Drag-to-reorder system types. The handle (draggable) carries the card's
+    // id; dropping onto another card moves it there and persists sort_order on
+    // every row. Pickers read sort_order, so the new order shows up there too.
+    let dragSysId = null;
+    host.querySelectorAll('.sys-drag-handle').forEach(h => {
+      const card = h.closest('[data-sys-id]');
+      h.addEventListener('dragstart', e => { dragSysId = card.dataset.sysId; e.dataTransfer.effectAllowed = 'move'; card.style.opacity = '.5'; });
+      h.addEventListener('dragend', () => { card.style.opacity = ''; });
+    });
+    host.querySelectorAll('[data-sys-id]').forEach(card => {
+      card.addEventListener('dragover', e => { if (dragSysId) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } });
+      card.addEventListener('drop', async e => {
+        e.preventDefault();
+        const targetId = card.dataset.sysId;
+        if (!dragSysId || dragSysId === targetId) return;
+        const arr = sortSystemTypes(state.systemTypes);
+        const from = arr.findIndex(s => s.id === dragSysId);
+        const to = arr.findIndex(s => s.id === targetId);
+        if (from < 0 || to < 0) return;
+        const [moved] = arr.splice(from, 1);
+        arr.splice(to, 0, moved);
+        arr.forEach((s, i) => { s.sort_order = i; });
+        state.systemTypes = arr;
+        dragSysId = null;
+        renderSystemTypes(host); // instant feedback
+        try {
+          const results = await Promise.all(arr.map((s, i) => supabase.from('pec_prod_system_types').update({ sort_order: i }).eq('id', s.id)));
+          const bad = results.find(r => r && r.error);
+          if (bad) throw bad.error;
+        } catch (err) {
+          alert('Could not save the new order (run the system_type_sort_order migration if this persists): ' + (err.message || err));
+          await loadCatalog(); render();
+        }
+      });
+    });
   }
 
   function openSystemTypeModal(systemId) {
