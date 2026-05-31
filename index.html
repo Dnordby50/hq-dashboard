@@ -6832,6 +6832,7 @@ async function renderJobInvoice(jobId) {
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
         <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
         <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
+        <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
@@ -6873,32 +6874,76 @@ async function renderJobInvoice(jobId) {
   // server renders the line items / total / balance; the log row updates async
   // via the Resend webhook. Uses openModal (#pecModalRoot) like the page's other
   // working modals.
+  // Copy the public hosted-invoice link for texting/Slack. Guards pre-migration.
+  const copyB = $('pecInvCopyLink');
+  if (copyB) copyB.addEventListener('click', async () => {
+    if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+    const url = `${location.origin}/pay/${row.public_token}`;
+    try { await navigator.clipboard.writeText(url); showToast('Public invoice link copied', { ttl: 2500 }); }
+    catch (_) { window.prompt('Copy this link:', url); }
+  });
+
+  // Compose-before-send dialog: To / Cc / Copy Me / Subject / rich-text body,
+  // all pre-filled from the invoice template with tokens resolved client-side.
+  // Sends in compose mode (server wraps the body in brand chrome).
   const emailB = $('pecInvEmail');
-  if (emailB) emailB.addEventListener('click', () => {
+  if (emailB) emailB.addEventListener('click', async () => {
     const brand = 'prescott-epoxy'; // PEC-only CRM
+    await fetchBrandIdentity(); // for the CTA color + chrome match
+    const values = emailComposeValues(row);
+    const staffEmail = state.adminUser?.email || '';
     openModal(`
       <h3>Email invoice</h3>
-      <div class="pec-ar-sub" style="margin-bottom:12px">To <strong>${esc(row.customer_name || 'customer')}</strong> · invoice ${esc(row.hq_invoice_number || row.dripjobs_deal_id || '')}</div>
-      <div class="pec-field"><label>Recipient email</label><input id="emInvTo" type="email" value="${esc(row.customer_email || '')}" placeholder="customer@example.com"></div>
-      <div class="prod-msg-err" id="emInvErr" style="min-height:16px"></div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>To</label><input id="cmpTo" value="${esc(row.customer_email || '')}" placeholder="customer@example.com (comma-separated for multiple)"></div>
+        <div class="pec-field"><label>Cc</label><input id="cmpCc" placeholder="optional, comma-separated"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="cmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
+      <div class="pec-field"><label>Subject</label><input id="cmpSubject"></div>
+      <div class="pec-field"><label>Body</label><div id="cmpEditorWrap" style="background:#fff;border-radius:6px"><div id="cmpEditor" style="min-height:240px"></div></div></div>
+      <div class="prod-msg-err" id="cmpErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
-        <button type="button" class="pec-btn primary" id="emInvSend">Send invoice</button>
+        <button type="button" class="pec-btn primary" id="cmpSend" disabled>Loading editor…</button>
       </div>
-    `, { onMount: modal => {
-      modal.querySelector('#emInvSend').addEventListener('click', async () => {
-        const errEl = modal.querySelector('#emInvErr'); errEl.textContent = '';
-        const to = modal.querySelector('#emInvTo').value.trim();
-        if (!to) { errEl.textContent = 'Enter a recipient email.'; return; }
-        const sb2 = modal.querySelector('#emInvSend'); sb2.disabled = true; sb2.textContent = 'Sending…';
+    `, { onMount: async modal => {
+      // Pre-fill subject + body from the saved template (fall back to defaults).
+      let subjectTpl = DEFAULT_INVOICE_SUBJECT, bodyTpl = DEFAULT_INVOICE_BODY;
+      try {
+        const { data } = await supabase.from('pec_email_templates').select('subject,html').eq('key', 'invoice').eq('brand', brand).maybeSingle();
+        if (data) { subjectTpl = data.subject || subjectTpl; bodyTpl = data.html || bodyTpl; }
+      } catch (_) { /* defaults */ }
+      modal.querySelector('#cmpSubject').value = emailResolveSubject(subjectTpl, values);
+      const bodyHtml = emailResolveBody(bodyTpl, values);
+      let quill = null;
+      try {
+        await ensureQuill();
+        quill = new Quill(modal.querySelector('#cmpEditor'), { theme: 'snow', modules: { toolbar: [['bold', 'italic', 'underline'], [{ list: 'ordered' }, { list: 'bullet' }], ['link'], ['clean']] } });
+        quill.clipboard.dangerouslyPasteHTML(bodyHtml);
+      } catch (e) {
+        // Editor failed to load: fall back to a plain textarea of the HTML.
+        modal.querySelector('#cmpEditorWrap').innerHTML = `<textarea id="cmpEditorTa" rows="12" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem">${esc(bodyHtml)}</textarea>`;
+      }
+      const sendBtn = modal.querySelector('#cmpSend');
+      sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
+      sendBtn.addEventListener('click', async () => {
+        const errEl = modal.querySelector('#cmpErr'); errEl.textContent = '';
+        const to = modal.querySelector('#cmpTo').value.trim();
+        let cc = modal.querySelector('#cmpCc').value.trim();
+        if (modal.querySelector('#cmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
+        const subject = modal.querySelector('#cmpSubject').value.trim();
+        const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#cmpEditorTa')?.value || '');
+        if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
+        if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
+        sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
         try {
-          await pecSendEmail({ template_key: 'invoice', brand, to_email: to, job_id: row.id, customer_id: row.customer_id });
+          await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, job_id: row.id, customer_id: row.customer_id });
           closeModal();
           showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
           renderInvoicing();
         } catch (err) {
-          console.error('[pec] email invoice failed', err);
-          sb2.disabled = false; sb2.textContent = 'Send invoice';
+          console.error('[pec] compose send failed', err);
+          sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
           errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
         }
       });
@@ -9141,6 +9186,7 @@ function settingsTabBar(active) {
     <strong style="margin-right:6px">Settings</strong>
     <button class="pec-btn ${active === 'general' ? 'primary' : 'ghost'} sm" data-settings-tab="general">General</button>
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
+    <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
 }
 function wireSettingsTabs(root) {
@@ -9154,6 +9200,7 @@ async function renderSettings() {
   // when leaving the Email tab or the Settings view).
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
   if (state.settingsTab === 'email') return renderSettingsEmail();
+  if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes] = await Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
@@ -9320,15 +9367,18 @@ const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Pres
 // Sample values so a template's {{tokens}} render to something realistic in the
 // readable-text view and the preview popup (the live send fills the real data).
 function emailSampleVars() {
+  const b = state.brandIdentity || EMAIL_BRAND_DEFAULTS;
   return {
     customer_name: 'Sample Customer',
     invoice_number: 'INV-1042',
     total: '$12,400.00',
     balance: '$6,200.00',
     portal_link: '#',
-    brand_name: 'Prescott Epoxy Company',
-    from_name: 'Prescott Epoxy Company',
+    brand_name: b.business_name || 'Prescott Epoxy Company',
+    business_name: b.business_name || 'Prescott Epoxy Company',
+    from_name: b.business_name || 'Prescott Epoxy Company',
     year: String(new Date().getFullYear()),
+    cta: `<a href="#" style="display:inline-block;background:${esc((b.primary_color) || '#1e3a5f')};color:#fff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:600">View Invoice &amp; Pay</a>`,
     line_items_table: '<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px"><thead><tr><th style="text-align:left;padding:6px 8px;background:#0f172a;color:#fff">Item</th><th style="text-align:right;padding:6px 8px;background:#0f172a;color:#fff">Price</th></tr></thead><tbody><tr><td style="padding:6px 8px;border:1px solid #e2e8f0">Garage floor, Metallic<div style="color:#64748b;font-size:12px">Grind, patch, 2-coat metallic, polyaspartic topcoat</div></td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">$8,400.00</td></tr><tr><td style="padding:6px 8px;border:1px solid #e2e8f0">Front patio, Flake</td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">$4,000.00</td></tr></tbody></table>',
   };
 }
@@ -9343,15 +9393,16 @@ function emailHtmlToText(html) {
   tmp.innerHTML = emailRenderTokens(html);
   return (tmp.innerText || tmp.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
-// Open the real rendered email in a popup window (sample data).
+// Open the real rendered email (body wrapped in brand chrome) in a popup,
+// using sample token data. Mirrors what the server sends.
 function emailPreviewPopup(subject, html) {
   const win = window.open('', '_blank');
   if (!win) { alert('Pop-up blocked. Allow pop-ups to preview the email.'); return; }
+  const wrapped = emailWrapChrome(emailRenderTokens(html), state.brandIdentity);
   const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(subject || 'Email preview')}</title></head>`
-    + `<body style="margin:0;background:#f1f5f9;padding:20px;font-family:Arial,Helvetica,sans-serif">`
-    + `<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.12)">`
-    + `<div style="font-size:12px;color:#64748b;border-bottom:1px solid #e2e8f0;padding-bottom:8px;margin-bottom:14px">Subject: ${esc(subject || '')}</div>`
-    + `${emailRenderTokens(html)}</div></body></html>`;
+    + `<body style="margin:0">`
+    + `<div style="background:#fff;border-bottom:1px solid #e2e8f0;padding:8px 16px;font:12px Arial,Helvetica,sans-serif;color:#64748b">Subject: ${esc(emailRenderTokens(subject || ''))}</div>`
+    + `${wrapped}</body></html>`;
   win.document.open(); win.document.write(doc); win.document.close();
 }
 
@@ -9368,9 +9419,169 @@ function emailLogRowsHtml(log) {
   </tr>`).join('');
 }
 
+// Client mirror of the server BRAND_DEFAULTS + wrapInChrome (pec-send-email.cjs).
+// KEEP IN SYNC with that function so the Settings preview matches real sends.
+const EMAIL_BRAND_DEFAULTS = {
+  logo_url: null, primary_color: '#1e3a5f', accent_color: '#ea580c',
+  business_name: 'Prescott Epoxy Company', address_line: '', phone: '',
+  license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
+};
+function emailWrapChrome(bodyHtml, brand) {
+  const b = { ...EMAIL_BRAND_DEFAULTS, ...(brand || {}) };
+  const name = b.business_name || 'Prescott Epoxy Company';
+  const header = b.logo_url
+    ? `<img src="${esc(b.logo_url)}" alt="${esc(name)}" style="max-height:48px;max-width:240px">`
+    : `<div style="font-size:20px;font-weight:800;letter-spacing:1px;color:${esc(b.primary_color)}">${esc(name)}</div>`;
+  const phoneLine = b.phone ? `<br><a href="tel:${esc(String(b.phone).replace(/[^0-9+]/g, ''))}" style="color:${esc(b.primary_color)};text-decoration:none">${esc(b.phone)}</a>` : '';
+  const footerBits = [name, b.address_line, b.license_number ? 'License ' + b.license_number : '', b.footer_disclaimer].filter(Boolean).map(esc).join(' &middot; ');
+  return `<div style="background:#f1f5f9;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
+    <div style="max-width:600px;margin:0 auto">
+      <div style="text-align:center;padding:12px 0 16px">${header}</div>
+      <div style="background:#fff;border-radius:10px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);color:#0f172a;font-size:14px;line-height:1.5">
+        ${bodyHtml}
+        <div style="margin-top:22px;padding-top:14px;border-top:1px solid #e2e8f0;color:#334155;font-size:13px">Thank you,<br><strong>${esc(name)}</strong>${phoneLine}</div>
+      </div>
+      <div style="text-align:center;color:#94a3b8;font-size:11px;padding:14px 8px">${footerBits}</div>
+    </div>
+  </div>`;
+}
+// Cached brand identity (PEC). Best-effort; returns defaults pre-migration.
+async function fetchBrandIdentity() {
+  try {
+    const { data, error } = await supabase.from('pec_brand_identity').select('*').eq('brand', 'prescott-epoxy').maybeSingle();
+    if (!error && data) { state.brandIdentity = data; return data; }
+  } catch (_) { /* pre-migration */ }
+  return state.brandIdentity || { ...EMAIL_BRAND_DEFAULTS, brand: 'prescott-epoxy' };
+}
+
+// --- Compose-dialog helpers (client-side token resolution for pre-fill) ------
+// Token list KEPT IN SYNC with pec-send-email.cjs. line_items_table + cta are
+// raw HTML; other text values are escaped before injecting into the body HTML.
+const DEFAULT_INVOICE_SUBJECT = 'Invoice {{invoice_number}} from {{business_name}}';
+const DEFAULT_INVOICE_BODY = '<p>Hi {{customer_name}},</p><p>Thank you for your business. Here is your invoice <strong>{{invoice_number}}</strong>.</p>{{line_items_table}}<p style="font-size:15px;margin-top:16px"><strong>Total: {{total}}</strong><br>Balance due: <strong>{{balance}}</strong></p><p>{{cta}}</p><p>Questions about this invoice? Just reply to this email.</p>';
+function emailLineItemsTable(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return '';
+  const rows = list.map(li => {
+    const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
+    return `<tr><td style="padding:6px 8px;border:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <em>(change order)</em>' : ''}${li.description ? `<div style="color:#64748b;font-size:12px;margin-top:2px;white-space:pre-wrap">${esc(li.description)}</div>` : ''}</td><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right;white-space:nowrap">${price != null ? invUSD(price) : ''}</td></tr>`;
+  }).join('');
+  return `<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px"><thead><tr><th style="text-align:left;padding:6px 8px;background:#0f172a;color:#fff">Item</th><th style="text-align:right;padding:6px 8px;background:#0f172a;color:#fff">Price</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function emailComposeValues(row) {
+  const b = state.brandIdentity || EMAIL_BRAND_DEFAULTS;
+  const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
+  const cta = row.public_token
+    ? `<a href="${location.origin}/pay/${row.public_token}" style="display:inline-block;background:${esc(b.primary_color || '#1e3a5f')};color:#fff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:600">View Invoice &amp; Pay</a>`
+    : '';
+  const name = b.business_name || 'Prescott Epoxy Company';
+  return {
+    customer_name: row.customer_name || '', invoice_number: invNo,
+    total: invUSD(row.price), balance: invUSD(row.balance != null ? row.balance : row.balance_remaining),
+    business_name: name, brand_name: name, from_name: name, portal_link: '#',
+    year: String(new Date().getFullYear()), cta, line_items_table: emailLineItemsTable(row.line_items),
+  };
+}
+function emailResolveBody(tpl, values) {
+  return String(tpl || '').replace(/\{\{(\w+)\}\}/g, (_, k) => values[k] == null ? '' : ((k === 'line_items_table' || k === 'cta') ? values[k] : esc(values[k])));
+}
+function emailResolveSubject(tpl, values) {
+  return String(tpl || '').replace(/\{\{(\w+)\}\}/g, (_, k) => values[k] != null ? String(values[k]) : '');
+}
+// Lazy-load Quill from cdnjs on first compose-modal open.
+let _quillLoading = null;
+function ensureQuill() {
+  if (window.Quill) return Promise.resolve();
+  if (_quillLoading) return _quillLoading;
+  _quillLoading = new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/quill/2.0.2/quill.snow.css';
+    document.head.appendChild(link);
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/quill/2.0.2/quill.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _quillLoading = null; reject(new Error('Could not load the editor.')); };
+    document.head.appendChild(s);
+  });
+  return _quillLoading;
+}
+
+async function renderSettingsBrand() {
+  const root = $('pecViewRoot');
+  let bi = null, notReady = false;
+  try {
+    const { data, error } = await withFreshSession(() => supabase.from('pec_brand_identity').select('*').eq('brand', 'prescott-epoxy').maybeSingle(), { label: 'brand-identity' });
+    if (error) notReady = true; else bi = data;
+  } catch (e) { notReady = true; }
+  if (notReady) {
+    root.innerHTML = settingsTabBar('brand') + '<div class="pec-card"><div class="pec-empty">Run the brand_and_public_invoice migration (supabase/migrations/2026-06-01_brand_and_public_invoice.sql) to enable brand identity.</div></div>';
+    wireSettingsTabs(root);
+    return;
+  }
+  const b = bi || { ...EMAIL_BRAND_DEFAULTS, brand: 'prescott-epoxy' };
+  state.brandIdentity = b;
+  const field = (label, id, val, ph) => `<div class="pec-field"><label>${esc(label)}</label><input id="${id}" value="${esc(val || '')}" placeholder="${esc(ph || '')}"></div>`;
+  const colorField = (label, id, val) => `<div class="pec-field"><label>${esc(label)}</label><div style="display:flex;gap:8px;align-items:center"><input type="color" id="${id}c" value="${esc(val || '#000000')}" style="width:46px;height:34px;padding:2px"><input id="${id}" value="${esc(val || '')}" placeholder="#1e3a5f" style="flex:1"></div></div>`;
+  root.innerHTML = settingsTabBar('brand') + `
+    <div class="pec-card">
+      <h3>Brand identity</h3>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">Drives the email header / signature / footer and the public invoice page. One brand (Prescott Epoxy).</div>
+      ${field('Logo URL (paste a hosted image URL; blank = text header)', 'biLogo', b.logo_url, 'https://…/logo.png')}
+      <div class="pec-row-2">${colorField('Primary color', 'biPrimary', b.primary_color)}${colorField('Accent color', 'biAccent', b.accent_color)}</div>
+      ${field('Business name', 'biName', b.business_name, 'Prescott Epoxy Company')}
+      ${field('Address line', 'biAddress', b.address_line, 'Street, City, State ZIP')}
+      <div class="pec-row-2">${field('Phone', 'biPhone', b.phone, '(928) 800-8154')}${field('License #', 'biLicense', b.license_number, 'ROC…')}</div>
+      ${field('Website', 'biWebsite', b.website, 'prescottepoxy.com')}
+      <div class="pec-field"><label>Footer disclaimer</label><textarea id="biDisclaimer" rows="2">${esc(b.footer_disclaimer || '')}</textarea></div>
+      <div class="pec-field"><label>Payment instructions (HTML; shown on the public invoice page)</label><textarea id="biPayInstr" rows="6" style="font-family:ui-monospace,monospace;font-size:.78rem">${esc(b.payment_instructions_html || '')}</textarea>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Plain HTML. Example: a paragraph telling customers to mail a check, call, or reply.</div></div>
+      <button class="pec-btn primary sm" id="biSave">Save brand identity</button>
+      <span id="biMsg" style="margin-left:10px;font-size:.8rem"></span>
+    </div>`;
+  wireSettingsTabs(root);
+  [['biPrimary'], ['biAccent']].forEach(([id]) => {
+    const hex = $(id), sw = $(id + 'c');
+    if (hex && sw) {
+      sw.addEventListener('input', () => { hex.value = sw.value; });
+      hex.addEventListener('input', () => { if (/^#[0-9a-fA-F]{6}$/.test(hex.value)) sw.value = hex.value; });
+    }
+  });
+  $('biSave').addEventListener('click', async () => {
+    const btn = $('biSave'), msg = $('biMsg'); msg.textContent = '';
+    const patch = {
+      logo_url: $('biLogo').value.trim() || null,
+      primary_color: $('biPrimary').value.trim() || '#1e3a5f',
+      accent_color: $('biAccent').value.trim() || '#ea580c',
+      business_name: $('biName').value.trim() || 'Prescott Epoxy Company',
+      address_line: $('biAddress').value.trim(),
+      phone: $('biPhone').value.trim() || null,
+      license_number: $('biLicense').value.trim() || null,
+      website: $('biWebsite').value.trim() || null,
+      footer_disclaimer: $('biDisclaimer').value.trim() || null,
+      payment_instructions_html: $('biPayInstr').value || null,
+      updated_at: new Date().toISOString(),
+    };
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
+      if (upd.error) throw upd.error;
+      state.brandIdentity = { ...b, ...patch };
+      showToast('Brand identity saved', { ttl: 2500 });
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save brand identity';
+      msg.style.color = '#dc2626'; msg.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+      return;
+    }
+    renderSettingsBrand();
+  });
+}
+
 async function renderSettingsEmail() {
   const root = $('pecViewRoot');
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
+  // Warm the brand identity so the Preview popup wraps in real brand chrome.
+  await fetchBrandIdentity();
   let senders = [], templates = [], log = [], notReady = false;
   try {
     const [sRes, tRes, lRes] = await withFreshSession(() => Promise.all([
@@ -9411,9 +9622,9 @@ async function renderSettingsEmail() {
         <span style="font-size:.7rem;color:var(--muted)">Opens the real rendered email in a popup (sample data).</span>
       </div>
       <details>
-        <summary style="cursor:pointer;font-size:.78rem;color:var(--muted)">Edit HTML source</summary>
+        <summary style="cursor:pointer;font-size:.78rem;color:var(--muted)">Edit HTML source (body only)</summary>
         <div class="pec-field" style="margin-top:6px"><textarea class="te-html" rows="8" style="font-family:ui-monospace,monospace;font-size:.78rem;resize:vertical">${esc(t.html || '')}</textarea></div>
-        <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px">Tokens: {{customer_name}} {{invoice_number}} {{line_items_table}} {{total}} {{balance}} {{portal_link}} {{brand_name}} {{from_name}} {{year}}</div>
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px">Body only — the logo header, signature, and footer are added automatically from Settings &gt; Brand. Tokens: {{customer_name}} {{invoice_number}} {{line_items_table}} {{total}} {{balance}} {{cta}} {{business_name}} {{year}}</div>
       </details>
       <button class="pec-btn primary sm" style="margin-top:8px" data-save-template="${esc(t.id)}">Save template</button>
     </div>`).join('') || '<div class="pec-empty">No templates seeded.</div>';

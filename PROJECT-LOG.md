@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] email/invoicing: brand identity + compose-before-send + public hosted invoice page (/pay/<token>)
+
+By: Claude Code
+Changed: new migration `2026-06-01_brand_and_public_invoice.sql`; new function `pec-public-invoice.cjs`; extended `pec-send-email.cjs`; `netlify.toml`; `index.html`.
+Why: Make the invoice email branded/professional, let staff edit before sending, and give the customer a shareable hosted invoice link. No payment processor (phase 4).
+
+Architectural shift: email templates are now BODY-ONLY; the chrome (logo header / signature / footer + the View-Invoice CTA) is added by the render layer from `pec_brand_identity`, so editing brand identity restyles every email and the hosted page without touching template HTML.
+
+Migration (Cowork): `pec_brand_identity` (one row per brand, PEC seeded with defaults; RLS via is_admin_staff); `jobs.public_token uuid default gen_random_uuid()` (+`public_token_revoked_at` reserved, +unique index); **recreated `pec_job_ar`** appending `j.public_token` LAST (42P16 rule); **explicit UPDATE** of the two PEC templates to body-only HTML + new subjects (`Invoice {{invoice_number}} from {{business_name}}` / `TopCoat test email`) + new vars (NOT insert-on-conflict, which would skip the existing rows).
+
+`pec-send-email.cjs`: now two modes on one endpoint. Template mode (existing) renders the template body with tokens; **compose mode** (`{ subject, body_html }`) uses the edited subject + body verbatim, server-side sanitized (allowlist: strips script/style/iframe/object/embed, on*= handlers, javascript: URLs — defense-in-depth since the sender is authenticated staff). Both wrap the body in `wrapInChrome` from brand identity. Added `{{cta}}` (View Invoice & Pay -> `${URL}/pay/<public_token>`), brand tokens (`business_name`, etc.), and `cc` support (dedup/validate). Compose sends log as `template_key='compose'`.
+
+`pec-public-invoice.cjs` (new, public GET): `/pay/<token>` (Netlify rewrite passes the token in `?token=`). Looks up `pec_job_ar?public_token=eq.<token>` (the view already excludes voided jobs) + `pec_brand_identity`, renders a branded server-side page (header, status banner, accent-band invoice card, line items, summary, payment-instructions HTML, Print/Save-PDF). Generic 404 on miss (no token/DB leak); `X-Robots-Tag: noindex, nofollow`; UUID-shape check before any DB hit.
+
+`netlify.toml`: `/pay/*` -> the function (status 200 rewrite, force), mirroring `/mcp`.
+
+`index.html`: **Settings > Brand** tab (logo/colors/business info/payment-instructions; save via withFreshWrite; pre-migration notice). Email tab: templates are body-only (token hint updated), and the **Preview popup now wraps the body in brand chrome** (client `emailWrapChrome` mirrors the server — commented "keep in sync"). **Compose dialog** replaces the minimal Email-invoice modal: To / Cc / Copy-Me / Subject / **Quill** rich-text body (lazy-loaded from cdnjs on first open; plain-textarea fallback), all pre-filled from the invoice template with tokens resolved client-side (`emailComposeValues`/`emailResolveBody`), sent in compose mode. **Copy public invoice link** button copies `${origin}/pay/<public_token>` (guards pre-migration). Uses `#pecModalRoot`/openModal like the page's other working modals.
+
+Verified: `node --check` passes on both functions; the sanitizer/cc logic was unit-checked; inline `<script>` failure set unchanged vs HEAD. No CSP exists, so the Quill CDN load is unblocked.
+
+Files touched: supabase/migrations/2026-06-01_brand_and_public_invoice.sql (new), netlify/functions/pec-public-invoice.cjs (new), netlify/functions/pec-send-email.cjs, netlify.toml, index.html, PROJECT-LOG.md.
+Next steps: Phase 4 = payment processor integration (scope later).
+
+## Handoff to Cowork
+Run `supabase/migrations/2026-06-01_brand_and_public_invoice.sql` (PEC `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). Idempotent. Acceptance: `select count(*) from pec_brand_identity;`=1; `select brand from pec_brand_identity;`=prescott-epoxy; `select column_name from information_schema.columns where table_name='jobs' and column_name='public_token';`=1 row; `select subject from pec_email_templates where key='invoice' and brand='prescott-epoxy';` contains `{{invoice_number}}` and `{{business_name}}` (proves the UPDATE applied, not skipped).
+
+## Handoff to Dylan
+After deploy + Cowork migration, hard-reload. Settings > Brand: paste your hosted logo URL, confirm address/phone/license/payment-instructions copy (defaults are seeded — fix anything wrong). Settings > Email: Preview the Invoice template (that's what customers see). Any job's invoice: "Copy public invoice link" → open in a private window to verify the hosted page. Then "Email invoice" → compose dialog → send to yourself (Cc + Copy Me work). Real delivery still needs the Resend env/domain from the prior email entry. Phase 4 (payment processor) is next when ready.
+
 ## [2026-05-31 MST] email migration: re-ran 2026-05-31_email_platform.sql; FTP rows cleaned up, PEC-only state confirmed in prod
 
 By: Cowork

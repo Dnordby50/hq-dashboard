@@ -25,3 +25,11 @@
   to = "/.netlify/functions/mcp"
   status = 200
   force = true
+
+# Public hosted invoice page. /pay/<token> rewrites to the function with the
+# token in the query string (event.queryStringParameters.token).
+[[redirects]]
+  from = "/pay/*"
+  to = "/.netlify/functions/pec-public-invoice?token=:splat"
+  status = 200
+  force = true
