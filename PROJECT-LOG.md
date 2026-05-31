@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] email: transactional email pipeline (Resend) — send-invoice + Settings > Email panel
+
+By: Claude Code
+Changed: 2 new Netlify functions, 1 new migration, index.html (Settings tab shell + Email panel; invoice "Email invoice" button).
+Why: Stand up server-side transactional email so the office can email an invoice from the invoice page and manage senders/templates/test-sends/log from Settings. Vendor: Resend. Marketing out of scope.
+
+Architecture: API key stays in Netlify env (RESEND_API_KEY); the browser never sees it. Every send goes through `netlify/functions/pec-send-email.cjs`. Supabase holds `pec_email_senders` / `pec_email_templates` / `pec_email_log`. A Resend webhook (`pec-webhook-resend.cjs`) updates the log's delivery/open/click/bounce. Two brands keyed by `customers.company` ('prescott-epoxy' / 'finishing-touch').
+
+Migration `supabase/migrations/2026-05-31_email_platform.sql` (Cowork runs it): the 3 tables + RLS (reuses `is_admin_staff()`; log is staff-readable but only the service-role function writes it) + seeds (2 senders with placeholder from-emails, 4 templates: invoice + test per brand, with usable starter HTML using {{tokens}}).
+
+`pec-send-email.cjs`: validates the caller's Supabase JWT via `${SUPABASE_URL}/auth/v1/user` (captures user.id for sent_by_user); env guard returns 503 + logs a 'failed' row if RESEND_API_KEY is missing; 50-sends/user/hour cap via a `pec_email_log` count query (reliable across function instances); looks up sender + template by brand, fetches the `pec_job_ar` row for auto fields, renders {{tokens}} (caller vars + auto: customer_name, invoice_number, line_items_table, total, balance, portal_link, brand_name, from_name, year; text fields HTML-escaped, the line-items table left raw), POSTs to Resend, writes a 'sent'/'failed' pec_email_log row. Never logs the key.
+
+`pec-webhook-resend.cjs`: real **Svix** signature verification with RESEND_WEBHOOK_SECRET (HMAC-SHA256 over `${svix-id}.${svix-timestamp}.${rawBody}`, base64, constant-time compare against each `v1,<sig>`), then PATCHes the log row by resend_id (delivered/opened/clicked/bounced). Always 200s; never throws back to Resend.
+
+Three spec corrections (verified in code): (1) the existing webhooks use a plain `x-webhook-secret` compare, NOT HMAC, so the Resend webhook implements Svix properly (its early-return shape mirrors pec-webhook-stage-changed.cjs). (2) pec-log-signin.cjs is unauthenticated, not a JWT example, so the send function validates the token against /auth/v1/user. (3) invoice-page modals use #pecModalRoot via openModal (the working payment/change-order modals do), not #prodModalRoot, so the email-invoice modal does the same. Also: no hosted invoice page exists, so the email is self-contained (line items + totals rendered inline; optional {{portal_link}} when the customer has a token).
+
+index.html: Settings now has a tab shell (General / Email) mirroring the Catalog tab pattern. Email tab: sender identities (per brand, save via withFreshWrite), template list (subject + plain HTML textarea, save by id), test send (POST to the function with the user's access token), recent send log (last 50, status + opened/clicked/bounced, auto-refreshes every 30s by updating only the log tbody so it never clobbers in-progress edits). Pre-migration the panel shows "run the email-platform migration" instead of crashing. Invoice page: "Email invoice" button opens a modal (recipient pre-filled from customer_email) -> POST to pec-send-email (template_key 'invoice', brand from customer_company, job_id, customer_id); friendly error on 503/4xx.
+
+Syntax: node --check passes on both .cjs files; Svix verification validated in isolation (valid passes, tampered/missing reject); inline <script> blocks unchanged vs HEAD.
+
+Files touched: supabase/migrations/2026-05-31_email_platform.sql (new), netlify/functions/pec-send-email.cjs (new), netlify/functions/pec-webhook-resend.cjs (new), index.html, PROJECT-LOG.md.
+Next steps (phase 2, not built): marketing, color-confirmation reminder cron, payment-receipt auto-send, customer portal, PDF attachments, unsubscribe management.
+
+## Handoff to Cowork
+Run `supabase/migrations/2026-05-31_email_platform.sql` in Supabase Studio (PEC `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). Acceptance: `pec_email_senders` (2 rows), `pec_email_templates` (>= 4 rows), `pec_email_log` all exist. No view change. The UI degrades gracefully until this runs (Email panel shows the "run migration" message; the invoice Email button shows a friendly error).
+
+## Handoff to Dylan
+1. **Resend account:** create/log in; add and verify `prescottepoxy.com` and `finishingtouchpainting.com` as domains (add the SPF, DKIM, DMARC records Resend shows, at your registrar). Until verified, sends from those addresses bounce.
+2. **Netlify env (Production + Deploy contexts):** add `RESEND_API_KEY` and `RESEND_WEBHOOK_SECRET`, then redeploy.
+3. **Resend webhook:** create one pointing at `https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-resend` with events delivered, bounced, opened, clicked; paste its signing secret into Netlify env as `RESEND_WEBHOOK_SECRET` (same value as step 2).
+4. **Settings > Email:** replace the seeded placeholder from_email values with the real addresses (e.g. invoices@prescottepoxy.com). After domains are verified + env set, the invoice "Email invoice" button is live and a test send from Settings should arrive.
+
 ## [2026-05-31 MST] work order: "View Work Order" (no auto-print); manual Print button in the WO window
 
 By: Claude Code

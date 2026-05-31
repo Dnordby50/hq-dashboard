@@ -6831,6 +6831,7 @@ async function renderJobInvoice(jobId) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
         <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
+        <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
@@ -6867,6 +6868,42 @@ async function renderJobInvoice(jobId) {
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
+  // Email invoice: opens a small modal (pre-filled with the customer's email),
+  // POSTs to pec-send-email with the invoice template + the job's brand. The
+  // server renders the line items / total / balance; the log row updates async
+  // via the Resend webhook. Uses openModal (#pecModalRoot) like the page's other
+  // working modals.
+  const emailB = $('pecInvEmail');
+  if (emailB) emailB.addEventListener('click', () => {
+    const brand = row.customer_company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
+    openModal(`
+      <h3>Email invoice</h3>
+      <div class="pec-ar-sub" style="margin-bottom:12px">To <strong>${esc(row.customer_name || 'customer')}</strong> · ${esc(emailBrandLabel(brand))} · invoice ${esc(row.hq_invoice_number || row.dripjobs_deal_id || '')}</div>
+      <div class="pec-field"><label>Recipient email</label><input id="emInvTo" type="email" value="${esc(row.customer_email || '')}" placeholder="customer@example.com"></div>
+      <div class="prod-msg-err" id="emInvErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="emInvSend">Send invoice</button>
+      </div>
+    `, { onMount: modal => {
+      modal.querySelector('#emInvSend').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#emInvErr'); errEl.textContent = '';
+        const to = modal.querySelector('#emInvTo').value.trim();
+        if (!to) { errEl.textContent = 'Enter a recipient email.'; return; }
+        const sb2 = modal.querySelector('#emInvSend'); sb2.disabled = true; sb2.textContent = 'Sending…';
+        try {
+          await pecSendEmail({ template_key: 'invoice', brand, to_email: to, job_id: row.id, customer_id: row.customer_id });
+          closeModal();
+          showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
+          renderInvoicing();
+        } catch (err) {
+          console.error('[pec] email invoice failed', err);
+          sb2.disabled = false; sb2.textContent = 'Send invoice';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+        }
+      });
+    } });
+  });
   // Change order: an add-on after the job begins. Appends an is_change_order
   // line to jobs.line_items AND bumps jobs.price by the amount, so the AR
   // balance (price - paid_to_date) increases. Works even on a finalized job --
@@ -9097,9 +9134,26 @@ function openTeamForm(t) {
 // ============================================================
 // Settings (admin role only)
 // ============================================================
+// Settings tab shell. General = the existing config sections; Email = the
+// transactional-email panel. state.settingsTab persists the active tab.
+function settingsTabBar(active) {
+  return `<div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
+    <strong style="margin-right:6px">Settings</strong>
+    <button class="pec-btn ${active === 'general' ? 'primary' : 'ghost'} sm" data-settings-tab="general">General</button>
+    <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
+  </div>`;
+}
+function wireSettingsTabs(root) {
+  root.querySelectorAll('[data-settings-tab]').forEach(b => b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); }));
+}
+
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
+  // Clear any email-log auto-refresh timer from a previous render (avoids leaks
+  // when leaving the Email tab or the Settings view).
+  if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
+  if (state.settingsTab === 'email') return renderSettingsEmail();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes] = await Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
@@ -9112,6 +9166,7 @@ async function renderSettings() {
   state.salesTeam = salesRes.data || [];
 
   root.innerHTML = `
+    ${settingsTabBar('general')}
     ${(() => {
       const leadsOpen = state.leadSourcesOpen === true;
       const count = state.leadSources.length;
@@ -9240,6 +9295,193 @@ async function renderSettings() {
     state.catalogTab = 'system_types';
     switchView('catalog');
   });
+  wireSettingsTabs(root);
+}
+
+// Shared: POST a send to the pec-send-email function with the caller's Supabase
+// access token. Throws on any non-ok result so callers can show a friendly error.
+async function pecSendEmail(payload) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('Not signed in.');
+  const res = await fetch('/.netlify/functions/pec-send-email', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  let body = {};
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok || !body.ok) throw new Error(body.error || `Send failed (${res.status})`);
+  return body;
+}
+
+const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
+
+function emailLogRowsHtml(log) {
+  if (!log.length) return '<tr class="nohover"><td colspan="6" class="pec-empty">No emails sent yet.</td></tr>';
+  const statusColor = s => s === 'bounced' || s === 'failed' || s === 'complained' ? '#dc2626' : (s === 'opened' || s === 'clicked' || s === 'delivered' ? '#16a34a' : 'var(--muted)');
+  return log.map(r => `<tr class="nohover">
+    <td>${invFmtDate(r.sent_at)}</td>
+    <td>${esc(r.to_email || '—')}</td>
+    <td>${esc(r.template_key || '—')} · ${esc(emailBrandLabel(r.brand))}</td>
+    <td style="color:${statusColor(r.status)};font-weight:600">${esc(r.status || '—')}</td>
+    <td style="font-size:.72rem;color:var(--muted)">${r.opened_at ? 'opened ' + invFmtDate(r.opened_at) : ''}${r.clicked_at ? ' · clicked' : ''}${r.bounced_at ? ' · bounced' : ''}</td>
+    <td style="font-size:.72rem;color:#dc2626">${esc(r.error_message || '')}</td>
+  </tr>`).join('');
+}
+
+async function renderSettingsEmail() {
+  const root = $('pecViewRoot');
+  if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
+  let senders = [], templates = [], log = [], notReady = false;
+  try {
+    const [sRes, tRes, lRes] = await withFreshSession(() => Promise.all([
+      supabase.from('pec_email_senders').select('*').order('brand'),
+      supabase.from('pec_email_templates').select('*').order('brand'),
+      supabase.from('pec_email_log').select('*').order('sent_at', { ascending: false }).limit(50),
+    ]), { label: 'email-settings' });
+    if (sRes.error || tRes.error || lRes.error) notReady = true;
+    senders = sRes.data || []; templates = tRes.data || []; log = lRes.data || [];
+  } catch (e) { notReady = true; }
+
+  if (notReady) {
+    root.innerHTML = settingsTabBar('email') + '<div class="pec-card"><div class="pec-empty">Run the email-platform migration (supabase/migrations/2026-05-31_email_platform.sql) to enable email.</div></div>';
+    wireSettingsTabs(root);
+    return;
+  }
+
+  const sendersHtml = senders.map(s => `
+    <div style="border:1px solid var(--rd-line, var(--border));border-radius:8px;padding:12px;margin-bottom:10px" data-sender-brand="${esc(s.brand)}">
+      <div style="font-weight:600;margin-bottom:8px">${esc(emailBrandLabel(s.brand))}</div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>From name</label><input class="se-from-name" value="${esc(s.from_name || '')}"></div>
+        <div class="pec-field"><label>From email</label><input class="se-from-email" value="${esc(s.from_email || '')}" placeholder="invoices@example.com"></div>
+      </div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Reply-to (optional)</label><input class="se-reply-to" value="${esc(s.reply_to || '')}"></div>
+        <div class="pec-field" style="display:flex;align-items:flex-end"><button class="pec-btn primary sm" data-save-sender="${esc(s.brand)}">Save</button></div>
+      </div>
+    </div>`).join('') || '<div class="pec-empty">No senders seeded.</div>';
+
+  const templatesHtml = templates.map(t => `
+    <div style="border:1px solid var(--rd-line, var(--border));border-radius:8px;padding:12px;margin-bottom:10px" data-template-id="${esc(t.id)}">
+      <div style="font-weight:600;margin-bottom:8px">${esc(t.name)} <span style="color:var(--muted);font-weight:400;font-size:.78rem">· ${esc(t.key)} · ${esc(emailBrandLabel(t.brand))}</span></div>
+      <div class="pec-field"><label>Subject</label><input class="te-subject" value="${esc(t.subject || '')}"></div>
+      <div class="pec-field"><label>HTML body</label><textarea class="te-html" rows="8" style="font-family:ui-monospace,monospace;font-size:.78rem;resize:vertical">${esc(t.html || '')}</textarea></div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px">Tokens: {{customer_name}} {{invoice_number}} {{line_items_table}} {{total}} {{balance}} {{portal_link}} {{brand_name}} {{from_name}} {{year}}</div>
+      <button class="pec-btn primary sm" data-save-template="${esc(t.id)}">Save template</button>
+    </div>`).join('') || '<div class="pec-empty">No templates seeded.</div>';
+
+  const templateOpts = templates.map(t => `<option value="${esc(t.id)}">${esc(t.name)} · ${esc(emailBrandLabel(t.brand))}</option>`).join('');
+
+  root.innerHTML = settingsTabBar('email') + `
+    <div class="pec-card">
+      <h3>Sender identities</h3>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">The from-name / from-email per brand. The domain must be verified in Resend or sends will bounce.</div>
+      ${sendersHtml}
+    </div>
+    <div class="pec-card">
+      <h3>Templates</h3>
+      ${templatesHtml}
+    </div>
+    <div class="pec-card">
+      <h3>Send a test</h3>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Template</label><select id="etTemplate">${templateOpts}</select></div>
+        <div class="pec-field"><label>Recipient email</label><input id="etTo" type="email" placeholder="you@example.com"></div>
+      </div>
+      <button class="pec-btn primary sm" id="etSend">Send test</button>
+      <span id="etResult" style="margin-left:10px;font-size:.8rem"></span>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">Recent sends</h3>
+        <span style="font-size:.7rem;color:var(--muted)">last 50 · auto-refreshes</span>
+      </div>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Sent</th><th>To</th><th>Template</th><th>Status</th><th>Events</th><th>Error</th></tr></thead>
+        <tbody id="emailLogBody">${emailLogRowsHtml(log)}</tbody>
+      </table></div>
+    </div>`;
+
+  wireSettingsTabs(root);
+
+  // Save sender
+  root.querySelectorAll('[data-save-sender]').forEach(btn => btn.addEventListener('click', async () => {
+    const brand = btn.dataset.saveSender;
+    const card = root.querySelector(`[data-sender-brand="${brand}"]`);
+    const patch = {
+      from_name: card.querySelector('.se-from-name').value.trim(),
+      from_email: card.querySelector('.se-from-email').value.trim(),
+      reply_to: card.querySelector('.se-reply-to').value.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('pec_email_senders').update(patch).eq('brand', brand), { label: 'email-sender' });
+      if (upd.error) throw upd.error;
+      showToast('Sender saved', { ttl: 2500 });
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save';
+      alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not save: ' + (err.message || err));
+      return;
+    }
+    renderSettingsEmail();
+  }));
+
+  // Save template
+  root.querySelectorAll('[data-save-template]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.saveTemplate;
+    const card = root.querySelector(`[data-template-id="${id}"]`);
+    const patch = {
+      subject: card.querySelector('.te-subject').value,
+      html: card.querySelector('.te-html').value,
+      updated_at: new Date().toISOString(),
+    };
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWrite(() => supabase.from('pec_email_templates').update(patch).eq('id', id), { label: 'email-template' });
+      if (upd.error) throw upd.error;
+      showToast('Template saved', { ttl: 2500 });
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save template';
+      alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not save: ' + (err.message || err));
+      return;
+    }
+    renderSettingsEmail();
+  }));
+
+  // Send test
+  $('etSend').addEventListener('click', async () => {
+    const sel = $('etTemplate'); const resultEl = $('etResult');
+    const tpl = templates.find(t => t.id === sel.value);
+    const to = $('etTo').value.trim();
+    resultEl.textContent = '';
+    if (!tpl) { resultEl.textContent = 'Pick a template.'; return; }
+    if (!to) { resultEl.textContent = 'Enter a recipient.'; return; }
+    const btn = $('etSend'); btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await pecSendEmail({ template_key: tpl.key, brand: tpl.brand, to_email: to });
+      resultEl.style.color = '#16a34a'; resultEl.textContent = 'Sent ✓';
+      renderSettingsEmail();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Send test';
+      resultEl.style.color = '#dc2626'; resultEl.textContent = err.message || 'Failed';
+    }
+  });
+
+  // Auto-refresh the log every 30s while the Email tab is visible (updates only
+  // the log tbody so it never clobbers in-progress template edits).
+  state._emailLogTimer = setInterval(async () => {
+    // Guard on the log element's presence (reliable even if state.view is stale):
+    // if the user navigated away, #emailLogBody is gone and we skip.
+    const bodyEl = $('emailLogBody');
+    if (document.hidden || !bodyEl) return;
+    try {
+      const { data } = await supabase.from('pec_email_log').select('*').order('sent_at', { ascending: false }).limit(50);
+      bodyEl.innerHTML = emailLogRowsHtml(data || []);
+    } catch (_) { /* transient; next tick retries */ }
+  }, 30000);
 }
 
 function openLeadSourceModal(leadId) {
