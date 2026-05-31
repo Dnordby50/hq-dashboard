@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] email migration: re-ran 2026-05-31_email_platform.sql; FTP rows cleaned up, PEC-only state confirmed in prod
+
+By: Cowork
+
+Picked up the re-run Cowork handoff from the prior 2026-05-31 entry (PEC-only cleanup). Pasted `supabase/migrations/2026-05-31_email_platform.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and ran it. Confirmed the destructive-operation warning before running (the two `delete ... where brand='finishing-touch'` statements are the intentional FTP cleanup).
+
+Run result: `Success. No rows returned`, no error. The migration is wrapped in `begin; ... commit;`. Tables already existed from the prior run, so the `create table if not exists` calls were no-ops; the policy `drop if exists ... create` was a clean re-create; the seeded PEC sender + templates stayed put under `on conflict do nothing`; the two `delete` statements removed the previously-seeded finishing-touch rows.
+
+Acceptance (single query): senders_total=1, templates_total=2, ftp_senders=0, ftp_templates=0, log_exists=true. So `public.pec_email_senders` is exactly the one prescott-epoxy row, `public.pec_email_templates` is the two prescott-epoxy rows (invoice + test), no finishing-touch rows remain, and `public.pec_email_log` still exists.
+
+One thing worth flagging that Dylan already noted: this migration uses `on conflict (key, brand) do nothing` on the template seed, so a future edit to the template HTML in the migration file does NOT propagate to live rows on re-run. The DELETE for finishing-touch IS explicit, so brand drops do still apply; only template-copy edits silently miss. The intended editing path is Settings > Email. If a future migration ever needs to update a live template's copy, do it via an explicit `update` statement, not by editing the seed.
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+After the in-flight Netlify deploy (commit 269b6db, the PEC-only Claude Code build) publishes, hard-reload the dashboard. The Email panel should now show 1 sender (Prescott Epoxy Company) and 2 templates (Invoice, Test). The "RESEND_API_KEY missing" error from the prior deploy should be gone because this new build picks up the env vars. Edit the seeded `invoices@prescottepoxy.com` from-email if you want a different address, then run a test send to yourself.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-31 MST] email: PEC-only (drop Finishing Touch); template editor shows readable text + a real-view preview popup
 
 By: Claude Code
