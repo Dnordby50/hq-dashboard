@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] jobs: recover+retry idempotent writes on the idle-session wedge (fixes line-items SESSION_TIMEOUT)
+
+By: Claude Code
+Changed: index.html only.
+Why: Saving line items failed with `SESSION_TIMEOUT:job-line-items` (console: `[pec] job-line-items pre-write refresh skipped: ... timed out`). The idle-JWT wedge: after the tab idles, supabase-js's auth client wedges, `ensureFreshSession`'s 5s refresh times out and proceeds, then the write hangs and `withDeadline` throws at 12s. The big "Save job" button already self-heals via `recoverWedgedClient()` + retry, but `writeLi` (line items / finalize) and the other job-detail flag writes called `withFreshWrite` with no recover/retry, so they died on the wedge.
+
+Fix: added `withFreshWriteRetry(fn, opts)` next to `withFreshWrite` — same path, but on an `isSessionStale` failure it calls `recoverWedgedClient()` (rebuilds the auth client in place, no page reload; reassigns the `supabase` binding) and retries the write ONCE. Reuses the existing `withFreshWrite` / `isSessionStale` / `recoverWedgedClient`. Routed the IDEMPOTENT writes through it: line items + finalize, colors-confirmed toggle, reopen, edit-contact + edit-address, mark-complete, the two deposit-flag updates, and the Settings brand/email-sender/email-template saves (all full-value `update().eq()`, so a retry re-runs to the same result).
+
+Deliberately LEFT on plain `withFreshWrite` (non-idempotent — a retry would double them): the payment insert and the change order (which does `line_items.concat([line])` + `price + amount`). Those still fail loud with the "session stalled, tap again" message so money writes are never auto-duplicated.
+
+Verified: only the new helper + those two non-idempotent calls still use plain `withFreshWrite`; 11 idempotent call sites now use `withFreshWriteRetry`; inline `<script>` parse vs HEAD unchanged.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/function change).
+Handoff to Dylan: After deploy + hard-reload, saving line items (and finalize / colors toggle / edit contact / mark complete / Settings brand+email saves) should no longer fail after the tab's been idle — it rebuilds the connection and saves (brief "Reconnecting" pause, console shows `rebuilt Supabase client`). Recording a payment or adding a change order still asks you to tap again if the session stalled (intentional, to avoid double-charging).
+
 ## [2026-05-31 MST] migration: ran 2026-06-01_system_type_sort_order.sql; sort_order column live + backfilled
 
 By: Cowork

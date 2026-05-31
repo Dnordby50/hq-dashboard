@@ -5039,6 +5039,20 @@ async function withFreshWrite(fn, { timeoutMs = 12000, label = 'write' } = {}) {
   await ensureFreshSession(label);
   return await withDeadline(fn, { timeoutMs, label });
 }
+// Same as withFreshWrite, but on a stale-session timeout it rebuilds the wedged
+// auth client (recoverWedgedClient, no page reload) and retries ONCE. Use ONLY
+// for idempotent writes -- a full-value update().eq(...) re-runs to the same
+// result. NEVER use for inserts or accumulating writes (payments, change orders)
+// where a retry would double them; those stay on plain withFreshWrite.
+async function withFreshWriteRetry(fn, opts) {
+  try {
+    return await withFreshWrite(fn, opts);
+  } catch (e) {
+    if (!isSessionStale(e)) throw e;
+    await recoverWedgedClient();           // fresh client; reassigns the `supabase` binding
+    return await withFreshWrite(fn, opts); // fn reads `supabase` at call time -> new client
+  }
+}
 
 // Proactive stale-session detection. supabase-js's auth-refresh queue can wedge
 // after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
@@ -6781,7 +6795,7 @@ async function renderJobInvoice(jobId) {
     if (!btn) return;
     const orig = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'deposit-flag' });
+      const upd = await withFreshWriteRetry(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'deposit-flag' });
       if (upd.error) throw upd.error;
       showToast(okMsg, { ttl: 3000 });
       state.openInvoiceJobId = row.id; renderInvoicing();
@@ -6859,7 +6873,7 @@ function openPaymentModal(row, { deposit }) {
         // just the AR "Mark Deposit Paid" button.
         const markDeposit = !row.deposit_collected && !!fd.get('is_deposit');
         if (markDeposit) {
-          const upd = await withFreshWrite(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
+          const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
           if (upd.error) throw upd.error;
         }
         closeModal();
@@ -6881,7 +6895,7 @@ async function markJobComplete(row) {
   if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
   const today = invToday();
   try {
-    const upd = await withFreshWrite(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
+    const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
     if (upd.error) throw upd.error;
     try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
     showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
@@ -8250,7 +8264,7 @@ async function renderJobDetail(id) {
     const next = !job.colors_confirmed;
     colorsToggle.disabled = true; colorsToggle.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('jobs').update({ colors_confirmed: next, colors_confirmed_at: next ? new Date().toISOString() : null }).eq('id', id), { label: 'colors-confirmed' });
+      const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ colors_confirmed: next, colors_confirmed_at: next ? new Date().toISOString() : null }).eq('id', id), { label: 'colors-confirmed' });
       if (upd.error) throw upd.error;
       try { await logJobActivity(id, 'save', { colors_confirmed: job.colors_confirmed }, { colors_confirmed: next }); } catch (_) {}
       showToast(next ? 'Colors confirmed ✓' : 'Colors marked not confirmed', { ttl: 3000 });
@@ -8286,10 +8300,10 @@ async function renderJobDetail(id) {
         const address = modal.querySelector('#ecAddress').value.trim() || null;
         try {
           if (job.customer_id) {
-            const cu = await withFreshWrite(() => supabase.from('customers').update({ phone, email }).eq('id', job.customer_id), { label: 'edit-contact' });
+            const cu = await withFreshWriteRetry(() => supabase.from('customers').update({ phone, email }).eq('id', job.customer_id), { label: 'edit-contact' });
             if (cu.error) throw cu.error;
           }
-          const ju = await withFreshWrite(() => supabase.from('jobs').update({ address }).eq('id', id), { label: 'edit-address' });
+          const ju = await withFreshWriteRetry(() => supabase.from('jobs').update({ address }).eq('id', id), { label: 'edit-address' });
           if (ju.error) throw ju.error;
           closeModal();
           showToast('Contact updated', { ttl: 2500 });
@@ -8337,7 +8351,7 @@ async function renderJobDetail(id) {
       const total = invRound2(lines.reduce((s, l) => s + (Number(l.price) || 0), 0));
       const orig = btnEl.textContent; btnEl.disabled = true; btnEl.textContent = 'Saving…';
       try {
-        const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: lines, price: total, ...extra }).eq('id', id), { label: 'job-line-items' });
+        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ line_items: lines, price: total, ...extra }).eq('id', id), { label: 'job-line-items' });
         if (upd.error) throw upd.error;
         showToast(okMsg, { ttl: 2500 });
         renderJobDetail(id);
@@ -8361,7 +8375,7 @@ async function renderJobDetail(id) {
     if (!confirm('Reopen line items for editing? The price will become editable again.')) return;
     reopenBtn.disabled = true; reopenBtn.textContent = 'Reopening…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('jobs').update({ finalized: false, finalized_at: null }).eq('id', id), { label: 'job-reopen' });
+      const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ finalized: false, finalized_at: null }).eq('id', id), { label: 'job-reopen' });
       if (upd.error) throw upd.error;
       showToast('Reopened for editing', { ttl: 2500 });
       renderJobDetail(id);
@@ -9355,7 +9369,7 @@ async function renderSettingsBrand() {
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
+      const upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
       if (upd.error) throw upd.error;
       state.brandIdentity = { ...b, ...patch };
       showToast('Brand identity saved', { ttl: 2500 });
@@ -9466,7 +9480,7 @@ async function renderSettingsEmail() {
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('pec_email_senders').update(patch).eq('brand', brand), { label: 'email-sender' });
+      const upd = await withFreshWriteRetry(() => supabase.from('pec_email_senders').update(patch).eq('brand', brand), { label: 'email-sender' });
       if (upd.error) throw upd.error;
       showToast('Sender saved', { ttl: 2500 });
     } catch (err) {
@@ -9488,7 +9502,7 @@ async function renderSettingsEmail() {
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWrite(() => supabase.from('pec_email_templates').update(patch).eq('id', id), { label: 'email-template' });
+      const upd = await withFreshWriteRetry(() => supabase.from('pec_email_templates').update(patch).eq('id', id), { label: 'email-template' });
       if (upd.error) throw upd.error;
       showToast('Template saved', { ttl: 2500 });
     } catch (err) {
