@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] fix: "Open Job" from the Job Schedule crashed the Unified Job page (half-loaded costing state)
+
+By: Claude Code
+Changed: index.html only (state literal, loadCostingData, renderUnifiedJob guard).
+Why: Dylan: clicking "View/Open job" from a Job Schedule entry showed "Failed to load this view" with `TypeError: Cannot read properties of undefined (reading '<jobId>')` at `renderUnifiedJob` (index.html:11266).
+
+Root cause: the Unified Job / Job Costing page reads `state` slots that are populated ONLY by `loadCostingData()` — `materialLinesByJob`, `materialOrderedByJob`, `materialUsedByJob`, `bonusesByJob`, `scheduleByJob`, `crewMembers`. The Job Schedule uses a DIFFERENT loader (`loadScheduleData`) that fills `prodJobs`, `systemTypes`, `crews`, `productAreasByJob` but none of those costing slots. The schedule "Open Job" button sets `state.openUnifiedJobId` and calls `switchView('costing')`; `renderJobCosting` delegates straight to `renderUnifiedJob` BEFORE its own `loadCostingData()` call. `renderUnifiedJob`'s cold-load guard only reloaded when `state.prodJobs` was empty — but the schedule had already filled `prodJobs`, so the load was skipped and `state.materialLinesByJob` was `undefined`, crashing on `state.materialLinesByJob[jobId]`. (Earlier lines survived because `costing`/`systemTypes`/`crews`/`productAreasByJob` are pre-initialized in the `state` literal; the costing-only slots weren't — which is exactly why the crash landed on line 11266.)
+
+Fix (root cause + defense): (1) `renderUnifiedJob`'s guard now keys off a real "costing data is loaded" signal — `if (!state.costingLoaded) await loadCostingData()` — instead of `prodJobs.length`, so the page hydrates on every entry path (schedule, costing list, cold refresh). (2) `loadCostingData` sets `state.costingLoaded = true` after all slots are populated; `loadScheduleData` deliberately doesn't, so arriving from the schedule triggers the load. (3) Pre-initialized the missing slots in the `state` literal (`materialLinesByJob:{}, materialOrderedByJob:{}, materialUsedByJob:{}, bonusesByJob:{}, scheduleByJob:{}, crewMembers:[], costingLoaded:false`) so this class of "undefined map" crash can't recur even if a future path bypasses the guard (the reads already use `||{}` / `||[]` / `?.`, so empty defaults render a valid empty page).
+
+Tradeoff: once costing data is loaded, bouncing schedule→job reuses the already-loaded costing slots (possibly slightly stale until the next costing load) — acceptable; never crashes, prodJobs/areas are refreshed by the schedule, and no extra latency on every open.
+
+Verified: all 6 inline `<script>` blocks parse clean (node --check per block).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/function/config change).
+Handoff to Dylan: After deploy + hard-reload, opening a job from the Job Schedule (the "Open Job" button in the schedule entry) loads the Unified Job page instead of "Failed to load this view." Works for both manual schedule entries and DripJobs-sourced ones.
+
 ## [2026-05-31 MST] ROOT CAUSE FIX: the supabase-js "wedge" was our no-op auth lock, not idle JWT — restored the real lock
 
 By: Claude Code (root cause diagnosed by Cowork — see the diagnosis entry below)
