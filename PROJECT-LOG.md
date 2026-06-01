@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] migration: ran 2026-06-01_job_area_estimate.sql; job_areas.price + job_areas.description live
+
+By: Cowork
+
+Picked up the open Cowork handoff from the prior entry (the merged areas + line items estimate editor). Pasted `supabase/migrations/2026-06-01_job_area_estimate.sql` verbatim into the Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role) and ran it. The script is wrapped in `begin; ... commit;` and is just two `alter table ... add column if not exists` on `public.job_areas`. No view or RLS change, no 42P16 trap, no destructive-operation warning shown.
+
+Run result: `Success. No rows returned`, no error.
+
+Acceptance (verify query from the migration footer): `select column_name, data_type from information_schema.columns where table_schema='public' and table_name='job_areas' and column_name in ('price','description') order by column_name;` returned 2 rows (`description` text, `price` numeric). Both columns are now present on `public.job_areas` with the intended types.
+
+Net for Dylan: the merged Estimate editor in the job detail can now persist per-line `price` and `description` on `job_areas` directly. The graceful pre-migration fallback (PGRST204 retry without those fields) is no longer needed and will simply not trigger.
+
+Files touched: PROJECT-LOG.md only. Migration file unchanged.
+
+## Handoff to Dylan
+
+Hard-reload the dashboard, open a job, and add a couple of Estimate lines with name + system + colors + sqft + price + detail. Save, reload, and confirm the per-line price and detail persist (before this migration they reloaded empty). Then open the invoice, add a change order, re-save the estimate, and confirm the change order is not dropped.
+
+## Handoff to Claude Code
+
+None.
+
 ## [2026-05-31 MST] jobs: merged "areas" + "line items" into one Estimate editor (areas are the estimate lines now)
 
 By: Claude Code
