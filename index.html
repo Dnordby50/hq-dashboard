@@ -7611,16 +7611,65 @@ async function renderJobDetail(id) {
     return;
   }
   const job = jobRes.data;
-  // Scheduled install date lives on the linked pec_prod_jobs row (matched by
-  // dripjobs_deal_id). Fetched here (blocking) so the header + the colors-urgency
-  // banner can use it at render time. Misses are silent (manual entries, etc.).
-  let jobInstallDate = null;
+  // Real schedule state. The truth lives on the linked pec_prod_jobs row + its
+  // pec_prod_job_schedule_days (matched by dripjobs_deal_id); a job counts as
+  // scheduled if it has an install_date OR any schedule-day rows -- the same
+  // rule renderSchedule uses. We fetch as a LIST (NOT maybeSingle, which ERRORS
+  // on duplicate deal-id rows and falsely showed "Unscheduled") and pick the row
+  // with an install_date. Drives the header label, the colors-urgency banner,
+  // and the status auto-sync below. Misses are silent (manual entries, etc.).
+  let jobInstallDate = null;     // earliest scheduled date (urgency + header)
+  let scheduledDates = [];       // all scheduled days, sorted + unique
+  let scheduleCrewName = '';
+  let scheduleBridged = false;   // true only when we reliably know the schedule
   if (job.dripjobs_deal_id) {
     try {
-      const br = await supabase.from('pec_prod_jobs').select('install_date').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle();
-      jobInstallDate = br?.data?.install_date || null;
-    } catch (_) { /* optional polish */ }
+      const [pjRes, crewsRes] = await Promise.all([
+        supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id),
+        supabase.from('pec_prod_crews').select('id,name'),
+      ]);
+      if (!pjRes.error) {
+        scheduleBridged = true;
+        const pjs = pjRes.data || [];
+        const prodJob = pjs.find(p => p.install_date) || pjs[0] || null;
+        if (prodJob) {
+          const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id').eq('job_id', prodJob.id);
+          const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
+          scheduledDates = [...new Set(days.map(d => d.scheduled_date).filter(Boolean))].sort();
+          if (!scheduledDates.length && prodJob.install_date) scheduledDates = [prodJob.install_date];
+          jobInstallDate = scheduledDates[0] || null;
+          const crewId = prodJob.crew_id || (days[0] && days[0].crew_id) || null;
+          if (crewId && !crewsRes.error) scheduleCrewName = ((crewsRes.data || []).find(c => c.id === crewId) || {}).name || '';
+        }
+      }
+    } catch (_) { /* schedule lookup is best-effort */ }
   }
+  const isScheduled = scheduledDates.length > 0;
+  // Header label: list the days (<=3) or show a range, plus the crew when known.
+  let scheduleLabel;
+  if (!isScheduled) {
+    scheduleLabel = 'Unscheduled';
+  } else if (scheduledDates.length === 1) {
+    scheduleLabel = 'Install ' + fmtDate(scheduledDates[0]);
+  } else if (scheduledDates.length <= 3) {
+    scheduleLabel = 'Install ' + scheduledDates.map(fmtDate).join(', ');
+  } else {
+    scheduleLabel = 'Install ' + fmtDate(scheduledDates[0]) + ' – ' + fmtDate(scheduledDates[scheduledDates.length - 1]) + ' · ' + scheduledDates.length + ' days';
+  }
+  if (isScheduled && scheduleCrewName) scheduleLabel += ' · ' + esc(scheduleCrewName) + ' crew';
+  // Auto-sync the job's status to the real schedule (only with a reliable
+  // bridge). 'completed' is never auto-changed. On schedule -> in_progress if
+  // the first install day is today/past (MST), else scheduled. Not on schedule
+  // -> signed, but never downgrade a job that's already in_progress. Same
+  // today-in-MST basis as runAutoProgressSweep.
+  const statusBeforeSync = job.status;
+  let statusTarget = job.status;
+  if (scheduleBridged && job.status !== 'completed') {
+    const mstTodayISO = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+    if (isScheduled) statusTarget = (jobInstallDate && jobInstallDate <= mstTodayISO) ? 'in_progress' : 'scheduled';
+    else if (job.status !== 'in_progress') statusTarget = 'signed';
+  }
+  if (statusTarget !== job.status) job.status = statusTarget; // reflect immediately in the Status dropdown
   // jobs.line_items is now DERIVED from the estimate lines (areas) on save:
   // each area -> { name, description, price }, plus any change-order lines added
   // from the invoice. lineItemPrice tolerates legacy shapes (total/unit_price)
@@ -7729,7 +7778,7 @@ async function renderJobDetail(id) {
           <div style="color:var(--muted);font-size:.82rem;margin-top:2px">${esc(job.address || 'No address on file')} <button class="pec-btn ghost sm" id="pecJobEditContact" style="padding:1px 8px;font-size:.68rem;vertical-align:middle">Edit</button></div>
           <div style="color:var(--muted);font-size:.8rem;margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${systemBadgeHtml(areasRes.data || [], Object.fromEntries(systemTypes.map(s => [s.id, s])))}
-            <span style="font-size:.78rem;color:var(--muted)">${jobInstallDate ? 'Install ' + fmtDate(jobInstallDate) : 'Unscheduled'}</span>
+            <span style="font-size:.78rem;color:${isScheduled ? 'var(--muted)' : 'var(--warn,#d97706)'}">${scheduleLabel}</span>
           </div>
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
@@ -7855,27 +7904,19 @@ async function renderJobDetail(id) {
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
 
-  // Bridge: if this public.jobs row came from DripJobs (has dripjobs_deal_id),
-  // look up the matching pec_prod_jobs row to show install_date + crew in
-  // the header. Non-blocking; the page has already painted. Misses are
-  // silent (manual entries, jobs whose bridge wasn't built yet).
-  (async () => {
-    const summaryEl = document.getElementById('jobInstallSummary');
-    if (!summaryEl || !job.dripjobs_deal_id) return;
-    try {
-      const [bridgeRes, crewsRes] = await Promise.all([
-        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle(),
-        supabase.from('pec_prod_crews').select('id,name'),
-      ]);
-      const pj = bridgeRes?.data;
-      if (!pj) return;
-      const crewName = pj.crew_id ? (crewsRes?.data || []).find(c => c.id === pj.crew_id)?.name : null;
-      const parts = [];
-      parts.push(pj.install_date ? 'Install ' + fmtDate(pj.install_date) : 'Unscheduled');
-      if (crewName) parts.push(esc(crewName) + ' crew');
-      summaryEl.innerHTML = '· ' + parts.join(' · ');
-    } catch (e) { /* silent — header summary is optional polish */ }
-  })();
+  // Persist the schedule -> status auto-sync. The dropdown already shows the
+  // synced value (job.status was set at render time above); this writes it back
+  // when the schedule implied a different status. Idempotent full-value update,
+  // so the wedge-safe recover+retry helper is appropriate. Non-blocking.
+  if (statusTarget !== statusBeforeSync) {
+    (async () => {
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ status: statusTarget }).eq('id', id), { label: 'status-schedule-sync' });
+        if (upd.error) throw upd.error;
+        try { await logJobActivity(id, 'status_change', { status: statusBeforeSync }, { status: statusTarget, source: 'schedule_sync' }); } catch (_) {}
+      } catch (e) { console.warn('[pec] status schedule-sync failed', e); }
+    })();
+  }
 
   // Activity feed: populate #jobActivity after the page paints. Best-effort
   // read; if the audit_log RLS policy hasn't been applied yet (migration

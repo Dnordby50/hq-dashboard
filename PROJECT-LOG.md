@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] jobs: job-detail header + status now reflect the REAL schedule (install dates + auto-synced status)
+
+By: Claude Code
+Changed: index.html only (renderJobDetail).
+Why: Dylan: a job scheduled for today showed "Unscheduled" next to the system badge while the Status dropdown said "scheduled" — contradictory. Wanted the labels congruent with whether the job is actually on the schedule, and the install date(s) visible.
+
+Root cause: the header's install date was read ONLY from `pec_prod_jobs.install_date`, fetched by `dripjobs_deal_id` with `.maybeSingle()`. That (a) ignored jobs scheduled via `pec_prod_job_schedule_days` rows with a null `install_date`, and (b) `.maybeSingle()` ERRORS when the deal id matches more than one `pec_prod_jobs` row (duplicates) → null → "Unscheduled". The schedule view itself counts a job as scheduled when it has an install_date OR any schedule-day rows.
+
+Fix: renderJobDetail now loads the real schedule — `pec_prod_jobs` by deal id as a LIST (picks the row with an install_date), its `pec_prod_job_schedule_days`, and the crew name. Derives `scheduledDates` (all days, sorted/unique; falls back to install_date), `isScheduled`, earliest date, and crew. Header shows `Install <date>` (single), a comma list (≤3 days), or `<first> – <last> · N days` (more), plus `· <crew> crew`; only shows "Unscheduled" (now amber) when genuinely not on the calendar. The colors-urgency banner now also picks up schedule-day-only jobs.
+
+Status auto-sync (Dylan's choice): with a reliable bridge, the job's `status` reconciles to the schedule on open — on schedule → `in_progress` if the first install day is today/past (MST), else `scheduled`; not on schedule → `signed` (but never downgrades a job already `in_progress`); `completed` is never auto-changed; jobs with no deal id are left untouched (can't bridge reliably). The dropdown reflects it immediately and it's persisted in the background (idempotent `withFreshWriteRetry` + a `status_change` activity log tagged `source: schedule_sync`). Removed a dead `#jobInstallSummary` async block (its element didn't exist). Same MST-today basis as `runAutoProgressSweep`.
+
+Verified: all 6 inline `<script>` blocks parse clean (node --check per block).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/function change).
+Handoff to Dylan: After deploy + hard-reload, the job detail shows the real install date(s) + crew, and "Unscheduled" only appears when the job truly isn't on the schedule; the Status auto-matches the schedule (it'll reconcile schedule-driven statuses on open — only `completed` stays purely manual). Ed Lawson should now read "Install <today> · <crew>" with status in_progress.
+
 ## [2026-06-01 MST] fix: "Open Job" from the Job Schedule crashed the Unified Job page (half-loaded costing state)
 
 By: Claude Code
