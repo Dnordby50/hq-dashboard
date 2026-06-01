@@ -4741,22 +4741,26 @@ const CFG = window.CONFIG || {};
 if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_URL.includes('YOUR-')) {
   console.warn('[pec] Supabase not configured — set CONFIG.SUPABASE_URL and CONFIG.SUPABASE_ANON_KEY');
 }
-// supabase-js v2 serializes auth ops through a navigator.locks-based exclusive lock.
-// If a lock callback ever fails to release (e.g. a backgrounded tab whose autorefresh
-// fetch never settles), every subsequent .from(...).select() / auth.getSession() call
-// queues forever and never even reaches the network. Diagnosed live: navigator.locks
-// showed 1 held + 1 pending lock on lock:sb-zdfpzmmrgotynrwkeakd-auth-token, with zero
-// requests on the wire and 8s+ timeouts in console. We override the lock with an
-// in-memory no-op. Trade-off: no cross-tab auth coordination. Acceptable here because
-// this dashboard is a single-user app; worst case is two tabs both refreshing the
-// token at once, which supabase tolerates (last-write-wins, both end up authenticated).
-const noopLock = (_name, _acquireTimeout, fn) => Promise.resolve(fn());
+// supabase-js v2 serializes auth ops through a navigator.locks-based exclusive
+// lock, and we let it use that DEFAULT lock (see makeClient below -- no `lock`
+// override). History worth keeping: we PREVIOUSLY replaced it with an in-memory
+// no-op after an idle "wedge" where the Web Lock appeared held with no requests
+// on the wire. That no-op removed ALL mutual exclusion, which proved far worse:
+// with autoRefreshToken's background ticker firing concurrently with other auth
+// ops, GoTrue's internal `lockAcquired` flag got stranded `true` and every later
+// call queued forever (`pendingInLock` grows) -- a FREQUENT active-use wedge,
+// diagnosed live (Cowork) with `lockAcquired:true` + `refreshingDeferred:null`
+// while navigator.locks itself was clean. Real mutual exclusion is the fix.
+// The original idle wedge -- a lock held by a STALLED REFRESH FETCH -- is now
+// prevented at the source by timedFetch below (which did not exist when the
+// no-op was added): every auth fetch gets a hard 8s AbortController deadline, so
+// a hung fetch rejects and releases the lock instead of holding it forever.
 
-// ROOT-CAUSE guard for the idle "wedge". With the lock no-op'd above, the
-// remaining way the client hangs forever is supabase-js's auth token-refresh
-// FETCH stalling (backgrounded tab, flaky network): because the in-flight
-// refresh promise is shared, every later getSession()/query/write awaits it and
-// never settles -- the reported "stuck on Saving…" / "did not respond" symptoms.
+// ROOT-CAUSE guard: supabase-js's auth token-refresh FETCH can stall
+// (backgrounded tab, flaky network); because the in-flight refresh promise is
+// shared, every later getSession()/query/write awaits it and never settles --
+// the reported "stuck on Saving…" / "did not respond" symptoms. It also bounds
+// how long the auth lock can be held (a stalled fetch can no longer wedge it).
 // Fix at the source: give every request a hard AbortController deadline so a
 // stalled fetch REJECTS instead of hanging. supabase-js treats a rejected
 // refresh as a transient failure and recovers on the next call, so the wedge
@@ -4781,7 +4785,11 @@ const timedFetch = (input, init = {}) => {
 const makeClient = () => createClient(
   CFG.SUPABASE_URL || 'https://missing.supabase.co',
   CFG.SUPABASE_ANON_KEY || 'missing',
-  { auth: { lock: noopLock }, global: { fetch: timedFetch } }
+  // No `auth.lock` override -> supabase-js's default navigator.locks exclusive
+  // lock (real mutual exclusion). timedFetch bounds the auth fetch so the lock
+  // can't be held by a stalled refresh. Other auth defaults stay on
+  // (persistSession, autoRefreshToken, detectSessionInUrl).
+  { global: { fetch: timedFetch } }
 );
 // `let`, not `const`: when the auth client wedges (a stuck internal token-refresh
 // promise from an idle tab — the hang happens BEFORE any fetch, so timedFetch

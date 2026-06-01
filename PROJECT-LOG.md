@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] ROOT CAUSE FIX: the supabase-js "wedge" was our no-op auth lock, not idle JWT — restored the real lock
+
+By: Claude Code (root cause diagnosed by Cowork — see the diagnosis entry below)
+Changed: index.html (the supabase client config in makeClient), CLAUDE.md (Architecture Gotchas mental model).
+Why: The intermittent `SESSION_TIMEOUT` / `SESSION_WEDGED` failures (line items, payments, renderJobs) kept happening during ACTIVE use, not just after idle — so the "idle JWT" theory and all the band-aids on top of it were treating a symptom. Dylan asked for the root cause. Cowork did a live DevTools diagnosis and found it.
+
+Root cause (Cowork, with hard evidence): we had overridden supabase-js's auth lock with an in-memory NO-OP (`noopLock`), which provides zero mutual exclusion. With `autoRefreshToken` on, GoTrue's background refresh ticker (`_autoRefreshTokenTick`) fires concurrently with other auth ops (page-load `_initialize`, a manual `refreshSession`, etc.). Under the no-op lock those callbacks interleave, one's `finally` is stranded, GoTrue's `lockAcquired` stays `true`, and every later `_acquireLock` falls into the `pendingInLock` path and `await last` — forever. Live fingerprint at a wedge: `lockAcquired:true`, `refreshingDeferred:null`, `pendingInLock.length:18` and growing, while `navigator.locks.query()` was clean (so it's GoTrue's internal JS bookkeeping, not the Web Locks API). Backend was healthy: raw `POST /auth/v1/token` = 488 ms 200, `GET /rest/v1/admin_users` = 159 ms 200; when wedged, ZERO supabase requests went on the wire. Control: a fresh client with `autoRefreshToken:false` was clean — proving the ticker is the concurrent trigger.
+
+Fix: removed the `auth.lock` override so supabase-js uses its DEFAULT navigator.locks exclusive lock (real mutual exclusion → the ticker can no longer interleave-and-strand). The original reason for the no-op (an idle Web Lock held by a stalled refresh FETCH) no longer applies: `timedFetch` (added later) already gives every `/auth/v1/` fetch a hard 8s AbortController deadline, so a hung fetch rejects and RELEASES the lock instead of holding it forever. So we get real exclusion now AND the idle case is covered at the source. Kept `autoRefreshToken` (default on) since the default lock serializes it safely. This trades a FREQUENT active-use wedge for, at worst, a RARE idle one that's now far better recovered.
+
+Did NOT: loosen the withFreshSession/withDeadline timeouts (the wedge is an infinite hang; bigger numbers just lengthen the wait), add another retry layer, or touch the backend (nothing on the wire was broken). The existing mitigations stay as defense-in-depth but should now rarely fire. Updated CLAUDE.md's gotcha to the correct mental model (lock problem, not idle-JWT).
+
+Verified: `noopLock` has no remaining references; all 6 inline `<script>` blocks parse clean (node --check per block).
+
+Files touched: index.html, CLAUDE.md, PROJECT-LOG.md.
+Next steps: Cowork to re-verify the IDLE path post-deploy (the one scenario this could in theory regress) — see handoff.
+
+## Handoff to Cowork
+
+After this deploys to https://hq-prescott.netlify.app, re-run your diagnosis, focused on confirming the fix holds and the OLD idle wedge did not return:
+1. Hard-reload (Cmd+Shift+R) so the new client (default lock) loads. Confirm there's no `noopLock` anymore.
+2. Active-use check: click around (Jobs, open a job, save an estimate, record a $0.01 test payment on a test job and delete it after) for several minutes. Confirm NO `SESSION_WEDGED` / `SESSION_TIMEOUT`. Re-run your lock-fingerprint snippet a few times: `lockAcquired` should not get stranded `true` with `refreshingDeferred:null`.
+3. IDLE check (the regression risk): leave the tab open and untouched for 60+ minutes, then return and immediately click Jobs and record a $0.01 test payment. Capture console + the `/auth/v1/token` network entry (status, ms, any `(canceled)` / `net::ERR_ABORTED` from the 8s abort). If it wedges, capture the lock fingerprint + `navigator.locks.query()`.
+4. Report back: a PROJECT-LOG entry (By: Cowork) with the active-use and idle results (pass/fail + evidence) and a one-line verdict. If the idle wedge returned, say so explicitly and paste a "Prompt for Claude Code" so I can add the short-hold custom-lock fallback.
+
 ## [2026-05-31 MST] diagnosis: session-timeout root cause (the no-op lock + autoRefreshToken wedge the supabase-js client, not the network)
 
 By: Cowork
