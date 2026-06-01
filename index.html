@@ -8586,7 +8586,22 @@ async function renderJobDetail(id) {
         });
       }
       if (matRows.length) {
-        const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRows), { label: 'job-save-materials' });
+        // Normalize every row to the SAME column set before the bulk insert.
+        // PostgREST builds one column list from the UNION of all rows' keys and
+        // writes explicit NULL for any row missing a key -- which BYPASSES the
+        // column default. So a batch mixing custom rows (is_custom:true) with
+        // normal picks (no is_custom) made the normal rows insert is_custom=NULL
+        // and hit the NOT NULL constraint, failing the save AFTER the old areas
+        // were already deleted (data loss). Forcing a uniform, non-null shape
+        // fixes it and is defensive for every column.
+        const MAT_COLS = ['job_area_id','recipe_slot_id','slot_label','slot_kind','material_type','order_index','pick_index','product_id','choice_value','text_value','is_custom'];
+        const matRowsNorm = matRows.map(r => {
+          const o = {};
+          for (const c of MAT_COLS) o[c] = (r[c] === undefined ? null : r[c]);
+          o.is_custom = !!r.is_custom; // NOT NULL column -- never send null
+          return o;
+        });
+        const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRowsNorm), { label: 'job-save-materials' });
         if (mins.error) throw mins.error;
       }
       // The data writes are done and confirmed at this point. Show an explicit

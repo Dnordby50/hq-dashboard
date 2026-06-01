@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] fix: job save wiped recipe picks when an area had a custom material (is_custom NULL on bulk insert)
+
+By: Claude Code
+Changed: index.html (the job_area_materials insert in the job save).
+Why: Dylan saved an estimate and "lost ALL my info" with `null value in column "is_custom" of relation "job_area_materials" violates not-null constraint` (code 23502).
+
+Root cause (a PostgREST bulk-insert gotcha, NOT specific to the estimate merge — latent since the recipe model shipped): `job_area_materials.is_custom` is `boolean not null default false`. When you `.insert([...])` an array where SOME rows include a key and others omit it, PostgREST builds ONE column list from the UNION of all rows' keys and writes an explicit NULL for every row missing that key — which BYPASSES the column default. The save batches normal recipe picks (which never set `is_custom`) together with PM custom-material rows (which set `is_custom: true`). So the moment a job had at least one custom material, the normal rows were sent `is_custom = NULL` and the whole insert failed. Because that insert runs AFTER the save has already deleted + reinserted `job_areas` (the delete cascades `job_area_materials`), the richer picks were gone -> data loss. (sqft / system / flake / basecoat survive: they're mirrored onto `job_areas` columns, and `jobs.line_items`/price were written by the earlier jobs update. Topcoat cure, additives, choices, custom rows, and special-order notes for that one job are lost and can't be recovered — re-enter them.)
+
+Fix: normalize every material row to the SAME column set before the insert (`MAT_COLS` -> fill missing keys with null), and force `is_custom` to a real boolean (`!!r.is_custom`) so the NOT NULL column never receives null. Uniform keys also make the batch defensive for every other column. No schema change.
+
+Known limitation (follow-up): the job save is still non-atomic (update jobs -> delete job_areas -> insert job_areas -> insert job_area_materials, four separate calls). A failure between the delete and the materials insert can still lose the richer picks. Proper fix is a Postgres function/RPC that does the delete+reinsert in one transaction; deferred. With this fix the known trigger is gone, and on any failure the in-memory draft stays intact (the failure path does not re-render), so re-clicking Save completes.
+
+Verified: all 6 inline scripts parse clean.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None (the estimate-merge migration already ran — see the next entry).
+Handoff to Cowork: None.
+Handoff to Dylan: After deploy + hard-reload, saving an estimate that includes a custom material no longer errors or wipes picks. Sorry about the lost detail on that one job — system/sqft/flake/basecoat/price should still be there; please re-enter any topcoat cure speed / additives / custom rows / special-order notes for it.
+
 ## [2026-05-31 MST] migration: ran 2026-06-01_job_area_estimate.sql; job_areas.price + job_areas.description live
 
 By: Cowork
