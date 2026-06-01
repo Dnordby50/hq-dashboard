@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] fix: recording a payment now recovers from the idle wedge (no more reload + re-enter) without risk of double-charging
+
+By: Claude Code
+Changed: index.html only (the payment submit handler in openPaymentModal).
+Why: Dylan hit `SESSION_TIMEOUT:payment` recording a payment (console: `[pec] payment pre-write refresh skipped: [payment refresh] timed out` then `[pec] payment insert failed Error: SESSION_TIMEOUT:payment`). That's the idle-JWT wedge: after the tab sits idle, supabase-js's auth-refresh queue stalls, the pre-write refresh times out, and the insert hangs. The payment write was deliberately left NON-retrying (a blind retry could double-record money), so it failed loud and told him to reload + check + re-enter — correct but painful, and he kept hitting it.
+
+Fix (recover -> verify -> retry, no schema change): the wedge has a known signature — the first write hangs with the request NEVER leaving the client (zero network traffic), so on a stale-session failure the payment did NOT reach the server. On `isSessionStale(err)` the handler now rebuilds the auth client in place (`recoverWedgedClient()`, no page reload) and retries the insert ONCE. Before retrying it VERIFIES no matching payment landed in the last 2 minutes (`pec_payments` where job_id + amount + method + received_date match and `recorded_at >= now()-2min`); if one is found it treats that as success and does NOT re-insert. So even in the unlikely case the first write actually got through, the payment is never double-recorded. This is the same recover-in-place pattern as `withFreshWriteRetry`, but with an explicit existence check because money writes aren't blindly idempotent.
+
+Used `recorded_at` (the server write timestamp; `pec_payments` has `recorded_at timestamptz not null default now()`, NOT `created_at`) for the recency window, verified against `supabase/migrations/2026-05-27_invoicing_ar.sql`. The deposit-flag update after the insert already used `withFreshWriteRetry` (idempotent) and is unchanged. If recovery + retry still fails, it falls through to the existing "did not save, reload and check" guidance (unchanged), so the worst case is no worse than before — and there's still no double-charge.
+
+Verified: all 6 inline `<script>` blocks parse clean (node --check per block).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/function/env change).
+Handoff to Dylan: After deploy + hard-reload, recording a payment after the tab's been idle should now just work — you'll see a brief "Reconnecting…" on the Submit button, then "Recorded $X". It will not double-record (it checks first). Only if reconnecting also fails will it fall back to the old "reload and check Invoicing" message.
+
 ## [2026-05-31 MST] ui: accent-forward buttons; payment modal no longer closes on tab-switch or a click just outside it
 
 By: Claude Code

@@ -6891,19 +6891,49 @@ function openPaymentModal(row, { deposit }) {
       if (!(amount > 0)) { errEl.textContent = 'Enter an amount greater than 0.'; return; }
       const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Saving…';
       try {
-        // Refresh the session before writing so an idle-JWT wedge is cleared (or
-        // detected and reloaded) WITHOUT ever sending the insert into a wedged
-        // client. No auto-retry: a retried insert could double-record a payment
-        // if the first request actually landed, so withFreshWrite refreshes
-        // first and runs the write exactly once.
-        const ins = await withFreshWrite(() => supabase.from('pec_payments').insert({
+        // Build the payload once so the recovery retry uses identical values.
+        const payload = {
           job_id: row.id,
           amount,
           method: fd.get('method'),
           reference: (fd.get('reference') || '').trim() || null,
           received_date: fd.get('received_date'),
           recorded_by: state.adminUser?.name || state.adminUser?.email || 'Unknown',
-        }), { label: 'payment' });
+        };
+        const doInsert = (label) => withFreshWrite(() => supabase.from('pec_payments').insert(payload), { label });
+        // Record the payment exactly once -- but recover from the idle-JWT wedge
+        // instead of forcing a reload + manual re-entry. In the wedge, the first
+        // write hangs with the request NEVER leaving the client (zero network
+        // traffic), so it did NOT reach the server. On that stale-session failure
+        // we rebuild the client (recoverWedgedClient, no reload) and retry ONCE.
+        // Before retrying we VERIFY no matching payment landed in the last 2 min,
+        // so even in the unlikely case the first one did get through, we never
+        // double-record. (pec_payments has recorded_at; received_date is the
+        // user-entered date, recorded_at is the server write time.)
+        let ins;
+        try {
+          ins = await doInsert('payment');
+        } catch (err) {
+          if (!isSessionStale(err)) throw err;
+          console.warn('[pec] payment write stalled; rebuilding client and verifying before retry', err);
+          btn.textContent = 'Reconnecting…';
+          await recoverWedgedClient();
+          const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+          const check = await supabase.from('pec_payments')
+            .select('id')
+            .eq('job_id', payload.job_id)
+            .eq('amount', payload.amount)
+            .eq('method', payload.method)
+            .eq('received_date', payload.received_date)
+            .gte('recorded_at', since)
+            .limit(1);
+          if (!check.error && Array.isArray(check.data) && check.data.length) {
+            ins = { error: null }; // it actually landed before the wedge surfaced -- do not re-insert
+          } else {
+            btn.textContent = 'Saving…';
+            ins = await doInsert('payment-retry');
+          }
+        }
         if (ins.error) throw ins.error;
         // Flip deposit_collected when the user marked this payment as the deposit
         // (the modal checkbox), regardless of which button opened the modal. This
