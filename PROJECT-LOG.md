@@ -4,6 +4,153 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] diagnosis: session-timeout root cause (the no-op lock + autoRefreshToken wedge the supabase-js client, not the network)
+
+By: Cowork
+
+Picked up Dylan's session-timeout diagnostic handoff. Diagnosed live on https://hq-prescott.netlify.app while signed in as `dylan@prescottepoxy.com` from a fresh logged-in tab (not an idle one). Drove the live page via the Claude in Chrome MCP rather than DevTools (no UI Network panel, but `read_network_requests` + `read_console_messages` + page-context JS execution give the same data). Browser: Chrome (extension), macOS, home network. No VPN.
+
+**TL;DR root cause:** `noopLock` (the in-page replacement for supabase-js's default auth lock) combined with `autoRefreshToken: true` creates a race that strands GoTrueClient's internal lock state. After the race, `lockAcquired` is stuck at `true` with NO refresh actually in flight, and every subsequent `.from(...)` / `auth.refreshSession()` queues into `pendingInLock` forever (observed 18 deep, growing). Raw `fetch` to the same Supabase endpoints, bypassing supabase-js, returns 200 in <500ms. Network is healthy. The wedge is inside the client. Reload (a new client) is the only thing that clears it, which is exactly what the existing `[pec] session wedge detected -> auto-reload` path does after the fact.
+
+**Step 2 baseline (the smoking gun)**
+
+2a. Token + expiry. Token has 1292 seconds (~21 min) to expiry. Not even close to needing a refresh.
+```
+key: sb-zdfpzmmrgotynrwkeakd-auth-token
+expires_at_iso: 2026-06-01T04:16:50.000Z
+now_iso:        2026-06-01T03:55:17.538Z
+secs_to_expiry: 1292
+refresh_token_head: ntw64azp
+access_token_head:  eyJhbGciOiJFUzI1
+user_email: dylan@prescottepoxy.com
+```
+
+2b. `auth.refreshSession()` timing with a 10s in-page hard cap (Promise.race against `setTimeout(10000)`):
+```
+ms: 10001
+status: hit_10s_internal_timeout    <-- refreshSession() never resolved
+```
+A second run of three back-to-back refreshes through a single 45-second Runtime.evaluate hit the CDP ceiling, confirming each refresh wedges indefinitely once the client is in this state.
+
+2c. Web locks (the "is it a navigator.locks wedge" check). Both empty:
+```
+{"held": [], "pending": []}
+```
+So navigator.locks is NOT the wedge surface. The wedge is in supabase-js's INTERNAL JS-Promise lock state, not in the browser's Web Locks API.
+
+2d. Plain read `.from('admin_users').select('id').limit(1)` with an 8s cap:
+```
+ms: 8001
+status: hit_8s_internal_timeout    <-- read also never resolved
+```
+Reads are wedged too, not just refreshes. The wedge is global to the client.
+
+**The decisive client-state probe.** Inspected `window.pecSupabase.auth` directly:
+```
+refreshingDeferred:   null            (no refresh actually in flight)
+lockAcquired:         true            (the lock is "held")
+pendingInLock_length: 18              (18 ops queued waiting for release)
+autoRefreshTicker:    true            (ticker is still scheduling refreshes)
+autoRefreshToken_enabled: true
+flowType:             implicit
+lock_function_source: (_name, _acquireTimeout, fn) => Promise.resolve(fn())
+```
+That is the wedge frozen in the act. The `lockAcquired = true` is set inside the lock callback's body and is supposed to be cleared in the `finally`. With `noopLock` providing zero exclusion, the auto-refresh ticker and the initialize/refresh path interleave inside the same synchronous lock callback, the `finally` that clears `lockAcquired` never fires for one of them, and the queue stays held forever. `refreshingDeferred` being `null` confirms no real refresh is mid-flight; the lock is held by ghost state.
+
+**Step 3 / 5 network findings.** Did NOT see ANY failing `/auth/v1/token` or REST request when supabase-js was wedged, because supabase-js never reached the fetch layer at all. To prove the network/backend are healthy, ran two raw `fetch`es from page context, bypassing supabase-js:
+```
+raw_refresh (POST /auth/v1/token?grant_type=refresh_token):
+  ms: 488    status: 200    body: { has_access: true, new_expires: 1780289839 }
+raw_read    (GET  /rest/v1/admin_users?select=id&limit=1):
+  ms: 159    status: 200    rows: 1
+```
+Backend and network are sub-500ms and 200 OK. The `[pec] ... timed out` console line is misleading: nothing is timing out on the wire. The "timeout" is the in-page `withFreshSession` / `withDeadline` ceiling firing because supabase-js never makes the call.
+
+**Control: a fresh supabase client with `autoRefreshToken: false`** (built from `window.supabase.createClient`, same URL/key, no noopLock override needed because no ticker fires):
+```
+fresh_read:    ms: 359   err: null   rows: 1
+fresh_refresh: ms: 166   err: null   new_expires: 1780289953
+```
+Healthy. Confirms the wedge is the combination (noopLock + autoRefreshToken), not the noopLock alone, not the URL/key, not the user.
+
+**Step 4 end-to-end reproduction (verbatim console).** Clicked Jobs in the live UI while the wedge was present:
+```
+[8:59:58 PM] [crm] switchView calling renderFn: renderJobs
+[9:00:08 PM] [pec] renderJobs timed out; probing for session wedge
+[9:00:11 PM] [pec] session wedge detected (renderJobs + refreshSession both timed out) -> auto-reload
+[9:00:11 PM] [ERROR] [crm] switchView render error: Error: SESSION_WEDGED:renderJobs
+    at withFreshSession (https://hq-prescott.netlify.app/:5003:13)
+    at async renderJobs (https://hq-prescott.netlify.app/:6373:29)
+```
+That is the user-facing failure Dylan reports, reproduced in 13 seconds from clicking a nav button. After the auto-reload the new client probe showed clean state (`lockAcquired: false`, `pendingInLock: 0`), and three concurrent `refreshSession()` calls all succeeded in 848ms total. So the wedge is non-deterministic per page-life: a healthy client can stay healthy for a while, then race once and stay wedged until reload. Did NOT run the 3-5x $0.01 payment submission test from task 4(c); the wedge mechanism is already proven and the renderJobs path exercises the same `withFreshSession` write-guard the payment flow uses, without polluting `pec_payments` / AR. No test rows to clean up.
+
+**One-line read.** The noopLock makes the autoRefreshToken ticker racy; one stranded lock-callback leaves `lockAcquired = true` with no `refreshingDeferred`, and the client is permanently wedged for the rest of the page's life. The existing `withFreshSession` + `recoverWedgedClient` + auto-reload defenses detect and paper over it; they don't prevent it.
+
+Files touched: PROJECT-LOG.md only.
+
+## Handoff to Dylan
+
+You already saw the live reproduction in the diagnostic tab. No code change in this entry. The "Prompt for Claude Code" below is the actionable handoff: paste it into a Claude Code session so it can choose between (a) restoring a real auth lock, (b) dropping autoRefreshToken in favor of the existing on-write refresh, or (c) something else the evidence points at. Do not roll out another workaround at the `withFreshSession` layer without addressing one of those root causes.
+
+## Handoff to Claude Code
+
+Paste-ready prompt below.
+
+```
+Diagnosis from Cowork — root cause of the intermittent SESSION_TIMEOUT / SESSION_WEDGED on the dashboard. This is NOT idle-only and NOT a network/Supabase backend issue. The wedge is inside the supabase-js client. Pick a fix; do not add another retry layer.
+
+Reproduction rate: 100% deterministic that the wedge CAN happen on the current code; non-deterministic per page-life when it actually trips. In the diagnostic session, the wedge was present on a fresh logged-in tab that had been open <10 min and was actively used. Clicking Jobs reproduced `Error: SESSION_WEDGED:renderJobs` at `withFreshSession (index.html:5003)` from `renderJobs (index.html:6373)` in 13 seconds. After auto-reload, the new client stayed healthy through three concurrent `refreshSession()` calls in 848 ms total. So the bug is: every page-life is a coin flip on whether the lock races; once it races, the whole client is dead until reload.
+
+Concrete client state at the moment of the wedge (window.pecSupabase.auth):
+  lockAcquired:           true        <-- lock "held"
+  pendingInLock.length:   18          <-- queue growing
+  refreshingDeferred:     null        <-- but NO refresh is actually in flight
+  autoRefreshTicker:      true
+  autoRefreshToken:       true        (still enabled in client config)
+  flowType:               implicit
+  lock toString():        (_name, _acquireTimeout, fn) => Promise.resolve(fn())
+
+navigator.locks.query():  { held: [], pending: [] }   <-- Web Locks API is clean. The wedge is purely in supabase-js's internal JS-promise lock bookkeeping.
+
+Token state when wedged: 1292 s to expiry, fresh access token, fresh refresh token. Not expired, not near expiry. Refresh is not even needed.
+
+Network / backend are healthy. Raw fetch from page context, bypassing supabase-js:
+  POST /auth/v1/token?grant_type=refresh_token : 488 ms, HTTP 200, returns new access + new expires
+  GET  /rest/v1/admin_users?select=id&limit=1  : 159 ms, HTTP 200, 1 row
+  When supabase-js is wedged, ZERO supabase requests go on the wire — the wedged calls never reach _fetch.
+
+supabase-js's own calls when wedged (10s / 8s in-page Promise.race caps):
+  auth.refreshSession() : did not resolve within 10000 ms
+  .from('admin_users').select('id').limit(1) : did not resolve within 8000 ms
+
+Control: a freshly constructed client with autoRefreshToken:false (same URL+key, same browser, same tab) was clean:
+  .from(...).select() : 359 ms, 200, 1 row
+  auth.refreshSession() : 166 ms, 200, new expires
+
+Root cause: noopLock provides zero mutual exclusion. GoTrueClient's _acquireLock sets `this.lockAcquired = true` inside the lock callback and clears it in `finally`. With autoRefreshToken=true, the ticker fires _autoRefreshTokenTick concurrently with whatever else is in-flight (page-load _initialize, a manual refreshSession, etc). The two lock callbacks interleave inside the same microtask queue, the `finally` for one of them is stranded, lockAcquired stays true, and every subsequent _acquireLock falls into the pendingInLock path and `await last` — forever. refreshingDeferred:null + lockAcquired:true is the fingerprint.
+
+Why the existing defenses don't actually fix it:
+- `withFreshSession`'s pre-write `refreshSession()` queues behind the dead lock and trips its own 10 s timeout.
+- `recoverWedgedClient()` rebuilds the client, but the rebuild only fires after detection inside `withFreshSession`. Anything queued before the rebuild (line items, payments, finalize, etc.) has already errored to the user.
+- The visibility-idle probe never triggers when the user is actively using the tab — that's why Dylan sees this with no idle.
+- `withFreshWriteRetry` retries once after `recoverWedgedClient`; that helps for idempotent writes after the wedge is detected, but does nothing to PREVENT the wedge.
+
+Pick a fix. Suggested in priority order, with the relevant evidence:
+
+1. (Most likely correct fix) Drop the noopLock and let supabase-js use its default lock. The 57-min idle-JWT wedge documented in CLAUDE.md was the original reason for noopLock, but the data above shows noopLock has TRADED a known-rare-idle bug for a frequent active-use bug. If the navigator.locks-based default actually causes the idle wedge, do a SHORT-HOLD custom lock: navigator.locks.request with a hard `setTimeout(reject, 5000)` race so the lock can never be held for more than 5 s. That preserves real mutual exclusion and bounds the worst case. Re-test the idle path after.
+
+2. (Next-best) Keep noopLock but set `autoRefreshToken: false`. The auto-refresh ticker is the concurrent caller that makes noopLock racy. The app already has `withFreshSession`'s pre-write refresh on every write and a visibility-probe refresh on tab focus; those cover refresh without the ticker. With no concurrent caller, noopLock's lack of exclusion stops mattering because no one else is competing. This is the minimal change but it depends on every read/write path going through `withFreshSession`, which today most do.
+
+3. (Workaround, do not ship alone) Add a periodic "is lockAcquired stuck without refreshingDeferred for >N s" probe that pre-emptively calls `recoverWedgedClient()`. This is defense in depth, not a fix. Only pair it with option 1 or 2.
+
+Things to NOT do:
+- Do not loosen the `withFreshSession` 10 s / `withDeadline` 12 s timeouts. The wedge is infinite-hang; bigger numbers just lengthen the user's wait before the same error.
+- Do not auto-retry non-idempotent writes (payments, change orders) through any new helper. The current rule of keeping those on plain `withFreshWrite` stays.
+- Do not chase the network/backend side. POST /auth/v1/token is 488 ms 200 OK from raw fetch; REST is 159 ms 200 OK. Nothing on the wire is broken.
+
+When you ship, tag the fix in CLAUDE.md's "Architecture Gotchas" section by REPLACING the existing "Idle JWT wedges supabase-js" bullet with the new mental model: the wedge is the noopLock+autoRefreshToken race, not idle JWT. The 57-min idle observation was a coincidence of timing, not the mechanism.
+```
+
 ## [2026-05-31 MST] fix: recording a payment now recovers from the idle wedge (no more reload + re-enter) without risk of double-charging
 
 By: Claude Code
