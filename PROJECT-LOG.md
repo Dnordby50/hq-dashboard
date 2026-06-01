@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] jobs: merged "areas" + "line items" into one Estimate editor (areas are the estimate lines now)
+
+By: Claude Code
+Changed: index.html (renderJobDetail / renderAreas + the job save), new supabase/migrations/2026-06-01_job_area_estimate.sql.
+Why: Dylan: "condense line items and areas to be one. once we're estimating in this CRM it makes the most sense. each line item has a system selector, colors, and square footage. option to mirror first line item on subsequent line items." Estimating happens in the CRM now, so the two parallel sections (areas = system + colors + sqft, feeding the work order / material calc; line items = scope + detail + price, feeding the invoice) became one.
+
+WHAT IT DOES NOW: the job detail has a single **Estimate** card. Each line is one area with a name, system, colors (recipe picks), square footage, a free-text **Detail / scope of work**, and a **Line price**. The line prices sum to a live **Total** (also shown in the header Price field, now read-only). Lines after the first have a **"Same as line 1"** button that copies line 1's system + colors (sqft/price/name stay per-line). **Finalize estimate** locks it (read-only summary + Reopen); change orders still come from the invoice only.
+
+HOW IT WORKS (the key WHY): areas are the single source. On save the UI DERIVES `jobs.line_items` from the areas (each area -> `{ name, description, price }`) and sets `jobs.price` = areas total + any change-order total, while PRESERVING the invoice's change-order lines (`is_change_order`) so a re-save never drops them. That's why the invoice (`renderJobInvoice` reads `jobs.line_items` + `pec_job_ar`), work-order page 2 (`renderWorkOrder` reads `jobs.line_items`), and the material calculator (`computeMaterialPlan` reads the areas) all keep working with zero changes — they read exactly what they read before, just sourced from the merged editor.
+
+Validation moved: the required-recipe-slot check used to block the big Save; it now gates **Finalize** only. A plain Save persists whatever's picked, so you can estimate price/sqft before colors are locked (the merged Save also writes price now, so blocking it on unpicked colors would be wrong friction). Extracted to `validateRequiredSlots()`; the old line-items editor + its `writeLi`/`liDraft` block and the standalone reopen handler were removed; the job save was refactored into a hoisted `saveJob({ finalize })` used by both the "Save job" button and "Finalize estimate".
+
+Data model: new migration adds `job_areas.price numeric(12,2)` + `job_areas.description text` (the existing `job_areas.name` becomes the editable line name). The save is graceful pre-migration: if those columns don't exist yet it retries the `job_areas` insert without them (catches PostgREST PGRST204), so saving keeps working — only the per-line price/detail reload empty until the migration runs (the price still lands on `jobs.line_items` meanwhile). Did NOT touch `pec_prod_areas` / schedule / costing / ordering (a separate production table bridged by `dripjobs_deal_id`).
+
+Transition: existing jobs keep their current `jobs.line_items` until that job's estimate is next saved, at which point the areas become the source (area-derived lines replace the old manual lines; change-order lines are preserved). The standalone line-items feature was only days old, so few jobs are affected; not auto-migrating (too risky).
+
+Verified: all 6 inline `<script>` blocks parse clean (node --check per block); no remaining references to the removed `hasLineItems` / `writeLi` / `jobLi*` / `#jobLineItemsCard`.
+
+Files touched: index.html, supabase/migrations/2026-06-01_job_area_estimate.sql, PROJECT-LOG.md.
+Next steps: Cowork runs the migration (below); then Dylan smoke-tests on a real job.
+
+## Handoff to Cowork
+
+Run `supabase/migrations/2026-06-01_job_area_estimate.sql` in Supabase Studio SQL editor (PEC project `zdfpzmmrgotynrwkeakd`, Primary Database, postgres role). It's wrapped in `begin; ... commit;` and only does two `alter table ... add column if not exists` on `public.job_areas` (`price numeric(12,2)`, `description text`). No view or RLS change, so the 42P16 ordinal trap does not apply. Acceptance (the verify query in the file footer): `select column_name from information_schema.columns where table_schema='public' and table_name='job_areas' and column_name in ('price','description');` must return 2 rows (`price`, `description`). Append a PROJECT-LOG entry `By: Cowork` with the run result + the acceptance output, and tell Dylan it's live.
+
+## Handoff to Dylan
+
+After the deploy + the Cowork migration above, hard-reload and open any job. There's now one **Estimate** section instead of separate "Line items" and area cards. Add a couple of lines (each = name + system + colors + sqft + price), watch the Total update, use **Same as line 1** on a second line to copy the first line's system + colors. Click **Save job**, reload, and confirm the names/systems/colors/sqft/prices persist. Open the invoice — it should show those lines + total; add a change order and confirm it sticks after you re-save the estimate. **Finalize estimate** locks it (Reopen to edit again). Note: a job's old invoice lines stay as-is until you next save that job's estimate.
+
 ## [2026-06-01 MST] jobs: line-items save is now in-place (no full reload); CompanyCam proxy stops logging console errors
 
 By: Claude Code

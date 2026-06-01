@@ -7540,14 +7540,11 @@ async function renderJobDetail(id) {
       jobInstallDate = br?.data?.install_date || null;
     } catch (_) { /* optional polish */ }
   }
-  // Job-level line items (scope title + detail + price); their prices sum to
-  // jobs.price. Locked once finalized; only a change order (invoice) can then
-  // alter the total. Tolerate legacy shapes (total/unit_price) on read.
-  const jobLineItems = Array.isArray(job.line_items) ? job.line_items : [];
+  // jobs.line_items is now DERIVED from the estimate lines (areas) on save:
+  // each area -> { name, description, price }, plus any change-order lines added
+  // from the invoice. lineItemPrice tolerates legacy shapes (total/unit_price)
+  // when reading the change-order lines for the locked summary.
   const lineItemPrice = li => { const v = li.price ?? li.total ?? li.unit_price; return v == null ? 0 : Number(v) || 0; };
-  const hasLineItems = jobLineItems.length > 0;
-  const lineItemsTotal = invRound2(jobLineItems.reduce((s, li) => s + lineItemPrice(li), 0));
-  const jobFinalized = !!job.finalized;
   // Colors urgency: unconfirmed AND install within 14 days (or overdue).
   const installDaysUntil = jobInstallDate ? invDaysBetween(invToday(), jobInstallDate) : null;
   const colorsUrgent = !job.colors_confirmed && installDaysUntil != null && installDaysUntil <= 14;
@@ -7615,7 +7612,7 @@ async function renderJobDetail(id) {
       if (m.text_value != null) pk.text = m.text_value;
     }
     for (const k in picks) picks[k].productIds = picks[k].productIds.filter(Boolean);
-    const area = { id: a.id || null, name: a.name || 'Main', sqft: a.sqft ?? '', system_type_id: a.system_type_id || '', topcoat_cure_speed: a.topcoat_cure_speed || '', picks, customs };
+    const area = { id: a.id || null, name: a.name || '', sqft: a.sqft ?? '', system_type_id: a.system_type_id || '', topcoat_cure_speed: a.topcoat_cure_speed || '', price: a.price ?? '', description: a.description || '', picks, customs };
     // No saved material rows yet (pre-migration job, or the SQL backfill did
     // not run): seed picks from the legacy flake/basecoat columns by matching
     // the system's recipe slots, so the editor opens pre-filled.
@@ -7632,6 +7629,10 @@ async function renderJobDetail(id) {
   if (!areas.length) {
     areas = [buildArea({ name: 'Main', sqft: job.sqft ?? '', system_type_id: job.system_type_id || '' })];
   }
+  // Estimate total = sum of the per-line (area) prices. The areas ARE the
+  // estimate lines now: each line's price feeds jobs.line_items + jobs.price on
+  // save, so this drives the header price field and the Estimate card total.
+  const areaPriceSum = () => invRound2(areas.reduce((s, a) => s + (Number(a.price) || 0), 0));
 
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -7657,9 +7658,7 @@ async function renderJobDetail(id) {
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
-            ${hasLineItems
-              ? `<input id="jobPrice" type="number" value="${lineItemsTotal}" readonly title="Set by the line items below" style="max-width:130px;background:var(--bg-soft,#f1f3f5);color:var(--muted)">`
-              : `<input id="jobPrice" type="number" step="0.01" value="${job.price ?? ''}" style="max-width:130px">`}
+            <input id="jobPrice" type="number" value="${areaPriceSum()}" readonly title="Sum of the estimate lines below" style="max-width:130px;background:var(--bg-soft,#f1f3f5);color:var(--muted)">
           </div>
           <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">View Work Order</button>
         </div>
@@ -7725,32 +7724,6 @@ async function renderJobDetail(id) {
         </div>
         <button class="pec-btn ${job.colors_confirmed ? 'ghost' : 'primary'} sm" id="jobColorsToggle">${job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed'}</button>
       </div>
-    </div>
-
-    <div class="pec-card" id="jobLineItemsCard">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-        <h3 style="margin:0">Line items ${jobFinalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
-        <div style="font-size:.8rem;color:var(--muted)">Total <strong id="jobLiTotal" style="font-size:1rem">${invUSD(lineItemsTotal)}</strong></div>
-      </div>
-      ${jobFinalized ? `
-        <div class="pec-scroll-x"><table class="pec-table">
-          <thead><tr><th>Scope</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
-          <tbody>${jobLineItems.length ? jobLineItems.map(li => `<tr class="nohover">
-            <td>${esc(li.name || '—')}${li.is_change_order ? ' <span class="pec-age pec-age-yellow">Change order</span>' : ''}</td>
-            <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(li.description || '')}</td>
-            <td style="text-align:right">${invUSD(lineItemPrice(li))}</td></tr>`).join('') : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items.</td></tr>'}</tbody>
-        </table></div>
-        <div style="margin-top:10px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. Price is locked — add a change order from the invoice to adjust the total. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>
-      ` : `
-        <div style="font-size:.78rem;color:var(--muted);margin-bottom:8px">Paste each line from the signed DripJobs proposal: a scope title, the detail, and its price (negatives allowed, e.g. a discount). The prices sum to the job price.</div>
-        <div id="jobLineItemsBody"></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-          <button type="button" class="pec-btn ghost sm" id="jobLiAdd">+ Add line</button>
-          <span style="flex:1"></span>
-          <button type="button" class="pec-btn sm" id="jobLiSave">Save line items</button>
-          <button type="button" class="pec-btn primary sm" id="jobLiFinalize">Finalize job</button>
-        </div>
-      `}
     </div>
 
     <div id="jobAreas"></div>
@@ -8149,17 +8122,67 @@ async function renderJobDetail(id) {
       return out;
     };
 
-    host.innerHTML = areas.map((a, idx) => {
-      const title = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
+    const finalized = !!job.finalized;
+    const total = areaPriceSum();
+    // The estimate's own change-order lines live only on jobs.line_items (added
+    // from the invoice; areas have no materials). Surface them read-only here so
+    // the locked summary total matches the invoice.
+    const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
+    const sysNameFor = (sid) => (systemTypes.find(s => s.id === sid) || {}).name || '—';
+
+    // Header card: title + live total + Finalize state (Reopen when locked).
+    const headerCard = `
+      <div class="pec-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
+          <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(total)}</strong></div>
+        </div>
+        ${finalized
+          ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked — add a change order from the invoice to adjust the total. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
+          : `<div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Each line is one area: system + colors + square footage + price. The line prices sum to the job price, and the invoice + work order build from these lines. Use "Same as line 1" to copy the first line's system and colors.</div>`}
+      </div>`;
+
+    if (finalized) {
+      // Read-only summary (line · system · sqft · detail · price) + the
+      // invoice-added change orders, mirroring the prior finalized view.
+      host.innerHTML = headerCard + `
+        <div class="pec-card">
+          <div class="pec-scroll-x"><table class="pec-table">
+            <thead><tr><th>Line</th><th>System</th><th style="text-align:right">Sq ft</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
+            <tbody>
+              ${areas.map((a, idx) => `<tr class="nohover">
+                <td>${esc(a.name || (idx === 0 ? 'Main Area' : `Area ${idx+1}`))}</td>
+                <td>${esc(sysNameFor(a.system_type_id))}</td>
+                <td style="text-align:right">${a.sqft !== '' && a.sqft != null ? esc(a.sqft) : '—'}</td>
+                <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(a.description || '')}</td>
+                <td style="text-align:right">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')}
+              ${changeOrderLines.map(l => `<tr class="nohover">
+                <td>${esc(l.name || '—')} <span class="pec-age pec-age-yellow">Change order</span></td>
+                <td>—</td><td style="text-align:right">—</td>
+                <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(l.description || '')}</td>
+                <td style="text-align:right">${invUSD(lineItemPrice(l))}</td></tr>`).join('')}
+            </tbody>
+          </table></div>
+        </div>`;
+      renderBudget();
+      wireEstimateControls();
+      return;
+    }
+
+    host.innerHTML = headerCard + areas.map((a, idx) => {
+      const placeholderName = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
       const slots = reorderForFlakeSystem(slotsBySystem[a.system_type_id] || []);
       const slotsBody = a.system_type_id
         ? (slots.map(s => slotHtml(a, idx, s)).join('') || '<div style="margin-top:10px;color:var(--muted);font-size:.78rem">This system has no recipe slots yet — use Custom options below, or add slots in Material Catalog.</div>')
         : '';
       return `
         <div class="pec-card">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-            <h3 style="margin:0">${title}</h3>
-            ${areas.length > 1 ? `<button class="pec-btn ghost sm" data-area-remove="${idx}">Remove area</button>` : ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+            <input data-area-name="${idx}" value="${esc(a.name)}" placeholder="${placeholderName}" style="flex:1;min-width:120px;font-size:1rem;font-weight:600">
+            <div style="display:flex;gap:6px;align-items:center">
+              ${idx > 0 ? `<button type="button" class="pec-btn ghost sm" data-area-mirror="${idx}" title="Copy the system + colors from line 1">Same as line 1</button>` : ''}
+              ${areas.length > 1 ? `<button type="button" class="pec-btn ghost sm" data-area-remove="${idx}">Remove</button>` : ''}
+            </div>
           </div>
           <div class="pec-row-2">
             <div class="pec-field"><label>Square footage</label><input type="number" min="0" step="1" data-area-sqft="${idx}" value="${esc(a.sqft)}"></div>
@@ -8167,12 +8190,35 @@ async function renderJobDetail(id) {
           </div>
           ${slotsBody}
           ${customHtml(a, idx)}
+          <div class="pec-field" style="margin-top:12px"><label>Detail / scope of work</label><textarea data-area-desc="${idx}" rows="2" placeholder="What's included in this line (paste from the proposal)" style="width:100%;resize:vertical">${esc(a.description)}</textarea></div>
+          <div class="pec-field" style="margin-top:8px;max-width:200px"><label>Line price $</label><input type="number" step="0.01" data-area-price="${idx}" value="${esc(a.price)}" placeholder="0.00"></div>
         </div>`;
-    }).join('') + `<div style="margin-bottom:16px"><button class="pec-btn sm" id="jobAddArea">+ Add area</button></div>`;
+    }).join('') + `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+        <button type="button" class="pec-btn sm" id="jobAddArea">+ Add line</button>
+        <span style="flex:1"></span>
+        <button type="button" class="pec-btn primary sm" id="jobFinalize">Finalize estimate</button>
+      </div>`;
 
     const parse = (v) => { const p = v.split('|'); return { a: areas[+p[0]], rest: p.slice(1) }; };
 
     host.querySelectorAll('[data-area-sqft]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaSqft].sqft = el.value; }));
+    // Line name / detail / price mutate in place (no re-render) so the inputs
+    // keep focus while typing. Price additionally updates the live total.
+    host.querySelectorAll('[data-area-name]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaName].name = el.value; }));
+    host.querySelectorAll('[data-area-desc]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaDesc].description = el.value; }));
+    host.querySelectorAll('[data-area-price]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaPrice].price = el.value; recalcEstimateTotal(); }));
+    // "Same as line 1": copy line 1's system + colors (recipe picks) into this
+    // line. Square footage, price, name and detail stay per-line.
+    host.querySelectorAll('[data-area-mirror]').forEach(el => el.addEventListener('click', () => {
+      const src = areas[0]; const a = areas[+el.dataset.areaMirror];
+      if (!src || a === src) return;
+      a.system_type_id = src.system_type_id;
+      a.topcoat_cure_speed = src.topcoat_cure_speed || '';
+      a.picks = JSON.parse(JSON.stringify(src.picks || {}));
+      seedAreaDefaults(a);
+      renderAreas();
+    }));
     host.querySelectorAll('[data-area-topcure]').forEach(el => el.addEventListener('change', () => {
       areas[+el.dataset.areaTopcure].topcoat_cure_speed = el.value;
     }));
@@ -8237,21 +8283,42 @@ async function renderJobDetail(id) {
       areas[+el.dataset.customAdd].customs.push({ label: '', productId: '', text: '' });
       renderAreas();
     }));
-    $('jobAddArea').addEventListener('click', () => {
+    const addBtn = $('jobAddArea');
+    if (addBtn) addBtn.addEventListener('click', () => {
       // Inherit the previous area's system so the new area opens with
       // defaults already seeded -- the most common case is "add a second
       // area for the same system". User can change the system from the
       // dropdown if they need a different one (seedAreaDefaults re-fires).
       const prev = areas[areas.length - 1];
       const inheritSystem = prev?.system_type_id || '';
-      const next = { id: null, name: '', sqft: '', system_type_id: inheritSystem, picks: {}, customs: [] };
+      const next = { id: null, name: '', sqft: '', system_type_id: inheritSystem, topcoat_cure_speed: '', price: '', description: '', picks: {}, customs: [] };
       seedAreaDefaults(next);
       areas.push(next);
       renderAreas();
     });
+    wireEstimateControls();
     // Budget recomputes any time renderAreas paints, so it tracks the user's
     // sqft / system / flake edits live without waiting for a Save.
     renderBudget();
+  }
+  // Keep the live Estimate total + the header price field in sync with the
+  // per-line prices as they're typed (no re-render needed).
+  function recalcEstimateTotal() {
+    const t = areaPriceSum();
+    const tEl = $('estimateTotal'); if (tEl) tEl.textContent = invUSD(t);
+    const pf = $('jobPrice'); if (pf) pf.value = t;
+  }
+  // Bind the Finalize (editable) / Reopen (locked) buttons rendered inside the
+  // Estimate header by renderAreas. Both go through saveJob / doReopen.
+  function wireEstimateControls() {
+    const finalizeBtn = $('jobFinalize');
+    if (finalizeBtn) finalizeBtn.addEventListener('click', () => {
+      if (!areas.length) { alert('Add at least one line before finalizing.'); return; }
+      if (!confirm('Finalize this estimate? The lines and price will be locked. Add a change order from the invoice to adjust the total afterward.')) return;
+      saveJob({ finalize: true, btn: finalizeBtn });
+    });
+    const reopenBtn = $('jobReopen');
+    if (reopenBtn) reopenBtn.addEventListener('click', doReopen);
   }
   renderAreas();
 
@@ -8317,88 +8384,30 @@ async function renderJobDetail(id) {
     } });
   });
 
-  // --- Line items editor (editable mode only; #jobLineItemsBody absent when finalized)
-  const liBody = $('jobLineItemsBody');
-  if (liBody) {
-    const liDraft = jobLineItems.length
-      ? jobLineItems.map(l => ({ name: l.name || '', description: l.description || '', price: (l.price ?? l.total ?? l.unit_price ?? ''), is_change_order: !!l.is_change_order }))
-      : [{ name: '', description: '', price: '', is_change_order: false }];
-    const liTotalEl = $('jobLiTotal');
-    const recalcLi = () => { const t = invRound2(liDraft.reduce((s, l) => s + (Number(l.price) || 0), 0)); if (liTotalEl) liTotalEl.textContent = invUSD(t); };
-    const renderLi = () => {
-      liBody.innerHTML = liDraft.map((l, i) => `
-        <div style="display:flex;gap:8px;margin-bottom:8px;align-items:flex-start">
-          <div style="flex:1;display:flex;flex-direction:column;gap:4px">
-            <input class="jobLiName" data-idx="${i}" value="${esc(l.name)}" placeholder="Scope (e.g. Grind and Seal - No Stain)">
-            <textarea class="jobLiDesc" data-idx="${i}" rows="2" placeholder="Detail / scope of work (paste from the proposal)" style="resize:vertical">${esc(l.description)}</textarea>
-          </div>
-          <input class="jobLiPrice" data-idx="${i}" type="number" step="0.01" value="${esc(l.price)}" placeholder="0.00" style="width:120px;text-align:right">
-          <button type="button" class="pec-btn ghost sm jobLiDel" data-idx="${i}" title="Remove" ${liDraft.length <= 1 ? 'disabled' : ''}>✕</button>
-        </div>`).join('');
-      liBody.querySelectorAll('.jobLiName').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].name = e.target.value; }));
-      liBody.querySelectorAll('.jobLiDesc').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].description = e.target.value; }));
-      liBody.querySelectorAll('.jobLiPrice').forEach(inp => inp.addEventListener('input', e => { liDraft[+e.target.dataset.idx].price = e.target.value; recalcLi(); }));
-      liBody.querySelectorAll('.jobLiDel').forEach(b => b.addEventListener('click', e => { liDraft.splice(+e.currentTarget.dataset.idx, 1); if (!liDraft.length) liDraft.push({ name: '', description: '', price: '', is_change_order: false }); renderLi(); recalcLi(); }));
-    };
-    renderLi(); recalcLi();
-    $('jobLiAdd').addEventListener('click', () => { liDraft.push({ name: '', description: '', price: '', is_change_order: false }); renderLi(); });
-
-    const cleanLi = () => liDraft
-      .map(l => ({ name: (l.name || '').trim(), description: (l.description || '').trim(), price: Number(l.price) || 0, ...(l.is_change_order ? { is_change_order: true } : {}) }))
-      .filter(l => l.name || l.description || l.price);
-    const writeLi = async (extra, okMsg, btnEl, reload = false) => {
-      const lines = cleanLi();
-      const total = invRound2(lines.reduce((s, l) => s + (Number(l.price) || 0), 0));
-      const orig = btnEl.textContent; btnEl.disabled = true; btnEl.textContent = 'Saving…';
-      try {
-        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ line_items: lines, price: total, ...extra }).eq('id', id), { label: 'job-line-items' });
-        if (upd.error) throw upd.error;
-        // Keep the in-memory job in sync so any later render is correct.
-        job.line_items = lines; job.price = total; Object.assign(job, extra);
-        showToast(okMsg, { ttl: 2500 });
-        // Finalize/reopen change the locked layout, so re-render. A plain save
-        // does not -- update the derived header price in place and restore the
-        // button so there is no jarring full-page reload (and no CompanyCam refetch).
-        if (reload) { renderJobDetail(id); return; }
-        const pf = $('jobPrice'); if (pf) pf.value = total;
-        btnEl.disabled = false; btnEl.textContent = orig;
-      } catch (err) {
-        console.error('[pec] line items save failed', err);
-        btnEl.disabled = false; btnEl.textContent = orig;
-        alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not save: ' + (err.message || err));
-      }
-    };
-    $('jobLiSave').addEventListener('click', () => writeLi({}, 'Line items saved ✓', $('jobLiSave'), false));
-    $('jobLiFinalize').addEventListener('click', () => {
-      if (!cleanLi().length) { alert('Add at least one line item before finalizing.'); return; }
-      if (!confirm('Finalize this job? Line items and price will be locked. Add a change order from the invoice to adjust the total afterward.')) return;
-      writeLi({ finalized: true, finalized_at: new Date().toISOString() }, 'Job finalized', $('jobLiFinalize'), true);
-    });
-  }
-
-  // --- Reopen (finalized mode) ----------------------------------------------
-  const reopenBtn = $('jobReopen');
-  if (reopenBtn) reopenBtn.addEventListener('click', async () => {
-    if (!confirm('Reopen line items for editing? The price will become editable again.')) return;
-    reopenBtn.disabled = true; reopenBtn.textContent = 'Reopening…';
+  // --- Reopen (unlocks a finalized estimate). Bound by wireEstimateControls
+  // each time renderAreas paints the locked header, so it's a named function.
+  async function doReopen() {
+    if (!confirm('Reopen this estimate for editing? The price will become editable again.')) return;
+    const reopenBtn = $('jobReopen');
+    if (reopenBtn) { reopenBtn.disabled = true; reopenBtn.textContent = 'Reopening…'; }
     try {
       const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ finalized: false, finalized_at: null }).eq('id', id), { label: 'job-reopen' });
       if (upd.error) throw upd.error;
+      job.finalized = false; job.finalized_at = null;
       showToast('Reopened for editing', { ttl: 2500 });
       renderJobDetail(id);
     } catch (err) {
       console.error('[pec] reopen failed', err);
-      reopenBtn.disabled = false; reopenBtn.textContent = 'Reopen';
+      if (reopenBtn) { reopenBtn.disabled = false; reopenBtn.textContent = 'Reopen'; }
       alert(isSessionStale(err) ? 'Session briefly stalled — try again.' : 'Could not reopen: ' + (err.message || err));
     }
-  });
+  }
 
-  $('jobSaveBtn').addEventListener('click', async () => {
-    const msg = $('jobSaveMsg'); const btn = $('jobSaveBtn');
-    // Validate required recipe slots before writing anything. On failure,
-    // dump full state to the console (for next-time debugging), outline the
-    // offending slot in red, scroll it into view, and surface a precise
-    // alert that names the area + the slot.
+  // Required-recipe-slot check, extracted so Finalize can gate on it while a
+  // plain Save persists freely (estimate price/sqft before colors are final).
+  // Returns true when every required slot in every area is satisfied; on the
+  // first miss it outlines + scrolls to the slot, alerts, and returns false.
+  function validateRequiredSlots() {
     root.querySelectorAll('.pec-slot-missing').forEach(el => el.classList.remove('pec-slot-missing'));
     for (let i = 0; i < areas.length; i++) {
       const a = areas[i];
@@ -8412,21 +8421,11 @@ async function renderJobDetail(id) {
           : kind === 'text' ? true
           : pk.productIds.filter(Boolean).length >= slot.min_select && !(soPick && !(pk.text || '').trim());
         if (!ok) {
-          msg.textContent = '';
-          console.warn('[pec] save validation failed', {
+          console.warn('[pec] finalize validation failed', {
             areaIndex: i, areaName: a.name, slotId: slot.id,
             slotLabel: slot.label, materialType: slot.material_type,
-            slotKind: kind, minSelect: slot.min_select,
-            picksForSlot: pk,
-            picksSnapshot: JSON.parse(JSON.stringify(a.picks || {})),
-            allAreas: areas.map(x => ({
-              id: x.id, name: x.name, system_type_id: x.system_type_id,
-              picks: x.picks,
-            })),
+            slotKind: kind, minSelect: slot.min_select, picksForSlot: pk,
           });
-          // Find a DOM anchor: a child element whose data-slot-* attr
-          // contains this slot id. Walk up to the area container for a
-          // less surgical outline (slot blocks vary by slot_kind).
           const sel = `[data-slot-select^="${i}|${slot.id}"], [data-slot-choice^="${i}|${slot.id}"], [data-slot-text^="${i}|${slot.id}"], [data-slot-swatch^="${i}|${slot.id}"]`;
           const anchor = root.querySelector(sel);
           const target = anchor ? (anchor.closest('div[style*="margin-top"]') || anchor) : null;
@@ -8437,14 +8436,38 @@ async function renderJobDetail(id) {
           const areaLabel = (a.name && a.name.trim()) ? `"${a.name}"` : `#${i+1}`;
           const slotName = slot.label || slot.material_type;
           alert(soPick
-            ? `Area ${i+1} ${areaLabel}: add the Special Order details for "${slotName}".`
-            : `Area ${i+1} ${areaLabel}: "${slotName}" is required.`);
-          return;
+            ? `Line ${i+1} ${areaLabel}: add the Special Order details for "${slotName}" before finalizing.`
+            : `Line ${i+1} ${areaLabel}: "${slotName}" is required before finalizing.`);
+          return false;
         }
       }
     }
+    return true;
+  }
+
+  $('jobSaveBtn').addEventListener('click', () => saveJob({ btn: $('jobSaveBtn') }));
+
+  // Unified estimate save. A plain Save persists everything (areas + materials
+  // + derived jobs.line_items/price) without gating on colors. Finalize first
+  // runs validateRequiredSlots(), then saves with finalized=true to lock it.
+  async function saveJob({ finalize = false, btn } = {}) {
+    btn = btn || $('jobSaveBtn');
+    const msg = $('jobSaveMsg');
+    if (finalize && !validateRequiredSlots()) return;
     msg.textContent = 'Saving…'; btn.disabled = true;
-    const priceVal = $('jobPrice').value;
+    // Derive the invoice line items + job price from the estimate lines (areas):
+    // each area becomes a line (name + detail + price). Preserve any change-order
+    // lines (added from the invoice; they have no area) so a re-save never drops
+    // them. jobs.price = areas total + change-order total, matching the invoice.
+    const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
+    const areaLineItems = areas.map((a, idx) => ({
+      name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main Area' : `Area ${idx+1}`),
+      description: (a.description || '').trim(),
+      price: Number(a.price) || 0,
+    }));
+    const newLineItems = [...areaLineItems, ...changeOrderLines];
+    const coTotal = changeOrderLines.reduce((s, l) => s + (Number(l.price ?? l.total ?? l.unit_price) || 0), 0);
+    const newPrice = invRound2(areaLineItems.reduce((s, l) => s + l.price, 0) + coTotal);
     // Legacy mirror: first basecoat / flake-type product pick on the area, so
     // anything still reading job_areas.flake_product_id stays correct.
     const firstPick = (a, pred) => {
@@ -8463,12 +8486,15 @@ async function renderJobDetail(id) {
       // would null the address -- omit it.
       scope: $('jobScope').value || null,
       dripjobs_deal_id: $('jobProposal')?.value?.trim() || null,
-      // Price only in manual mode. When line items exist the price is derived
-      // from them (set by "Save line items" / change orders) and locked, so we
-      // omit it here to avoid clobbering that value.
-      ...(hasLineItems ? {} : { price: priceVal ? parseFloat(priceVal) : null }),
+      // Price + line items are derived from the estimate lines (areas) above,
+      // preserving any invoice change orders. This is what the invoice + work
+      // order read, so the merged editor is the single source for them.
+      price: newPrice,
+      line_items: newLineItems,
       sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
       system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
+      // Finalize locks the estimate (price changes only via a change order).
+      ...(finalize ? { finalized: true, finalized_at: new Date().toISOString() } : {}),
       // Job Card fields (printed onto the work order). Migration
       // 2026-05-24_job_card_fields.sql adds these columns; before it runs
       // these inputs don't exist in the DOM and the lookups return null safely.
@@ -8496,17 +8522,31 @@ async function renderJobDetail(id) {
       if (del.error) throw del.error;
       const areaRows = areas.map((a, idx) => ({
         job_id: id,
-        name: idx === 0 ? 'Main' : `Area ${idx+1}`,
+        // Persist the user-typed line name (falls back to a positional label).
+        name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main' : `Area ${idx+1}`),
         sqft: (a.sqft === '' || a.sqft == null) ? null : Number(a.sqft),
         system_type_id: a.system_type_id || null,
         flake_product_id: firstPick(a, t => SWATCH_TYPES.has(t)),
         basecoat_product_id: firstPick(a, t => t === 'Basecoat'),
         topcoat_cure_speed: a.topcoat_cure_speed || null,
+        // Estimate columns (migration 2026-06-01_job_area_estimate.sql).
+        price: (a.price === '' || a.price == null) ? null : Number(a.price),
+        description: (a.description || '').trim() || null,
         order_index: idx,
       }));
       let saved = [];
       if (areaRows.length) {
-        const ins = await withDeadline(() => supabase.from('job_areas').insert(areaRows).select(), { label: 'job-save-areas-ins' });
+        let ins = await withDeadline(() => supabase.from('job_areas').insert(areaRows).select(), { label: 'job-save-areas-ins' });
+        // Pre-migration fallback: if job_areas.price/description don't exist yet,
+        // strip them and persist everything else so the save still works. The
+        // per-line price already landed on jobs.line_items (the invoice's
+        // source); only the per-line price/detail reload empty until the
+        // migration runs. PostgREST reports a missing column as PGRST204.
+        if (ins.error && (ins.error.code === 'PGRST204' || /price|description|schema cache/i.test(ins.error.message || ''))) {
+          console.warn('[pec] job_areas.price/description missing — saving without them (run 2026-06-01_job_area_estimate.sql)', ins.error);
+          const stripped = areaRows.map(({ price, description, ...rest }) => rest);
+          ins = await withDeadline(() => supabase.from('job_areas').insert(stripped).select(), { label: 'job-save-areas-ins-fallback' });
+        }
         if (ins.error) throw ins.error;
         saved = ins.data || [];
       }
@@ -8577,7 +8617,7 @@ async function renderJobDetail(id) {
       return;
      }
     }
-  });
+  }
   root.querySelectorAll('.pec-gallery-item img').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
   root.querySelectorAll('[data-del-photo]').forEach(b => {
     b.addEventListener('click', async e => {
