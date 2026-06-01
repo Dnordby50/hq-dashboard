@@ -1251,12 +1251,18 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-table tr:hover td {
 }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-table tr.nohover:hover td { background: transparent; }
 
-/* Buttons */
+/* Buttons -- accent-forward, sized + colored to match the left sidebar nav.
+   Size lives here (not on base .pec-btn) so portal-mode buttons are untouched.
+   Primary uses the same accent fill + shadow as the active sidebar item; the
+   accent token auto-swaps to PEC orange when the brand is on. */
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn {
   background: var(--rd-shell);
   color: var(--rd-ink);
   border: 1px solid var(--rd-line);
   border-radius: 10px;
+  padding: 10px 18px;
+  font-size: .84rem;
+  font-weight: 500;
 }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn:hover {
   border-color: var(--rd-accent);
@@ -1267,20 +1273,31 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.primary {
   background: var(--rd-accent);
   border-color: var(--rd-accent);
   color: var(--rd-accent-ink);
+  font-weight: 600;
+  box-shadow: 0 6px 14px var(--rd-accent-ring);
 }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.primary:hover {
   background: var(--rd-accent);
   color: var(--rd-accent-ink);
-  opacity: .92;
+  box-shadow: 0 8px 20px var(--rd-accent-ring);
+  opacity: .94;
 }
-body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.ghost { background: transparent; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.ghost { background: transparent; box-shadow: none; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.ghost:hover { background: var(--rd-soft); }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.danger {
   color: var(--rd-danger);
   border-color: rgba(239,68,68,.3);
+  box-shadow: none;
 }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.danger:hover {
   background: rgba(239,68,68,.08);
   border-color: var(--rd-danger);
+}
+/* Compact variant stays small for dense toolbars + table-row actions. Higher
+   specificity than the rule above so it isn't inflated by the new padding. */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.sm {
+  padding: 7px 13px;
+  font-size: .76rem;
 }
 
 /* Form fields */
@@ -1329,11 +1346,16 @@ body:not(.pec-portal-mode) .pec-modal .pec-field select {
 body:not(.pec-portal-mode) .pec-modal .pec-field label { color: var(--rd-muted); }
 body:not(.pec-portal-mode) .pec-modal .pec-btn {
   background: var(--rd-shell); color: var(--rd-ink); border: 1px solid var(--rd-line);
+  border-radius: 10px; padding: 10px 18px; font-size: .84rem; font-weight: 500;
 }
+body:not(.pec-portal-mode) .pec-modal .pec-btn:hover { border-color: var(--rd-accent); background: var(--rd-soft); }
 body:not(.pec-portal-mode) .pec-modal .pec-btn.primary {
   background: var(--rd-accent); border-color: var(--rd-accent); color: var(--rd-accent-ink);
+  font-weight: 600; box-shadow: 0 6px 14px var(--rd-accent-ring);
 }
-body:not(.pec-portal-mode) .pec-modal .pec-btn.ghost { background: transparent; }
+body:not(.pec-portal-mode) .pec-modal .pec-btn.primary:hover { box-shadow: 0 8px 20px var(--rd-accent-ring); opacity: .94; }
+body:not(.pec-portal-mode) .pec-modal .pec-btn.ghost { background: transparent; box-shadow: none; }
+body:not(.pec-portal-mode) .pec-modal .pec-btn.sm { padding: 7px 13px; font-size: .76rem; }
 
 /* Timeline + gallery + swatches */
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-timeline-stage {
@@ -5075,7 +5097,11 @@ function _pecProbeSession(triggerLabel) {
       // is what stops "tab away, come back, page refreshed and I lost my work":
       // returning to the tab after idle silently fixes the session instead.
       console.warn(`[pec] idle-probe (${triggerLabel}) timed out -> recovering client without reload`);
-      recoverWedgedClient();
+      // Swallow any rejection: an un-awaited recoverWedgedClient() here would
+      // surface as an unhandledrejection, which the global safety net used to
+      // answer by wiping every open modal (closing the payment form on tab
+      // return). Keep it self-contained.
+      recoverWedgedClient().catch(e => console.warn('[pec] idle-probe recovery failed', e));
     });
 }
 
@@ -5506,7 +5532,13 @@ function openModal(html, { onMount } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-modal-bg';
   wrap.innerHTML = `<div class="pec-modal">${html}</div>`;
-  wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
+  // Backdrop click closes ONLY for info dialogs (no inputs). Data-entry modals
+  // (payment, edit contact, change order, compose, ...) must be dismissed with
+  // their explicit Cancel/✕ button so a stray click just outside the box can't
+  // wipe what's been typed -- this is the "very touchy" complaint.
+  if (!wrap.querySelector('form, input, textarea, select')) {
+    wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
+  }
   $('pecModalRoot').appendChild(wrap);
   if (onMount) onMount(wrap.querySelector('.pec-modal'));
   return wrap;
@@ -5574,10 +5606,16 @@ function scheduleSaveToast(job, dateIso, { undoSnapshot } = {}) {
 // is open, clear the backdrop so it cannot silently block the whole UI. The
 // app has two separate modal-root containers (#pecModalRoot for CRM views,
 // #prodModalRoot for production / Material Catalog views), so clear both.
+// BUT never wipe a modal the user is actively filling in: a stray rejection
+// (e.g. a fetch aborted when the tab is backgrounded, or the idle-probe's
+// recovery) used to nuke an open payment/edit form on tab-switch. Skip any
+// root whose modal contains a form/input -- still clears broken info modals.
 function clearAllModalRoots() {
   ['pecModalRoot', 'prodModalRoot'].forEach(id => {
     const root = document.getElementById(id);
-    if (root) root.innerHTML = '';
+    if (!root) return;
+    if (root.querySelector('form, input, textarea, select')) return; // mid-entry -- leave it
+    root.innerHTML = '';
   });
 }
 window.addEventListener('error', clearAllModalRoots);
@@ -12754,7 +12792,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
 
     $('prodPullClose').addEventListener('click', () => { $('prodModalRoot').innerHTML = ''; });
-    $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg') $('prodModalRoot').innerHTML = ''; });
+    $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg' && !e.currentTarget.querySelector('form, input, textarea, select')) $('prodModalRoot').innerHTML = ''; });
     $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
     $('prodPullEnd').addEventListener('change', (e) => { state._pull.end = e.target.value; renderMaterialPull(); });
     $('prodPullPreset7').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(7)  }; renderMaterialPull(); });
@@ -13304,7 +13342,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     renderDetailLines();
     $('prodDetailClose').addEventListener('click', closeJobDetail);
-    $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg') closeJobDetail(); });
+    $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closeJobDetail(); });
     $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
     $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
     $('prodDetailComplete').addEventListener('click', completeActiveJob);
@@ -13615,7 +13653,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('pmCancel').addEventListener('click', closer);
-    $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg') closer(); });
+    $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     const imgEl = $('pmImage');
     if (imgEl) imgEl.addEventListener('input', () => {
       const url = imgEl.value.trim();
@@ -13855,7 +13893,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('smCancel').addEventListener('click', closer);
-    $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg') closer(); });
+    $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('smSave').addEventListener('click', async () => {
       const laborPctRaw = $('smLaborPct').value;
       const matPctRaw = $('smMatPct').value;
@@ -13952,7 +13990,7 @@ function _mergeAcrossAreas(areaPlans) {
     syncKind();
     $('rsType').addEventListener('change', () => { $('rsProduct').innerHTML = `<option value="">User picks at job time</option>` + productOpts($('rsType').value); });
     $('rsCancel').addEventListener('click', closer);
-    $('prodRSlotBg').addEventListener('click', (e) => { if (e.target.id === 'prodRSlotBg') closer(); });
+    $('prodRSlotBg').addEventListener('click', (e) => { if (e.target.id === 'prodRSlotBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('rsSave').addEventListener('click', async () => {
       const kind = $('rsKind').value;
       const required = $('rsReq').value === 'true';
@@ -14086,7 +14124,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('cpCancel').addEventListener('click', closer);
-    $('prodCpBg').addEventListener('click', (e) => { if (e.target.id === 'prodCpBg') closer(); });
+    $('prodCpBg').addEventListener('click', (e) => { if (e.target.id === 'prodCpBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('cpSave').addEventListener('click', async () => {
       const errEl = $('cpError'); errEl.textContent = '';
       const flake = $('cpFlake').value, base = $('cpBase').value;

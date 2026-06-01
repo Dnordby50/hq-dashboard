@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-05-31 MST] ui: accent-forward buttons; payment modal no longer closes on tab-switch or a click just outside it
+
+By: Claude Code
+Changed: index.html only (CSS button rules + the modal lifecycle JS).
+Why: Dylan: buttons are "small, boring, basic" — wants them bigger and color-matched to the UI "like the bar on the left"; and the payment modal "closes on me" when switching browser tabs and back, and is "very touchy" (a click just outside the box closes it and loses the entry).
+
+PART A — buttons (accent-forward, chosen via a styled preview). Restyled the CRM-scope button rules only (`body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn` ~1255, and `.pec-modal .pec-btn` ~1330); portal/customer buttons untouched. Bigger padding (10px 18px), larger text (.84rem), radius 10, weight 500. Primary now uses the SAME treatment as the active left-sidebar item: filled `var(--rd-accent)` + `box-shadow: 0 6px 14px var(--rd-accent-ring)`, weight 600, lift on hover. Secondary stays light with an accent border + soft-gray fill on hover (mirrors the sidebar's inactive hover). Because `--rd-accent` auto-swaps to PEC orange when the brand is on, the buttons match whatever accent is active. WHY size lives in the CRM scope, not base `.pec-btn`: base is shared with portal mode, so scoping keeps the customer portal as-is. Added a higher-specificity `.pec-btn.sm` override (7px 13px / .76rem) so the new padding doesn't inflate the many small toolbar / table-row buttons.
+
+PART B — modal vanished on tab-switch. Root cause: two blunt global safety nets, `window.addEventListener('error'|'unhandledrejection', clearAllModalRoots)`, where `clearAllModalRoots()` wiped BOTH modal roots. On tab blur/refocus a stray rejection could fire it — notably the idle-probe `_pecProbeSession` called `recoverWedgedClient()` un-awaited, so a rejection there surfaced as an unhandledrejection and nuked the open payment form. Fix (two halves): (1) the idle-probe now `recoverWedgedClient().catch(...)` so it can't float a rejection; (2) `clearAllModalRoots()` now SKIPS any root whose modal contains a `form/input/textarea/select` — it still clears a broken input-less modal, but never wipes a form the user is filling in. (`switchView`'s intentional clear is unchanged — navigating away is explicit.)
+
+PART C — "very touchy" outside-click. `openModal()` closed the dialog on any backdrop click. Now it only wires backdrop-dismiss for INFO modals (no inputs); data-entry modals (payment, edit contact, change order, compose, ...) must be closed with their explicit Cancel/✕ button, so a stray click just outside can't discard the entry. Applied the same form-guard to the six hand-rolled `#prodModalRoot` catalog editors (`prodPullBg`, `prodDetailBg`, `prodPModalBg`, `prodSModalBg`, `prodRSlotBg`, `prodCpBg`) — each already has a Cancel/Close button, so nothing gets trapped.
+
+Verified: all 6 inline `<script>` blocks parse clean (node --check per block).
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None (no DB/function/env change).
+Handoff to Dylan: Hard-reload. Buttons are bigger and color-matched (primary = filled accent + soft shadow like the active item in the left bar; they follow the PEC orange when the brand is on). Customer-portal buttons are unchanged. Recording a payment: clicking just outside the box no longer closes it (use Cancel/✕), and switching to another browser tab and back keeps the modal + your entry. The same "don't close on outside click" now applies to the Material Catalog editors too.
+
 ## [2026-05-31 MST] fix: job save wiped recipe picks when an area had a custom material (is_custom NULL on bulk insert)
 
 By: Claude Code
