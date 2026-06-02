@@ -5252,9 +5252,19 @@ const PAGE = 20;
 async function initAuth() {
   const { data } = await supabase.auth.getSession();
   state.session = data.session;
+  // B-001 fix: boot() calls renderAuthUI() explicitly right after initAuth()
+  // resolves the session, so the FIRST event onAuthStateChange emits on
+  // subscribe (INITIAL_SESSION in supabase-js v2; a SIGNED_IN on older builds)
+  // is a DUPLICATE of that initial paint. Left unguarded it makes renderAuthUI
+  // -> switchView -> renderDashboard each fire twice on load (doubled network
+  // calls, UI flicker, and the data-fetch races the eval flagged). Swallow only
+  // that first event (still keep state.session fresh from it); every real later
+  // event (sign-in, sign-out, token refresh) flows through as before.
+  let sawInitialAuthEvent = false;
   supabase.auth.onAuthStateChange(async (ev, session) => {
     const prevUid = state.session?.user?.id;
     state.session = session;
+    if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
     // A plain token refresh keeps the same user signed in. Re-resolving the
     // admin row and re-running renderAuthUI() (which calls switchView and wipes
     // the current view back to "Loading…") on every refresh is needless churn,
