@@ -14325,8 +14325,8 @@ function _mergeAcrossAreas(areaPlans) {
       // -> loadJobs). Re-entering Ordering otherwise re-renders a STALE cache, so
       // a job created after first boot (the manual "+ New Job" -> pec_prod_jobs
       // bridge, or a DripJobs webhook insert) never appeared in Ordering until a
-      // full page reload — the reported "manually-created job missing from
-      // Ordering". Refresh the list on entry to the Ordering jobs view. Skip the
+      // full page reload (the reported "manually-created job missing from
+      // Ordering"). Refresh the list on entry to the Ordering jobs view. Skip the
       // redundant reload on the very first boot (ensureBooted just loaded it) and
       // on the Catalog view (which doesn't read jobs).
       if (wasBooted && state.view === 'jobs') {
