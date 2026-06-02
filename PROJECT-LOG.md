@@ -4,6 +4,41 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-02 MST] Cowork: Dylan's 3 Phase 1 judgment calls executed (Greg ghost + prod dupe, Waxler merge, kvillalba kept)
+
+By: Cowork
+Scope: Followed up on the 3 Dylan judgment calls flagged in the earlier Phase 1 SQL handoff entry today. Files touched: PROJECT-LOG.md only.
+
+Dylan's decisions:
+ 1. Greg Gutierrez: delete the public.jobs ghost (2433cfcd-d683-49ba-a889-aeffdbb05deb) AND the unscheduled MANUAL-E933 prod row.
+ 2. Robert Waxler: delete the older customer; keep the newer.
+ 3. B-017 kvillalba.163: KEEP (Dylan identified the user as Anne Villalba, FTP-adjacent; said she still appears registered).
+
+Greg Gutierrez cleanup (PASS, destructive). One transaction:
+ - DELETE pec_prod_jobs 550aa438-8d64-4f18-9155-dc8e816cfb60 (MANUAL-20260526-141729-E933, unscheduled).
+ - DELETE public.jobs 2433cfcd-d683-49ba-a889-aeffdbb05deb (the signed $0 ghost).
+ Verify (post): exactly 2 Greg rows remain. pec_prod_jobs 1e1eb00e-f617-4c1c-8f61-756eef2e78a8 (MANUAL-A02T scheduled, install 2026-05-29, $4,345). public.jobs 96d324a9-c66e-4a8a-ae17-8a84db3ae145, deal_id 2794445.
+ Drift noted while verifying: public.jobs 96d324a9 now reads "signed, $3,995" rather than the "scheduled, $4,345" we saw earlier today during the audit. Likely Dylan or the dashboard touched it during this session (price edit + status change). Not a problem; flagged so the next audit pass doesn't treat the change as suspicious.
+
+Robert Waxler customer merge (PASS, destructive). One transaction:
+ - UPDATE public.jobs SET customer_id = 6385c5b2-a7d5-4bcb-ba9a-f00c5c9c6949 WHERE customer_id = 1b2a6c4c-7c8d-45e1-94e0-8e33c79a7335;
+ - UPDATE public.pec_prod_jobs SET customer_id = 6385c5b2-...;
+ - DELETE FROM public.customers WHERE id = '1b2a6c4c-...';
+ Verify (post): 1 Waxler customer row remaining: 6385c5b2-a7d5-4bcb-ba9a-f00c5c9c6949 (created 2026-05-26 19:43:27), with public_jobs=2 and prod_jobs=2. Order of operations mattered here: public.jobs.customer_id has ON DELETE CASCADE and pec_prod_jobs.customer_id has ON DELETE SET NULL, so the UPDATEs HAD to come before the customer DELETE.
+
+B-017 kvillalba.163 (NO ACTION, KEPT). Per Dylan: keep the account. No ban, no delete. Note for future: the kvillalba.163@gmail.com auth user (a354d64e-86bd-4b31-89a5-53718140634b) is confirmed in auth.users with NO admin_users mapping. Anyone wondering "why doesn't she see anything when she signs in" is hitting the RLS gate, not a bug. If Dylan wants her to actually access data, add an admin_users row mapping a354d64e... to a role (and decide which role - FTP staff would presumably need the same role Anne has).
+
+Residual issue NOT addressed (flagging for Dylan):
+ - Jobs-level duplicate for deal_id 2813460 (Robert Waxler): public.jobs 68d0bb0f-bdef-4594-997a-85314e19dd0c (signed, $4,702.50) AND 86bf785c-7d7d-48e0-9ed3-d773137d09c3 (scheduled, $4,702.50) BOTH still exist on the merged customer. This is the classic webhook double-fire shape (same deal_id, near-identical rows). The customer merge consolidated the OWNER, not the duplicate jobs. Dylan: tell Cowork which jobs.id to delete (the older signed 68d0bb0f looks like the original; the newer 86bf785c is the one already on the schedule). Also flagged in the earlier Cowork entry today as deal-id-2813460 group B.
+
+Files touched: PROJECT-LOG.md.
+Commits: Cowork to git add . and commit ("cowork: execute Dylan's 3 phase 1 judgment calls (Greg ghost + prod dupe, Waxler merge, kvillalba kept)"). No push.
+
+## Handoff to Dylan
+
+- Robert Waxler still has 2 public.jobs rows on the same deal_id 2813460 (68d0bb0f signed and 86bf785c scheduled). Decide which to delete (most likely the older signed 68d0bb0f), then Cowork can finish.
+- If kvillalba.163 should actually see something on sign-in, add an admin_users row (auth_user_id a354d64e-86bd-4b31-89a5-53718140634b, email kvillalba.163@gmail.com, role TBD).
+
 ## [2026-06-02 MST] Cowork: Phase 1 SQL handoff executed (B-016 A/B, price integrity + VALIDATE, ZIP-leak + reconcile, B-017 investigation)
 
 By: Cowork
