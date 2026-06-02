@@ -4,6 +4,56 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-02 MST] Phase 1 bug fixes: B-001 double-init, B-022 Ordering, CompanyCam UI, + data-hygiene SQL (B-016/B-012/B-008/B-013/B-017)
+
+By: Claude Code
+Changed: index.html; new supabase/migrations/2026-06-02_price_integrity.sql; new scripts/migrations/ (3 files). No Google Sheets touched. No emails/Slack sent. No remote push (local commits only, Dylan reviews + pushes).
+Why: Dylan ran the Phase 1 slice of the 2026-06-01 live walkthrough bug log (the highest-leverage data-hygiene + quick-wins). Phase 2/3 deliberately untouched.
+
+Important operating constraint: this Claude Code session has NO direct Supabase access (no psql, no supabase CLI, no .env/DB creds). So, per CLAUDE.md rule 8 + the Bug Diagnosis Workflow, every DB change is authored here as a committed SQL file and RUN BY COWORK in prod. The pure code fixes (B-001, B-022, CompanyCam) are done + committed directly. The data deletions, the auth-account lookup, and the price reconciliation need live rows, so they are written as guarded, verification-wrapped SQL for Cowork to execute and report on (handoff below). Nothing was invented from missing data.
+
+CODE FIXES (committed, live after deploy + hard reload):
+
+B-001 (double-init on load). Root cause: boot() (index.html ~12353) calls renderAuthUI() explicitly right after initAuth() resolves the session, AND the onAuthStateChange listener registered inside initAuth() (index.html ~5255) ALSO fires renderAuthUI() on its first emitted event (INITIAL_SESSION in supabase-js v2). That is two initial paints, so renderAuthUI / switchView -> dashboard / renderFn: renderDashboard each ran twice (doubled network, flicker, the data-fetch race the eval flagged). There was only ONE onAuthStateChange subscription, not two. Fix: a sawInitialAuthEvent flag swallows just that first listener event (keeping state.session fresh from it); boot()'s explicit renderAuthUI() stays the single deterministic first paint. Every real later event (sign-in, sign-out, token refresh) flows through unchanged. Commit bc91eb8.
+
+B-022 (manual job not in Ordering). DIVERGENCE FROM THE EVAL: the eval guessed "Ordering filters by proposal_# IS NOT NULL." The code does not. Ordering is the production module's jobs list; its loader loadJobs() (index.html ~12700) reads ALL pec_prod_jobs with no proposal filter, and pec_prod_jobs.proposal_number is already text UNIQUE NOT NULL (so it cannot be null and every write path already assigns a MANUAL-... value). The real cause: the prod module loads pec_prod_jobs exactly ONCE at boot (ensureBooted -> loadJobs, ~14268); re-entering Ordering re-renders a STALE cache, so a job created after first boot (the "+ New Job" -> pec_prod_jobs bridge at ~7345, or a DripJobs webhook) never showed until a full page reload. Fix: prodSwitchView now reloads loadJobs() on entry to the Ordering jobs view (skipping the redundant reload on first boot and on the Catalog view). Because of this, the prompt's preferred fix (auto-assign a MANUAL- proposal_number via a Postgres trigger + backfill) was NOT written: it is moot against the real schema (column is NOT NULL UNIQUE, no NULLs exist to backfill, public.jobs has no proposal_number column at all). Commit 37e0142 (+ 3ba515f punctuation).
+
+CompanyCam (eval section 3). The job-detail page showed "CompanyCam is not configured. Set COMPANYCAM_API_TOKEN..." on every job (the proxy netlify/functions/pec-companycam.cjs returns that error when the env token is unset, and index.html rendered it into the project dropdown). Fix: the CompanyCam sub-section (#ccSection) now starts display:none and is only revealed once the proxy actually returns projects (i.e. the token is set). On any error it stays hidden, so production never shows the placeholder; once configured, the linking dropdown appears as normal. Commit d938868.
+
+SQL AUTHORED FOR COWORK (not yet run; this session cannot reach the DB):
+- scripts/migrations/2026-06-02_b016_cleanup_and_dupe_investigation.sql (B-016): hard-delete the ZZZ TEST DELETE ME customer e3562d70-c06b-4303-8a6f-e0ccc86eecd6 (prod rows first since pec_prod_jobs.customer_id is ON DELETE SET NULL, then the customer which cascades public.jobs), delete the Jones/#1234 placeholder (guarded), and investigate the Greg Gutierrez (duplicate jobs) + Robert Waxler (duplicate customers) cases with read-only SELECTs + templated merge/delete that need a human decision.
+- supabase/migrations/2026-06-02_price_integrity.sql (B-012/B-008): NOT VALID CHECK constraints on jobs.price and pec_prod_jobs.revenue (range 0..100000; and no status='scheduled' at zero). NOT VALID so existing bad rows do not block the add; VALIDATE after the data is reconciled.
+- scripts/migrations/2026-06-02_b012_b013_price_reconcile_audit.sql (B-012/B-013/B-008): fix the Stephen Prescott ZIP-leak ($86,301 == ZIP 86301, on the MANUAL-20260528-041812-SX9U prod row's revenue) and a divergence audit. DIVERGENCE FROM THE EVAL: the prompt's job_lines / line_price table does not exist in this schema; the value Schedule/Costing actually show is pec_prod_jobs.revenue, so the audit compares jobs.price vs pec_prod_jobs.revenue (joined by dripjobs_deal_id, or customer_id for manual rows as a heuristic).
+- scripts/migrations/2026-06-02_b017_unknown_signin_investigation.sql (B-017): READ-ONLY lookup of kvillalba.163@gmail.com in sign_in_log / admin_users / auth.users. Deletes nothing; the ban/delete is a commented template to run only after Dylan confirms.
+
+Verified: all 6 inline <script> blocks parse clean (node --check per block, importmap excluded). No em dashes in any authored line. I did NOT run the live E2E test-job flow the prompt asked for, because it needs the deployed app against prod Supabase (no creds here); that verification is in the Cowork/Dylan handoff after deploy.
+
+Files touched: index.html, supabase/migrations/2026-06-02_price_integrity.sql, scripts/migrations/2026-06-02_b016_cleanup_and_dupe_investigation.sql, scripts/migrations/2026-06-02_b012_b013_price_reconcile_audit.sql, scripts/migrations/2026-06-02_b017_unknown_signin_investigation.sql, PROJECT-LOG.md.
+Commits: bc91eb8 (B-001), d938868 (CompanyCam), 37e0142 + 3ba515f (B-022), bbb2537 (B-016), 566e08a (B-012/B-008/B-013), d3894ed (B-017).
+Next steps: Dylan reviews + pushes; Cowork runs the SQL + reports (handoff below); Dylan makes the 3 judgment calls (handoff below). Phase 2/3 untouched and not started.
+
+## Handoff to Cowork
+
+Run on the PEC Supabase project (zdfpzmmrgotynrwkeakd, Primary DB, postgres role), in this order, after Dylan pushes the branch so the files are on main. Each script has PRE-CHECK SELECTs; run those and eyeball them BEFORE the destructive statement, and report the before/after counts.
+
+1. B-016 cleanup (scripts/migrations/2026-06-02_b016_cleanup_and_dupe_investigation.sql).
+   - Section A: run A1, then A2 (the BEGIN/COMMIT delete), then A3. Acceptance: A3's three counts are all 0.
+   - Section B: run B1; confirm it returns ONLY the Jones/#1234 dummy (no real Jones); then run B2 with the exact id. Acceptance: the placeholder is gone from Ordering + Costing.
+   - Section C (Greg Gutierrez): run C1 + C2, report the rows + whether the two prod rows share a dripjobs_deal_id (webhook double-fire) or are both MANUAL- (double manual entry). DO NOT delete; this is Dylan's call (handoff below).
+   - Section D (Robert Waxler customers): run D1, report the rows + per-customer job counts. DO NOT merge/delete yet; Dylan picks canonical (handoff below).
+2. Price-integrity constraints (supabase/migrations/2026-06-02_price_integrity.sql). Run sections A + B (the NOT VALID adds). Acceptance: select conname from pg_constraint where conname in ('jobs_price_in_range','jobs_scheduled_needs_price','pec_prod_jobs_revenue_in_range','pec_prod_jobs_scheduled_needs_revenue') returns 4 rows. Do NOT run section C (VALIDATE) until step 3 is done.
+3. Price reconcile (scripts/migrations/2026-06-02_b012_b013_price_reconcile_audit.sql). Run A1; confirm Stephen Prescott's prod revenue = 86301 and jobs_price = 3555; run A2 (the UPDATE). Run section B (the full divergence audit) and PASTE the result for Dylan. Run C1 (preview), then C2 (the safe zero->real-price update) only after the B-016 dedupe in step 1 is done. Then go back and run section C of the price_integrity migration (the 4 VALIDATE statements). Acceptance: all 4 VALIDATE succeed (no offending rows).
+4. B-017 investigation (scripts/migrations/2026-06-02_b017_unknown_signin_investigation.sql). Run queries 1-4 and report: how many sign-ins by kvillalba.163, the IP(s), whether it is in admin_users (expected: no), and whether auth.users still has the account + its last_sign_in_at. DELETE/BAN NOTHING; that is Dylan's call.
+
+## Handoff to Dylan
+
+Three judgment calls that need you (Cowork will hand you the data):
+- Greg Gutierrez duplicate: after Cowork reports section C, decide which row is the keeper (the eval suggests the SCHEDULED $4,345 is real and the SIGNED $0 is the ghost). If both are genuinely separate jobs at 13995 N Thunderbird, say so and I will leave both + note it. Tell Cowork which id to delete (or "keep both").
+- Robert Waxler duplicate customers: after section D, pick the canonical customer UUID; Cowork merges the other's jobs onto it and deletes the duplicate.
+- B-017 unknown sign-in: after Cowork's read-only report, decide revoke vs keep for kvillalba.163@gmail.com. Nothing in auth.users will be touched without your explicit go (the ban/delete statement is pre-written + commented).
+- Price ceiling sanity-check: the CHECK range is 0..100000. If PEC ever books a job above $100k, raise the ceiling in supabase/migrations/2026-06-02_price_integrity.sql before Cowork validates. Honest caveat: the ceiling does NOT catch the ZIP-leak class on its own (86301 < 100000); the real fix for that row is the data correction in step 3, and structural decoupling of price from address is Phase 2.
+- E2E verification the prompt wanted (create customer -> create job -> confirm it shows in Ordering -> price persists across Jobs/Costing/Schedule): I could not run it (no deployed app / DB here). After deploy + the Cowork SQL, please run it once, or hand it to Cowork.
+
 ## [2026-06-01 MST] backlog #5/#6/#7: atomic job save (RPC) + single prod hydration core + webhook job dedupe
 
 By: Claude Code
