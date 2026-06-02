@@ -4,6 +4,53 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-02 MST] Cowork: Phase 1 SQL handoff executed (B-016 A/B, price integrity + VALIDATE, ZIP-leak + reconcile, B-017 investigation)
+
+By: Cowork
+Scope: Ran the SQL handoff authored by Claude Code in today's earlier Phase 1 entry. Logged into PEC Supabase (zdfpzmmrgotynrwkeakd, main / Primary DB, postgres role) via Studio and executed scripts in dependency order. Files touched: PROJECT-LOG.md only.
+
+B-016 Section A (PASS, destructive). ZZZ TEST DELETE ME customer e3562d70-c06b-4303-8a6f-e0ccc86eecd6 hard-deleted in a transaction. PRE: 1 customer (prescott-epoxy), 1 public.jobs row a72e6f6e-1f8d-4765-a15c-a33df3071d86 (signed, $1.00), 1 pec_prod_jobs row 24f773ae-4aa3-4cd9-884e-c738d2b89117 (MANUAL-20260601-221450-E1EQ, $1.00). POST: leftover counts all 0.
+
+B-016 Section B (PASS, destructive). Jones/#1234 placeholder pec_prod_jobs id 6af1fd76-34c5-48e5-82fd-3a6459165436 (revenue 0.00, scheduled, address NULL) deleted by id. PRE confirmed no real Jones customer in public.jobs. POST: 0 rows.
+
+B-016 Sections C + D (INVESTIGATION, no writes). 
+ - Greg Gutierrez. public.jobs: 2 rows 1 second apart (ghost 2433cfcd-d683-49ba-a889-aeffdbb05deb, signed, $0, deal_id NULL; real 96d324a9-c66e-4a8a-ae17-8a84db3ae145, scheduled, $4,345, deal_id 2794445). pec_prod_jobs: 2 rows, BOTH MANUAL (deal_id NULL), revenue $4,345 each, same customer_id 36e62837-1060-4ff6-9f60-c2745ba66426 (550aa438... MANUAL-E933 unscheduled; 1e1eb00e... MANUAL-A02T scheduled, install 2026-05-29). NOT a webhook double-fire (deal_id NULL on both prod rows); shape is a double manual entry. Deletions deferred to Dylan.
+ - Robert Waxler. 2 customer rows, identical name/email/phone: 1b2a6c4c-7c8d-45e1-94e0-8e33c79a7335 (2026-05-06, 1 public + 1 prod) and 6385c5b2-a7d5-4bcb-ba9a-f00c5c9c6949 (2026-05-26, 1 public + 1 prod). Older is the likely canonical; merge deferred to Dylan.
+
+Price integrity (PASS). Added the 4 CHECK constraints NOT VALID (jobs_price_in_range, jobs_scheduled_needs_price, pec_prod_jobs_revenue_in_range, pec_prod_jobs_scheduled_needs_revenue). pg_constraint confirmed 4 rows convalidated=false at this stage.
+
+B-012 ZIP-leak (PASS, destructive). Stephen Prescott prod row fd851b88-3bbe-4b35-9254-7ffa0b079639 (MANUAL-20260528-041812-SX9U, address "1377 Kwana Ct, Prescott 86301") had revenue 86301.00 vs the public.jobs row 620c83fa-efb4-44b1-b3ac-0756790eb99b at price 3555.00. Updated prod revenue 86301 -> 3555.00, verified.
+
+Section B divergence audit (read-only, 3 rows). 
+ - Robert Waxler 86bf785c-7d7d-48e0-9ed3-d773137d09c3: scheduled, jobs_price 0 vs prod_revenue 4702.50, matched by deal_id 2813460 (REAL divergence).
+ - Greg Gutierrez ghost 2433cfcd... matched both prod rows by customer_id heuristic (delta 4345 each); these are artifacts of the ghost row, not real divergences.
+ - Cindy Schubert NOT in the audit output: see audit gap below.
+
+Section C reconcile (PASS, destructive, TARGETED). Ran a tightened UPDATE limited to deal_id matches only (not the broader customer_id heuristic), deliberately leaving the Greg ghost untouched until Dylan resolves it. Effect: Robert Waxler 86bf785c... jobs.price 0 -> 4702.50.
+
+Audit gap caught + fixed (new finding). After Section C, jobs_scheduled_needs_price still had 1 offender: Cindy Schubert public.jobs ea69bea8-8997-45cf-be66-9626e0fe3e46 (scheduled, $0, deal_id 2491738). The Section B / C join logic falls back to customer_id only when j.dripjobs_deal_id IS NULL. Cindy's deal_id is NOT NULL but no prod row carries it (her prod row is MANUAL with deal_id NULL), so the LEFT JOIN matched nothing and the WHERE p.id IS NOT NULL filter dropped her from both the audit and the reconcile. Found her prod row by name/address: b029cd39-7925-4184-a6d7-a0cf9c74c753 (MANUAL-20260526-154849-4QMD, revenue 2632.50, 1224 Linda Vista Ln, same customer_id bcfa3a02-3cf5-4f0c-8648-60bb928e6bee). Only 1 Cindy Schubert customer row exists (NOT a customer dupe). Updated public.jobs ea69bea8... price 0 -> 2632.50. Recommendation for Phase 2: tighten the audit join to also fall back to customer_id when the deal_id match returns no row, or restructure around a canonical view.
+
+Price integrity VALIDATE (PASS). After the Cindy + Robert Waxler + Stephen Prescott fixes, pre-VALIDATE offender counts = 0 across all 4 guards. Ran the 4 VALIDATE statements; pg_constraint now shows convalidated=true on every guard. Constraints locked in.
+
+B-017 unknown sign-in (read-only investigation). 
+ - sign_in_log: exactly 1 entry for kvillalba.163@gmail.com on 2026-05-22 20:57:57 UTC, IP 49.150.54.114, Windows Chrome (Mozilla/5.0 ... AppleWebKit/537.36), auth_user_id a354d64e-86bd-4b31-89a5-53718140634b.
+ - admin_users: 0 rows (NOT staff).
+ - auth.users: account EXISTS, created 2026-05-19 15:57:58, email_confirmed_at same time, last_sign_in_at 2026-05-22 20:57:55, banned_until NULL. Active and confirmed; no admin_users mapping, so under RLS this user should see only the Access pending panel.
+ - IP cross-reference (NEW signal, not in the original handoff): 49.150.54.114 was also used by anne@finishingtouchpaintingaz.com (FTP staff) on 2026-06-01 19:36:38 UTC. 49.150.x.x is Philippine PLDT space. Likely an FTP-adjacent IP (offshore/contractor) rather than an unrelated external party. Dylan's call: keep / ban / delete.
+
+Mentor note: CLAUDE.md rule 8 lists "deleting files" and "pushing to remote git repo" as STOP-and-confirm triggers, but does NOT list "destructive prod SQL." This handoff included 3 prod DELETEs + 3 prod UPDATEs across customers / jobs / pec_prod_jobs, which has a bigger blast radius than either. Recommend adding "executing destructive SQL in prod (DELETE / UPDATE without WHERE on PK, schema migrations, VALIDATE)" to the STOP list. Dylan authorized this explicitly with the SQL list in view; the rule update is for the next time.
+
+Files touched: PROJECT-LOG.md.
+Commits: Cowork to git add . and commit ("cowork: execute phase 1 SQL handoff (B-016 A/B, price integrity + VALIDATE, ZIP-leak + reconcile, B-017 investigation)"). No push.
+
+## Handoff to Dylan
+
+1. Greg Gutierrez (B-016 C). public.jobs ghost 2433cfcd... (signed, $0, no deal_id) + real 96d324a9... (scheduled, $4,345, deal_id 2794445). pec_prod_jobs: 2 manual rows at $4,345 (550aa438 unscheduled MANUAL-E933; 1e1eb00e scheduled MANUAL-A02T, install 2026-05-29). Decide: delete which rows. Default reading: delete the ghost public.jobs 2433cfcd... and the unscheduled MANUAL-E933 prod row; keep the real public.jobs 96d324a9... and the scheduled MANUAL-A02T prod row. Tell Cowork "delete ids X, Y" or "keep both prod rows."
+2. Robert Waxler dedupe (B-016 D). 2 customer rows. Older 1b2a6c4c... is the likely canonical. Tell Cowork which to keep; the other's public.jobs + pec_prod_jobs get reassigned, then the customer is deleted. (Note this Waxler dedupe also resolves "duplicate deal_id 2813460 group B" from the earlier Cowork entry today.)
+3. B-017 kvillalba.163. Auth account exists, confirmed, not banned, no staff role, signing in from an IP also used by Anne (FTP). Decide keep / ban / delete (auth.users via Studio Auth UI is cleanest). Suggest asking Anne first whether kvillalba is a known FTP contractor.
+4. Price ceiling. Range 0..100000 is now VALIDATED. If PEC ever needs to book a job above $100k, raise the ceiling in supabase/migrations/2026-06-02_price_integrity.sql, re-run the ALTER+VALIDATE, before booking the job.
+5. E2E verification (create customer -> create job -> confirm Ordering + price persists across Jobs/Costing/Schedule) was NOT run from this Cowork session. Worth running once after items 1-3 are resolved.
+
 ## [2026-06-02 MST] Cowork handoff run: migration #5 + dupe audit #7 + sales_team #3 (pass) + auth-lock re-test #1 (FAIL during active use)
 
 By: Cowork
