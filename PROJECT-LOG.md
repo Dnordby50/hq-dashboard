@@ -4,6 +4,84 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-02 MST] Cowork handoff run: migration #5 + dupe audit #7 + sales_team #3 (pass) + auth-lock re-test #1 (FAIL during active use)
+
+By: Cowork
+Scope: Executed the 4-task handoff from 2026-06-01's backlog #5/#6/#7 entry. Tasks 1, 2, 3 pass cleanly. Task 4 active-use portion FAILED (wedge regressed during active use, before the 60-min idle leg was even attempted). Per Dylan's pre-task pick, only the active-use portion of #4 was run, not the 60-min idle. No app code touched (per the handoff). Files touched: PROJECT-LOG.md only.
+
+Task 1 (PASS). Ran supabase/migrations/2026-06-02_job_save_txn.sql in the Supabase SQL editor (project zdfpzmmrgotynrwkeakd, Primary DB, postgres role). Supabase flagged the function body as "destructive" (because it contains a DELETE inside the plpgsql body); confirmed and ran. Acceptance: select proname from pg_proc where proname='pec_replace_job_areas' returned 1 row. The atomic RPC is live; the client's graceful fallback path is no longer the active path.
+
+Task 2 (audit reported). pec_prod_jobs duplicate-deal-id audit returned 0 rows (no duplicates). public.jobs duplicate-deal-id audit returned 2 groups (4 rows total). The Cowork prompt asked for install_date in the row list; install_date does not exist on public.jobs (it lives on pec_prod_jobs), so the listing uses jobs columns + a correlated pec_prod_jobs.install_date lookup by deal_id (both came back NULL).
+
+  Group A: dripjobs_deal_id 2776218 (count 2). NOTE these are two DIFFERENT customers at two DIFFERENT addresses sharing one deal_id, not a webhook re-fire:
+    A1: jobs.id b5a9db08-54ca-479f-9a8d-ab646b3d0075, created 2026-05-26 17:02:54 UTC, status scheduled, customer 52e62ef0-c012-4050-b122-41e3bc5946e0, 385 Fox Hollow Cir Prescott 86303, price 7350.00, pp_install_date NULL.
+    A2: jobs.id 2280c568-b1f4-482a-ba03-b81913ae298e, created 2026-05-26 17:10:41 UTC, status scheduled, customer b8f058e2-59a4-462a-8977-b73217599985, 1729 Rolling Hills Dr Prescott 86303, price 3450.00, pp_install_date NULL.
+
+  Group B: dripjobs_deal_id 2813460 (count 2). Same address (6991 N State Route 89, Chino Valley 86323), different customer rows. Looks like one real job + a $0 placeholder created later (the kind of dupe the webhook fix is meant to prevent going forward):
+    B1: jobs.id 68d0bb0f-bdef-4594-997a-85314e19dd0c, created 2026-05-06 20:28:35 UTC, status signed, customer 1b2a6c4c-7c8d-45e1-94e0-8e33c79a7335, price 4702.50, pp_install_date NULL.
+    B2: jobs.id 86bf785c-7d7d-48e0-9ed3-d773137d09c3, created 2026-05-26 19:44:34 UTC, status scheduled, customer 6385c5b2-a7d5-4bcb-ba9a-f00c5c9c6949, price 0.00, pp_install_date NULL.
+
+  Per handoff: did NOT delete anything; did NOT add a unique index. Dylan needs to decide per group (see handoff to Dylan below).
+
+Task 3 (PASS). select to_regclass('public.pec_sales_team_members') returned NULL (table did not exist), so ran supabase/migrations/2026-05-24_sales_team_members.sql in the SQL editor (the idempotent BEGIN/COMMIT block). Then bulk-inserted the roster Dylan provided (Dylan Nordby, Aron Bronson) with on conflict (name) do nothing. Acceptance: select count(*) from public.pec_sales_team_members returned 2 (matches the 2-name roster).
+
+Task 4 (FAIL - active-use wedge regression). Hard-reloaded https://hq-prescott.netlify.app (Cmd+Shift+R), confirmed via in-page probe that the noopLock is gone and the real navigator.locks lock is active. Healthy baseline:
+  lock_is_navigator_locks: true, lock_is_noop: false, lockAcquired: false, refreshingDeferred: null, pendingInLock_len: 0.
+
+Then drove the app: clicked Jobs (load OK, lock state clean), opened the ZZZ TEST DELETE ME labeled test job (load OK, lock state clean), scrolled to the estimate section, clicked Finalize estimate. At that point CDP could not dispatch further mouse events (Input.dispatchMouseEvent timed out 30s) and screenshots hit document_idle-waited-45000ms repeatedly. The page eventually became scriptable again, but the auth-token lock did not release. Captured fingerprint roughly 1 minute after the click and again 15s later:
+
+  T+~60s: lockAcquired: true, refreshingDeferred: null, pendingInLock_len: 2, navigator.locks held: 1 exclusive lock named lock:sb-zdfpzmmrgotynrwkeakd-auth-token, navigator.locks pending: 1 exclusive on the same name.
+  T+~75s: pendingInLock_len: 3 (still 1 held / 1 pending in navigator.locks).
+  T+~85s: pendingInLock_len: 4.
+  T+~115s: pendingInLock_len: 6.
+  T+~130s: pendingInLock_len: 7. refreshingDeferred still null. navigator.locks still held by 1 client, 1 pending.
+
+The pendingInLock queue keeps growing while no refresh is actually running and no /auth/v1/token request is on the wire (no console "[pec] ... timed out" log fired, because no operation has run long enough yet to trip the in-page deadlines; the wedge will surface to the user the next time something tries a read). The CLAUDE.md "fingerprint" matches in spirit (lockAcquired:true + refreshingDeferred:null + pendingInLock growing), but with one important difference from the 2026-05-31 diagnosis: this time navigator.locks IS held (exclusive). The previous wedge had navigator.locks clean and the strand was purely inside GoTrue's JS bookkeeping under the no-op lock; this wedge has the real navigator.locks lock acquired and never released. Per Dylan's pre-task answer, did NOT run the 60-minute idle leg; the active-use leg already failed.
+
+No $0.01 test payment was recorded; the Finalize estimate click is what tripped the wedge and the page never resumed.
+
+Files touched: PROJECT-LOG.md.
+Commits: Cowork to git add . and commit (per CLAUDE.md rule 8 / Cowork conventions): single commit "cowork: log handoff run results (tasks 1-3 pass; task 4 wedge regressed during active use)". No push.
+
+## Handoff to Dylan
+
+- public.jobs duplicate-deal-id audit (task 2): two groups need your decision. Group A (deal 2776218) has two DIFFERENT customers/addresses sharing one deal_id, which is not the webhook re-fire shape; this looks like a deal_id collision in DripJobs itself or a mis-mapping at import. Group B (deal 2813460) is the classic webhook-shape dupe: same address, one real signed row at $4,702.50 and a later $0 scheduled placeholder. Tell Cowork which row id(s) to delete for each group (or "keep both" for A if those really are two separate jobs). Reminder per the earlier entry: a unique index on (table, dripjobs_deal_id) is deliberately deferred until the data is clean.
+- Auth-lock wedge (task 4) returned during ACTIVE USE after clicking Finalize estimate on ZZZ TEST DELETE ME. The fingerprint matches the lockAcquired:true / refreshingDeferred:null / pendingInLock-growing shape, but with the new wrinkle that navigator.locks itself is held this time. The page also stopped accepting input briefly (CDP could not dispatch click/JS for ~45-90s before recovering). The 2026-05-31 fix (remove no-op lock so the default navigator.locks lock is used) is necessary but not sufficient: something inside this active path is holding the real lock and not releasing it. Recommend escalating to the SHORT-HOLD custom navigator.locks lock that CLAUDE.md's Architecture Gotchas section names as the fallback. A self-contained prompt for Claude Code is below.
+
+## Prompt for Claude Code
+
+```
+## Context
+HQ-Dashboard. Commit b52a3ac on main (the no-op-lock removal from 2026-05-31 + the atomic-save RPC + webhook dedupe from 2026-06-01) is live on https://hq-prescott.netlify.app. Cowork ran the 2026-06-01 handoff on 2026-06-02:
+- Migration supabase/migrations/2026-06-02_job_save_txn.sql is APPLIED in prod (pec_replace_job_areas exists, 1 row in pg_proc).
+- pec_prod_jobs has zero duplicate deal_ids; public.jobs has two duplicate groups (2776218 x2, 2813460 x2), pending Dylan's keep/delete decision (do not touch).
+- public.pec_sales_team_members exists, seeded with 2 rows (Dylan Nordby, Aron Bronson).
+- Auth-lock IDLE re-test was NOT run yet; the ACTIVE-USE re-test REGRESSED.
+
+Active-use regression evidence (captured live by Cowork on 2026-06-02):
+- After Cmd+Shift+R the client uses the real navigator.locks lock (lock_is_noop:false, lock_is_navigator_locks:true, baseline lockAcquired:false / refreshingDeferred:null / pendingInLock_len:0).
+- Reproduced by: Jobs -> open ZZZ TEST DELETE ME -> Finalize estimate. Renderer went unresponsive to CDP for ~45-90s (the click did not visibly resolve).
+- After it became scriptable again, the wedge state persisted and grew:
+  - lockAcquired: true (stranded)
+  - refreshingDeferred: null (no refresh actually in flight)
+  - pendingInLock_len grew 2 -> 3 -> 4 -> 6 -> 7 over ~70s and kept growing
+  - navigator.locks.query() showed 1 exclusive lock held on lock:sb-zdfpzmmrgotynrwkeakd-auth-token plus 1 pending on the same name
+- No "[pec] ... timed out" / "[pec] session wedge detected" line in console (the in-page deadlines did not trip in the observation window).
+
+This is a DIFFERENT shape from the 2026-05-31 wedge: that one had navigator.locks clean and the strand was inside GoTrue's JS bookkeeping under the no-op lock. This one has the real navigator.locks lock acquired and never released. The 2026-05-31 fix is necessary but not sufficient.
+
+## Tasks
+1. Implement the SHORT-HOLD custom navigator.locks lock that CLAUDE.md's Architecture Gotchas section names as the fallback, instead of (or alongside) reverting to the default lock. The intent: wrap GoTrue's auth callback in a navigator.locks.request(name, {mode:'exclusive', steal:true after N ms}) so a holder that fails to release is forcibly evicted instead of strand-locking the page. Keep timedFetch (8s hard abort on /auth/v1/) in place.
+   - Where: index.html, in makeClient (the supabase client config). Same site as the 2026-05-31 fix.
+   - The lock function must call fn() inside navigator.locks.request and AWAIT it (so the lock holds only while fn() is in flight), with a steal-after-deadline safety net for the wedge case (likely 10-15s, larger than timedFetch's 8s so the fetch usually wins the race).
+   - Acceptance: build parses; the active-use repro above no longer wedges (Cowork will re-test); no SESSION_WEDGED / SESSION_TIMEOUT in console during multi-minute active use; lockAcquired transitions cleanly (does not strand at true with refreshingDeferred:null).
+2. Add a console.error(...) when the steal path actually triggers (so we have visibility next time something IS holding the lock too long).
+3. Keep the existing recovery scaffolding (recoverWedgedClient, withFreshSession, withDeadline, withFreshWriteRetry, visibilitychange idle-probe, 15s render fence with Retry-reload).
+
+## After
+Append a PROJECT-LOG entry under your name (Claude Code) describing the lock function shipped and the steal deadline chosen. Hand back to Cowork to (a) hard-reload + re-probe (expect lockAcquired:false / pendingInLock:0 baseline after the active-use repro), (b) re-run the active-use sequence (Jobs -> open ZZZ TEST DELETE ME -> Finalize estimate), (c) the 60-minute idle leg that was skipped this run.
+```
+
 ## [2026-06-02 MST] Phase 1 bug fixes: B-001 double-init, B-022 Ordering, CompanyCam UI, + data-hygiene SQL (B-016/B-012/B-008/B-013/B-017)
 
 By: Claude Code
