@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] backlog #5/#6/#7: atomic job save (RPC) + single prod hydration core + webhook job dedupe
+
+By: Claude Code
+Changed: index.html, netlify/functions/pec-webhook-proposal-accepted.cjs, new supabase/migrations/2026-06-02_job_save_txn.sql.
+Why: Dylan asked to clear the open-loop backlog #1-8 in one pass. #5-#7 are code/migration (done here); #1-#4 are verification/ops handoffs (below); #8 (remove the wedge band-aids) is DEFERRED until Cowork's idle re-test confirms the auth-lock fix holds (his choice).
+
+#7 — Stop duplicate job rows. The proposal-accepted webhook already deduped pec_prod_jobs (SELECT-before-INSERT), but the public.jobs write was a plain INSERT with no guard, so a webhook re-fire created a second jobs row for the same DripJobs deal (dripjobs_deal_id is NOT unique on either table). Added the same SELECT-before-INSERT guard before the /jobs POST (reuse the existing row when `deal_id` matches; only when a deal_id is present so manual jobs are unaffected), and moved the default-timeline-stages creation to run ONLY for a newly created job (a re-fire reusing the job must not duplicate its stages). Existing duplicates still need a Cowork data audit (handoff below); deliberately did NOT add a unique index yet (clean the data first).
+
+#5 — Atomic job-estimate save. The save was 4 separate writes (update jobs -> delete job_areas -> insert areas -> insert materials); a failure between the delete and the materials insert wiped picks (the earlier "lost ALL my info" class). New migration `2026-06-02_job_save_txn.sql` adds `public.pec_replace_job_areas(p_job_id uuid, p_areas jsonb, p_materials jsonb)` -- a SECURITY DEFINER plpgsql function (guarded by `is_admin_staff()`) that deletes + reinserts job_areas AND job_area_materials in ONE transaction (atomic: any error rolls the whole thing back). Materials carry `area_index` (= the area's order_index); the function maps that to each newly-inserted area id. The client `saveJob` now builds `areaPayload` + `matPayload` and calls `supabase.rpc('pec_replace_job_areas', ...)` in place of the delete+insert+insert. Graceful fallback: if the function isn't deployed yet (PostgREST PGRST202 / 42883), it falls back to the legacy separate-calls path (which keeps the older price/description column fallback + the is_custom normalization), so saving keeps working before Cowork runs the migration. The jobs update (price/line_items/status/job-card fields) stays a separate idempotent call before the RPC; residual risk (jobs row updated but RPC rolled back) is minor and self-corrects on the next save -- the catastrophic data-loss path is gone.
+
+#6 — One hydration core for the two production loaders. `loadScheduleData` and `loadCostingData` both populated prodJobs/scheduleDays/systemTypes/crews/productAreasByJob/salesTeam but with DIFFERENT shapes (costing omitted area.sqft, used column subsets, opposite prodJobs sort) -- the root of the half-loaded-state crash class. Extracted `loadProdCore()` that loads those shared slots once with the SUPERSET shape (select('*') for jobs/crews/system_types, areas WITH sqft). `loadScheduleData` = just `loadProdCore()`; `loadCostingData` = `loadProdCore()` + the costing-only slots (costing, crew_members, material lines aggregates, bonuses) + `costingLoaded=true`, and now derives `scheduleByJob` from the core-loaded `scheduleDays` (dropped a redundant query). renderJobCosting sorts its list recent-first explicitly (core loads ascending for the schedule). renderUnifiedJob's `!state.costingLoaded` guard stays. Net: shared slots are identical regardless of entry path; costing-only slots stay gated.
+
+Verified: all 6 inline `<script>` blocks parse clean; `node --check` on the .cjs; no stale references to the removed costing-loader vars.
+
+Files touched: index.html, netlify/functions/pec-webhook-proposal-accepted.cjs, supabase/migrations/2026-06-02_job_save_txn.sql, PROJECT-LOG.md.
+Next steps: Cowork runs the #5 migration + the #7 dupe audit (handoff below); #1-#4 verification (handoff below); #8 after #1 passes.
+
+## Handoff to Cowork
+
+1. **Run migration `supabase/migrations/2026-06-02_job_save_txn.sql`** (PEC project `zdfpzmmrgotynrwkeakd`, Primary DB, postgres role). Adds the `public.pec_replace_job_areas(uuid,jsonb,jsonb)` function (security definer, is_admin_staff-guarded). Acceptance: `select proname from pg_proc where proname='pec_replace_job_areas';` returns 1 row. Until it's run, the dashboard save uses a graceful fallback, so no rush, but per-save atomicity only kicks in after it's live.
+2. **Duplicate-deal-id audit (#7).** Run and report counts: `select dripjobs_deal_id, count(*) from public.pec_prod_jobs where dripjobs_deal_id is not null group by 1 having count(*)>1;` and the same for `public.jobs`. For any group >1, list the rows (id, created_at, status) for Dylan to decide which to keep; do NOT auto-delete. (The app now tolerates dupes on read and the webhook won't create new ones; this is cleanup of pre-existing dupes. A unique index is a follow-up once clean.)
+3. **sales_team table (#3).** Confirm `public.pec_sales_team_members` exists (run `supabase/migrations/2026-05-24_sales_team_members.sql` if not -- idempotent), then ask Dylan for the current sales roster and bulk-insert the names. Acceptance: `select count(*) from public.pec_sales_team_members;` matches the roster.
+4. **Auth-lock wedge idle re-test (#1).** On https://hq-prescott.netlify.app after deploy: hard-reload (confirm no `noopLock`); use the app actively several minutes (no SESSION_WEDGED/SESSION_TIMEOUT); then leave the tab idle 60+ min, return, and immediately click Jobs + record a $0.01 test payment on a test job (delete it after). Capture console + the `/auth/v1/token` network entry (status/ms/any canceled). Report pass/fail + the lock fingerprint if it wedges. If it regresses, say so -- the fallback is a short-hold custom navigator.locks lock.
+
+## Handoff to Dylan
+
+- **#2 Email (Resend):** confirm/set in Netlify env (Production + Deploy contexts) `RESEND_API_KEY` and `RESEND_WEBHOOK_SECRET`, verify the Resend sending domain, and that the Resend webhook points at `https://hq-prescott.netlify.app/.netlify/functions/pec-webhook-resend` (events: delivered, bounced, opened, clicked). Until these are set, the invoice "Email" button silently won't send. Quick check: Settings -> Email -> send a test to yourself.
+- **#4 CompanyCam:** optional. Set `COMPANYCAM_API_TOKEN` in Netlify env to light up the job-photo widget, or leave it -- it stays a quiet "unavailable" with no error. Your call.
+- After the Cowork migration (#5) deploys, saving a job estimate is atomic (a failed save can no longer wipe your color/recipe picks). Re-firing a DripJobs proposal no longer creates duplicate jobs.
+
 ## [2026-06-01 MST] hardening: shared schedule resolver + killed the last duplicate-deal-id maybeSingle (stop the recurring class of bugs)
 
 By: Claude Code

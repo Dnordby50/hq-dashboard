@@ -8651,6 +8651,74 @@ async function renderJobDetail(id) {
       // the job detail and lives only on the crew's job-complete work order.
       // Omitting it leaves the column untouched on a job-detail save.
     };
+    // Build the atomic-save payloads (deterministic from `areas`). area_index
+    // ties each material to its area's order_index so the RPC can resolve it to
+    // the newly-inserted job_areas.id after the insert.
+    const areaPayload = areas.map((a, idx) => ({
+      order_index: idx,
+      name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main' : `Area ${idx+1}`),
+      sqft: (a.sqft === '' || a.sqft == null) ? null : Number(a.sqft),
+      system_type_id: a.system_type_id || null,
+      flake_product_id: firstPick(a, t => SWATCH_TYPES.has(t)),
+      basecoat_product_id: firstPick(a, t => t === 'Basecoat'),
+      topcoat_cure_speed: a.topcoat_cure_speed || null,
+      price: (a.price === '' || a.price == null) ? null : Number(a.price),
+      description: (a.description || '').trim() || null,
+    }));
+    const matPayload = [];
+    areas.forEach((a, idx) => {
+      for (const slot of (slotsBySystem[a.system_type_id] || [])) {
+        const pk = a.picks[slot.id]; if (!pk) continue;
+        const kind = slot.slot_kind || 'product';
+        const base = { area_index: idx, recipe_slot_id: slot.id, slot_label: slot.label || slot.material_type, slot_kind: kind, material_type: slot.material_type, order_index: slot.order_index || 0 };
+        if (kind === 'choice') {
+          if (pk.choice) matPayload.push({ ...base, pick_index: 0, choice_value: pk.choice });
+        } else if (kind === 'text') {
+          if (pk.text) matPayload.push({ ...base, pick_index: 0, text_value: pk.text });
+        } else {
+          pk.productIds.filter(Boolean).forEach((pid, pi) => {
+            const isSO = pi === 0 && productById[pid] && isSpecialOrder(productById[pid]);
+            matPayload.push({ ...base, pick_index: pi, product_id: pid, text_value: isSO ? (pk.text || null) : null });
+          });
+        }
+      }
+      a.customs.forEach((c, ci) => {
+        if (!c.label && !c.productId && !c.text) return;
+        matPayload.push({ area_index: idx, recipe_slot_id: null, slot_label: c.label || 'Custom', slot_kind: 'custom', material_type: null, order_index: 100 + ci, pick_index: 0, product_id: c.productId || null, text_value: c.text || null, is_custom: true });
+      });
+    });
+
+    // Legacy (pre-migration) replace: delete + reinsert job_areas, then
+    // job_area_materials, as separate calls. Used ONLY as a fallback when the
+    // pec_replace_job_areas RPC isn't deployed yet. Keeps the older
+    // price/description column fallback + the is_custom normalization.
+    const legacyReplaceAreas = async () => {
+      const del = await withDeadline(() => supabase.from('job_areas').delete().eq('job_id', id), { label: 'job-save-areas-del' });
+      if (del.error) throw del.error;
+      let saved = [];
+      if (areaPayload.length) {
+        const rows = areaPayload.map(a => ({ job_id: id, ...a }));
+        let ins = await withDeadline(() => supabase.from('job_areas').insert(rows).select(), { label: 'job-save-areas-ins' });
+        if (ins.error && (ins.error.code === 'PGRST204' || /price|description|schema cache/i.test(ins.error.message || ''))) {
+          const stripped = rows.map(({ price, description, ...rest }) => rest);
+          ins = await withDeadline(() => supabase.from('job_areas').insert(stripped).select(), { label: 'job-save-areas-ins-fallback' });
+        }
+        if (ins.error) throw ins.error;
+        saved = ins.data || [];
+      }
+      const idByOrder = {}; saved.forEach(s => { idByOrder[s.order_index] = s.id; });
+      const MAT_COLS = ['job_area_id','recipe_slot_id','slot_label','slot_kind','material_type','order_index','pick_index','product_id','choice_value','text_value','is_custom'];
+      const matRows = matPayload.map(m => {
+        const o = {}; for (const c of MAT_COLS) o[c] = (m[c] === undefined ? null : m[c]);
+        o.job_area_id = idByOrder[m.area_index]; o.is_custom = !!m.is_custom;
+        return o;
+      }).filter(o => o.job_area_id);
+      if (matRows.length) {
+        const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRows), { label: 'job-save-materials' });
+        if (mins.error) throw mins.error;
+      }
+    };
+
     // Auto-retry once. A job save is a REPLACE (update job, then rebuild its
     // areas & materials), so re-running it is idempotent and safe. If attempt 1
     // fails because the auth client wedged after the tab idled, rebuild the
@@ -8660,92 +8728,18 @@ async function renderJobDetail(id) {
      try {
       const upd = await withDeadline(() => supabase.from('jobs').update(jobPatch).eq('id', id), { label: 'job-save' });
       if (upd.error) throw upd.error;
-      // Delete + re-insert job_areas; the cascade clears job_area_materials.
-      const del = await withDeadline(() => supabase.from('job_areas').delete().eq('job_id', id), { label: 'job-save-areas-del' });
-      if (del.error) throw del.error;
-      const areaRows = areas.map((a, idx) => ({
-        job_id: id,
-        // Persist the user-typed line name (falls back to a positional label).
-        name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main' : `Area ${idx+1}`),
-        sqft: (a.sqft === '' || a.sqft == null) ? null : Number(a.sqft),
-        system_type_id: a.system_type_id || null,
-        flake_product_id: firstPick(a, t => SWATCH_TYPES.has(t)),
-        basecoat_product_id: firstPick(a, t => t === 'Basecoat'),
-        topcoat_cure_speed: a.topcoat_cure_speed || null,
-        // Estimate columns (migration 2026-06-01_job_area_estimate.sql).
-        price: (a.price === '' || a.price == null) ? null : Number(a.price),
-        description: (a.description || '').trim() || null,
-        order_index: idx,
-      }));
-      let saved = [];
-      if (areaRows.length) {
-        let ins = await withDeadline(() => supabase.from('job_areas').insert(areaRows).select(), { label: 'job-save-areas-ins' });
-        // Pre-migration fallback: if job_areas.price/description don't exist yet,
-        // strip them and persist everything else so the save still works. The
-        // per-line price already landed on jobs.line_items (the invoice's
-        // source); only the per-line price/detail reload empty until the
-        // migration runs. PostgREST reports a missing column as PGRST204.
-        if (ins.error && (ins.error.code === 'PGRST204' || /price|description|schema cache/i.test(ins.error.message || ''))) {
-          console.warn('[pec] job_areas.price/description missing — saving without them (run 2026-06-01_job_area_estimate.sql)', ins.error);
-          const stripped = areaRows.map(({ price, description, ...rest }) => rest);
-          ins = await withDeadline(() => supabase.from('job_areas').insert(stripped).select(), { label: 'job-save-areas-ins-fallback' });
-        }
-        if (ins.error) throw ins.error;
-        saved = ins.data || [];
-      }
-      // Rebuild job_area_materials from each area's picks + customs.
-      const matRows = [];
-      for (const ar of saved) {
-        const a = areas[ar.order_index]; if (!a) continue;
-        for (const slot of (slotsBySystem[a.system_type_id] || [])) {
-          const pk = a.picks[slot.id]; if (!pk) continue;
-          const kind = slot.slot_kind || 'product';
-          const base = {
-            job_area_id: ar.id, recipe_slot_id: slot.id,
-            slot_label: slot.label || slot.material_type, slot_kind: kind,
-            material_type: slot.material_type, order_index: slot.order_index || 0,
-          };
-          if (kind === 'choice') {
-            if (pk.choice) matRows.push({ ...base, pick_index: 0, choice_value: pk.choice });
-          } else if (kind === 'text') {
-            if (pk.text) matRows.push({ ...base, pick_index: 0, text_value: pk.text });
-          } else {
-            pk.productIds.filter(Boolean).forEach((pid, pi) => {
-              // Carry the special-order note (pk.text) only on a special-order
-              // pick, so a normal color pick never persists a stale note.
-              const isSO = pi === 0 && productById[pid] && isSpecialOrder(productById[pid]);
-              matRows.push({ ...base, pick_index: pi, product_id: pid, text_value: isSO ? (pk.text || null) : null });
-            });
-          }
-        }
-        a.customs.forEach((c, ci) => {
-          if (!c.label && !c.productId && !c.text) return;
-          matRows.push({
-            job_area_id: ar.id, recipe_slot_id: null,
-            slot_label: c.label || 'Custom', slot_kind: 'custom', material_type: null,
-            order_index: 100 + ci, pick_index: 0,
-            product_id: c.productId || null, text_value: c.text || null, is_custom: true,
-          });
-        });
-      }
-      if (matRows.length) {
-        // Normalize every row to the SAME column set before the bulk insert.
-        // PostgREST builds one column list from the UNION of all rows' keys and
-        // writes explicit NULL for any row missing a key -- which BYPASSES the
-        // column default. So a batch mixing custom rows (is_custom:true) with
-        // normal picks (no is_custom) made the normal rows insert is_custom=NULL
-        // and hit the NOT NULL constraint, failing the save AFTER the old areas
-        // were already deleted (data loss). Forcing a uniform, non-null shape
-        // fixes it and is defensive for every column.
-        const MAT_COLS = ['job_area_id','recipe_slot_id','slot_label','slot_kind','material_type','order_index','pick_index','product_id','choice_value','text_value','is_custom'];
-        const matRowsNorm = matRows.map(r => {
-          const o = {};
-          for (const c of MAT_COLS) o[c] = (r[c] === undefined ? null : r[c]);
-          o.is_custom = !!r.is_custom; // NOT NULL column -- never send null
-          return o;
-        });
-        const mins = await withDeadline(() => supabase.from('job_area_materials').insert(matRowsNorm), { label: 'job-save-materials' });
-        if (mins.error) throw mins.error;
+      // Atomic areas + materials replace via the RPC: the delete + reinsert of
+      // BOTH job_areas and job_area_materials happens in ONE transaction, so a
+      // mid-save failure can no longer wipe picks (the old "lost ALL my info"
+      // bug). Falls back to the legacy separate-calls path if the function
+      // isn't deployed yet (pre-migration: 2026-06-02_job_save_txn.sql).
+      const rpc = await withDeadline(() => supabase.rpc('pec_replace_job_areas', { p_job_id: id, p_areas: areaPayload, p_materials: matPayload }), { label: 'job-save-rpc' });
+      if (rpc.error) {
+        const code = rpc.error.code || '';
+        const fnMissing = code === 'PGRST202' || code === '42883' || /pec_replace_job_areas|could not find the function|does not exist|schema cache/i.test(rpc.error.message || '');
+        if (!fnMissing) throw rpc.error;
+        console.warn('[pec] pec_replace_job_areas not deployed — using legacy delete+insert (run 2026-06-02_job_save_txn.sql)', rpc.error);
+        await legacyReplaceAreas();
       }
       // The data writes are done and confirmed at this point. Show an explicit
       // success confirmation so the save is unambiguous, then do the
@@ -9998,7 +9992,14 @@ function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-async function loadScheduleData() {
+// Shared production data used by BOTH the Job Schedule and Job Costing views.
+// Extracted so the overlapping slots (prodJobs / scheduleDays / systemTypes /
+// crews / productAreasByJob / salesTeam) always have the SAME superset shape
+// regardless of which view loaded them. Previously loadCostingData omitted
+// area.sqft and used column subsets + a different sort, so bouncing between the
+// two views could leave a shared slot wrong-shaped. Each view sorts prodJobs as
+// it needs (renderSchedule filters pending; renderJobCosting sorts recent-first).
+async function loadProdCore() {
   const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
@@ -10006,7 +10007,7 @@ async function loadScheduleData() {
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
-  ]), { label: 'loadScheduleData' });
+  ]), { label: 'loadProdCore' });
   state.prodJobs = jobsRes.data || [];
   state.scheduleDays = daysRes.data || [];
   state.systemTypes = sysRes.data || [];
@@ -10015,6 +10016,9 @@ async function loadScheduleData() {
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
+}
+async function loadScheduleData() {
+  await loadProdCore(); // schedule needs only the shared slots
 }
 
 async function renderSchedule() {
@@ -10942,27 +10946,15 @@ function openAddJobModal() {
 // Job Costing (full-bleed)
 // ============================================================
 async function loadCostingData() {
-  const [jobsRes, costRes, sysRes, crewsRes, membersRes, areasRes, linesRes, bonusesRes, schedRes, salesRes] = await withFreshSession(() => Promise.all([
-    supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: false, nullsFirst: false }),
+  await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
+  const [costRes, membersRes, linesRes, bonusesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
-    supabase.from('pec_prod_system_types').select('id,name,color,labor_budget_pct,materials_budget_pct'),
-    supabase.from('pec_prod_crews').select('id,name'),
     supabase.from('pec_prod_crew_members').select('id,crew_id,name,busybusy_member_id,active').order('name'),
-    supabase.from('pec_prod_areas').select('id,job_id,system_type_id,order_index'),
     supabase.from('pec_prod_material_lines').select('id,job_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
     supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
-    supabase.from('pec_prod_job_schedule_days').select('id,job_id,scheduled_date,day_index,crew_id,crew_lead,notes').order('scheduled_date'),
-    supabase.from('pec_sales_team_members').select('*').order('name'),
   ]), { label: 'loadCostingData' });
-  state.prodJobs = jobsRes.data || [];
   state.costing = costRes.data || [];
-  state.systemTypes = sysRes.data || [];
-  state.crews = crewsRes.data || [];
   state.crewMembers = membersRes.data || [];
-  state.salesTeam = salesRes.data || [];
-  const byJob = {};
-  for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
-  state.productAreasByJob = byJob;
   // Aggregate material_lines per job. ordered = sum of line_cost (cost to
   // order); used = sum of actual_used_qty * unit_cost_snapshot (cost actually
   // consumed; the PM fills in actual_used_qty on the unified job page).
@@ -10985,10 +10977,10 @@ async function loadCostingData() {
   const bonusesByJob = {};
   for (const b of bonusesRes.data || []) (bonusesByJob[b.job_id] ||= []).push(b);
   state.bonusesByJob = bonusesByJob;
-  // Schedule days grouped per job; the unified page renders a read-only
-  // strip pulled from this (full editing comes in a later commit).
+  // Schedule days grouped per job (from the core-loaded state.scheduleDays);
+  // the unified page renders a read-only strip pulled from this.
   const schedByJob = {};
-  for (const s of schedRes.data || []) (schedByJob[s.job_id] ||= []).push(s);
+  for (const s of state.scheduleDays || []) (schedByJob[s.job_id] ||= []).push(s);
   state.scheduleByJob = schedByJob;
   state.costingLoaded = true; // all costing slots above are now hydrated
 }
@@ -11712,7 +11704,9 @@ async function renderJobCosting() {
     if (filt === 'all') return true;
     if (filt === 'active') return j.status !== 'completed';
     return j.status === filt;
-  });
+  // Recent-first (loadProdCore loads prodJobs ascending for the schedule;
+  // the costing list shows most-recent install date first).
+  }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
 
   // Pre-compute every visible row once so the rollups and the per-job table
   // share the same underlying numbers and can never drift.
