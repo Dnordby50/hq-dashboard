@@ -7376,6 +7376,38 @@ async function openNewJobForm() {
 // self-contained HTML document (own styles, inline) so it doesn't disturb
 // the in-page CRM state and prints cleanly to PDF. window.print() fires on
 // load so the print dialog appears immediately.
+// Shared schedule resolver -- ONE place that derives a job's real schedule
+// state from its production rows, so the job detail, work order, schedule, and
+// costing all agree. A job is scheduled if it has an install_date OR any
+// schedule-day rows (the rule renderSchedule uses). Handles duplicate
+// dripjobs_deal_id matches (pec_prod_jobs.dripjobs_deal_id is NOT unique) by
+// preferring the row with an install_date. Pure: callers pass the prod-job
+// row(s), that job's schedule-day rows, and a crews array/map; nothing fetched.
+function deriveScheduleState(prodJobRows, scheduleDayRows, crews) {
+  const rows = Array.isArray(prodJobRows) ? prodJobRows : (prodJobRows ? [prodJobRows] : []);
+  const prodJob = rows.find(p => p && p.install_date) || rows[0] || null;
+  const days = prodJob ? (scheduleDayRows || []).filter(d => d.job_id === prodJob.id) : [];
+  let scheduledDates = [...new Set(days.map(d => d.scheduled_date).filter(Boolean))].sort();
+  if (!scheduledDates.length && prodJob && prodJob.install_date) scheduledDates = [prodJob.install_date];
+  const crewId = (prodJob && prodJob.crew_id) || (days[0] && days[0].crew_id) || null;
+  const crewsById = Array.isArray(crews) ? Object.fromEntries(crews.map(c => [c.id, c])) : (crews || {});
+  const crewName = crewId && crewsById[crewId] ? (crewsById[crewId].name || '') : '';
+  return { prodJob, isScheduled: scheduledDates.length > 0, scheduledDates, installDate: scheduledDates[0] || null, crewId, crewName };
+}
+// Header label for a derived schedule state: "Install <date>", a comma list
+// (<=3 days), or a range, plus the crew. Returns "Unscheduled" when not on the
+// calendar. (Crew name is esc'd here; the rest is date text, so callers inject
+// the result without re-escaping.)
+function scheduleLabelFromState(s) {
+  if (!s || !s.isScheduled) return 'Unscheduled';
+  const ds = s.scheduledDates;
+  let label;
+  if (ds.length === 1) label = 'Install ' + fmtDate(ds[0]);
+  else if (ds.length <= 3) label = 'Install ' + ds.map(fmtDate).join(', ');
+  else label = 'Install ' + fmtDate(ds[0]) + ' – ' + fmtDate(ds[ds.length - 1]) + ' · ' + ds.length + ' days';
+  if (s.crewName) label += ' · ' + esc(s.crewName) + ' crew';
+  return label;
+}
 async function renderWorkOrder(ctx) {
   const { job, areasFromState, systemTypes, productById, colorPairings, recipeSlots, defaultLaborRate } = ctx;
   // Resolve the matching pec_prod_jobs row for install date + crew, plus
@@ -7384,16 +7416,20 @@ async function renderWorkOrder(ctx) {
   let installDate = null, crewName = null;
   try {
     if (job.dripjobs_deal_id) {
-      const [bridgeRes, crewsRes] = await Promise.all([
-        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id).maybeSingle(),
+      // List (NOT maybeSingle, which errors on duplicate deal-id rows), then
+      // resolve install date(s) + crew through the shared resolver so the work
+      // order matches the job detail (incl. schedule-day-only jobs).
+      const [pjRes, crewsRes] = await Promise.all([
+        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id),
         supabase.from('pec_prod_crews').select('id,name'),
       ]);
-      const pj = bridgeRes?.data;
-      if (pj) {
-        installDate = pj.install_date;
-        if (pj.crew_id) {
-          crewName = (crewsRes?.data || []).find(c => c.id === pj.crew_id)?.name || null;
-        }
+      if (!pjRes.error && (pjRes.data || []).length) {
+        const prodJob = (pjRes.data || []).find(p => p.install_date) || pjRes.data[0];
+        const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
+        const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
+        const s = deriveScheduleState([prodJob], days, crewsRes.error ? [] : (crewsRes.data || []));
+        installDate = s.installDate;
+        crewName = s.crewName || null;
       }
     }
   } catch (e) { /* silent — work order still renders */ }
@@ -7618,9 +7654,7 @@ async function renderJobDetail(id) {
   // on duplicate deal-id rows and falsely showed "Unscheduled") and pick the row
   // with an install_date. Drives the header label, the colors-urgency banner,
   // and the status auto-sync below. Misses are silent (manual entries, etc.).
-  let jobInstallDate = null;     // earliest scheduled date (urgency + header)
-  let scheduledDates = [];       // all scheduled days, sorted + unique
-  let scheduleCrewName = '';
+  let scheduleState = { prodJob: null, isScheduled: false, scheduledDates: [], installDate: null, crewId: null, crewName: '' };
   let scheduleBridged = false;   // true only when we reliably know the schedule
   if (job.dripjobs_deal_id) {
     try {
@@ -7630,33 +7664,20 @@ async function renderJobDetail(id) {
       ]);
       if (!pjRes.error) {
         scheduleBridged = true;
-        const pjs = pjRes.data || [];
-        const prodJob = pjs.find(p => p.install_date) || pjs[0] || null;
+        const rows = pjRes.data || [];
+        const prodJob = rows.find(p => p.install_date) || rows[0] || null;
+        let days = [];
         if (prodJob) {
-          const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id').eq('job_id', prodJob.id);
-          const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
-          scheduledDates = [...new Set(days.map(d => d.scheduled_date).filter(Boolean))].sort();
-          if (!scheduledDates.length && prodJob.install_date) scheduledDates = [prodJob.install_date];
-          jobInstallDate = scheduledDates[0] || null;
-          const crewId = prodJob.crew_id || (days[0] && days[0].crew_id) || null;
-          if (crewId && !crewsRes.error) scheduleCrewName = ((crewsRes.data || []).find(c => c.id === crewId) || {}).name || '';
+          const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
+          days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
         }
+        scheduleState = deriveScheduleState(rows, days, crewsRes.error ? [] : (crewsRes.data || []));
       }
     } catch (_) { /* schedule lookup is best-effort */ }
   }
-  const isScheduled = scheduledDates.length > 0;
-  // Header label: list the days (<=3) or show a range, plus the crew when known.
-  let scheduleLabel;
-  if (!isScheduled) {
-    scheduleLabel = 'Unscheduled';
-  } else if (scheduledDates.length === 1) {
-    scheduleLabel = 'Install ' + fmtDate(scheduledDates[0]);
-  } else if (scheduledDates.length <= 3) {
-    scheduleLabel = 'Install ' + scheduledDates.map(fmtDate).join(', ');
-  } else {
-    scheduleLabel = 'Install ' + fmtDate(scheduledDates[0]) + ' – ' + fmtDate(scheduledDates[scheduledDates.length - 1]) + ' · ' + scheduledDates.length + ' days';
-  }
-  if (isScheduled && scheduleCrewName) scheduleLabel += ' · ' + esc(scheduleCrewName) + ' crew';
+  const isScheduled = scheduleState.isScheduled;
+  const jobInstallDate = scheduleState.installDate; // earliest scheduled date (urgency + header)
+  const scheduleLabel = scheduleLabelFromState(scheduleState);
   // Auto-sync the job's status to the real schedule (only with a reliable
   // bridge). 'completed' is never auto-changed. On schedule -> in_progress if
   // the first install day is today/past (MST), else scheduled. Not on schedule
@@ -11099,7 +11120,7 @@ function openCostingDetail(jobId) {
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
   const areas = (state.productAreasByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const sys = areas[0] ? sysById[areas[0].system_type_id] : null;
-  const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
+  const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob?.[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
   const lines = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
 
@@ -11313,7 +11334,11 @@ async function renderUnifiedJob(jobId) {
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
   const areas    = (state.productAreasByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const sys      = areas[0] ? sysById[areas[0].system_type_id] : null;
-  const crewName = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
+  // Derive scheduled-ness/dates/crew the same way the job detail does, so a
+  // schedule-day-only job (install_date null but day rows exist) shows its real
+  // dates here instead of "Unscheduled". Uses the already-loaded state.
+  const schedState = deriveScheduleState(job, state.scheduleByJob?.[jobId] || [], crewById);
+  const crewName = schedState.crewName;
   const lines    = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const bonuses  = (state.bonusesByJob?.[jobId] || []).slice();
   const sched    = (state.scheduleByJob?.[jobId] || []).slice().sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date)));
@@ -11323,7 +11348,7 @@ async function renderUnifiedJob(jobId) {
   const recomputeR = () => computeCostingRow(
     job, state.costing.find(c => c.job_id === jobId),
     sys ? sys.name : '',
-    state.materialOrderedByJob[jobId],
+    state.materialOrderedByJob?.[jobId],
     state.materialUsedByJob?.[jobId],
     bonusTotalForJob(jobId)
   );
@@ -11343,7 +11368,11 @@ async function renderUnifiedJob(jobId) {
 
   const headerMeta = [
     job.address || '',
-    job.install_date ? `Install ${new Date(job.install_date).toLocaleDateString()}` : 'Unscheduled',
+    schedState.isScheduled
+      ? 'Install ' + (schedState.scheduledDates.length === 1
+          ? new Date(schedState.scheduledDates[0]).toLocaleDateString()
+          : new Date(schedState.scheduledDates[0]).toLocaleDateString() + ' +' + (schedState.scheduledDates.length - 1) + ' more')
+      : 'Unscheduled',
     sys ? sys.name : '',
     crewName ? `${crewName} crew` : '',
   ].filter(Boolean).map(esc).join(' · ');
@@ -11690,7 +11719,7 @@ async function renderJobCosting() {
   const computedRows = jobs.map(j => {
     const sys = areaSystem(j);
     const cost = costByJob[j.id];
-    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
+    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
     return { job: j, sys, cost, r };
   });
   const grandTotal = aggregateCostingRows(computedRows);
@@ -11794,7 +11823,7 @@ async function renderJobCosting() {
             ${jobs.map(j => {
               const sys = areaSystem(j);
               const cost = costByJob[j.id];
-              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
+              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
               const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
               // Labor budget = revenue * system.labor_budget_pct. Variance is
               // signed: positive = labor cost over budget (cost-neg coloring).
@@ -11870,7 +11899,7 @@ async function renderJobCosting() {
     const job = state.prodJobs.find(j => j.id === jobId);
     const cost = state.costing.find(c => c.job_id === jobId);
     const sys = areaSystem(job);
-    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
+    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob?.[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
     const set = (sel, html, cls) => {
       const el = tr.querySelector(sel);
       if (!el) return;

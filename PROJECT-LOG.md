@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-01 MST] hardening: shared schedule resolver + killed the last duplicate-deal-id maybeSingle (stop the recurring class of bugs)
+
+By: Claude Code
+Changed: index.html only.
+Why: Dylan was frustrated that similar bugs keep recurring ("thinking of trying another AI"). Rather than keep fixing one symptom at a time, he opted into a root-cause hardening pass. A read-only sweep (3 Explore agents) classified the recurring failures into two classes + one root inconsistency.
+
+Findings from the sweep:
+1. `.maybeSingle()` on non-unique columns: `pec_prod_jobs.dripjobs_deal_id` is NOT unique (partial index only), so a duplicate deal-id makes `.maybeSingle()` THROW and the caller silently treats it as "no data" (the exact shape of the "Unscheduled"/blank bugs). The sweep found every maybeSingle/single call; all but ONE were safe (PK/unique/insert). The one risky remaining instance was `renderWorkOrder` (work order page 2 install date + crew).
+2. Unguarded `state.<slot>[key]` reads where a loader may not have populated the slot: already neutralized by the earlier fix that pre-initialized the costing slots + added `costingLoaded`. The sweep confirmed no crash-prone reads remain; 4 `materialOrderedByJob` reads were unguarded-but-safe.
+3. The real root: 7 places derive "is this job scheduled / install dates / crew" from the public.jobs <-> pec_prod_jobs bridge with subtly DIFFERENT rules (install_date-only vs install_date-or-schedule-days; different duplicate handling; different crew lookup). That divergence is what made the same kind of bug pop up in a new spot each time.
+
+Hardening done:
+- Added a single shared resolver `deriveScheduleState(prodJobRows, scheduleDayRows, crews)` (pure; handles duplicate deal-id rows by preferring the row with an install_date; scheduled = install_date OR any schedule-day rows; crew from prod-job then schedule-day fallback) + `scheduleLabelFromState(s)` for the header label. ONE source of truth for the derivation logic.
+- Fixed the last risky maybeSingle: `renderWorkOrder` now lists `pec_prod_jobs` by deal id and runs the resolver (no throw on duplicates; shows schedule-day-only dates + crew consistently).
+- Refactored `renderJobDetail`'s schedule logic (shipped earlier today) to call the shared resolver (DRY, same behavior).
+- `renderUnifiedJob` (Job Costing) now derives via the resolver from already-loaded state, so a schedule-day-only job shows its real dates + crew instead of "Unscheduled".
+- Standardized the 4 unguarded `state.materialOrderedByJob[...]` reads to `?.[...]` (defense-in-depth; safe even if the pre-init is ever removed).
+
+Known minor gap (logged, not a crash): the Dashboard "colors not confirmed" list and the AR list build their install-date hints from a bulk `install_date`-only map (not schedule_days), so a schedule-day-only job would show no date hint there. Low impact (the schedule modal sets install_date whenever it creates day rows), left for a future pass to avoid bulk-loading schedule_days on those list views.
+
+Verified: all 6 inline `<script>` blocks parse clean; no maybeSingle on `dripjobs_deal_id` remains; resolver used at all 3 detail/work-order sites.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None blocking. (Still pending from earlier: Cowork's idle re-test of the auth-lock wedge fix.)
+Handoff to Cowork: None new.
+Handoff to Dylan: This was a proactive pass to stop the repeat bugs at the source, not a single feature. The job detail, work order, and Job Costing page now all read the schedule the same way (one shared resolver), and the last "duplicate deal id silently blanks the data" landmine (on the work order) is gone. If a schedule-related mismatch still shows up, it'll be in one shared function now instead of scattered across the app.
+
 ## [2026-06-01 MST] jobs: job-detail header + status now reflect the REAL schedule (install dates + auto-synced status)
 
 By: Claude Code
