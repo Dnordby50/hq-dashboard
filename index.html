@@ -14314,12 +14314,24 @@ function _mergeAcrossAreas(areaPlans) {
       r.innerHTML = '<div class="pec-empty" style="font-size:.9rem">Loading ' + esc(crmView) + '…</div>';
     }
     try {
+      const wasBooted = booted; // capture before ensureBooted() flips it
       const ok = await ensureBooted();
       if (!ok) {
         if (r) r.innerHTML = '<div class="pec-empty">Sign in to TopCoat first.</div>';
         return;
       }
       state.view = mapView(crmView);
+      // B-022 fix: the prod module loads pec_prod_jobs ONCE at boot (ensureBooted
+      // -> loadJobs). Re-entering Ordering otherwise re-renders a STALE cache, so
+      // a job created after first boot (the manual "+ New Job" -> pec_prod_jobs
+      // bridge, or a DripJobs webhook insert) never appeared in Ordering until a
+      // full page reload — the reported "manually-created job missing from
+      // Ordering". Refresh the list on entry to the Ordering jobs view. Skip the
+      // redundant reload on the very first boot (ensureBooted just loaded it) and
+      // on the Catalog view (which doesn't read jobs).
+      if (wasBooted && state.view === 'jobs') {
+        await loadJobs();
+      }
       render();
     } catch (err) {
       console.error('[prod] switchView error:', err);
