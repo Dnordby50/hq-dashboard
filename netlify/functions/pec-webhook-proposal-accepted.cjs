@@ -74,33 +74,51 @@ exports.handler = async (event) => {
     }
 
     const type = (job_type === 'paint') ? 'paint' : 'epoxy';
-    const createdJobs = await sb('POST', '/jobs', {
-      customer_id: customer.id,
-      type,
-      address: address || null,
-      package: pkg || null,
-      scope: cleanScope,
-      sqft: sqft || null,
-      price: price ? parseFloat(price) : null,
-      monthly_payment: monthly_payment ? parseFloat(monthly_payment) : null,
-      warranty: warranty || null,
-      dripjobs_url: dripjobs_url || null,
-      dripjobs_deal_id: deal_id || null,
-      salesperson: salesperson || null,
-      signed_date: signedDate,
-      source: 'dripjobs',
-    }, true);
-    const job = createdJobs[0];
+    // Idempotent against webhook re-deliveries: if a public.jobs row for this
+    // DripJobs deal already exists, reuse it instead of inserting a duplicate.
+    // public.jobs.dripjobs_deal_id is NOT unique (only a plain index), so this
+    // SELECT-before-INSERT guard -- mirroring the pec_prod_jobs bridge below --
+    // is what prevents duplicate job rows on a re-fire. Only applies when a
+    // deal_id is present; manual / no-deal jobs are unaffected.
+    let job = null;
+    let jobIsNew = false;
+    if (deal_id) {
+      const existingJobs = await sb('GET', `/jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id&limit=1`);
+      if (existingJobs.length) job = existingJobs[0];
+    }
+    if (!job) {
+      const createdJobs = await sb('POST', '/jobs', {
+        customer_id: customer.id,
+        type,
+        address: address || null,
+        package: pkg || null,
+        scope: cleanScope,
+        sqft: sqft || null,
+        price: price ? parseFloat(price) : null,
+        monthly_payment: monthly_payment ? parseFloat(monthly_payment) : null,
+        warranty: warranty || null,
+        dripjobs_url: dripjobs_url || null,
+        dripjobs_deal_id: deal_id || null,
+        salesperson: salesperson || null,
+        signed_date: signedDate,
+        source: 'dripjobs',
+      }, true);
+      job = createdJobs[0];
+      jobIsNew = true;
+    }
 
-    // Create default timeline stages
-    const stages = (type === 'epoxy' ? epoxyStages : paintStages).map((name, i) => ({
-      job_id: job.id,
-      stage_name: name,
-      status: i === 0 ? 'completed' : 'pending',
-      completed_at: i === 0 ? new Date().toISOString() : null,
-      sort_order: i,
-    }));
-    await sb('POST', '/timeline_stages', stages);
+    // Create default timeline stages -- ONLY for a newly created job. On a
+    // re-fire we reuse the existing job and must not duplicate its stages.
+    if (jobIsNew) {
+      const stages = (type === 'epoxy' ? epoxyStages : paintStages).map((name, i) => ({
+        job_id: job.id,
+        stage_name: name,
+        status: i === 0 ? 'completed' : 'pending',
+        completed_at: i === 0 ? new Date().toISOString() : null,
+        sort_order: i,
+      }));
+      await sb('POST', '/timeline_stages', stages);
+    }
 
     // Auto-bridge: create the matching pec_prod_jobs row so this proposal lands
     // in the PEC Job Schedule's Pending Jobs sidebar immediately. install_date
