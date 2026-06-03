@@ -4,6 +4,37 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-02 MST] feature: archive a job from the job detail (type DELETE) + remove a job from the Schedule Pending list
+
+By: Claude Code
+Changed: index.html; new supabase/migrations/2026-06-02_prod_jobs_archive_hide.sql. No Sheets/emails/Slack. No push (local commits; Dylan reviews + pushes). Planned in plan mode first; Dylan approved.
+
+Why: Dylan wanted to clean up mistaken jobs himself. Two controls, with three decisions he made up front: (1) the job-detail delete is a reversible ARCHIVE (sets archived_at), not a hard delete, so invoice/payment history is never lost; (2) both controls are open to any signed-in staff (no admin gate; RLS already gates the tables to is_admin_staff); (3) the Pending-list remove hides the card from Pending ONLY, leaving the job on the Ordering page with all data intact.
+
+Feature A (archive a job). renderJobDetail now has a "Danger zone" card at the bottom with a Delete job button. It opens a confirm modal (built on the existing openModal/closeModal helpers, since the app had no type-to-confirm pattern) whose Delete button stays disabled until you type DELETE exactly. On confirm it sets public.jobs.archived_at and, for the linked production row, public.pec_prod_jobs.archived_at. The linked prod row is the exact one the page already resolved via deriveScheduleState (scheduleState.prodJob.id), so no fuzzy customer_id guessing. CRM reads already filter jobs.archived_at (so it leaves Jobs + Invoicing + Dashboard); to make it leave Ordering/Schedule/Costing too, loadProdCore and the Ordering loadJobs now drop rows with archived_at set. Reversible: the rows are kept, only flagged, so a job can be un-archived by clearing archived_at (no in-app un-archive screen yet; see follow-up).
+
+Feature B (remove from Pending). Each Pending Jobs card on the Job Schedule now has a small x in the corner. Clicking it (after a one-line confirm) sets public.pec_prod_jobs.pending_hidden_at and re-renders the schedule. The pending filter excludes pending_hidden_at (and archived_at). It does NOT delete anything or touch Ordering, matching Dylan's "just remove it from that pending box, keep everything else as is."
+
+Migration + deploy-order safety. New columns archived_at + pending_hidden_at on public.pec_prod_jobs (nullable, additive, idempotent migration). The app filters these CLIENT-SIDE (e.g. !j.archived_at), not with a server-side .is(), on purpose: before the migration runs, select('*') simply omits the columns, the values read as undefined, and nothing is hidden, so deploying the code before Cowork runs the migration cannot break Ordering/Schedule. The only thing that waits on the migration is the new buttons' writes (wrapped in try/catch so a missing column shows a toast, not a crash).
+
+Note on "nothing loads for Dylan but works for Anne": that was not a code bug (same deployed code worked for Anne). It was the documented per-session supabase client wedge; a hard reload clears it. No code change.
+
+Verified: all 6 inline <script> blocks parse clean (node --check per block); no em dashes in any new line. Live archive/pending behavior needs the migration + a deploy, then a manual pass (handoff below); this session cannot run the live app or DB.
+
+Files touched: index.html, supabase/migrations/2026-06-02_prod_jobs_archive_hide.sql, PROJECT-LOG.md.
+Commits: e97a54f (migration), eefef0a (Feature A archive), d1073c0 (Feature B pending remove).
+Next steps: Dylan reviews + pushes; Cowork runs the migration (handoff); then a quick manual verification.
+
+## Handoff to Cowork
+
+1. Run supabase/migrations/2026-06-02_prod_jobs_archive_hide.sql on the PEC project (zdfpzmmrgotynrwkeakd, Primary DB, postgres role). Acceptance: `select column_name from information_schema.columns where table_name='pec_prod_jobs' and column_name in ('archived_at','pending_hidden_at');` returns 2 rows. Until it runs, the new Delete / x buttons will report a write error toast, but nothing else is affected.
+2. After it is live and Dylan has deployed, smoke-test once: archive a TEST job from its detail (type DELETE) and confirm it disappears from Jobs, Ordering, and Schedule but the rows still exist in Supabase (archived_at set, not deleted); then remove a pending card with the x and confirm it leaves Pending but still shows on the Ordering page after a reload. Report pass/fail.
+
+## Handoff to Dylan
+
+- This is local-only; review the three commits above and push when ready. The migration file ships with the push but does NOT auto-run; Cowork runs it (handoff above). Deploying before the migration is safe (nothing hidden until the column exists); the Delete / x buttons just won't persist until it runs.
+- "Reversible" today means the data is retained (archived_at flag), restorable by clearing the flag in Supabase. There is no in-app "Archived jobs" screen yet. If you want one (view + one-click restore), say so and I will add it as a small follow-up (also a matching un-hide for pending).
+
 ## [2026-06-02 MST] Cowork: Dylan's 3 Phase 1 judgment calls executed (Greg ghost + prod dupe, Waxler merge, kvillalba kept)
 
 By: Cowork
