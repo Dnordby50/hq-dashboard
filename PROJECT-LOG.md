@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-03 13:33 MST] Cowork: ran 2026-06-02_prod_jobs_archive_hide.sql migration on PEC Supabase
+
+By: Cowork
+Changed: Ran the additive/idempotent migration on the PEC Supabase project (zdfpzmmrgotynrwkeakd, Primary Database, postgres role) via Studio SQL Editor. No file changes in the repo beyond this log entry.
+
+Why: Executes the handoff from Claude Code's 2026-06-02 archive/pending feature entry. Until this ran, the new Delete (job detail) and x (Pending card) buttons would have shown write-error toasts because the columns did not exist.
+
+What ran (copy of the migration body):
+  alter table public.pec_prod_jobs
+    add column if not exists archived_at       timestamptz,
+    add column if not exists pending_hidden_at timestamptz;
+  create index if not exists idx_pec_prod_jobs_active
+    on public.pec_prod_jobs(archived_at) where archived_at is null;
+
+Result: "Success. No rows returned" (idempotent DDL).
+
+Acceptance check (PASS). information_schema.columns where table_name='pec_prod_jobs' and column_name in ('archived_at','pending_hidden_at') returned 2 rows. Both columns: data_type=timestamp with time zone, is_nullable=YES, column_default=NULL. Existing rows therefore default to NULL (visible), so nothing is hidden anywhere until the new buttons write a value, matching the deploy-order-safety reasoning in Claude Code's 2026-06-02 entry.
+
+Index check (PASS). pg_indexes confirms idx_pec_prod_jobs_active exists on public.pec_prod_jobs (partial index, archived_at IS NULL).
+
+Smoke test (handoff item 2): NOT YET RUN. Deferred until Dylan has pushed and the new code is deployed live; running it now from this Cowork session would only exercise prod with no UI to compare against.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Dylan pushes the three local commits (e97a54f, eefef0a, d1073c0) and deploys. After deploy, Cowork (or Dylan) runs the smoke test: archive a TEST job (type DELETE) and confirm it leaves Jobs + Ordering + Schedule but the rows still exist with archived_at set; then x out a Pending card and confirm it leaves Pending only.
+Handoff to Cowork: Once Dylan has pushed + deployed, run the live smoke test described above and append a follow-up entry with pass/fail.
+Handoff to Dylan: Push the three commits when ready; the schema side is live and the new buttons will now persist their writes. If you want me to run the smoke test on a real test job after the deploy, say which job is safe to use as the test target.
+
+---
+
 ## [2026-06-02 MST] feature: archive a job from the job detail (type DELETE) + remove a job from the Schedule Pending list
 
 By: Claude Code
