@@ -10111,9 +10111,11 @@ async function renderSchedule() {
   };
   const sumSqft = (job) => (state.productAreasByJob[job.id] || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
 
-  // Pending = no install_date AND no schedule rows
+  // Pending = no install_date AND no schedule rows. Also exclude jobs the user
+  // removed from the Pending list (pending_hidden_at) and archived jobs
+  // (archived already dropped upstream in loadProdCore; kept here defensively).
   const scheduledJobIds = new Set(state.scheduleDays.map(d => d.job_id));
-  const pending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled');
+  const pending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled' && !j.pending_hidden_at && !j.archived_at);
 
   root.innerHTML = `
     <div class="pec-sched-grid">
@@ -10122,7 +10124,8 @@ async function renderSchedule() {
         <div class="pec-sched-pending" id="pecSchedPending">
           ${pending.length === 0 ? '<div class="pec-empty" style="padding:20px 8px">No pending jobs. New jobs from accepted DripJobs estimates land here automatically.</div>' : pending.map(j => {
             const sys = areaSystem(j);
-            return `<div class="pec-sched-pcard">
+            return `<div class="pec-sched-pcard" style="position:relative">
+              <button data-hide-pending="${esc(j.id)}" title="Remove from Pending list" aria-label="Remove from Pending list" style="position:absolute;top:4px;right:4px;border:none;background:transparent;color:var(--muted);font-size:1.15rem;line-height:1;cursor:pointer;padding:2px 6px">×</button>
               <h4>${esc(j.customer_name)}</h4>
               <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${j.revenue ? ' · ' + fmtMoney(j.revenue) : ''}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
               <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs est` : ''}</div>
@@ -10156,6 +10159,23 @@ async function renderSchedule() {
     renderSchedule();
   });
   root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
+  // Remove a job from the Pending list only (a mistake fix). Sets
+  // pending_hidden_at; the job stays on the Ordering page with all data intact.
+  // Best-effort write: tolerates the column not existing yet (pre-migration).
+  root.querySelectorAll('[data-hide-pending]').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.hidePending;
+    if (!confirm('Remove this job from the Pending list? It stays on the Ordering page.')) return;
+    b.disabled = true;
+    try {
+      const upd = await supabase.from('pec_prod_jobs').update({ pending_hidden_at: new Date().toISOString() }).eq('id', id);
+      if (upd.error) throw upd.error;
+      renderSchedule();
+    } catch (err) {
+      b.disabled = false;
+      console.error('[pec] hide pending:', err);
+      showToast('Could not remove: ' + (err?.message || err), { ttl: 5000 });
+    }
+  }));
 
   renderScheduleCalendar(sysById, crewById, areaSystem);
 }
