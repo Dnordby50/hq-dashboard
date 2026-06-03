@@ -7925,6 +7925,12 @@ async function renderJobDetail(id) {
       ${job.signature_data ? `<img src="${esc(job.signature_data)}" alt="Signature" style="max-width:300px;background:#fff;border-radius:6px;padding:4px">` : ''}
     </div>
 
+    <div class="pec-card" style="border:1px solid var(--danger, #c0392b)">
+      <h3 style="color:var(--danger, #c0392b)">Danger zone</h3>
+      <div style="font-size:.8rem;color:var(--muted);margin-bottom:10px">Archive this job. It is removed from Jobs, Ordering, Schedule, and Invoicing but kept in the database so it can be restored. Invoice and payment history is preserved.</div>
+      <button class="pec-btn danger" id="jobDeleteBtn">Delete job</button>
+    </div>
+
     <div id="jobActivity"></div>
   `;
 
@@ -7934,6 +7940,54 @@ async function renderJobDetail(id) {
   // from Kathy Carmack's job detail did nothing.
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
+
+  // Danger zone: archive this job (reversible). Requires typing DELETE to
+  // confirm. Archive (not a hard delete) keeps invoice/payment history; the job
+  // just leaves every list. Also archives the linked pec_prod_jobs row (the
+  // exact row the schedule resolver matched, no fuzzy customer_id guess) so it
+  // leaves Ordering/Schedule too. The prod-row write is best-effort and tolerates
+  // the archived_at column not existing yet (before the migration runs) so the
+  // CRM archive still succeeds.
+  $('jobDeleteBtn').addEventListener('click', () => {
+    const prodJobId = scheduleState?.prodJob?.id || null;
+    openModal(`
+      <h3 style="color:var(--danger, #c0392b)">Delete this job?</h3>
+      <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">This archives <strong>${esc(job.customers?.name || 'this job')}</strong>. It is removed from Jobs, Ordering, Schedule, and Invoicing but kept in the database (restorable). To confirm, type <strong>DELETE</strong> below.</div>
+      <div class="pec-field"><input id="jobDeleteConfirm" placeholder="Type DELETE to confirm" autocomplete="off"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn danger" id="jobDeleteGo" disabled>Delete job</button>
+      </div>
+    `, { onMount: modal => {
+      const input = modal.querySelector('#jobDeleteConfirm');
+      const go = modal.querySelector('#jobDeleteGo');
+      input.addEventListener('input', () => { go.disabled = input.value !== 'DELETE'; });
+      go.addEventListener('click', async () => {
+        if (input.value !== 'DELETE') return;
+        go.disabled = true; go.textContent = 'Deleting…';
+        try {
+          const stamp = new Date().toISOString();
+          const upd = await supabase.from('jobs').update({ archived_at: stamp }).eq('id', job.id);
+          if (upd.error) throw upd.error;
+          if (prodJobId) {
+            try {
+              const pUpd = await supabase.from('pec_prod_jobs').update({ archived_at: stamp }).eq('id', prodJobId);
+              if (pUpd.error) console.warn('[pec] archive prod row (non-fatal):', pUpd.error.message);
+            } catch (pe) { console.warn('[pec] archive prod row threw (non-fatal):', pe); }
+          }
+          logJobActivity(job.id, 'archive', { archived_at: null }, { archived_at: stamp });
+          closeModal();
+          showToast('Job archived', { ttl: 2500 });
+          state.openJobId = null;
+          switchView('jobs');
+        } catch (err) {
+          go.disabled = false; go.textContent = 'Delete job';
+          console.error('[pec] archive job:', err);
+          showToast('Delete failed: ' + (err?.message || err), { ttl: 5000 });
+        }
+      });
+    }});
+  });
 
   // Persist the schedule -> status auto-sync. The dropdown already shows the
   // synced value (job.status was set at render time above); this writes it back
@@ -10026,7 +10080,11 @@ async function loadProdCore() {
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
   ]), { label: 'loadProdCore' });
-  state.prodJobs = jobsRes.data || [];
+  // Drop archived jobs (archived from the CRM job-detail Delete box) from every
+  // production surface (Schedule, Pending, Costing) that reads state.prodJobs.
+  // Client-side filter so a missing archived_at column (before the migration
+  // runs) just reads as undefined and hides nothing.
+  state.prodJobs = (jobsRes.data || []).filter(j => !j.archived_at);
   state.scheduleDays = daysRes.data || [];
   state.systemTypes = sysRes.data || [];
   state.crews = crewsRes.data || [];
@@ -12721,7 +12779,8 @@ function _mergeAcrossAreas(areaPlans) {
       .select('*, areas:pec_prod_areas(*, tints:pec_prod_area_tints(*)), lines:pec_prod_material_lines(*)')
       .order('install_date', { ascending: true, nullsFirst: false });
     if (error) console.error('[prod] jobs:', error);
-    state.jobs = data || [];
+    // Drop archived jobs from Ordering (same client-side filter as loadProdCore).
+    state.jobs = (data || []).filter(j => !j.archived_at);
   }
 
   // -------------------- Render dispatcher --------------------
