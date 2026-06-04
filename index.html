@@ -7133,7 +7133,7 @@ async function renderMetrics() {
     res = await withFreshSession(() => Promise.all([
       supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
-      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,crew_lead').not('dripjobs_deal_id', 'is', null),
+      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,crew_lead,callback'),
       supabase.from('reviews').select('created_at,rating,job_id'),
     ]), { label: 'renderMetrics' });
   } catch (e) { res = [{ error: e }, {}, {}, {}]; }
@@ -7234,6 +7234,17 @@ async function renderMetrics() {
   }
   const crewLeadRows = Object.entries(crewLeadRev).sort((a, b) => b[1] - a[1]);
 
+  // Callbacks grouped by crew lead (all-time count of jobs flagged callback=true;
+  // crew_lead is the text field on the production job). Window-independent: a
+  // callback is a quality signal, not a dated event.
+  const callbacksByLead = {};
+  for (const r of (prodRes.data || [])) {
+    if (r.callback !== true) continue;
+    const lead = r.crew_lead || 'Unassigned';
+    callbacksByLead[lead] = (callbacksByLead[lead] || 0) + 1;
+  }
+  const callbackRows = Object.entries(callbacksByLead).sort((a, b) => b[1] - a[1]);
+
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -7250,6 +7261,12 @@ async function renderMetrics() {
       <div class="pec-scroll-x"><table class="pec-table">
         <thead><tr><th>Crew lead</th><th style="text-align:right">Collected</th></tr></thead>
         <tbody>${crewLeadRows.map(([lead, amt]) => `<tr class="nohover"><td>${esc(lead)}</td><td style="text-align:right">${invUSD0(amt)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No payments in this window.</td></tr>'}</tbody>
+      </table></div>
+    </div>
+    <div class="pec-card"><div class="pec-metric-h">Callbacks by crew lead (all time)</div>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Crew lead</th><th style="text-align:right">Callbacks</th></tr></thead>
+        <tbody>${callbackRows.map(([lead, n]) => `<tr class="nohover"><td>${esc(lead)}</td><td style="text-align:right">${n}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No callbacks recorded.</td></tr>'}</tbody>
       </table></div>
     </div>
     <div class="pec-grid-stats">
@@ -7784,7 +7801,7 @@ async function renderJobDetail(id) {
   if (job.dripjobs_deal_id) {
     try {
       const [pjRes, crewsRes] = await Promise.all([
-        supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id),
+        supabase.from('pec_prod_jobs').select('id,install_date,status,crew_id,callback').eq('dripjobs_deal_id', job.dripjobs_deal_id),
         supabase.from('pec_prod_crews').select('id,name'),
       ]);
       if (!pjRes.error) {
@@ -7950,6 +7967,14 @@ async function renderJobDetail(id) {
           ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
         </select>
         ${['scheduled','in_progress'].includes(job.status) ? `<button class="pec-btn sm" id="pecJobComplete" style="margin-top:8px">Mark job complete</button>` : ''}
+        ${scheduleState.prodJob ? `<div style="margin-top:10px">
+          <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Callback</label>
+          <select id="pecJobCallback">
+            <option value=""     ${scheduleState.prodJob.callback == null   ? 'selected' : ''}>—</option>
+            <option value="true" ${scheduleState.prodJob.callback === true  ? 'selected' : ''}>Yes</option>
+            <option value="false"${scheduleState.prodJob.callback === false ? 'selected' : ''}>No</option>
+          </select>
+        </div>` : ''}
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
         <h4 style="margin:0 0 8px;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600">Job Card <span style="font-size:.7rem;font-weight:400;text-transform:none;letter-spacing:0">prints onto the work order</span></h4>
@@ -8198,6 +8223,19 @@ async function renderJobDetail(id) {
       console.error('[pec] mark complete (job detail):', err);
       showToast('Could not mark complete: ' + (err && err.message ? err.message : err), { ttl: 5000 });
     }
+  });
+  // Callback Yes/No writes to the bridged pec_prod_jobs row (callback lives on
+  // the production job, same column the costing page edits). Tracked per crew
+  // lead in Metrics.
+  const callbackSel = $('pecJobCallback');
+  if (callbackSel && scheduleState.prodJob) callbackSel.addEventListener('change', async e => {
+    const v = e.target.value === '' ? null : (e.target.value === 'true');
+    const before = scheduleState.prodJob.callback;
+    const upd = await supabase.from('pec_prod_jobs').update({ callback: v }).eq('id', scheduleState.prodJob.id);
+    if (upd.error) { showToast('Callback save failed: ' + upd.error.message, { ttl: 4000 }); e.target.value = before == null ? '' : String(before); return; }
+    scheduleState.prodJob.callback = v;
+    try { await logJobActivity(id, 'save', { callback: before }, { callback: v }); } catch (_) {}
+    showToast('Callback updated', { ttl: 1800 });
   });
 
   // Areas editor — recipe-driven. Each area picks a system type; the system's
