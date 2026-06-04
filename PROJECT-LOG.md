@@ -4,6 +4,54 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] feature: calendar-driven status, AM/PM scheduling + Next-Day board, callback metric, schedule view-job fix
+
+By: Claude Code
+Changed: index.html; two new migrations (supabase/migrations/2026-06-04_schedule_time_slot.sql, supabase/migrations/2026-06-04_prod_status_sync_trigger.sql). No Sheets/email/Slack. No push (local commits; Dylan reviews + pushes). Planned in plan mode first; Dylan approved and answered three design questions (full AM/PM + Next-Day build; calendar scheduling is authoritative for status; surface callback on the job detail too).
+
+Why: Five connected problems Dylan raised. The through-line: production-calendar state was not driving CRM status, and the schedule did not model how PEC actually runs (two crew visits/day, finalized nightly with Dusty).
+
+1. Schedule "View job" landed on Job Costing, not the job card. The schedule modal's "Open job" button hard-switched to the costing (Unified Job) view. Now: for a DripJobs-sourced job it resolves the bridged public.jobs row by dripjobs_deal_id and opens renderJobDetail; manual prod-only jobs (no CRM row) still fall back to the costing page. (index.html schedOpenJob handler.)
+
+2. THE recurring status bug. Root cause found: scheduling wrote pec_prod_jobs.status='scheduled' + install_date but NEVER wrote public.jobs.status, which the Pipeline (via pec_job_ar), Jobs list, and job-detail label all read. CRM status only updated lazily when someone opened the job detail, and only if the deal-id bridge resolved, so a calendar-scheduled job kept reading signed/Unscheduled everywhere else. Fixed two ways (belt and suspenders): (a) a client helper syncPublicJobStatusFromSchedule() now runs on every schedule save / reschedule / clear and writes the bridged public.jobs.status immediately (signed -> scheduled -> in_progress by install date, back to signed on clear), clearing status_manual_at because "calendar wins," logging to audit_log with source 'schedule'; (b) a Postgres trigger (2026-06-04_prod_status_sync_trigger.sql) mirrors pec_prod_jobs status/install_date onto public.jobs for ANY path (UI, Cowork SQL, future webhook), never downgrading a completed job. State machine: DripJobs -> signed (unchanged); on the production calendar -> scheduled; install start date arrives -> in_progress (the daily pec-auto-progress.cjs already does this, and the trigger does it on the next write); manual completion now (no auto-complete yet, per Dylan).
+
+3. "Job Complete" button. renderJobDetail now has a "Mark job complete" button (shown for scheduled/in_progress jobs, open to staff not just admins, for Dusty/crew lead) that sets completed + completed_date, marks a manual lock, mirrors completed onto the prod row, and logs it. (Auto-complete when scheduled dates pass is deferred per Dylan.)
+
+4. AM/PM scheduling + Next-Day finalization. New time_slot column on pec_prod_job_schedule_days ('AM'/'PM', nullable). The schedule modal has a Time slot picker; the 3-week calendar shows a small AM/PM chip on the event bar. New "Next Day" nav item (between Job Schedule and Pipeline) renders a crew x {AM, PM} board for a chosen date (defaults to tomorrow), with a "no slot yet" side rail; dragging a job card into a crew/slot cell sets that schedule-day's crew_id + time_slot (and the prod job's crew_id). This is the nightly Dusty ritual ("which job is first vs second for each crew tomorrow").
+
+5. Callback metric. pec_prod_jobs.callback already existed and was editable on the costing page; now it is also a Yes/No control on the job detail (writes the bridged prod row), and Metrics has a new "Callbacks by crew lead (all time)" table mirroring the existing revenue-by-crew-lead pattern.
+
+Deploy-order safety. Both new columns are additive/idempotent and read via select('*')/with fallbacks: time_slot writes fall back to omitting the column, status_manual_at writes fall back to status-only, and the trigger is a pure backstop. Deploying the code before Cowork runs the migrations cannot break scheduling, the calendar, or the job detail; the only things that wait on the migrations are AM/PM persistence (time_slot) and the path-independent server-side status mirror (trigger). The trigger DEPENDS on status_manual_at, so 2026-06-03_jobs_status_manual_override.sql must run first.
+
+Verified: all 7 inline <script> blocks parse clean (node --check per block); no new em dashes (the two '—' in the diff are pre-existing placeholder strings: the null-status label and the callback "—" option that matches the identical costing control). Live behavior (scheduling, drag, trigger, metrics) needs the deploy + the migrations, then a manual pass (handoff below); this session has no browser or prod DB.
+
+Files touched: index.html, supabase/migrations/2026-06-04_schedule_time_slot.sql, supabase/migrations/2026-06-04_prod_status_sync_trigger.sql, PROJECT-LOG.md.
+Commits: 10c9130 (view-job fix), 66f1d21 (status sync helper + trigger + Job Complete), 604e85d (AM/PM + Next-Day board), 8cd1742 (callback on detail + metric).
+Next steps: Dylan reviews + pushes. Cowork runs the migrations (handoff), then a live smoke pass.
+
+## Handoff to Cowork
+
+Repo: hq-dashboard, branch main. Deploy URL: https://hq-prescott.netlify.app. PEC Supabase project: zdfpzmmrgotynrwkeakd (Primary DB, postgres role), Studio SQL Editor. Run AFTER Dylan pushes + Netlify deploys, IN THIS ORDER (the first two may already be done from the prior handoff; verify, do not double-run destructively).
+
+1. PREREQ (from the previous handoff, if not already run): supabase/migrations/2026-06-03_jobs_status_manual_override.sql, then scripts/migrations/2026-06-03_backfill_job_status.sql (preview first). The trigger in step 3 needs status_manual_at to exist. Acceptance: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='status_manual_at';` returns 1 row.
+
+2. Run supabase/migrations/2026-06-04_schedule_time_slot.sql (adds time_slot). Acceptance: the column exists on public.pec_prod_job_schedule_days (query in the file header). Guardrail: additive only.
+
+3. Run supabase/migrations/2026-06-04_prod_status_sync_trigger.sql (the status mirror trigger). Acceptance: `select tgname from pg_trigger where tgrelid='public.pec_prod_jobs'::regclass and tgname='trg_pec_prod_jobs_sync_status';` returns 1 row. Then OPTIONAL one-shot backfill to mirror every already-scheduled job: `update public.pec_prod_jobs set status = status where dripjobs_deal_id is not null;` (the no-op UPDATE fires the trigger for every bridged row). After it, spot-check: a job that is scheduled on the calendar should now read 'scheduled' (or 'in_progress' if its install date is today/past) in the Pipeline and Jobs list. Guardrail: do not change the state-machine logic in the function.
+
+4. Live smoke test (record pass/fail):
+   a. Schedule a DripJobs job on the calendar -> it shows 'scheduled' in Pipeline + Jobs list + job-detail label immediately (no need to open the detail first).
+   b. On the calendar, "Open job" on a DripJobs job -> lands on the CRM job detail (not costing). A manual job -> still opens the costing/Unified page.
+   c. In the schedule modal, set Time slot = AM, save -> the calendar bar shows an "AM" chip.
+   d. Open "Next Day", pick a date with scheduled jobs -> jobs show under the right crew/slot; drag one into a different crew's PM slot -> it persists after reload.
+   e. "Mark job complete" on a job detail -> 'completed' everywhere, completed_date set.
+   f. Toggle Callback = Yes on a job detail -> reflected on the costing page AND counted under that crew lead in Metrics ("Callbacks by crew lead").
+
+## Handoff to Dylan
+
+- Local-only: review commits 10c9130, 66f1d21, 604e85d, 8cd1742 and push when ready. Cowork runs the migrations after deploy.
+- Deferred on purpose (say the word to build any): (1) auto-complete when scheduled dates pass (you said future; manual button for now); (2) crew-lead login accounts so crew leads can hit "Job Complete" from the field (B-019); (3) crew notification / printable sheet when you "finalize" the Next-Day board; (4) per-day differing crew on multi-day jobs (schema supports it; the modal assigns one crew today). Also: the schedule modal's Time slot applies one AM/PM to all of a job's days; fine-grained per-day AM/PM is done on the Next-Day board.
+
 ## [2026-06-04 MST] Cowork: Waxler dupe-jobs cleanup DEFERRED (Dylan will handle manually)
 
 By: Cowork
