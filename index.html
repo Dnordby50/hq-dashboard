@@ -1835,6 +1835,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
+          <button data-pec-view="pipeline">Pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="docs">Invoicing Docs</button>
@@ -5312,6 +5313,9 @@ const state = {
   bonusesByJob: {}, scheduleByJob: {}, crewMembers: [], costingLoaded: false,
   // Invoicing & AR module
   arRows: [], metricsWindow: '4w', metricsSalesperson: '', openInvoiceJobId: null,
+  // Jobs Pipeline (kanban). Filters apply on Go; window is the changed-date range.
+  pipelineFilters: { salesperson: '', crew: '', leadSource: '', window: 'any' },
+  pendingWorkOrderJobId: null,
 };
 window.pecState = state;
 const PAGE = 20;
@@ -5546,6 +5550,7 @@ function switchView(v) {
       metrics: renderMetrics,
       docs: renderInvoicingDocs,
       schedule: renderSchedule,
+      pipeline: renderPipeline,
       costing: renderJobCosting,
       team: renderTeam,
       settings: renderSettings,
@@ -8107,6 +8112,13 @@ async function renderJobDetail(id) {
     job, areasFromState: () => areas, systemTypes, products, productById,
     colorPairings, recipeSlots, defaultLaborRate,
   }));
+  // Pipeline card "Work Order" button navigates here with this flag set, then
+  // fires the exact same work-order flow once the area draft is built. Reuses
+  // the existing flow instead of duplicating its data assembly on the card.
+  if (state.pendingWorkOrderJobId === id) {
+    state.pendingWorkOrderJobId = null;
+    $('pecJobPrintWO').click();
+  }
   // Admin-only manual override. The select fires 'change' optimistically; we
   // revert it immediately and let the confirm modal be the real commit, so a
   // cancel leaves the dropdown showing the current status. The modal sets
@@ -10171,6 +10183,328 @@ async function loadProdCore() {
 }
 async function loadScheduleData() {
   await loadProdCore(); // schedule needs only the shared slots
+}
+
+// ============================================================
+// Jobs Pipeline (kanban)
+// ============================================================
+// Reads jobs.status as the single source of truth (via pec_job_ar, the view
+// that derives from it). Five fixed columns; "Project Scheduled" vs "Colors
+// Confirmed" are sub-buckets of status='scheduled' split by colors_confirmed_at
+// (see CLAUDE.md: colors confirmation is a FLAG, not a status). Install date +
+// crew come from the bridged pec_prod_jobs rows (loadProdCore), matched by
+// dripjobs_deal_id. Money comes from pec_job_ar. Admin-only drag triggers the
+// same confirm-with-reason flow as the job-detail dropdown.
+
+// Module-level so the column drop handlers can resolve the dragged card to its
+// enriched row object. Repopulated on every renderPipeline.
+let _pipelineRowsById = {};
+
+// Parse a 'YYYY-MM-DD' date column as LOCAL (not UTC) so a Phoenix install date
+// never renders one day early. Returns null on empty.
+function pipelineParseDate(iso) {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).slice(0, 10).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function pipelineShortDate(iso) {
+  const dt = pipelineParseDate(iso);
+  return dt ? dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+}
+
+// Confirm + apply a kanban move. target carries the desired status and, for the
+// two scheduled sub-columns, the desired colors_confirmed value. Writes
+// status_manual_at so automation stops overriding the row (same lock the
+// dropdown sets). Colors changes piggyback in the same write. onDone re-renders.
+function openPipelineMoveModal(row, target, onDone) {
+  const curColors = !!row.colorsConfirmedAt;
+  const statusChanges = target.status !== row.status;
+  const colorsChanges = target.colors !== null && target.colors !== curColors;
+  if (!statusChanges && !colorsChanges) { showToast('Already in that column', { ttl: 1800 }); return; }
+  const pretty = s => (s || '').replace('_', ' ');
+  const summary = statusChanges
+    ? `Set status from <strong>${esc(pretty(row.status))}</strong> to <strong>${esc(pretty(target.status))}</strong>${colorsChanges ? ` and mark colors <strong>${target.colors ? 'confirmed' : 'not confirmed'}</strong>` : ''}?`
+    : `Mark colors <strong>${target.colors ? 'confirmed' : 'not confirmed'}</strong> for this job?`;
+  openModal(`
+    <h3>Move to ${esc(target.title)}</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">${summary} This is a manual override, so the schedule will not change it back automatically.</div>
+    <div class="pec-field"><label>Reason (optional)</label><input id="pipelineMoveReason" placeholder="Why are you moving this?" autocomplete="off"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn" id="pipelineMoveGo">Confirm</button>
+    </div>
+  `, { onMount: modal => {
+    const go = modal.querySelector('#pipelineMoveGo');
+    const reasonEl = modal.querySelector('#pipelineMoveReason');
+    reasonEl.focus();
+    go.addEventListener('click', async () => {
+      go.disabled = true; go.textContent = 'Saving…';
+      const reason = (reasonEl.value || '').trim();
+      try {
+        const stamp = new Date().toISOString();
+        const patch = {};
+        if (statusChanges) { patch.status = target.status; patch.status_manual_at = stamp; }
+        if (colorsChanges) { patch.colors_confirmed = target.colors; patch.colors_confirmed_at = target.colors ? stamp : null; }
+        let upd = await supabase.from('jobs').update(patch).eq('id', row.id);
+        if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+          const { status_manual_at, ...rest } = patch; // retry without the not-yet-migrated column
+          upd = await supabase.from('jobs').update(rest).eq('id', row.id);
+        }
+        if (upd.error) throw upd.error;
+        if (statusChanges) {
+          const after = { status: target.status, source: 'pipeline_drag' };
+          if (reason) after.reason = reason;
+          await logJobActivity(row.id, 'status_change', { status: row.status }, after);
+        }
+        if (colorsChanges) {
+          await logJobActivity(row.id, 'save', { colors_confirmed: curColors }, { colors_confirmed: target.colors });
+        }
+        closeModal();
+        showToast('Job moved', { ttl: 1800 });
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        go.disabled = false; go.textContent = 'Confirm';
+        console.error('[pec] pipeline move:', err);
+        showToast('Move failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+      }
+    });
+  }});
+}
+
+// Load + enrich every PEC job for the pipeline. Returns enriched row objects.
+async function loadPipelineData() {
+  await loadProdCore(); // crews, prodJobs (non-archived), scheduleDays, salesTeam
+  const [arRes, extraRes, leadRes] = await withFreshSession(() => Promise.all([
+    supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
+    // pec_job_ar carries money + status but not colors_confirmed_at, archived_at,
+    // or lead_source, so pull those from jobs (lead_source lives on customers).
+    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,customers(lead_source)'),
+    supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
+  ]), { label: 'loadPipelineData' });
+  if (arRes.error) throw new Error(arRes.error.message);
+  const extraById = {};
+  for (const j of extraRes.data || []) extraById[j.id] = j;
+
+  // Bridge maps: prod rows by deal id, schedule days by prod job id.
+  const prodByDeal = {};
+  for (const p of state.prodJobs || []) {
+    if (!p.dripjobs_deal_id) continue;
+    (prodByDeal[p.dripjobs_deal_id] ||= []).push(p);
+  }
+  const daysByProdJob = {};
+  for (const d of state.scheduleDays || []) (daysByProdJob[d.job_id] ||= []).push(d);
+  const crewNameById = Object.fromEntries((state.crews || []).map(c => [c.id, c.name]));
+
+  const installInfo = (dealId) => {
+    const rows = dealId ? (prodByDeal[dealId] || []) : [];
+    const dates = [];
+    let crew = '';
+    for (const p of rows) {
+      if (p.install_date) dates.push(p.install_date);
+      for (const d of daysByProdJob[p.id] || []) if (d.scheduled_date) dates.push(d.scheduled_date);
+      if (!crew) crew = crewNameById[p.crew_id] || p.crew || '';
+    }
+    if (!dates.length) return { start: null, end: null, crew };
+    dates.sort();
+    return { start: dates[0], end: dates[dates.length - 1], crew };
+  };
+
+  const maxTs = (...vals) => {
+    let best = 0;
+    for (const v of vals) { if (!v) continue; const t = new Date(v).getTime(); if (Number.isFinite(t) && t > best) best = t; }
+    return best || null;
+  };
+
+  const rows = [];
+  for (const r of arRes.data || []) {
+    const extra = extraById[r.id] || {};
+    if (extra.archived_at) continue; // pec_job_ar keeps archived rows; drop them here
+    const inst = installInfo(r.dripjobs_deal_id);
+    rows.push({
+      id: r.id,
+      customerName: r.customer_name || '(no name)',
+      status: r.status,
+      colorsConfirmedAt: extra.colors_confirmed_at || null,
+      leadSource: (extra.customers && extra.customers.lead_source) || '',
+      price: Number(r.price) || 0,
+      paid: Number(r.paid_to_date) || 0,
+      balance: Number(r.balance_remaining) || 0,
+      salesperson: r.salesperson || '',
+      signedDate: r.signed_date || null,
+      crew: inst.crew,
+      installStart: inst.start,
+      installEnd: inst.end,
+      lastTouched: maxTs(r.created_at, extra.created_at, extra.colors_confirmed_at, r.completed_date, r.last_payment_date),
+    });
+  }
+  return { rows, leadSources: (leadRes.data || []).map(l => l.name) };
+}
+
+const PIPELINE_COLUMNS = [
+  { key: 'signed',      title: 'Project Accepted',    status: 'signed',      colors: null,  match: r => r.status === 'signed' },
+  { key: 'scheduled',   title: 'Project Scheduled',   status: 'scheduled',   colors: false, match: r => r.status === 'scheduled' && !r.colorsConfirmedAt },
+  { key: 'colors',      title: 'Colors Confirmed',    status: 'scheduled',   colors: true,  match: r => r.status === 'scheduled' && !!r.colorsConfirmedAt },
+  { key: 'in_progress', title: 'Project In Progress', status: 'in_progress', colors: null,  match: r => r.status === 'in_progress' },
+  { key: 'completed',   title: 'Project Complete',    status: 'completed',   colors: null,  match: r => r.status === 'completed' },
+];
+
+// Build one pipeline card. canEdit toggles drag + the read-only cursor.
+function pipelineCardHtml(r, canEdit) {
+  const paidChip = r.price > 0 && r.balance <= 0.005
+    ? '<span class="pec-badge" style="--pec-badge-bg:#16a34a">Paid in Full</span>'
+    : (r.paid > 0.005
+      ? '<span class="pec-badge" style="--pec-badge-bg:#d97706">Partially Paid</span>'
+      : '<span class="pec-badge" style="--pec-badge-bg:#64748b">Deposit Owed</span>');
+  const installLabel = r.installStart
+    ? `${pipelineShortDate(r.installStart)} - ${pipelineShortDate(r.installEnd || r.installStart)}`
+    : 'No install date';
+  const crewLabel = r.crew ? esc(r.crew) : 'No Crew Assigned';
+  const updated = r.lastTouched ? fmtRelativeTime(new Date(r.lastTouched).toISOString()) : '';
+  return `<div class="pipeline-card" draggable="${canEdit ? 'true' : 'false'}" data-job-id="${esc(r.id)}"
+      style="background:var(--s2,#fff);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;${canEdit ? 'cursor:grab;' : ''}box-shadow:0 1px 2px rgba(0,0,0,.04)">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+      <strong style="font-size:.9rem;line-height:1.2">${esc(r.customerName)}</strong>
+      <button type="button" class="pec-btn ghost sm" data-pipeline-open="${esc(r.id)}" title="Open job detail" style="padding:1px 7px;font-size:.72rem;flex-shrink:0">open</button>
+    </div>
+    ${r.leadSource ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px">${esc(r.leadSource)}</div>` : ''}
+    <div style="margin:8px 0 6px;font-size:.95rem;font-weight:600">${invUSD(r.paid)} <span style="color:var(--muted);font-weight:400">of ${invUSD(r.price)}</span></div>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+      ${paidChip}
+      <button type="button" class="pec-btn ghost sm" data-pipeline-invoice="${esc(r.id)}" style="padding:1px 7px;font-size:.72rem">invoice</button>
+    </div>
+    <div style="font-size:.75rem;color:var(--muted)">Install: ${esc(installLabel)}</div>
+    <div style="font-size:.75rem;color:var(--muted)">Crew: ${crewLabel}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+      <button type="button" class="pec-btn sm" data-pipeline-wo="${esc(r.id)}" style="padding:2px 9px;font-size:.72rem">Work Order</button>
+      ${updated ? `<span style="font-size:.7rem;color:var(--muted)">Updated ${esc(updated)}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+async function renderPipeline() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading pipeline…</div>';
+  let data;
+  try {
+    data = await loadPipelineData();
+  } catch (e) {
+    const hint = /pec_job_ar/.test(e.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
+    root.innerHTML = `<div class="pec-empty">Could not load the pipeline: ${esc(e.message || String(e))}${hint}</div>`;
+    return;
+  }
+  const canEdit = isAdmin();
+  const f = state.pipelineFilters;
+
+  // Apply filters. Window filters on the last-changed timestamp.
+  const now = Date.now();
+  const windowCut = {
+    any: null,
+    '7d': now - 7 * 86400000,
+    '30d': now - 30 * 86400000,
+    quarter: now - 90 * 86400000,
+    ytd: new Date(new Date().getFullYear(), 0, 1).getTime(),
+  }[f.window];
+  const rows = data.rows.filter(r => {
+    if (f.salesperson && r.salesperson !== f.salesperson) return false;
+    if (f.crew && r.crew !== f.crew) return false;
+    if (f.leadSource && r.leadSource !== f.leadSource) return false;
+    if (windowCut && (!r.lastTouched || r.lastTouched < windowCut)) return false;
+    return true;
+  });
+  _pipelineRowsById = Object.fromEntries(rows.map(r => [r.id, r]));
+
+  const totalValue = rows.reduce((s, r) => s + r.price, 0);
+  const salesOpts = (state.salesTeam || []).filter(m => m.active !== false).map(m => m.name);
+  // Include any salesperson value present on jobs but missing from the team list.
+  for (const r of rows) if (r.salesperson && !salesOpts.includes(r.salesperson)) salesOpts.push(r.salesperson);
+  const crewOpts = (state.crews || []).map(c => c.name);
+  const sel = (val, cur) => `${val === cur ? 'selected' : ''}`;
+  const optList = (vals, cur) => `<option value="">All</option>` + vals.map(v => `<option value="${esc(v)}" ${sel(v, cur)}>${esc(v)}</option>`).join('');
+
+  const columnsHtml = PIPELINE_COLUMNS.map(col => {
+    const colRows = rows.filter(col.match)
+      .sort((a, b) => new Date(b.signedDate || 0) - new Date(a.signedDate || 0));
+    const colValue = colRows.reduce((s, r) => s + r.price, 0);
+    const body = colRows.length
+      ? colRows.map(r => pipelineCardHtml(r, canEdit)).join('')
+      : `<div class="pec-empty" style="font-size:.8rem;padding:16px 8px">No Jobs</div>`;
+    return `<div class="pipeline-col" data-col="${col.key}" style="flex:0 0 270px;display:flex;flex-direction:column;background:var(--bg-soft,#f1f3f5);border-radius:10px;padding:10px;max-height:calc(100vh - 230px)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">${esc(col.title)}</strong>
+        <span class="pec-badge" style="--pec-badge-bg:#475569">${colRows.length}</span>
+      </div>
+      <div class="pipeline-col-body" style="overflow-y:auto;flex:1">${body}</div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.8rem;font-weight:600">${invUSD(colValue)}</div>
+    </div>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div style="padding:4px 2px 0">
+      <h2 style="margin:0">Jobs Pipeline</h2>
+      <div style="color:var(--muted);font-size:.85rem;margin-top:2px">Total Deals: ${rows.length} · Total Value: ${invUSD(totalValue)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:12px 0">
+        <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="pipeFilterSales">${optList(salesOpts, f.salesperson)}</select></div>
+        <div class="pec-field" style="margin:0"><label>Crew</label><select id="pipeFilterCrew">${optList(crewOpts, f.crew)}</select></div>
+        <div class="pec-field" style="margin:0"><label>Lead source</label><select id="pipeFilterLead">${optList(data.leadSources, f.leadSource)}</select></div>
+        <div class="pec-field" style="margin:0"><label>Changed</label><select id="pipeFilterWindow">
+          <option value="any" ${sel('any', f.window)}>Anytime</option>
+          <option value="7d" ${sel('7d', f.window)}>Last 7 days</option>
+          <option value="30d" ${sel('30d', f.window)}>Last 30 days</option>
+          <option value="quarter" ${sel('quarter', f.window)}>Last quarter</option>
+          <option value="ytd" ${sel('ytd', f.window)}>Year to date</option>
+        </select></div>
+        <button type="button" class="pec-btn" id="pipeFilterGo">Go</button>
+        <button type="button" class="pec-btn ghost" id="pipeFilterReset">Reset</button>
+      </div>
+      <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px">${columnsHtml}</div>
+    </div>`;
+
+  // Filters
+  $('pipeFilterGo').addEventListener('click', () => {
+    state.pipelineFilters = {
+      salesperson: $('pipeFilterSales').value,
+      crew: $('pipeFilterCrew').value,
+      leadSource: $('pipeFilterLead').value,
+      window: $('pipeFilterWindow').value,
+    };
+    renderPipeline();
+  });
+  $('pipeFilterReset').addEventListener('click', () => {
+    state.pipelineFilters = { salesperson: '', crew: '', leadSource: '', window: 'any' };
+    renderPipeline();
+  });
+
+  // Card actions
+  root.querySelectorAll('[data-pipeline-open]').forEach(b => b.addEventListener('click', () => {
+    state.openJobId = b.dataset.pipelineOpen; state.openInvoiceJobId = null; switchView('jobs');
+  }));
+  root.querySelectorAll('[data-pipeline-invoice]').forEach(b => b.addEventListener('click', () => {
+    state.openInvoiceJobId = b.dataset.pipelineInvoice; state.openJobId = null; switchView('invoicing');
+  }));
+  root.querySelectorAll('[data-pipeline-wo]').forEach(b => b.addEventListener('click', () => {
+    state.openJobId = b.dataset.pipelineWo; state.pendingWorkOrderJobId = b.dataset.pipelineWo; switchView('jobs');
+  }));
+
+  // Admin-only drag and drop
+  if (canEdit) {
+    let draggedId = null;
+    root.querySelectorAll('.pipeline-card').forEach(card => {
+      card.addEventListener('dragstart', e => { draggedId = card.dataset.jobId; e.dataTransfer.effectAllowed = 'move'; });
+      card.addEventListener('dragend', () => { draggedId = null; });
+    });
+    root.querySelectorAll('.pipeline-col').forEach(colEl => {
+      colEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+      colEl.addEventListener('drop', e => {
+        e.preventDefault();
+        const id = draggedId;
+        if (!id) return;
+        const row = _pipelineRowsById[id];
+        const target = PIPELINE_COLUMNS.find(c => c.key === colEl.dataset.col);
+        if (row && target) openPipelineMoveModal(row, target, () => renderPipeline());
+      });
+    });
+  }
 }
 
 async function renderSchedule() {
