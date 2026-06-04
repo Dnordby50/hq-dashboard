@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Cowork: Waxler dupe-jobs cleanup DEFERRED (Dylan will handle manually)
+
+By: Cowork
+Scope: Attempted the leftover Waxler jobs-level dedupe (the 2 public.jobs rows on dripjobs_deal_id 2813460 still attached to customer 6385c5b2... after the customer merge on 2026-06-02). Stopped before any DELETE. No DB writes. Files touched: PROJECT-LOG.md only.
+
+What I found during pre-check (read-only):
+ - OLDER 68d0bb0f-bdef-4594-997a-85314e19dd0c (signed, $4,702.50, created 2026-05-06): 1 job_area, 1 pec_payments, 7 timeline_stages, 0 photos / 0 reviews / 0 job_colors.
+ - NEWER 86bf785c-7d7d-48e0-9ed3-d773137d09c3 (scheduled, $4,702.50, created 2026-05-26): 2 job_areas (Full Flake Garage Floor 845 sqft + Sales Discount, BOTH CREATED 2026-06-03 22:56 UTC = recent estimate work), 1 pec_payments, 0 timeline_stages.
+ - FK delete rules on public.jobs are CASCADE for job_areas, job_colors, pec_payments, photos, reviews, timeline_stages. A DELETE of either side cascades real data Dylan wants to keep.
+
+Dylan walked through 2 reversed instincts (delete older, then delete newer); both options cascade a payment, and the newer also cascades estimate work added 2026-06-03. He then said "skip this i will manually look at later." Deferred. Neither row deleted.
+
+The right cleanup is almost certainly a MERGE (re-point one side's job_areas + pec_payments onto the keeper, then delete the now-empty shell) rather than a naked DELETE, since both sides carry data Dylan wants to keep. The decision needs (1) inspection of the 2 payment rows side-by-side (same payment double-recorded vs deposit + balance) and (2) reading the dashboard / webhook code to confirm which row the active UI reads. Authoring the merge belongs in Claude Code, not Cowork.
+
+Files touched: PROJECT-LOG.md.
+Commits: Cowork to git commit ("cowork: defer Waxler 2813460 jobs dedupe per Dylan"). No push.
+
+## Handoff to Dylan
+
+- The 2 Waxler jobs on deal 2813460 are still both there. Customer ownership is clean (6385c5b2). When you sit down to manually decide, the row ids and dependent counts are above; the live estimate work is on the newer 86bf785c (Full Flake Garage 845 sqft + Sales Discount, added 2026-06-03 22:56 UTC). Cleanest next step is to ask Claude Code to author a merge migration based on the actual payment rows + dashboard reads (a self-contained prompt is in this Cowork session's chat, before the deferral).
+
 ## [2026-06-03 14:15 MST] feature: Jobs Pipeline kanban tab + status dropdown override fix
 
 By: Claude Code
