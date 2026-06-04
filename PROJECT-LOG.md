@@ -4,6 +4,57 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-03 14:15 MST] feature: Jobs Pipeline kanban tab + status dropdown override fix
+
+By: Claude Code
+Changed: index.html, netlify/functions/pec-auto-progress.cjs, two new SQL files (supabase/migrations/2026-06-03_jobs_status_manual_override.sql, scripts/migrations/2026-06-03_backfill_job_status.sql). No Sheets/email/Slack. No push (local commits; Dylan reviews + pushes).
+
+Why: Dylan wanted a sales-pipeline kanban view of every PEC job, plus a fix for the job-detail status dropdown that "did nothing." Both were specced as a 6-stage build that assumed jobs.status is the one source of truth, a brand-new activity-log table, a brand-new daily rollover function, and a Postgres trigger on jobs.install_date.
+
+Scope decision up front (asked Dylan, two answers): (1) BUILD ON EXISTING INFRA, not the duplicates the spec described, because ~half of it already exists: the daily 6am-MST rollover is pec-auto-progress.cjs (scheduled in netlify.toml), the activity log is public.audit_log (already wired via logJobActivity/renderActivityCard), the status enum signed/scheduled/in_progress/completed is already live, and colors_confirmed_at already exists. Also, the spec's "trigger on jobs.install_date" is impossible: install_date is NOT on public.jobs, it lives on the sibling pec_prod_jobs and is bridged by dripjobs_deal_id (see CLAUDE.md "Two parallel job tables"). signed->scheduled already happens via the DripJobs stage-changed webhook and the scheduling UI. So no new table, no new function, no new trigger were created. (2) SCOPE READ-PATH WORK TO PIPELINE ONLY: Schedule/Ordering/Costing read pec_prod_jobs, which has a DIFFERENT 5-value status enum (unscheduled/scheduled/ordered/delivered/completed); per Dylan we left those alone and the Pipeline reads jobs.status (via pec_job_ar, the view that derives from it). Unifying those taxonomies is a deferred follow-up.
+
+Stage 1 (status dropdown bug, commit 84891eb). Root cause: the dropdown DID save, but renderJobDetail's schedule auto-sync (index.html ~7698) re-ran on the post-save re-render, recomputed status from the linked pec_prod_jobs.install_date, and overwrote the manual pick back. To the user it "snapped back." Fix: new nullable column jobs.status_manual_at marks a hand-set status. When set, three automations skip the row: the render auto-sync, the client boot sweep runAutoProgressSweep, and the daily pec-auto-progress.cjs. The dropdown is now admin-only (non-admins see a disabled select with a tooltip) and opens a confirm-with-reason modal (openStatusChangeModal) before persisting; every change logs to audit_log with actor + source 'manual_override' + the optional reason, so backward transitions (e.g. completed -> scheduled) are auditable. The DripJobs webhooks are deliberately NOT gated by status_manual_at (they reflect real external events); whether a manual override should survive a later DripJobs stage change is a follow-up call for Dylan.
+
+Stage 2 (backfill, commit 3ef7786). scripts/migrations/2026-06-03_backfill_job_status.sql sets each existing job's status from current data: completed if completed_date is set, else in_progress if the bridged install_date is today-or-earlier (Phoenix), else scheduled if there is a future bridged install_date, else signed. It bridges install_date through pec_prod_jobs by dripjobs_deal_id, skips archived/voided rows, and skips status_manual_at rows so manual pins are never clobbered. Ships as PREVIEW (read-only) + WRITE (transaction) + VERIFY steps; idempotent. NOT a new function/trigger: the rollover and signed->scheduled paths already exist.
+
+Stage 3 (activity log). No new table. Reused public.audit_log. The dropdown and the kanban drag both write through the existing logJobActivity; activityPhrase now renders the source (manual override, pipeline drag, auto: install day, etc.) and the reason.
+
+Stage 4 (read paths). Scoped to Pipeline per Dylan. Pipeline reads pec_job_ar (derives from jobs.status) for money + status, enriched with colors_confirmed_at + lead_source from jobs/customers and install/crew from the bridged pec_prod_jobs. Schedule/Ordering/Costing untouched (see deferred items).
+
+Stage 5 (Pipeline tab, commit 39df31f). New "Pipeline" nav item between Job Schedule and Job Costing (visible to all staff; the sidebar mirror picks it up automatically). Five fixed columns: Project Accepted (signed), Project Scheduled (scheduled + colors not confirmed), Colors Confirmed (scheduled + colors confirmed), Project In Progress (in_progress), Project Complete (completed). Title shows Total Deals + Total Value across the filtered set; each column shows a count chip and a revenue total. Filter row (salesperson, crew, lead source, changed-date window: Anytime/7d/30d/quarter/YTD) applies on Go, with Reset. Project Manager and Labels filters were dropped (no data model for them yet, per the spec's out-of-scope list). Cards (sorted signed_date DESC) show customer, lead source, $paid of $price with a Paid in Full / Partially Paid / Deposit Owed chip, an invoice link, install date range, crew (or "No Crew Assigned"), a Work Order button, and "Updated Xd ago". Drag-and-drop is admin-only and opens the same confirm-with-reason flow (openPipelineMoveModal); dragging between the two scheduled sub-columns toggles colors_confirmed instead of status. The Work Order button reuses the EXACT existing work-order flow by navigating to the job detail and auto-firing its "View Work Order" button (state.pendingWorkOrderJobId), rather than duplicating the heavy area-draft assembly.
+
+Deploy-order safety. status_manual_at is additive + idempotent. The client reads it via select('*') (undefined before the migration runs, so nothing is suppressed) and the override write falls back to a status-only update if the column is missing, so deploying the code before Cowork runs the migration cannot break the dropdown or the kanban; the only thing that waits on the migration is the override becoming "sticky."
+
+Verified (static only; this session has no browser or prod DB): all 7 inline <script> blocks parse clean (node --check per block), pec-auto-progress.cjs parses, and no new em dashes were introduced (the single '—' in the diff is a pre-existing null-placeholder string carried over verbatim). The live smoke tests and the two SQL runs need the deploy + Supabase, so they are a Cowork handoff below.
+
+Files touched: index.html, netlify/functions/pec-auto-progress.cjs, supabase/migrations/2026-06-03_jobs_status_manual_override.sql, scripts/migrations/2026-06-03_backfill_job_status.sql, PROJECT-LOG.md.
+Commits: 84891eb (stage 1), 3ef7786 (stage 2 backfill), 39df31f (stage 5 pipeline).
+Next steps: Dylan reviews + pushes. Cowork runs the migration, then the backfill, then the live smoke tests (handoff below).
+
+## Handoff to Cowork
+
+Repo: hq-dashboard, branch main. Deploy URL: https://hq-prescott.netlify.app. PEC Supabase project: zdfpzmmrgotynrwkeakd (Primary DB, postgres role), Studio SQL Editor. Do these AFTER Dylan has pushed + Netlify has deployed, in order.
+
+1. Run supabase/migrations/2026-06-03_jobs_status_manual_override.sql (adds jobs.status_manual_at). Acceptance: `select column_name from information_schema.columns where table_schema='public' and table_name='jobs' and column_name='status_manual_at';` returns 1 row. Until it runs, the status dropdown + kanban drag still change status but the override is not yet "sticky" (the schedule can still re-derive it).
+   Guardrail: additive only, do not touch any other column.
+
+2. Run scripts/migrations/2026-06-03_backfill_job_status.sql. IMPORTANT: run STEP 1 (the PREVIEW select) ALONE first and capture the old_status -> new_status -> count rows. Eyeball any row moving INTO 'signed' from 'in_progress'/'completed' (the file documents this edge case). If any look wrong, stop and ask Dylan before STEP 2. Then run STEP 2 (the transaction) and STEP 3 (verify; the preview re-run should now return 0 rows). Capture the final status spread.
+   Guardrail: the script already skips archived/voided/status_manual_at rows; do not remove those filters.
+
+3. Live smoke test (record pass/fail for each):
+   a. Create a new manual PEC job. It appears in Pipeline "Project Accepted".
+   b. Schedule it (set an install date via the schedule). It moves to "Project Scheduled".
+   c. Click "Mark colors confirmed" on the job. It moves to "Colors Confirmed".
+   d. Run the rollover by hand for an install-today job: `curl https://hq-prescott.netlify.app/.netlify/functions/pec-auto-progress` and confirm a scheduled+install-today job flips to "Project In Progress".
+   e. Mark Complete from Invoicing. It moves to "Project Complete" and completed_date is set.
+   f. As an admin, change a job's status via the job-detail dropdown (confirm modal + reason). Confirm it sticks (does not snap back) and the Activity card shows "manual override" + the reason.
+   g. As a NON-admin (e.g. Anne's login), confirm the status dropdown is disabled and the kanban cards do not drag.
+
+## Handoff to Dylan
+
+- Local-only: review commits 84891eb, 3ef7786, 39df31f and push when ready. Deploying before the migration is safe (override just is not sticky yet); Cowork runs the two SQL files after deploy.
+- Deferred follow-ups for you to decide on (not done on purpose): (1) Should a manual status override also survive a later DripJobs stage-changed webhook, or should DripJobs win? Today DripJobs is NOT gated by the override. (2) Unifying Schedule/Ordering/Costing (which read pec_prod_jobs's 5-value enum) onto jobs.status, the bigger Stage 4 work we scoped out. (3) The pipeline card "open" + "Work Order" navigate in-app rather than opening a new browser tab (the SPA has no per-job deep-link URL yet); say if you want real new-tab deep links. (4) Manual backward moves out of 'completed' do not clear completed_date; say if you want that cleared.
+
 ## [2026-06-03 13:33 MST] Cowork: ran 2026-06-02_prod_jobs_archive_hide.sql migration on PEC Supabase
 
 By: Cowork
