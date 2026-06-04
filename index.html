@@ -1835,6 +1835,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
+          <button data-pec-view="nextday">Next Day</button>
           <button data-pec-view="pipeline">Pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
@@ -5352,6 +5353,8 @@ const state = {
   // Jobs Pipeline (kanban). Filters apply on Go; window is the changed-date range.
   pipelineFilters: { salesperson: '', crew: '', leadSource: '', window: 'any' },
   pendingWorkOrderJobId: null,
+  // Next-Day finalization board (crew x AM/PM). Anchor defaults to tomorrow.
+  nextDayAnchor: null,
 };
 window.pecState = state;
 const PAGE = 20;
@@ -5586,6 +5589,7 @@ function switchView(v) {
       metrics: renderMetrics,
       docs: renderInvoicingDocs,
       schedule: renderSchedule,
+      nextday: renderNextDay,
       pipeline: renderPipeline,
       costing: renderJobCosting,
       team: renderTeam,
@@ -10570,6 +10574,119 @@ async function renderPipeline() {
   }
 }
 
+// ============================================================
+// Next-Day finalization board (crew x AM/PM)
+// ============================================================
+// The "which job is first (AM) and second (PM) for each crew tomorrow" ritual
+// Dylan + Dusty run nightly. Reads the schedule days for one date and lays them
+// out as a crew x {AM,PM} grid. Dragging a job card into a crew/slot cell sets
+// that schedule-day's crew_id + time_slot (and the prod job's crew_id); the
+// status-sync helper/trigger keep CRM status correct. Reuses loadProdCore data.
+
+let _nextDayRowsById = {};
+
+async function renderNextDay() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
+  await loadProdCore();
+  if (!state.nextDayAnchor) state.nextDayAnchor = isoDate(addDays(parseISO(mstTodayIso()), 1));
+  const target = state.nextDayAnchor;
+  const crews = (state.crews || []).filter(c => c.active);
+  const jobById = Object.fromEntries((state.prodJobs || []).map(j => [j.id, j]));
+  const dayRows = (state.scheduleDays || []).filter(d => d.scheduled_date === target && jobById[d.job_id]);
+  _nextDayRowsById = Object.fromEntries(dayRows.map(d => [d.id, d]));
+  const unslotted = dayRows.filter(d => !d.time_slot);
+  const dayRevenue = [...new Set(dayRows.map(d => d.job_id))]
+    .reduce((s, id) => s + (Number(jobById[id] && jobById[id].revenue) || 0), 0);
+
+  const cardHtml = (d) => {
+    const j = jobById[d.job_id] || {};
+    return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
+        style="background:var(--s2,#fff);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.04)">
+      <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>
+      <div style="font-size:.72rem;color:var(--muted)">${esc(j.address || 'No address')}</div>
+      <div style="font-size:.72rem;color:var(--muted)">${invUSD(Number(j.revenue) || 0)}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
+    </div>`;
+  };
+  const cell = (crew, slot) => {
+    const rows = dayRows.filter(d => d.crew_id === crew.id && d.time_slot === slot);
+    const body = rows.length ? rows.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.72rem;padding:12px 6px">Empty</div>`;
+    return `<div class="nextday-cell" data-crew="${esc(crew.id)}" data-slot="${slot}"
+        style="min-height:74px;background:var(--bg-soft,#f1f3f5);border-radius:8px;padding:6px">${body}</div>`;
+  };
+
+  const headerRow = `<div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:8px;margin-bottom:6px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">
+      <div>Crew</div><div>AM (first visit)</div><div>PM (second visit)</div>
+    </div>`;
+  const crewRows = crews.length ? crews.map(c => `
+    <div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:8px;margin-bottom:8px;align-items:start">
+      <div style="font-weight:600;padding-top:10px">${esc(c.name)}</div>
+      ${cell(c, 'AM')}
+      ${cell(c, 'PM')}
+    </div>`).join('') : `<div class="pec-empty">No active crews. Add crews in Settings.</div>`;
+
+  const niceDate = parseISO(target).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+
+  root.innerHTML = `
+    <div style="padding:4px 2px 0">
+      <h2 style="margin:0">Next Day Finalization</h2>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px">
+        <button type="button" class="pec-btn ghost sm" id="nextDayPrev">‹ Prev</button>
+        <input type="date" id="nextDayDate" value="${esc(target)}" style="max-width:170px">
+        <button type="button" class="pec-btn ghost sm" id="nextDayNext">Next ›</button>
+        <span style="color:var(--muted);font-size:.85rem">${esc(niceDate)} · Total revenue: ${invUSD(dayRevenue)}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 240px;gap:16px;align-items:start">
+        <div>
+          ${headerRow}
+          ${crewRows}
+        </div>
+        <div class="nextday-cell" data-crew="" data-slot="" style="background:var(--bg-soft,#f1f3f5);border-radius:10px;padding:10px">
+          <strong style="font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">No slot yet · ${unslotted.length}</strong>
+          <div style="font-size:.7rem;color:var(--muted);margin:4px 0 8px">Scheduled this day, AM/PM not set. Drag into a crew slot. Drop here to clear a slot.</div>
+          ${unslotted.length ? unslotted.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.75rem">All assigned</div>`}
+        </div>
+      </div>
+    </div>`;
+
+  const go = (iso) => { state.nextDayAnchor = iso; renderNextDay(); };
+  $('nextDayPrev').addEventListener('click', () => go(isoDate(addDays(parseISO(target), -1))));
+  $('nextDayNext').addEventListener('click', () => go(isoDate(addDays(parseISO(target), 1))));
+  $('nextDayDate').addEventListener('change', e => { if (e.target.value) go(e.target.value); });
+
+  // Drag and drop. Dropping a card into a cell sets that schedule-day row's
+  // crew_id + time_slot (empty cell = clear). Also mirrors crew onto the prod
+  // job so the calendar bar shows it. Open to staff (this is the ops ritual).
+  let draggedId = null;
+  root.querySelectorAll('.nextday-card').forEach(card => {
+    card.addEventListener('dragstart', e => { draggedId = card.dataset.dayId; e.dataTransfer.effectAllowed = 'move'; });
+    card.addEventListener('dragend', () => { draggedId = null; });
+  });
+  root.querySelectorAll('.nextday-cell').forEach(cellEl => {
+    cellEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    cellEl.addEventListener('drop', async e => {
+      e.preventDefault();
+      const id = draggedId; if (!id) return;
+      const row = _nextDayRowsById[id]; if (!row) return;
+      const crewId = cellEl.dataset.crew || null;
+      const slot = cellEl.dataset.slot || null;
+      if (row.crew_id === crewId && (row.time_slot || null) === slot) return; // no change
+      try {
+        let upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId, time_slot: slot }).eq('id', id);
+        if (upd.error && /time_slot/.test(upd.error.message || '')) {
+          upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId }).eq('id', id); // pre-migration fallback
+        }
+        if (upd.error) throw upd.error;
+        if (crewId) { try { await supabase.from('pec_prod_jobs').update({ crew_id: crewId }).eq('id', row.job_id); } catch (_) {} }
+        renderNextDay();
+      } catch (err) {
+        console.error('[pec] next-day assign:', err);
+        showToast('Could not move job: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+      }
+    });
+  });
+}
+
 async function renderSchedule() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
@@ -10743,13 +10860,13 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     for (const jobId of Object.keys(byJob)) {
       const ev = eventFor(jobId); if (!ev) continue;
       const sorted = byJob[jobId].slice().sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
-      let runStart = null, runEnd = null;
-      const flush = () => { if (runStart !== null) bars.push({ jobId, startCol: runStart, spanCols: runEnd - runStart + 1, ev }); };
+      let runStart = null, runEnd = null, runSlot = null;
+      const flush = () => { if (runStart !== null) bars.push({ jobId, startCol: runStart, spanCols: runEnd - runStart + 1, ev, slot: runSlot }); };
       for (const sd of sorted) {
         const col = isoToCol.get(sd.scheduled_date);
-        if (runStart === null) { runStart = col; runEnd = col; }
+        if (runStart === null) { runStart = col; runEnd = col; runSlot = sd.time_slot || null; }
         else if (col === runEnd + 1) { runEnd = col; }
-        else { flush(); runStart = col; runEnd = col; }
+        else { flush(); runStart = col; runEnd = col; runSlot = sd.time_slot || null; }
       }
       flush();
     }
@@ -10770,6 +10887,8 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
 
   const barHtml = (bar, gridRow) => {
     const parts = [];
+    // AM/PM chip first so it survives the progressive collapse on narrow bars.
+    if (bar.slot) parts.push(`<span class="bar-slot">${esc(bar.slot)}</span>`);
     parts.push(`<span class="bar-customer">${esc(bar.ev.customer || '(no name)')}</span>`);
     // Revenue first after customer so it survives the progressive collapse
     // (sys + crew drop out on narrow bars before rev does).
@@ -10851,6 +10970,7 @@ function openScheduleModal(jobId) {
       : (job.install_date ? [job.install_date] : []),
     pickerMonth: new Date(seedDate.getFullYear(), seedDate.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
+    time_slot: existingDays[0]?.time_slot || '',
     estimated_hours: job.estimated_hours || '',
     sales_team: job.sales_team || '',
     // Inline system pick. If the job already has an area its system wins,
@@ -10925,11 +11045,20 @@ function openScheduleModal(jobId) {
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Pick install days</div>
         <div id="schedDayGrid"></div>
       </div>
-      <div class="pec-field"><label>Crew</label>
-        <select id="schedCrew">
-          <option value="">Pick a crew…</option>
-          ${state.crews.filter(c => c.active).map(c => `<option value="${esc(c.id)}" ${c.id===draft.crew_id?'selected':''}>${esc(c.name)}</option>`).join('')}
-        </select>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Crew</label>
+          <select id="schedCrew">
+            <option value="">Pick a crew…</option>
+            ${state.crews.filter(c => c.active).map(c => `<option value="${esc(c.id)}" ${c.id===draft.crew_id?'selected':''}>${esc(c.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pec-field"><label>Time slot</label>
+          <select id="schedSlot">
+            <option value="">Not set</option>
+            <option value="AM" ${draft.time_slot==='AM'?'selected':''}>AM (first visit)</option>
+            <option value="PM" ${draft.time_slot==='PM'?'selected':''}>PM (second visit)</option>
+          </select>
+        </div>
       </div>
       <div class="pec-row-2">
         <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
@@ -10973,6 +11102,7 @@ function openScheduleModal(jobId) {
       });
       modal.querySelector('#schedSystem').addEventListener('change', e => { draft.system_type_id = e.target.value; });
       modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
+      modal.querySelector('#schedSlot').addEventListener('change', e => { draft.time_slot = e.target.value; });
       modal.querySelector('#schedHours').addEventListener('input', e => { draft.estimated_hours = e.target.value; });
       modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
       modal.querySelector('#schedSave').addEventListener('click', async () => {
@@ -10998,8 +11128,12 @@ function openScheduleModal(jobId) {
             scheduled_date: iso,
             day_index: idx,
             crew_id: draft.crew_id || null,
+            time_slot: draft.time_slot || null,
           }));
-          const ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
+          let ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
+          if (ins.error && /time_slot/.test(ins.error.message || '')) {
+            ins = await supabase.from('pec_prod_job_schedule_days').insert(rows.map(({ time_slot, ...r }) => r)); // pre-migration fallback
+          }
           if (ins.error) return errEl.textContent = ins.error.message;
           const sortedIso = draft.selectedDates.slice().sort();
           firstSavedIso = sortedIso[0];
@@ -13015,6 +13149,7 @@ if (portalToken) {
   .pec-cal-event-bar::before { content:''; position:absolute; left:3px; top:2px; bottom:2px; width:3px; background:var(--ev-color, #6366f1); border-radius:2px }
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
+  .pec-cal-event-bar .bar-slot { flex:0 0 auto; font-weight:700; font-size:.6rem; letter-spacing:.5px; padding:1px 5px; border-radius:999px; background:var(--ev-color, #6366f1); color:#fff; overflow:visible }
   .pec-cal-event-bar > .bar-customer { font-weight:600; flex:1 1 auto }
   .pec-cal-event-bar > .bar-rev { flex:0 0 auto; color:var(--fg, #0f172a); font-weight:700; font-variant-numeric:tabular-nums }
   .pec-cal-event-bar > .bar-system,
