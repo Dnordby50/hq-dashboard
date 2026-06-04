@@ -4899,6 +4899,62 @@ async function logJobActivity(jobId, action, beforeJson, afterJson) {
   }
 }
 
+// True only for the 'admin' role. Status overrides and pipeline drag are gated
+// on this; office / pm / sales / crew see status as read-only. Mirrors the
+// is_admin_role() server gate, not the broader is_admin_staff().
+function isAdmin() {
+  return !!(state.adminUser && state.adminUser.role === 'admin');
+}
+
+// Shared manual status-override flow. Opens a confirm modal (reason optional),
+// then writes jobs.status + status_manual_at and logs the change to audit_log
+// with source 'manual_override'. status_manual_at tells the schedule auto-sync
+// and the auto-progress sweep to stop deriving this row's status, so an admin's
+// pick sticks (that is the fix for the "dropdown does nothing" bug). Reused by
+// the job-detail dropdown and the Pipeline kanban drag. onDone() runs after a
+// successful write so the caller can re-render. Deploy-safe: if status_manual_at
+// does not exist yet (migration not run), it falls back to a status-only write.
+function openStatusChangeModal(jobId, fromStatus, toStatus, onDone) {
+  const pretty = s => (s || '').replace('_', ' ');
+  openModal(`
+    <h3>Change status</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Set status from <strong>${esc(pretty(fromStatus))}</strong> to <strong>${esc(pretty(toStatus))}</strong>? This is a manual override, so the schedule will not change it back automatically.</div>
+    <div class="pec-field"><label>Reason (optional)</label><input id="statusChangeReason" placeholder="Why are you changing this?" autocomplete="off"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn" id="statusChangeGo">Set status</button>
+    </div>
+  `, { onMount: modal => {
+    const go = modal.querySelector('#statusChangeGo');
+    const reasonEl = modal.querySelector('#statusChangeReason');
+    reasonEl.focus();
+    go.addEventListener('click', async () => {
+      go.disabled = true; go.textContent = 'Saving…';
+      const reason = (reasonEl.value || '').trim();
+      try {
+        const stamp = new Date().toISOString();
+        let upd = await supabase.from('jobs').update({ status: toStatus, status_manual_at: stamp }).eq('id', jobId);
+        if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+          // Migration not applied yet: persist the status anyway. The override
+          // will not be sticky until the column exists, but the change takes.
+          upd = await supabase.from('jobs').update({ status: toStatus }).eq('id', jobId);
+        }
+        if (upd.error) throw upd.error;
+        const after = { status: toStatus, source: 'manual_override' };
+        if (reason) after.reason = reason;
+        await logJobActivity(jobId, 'status_change', { status: fromStatus }, after);
+        closeModal();
+        showToast('Status updated', { ttl: 2000 });
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        go.disabled = false; go.textContent = 'Set status';
+        console.error('[pec] status change:', err);
+        showToast('Status change failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+      }
+    });
+  }});
+}
+
 // Pure diff helper. Returns only the fields whose value changed between the
 // original job snapshot + areasBefore and the about-to-be-written jobPatch +
 // areasAfter. Areas are summarized (count + total sqft) so the feed stays
@@ -5158,11 +5214,15 @@ async function runAutoProgressSweep() {
     const due = dueRes.data || [];
     if (!due.length) return;
     const dealIds = [...new Set(due.map(r => r.dripjobs_deal_id))];
+    // select('*') (not an explicit column list) so reading status_manual_at is
+    // safe before the 2026-06-03 migration runs: the field is just undefined
+    // then, and the manual-override filter below is a no-op until it exists.
     const jobsRes = await supabase.from('jobs')
-      .select('id, status, dripjobs_deal_id')
+      .select('*')
       .in('dripjobs_deal_id', dealIds)
       .eq('status', 'scheduled');
-    const jobs = jobsRes.data || [];
+    // Skip rows an admin pinned by hand; automation must not override them.
+    const jobs = (jobsRes.data || []).filter(j => !j.status_manual_at);
     for (const j of jobs) {
       const upd = await supabase.from('jobs').update({ status: 'in_progress' }).eq('id', j.id);
       if (upd.error) { console.warn('[pec] auto-progress update failed:', j.id, upd.error.message); continue; }
@@ -5178,7 +5238,17 @@ async function runAutoProgressSweep() {
 function activityPhrase(row) {
   const b = row.before_json || {}, a = row.after_json || {};
   if (row.action === 'status_change') {
-    return `changed status from <strong>${esc(b.status ?? '—')}</strong> to <strong>${esc(a.status ?? '—')}</strong>`;
+    let phrase = `changed status from <strong>${esc(b.status ?? '—')}</strong> to <strong>${esc(a.status ?? '—')}</strong>`;
+    const srcLabel = {
+      auto_install_day: 'auto: install day arrived',
+      schedule_sync: 'auto: synced to schedule',
+      invoicing_mark_complete: 'via Mark Complete',
+      manual_override: 'manual override',
+      pipeline_drag: 'pipeline drag',
+    }[a.source];
+    if (srcLabel) phrase += ` <span style="color:var(--muted)">(${esc(srcLabel)})</span>`;
+    if (a.reason) phrase += ` <span style="color:var(--muted)">(reason: ${esc(a.reason)})</span>`;
+    return phrase;
   }
   if (row.action === 'save') {
     const keys = Object.keys(a);
@@ -7695,7 +7765,10 @@ async function renderJobDetail(id) {
   // today-in-MST basis as runAutoProgressSweep.
   const statusBeforeSync = job.status;
   let statusTarget = job.status;
-  if (scheduleBridged && job.status !== 'completed') {
+  // status_manual_at means an admin set this status by hand; the schedule must
+  // not override it (this is what made the dropdown appear to "do nothing").
+  // Undefined before the migration runs, so behaviour is unchanged until then.
+  if (scheduleBridged && job.status !== 'completed' && !job.status_manual_at) {
     const mstTodayISO = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
     if (isScheduled) statusTarget = (jobInstallDate && jobInstallDate <= mstTodayISO) ? 'in_progress' : 'scheduled';
     else if (job.status !== 'in_progress') statusTarget = 'signed';
@@ -7716,6 +7789,8 @@ async function renderJobDetail(id) {
   const defaultLaborRate = Number(settingsRes?.data?.value) > 0 ? Number(settingsRes.data.value) : 35;
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
   const STATUSES = ['signed','scheduled','in_progress','completed'];
+  // Only admins can manually override status; everyone else sees it read-only.
+  const canEditStatus = isAdmin();
 
   // Recipe slots grouped per system, ordered, editor-visible only. Slots with
   // editor_hidden = true (calculator-only internals like a fixed body coat)
@@ -7826,7 +7901,7 @@ async function renderJobDetail(id) {
       </div>
       <div class="pec-field" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line, var(--border));margin-bottom:0;max-width:260px">
         <label>Status <span id="pecJobStatusSaved" style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)"></span></label>
-        <select id="pecJobStatus">
+        <select id="pecJobStatus"${canEditStatus ? '' : ' disabled title="Status updates automatically as the job moves through the pipeline. Ask an admin to override."'}>
           ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
         </select>
       </div>
@@ -8032,18 +8107,19 @@ async function renderJobDetail(id) {
     job, areasFromState: () => areas, systemTypes, products, productById,
     colorPairings, recipeSlots, defaultLaborRate,
   }));
-  $('pecJobStatus').addEventListener('change', async e => {
-    const savedEl = $('pecJobStatusSaved');
-    savedEl.textContent = 'Saving…';
-    const beforeStatus = job.status;
-    const newStatus = e.target.value;
-    const { error } = await supabase.from('jobs').update({ status: newStatus }).eq('id', id);
-    if (error) { savedEl.textContent = ''; alert(error.message); return; }
-    if (beforeStatus !== newStatus) {
-      await logJobActivity(id, 'status_change', { status: beforeStatus }, { status: newStatus });
-    }
-    renderJobDetail(id);
-  });
+  // Admin-only manual override. The select fires 'change' optimistically; we
+  // revert it immediately and let the confirm modal be the real commit, so a
+  // cancel leaves the dropdown showing the current status. The modal sets
+  // status_manual_at so the schedule auto-sync stops fighting the choice.
+  if (canEditStatus) {
+    $('pecJobStatus').addEventListener('change', e => {
+      const newStatus = e.target.value;
+      const fromStatus = job.status;
+      if (newStatus === fromStatus) return;
+      e.target.value = fromStatus;
+      openStatusChangeModal(id, fromStatus, newStatus, () => renderJobDetail(id));
+    });
+  }
 
   // Areas editor — recipe-driven. Each area picks a system type; the system's
   // recipe slots then define the inputs (single product, multi-product, choice,

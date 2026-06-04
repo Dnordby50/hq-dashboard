@@ -42,11 +42,15 @@ exports.handler = async () => {
     // 2) Matching CRM-side jobs currently in 'scheduled'. Anything already
     //    'in_progress' or further along is skipped (idempotency).
     const inClause = dealIds.map(id => `"${id.replace(/"/g, '\\"')}"`).join(',');
+    // select=* (not an explicit list) so reading status_manual_at is safe before
+    // the 2026-06-03 migration runs; it is undefined until the column exists.
     const candidates = await sb(
       'GET',
-      `/jobs?dripjobs_deal_id=in.(${encodeURIComponent(inClause)})&select=id,status,dripjobs_deal_id`
+      `/jobs?dripjobs_deal_id=in.(${encodeURIComponent(inClause)})&select=*`
     );
-    const toFlip = candidates.filter(j => j.status === 'scheduled');
+    // Flip only 'scheduled' rows that an admin has NOT manually pinned. A set
+    // status_manual_at means the override should survive the daily sweep.
+    const toFlip = candidates.filter(j => j.status === 'scheduled' && !j.status_manual_at);
     const skipped = candidates.length - toFlip.length;
 
     // 3) Flip + audit, one at a time so a single bad row doesn't kill the rest.
