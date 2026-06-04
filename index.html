@@ -10884,15 +10884,29 @@ function openScheduleModal(jobId) {
     onMount(modal) {
       renderBody(modal);
       const openJobBtn = modal.querySelector('#schedOpenJob');
-      // Open the Unified Job page for this job. It is keyed by pec_prod_jobs.id
-      // (the id this schedule row already has), so it works for manual entries
-      // too -- unlike the old path, which looked up a public.jobs row by
-      // dripjobs_deal_id and dead-ended on manual jobs. Same mechanism the Job
-      // Costing list row uses. NOTE: renderUnifiedJob is admin/PM-gated.
-      if (openJobBtn) openJobBtn.addEventListener('click', () => {
+      // Open the CRM job detail for a DripJobs-sourced job (bridged to a
+      // public.jobs row by dripjobs_deal_id). Manual prod-only entries have no
+      // public.jobs row, so they fall back to the Unified Job (costing) page,
+      // keyed by pec_prod_jobs.id. (renderUnifiedJob is admin/PM-gated; the job
+      // detail is open to staff.)
+      if (openJobBtn) openJobBtn.addEventListener('click', async () => {
+        let publicId = null;
+        if (job.dripjobs_deal_id) {
+          try {
+            const r = await supabase.from('jobs').select('id')
+              .eq('dripjobs_deal_id', job.dripjobs_deal_id).is('archived_at', null).limit(1);
+            publicId = (r.data && r.data[0]) ? r.data[0].id : null;
+          } catch (_) { /* fall back to costing below */ }
+        }
         window.pecCloseModal();
-        state.openUnifiedJobId = job.id;
-        switchView('costing');
+        if (publicId) {
+          state.openUnifiedJobId = null;
+          state.openJobId = publicId;
+          switchView('jobs');
+        } else {
+          state.openUnifiedJobId = job.id;
+          switchView('costing');
+        }
       });
       modal.querySelector('#schedSystem').addEventListener('change', e => { draft.system_type_id = e.target.value; });
       modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
