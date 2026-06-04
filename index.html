@@ -5235,6 +5235,40 @@ async function runAutoProgressSweep() {
   }
 }
 
+// Phoenix-local today (UTC-7, no DST per project context).
+function mstTodayIso() {
+  return new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// Propagate a production-calendar change to the bridged public.jobs row(s) so
+// the CRM status (Pipeline, Jobs list, job detail) matches the calendar right
+// away. The 2026-06-04 status-sync DB trigger does the same server-side as a
+// path-independent backstop; this client write gives instant feedback and
+// attributes the actor in audit_log. Calendar wins: it clears status_manual_at.
+// Never downgrades a completed job. No-op for manual prod-only jobs (no deal id).
+async function syncPublicJobStatusFromSchedule(prodJob, { cleared = false } = {}) {
+  try {
+    const dealId = prodJob && prodJob.dripjobs_deal_id;
+    if (!dealId) return;
+    const target = cleared
+      ? 'signed'
+      : (prodJob.install_date && prodJob.install_date <= mstTodayIso() ? 'in_progress' : 'scheduled');
+    const res = await supabase.from('jobs').select('id,status').eq('dripjobs_deal_id', dealId).is('archived_at', null);
+    if (res.error) { console.warn('[pec] schedule status sync lookup:', res.error.message); return; }
+    for (const j of res.data || []) {
+      if (j.status === 'completed' || j.status === target) continue;
+      let upd = await supabase.from('jobs').update({ status: target, status_manual_at: null }).eq('id', j.id);
+      if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+        upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id); // pre-migration fallback
+      }
+      if (upd.error) { console.warn('[pec] schedule status sync update:', upd.error.message); continue; }
+      await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule' });
+    }
+  } catch (e) {
+    console.warn('[pec] syncPublicJobStatusFromSchedule threw:', e);
+  }
+}
+
 // Build the human-readable phrase for one audit_log row.
 function activityPhrase(row) {
   const b = row.before_json || {}, a = row.after_json || {};
@@ -5244,6 +5278,8 @@ function activityPhrase(row) {
       auto_install_day: 'auto: install day arrived',
       schedule_sync: 'auto: synced to schedule',
       invoicing_mark_complete: 'via Mark Complete',
+      mark_complete: 'via Job Complete button',
+      schedule: 'auto: production calendar',
       manual_override: 'manual override',
       pipeline_drag: 'pipeline drag',
     }[a.source];
@@ -7909,6 +7945,7 @@ async function renderJobDetail(id) {
         <select id="pecJobStatus"${canEditStatus ? '' : ' disabled title="Status updates automatically as the job moves through the pipeline. Ask an admin to override."'}>
           ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
         </select>
+        ${['scheduled','in_progress'].includes(job.status) ? `<button class="pec-btn sm" id="pecJobComplete" style="margin-top:8px">Mark job complete</button>` : ''}
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--rd-line, var(--border))">
         <h4 style="margin:0 0 8px;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);font-weight:600">Job Card <span style="font-size:.7rem;font-weight:400;text-transform:none;letter-spacing:0">prints onto the work order</span></h4>
@@ -8132,6 +8169,32 @@ async function renderJobDetail(id) {
       openStatusChangeModal(id, fromStatus, newStatus, () => renderJobDetail(id));
     });
   }
+  // Job Complete button (open to staff, not just admins -- Dusty / crew lead).
+  // Sets completed + completed_date, marks it a manual lock so automation won't
+  // move it, and mirrors 'completed' onto the bridged pec_prod_jobs row.
+  const completeBtn = $('pecJobComplete');
+  if (completeBtn) completeBtn.addEventListener('click', async () => {
+    if (!confirm(`Mark this job complete?\n\n${job.customers?.name || ''}\n${job.address || ''}`)) return;
+    completeBtn.disabled = true; completeBtn.textContent = 'Saving…';
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      let upd = await supabase.from('jobs').update({ status: 'completed', completed_date: today, status_manual_at: new Date().toISOString() }).eq('id', id);
+      if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+        upd = await supabase.from('jobs').update({ status: 'completed', completed_date: today }).eq('id', id);
+      }
+      if (upd.error) throw upd.error;
+      if (scheduleState?.prodJob?.id) {
+        try { await supabase.from('pec_prod_jobs').update({ status: 'completed' }).eq('id', scheduleState.prodJob.id); } catch (_) {}
+      }
+      try { await logJobActivity(id, 'status_change', { status: job.status }, { status: 'completed', source: 'mark_complete' }); } catch (_) {}
+      showToast('Job marked complete', { ttl: 2500 });
+      renderJobDetail(id);
+    } catch (err) {
+      completeBtn.disabled = false; completeBtn.textContent = 'Mark job complete';
+      console.error('[pec] mark complete (job detail):', err);
+      showToast('Could not mark complete: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  });
 
   // Areas editor — recipe-driven. Each area picks a system type; the system's
   // recipe slots then define the inputs (single product, multi-product, choice,
@@ -10977,6 +11040,9 @@ function openScheduleModal(jobId) {
               if (areaUpd.error) return errEl.textContent = 'System update failed: ' + areaUpd.error.message;
             }
           }
+          // Calendar -> CRM status: reflect 'scheduled' (or 'in_progress' if the
+          // first day is today/past) on the bridged public.jobs row immediately.
+          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: job.dripjobs_deal_id, install_date: sortedIso[0] });
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -10997,6 +11063,8 @@ function openScheduleModal(jobId) {
           if (del.error) return errEl.textContent = del.error.message;
           const upd = await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null }).eq('id', job.id);
           if (upd.error) return errEl.textContent = upd.error.message;
+          // Calendar -> CRM status: clearing the schedule moves the CRM job back to 'signed'.
+          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: job.dripjobs_deal_id }, { cleared: true });
         } catch (err) {
           errEl.textContent = 'Clear failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -11447,6 +11515,12 @@ function openAddJobModal() {
             if (!draft.existing_job_id) await supabase.from('pec_prod_jobs').delete().eq('id', jobId);
             throw dayIns.error;
           }
+
+          // Calendar -> CRM status. No-op for the new manual-job path (deal id
+          // null, no public.jobs row); for a rescheduled DripJobs job it syncs
+          // the bridged CRM row. state.prodJobs carries dripjobs_deal_id.
+          const prodForSync = (state.prodJobs || []).find(p => p.id === jobId) || {};
+          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: prodForSync.dripjobs_deal_id, install_date: sortedIso[0] });
 
           closeModal();
           showToast(`${draft.existing_job_id ? 'Rescheduled' : 'Added'} job for ${esc(draft.customer_name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
