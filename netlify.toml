@@ -26,10 +26,31 @@
   status = 200
   force = true
 
-# OAuth 2.1 client_credentials flow for the MCP server. Anthropic's custom
-# connector UI uses OAuth Client ID + Secret; the function branches on path.
+# OAuth 2.1 client_credentials + RFC 9728 protected-resource discovery for the
+# MCP server. Anthropic's custom connector UI uses OAuth Client ID + Secret;
+# the function branches on path. The /mcp/.well-known/* duplicates exist
+# because some MCP clients probe relative to the protected-resource URL rather
+# than the issuer root.
 [[redirects]]
   from = "/.well-known/oauth-authorization-server"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/.well-known/oauth-protected-resource"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/mcp/.well-known/oauth-authorization-server"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/mcp/.well-known/oauth-protected-resource"
   to = "/.netlify/functions/mcp"
   status = 200
   force = true

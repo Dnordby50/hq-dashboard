@@ -198,6 +198,20 @@ function oauthMetadata(origin) {
   };
 }
 
+// RFC 9728 protected-resource metadata. MCP 2025-06-18 clients probe this
+// FIRST (at /.well-known/oauth-protected-resource, relative to the resource
+// URL) to discover which authorization server gates the resource. Without
+// this endpoint Anthropic's custom-connector returns 404 at registration.
+function protectedResourceMetadata(origin) {
+  return {
+    resource: `${origin}/mcp`,
+    authorization_servers: [origin],
+    bearer_methods_supported: ['header'],
+    scopes_supported: ['mcp'],
+    resource_documentation: `${origin}/mcp`,
+  };
+}
+
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -215,7 +229,9 @@ exports.handler = async (event) => {
   const origin = `https://${event.headers['x-forwarded-host'] || event.headers.host || 'hq-prescott.netlify.app'}`;
 
   // ---- OAuth 2.1 discovery metadata (unauthenticated GET) ----
-  if (path === '/.well-known/oauth-authorization-server') {
+  // Served at both root and /mcp/ sub-path so clients that probe relative to
+  // the protected-resource URL hit the same handler.
+  if (path === '/.well-known/oauth-authorization-server' || path === '/mcp/.well-known/oauth-authorization-server') {
     if (event.httpMethod !== 'GET') {
       return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
     }
@@ -223,6 +239,20 @@ exports.handler = async (event) => {
       statusCode: 200,
       headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' },
       body: JSON.stringify(oauthMetadata(origin)),
+    };
+  }
+
+  // ---- RFC 9728 protected-resource metadata (unauthenticated GET) ----
+  // First thing MCP 2025-06-18 clients fetch. Tells them which authorization
+  // server gates this resource. Without it Anthropic's connector 404s.
+  if (path === '/.well-known/oauth-protected-resource' || path === '/mcp/.well-known/oauth-protected-resource') {
+    if (event.httpMethod !== 'GET') {
+      return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
+    }
+    return {
+      statusCode: 200,
+      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' },
+      body: JSON.stringify(protectedResourceMetadata(origin)),
     };
   }
 
@@ -283,7 +313,14 @@ exports.handler = async (event) => {
   if (!expected || presented !== expected) {
     return {
       statusCode: 401,
-      headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': `Bearer realm="hq-dashboard-mcp", as_uri="${origin}/.well-known/oauth-authorization-server"` },
+      headers: {
+        ...cors,
+        'Content-Type': 'application/json',
+        // Point clients at the protected-resource metadata per RFC 9728. The
+        // client follows that to find our auth server. resource_metadata is
+        // the field name MCP 2025-06-18 clients look for.
+        'WWW-Authenticate': `Bearer realm="hq-dashboard-mcp", resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+      },
       body: JSON.stringify({ error: 'Unauthorized' }),
     };
   }

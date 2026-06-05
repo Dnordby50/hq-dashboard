@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Cowork: added RFC 9728 protected-resource metadata to mcp server (Anthropic connector was 404ing on discovery probe)
+
+By: Cowork
+Scope: After deploying the OAuth client_credentials work in the previous entry and re-trying the connector add, Dylan got a 404 from Anthropic's UI. Diagnosed: MCP 2025-06-18 clients probe /.well-known/oauth-protected-resource (RFC 9728) FIRST to discover which authorization server gates the MCP endpoint, then follow that pointer to the auth server's /.well-known/oauth-authorization-server. We had the auth-server metadata from the previous patch but not the protected-resource metadata, so the discovery chain broke at step one and surfaced as 404 in the connector dialog. Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Code changes:
+ - netlify.toml: 3 new redirects: /.well-known/oauth-protected-resource (root), /mcp/.well-known/oauth-authorization-server (sub-path), /mcp/.well-known/oauth-protected-resource (sub-path). The sub-path duplicates exist because some clients probe relative to the protected-resource URL rather than the issuer root; cheaper to handle both than to debug which one Anthropic picks.
+ - mcp.cjs:
+   * Added protectedResourceMetadata(origin) returning the RFC 9728 fields (resource, authorization_servers, bearer_methods_supported=[header], scopes_supported=[mcp], resource_documentation).
+   * Path router now handles oauth-authorization-server and oauth-protected-resource at both root and /mcp/ sub-path. Unauthenticated GET, JSON, 1h cache.
+   * 401 response on /mcp now sets WWW-Authenticate with resource_metadata="<origin>/.well-known/oauth-protected-resource" (replaced the prior as_uri pointing directly at the auth server). This matches MCP 2025-06-18's expected discovery chain.
+
+Verified (live, after the previous push but before this push):
+ - curl POST /oauth/token with grant_type=client_credentials, client_id=cowork-prod, client_secret=<env value>: HTTP 200, returns {access_token, token_type:Bearer, expires_in:3600, scope:mcp}. access_token equals MCP_BEARER_TOKEN as designed.
+ - curl POST /mcp with Authorization: Bearer <access_token>: tools/list and tools/call get_schedule both return HTTP 200 with live PEC rows (Nathan Rhodes $5,760, Mark Thorn $3,087.50). The OAuth half is functionally proven; only discovery was missing.
+ - One test-script bug worth noting (not a server issue): the Basic-auth token-exchange sanity check returned HTTP 000 because `echo ... | base64` on Linux wraps at 76 chars and the newline broke the header. Anthropic's client serializes Basic auth correctly; not a real concern.
+
+Honest caveat: I cannot verify the protected-resource metadata works for Anthropic's UI specifically until Dylan re-tries the add. If it 404s again, the next likely missing piece is Dynamic Client Registration (/register, RFC 7591) -- Anthropic's flow prefers DCR over pre-registered Client IDs.
+
+Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+Commits: Cowork to git commit ("cowork: add RFC 9728 protected-resource metadata + sub-path discovery to mcp server"). No push.
+
+## Handoff to Dylan
+
+1. git push from your terminal. ~30s for Netlify.
+2. Tell me when pushed and I will curl /.well-known/oauth-protected-resource to confirm it returns the metadata before you touch the connector UI.
+3. In Cowork desktop: re-try the connector add with URL https://hq-prescott.netlify.app/mcp, OAuth Client ID cowork-prod, OAuth Client Secret <your env value>.
+4. If you still see a 404 or "Couldn't register" message, copy the exact text and the reference ID (the "ofid_..." string) so I can pattern-match what's missing.
+
 ## [2026-06-04 MST] Cowork: added OAuth 2.1 client_credentials to mcp server (so Anthropic custom-connector tool calls work)
 
 By: Cowork
