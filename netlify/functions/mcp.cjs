@@ -169,8 +169,15 @@ exports.handler = async (event) => {
     return { statusCode: 204, headers: cors, body: '' };
   }
 
+  // Auth: Authorization: Bearer ${MCP_BEARER_TOKEN}, OR ?token= query param as
+  // a fallback so clients whose UI only takes a URL (Anthropic custom HTTP
+  // connector form, which has no headers field) can still authenticate. Note:
+  // URLs containing the token may land in Netlify access logs; prefer the
+  // header where possible, and rotate MCP_BEARER_TOKEN if the URL leaks.
   const auth = event.headers['authorization'] || event.headers['Authorization'] || '';
-  const presented = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const headerToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const queryToken = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  const presented = headerToken || queryToken;
   const expected = process.env.MCP_BEARER_TOKEN;
   if (!expected || presented !== expected) {
     return {

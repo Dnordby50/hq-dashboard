@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Cowork: mcp.cjs auth now accepts ?token= query fallback (Anthropic custom-connector UI compat)
+
+By: Cowork
+Scope: Anthropic's "Add custom connector (BETA)" UI in Claude desktop only takes a Name, Remote MCP server URL, and OAuth Client ID/Secret. No headers field. Static-Bearer MCP servers like ours can't authenticate through that form: it sends the request with no Authorization header, server returns 401, connector add fails. To unblock Cowork without rewriting auth as OAuth (proper but bigger lift), added a query-param fallback so the URL field alone can carry the secret. Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Change in netlify/functions/mcp.cjs (lines 172-181, the auth block at the top of exports.handler): kept the Authorization: Bearer header path unchanged, added a fallback that reads token from event.queryStringParameters.token. Order: header wins if both are present. Comment block documents the log-leak tradeoff and the recommendation to prefer the header (curl, Claude Code CLI) and rotate MCP_BEARER_TOKEN if a URL containing the token leaks.
+
+After Netlify redeploys, the connector form can take URL = https://hq-prescott.netlify.app/mcp?token=<TOKEN>, leave OAuth fields blank, Add. Existing curl/header-based calls keep working unchanged.
+
+Side note for posterity: the cleaner long-term path is OAuth 2.0 client-credentials per the MCP spec (well-known/oauth-authorization-server + a token endpoint). Deferred; this 5-line fallback is the v0.1 unblock.
+
+Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+Commits: Cowork to git commit ("cowork: mcp.cjs auth accepts ?token= query param fallback for custom-connector UI"). No push.
+
+## Handoff to Dylan
+
+- Review the diff in netlify/functions/mcp.cjs and push when ready. Netlify will redeploy. Once live, register the connector with URL https://hq-prescott.netlify.app/mcp?token=<your token>, blank OAuth fields. If a 401 persists, the token in the URL got mangled (trailing newline, missing chars) - re-paste from the env var.
+- The token is now URL-bearer. Netlify access logs will capture it. If that bothers you for prod, rotate MCP_BEARER_TOKEN after testing, or implement the OAuth path mentioned above.
+
 ## [2026-06-04 MST] Cowork: validated hq-dashboard-mcp endpoint (get_schedule live, 1549 rows in Booked Jobs)
 
 By: Cowork
