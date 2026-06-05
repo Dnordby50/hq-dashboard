@@ -213,6 +213,18 @@ function protectedResourceMetadata(origin) {
 }
 
 exports.handler = async (event) => {
+  // Temporary diagnostic: log every request that reaches the function so we
+  // can see exactly what Anthropic's MCP client probes during connector add.
+  // Remove after the OAuth flow is stable. Logs land in Netlify Function logs.
+  try {
+    console.log('[mcp-req]', JSON.stringify({
+      m: event.httpMethod,
+      p: event.path,
+      auth: !!(event.headers.authorization || event.headers.Authorization),
+      ua: (event.headers['user-agent'] || '').slice(0, 80),
+    }));
+  } catch {}
+
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version',
