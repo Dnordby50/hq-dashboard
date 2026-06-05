@@ -159,6 +159,45 @@ async function handleRpc(msg) {
   }
 }
 
+// Parse application/x-www-form-urlencoded bodies (OAuth token endpoint).
+function parseForm(body) {
+  const out = {};
+  if (!body) return out;
+  for (const pair of body.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq < 0) continue;
+    const k = decodeURIComponent(pair.slice(0, eq).replace(/\+/g, ' '));
+    const v = decodeURIComponent(pair.slice(eq + 1).replace(/\+/g, ' '));
+    out[k] = v;
+  }
+  return out;
+}
+
+// Decode Basic auth header into { id, secret }.
+function parseBasicAuth(header) {
+  if (!header || !header.startsWith('Basic ')) return null;
+  try {
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    const colon = decoded.indexOf(':');
+    if (colon < 0) return null;
+    return { id: decoded.slice(0, colon), secret: decoded.slice(colon + 1) };
+  } catch { return null; }
+}
+
+// OAuth 2.1 authorization server metadata (RFC 8414). We advertise only
+// client_credentials; Anthropic's custom-connector with Client ID + Secret in
+// the OAuth fields uses this grant.
+function oauthMetadata(origin) {
+  return {
+    issuer: origin,
+    token_endpoint: `${origin}/oauth/token`,
+    grant_types_supported: ['client_credentials'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
+    response_types_supported: ['token'],
+    scopes_supported: ['mcp'],
+  };
+}
+
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -169,6 +208,68 @@ exports.handler = async (event) => {
     return { statusCode: 204, headers: cors, body: '' };
   }
 
+  // Path routing: same Netlify function serves /mcp, /.well-known/..., and
+  // /oauth/token via the redirects in netlify.toml. event.path is the original
+  // request path before the rewrite.
+  const path = String(event.path || '').replace(/\/+$/, '');
+  const origin = `https://${event.headers['x-forwarded-host'] || event.headers.host || 'hq-prescott.netlify.app'}`;
+
+  // ---- OAuth 2.1 discovery metadata (unauthenticated GET) ----
+  if (path === '/.well-known/oauth-authorization-server') {
+    if (event.httpMethod !== 'GET') {
+      return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
+    }
+    return {
+      statusCode: 200,
+      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' },
+      body: JSON.stringify(oauthMetadata(origin)),
+    };
+  }
+
+  // ---- OAuth 2.1 token endpoint (client_credentials only) ----
+  if (path === '/oauth/token') {
+    if (event.httpMethod !== 'POST') {
+      return { statusCode: 405, headers: { ...cors, Allow: 'POST' }, body: '' };
+    }
+    const form = parseForm(event.body || '');
+    const basic = parseBasicAuth(event.headers.authorization || event.headers.Authorization || '');
+    const clientId = (basic && basic.id) || form.client_id || '';
+    const clientSecret = (basic && basic.secret) || form.client_secret || '';
+    const grantType = form.grant_type || '';
+    const expectedId = process.env.MCP_OAUTH_CLIENT_ID;
+    const expectedSecret = process.env.MCP_OAUTH_CLIENT_SECRET;
+    const bearer = process.env.MCP_BEARER_TOKEN;
+    if (!expectedId || !expectedSecret || !bearer) {
+      return {
+        statusCode: 500,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'server_misconfigured', error_description: 'MCP_OAUTH_CLIENT_ID, MCP_OAUTH_CLIENT_SECRET, MCP_BEARER_TOKEN must be set' }),
+      };
+    }
+    if (grantType !== 'client_credentials') {
+      return {
+        statusCode: 400,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'unsupported_grant_type', error_description: 'Only client_credentials is supported' }),
+      };
+    }
+    if (clientId !== expectedId || clientSecret !== expectedSecret) {
+      return {
+        statusCode: 401,
+        headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': 'Basic realm="hq-dashboard-mcp"' },
+        body: JSON.stringify({ error: 'invalid_client', error_description: 'Bad client_id or client_secret' }),
+      };
+    }
+    // Issue access_token = MCP_BEARER_TOKEN. Lifetime cosmetic (the underlying
+    // bearer doesn't actually expire); 1 hour is a sensible default.
+    return {
+      statusCode: 200,
+      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({ access_token: bearer, token_type: 'Bearer', expires_in: 3600, scope: 'mcp' }),
+    };
+  }
+
+  // ---- MCP JSON-RPC endpoint (Bearer required) ----
   // Auth: Authorization: Bearer ${MCP_BEARER_TOKEN}, OR ?token= query param as
   // a fallback so clients whose UI only takes a URL (Anthropic custom HTTP
   // connector form, which has no headers field) can still authenticate. Note:
@@ -182,7 +283,7 @@ exports.handler = async (event) => {
   if (!expected || presented !== expected) {
     return {
       statusCode: 401,
-      headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer realm="hq-dashboard-mcp"' },
+      headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': `Bearer realm="hq-dashboard-mcp", as_uri="${origin}/.well-known/oauth-authorization-server"` },
       body: JSON.stringify({ error: 'Unauthorized' }),
     };
   }

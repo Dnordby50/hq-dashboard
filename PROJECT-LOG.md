@@ -4,6 +4,48 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Cowork: added OAuth 2.1 client_credentials to mcp server (so Anthropic custom-connector tool calls work)
+
+By: Cowork
+Scope: Yesterday's URL-token hack (?token= in URL) was enough for Anthropic's custom-connector to register and call tools/list (the tool surfaced in Cowork's tool list), but tools/call consistently returned "The connector's server isn't responding" while direct curl against the same URL returned HTTP 200 in <2s. Diagnosis: Anthropic's MCP client treats the URL token as adequate for discovery/list but expects an OAuth-issued bearer token for actual tool invocations (consistent with the registration-time error "Couldn't register with Topcoat MCP's sign-in service... or add an OAuth Client ID in the connector settings"). Per Dylan's pick, implemented OAuth 2.1 client_credentials grant. Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Code changes:
+ - netlify.toml: 2 new redirects, both pointing back into the existing mcp function: /.well-known/oauth-authorization-server and /oauth/token. Same function serves all three paths now.
+ - netlify/functions/mcp.cjs:
+   * Added parseForm() + parseBasicAuth() helpers (no deps).
+   * Added oauthMetadata(origin) returning RFC 8414 metadata advertising client_credentials only, with token_endpoint_auth_methods_supported = [client_secret_basic, client_secret_post].
+   * Added path routing inside exports.handler:
+     - GET /.well-known/oauth-authorization-server returns the metadata JSON unauthenticated (1h cache).
+     - POST /oauth/token accepts client_credentials grant. client_id and client_secret can be in Basic auth header OR in the form body (spec compliance with both). On match against MCP_OAUTH_CLIENT_ID + MCP_OAUTH_CLIENT_SECRET, returns {access_token: MCP_BEARER_TOKEN, token_type: Bearer, expires_in: 3600, scope: mcp}. On mismatch returns 401 invalid_client.
+     - All other paths (including /mcp and /.netlify/functions/mcp) keep the existing Bearer + ?token= check unchanged. Existing curl tests still work.
+   * Updated WWW-Authenticate on 401 to include as_uri pointing at the new discovery endpoint (helps spec-compliant clients find OAuth).
+
+Design choices worth flagging:
+ - access_token IS the bearer token. Simpler than minting per-session JWTs. expires_in: 3600 is cosmetic (the underlying bearer doesn't actually expire; rotate MCP_BEARER_TOKEN to invalidate).
+ - Did NOT implement Dynamic Client Registration (RFC 7591). Anthropic's UI falls back to pre-registered Client ID/Secret if DCR fails, which is what we're using. If DCR ever becomes required, add a /register endpoint and a registration_endpoint field to the metadata.
+ - Did NOT implement authorization_code / PKCE. client_credentials is the right grant for a single-tenant server-to-server connector. If we add user-facing OAuth later, that's a separate flow.
+ - Kept the ?token= query fallback as belt-and-suspenders for direct curl debugging.
+
+Required ops setup (Dylan):
+ - Add two Netlify env vars on the hq-prescott site (Site configuration -> Environment variables): MCP_OAUTH_CLIENT_ID and MCP_OAUTH_CLIENT_SECRET. Generate fresh random values; client_id can be readable (e.g. "cowork-prod"), client_secret should be ~32+ random chars.
+ - Push the branch so Netlify redeploys.
+ - In Cowork desktop, remove the existing "HQ Dashboard MCP" connector (the URL+?token= one) and re-add with: URL https://hq-prescott.netlify.app/mcp, OAuth Client ID = <the new MCP_OAUTH_CLIENT_ID>, OAuth Client Secret = <the new MCP_OAUTH_CLIENT_SECRET>.
+
+Verified locally only (syntax check via node --check). Live verification once Netlify redeploys: curl GET /.well-known/oauth-authorization-server, curl POST /oauth/token with client_credentials, curl POST /mcp with the returned access_token.
+
+Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+Commits: Cowork to git commit ("cowork: implement OAuth 2.1 client_credentials on mcp server (custom-connector tool-call compat)"). No push (Dylan reviews + pushes).
+
+## Handoff to Dylan
+
+1. Generate two values:
+   - MCP_OAUTH_CLIENT_ID: anything readable, e.g. cowork-prod, hq-mcp-client
+   - MCP_OAUTH_CLIENT_SECRET: 32+ random chars (openssl rand -hex 24 in a terminal works)
+2. Add both as Netlify env vars on hq-prescott (Site configuration -> Environment variables -> Add a single variable, twice).
+3. git push from your terminal. Wait ~30s for Netlify to redeploy.
+4. Tell me when it's pushed and I'll run curl tests against the new OAuth endpoints to confirm before you touch the connector UI.
+5. Then: in Cowork desktop, remove the current connector, re-add with URL https://hq-prescott.netlify.app/mcp + the OAuth Client ID/Secret you just made. No ?token= in the URL this time.
+
 ## [2026-06-04 MST] Cowork: mcp.cjs auth now accepts ?token= query fallback (Anthropic custom-connector UI compat)
 
 By: Cowork
