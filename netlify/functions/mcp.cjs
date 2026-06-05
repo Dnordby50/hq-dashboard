@@ -229,9 +229,14 @@ exports.handler = async (event) => {
   const origin = `https://${event.headers['x-forwarded-host'] || event.headers.host || 'hq-prescott.netlify.app'}`;
 
   // ---- OAuth 2.1 discovery metadata (unauthenticated GET) ----
-  // Served at both root and /mcp/ sub-path so clients that probe relative to
-  // the protected-resource URL hit the same handler.
-  if (path === '/.well-known/oauth-authorization-server' || path === '/mcp/.well-known/oauth-authorization-server') {
+  // Served at three layouts so every client convention hits the same handler:
+  //   1. root                              /.well-known/oauth-authorization-server
+  //   2. suffix form                       /mcp/.well-known/oauth-authorization-server
+  //   3. RFC 8414 path-insertion form      /.well-known/oauth-authorization-server/mcp
+  // Form 3 is the canonical one (the well-known segment is inserted BEFORE the
+  // resource path), which some clients build themselves instead of following
+  // the resource_metadata URL we advertise in WWW-Authenticate.
+  if (path === '/.well-known/oauth-authorization-server' || path === '/mcp/.well-known/oauth-authorization-server' || path === '/.well-known/oauth-authorization-server/mcp') {
     if (event.httpMethod !== 'GET') {
       return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
     }
@@ -245,7 +250,7 @@ exports.handler = async (event) => {
   // ---- RFC 9728 protected-resource metadata (unauthenticated GET) ----
   // First thing MCP 2025-06-18 clients fetch. Tells them which authorization
   // server gates this resource. Without it Anthropic's connector 404s.
-  if (path === '/.well-known/oauth-protected-resource' || path === '/mcp/.well-known/oauth-protected-resource') {
+  if (path === '/.well-known/oauth-protected-resource' || path === '/mcp/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
     if (event.httpMethod !== 'GET') {
       return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
     }

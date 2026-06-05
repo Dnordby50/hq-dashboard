@@ -4,6 +4,39 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Claude Code: serve OAuth discovery at the RFC 8414/9728 path-insertion URL (smoke test found one discovery path 404ing)
+
+By: Claude Code
+Scope: Ran a live smoke test of the OAuth/MCP server after the previous two pushes (e73b9b5 OAuth client_credentials, 14a56ec protected-resource metadata + sub-path discovery). Five of six checks passed: both metadata docs at the root, the 401 + WWW-Authenticate on unauthenticated /mcp, and invalid_client on bad creds. The one failure: a GET to /.well-known/oauth-protected-resource/mcp returned Netlify's 404 page. Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+How the bug works: RFC 8414 and 9728 build the metadata URL by inserting the well-known segment BEFORE the resource path. So for a resource at /mcp, the canonical discovery URL is /.well-known/oauth-protected-resource/mcp (well-known first, then /mcp). The server only handled the root form (/.well-known/oauth-protected-resource) and a non-standard suffix form (/mcp/.well-known/oauth-protected-resource), so the canonical path-insertion form had neither a netlify.toml redirect nor a path-router branch and fell through to the static 404.
+
+Why it probably was not breaking Cowork yet (but worth fixing anyway): the 401 on /mcp advertises resource_metadata="<origin>/.well-known/oauth-protected-resource" (the root form, which works), and a spec-compliant client follows that advertised URL rather than constructing the path itself. The 404 only bites a client that builds the RFC path on its own. Cheaper to serve all three layouts than to bet on which one a given client picks.
+
+Code changes:
+ - netlify.toml: 2 new redirects, /.well-known/oauth-authorization-server/mcp and /.well-known/oauth-protected-resource/mcp, both to the mcp function (status 200, force). Added the auth-server one too for symmetry so both discovery docs answer at the canonical path.
+ - mcp.cjs: extended the two path-router conditions (lines ~234 and ~250) to also match the /.well-known/.../mcp path-insertion form. No new handler logic, same metadata responses.
+
+Verified (live, BEFORE this push, against the previous deploy):
+ - GET /.well-known/oauth-authorization-server -> 200, advertises client_credentials + /oauth/token.
+ - GET /.well-known/oauth-protected-resource -> 200, resource=<origin>/mcp, authorization_servers=[origin].
+ - POST /mcp no auth -> 401 with WWW-Authenticate: Bearer realm="hq-dashboard-mcp", resource_metadata=".../.well-known/oauth-protected-resource".
+ - POST /oauth/token with a wrong client_secret -> 401 invalid_client (auth genuinely enforced).
+ - GET /.well-known/oauth-protected-resource/mcp -> 404 (the bug; fixed by this commit, re-verify after deploy).
+
+Not verified: a positive token exchange and an authenticated tools/call, because this session does not hold MCP_OAUTH_CLIENT_SECRET / MCP_BEARER_TOKEN (secrets live only in Netlify). The previous entry already proved those return 200 with live rows.
+
+Files touched: netlify.toml, netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+## Handoff to Dylan
+
+After this push deploys (~30-60s), re-run the one check that was failing to confirm the fix is live:
+```
+curl -s -o /dev/null -w "%{http_code}\n" \
+  https://hq-prescott.netlify.app/.well-known/oauth-protected-resource/mcp
+```
+Expect 200 (was 404). If it still 404s, the redirect did not ship; check the Netlify deploy log for a TOML parse error.
+
 ## [2026-06-04 MST] Cowork: added RFC 9728 protected-resource metadata to mcp server (Anthropic connector was 404ing on discovery probe)
 
 By: Cowork

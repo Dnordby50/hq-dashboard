@@ -55,6 +55,22 @@
   status = 200
   force = true
 
+# RFC 8414 / 9728 canonical "path-insertion" form: the well-known segment is
+# inserted BEFORE the resource path (/mcp). Some clients build this URL
+# themselves rather than following the resource_metadata URL we advertise in
+# the WWW-Authenticate header, so serve it too.
+[[redirects]]
+  from = "/.well-known/oauth-authorization-server/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/.well-known/oauth-protected-resource/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/oauth/token"
   to = "/.netlify/functions/mcp"
