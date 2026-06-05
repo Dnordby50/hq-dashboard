@@ -77,6 +77,18 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/oauth/authorize"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/register"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
+
 # Public hosted invoice page. /pay/<token> rewrites to the function with the
 # token in the query string (event.queryStringParameters.token).
 [[redirects]]

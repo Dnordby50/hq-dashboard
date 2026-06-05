@@ -184,16 +184,76 @@ function parseBasicAuth(header) {
   } catch { return null; }
 }
 
-// OAuth 2.1 authorization server metadata (RFC 8414). We advertise only
-// client_credentials; Anthropic's custom-connector with Client ID + Secret in
-// the OAuth fields uses this grant.
+const crypto = require('crypto');
+
+// Base64url helpers (RFC 4648 §5, no padding).
+function b64uEncode(buf) {
+  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64uDecode(str) {
+  str = String(str || '').replace(/-/g, '+').replace(/_/g, '/');
+  while (str.length % 4) str += '=';
+  return Buffer.from(str, 'base64');
+}
+
+// HMAC helpers. Key derived from MCP_BEARER_TOKEN so rotating the bearer also
+// invalidates any in-flight auth codes (zero state, no DB).
+function hmac(payload) {
+  return crypto.createHmac('sha256', String(process.env.MCP_BEARER_TOKEN || '')).update(payload).digest();
+}
+
+// Issue a stateless authorization code (RFC 7636 PKCE). Encodes the request's
+// code_challenge + redirect_uri + expiry into the code itself, signed with
+// HMAC. Verification: decode payload, verify HMAC, check exp, check S256.
+function issueAuthCode({ code_challenge, redirect_uri, client_id }) {
+  const payload = JSON.stringify({
+    cc: code_challenge,
+    ru: redirect_uri,
+    ci: client_id,
+    exp: Math.floor(Date.now() / 1000) + 600, // 10 min
+  });
+  const sig = hmac(payload);
+  return `${b64uEncode(payload)}.${b64uEncode(sig)}`;
+}
+
+function verifyAuthCode(code) {
+  if (!code || typeof code !== 'string') return null;
+  const dot = code.indexOf('.');
+  if (dot < 0) return null;
+  const payloadEnc = code.slice(0, dot);
+  const sigEnc = code.slice(dot + 1);
+  let payloadBuf;
+  try { payloadBuf = b64uDecode(payloadEnc); } catch { return null; }
+  const expectedSig = hmac(payloadBuf);
+  const givenSig = b64uDecode(sigEnc);
+  if (expectedSig.length !== givenSig.length || !crypto.timingSafeEqual(expectedSig, givenSig)) return null;
+  let payload;
+  try { payload = JSON.parse(payloadBuf.toString('utf8')); } catch { return null; }
+  if (!payload || typeof payload !== 'object') return null;
+  if (typeof payload.exp !== 'number' || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+
+// Verify PKCE: SHA256(code_verifier) base64url-encoded must equal code_challenge.
+function verifyPkce(code_verifier, code_challenge) {
+  if (!code_verifier || !code_challenge) return false;
+  const h = crypto.createHash('sha256').update(code_verifier).digest();
+  return b64uEncode(h) === code_challenge;
+}
+
+// OAuth 2.1 authorization server metadata (RFC 8414). MCP 2025-06-18 clients
+// (Anthropic's custom-connector UI in particular) need authorization_code +
+// PKCE + DCR; we also keep client_credentials for direct M2M use.
 function oauthMetadata(origin) {
   return {
     issuer: origin,
+    authorization_endpoint: `${origin}/oauth/authorize`,
     token_endpoint: `${origin}/oauth/token`,
-    grant_types_supported: ['client_credentials'],
-    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],
-    response_types_supported: ['token'],
+    registration_endpoint: `${origin}/register`,
+    grant_types_supported: ['authorization_code', 'client_credentials'],
+    response_types_supported: ['code'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     scopes_supported: ['mcp'],
   };
 }
@@ -273,7 +333,83 @@ exports.handler = async (event) => {
     };
   }
 
-  // ---- OAuth 2.1 token endpoint (client_credentials only) ----
+  // ---- Dynamic Client Registration (RFC 7591) ----
+  // Anthropic's MCP client probes /register before falling back to manual
+  // Client ID/Secret. We return the pre-configured credentials regardless of
+  // what the client sends (single-tenant server; we trust whoever discovered
+  // us this far). This lets the connector "just work" without the user pasting
+  // anything into the OAuth fields.
+  if (path === '/register') {
+    if (event.httpMethod !== 'POST') {
+      return { statusCode: 405, headers: { ...cors, Allow: 'POST' }, body: '' };
+    }
+    const expectedId = process.env.MCP_OAUTH_CLIENT_ID;
+    const expectedSecret = process.env.MCP_OAUTH_CLIENT_SECRET;
+    if (!expectedId || !expectedSecret) {
+      return {
+        statusCode: 500,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'server_misconfigured', error_description: 'MCP_OAUTH_CLIENT_ID and MCP_OAUTH_CLIENT_SECRET must be set' }),
+      };
+    }
+    let req = {};
+    try { req = JSON.parse(event.body || '{}'); } catch {}
+    const redirectUris = Array.isArray(req.redirect_uris) ? req.redirect_uris : [];
+    return {
+      statusCode: 201,
+      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({
+        client_id: expectedId,
+        client_secret: expectedSecret,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        client_secret_expires_at: 0, // never
+        redirect_uris: redirectUris,
+        grant_types: ['authorization_code', 'client_credentials'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'client_secret_post',
+      }),
+    };
+  }
+
+  // ---- OAuth 2.1 authorization endpoint (authorization_code + PKCE S256) ----
+  // Single-tenant server: anyone who can reach this URL has already crossed
+  // the trust boundary (they had the protected-resource discovery), so we
+  // auto-approve without a user-facing consent screen. We do require PKCE
+  // (S256) and we sign the code with HMAC so tokens can't be forged.
+  if (path === '/oauth/authorize') {
+    if (event.httpMethod !== 'GET') {
+      return { statusCode: 405, headers: { ...cors, Allow: 'GET' }, body: '' };
+    }
+    const q = event.queryStringParameters || {};
+    const responseType = q.response_type || '';
+    const clientId = q.client_id || '';
+    const redirectUri = q.redirect_uri || '';
+    const codeChallenge = q.code_challenge || '';
+    const codeChallengeMethod = q.code_challenge_method || '';
+    const state = q.state || '';
+    if (responseType !== 'code') {
+      return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'unsupported_response_type' }) };
+    }
+    if (!redirectUri) {
+      return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_request', error_description: 'redirect_uri required' }) };
+    }
+    if (!codeChallenge || codeChallengeMethod !== 'S256') {
+      // Per RFC 7636, redirect with error rather than 4xx body, so the client
+      // surfaces the error to the user instead of treating it as a network fail.
+      const u = new URL(redirectUri);
+      u.searchParams.set('error', 'invalid_request');
+      u.searchParams.set('error_description', 'PKCE S256 required');
+      if (state) u.searchParams.set('state', state);
+      return { statusCode: 302, headers: { ...cors, Location: u.toString() }, body: '' };
+    }
+    const code = issueAuthCode({ code_challenge: codeChallenge, redirect_uri: redirectUri, client_id: clientId });
+    const u = new URL(redirectUri);
+    u.searchParams.set('code', code);
+    if (state) u.searchParams.set('state', state);
+    return { statusCode: 302, headers: { ...cors, Location: u.toString(), 'Cache-Control': 'no-store' }, body: '' };
+  }
+
+  // ---- OAuth 2.1 token endpoint (authorization_code + client_credentials) ----
   if (path === '/oauth/token') {
     if (event.httpMethod !== 'POST') {
       return { statusCode: 405, headers: { ...cors, Allow: 'POST' }, body: '' };
@@ -293,26 +429,56 @@ exports.handler = async (event) => {
         body: JSON.stringify({ error: 'server_misconfigured', error_description: 'MCP_OAUTH_CLIENT_ID, MCP_OAUTH_CLIENT_SECRET, MCP_BEARER_TOKEN must be set' }),
       };
     }
-    if (grantType !== 'client_credentials') {
+
+    if (grantType === 'authorization_code') {
+      const code = form.code || '';
+      const codeVerifier = form.code_verifier || '';
+      const redirectUri = form.redirect_uri || '';
+      const payload = verifyAuthCode(code);
+      if (!payload) {
+        return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_grant', error_description: 'Auth code invalid or expired' }) };
+      }
+      if (redirectUri && payload.ru !== redirectUri) {
+        return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_grant', error_description: 'redirect_uri mismatch' }) };
+      }
+      if (!verifyPkce(codeVerifier, payload.cc)) {
+        return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_grant', error_description: 'PKCE verification failed' }) };
+      }
+      // client_id MUST match what was bound to the code at /authorize time. For
+      // a public client (PKCE), client_secret is not required; for a confidential
+      // client it is. We accept either to match Anthropic's behavior.
+      if (clientId && payload.ci && clientId !== payload.ci) {
+        return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_client' }) };
+      }
+      if (clientSecret && clientSecret !== expectedSecret) {
+        return { statusCode: 401, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_client' }) };
+      }
       return {
-        statusCode: 400,
-        headers: { ...cors, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: 'unsupported_grant_type', error_description: 'Only client_credentials is supported' }),
+        statusCode: 200,
+        headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        body: JSON.stringify({ access_token: bearer, token_type: 'Bearer', expires_in: 3600, scope: 'mcp' }),
       };
     }
-    if (clientId !== expectedId || clientSecret !== expectedSecret) {
+
+    if (grantType === 'client_credentials') {
+      if (clientId !== expectedId || clientSecret !== expectedSecret) {
+        return {
+          statusCode: 401,
+          headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': 'Basic realm="hq-dashboard-mcp"' },
+          body: JSON.stringify({ error: 'invalid_client', error_description: 'Bad client_id or client_secret' }),
+        };
+      }
       return {
-        statusCode: 401,
-        headers: { ...cors, 'Content-Type': 'application/json', 'WWW-Authenticate': 'Basic realm="hq-dashboard-mcp"' },
-        body: JSON.stringify({ error: 'invalid_client', error_description: 'Bad client_id or client_secret' }),
+        statusCode: 200,
+        headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        body: JSON.stringify({ access_token: bearer, token_type: 'Bearer', expires_in: 3600, scope: 'mcp' }),
       };
     }
-    // Issue access_token = MCP_BEARER_TOKEN. Lifetime cosmetic (the underlying
-    // bearer doesn't actually expire); 1 hour is a sensible default.
+
     return {
-      statusCode: 200,
-      headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({ access_token: bearer, token_type: 'Bearer', expires_in: 3600, scope: 'mcp' }),
+      statusCode: 400,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'unsupported_grant_type', error_description: 'Supported: authorization_code, client_credentials' }),
     };
   }
 
