@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-04 MST] Cowork: validated hq-dashboard-mcp endpoint (get_schedule live, 1549 rows in Booked Jobs)
+
+By: Cowork
+Scope: Dylan stood up a self-hosted MCP server at netlify/functions/mcp.cjs on the hq-prescott Netlify site (v0.1, Streamable-HTTP stateless transport, single tool get_schedule reading the Booked Jobs Google Sheet). Asked Cowork to (a) register it as a custom HTTP MCP connector and (b) round-trip test it. Files touched: PROJECT-LOG.md only. No app code, env vars, or repo changed.
+
+Note on (a): Cowork cannot register custom MCP connectors programmatically inside a running session. That step is a one-time desktop-app config in Cowork's Settings -> Connectors (paste URL + Authorization header). Dylan needs to add it there for the tool to surface in future Cowork sessions. The token was kept out of all files, logs, and git. It lives only in Dylan's clipboard / the future connector config.
+
+Validated (b) via curl from the Cowork sandbox:
+ - POST https://hq-prescott.netlify.app/mcp with Bearer auth -> HTTP 200. tools/list returned exactly 1 tool, get_schedule, with input schema (business [all|pec|ftp], start_date, end_date, limit 1..500). Pass.
+ - tools/call get_schedule {business:"all", limit:5} -> JSON-RPC result with content[0].text = a JSON object containing count=5, total_matched=1549, rows[5]. The 5 rows include Nathan Rhodes PEC $5,760 (Dylan Nordby), Ed Lacasse FTP $10,000 (Doug Gray), and three Bob Pardee FTP rows at $1.00 dated 2026-06-01 / 06-02. Pass.
+
+Side-finding worth flagging (not blocking): the 3 Bob Pardee $1 FTP rows look like fat-finger / test entries on the Booked Jobs sheet from yesterday. Worth Dylan's eyeball next time he opens the sheet. The MCP itself surfaced them correctly; the data is what the sheet contains.
+
+Files touched: PROJECT-LOG.md.
+Commits: Cowork to git commit ("cowork: validated hq-dashboard-mcp endpoint (get_schedule live, 1549 rows in Booked Jobs)"). No push.
+
+## Handoff to Dylan
+
+- In Cowork desktop, add the connector under Settings -> Connectors -> Add custom HTTP, URL https://hq-prescott.netlify.app/mcp, Authorization header "Bearer <your token>", transport streamable HTTP stateless (no SSE / no separate GET stream). Once added, future Cowork sessions will see get_schedule as a callable tool and I can pull live schedule rows directly instead of asking you. Don't paste the token into any file or repo (you already said).
+- 3 Bob Pardee FTP $1.00 rows on the Booked Jobs sheet from 2026-06-01 and 06-02 (sold_by Doug Gray). Looks like test rows. Up to you whether to clean them up on the sheet.
+
 ## [2026-06-04 MST] feature: calendar-driven status, AM/PM scheduling + Next-Day board, callback metric, schedule view-job fix
 
 By: Claude Code
