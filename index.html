@@ -6544,7 +6544,7 @@ async function renderJobs() {
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
-            <td><span class="pec-badge ${j.status}">${j.status.replace('_',' ')}</span></td>
+            <td><span class="pec-badge ${j.status || ''}">${esc((j.status || '').replace('_',' ')) || '—'}</span></td>
             <td>${fmtMoney(j.price)}</td>
             <td>${fmtDate(j.created_at)}</td>
           </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs</td></tr>'}</tbody>
@@ -7768,7 +7768,20 @@ async function renderWorkOrder(ctx) {
   win.document.close();
 }
 
+// Thin wrapper so a throw anywhere in the (large) detail render surfaces a
+// retry card instead of a blank screen. renderJobDetail is reached both via
+// switchView (which has its own fence) AND directly from the jobs-row click and
+// search handlers (which do not), so the guard lives here to cover every path.
+// A single malformed row (e.g. an unexpected null) then shows an error the user
+// can act on rather than wiping the view.
 async function renderJobDetail(id) {
+  try {
+    return await renderJobDetailInner(id);
+  } catch (err) {
+    showCrmRenderError(err, 'jobs');
+  }
+}
+async function renderJobDetailInner(id) {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
