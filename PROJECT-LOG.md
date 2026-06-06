@@ -23,6 +23,35 @@ Still open (carried over): (1) remove ALL the temp diagnostics ([mcp-req], [mcp-
 ## Handoff to Dylan
 Once this deploy publishes (~1 min): in Cowork, delete the Topcoat connector and re-add it with URL https://hq-prescott.netlify.app/mcp, leaving the OAuth Client ID/Secret fields blank. If it still fails, have Cowork pull the mcp function logs and report the [mcp-register] and [mcp-authorize] lines from the attempt; that will show whether the connector now reaches authorize and what it requested.
 
+## [2026-06-06 06:28 MST] Cowork: re-pulled mcp logs after a fresh 06:26 connector attempt (same wall, plus new [mcp-register] body evidence)
+
+By: Cowork
+Changed: Read-only. Re-pulled the mcp function logs (Netlify dashboard, Last hour) at Dylan's request. A new connector attempt ran at 06:26, and Claude Code has since added an [mcp-register] logger that records the DCR request body. No code or config changed by Cowork.
+Why: Dylan retried the connector and asked for a fresh trace.
+
+New connector attempt (python-httpx/0.28.1 + Claude-User), ordered:
+ 1. 06:26:18  POST /mcp                                    auth:false  python-httpx/0.28.1  (unauth probe, 401 by design)
+ 2. 06:26:41  POST /mcp                                    auth:false  Claude-User          (unauth probe, 401 by design, 163ms)
+ 3. 06:26:46  GET  /.well-known/oauth-authorization-server  auth:false  python-httpx/0.28.1
+ 4. 06:26:48  GET  /.well-known/oauth-protected-resource    auth:false  python-httpx/0.28.1
+ 5. 06:26:48  GET  /.well-known/oauth-authorization-server  auth:false  python-httpx/0.28.1
+ 6. 06:26:49  POST /register                                auth:false  python-httpx/0.28.1
+
+New evidence from the [mcp-register] logger, the client's actual DCR request body at 06:26:49:
+ {"name":"Claude","ru":["https://claude.ai/api/mcp/auth_callback"],"gt":["authorization_code","refresh_token"],"rt":["code"],"am":"client_secret_post","scope":"mcp"}
+ So the client registers redirect_uri https://claude.ai/api/mcp/auth_callback, grant_types authorization_code + refresh_token, response_type code, token_endpoint_auth_method client_secret_post, scope mcp. This is a standard, well-formed registration request.
+
+Conclusion (unchanged, now with stronger evidence): the connector again stops immediately after POST /register and never issues GET /oauth/authorize or POST /oauth/token. The last endpoint reached is still POST /register. Because the registration REQUEST is well-formed, attention should move to the /register RESPONSE the server returns (which the logger does not capture) and whether it satisfies what the Anthropic client needs to proceed to the authorize redirect. Two concrete mismatches to check against the request above: the client asks for the refresh_token grant, but our metadata advertises grant_types_supported = [authorization_code, client_credentials] (no refresh_token); and confirm the /register 201 response echoes redirect_uris, grant_types, response_types, token_endpoint_auth_method and includes client_id (and client_secret for client_secret_post) per RFC 7591.
+
+Errors/timeouts: none. No ERROR lines, no timeouts, no 5xx. The only 4xx are the by-design 401s on the two unauthenticated POST /mcp probes.
+
+Files touched: PROJECT-LOG.md
+Next steps: Claude Code to diff the /register response body in mcp.cjs against the RFC 7591 fields the client expects, and decide whether to add refresh_token to grant_types_supported (or have /register echo only the grants the server will honor).
+Handoff to Cowork: None
+Handoff to Dylan: None. Read-only analysis.
+
+---
+
 ## [2026-06-06 06:15 MST] Cowork: log analysis of the failed Topcoat connector attempt (it stops after /register, never reaches /oauth/authorize)
 
 By: Cowork
