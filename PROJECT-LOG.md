@@ -4,6 +4,43 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: Monday-launch invoicing pass (black/orange rebrand, redesigned invoice page + email, 404 fix, durable line-item editor)
+
+By: Claude Code
+Scope: Executed the customer-facing invoicing launch brief (Cowork entry below). Confirmed each root cause from the code first, made six logical changes as separate commits, and added three SQL migrations that Cowork must run in prod. NOT pushed: local commits only. Dylan controls the single Monday deploy because items 1/3/6 need migrations live first and item 5's prior auth-gate pass also needs his owner row. Files touched: index.html, netlify/functions/pec-public-invoice.cjs, netlify/functions/pec-send-email.cjs, supabase/schema.sql (none this pass), two new supabase/migrations.
+
+Decisions Dylan made up front: (a) invoice line items stay FULLY editable + durable now (no finalize/signed gate) via a per-job override flag, until fully switched over; (b) Zelle + card surcharge stored as STRUCTURED brand columns; (c) recolor the CRM surface only, not the legacy dark HQ dashboard.
+
+What shipped (commit SHAs on this branch, not yet pushed):
+
+ - Item 1 (027b13b) black/orange brand. Colors are read from the pec_brand_identity DB row at render time, so code defaults alone do not recolor live sends. New migration 2026-06-07_brand_black_orange.sql flips the prescott-epoxy row to near-black #14181C + PEC orange #D8531C and adds two structured pay fields (zelle_email default dylan@prescottepoxy.com, card_surcharge_pct default 3). Updated BRAND_DEFAULTS in pec-public-invoice.cjs + pec-send-email.cjs and EMAIL_BRAND_DEFAULTS in index.html (all three KEEP IN SYNC) so the page renders correctly even before the migration runs.
+
+ - Item 2 (aa3ac36) removed the color selector, baked CRM orange. PEC orange is now the permanent --rd-accent family in #redesign-theme :root (colors only; layout, radii, shadows, fonts unchanged). Deleted the #rdTweaks panel + handlers, the #rdBtnTweaks button, the #rdTweaks CSS, and the dead data-accent override. The orb still gets data-orb-style on boot (default shader); retired localStorage keys (rd-tweaks, hq_orb_style, pec_brand_enabled) are no longer written. Did NOT use data-pec-brand (it would swap fonts to Archivo). The dark HQ dashboard's separate --accent indigo is untouched.
+
+ - Item 3 (2e0bfe9) redesigned the public invoice page (invoicePage in pec-public-invoice.cjs). Orange header band with business info + Invoice #/status pill, a balance-due alert bar, bill-to + job-address, itemized scope, totals, and three informational pay buttons: Credit Card with a LIVE surcharge computed from card_surcharge_pct (label "Credit Card + $X.XX", copy says call the office), Pay with Check (give to crew), Zelle (brand zelle_email). Kept print/noindex/no-store.
+
+ - Item 4 (4d0064c) fixed the "invoice not found" 404. Root cause confirmed from code: notFoundPage() is returned from three indistinguishable branches. Added distinct logs (UUID-shape warn, "no row for token" warn, "query error" in the catch) so the Netlify log tells "schema/migration missing" apart from "no such token" without leaking the token. Changed the copy to name Prescott Epoxy Company + (928) 800-8154. The actual fix is almost certainly running/confirming the 2026-06-01 migration in prod (the pec_job_ar view exposing public_token); see handoff.
+
+ - Item 5 (a335569) branded the invoice email. Orange header band matching the invoice page, white body card, and an orange (accent_color) "View Invoice & Pay" CTA. Updated wrapInChrome + auto.cta in pec-send-email.cjs and the mirrored emailWrapChrome + emailComposeValues cta in index.html, kept IN SYNC so the Settings > Brand preview matches the real send.
+
+ - Item 6 (1a2bf4b) durable invoice line-item editor. THE TRAP: saveJob() regenerated jobs.line_items + price from the estimate areas on every save (keeping only is_change_order lines), so a hand-built invoice was clobbered on the next estimate save. Chosen design (matches Dylan's "fully open until switched over"): a per-job flag line_items_manual_override (new migration 2026-06-07_line_items_manual_override.sql, mirrors status_manual_override, exposed on pec_job_ar). A new "Edit line items" modal in renderJobInvoice does add/edit/delete/reorder with a live total and saves line_items + recomputed price + the flag via withFreshWrite. saveJob() now SKIPS the area-derived regeneration when the flag is set, so the invoice editor owns the lines and edits survive later estimate saves; un-overridden jobs derive from areas exactly as before. The separate "Add change order" flow is intact and change-order lines keep their flag when edited.
+
+Open assumptions (Dylan can veto): card surcharge is computed on the BALANCE due (not the full invoice total); the surcharge band is 3% (card_surcharge_pct, editable later); Zelle = dylan@prescottepoxy.com.
+
+## Handoff to Cowork
+Run these in the PROD Supabase project (each has a "Verify after running" block):
+ 1. Confirm 2026-06-01_brand_and_public_invoice.sql is fully live (run its verify block: jobs.public_token present, select public_token from pec_job_ar limit 1 resolves). If it did NOT run, run it -- this is the likely fix for the "invoice not found" 404.
+ 2. 2026-06-07_brand_black_orange.sql -- paste the row showing primary_color #14181C, accent_color #D8531C, zelle_email set, card_surcharge_pct 3.
+ 3. 2026-06-07_line_items_manual_override.sql -- verify the jobs.line_items_manual_override column and that it resolves in pec_job_ar.
+
+## Handoff to Dylan
+Go-live order (do NOT deploy before steps 1-2):
+ 1. Run the three migrations above (Cowork) + confirm the 2026-06-01 one is live.
+ 2. Confirm your own admin_users row exists with an owner role (the prior auth-gate pass gates the whole app on per-user Supabase login; without an owner row you lock yourself out).
+ 3. Push the local commits + trigger a Netlify deploy.
+ 4. Test one real invoice end to end: open a job -> Edit line items (add/edit/reorder, save) -> Email invoice to yourself -> open the /pay link -> confirm orange branding, the three pay options with the right surcharge/phone/Zelle, and that re-saving the job estimate does not wipe your line edits.
+Honest flag: launching with no online card processing means every card payment is a manual phone step for Dusty on day one. Confirm he is briefed before Monday.
+
 ## [2026-06-06 MST] Cowork: investigated the customer-facing invoicing stack and produced a Claude Code launch prompt (no code changed)
 
 By: Cowork
