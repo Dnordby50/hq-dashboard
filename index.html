@@ -617,12 +617,15 @@ body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-po
   --rd-line:      #e6e8ec;
   --rd-line-2:    #eef0f3;
 
-  --rd-accent:          #2b59ff;
+  /* PEC orange is the permanent CRM accent (baked in; the old color selector
+     was removed). Only colors changed here, not layout/radii/shadows. The dark
+     HQ dashboard's separate --accent indigo is intentionally left untouched. */
+  --rd-accent:          #D8531C;
   --rd-accent-ink:      #ffffff;
-  --rd-accent-soft:     #e9efff;
-  --rd-accent-hero:     #16306b;
-  --rd-accent-hero-2:   #0c1d46;
-  --rd-accent-ring:     rgba(43,89,255,.18);
+  --rd-accent-soft:     #fbe9e0;
+  --rd-accent-hero:     #6b2a0a;
+  --rd-accent-hero-2:   #3e1604;
+  --rd-accent-ring:     rgba(216,83,28,.18);
 
   --rd-success:   #10b981;
   --rd-warn:      #f59e0b;
@@ -637,13 +640,6 @@ body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-po
   --rd-shadow-sm: 0 1px 2px rgba(16,24,40,.04);
   --rd-shadow-md: 0 6px 18px rgba(16,24,40,.06);
   --rd-shadow-lg: 0 16px 40px rgba(16,24,40,.08);
-}
-html[data-accent="orange"] {
-  --rd-accent:        #ff6b1a;
-  --rd-accent-soft:   #fff1e6;
-  --rd-accent-hero:   #6b2a0a;
-  --rd-accent-hero-2: #3e1604;
-  --rd-accent-ring:   rgba(255,107,26,.18);
 }
 
 /* ============================================================
@@ -1080,31 +1076,7 @@ input:focus, textarea:focus, select:focus {
 .spinner { border-top-color: var(--rd-accent) !important; border-color: var(--rd-line-2) !important; }
 .loading { color: var(--rd-muted) !important; }
 
-/* ---------- Tweak panel ---------- */
-#rdTweaks {
-  position: fixed; right: 20px; bottom: 20px;
-  background: #fff; border: 1px solid var(--rd-line);
-  border-radius: 16px; padding: 14px 16px;
-  box-shadow: var(--rd-shadow-lg);
-  z-index: 9000;
-  display: none;
-  font-size: 13px;
-}
-#rdTweaks.open { display: block; }
-#rdTweaks h4 { margin: 0 0 10px; font-size: 12.5px; color: var(--rd-muted); font-weight: 600; letter-spacing: .2px; }
-#rdTweaks .swatches { display: flex; gap: 8px; }
-#rdTweaks .swatch { width: 28px; height: 28px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: transform .15s; }
-#rdTweaks .swatch.active { border-color: var(--rd-ink); transform: scale(1.1); }
-#rdTweaks .swatch.blue   { background: #2b59ff; }
-#rdTweaks .swatch.orange { background: #ff6b1a; }
-#rdTweaks .rd-tweak-section { margin-top: 14px; }
-#rdTweaks .orb-opts { display: flex; gap: 6px; }
-#rdTweaks .orb-opt {
-  padding: 6px 12px; border-radius: 999px;
-  border: 1px solid var(--rd-line); background: var(--rd-softer);
-  font-size: 12px; font-weight: 600; color: var(--rd-ink-2); cursor: pointer;
-}
-#rdTweaks .orb-opt.active { background: var(--rd-accent); color: #fff; border-color: var(--rd-accent); }
+/* Tweak panel (color selector) removed: PEC orange is baked into --rd-accent. */
 
 /* ---------- Orb style switching ---------- */
 html[data-orb-style="shader"] .voice-orb-svg { display: none !important; }
@@ -4382,9 +4354,6 @@ if (document.readyState === 'loading') {
         <button class="rd-icon-btn" id="rdBtnRefresh" title="Refresh">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
-        <button class="rd-icon-btn" id="rdBtnTweaks" title="Theme">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-        </button>
         <div class="rd-user">
           <!-- SOPs hub button removed for now; the SOPs section + code stay in
                place. Larger SOP project is deferred to a later phase. -->
@@ -4651,81 +4620,10 @@ if (document.readyState === 'loading') {
       if (typeof window.pecJobSearchInput === 'function') window.pecJobSearchInput(e.target.value);
     });
 
-    // ---- Tweaks panel (accent color + orb style + PEC brand) ----
-    const TWEAK = { accent: 'blue', orbStyle: 'shader' };
-    const saved = (() => { try { return JSON.parse(localStorage.getItem('rd-tweaks') || 'null'); } catch { return null; } })();
-    const savedOrb = (() => { try { return localStorage.getItem('hq_orb_style'); } catch { return null; } })();
-    const savedPecBrand = (() => { try { return JSON.parse(localStorage.getItem('pec_brand_enabled') || 'false'); } catch { return false; } })();
-    const current = Object.assign({}, TWEAK, saved || {}, savedOrb ? { orbStyle: savedOrb } : {});
-
-    function applyAccent(a) {
-      document.documentElement.setAttribute('data-accent', a);
-      document.querySelectorAll('#rdTweaks .swatch').forEach(s => s.classList.toggle('active', s.dataset.accent === a));
-    }
-    function applyOrbStyle(o) {
-      document.documentElement.setAttribute('data-orb-style', o);
-      document.querySelectorAll('#rdTweaks .orb-opt').forEach(b => b.classList.toggle('active', b.dataset.orb === o));
-      try { localStorage.setItem('hq_orb_style', o); } catch {}
-    }
-    function setPecBrand(on) {
-      if (on) document.documentElement.setAttribute('data-pec-brand', 'on');
-      else document.documentElement.removeAttribute('data-pec-brand');
-      try { localStorage.setItem('pec_brand_enabled', JSON.stringify(!!on)); } catch {}
-      const t = document.getElementById('rdPecBrandToggle');
-      if (t) t.checked = !!on;
-    }
-    applyAccent(current.accent);
-    setPecBrand(savedPecBrand);
-
-    const tweakPanel = document.createElement('div');
-    tweakPanel.id = 'rdTweaks';
-    tweakPanel.innerHTML = `
-      <h4>Accent color</h4>
-      <div class="swatches">
-        <div class="swatch blue"   data-accent="blue"   title="Blue"></div>
-        <div class="swatch orange" data-accent="orange" title="Orange"></div>
-      </div>
-      <div class="rd-tweak-section">
-        <h4>Brand</h4>
-        <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer">
-          <input type="checkbox" id="rdPecBrandToggle" ${savedPecBrand ? 'checked' : ''}>
-          <span>PEC brand theme (chrome only)</span>
-        </label>
-      </div>
-      <div class="rd-tweak-section">
-        <h4>Orb style</h4>
-        <div class="orb-opts">
-          <button class="orb-opt" data-orb="shader">Shader</button>
-          <button class="orb-opt" data-orb="svg">SVG</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(tweakPanel);
-    applyOrbStyle(current.orbStyle || 'shader');
-
-    tweakPanel.addEventListener('click', (e) => {
-      const sw = e.target.closest('.swatch');
-      if (sw) {
-        const a = sw.dataset.accent;
-        applyAccent(a);
-        current.accent = a;
-        localStorage.setItem('rd-tweaks', JSON.stringify(current));
-        return;
-      }
-      const orbBtn = e.target.closest('.orb-opt');
-      if (orbBtn) {
-        applyOrbStyle(orbBtn.dataset.orb);
-      }
-    });
-    tweakPanel.addEventListener('change', (e) => {
-      if (e.target && e.target.id === 'rdPecBrandToggle') {
-        setPecBrand(!!e.target.checked);
-      }
-    });
-
-    document.getElementById('rdBtnTweaks').addEventListener('click', () => {
-      tweakPanel.classList.toggle('open');
-    });
+    // Color selector removed: PEC orange is the permanent CRM accent (baked into
+    // --rd-accent). The orb style is applied on boot (data-orb-style, default
+    // shader); the old data-accent / data-pec-brand toggles and their
+    // localStorage (rd-tweaks, hq_orb_style, pec_brand_enabled) are retired.
 
     refreshTitle();
   }
