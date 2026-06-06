@@ -4,6 +4,39 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 06:15 MST] Cowork: log analysis of the failed Topcoat connector attempt (it stops after /register, never reaches /oauth/authorize)
+
+By: Cowork
+Changed: Read-only analysis. Pulled the mcp function logs on hq-prescott (Netlify dashboard, Functions log, Last hour, filtered [mcp-req]) for the window around Dylan's failed connector add (ref ofid_d38ea81bbcbbd78e). No code or config changed.
+Why: Determine how far Anthropic's MCP custom connector gets before failing, given the server itself is verified healthy (see entry below).
+
+Two distinct clients appear in the window, do not confuse them:
+ - curl/8.7.1 at 06:04:58 to 06:05:04: this is Claude Code's own 7-of-7 curl verification from the entry below. It ran the FULL flow successfully (discovery, /register, GET /oauth/authorize 151ms, two POST /oauth/token, then POST /mcp auth:true 2045ms with live data). Not Dylan's connector.
+ - python-httpx/0.28.1 + Claude-User at 06:08:12 to 06:08:38: THIS is Dylan's actual connector attempt.
+
+Ordered [mcp-req] trace for the connector attempt (ts, method, path, auth, ua):
+ 1. 06:08:12  GET  /.well-known/oauth-protected-resource       auth:false  python-httpx/0.28.1
+ 2. 06:08:12  GET  /.well-known/oauth-authorization-server      auth:false  python-httpx/0.28.1
+ 3. 06:08:21  GET  /.well-known/oauth-protected-resource/mcp    auth:false  python-httpx/0.28.1
+ 4. 06:08:26  POST /register                                    auth:false  python-httpx/0.28.1
+ 5. 06:08:35  POST /mcp                                         auth:false  Claude-User
+ 6. 06:08:38  POST /register                                    auth:false  python-httpx/0.28.1
+
+How far it got: the connector completed all discovery (both well-known docs plus the RFC path-insertion variant) and completed Dynamic Client Registration (POST /register). It then did NOT issue GET /oauth/authorize and did NOT POST /oauth/token. Instead it made an unauthenticated POST /mcp (which the server answers with 401 by design) and then re-POSTed /register, i.e. it looped back instead of advancing. The LAST endpoint it successfully reached was POST /register. No browser-origin GET /oauth/authorize ever reached the server, which is consistent with the browser showing "Couldn't connect" before any authorize page could load.
+
+Errors/timeouts: none. The [mcp-req] logger does not record HTTP status codes, but there were no Netlify ERROR lines, no "Task timed out", and no 5xx in the window. All durations were short (2 to 68 ms) except the legitimate authenticated curl tools/call (2045 ms). The only implicit 4xx is the by-design 401 on the unauthenticated POST /mcp at step 5.
+
+Conclusion (one sentence): the connector advanced one step further than the 2026-06-04 diagnosis (it now registers via DCR) but still stalls immediately after POST /register, never reaching GET /oauth/authorize, so the break is now on the client side between registration and the browser authorization redirect, not in the server.
+
+Not proven by logs (flag for next session): WHY it stops after /register is not visible here. Hypotheses worth checking, the client advertised protocolVersion 2025-11-25 in its initialize probe while our flow targets the 2025-06-18 spec, and the /register response shape may be missing a field the client needs to build the authorize URL. The logs prove where it stopped, not why.
+
+Files touched: PROJECT-LOG.md
+Next steps: Claude Code to inspect the /register (DCR) response body in mcp.cjs against what an Anthropic MCP client expects post-registration (does it return registration_client_uri, the right redirect_uris echo, token_endpoint_auth_method, etc.), and reconcile the 2025-11-25 vs 2025-06-18 protocol version.
+Handoff to Cowork: None
+Handoff to Dylan: None. This was read-only log analysis. Nothing to action until Claude Code reviews the /register response shape.
+
+---
+
 ## [2026-06-06 MST] Claude Code: verified the full Anthropic-connector OAuth flow end to end against live (server is production-ready)
 
 By: Claude Code
