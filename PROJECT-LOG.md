@@ -4,6 +4,49 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: executed the dashboard cleanup pass (items 3, 4, 5, 6, 7 shipped; items 1 + 2 parked for research)
+
+By: Claude Code
+Scope: Worked the Cowork cleanup brief (entry below). Confirmed each root cause from the code before changing it (Bug Diagnosis Workflow), fixed five of the seven items directly in this session, and parked the other two pending a design decision from Dylan. Files touched: index.html, supabase/schema.sql, two new supabase/migrations files, PROJECT-LOG.md. NOT pushed: these are local commits only. Dylan controls the deploy because item 5 changes how everyone signs in (see the deploy-order warning in the handoff).
+
+Four decisions Dylan made up front (drove the work): (a) auth = whole app behind per-user Supabase login; (b) sqft source of truth = job_areas, and manual jobs should also get area rows; (c) search = full fuzzy now (pg_trgm + RPC); (d) the manual "Open Job" route is parked, Dylan wants to research it first.
+
+What shipped (commit SHAs on this branch, not yet pushed):
+
+ - Items 3 + 4 (f97ce5e) "Add Job" Save button + proposal number. Root cause of the dead button: every write in the #addJobSave handler was a RAW supabase call, so on a wedged client the first one hung forever with zero network traffic and never threw, leaving the button stuck on "Saving..." with no error (the catch never ran). Anne never hit it because she had not wedged. Fix: every write is now bounded. The idempotent reschedule ops use withFreshWriteRetry; the non-idempotent insert goes through a new insertManualJob() that mirrors the payment path (recover the client, then VERIFY by the unique proposal_number before re-inserting, so it can never double-insert); day rows use a no-retry withFreshWrite with best-effort rollback. The catch always re-enables the button. Item 4: manual proposal_number is now a clean sequential 7-digit integer in the 9,000,000+ band (looks like a DripJobs String(deal_id) but sits well above the real ~2.8M deal ids so it cannot collide) with a real UNIQUE-collision retry. The manual marker stays dripjobs_deal_id IS NULL.
+
+ - Item 6 (a12f68d) blank screens / dead buttons for the owner. Two parts. The "dead button" half is the same wedge as item 3 (fixed there). The "blank screen" half: renderJobs mapped j.status.replace() with no null guard (one row with a null status threw mid-template and blanked the whole list), and renderJobDetail is reached directly from the jobs-row click and search handlers, which skip switchView's render fence, so a throw there became an unhandled rejection and a blank screen. Fixed the null guard and wrapped renderJobDetail (now a thin guard around renderJobDetailInner that routes any throw to the existing showCrmRenderError retry card). The wedge recovery machinery itself was already healthy and is unchanged.
+
+ - Item 7 (39f381c) real job search. The #rdSearch box only hid/showed already-rendered DOM rows (and even targeted .jobs-table, a class the CRM table does not use), so it never searched anything. Now it queries jobs by customer name, address, and phone with typo tolerance. Server side is a new migration (pg_trgm + GIN trigram indexes + a SECURITY DEFINER search_jobs RPC guarded by is_admin_staff()); an RPC is required because PostgREST cannot filter parent jobs rows by an embedded customers column. Client side lives in the CRM module (it needs supabase/state/switchView) and the RD-shell input forwards keystrokes to window.pecJobSearchInput, which debounces, calls the RPC, and renders a results dropdown whose rows open the job detail. If the RPC is not deployed yet the client falls back to substring-filtering the loaded jobs, so there is no regression until Cowork runs the migration. Note: this repurposes #rdSearch from filtering the current view's DOM rows to a global job search.
+
+ - Item 5 (57f1f58) whole app behind Supabase login. Removed the shared #loginGate password and CONFIG.EMPLOYEE_CODES. A new full-screen #authGate overlay gates the ENTIRE app, not just the CRM. Owner-vs-employee role and per-employee SOP visibility now come from the admin_users row, not the password. Auth runs once at module load (initAuth + renderGlobalAuthGate); when the session resolves to an approved admin_users row it hides the gate and calls window.applyAuthShell (replaces unlockDashboard), which sets the owner/employee shell and runs init()/initEmployee() once. admin_users gains a company column (PEC/FTP/both, for SOP scoping) and the role check adds crew/sales; resolveAdminUser retries without company if the column is missing so deploying the client before the migration cannot lock anyone out.
+
+Open assumptions recorded (Dylan can veto any):
+ 1. Manual proposal-number band = 9,000,001+ (7-digit). Assumes DripJobs deal ids will not reach 9,000,000 for years.
+ 2. Sqft source of truth = job_areas (Dylan's choice). The reconciliation itself is part of the parked thread below, because making manual jobs use job_areas requires them to have a public.jobs row.
+ 3. Search target = public.jobs joined to public.customers (name, address, phone). pg_trgm similarity threshold starts at 0.3.
+ 4. admin_users.company namespace is PEC/FTP/both (matches the SOP frontmatter), deliberately different from customers.company (prescott-epoxy/finishing-touch).
+
+Parked: items 1 + 2 (manual-job unification). Both reduce to one question for Dylan: should a manual "+ Add Job" entry also create public.jobs + customers + job_areas rows? If yes, manual jobs get a real detail view (item 1, instead of the admin/PM-only costing fallback) AND job_areas sqft (item 2), and the schedule/production list can read sqft from job_areas so list and detail finally agree. Today manual jobs live only in pec_prod_jobs with no public.jobs row and no area rows at all, which is why neither item is safe to implement piecemeal. The DripJobs "Open Job" path already opens the detail (it sets state.openJobId and switchView('jobs'), which delegates to renderJobDetail); only the manual path is broken. No code changed for items 1/2 this pass.
+
+## Handoff to Cowork
+1. Run BOTH new migrations in the PROD Supabase project (SQL editor), each has a "Verify after running" block at the bottom:
+   - supabase/migrations/2026-06-06_admin_users_role_company.sql (adds the company column + crew/sales to the role check).
+   - supabase/migrations/2026-06-06_search_jobs_trgm.sql (pg_trgm extension, phone_digits(), three GIN trigram indexes, the search_jobs RPC). If the customers/jobs tables are busy, run the three create index statements as "create index concurrently" (outside a transaction).
+2. Create the 4 employee Supabase Auth accounts and a matching admin_users row for each (this is account creation, which Cowork does, not Claude Code). Role + company mapping (carried over from the deleted CONFIG.EMPLOYEE_CODES):
+   - Dusty: role=sales, company=PEC
+   - Doug: role=sales, company=FTP
+   - Justin: role=crew, company=PEC
+   - Kyle: role=crew, company=PEC
+   Send each a password-setup / invite email (or use resetPasswordForEmail).
+3. Confirm Dylan's own admin_users row exists with an owner role (admin) and company=both BEFORE the item-5 deploy goes live. THIS IS THE LOCKOUT RISK: with the universal password gone, anyone without an approved admin_users row sees only the #authGate. Verify Dylan (and any other current owner) is covered first.
+
+## Handoff to Dylan
+1. Deploy order for item 5: run the admin_users migration (Cowork step 1) and confirm your own owner row (Cowork step 3) BEFORE pushing/deploying, or you will lock yourself out of the whole dashboard, not just the CRM. The client degrades gracefully if the migration is missing (it keeps working), but you still need an owner-role admin_users row to get past the gate.
+2. Decide whether crew/sales staff should be walled off from CRM data at the database level. Right now RLS keys off is_admin_staff() (a row exists), so any admin_users row can read customers/jobs via direct queries even though the employee UI hides it. If they must not see CRM data, that needs role-aware RLS policies (a separate change).
+3. Decide whether the non-Supabase endpoints (sheets-proxy, sop-chat, GitHub SOPs) need server-side JWT checks. They were never protected server-side (the old password was client-only too), so this is not a regression, just worth knowing.
+4. Review the parked items 1 + 2 design question above (should manual jobs create public.jobs/customers/job_areas rows?) so I can build it next.
+
 ## [2026-06-06 MST] Cowork: investigated 7 dashboard cleanup issues in index.html and produced a Claude Code task brief (no code changed)
 
 By: Cowork
@@ -61,6 +104,31 @@ Still open (carried over): (1) remove ALL the temp diagnostics ([mcp-req], [mcp-
 
 ## Handoff to Dylan
 Once this deploy publishes (~1 min): in Cowork, delete the Topcoat connector and re-add it with URL https://hq-prescott.netlify.app/mcp, leaving the OAuth Client ID/Secret fields blank. If it still fails, have Cowork pull the mcp function logs and report the [mcp-register] and [mcp-authorize] lines from the attempt; that will show whether the connector now reaches authorize and what it requested.
+
+## [2026-06-06 07:05 MST] Cowork: Topcoat direct-key switch, verified the 401 path, handed key rotation and connector setup to Dylan (outside what Cowork can do)
+
+By: Cowork
+Changed: Verification only. Confirmed the unauthenticated reject path still works (curl POST /mcp with no key returned HTTP 401), which is the behavior direct-key auth depends on. Did NOT rotate any key, edit Netlify env vars, trigger a deploy, run the keyed curl, or touch the Cowork connector config. No repo or server changes.
+Why: Plan B switches Topcoat from OAuth to a direct bearer key. The bulk of that work (setting MCP_BEARER_TOKEN and MCP_OAUTH_CLIENT_SECRET to new secret values in Netlify, and pasting the key into the connector config) is entering credentials into fields and changing security settings, which Cowork does not do on the user's behalf even when authorized. Those steps are handed to Dylan.
+
+What Cowork verified: unauthenticated POST /mcp (tools/list, no Authorization header, no token) -> HTTP 401. So a request without a valid key is still rejected, and a request WITH a valid key will short-circuit to 200 and never emit the 401 that kicks off the broken OAuth loop. Direct-key auth is the right call.
+
+Not done by Cowork (handed to Dylan, see handoff): key rotation, Netlify env edits, deploy, keyed curl check, connector delete/re-add, in-Cowork tool-call test. These all require handling or entering the secret, which must stay with Dylan and out of any shared output.
+
+One technical recommendation flagged to Dylan: strongly prefer the custom-header auth variant (Authorization: Bearer ...) over the ?token= query-string variant. A key in a URL is the weaker option, it can leak through request logs, browser history, referrer headers, and intermediaries. The current diagnostic loggers no longer record the query string (fixed in d914a7c), so ?token= will not leak into THESE logs, but the general exposure surface of a URL-borne secret remains. Use the header if Cowork offers one; fall back to ?token= only if it does not.
+
+Files touched: PROJECT-LOG.md
+Next steps: Dylan to run the rotation + connector setup runbook (printed in chat). Once Topcoat connects and a get_schedule tool CALL succeeds, Claude Code still needs to remove the temporary [mcp-req] / [mcp-register] / [mcp-register-resp] / [mcp-authorize] diagnostics from mcp.cjs.
+Handoff to Cowork: None.
+Handoff to Dylan:
+ 1. Generate keys in your own terminal (not shared): NEWKEY=$(openssl rand -hex 32) and NEWSECRET=$(openssl rand -hex 24).
+ 2. Netlify -> hq-prescott -> Site configuration -> Environment variables: set MCP_BEARER_TOKEN to the new 64-char hex, set MCP_OAUTH_CLIENT_SECRET to the new 48-char hex. Save.
+ 3. Deploys -> Trigger deploy -> Deploy site. Wait for Published with a timestamp after the env edits.
+ 4. Verify privately: read -rs K (paste new key, enter). Unauth check: curl -s -o /dev/null -w "%{http_code}\n" -X POST https://hq-prescott.netlify.app/mcp -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' (expect 401, already confirmed by Cowork). Keyed check: curl -s -X POST "https://hq-prescott.netlify.app/mcp?token=$K" -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_schedule","arguments":{"limit":3}}}' (expect a JSON-RPC result whose content parses to an object with count and a rows array).
+ 5. In Cowork: delete the existing Topcoat connector, re-add with URL https://hq-prescott.netlify.app/mcp and a custom header Authorization = Bearer <new key>, OAuth fields blank. If no custom-header field exists, use URL https://hq-prescott.netlify.app/mcp?token=<new key> instead.
+ 6. Test the CALL in a Cowork chat: "Use the Topcoat connector to call get_schedule with limit 3 and list each job name, business, and revenue." If listing works but the call fails, switch header vs query variant and retry; if both list but fail the call, capture the exact error + ofid_ and that points back at Claude/Cowork, not the server.
+
+---
 
 ## [2026-06-06 07:00 MST] Cowork: re-pulled mcp logs after another failed attempt (ofid_6d775eabf3d0717c); the /register RESPONSE is now captured and is RFC-compliant, which flips the diagnosis
 
