@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: add refresh_token grant (connector requests it at DCR; absence kept it from advancing past /register)
+
+By: Claude Code
+Scope: Cowork's second log pull captured the actual DCR REQUEST body Anthropic's connector sends (via the new [mcp-register] logger): {"name":"Claude","ru":["https://claude.ai/api/mcp/auth_callback"],"gt":["authorization_code","refresh_token"],"rt":["code"],"am":"client_secret_post","scope":"mcp"}. Two corrections to the prior entry's theory: (1) the connector registers as a CONFIDENTIAL client (token_endpoint_auth_method client_secret_post), NOT public/"none" -- so the previous public-client fix, while correct in general, did not touch the connector's actual path; (2) the connector requests the refresh_token grant, which the server neither advertised nor supported, and the prior /register code actively STRIPPED refresh_token out of the echoed grant_types (intersection left only authorization_code). A connector registered for offline access that sees the server grant only authorization_code can refuse to advance to the browser authorize step, which matches the observed stall (registers once, never GETs /oauth/authorize). Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Fix in mcp.cjs (refresh_token end to end):
+ - oauthMetadata grant_types_supported now lists refresh_token.
+ - /register SUPPORTED_GRANTS now includes refresh_token, so the echoed grant_types match what the client requested (authorization_code + refresh_token) instead of dropping refresh_token.
+ - New stateless refresh tokens: issueRefreshToken/verifyRefreshToken use the same HMAC-signed envelope as the auth code (key derived from MCP_BEARER_TOKEN, so rotating the bearer invalidates them), 90-day expiry, tagged t:"refresh".
+ - /oauth/token authorization_code response now includes a refresh_token.
+ - /oauth/token now handles grant_type=refresh_token: validates the token's HMAC + expiry, then re-issues the access token (= MCP_BEARER_TOKEN) plus a rotated refresh token. unsupported_grant_type message updated.
+ - Added [mcp-register-resp] logging of the registration RESPONSE shape with the client_secret value redacted to a presence flag (<present:Nch>), so if it still stalls we can confirm the exact body the client receives without leaking the secret.
+
+Verified in-process (node harness, 9/9) using the EXACT body from the logs: DCR returns 201 with grant_types including refresh_token and (confidential) a client_secret; metadata advertises refresh_token; authorize -> code -> token returns access_token + refresh_token; the refresh_token grant returns fresh tokens; a forged refresh token is rejected (400). Live deploy + a real Cowork retry still needed to confirm the connector now advances to authorize; [mcp-authorize] in the logs will show it.
+
+Still open (carried over): (1) remove ALL temp diagnostics ([mcp-req], [mcp-register], [mcp-register-resp], [mcp-authorize]) once connected; (2) rotate MCP_OAUTH_CLIENT_SECRET and MCP_BEARER_TOKEN; (3) review /oauth/authorize auto-approve for a single-tenant server holding live revenue data.
+
+## Handoff to Dylan
+Once this deploy publishes (~1 min): in Cowork, delete the Topcoat connector and re-add it (URL https://hq-prescott.netlify.app/mcp, OAuth fields blank). If it STILL stalls, have Cowork pull the mcp logs and report the [mcp-register-resp] and [mcp-authorize] lines; [mcp-register-resp] now shows the exact response the client got, which is the piece we were missing.
+
 ## [2026-06-06 MST] Claude Code: fix DCR so public (PKCE-only) clients register without a secret (connector was looping on /register, never authorizing)
 
 By: Claude Code

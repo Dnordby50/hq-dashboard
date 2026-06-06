@@ -246,6 +246,26 @@ function verifyPkce(code_verifier, code_challenge) {
   return b64uEncode(h) === code_challenge;
 }
 
+// Stateless refresh token, same HMAC-signed envelope as the auth code. Anthropic's
+// connector registers for the refresh_token grant (offline access), so the token
+// response must hand one back or the client treats the server as unable to meet
+// its needs. Long-lived (90 days). Like the auth code, the HMAC key is derived
+// from MCP_BEARER_TOKEN, so rotating the bearer invalidates all refresh tokens.
+function issueRefreshToken({ client_id }) {
+  const payload = JSON.stringify({
+    t: 'refresh',
+    ci: client_id,
+    exp: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+  });
+  return `${b64uEncode(payload)}.${b64uEncode(hmac(payload))}`;
+}
+
+function verifyRefreshToken(token) {
+  const payload = verifyAuthCode(token); // same decode + HMAC + exp check
+  if (!payload || payload.t !== 'refresh') return null;
+  return payload;
+}
+
 // OAuth 2.1 authorization server metadata (RFC 8414). MCP 2025-06-18 clients
 // (Anthropic's custom-connector UI in particular) need authorization_code +
 // PKCE + DCR; we also keep client_credentials for direct M2M use.
@@ -255,7 +275,7 @@ function oauthMetadata(origin) {
     authorization_endpoint: `${origin}/oauth/authorize`,
     token_endpoint: `${origin}/oauth/token`,
     registration_endpoint: `${origin}/register`,
-    grant_types_supported: ['authorization_code', 'client_credentials'],
+    grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
     response_types_supported: ['code'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
@@ -388,7 +408,7 @@ exports.handler = async (event) => {
 
     // Echo back the client's requested grant/response types (intersected with
     // what we actually support) so strict clients see their request honored.
-    const SUPPORTED_GRANTS = ['authorization_code', 'client_credentials'];
+    const SUPPORTED_GRANTS = ['authorization_code', 'refresh_token', 'client_credentials'];
     const reqGrants = Array.isArray(req.grant_types) ? req.grant_types.filter(g => SUPPORTED_GRANTS.includes(g)) : [];
     const grantTypes = reqGrants.length ? reqGrants : ['authorization_code'];
     const responseTypes = Array.isArray(req.response_types) && req.response_types.length ? req.response_types : ['code'];
@@ -407,6 +427,14 @@ exports.handler = async (event) => {
       reg.client_secret = expectedSecret;
       reg.client_secret_expires_at = 0; // never
     }
+    // Secret-safe diagnostic of the RESPONSE shape: log every field we return
+    // EXCEPT the secret value (replaced by a presence flag). Lets us confirm the
+    // exact registration body the client receives without leaking the secret.
+    try {
+      const safe = { ...reg };
+      if ('client_secret' in safe) safe.client_secret = `<present:${String(reg.client_secret).length}ch>`;
+      console.log('[mcp-register-resp]', JSON.stringify(safe));
+    } catch {}
     return {
       statusCode: 201,
       headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -512,7 +540,38 @@ exports.handler = async (event) => {
       return {
         statusCode: 200,
         headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-        body: JSON.stringify({ access_token: bearer, token_type: 'Bearer', expires_in: 3600, scope: 'mcp' }),
+        body: JSON.stringify({
+          access_token: bearer,
+          token_type: 'Bearer',
+          expires_in: 3600,
+          refresh_token: issueRefreshToken({ client_id: payload.ci || clientId }),
+          scope: 'mcp',
+        }),
+      };
+    }
+
+    // refresh_token grant: the connector trades a refresh token for a fresh
+    // access token (and a rotated refresh token). access_token is the static
+    // MCP_BEARER_TOKEN, so "refresh" really just re-issues it; we still validate
+    // the refresh token's HMAC + expiry so only a token we minted is accepted.
+    if (grantType === 'refresh_token') {
+      const rt = verifyRefreshToken(form.refresh_token || '');
+      if (!rt) {
+        return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_grant', error_description: 'Refresh token invalid or expired' }) };
+      }
+      if (clientSecret && clientSecret !== expectedSecret) {
+        return { statusCode: 401, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'invalid_client' }) };
+      }
+      return {
+        statusCode: 200,
+        headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        body: JSON.stringify({
+          access_token: bearer,
+          token_type: 'Bearer',
+          expires_in: 3600,
+          refresh_token: issueRefreshToken({ client_id: rt.ci }),
+          scope: 'mcp',
+        }),
       };
     }
 
@@ -534,7 +593,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 400,
       headers: { ...cors, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'unsupported_grant_type', error_description: 'Supported: authorization_code, client_credentials' }),
+      body: JSON.stringify({ error: 'unsupported_grant_type', error_description: 'Supported: authorization_code, refresh_token, client_credentials' }),
     };
   }
 
