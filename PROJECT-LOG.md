@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: ran the two un-applied 2026-06-04 migrations in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Dylan asked to run recent migrations (chose "all un-applied since 2026-06-01, verify state first"). Worked in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, Primary DB, postgres role) via the SQL editor in Dylan's signed-in browser. No repo code changed. Files touched: PROJECT-LOG.md only. Note: this run covered the older 06-01..06-04 migrations only; the THREE new migrations Claude Code added in the 2026-06-07 entry directly below (black/orange rebrand etc.) were NOT part of this and still need running.
+
+State check first (read-only): confirmed everything from 2026-06-01, 2026-06-02, and 2026-06-03 was ALREADY applied in PROD: jobs.public_token + pec_job_ar.public_token + pec_brand_identity table (06-01 brand/public-invoice), job_areas.price + job_areas.description (06-01 estimate), pec_prod_system_types.sort_order (06-01), pec_replace_job_areas() (06-02 txn), all four price-integrity constraints jobs_price_in_range / jobs_scheduled_needs_price / pec_prod_jobs_revenue_in_range / pec_prod_jobs_scheduled_needs_revenue (06-02), pec_prod_jobs.archived_at + pending_hidden_at + idx_pec_prod_jobs_active (06-02 archive), jobs.status_manual_at (06-03). Useful for the invoicing work: the 06-01 brand/public-invoice migration IS live in PROD (public_token exists and the view exposes it), so the "invoice not found" link is NOT caused by that migration being absent.
+
+Only two migrations were un-applied, both dated 2026-06-04. Ran both (schema only), each "Success. No rows returned" (confirmed the Supabase destructive-op warning, which was the expected drop-trigger-if-exists / alter):
+ 1. 2026-06-04_prod_status_sync_trigger.sql -> created function public.pec_prod_jobs_sync_public_status() + trigger trg_pec_prod_jobs_sync_status on public.pec_prod_jobs. (Dependency 06-03 status_manual_at was already present, so safe.)
+ 2. 2026-06-04_schedule_time_slot.sql -> added pec_prod_job_schedule_days.time_slot (text, check AM/PM).
+
+Verified after running: all three new objects return present=true (the time_slot column, the sync function, and the sync trigger).
+
+Deliberately did NOT run the OPTIONAL backfill noted in 2026-06-04_prod_status_sync_trigger.sql ("update public.pec_prod_jobs set status = status where dripjobs_deal_id is not null;"), which would fire the new trigger for every bridged row and re-mirror statuses onto public.jobs. It is marked optional and is a data mutation (could flip existing job statuses), so it is left for Dylan to decide. Without it, the trigger keeps statuses in sync going forward; existing rows re-sync on their next status/install_date change.
+
+Next steps for Dylan: (1) decide whether to run the optional status backfill above; (2) run the three new migrations from the 2026-06-07 Claude Code entry below (black/orange rebrand) before Monday; (3) the PROJECT-LOG git commit is still blocked by a stale .git/index.lock the sandbox cannot remove (run `rm -f .git/index.lock` in the repo, then commit). This entry and the prior invoicing-prompt entry are saved to the file but not yet committed.
+
 ## [2026-06-07 MST] Claude Code: Monday-launch invoicing pass (black/orange rebrand, redesigned invoice page + email, 404 fix, durable line-item editor)
 
 By: Claude Code
