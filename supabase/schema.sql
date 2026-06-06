@@ -11,7 +11,10 @@ create table if not exists public.admin_users (
   auth_user_id uuid unique references auth.users(id) on delete cascade,
   email text unique not null,
   name text not null,
-  role text not null default 'office' check (role in ('admin','office','pm')),
+  role text not null default 'office' check (role in ('admin','office','pm','crew','sales')),
+  -- SOP visibility scope (getAccessibleSOPs). 'both' = sees all. Distinct from
+  -- customers.company; matches the SOP frontmatter namespace.
+  company text not null default 'both' check (company in ('PEC','FTP','both')),
   created_at timestamptz not null default now()
 );
 

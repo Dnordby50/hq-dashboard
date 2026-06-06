@@ -585,7 +585,7 @@ body.pec-portal-mode{
   background:var(--bg);color:var(--text);
 }
 body.pec-portal-mode.brand-ftp{--accent:#ff6b1a}
-body.pec-portal-mode #rdShell,body.pec-portal-mode .header,body.pec-portal-mode .tab-nav,body.pec-portal-mode .tab-content,body.pec-portal-mode #loginGate{display:none !important}
+body.pec-portal-mode #rdShell,body.pec-portal-mode .header,body.pec-portal-mode .tab-nav,body.pec-portal-mode .tab-content,body.pec-portal-mode #authGate{display:none !important}
 body.pec-portal-mode .pec-btn.primary{color:#fff}
 body.pec-portal-mode .pec-btn.primary:disabled{opacity:.5;cursor:not-allowed}
 body.pec-portal-mode .pec-swatch.selected{box-shadow:0 0 0 2px var(--accent) inset}
@@ -668,7 +668,7 @@ html[data-pec-brand="on"] #rdSidebar,
 html[data-pec-brand="on"] #rdTopbar,
 html[data-pec-brand="on"] #rdTitle,
 html[data-pec-brand="on"] .rd-promo,
-html[data-pec-brand="on"] #loginGate {
+html[data-pec-brand="on"] #authGate {
   font-family: "Archivo", system-ui, sans-serif;
 }
 html[data-pec-brand="on"] .rd-logo-name,
@@ -1075,19 +1075,7 @@ input:focus, textarea:focus, select:focus {
 .setup-notice h3 { color: var(--rd-warn) !important; }
 .setup-notice code { background: #fff !important; border: 1px solid var(--rd-line) !important; color: var(--rd-ink-2) !important; }
 
-#loginGate { background: var(--rd-bg) !important; }
-#loginGate > div > div:first-child {
-  background: var(--rd-accent) !important;
-  -webkit-text-fill-color: #fff !important;
-  color: #fff !important;
-  width: 70px; height: 70px; border-radius: 20px;
-  display: inline-grid !important; place-items: center;
-  margin: 0 auto 14px !important;
-  font-size: 1.6rem !important;
-  box-shadow: 0 12px 30px var(--rd-accent-ring) !important;
-}
-#loginGate > div > div:nth-child(2) { color: var(--rd-ink) !important; font-weight: 700 !important; font-size: 1.2rem !important; }
-#loginGate > div > div:nth-child(3) { color: var(--rd-muted) !important; }
+#authGate { background: var(--rd-bg) !important; }
 
 .spinner { border-top-color: var(--rd-accent) !important; border-color: var(--rd-line-2) !important; }
 .loading { color: var(--rd-muted) !important; }
@@ -1481,17 +1469,30 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 </script>
 
 <!-- PASSWORD GATE -->
-<div id="loginGate" style="position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;align-items:center;justify-content:center">
+<!-- Whole-app auth gate. Opaque, full-screen, above #rdShell. Stays up until a
+     Supabase session resolves to an approved staff row. Replaces #loginGate.
+     Wired + driven by the CRM module (renderGlobalAuthGate / #authGateForm). -->
+<div id="authGate" style="position:fixed;inset:0;z-index:10000;background:var(--bg);display:flex;align-items:center;justify-content:center">
   <div style="text-align:center;width:min(360px,90vw)">
-    <img src="assets/pec-logo.png" alt="Prescott Epoxy Company" style="width:96px;height:auto;margin:0 auto 12px;display:block">
-    <div style="color:var(--dim);font-size:.7rem;margin-bottom:32px">Owner password or employee code</div>
-    <input type="password" id="loginPass" placeholder="Password" autocomplete="current-password"
-      style="text-align:center;font-size:1rem;padding:14px 20px;margin-bottom:12px"
-      onkeydown="if(event.key==='Enter')checkLogin()">
-    <div style="margin-bottom:12px">
-      <button class="btn btn-primary" style="width:100%;padding:14px" onclick="checkLogin()">Enter</button>
+    <img src="assets/pec-logo.png" alt="Prescott Epoxy Company" style="width:96px;height:auto;margin:0 auto 16px;display:block">
+    <div id="authGate-checking" style="color:var(--dim);font-size:.85rem">Checking session…</div>
+    <div id="authGate-signin" style="display:none">
+      <div style="color:var(--dim);font-size:.7rem;margin-bottom:28px">Sign in with your staff email and password</div>
+      <form id="authGateForm" style="display:flex;flex-direction:column;gap:10px">
+        <input type="email" name="email" placeholder="you@example.com" autocomplete="username" required
+          style="text-align:center;font-size:1rem;padding:13px 18px">
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password" required
+          style="text-align:center;font-size:1rem;padding:13px 18px">
+        <button type="submit" class="btn btn-primary" style="width:100%;padding:14px">Sign in</button>
+      </form>
+      <button type="button" id="authGateForgot" class="btn" style="margin-top:10px;font-size:.8rem;background:none;border:none;color:var(--dim);cursor:pointer">Forgot password?</button>
+      <div id="authGateError" style="color:var(--danger);font-size:.8rem;min-height:20px;margin-top:8px"></div>
     </div>
-    <div id="loginError" style="color:var(--danger);font-size:.8rem;min-height:20px"></div>
+    <div id="authGate-pending" style="display:none">
+      <div style="color:var(--text);font-weight:700;font-size:1.1rem;margin-bottom:8px">Access pending</div>
+      <div style="color:var(--dim);font-size:.85rem;margin-bottom:20px">You're signed in but <strong id="authGatePendingEmail"></strong> hasn't been added to the staff list yet. Ask an admin to add you.</div>
+      <button type="button" class="btn btn-primary" style="width:100%;padding:13px" onclick="window.pecAuthSignOut && window.pecAuthSignOut()">Sign out</button>
+    </div>
   </div>
 </div>
 
@@ -1950,15 +1951,11 @@ const CONFIG = {
   COACH_MODEL: 'claude-sonnet-4-20250514',
   ELEVENLABS_API_KEY: 'sk_f3f6812161da21d3ac0f4772bc790227ccf55b1ae2dbc335',
   ELEVENLABS_VOICE_ID: 'JBFqnCBsd6RMkjVDRZzb',
-  PASSWORD: 'hq2026',
   COACH_LOG_SCRIPT: 'YOUR_APPS_SCRIPT_URL',
   SHEETS_PROXY: '/.netlify/functions/sheets-proxy',
-  EMPLOYEE_CODES: {
-    'dusty2026':  { name: 'Dusty',  company: 'PEC', role: 'sales', code: 'dusty2026' },
-    'doug2026':   { name: 'Doug',   company: 'FTP', role: 'sales', code: 'doug2026' },
-    'justin2026': { name: 'Justin', company: 'PEC', role: 'crew',  code: 'justin2026' },
-    'kyle2026':   { name: 'Kyle',   company: 'PEC', role: 'crew',  code: 'kyle2026' }
-  },
+  // Owner password + per-employee codes removed: the whole app is now behind
+  // per-user Supabase login. Employee role/company moved to admin_users
+  // (see the 2026-06-06 PROJECT-LOG entry + Cowork account-creation handoff).
   SOP_REPO: {
     owner: 'Dnordby50',
     repo: 'hq-sops',
@@ -3766,49 +3763,46 @@ document.querySelectorAll('.tab-nav:not(.employee-nav) .tab-btn').forEach(btn =>
 // ============================================================
 // INIT
 // ============================================================
-function checkLogin() {
-  const pass = $('loginPass').value.trim();
-  const passLower = pass.toLowerCase();
-  if (pass === CONFIG.PASSWORD) {
-    sessionStorage.setItem('hq_auth', 'true');
-    sessionStorage.setItem('hq_mode', 'owner');
-    sessionStorage.removeItem('hq_employee');
-    currentEmployee = null;
-    unlockDashboard();
-  } else if (CONFIG.EMPLOYEE_CODES[passLower]) {
-    currentEmployee = CONFIG.EMPLOYEE_CODES[passLower];
-    sessionStorage.setItem('hq_auth', 'true');
-    sessionStorage.setItem('hq_mode', 'employee');
-    sessionStorage.setItem('hq_employee', JSON.stringify(currentEmployee));
-    unlockDashboard();
-  } else {
-    $('loginError').textContent = 'Wrong password or code';
-    $('loginPass').value = '';
-    $('loginPass').focus();
-  }
-}
-
-function unlockDashboard() {
-  $('loginGate').style.display = 'none';
-  const mode = sessionStorage.getItem('hq_mode') || 'owner';
-  if (mode === 'employee') {
-    const empJson = sessionStorage.getItem('hq_employee');
-    if (empJson) currentEmployee = JSON.parse(empJson);
-    const empHeader = document.querySelector('.employee-header');
-    const empNav = document.querySelector('.employee-nav');
+// Apply the owner-vs-employee shell after the Supabase session resolves to an
+// approved admin_users row. The CRM module computes `derived` (from the
+// per-user role) and calls window.applyAuthShell(derived). This replaces the
+// old unlockDashboard(): the role source is now the Supabase user, not the
+// shared password. Toggling .header / .employee-header display is what the RD
+// shell's empObs watches to flip the sidebar nav, so we keep that contract.
+// init()/initEmployee() run exactly once (appShellInitialized guard) so repeat
+// auth events (token refresh, re-render) do not reload the dashboard data.
+let appShellInitialized = false;
+function applyAuthShell(derived) {
+  const ownerHeader = document.querySelector('.header');
+  const ownerNav    = document.querySelector('.tab-nav:not(.employee-nav)');
+  const empHeader   = document.querySelector('.employee-header');
+  const empNav      = document.querySelector('.employee-nav');
+  if (derived && derived.mode === 'employee') {
+    currentEmployee = derived.sopProfile || null;
     if (empHeader) empHeader.style.display = '';
     if (empNav) empNav.style.display = '';
-    initEmployee();
+    if (ownerHeader) ownerHeader.style.display = 'none';
+    if (ownerNav) ownerNav.style.display = 'none';
   } else {
-    document.querySelector('.header').style.display = '';
-    document.querySelector('.tab-nav').style.display = '';
-    init();
+    currentEmployee = null;
+    if (ownerHeader) ownerHeader.style.display = '';
+    if (ownerNav) ownerNav.style.display = '';
+    if (empHeader) empHeader.style.display = 'none';
+    if (empNav) empNav.style.display = 'none';
   }
+  if (appShellInitialized) return;
+  appShellInitialized = true;
+  if (derived && derived.mode === 'employee') initEmployee(); else init();
 }
+window.applyAuthShell = applyAuthShell;
 
 function logout() {
-  sessionStorage.clear();
-  location.reload();
+  // Per-user sign-out lives in the CRM module (Supabase). Reload after so the
+  // heavy in-memory state and the appShellInitialized guard reset cleanly and
+  // the #authGate comes back up.
+  Promise.resolve(window.pecAuthSignOut && window.pecAuthSignOut())
+    .catch(() => {})
+    .finally(() => location.reload());
 }
 
 async function init() {
@@ -3849,15 +3843,14 @@ async function refreshAll(force = true) {
   setTimeout(() => { $('statusDot').style.background = 'var(--success)'; }, 2000);
 }
 
-// Check if already authenticated this session
-if (sessionStorage.getItem('hq_auth') === 'true') {
-  unlockDashboard();
-} else {
-  $('loginPass').focus();
-}
+// No boot gate here anymore: the CRM module drives sign-in via the #authGate
+// overlay and calls window.applyAuthShell() once the Supabase session resolves
+// to an approved staff row, which runs init()/initEmployee().
 
 // Auto-refresh every 5 minutes — passive (do not retry known-failed widgets).
-setInterval(() => refreshAll(false), 5 * 60 * 1000);
+// Gated on appShellInitialized so a logged-out tab (sitting on #authGate) does
+// not hit the sheets proxy before anyone has signed in.
+setInterval(() => { if (appShellInitialized) refreshAll(false); }, 5 * 60 * 1000);
 </script>
 
 <script type="module">
@@ -5404,7 +5397,7 @@ async function initAuth() {
     }
     if (session) await resolveAdminUser();
     else { state.adminUser = null; }
-    renderAuthUI();
+    renderGlobalAuthGate();
   });
   if (state.session) await resolveAdminUser();
   // Fire-and-forget the install-day auto-progress sweep. Best-effort: any
@@ -5416,11 +5409,22 @@ async function initAuth() {
 async function resolveAdminUser() {
   if (!state.session) return;
   const uid = state.session.user.id;
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('admin_users')
-    .select('id, auth_user_id, email, name, role')
+    .select('id, auth_user_id, email, name, role, company')
     .eq('auth_user_id', uid)
     .maybeSingle();
+  // Deploy-order safety: if this client ships before the admin_users `company`
+  // column migration runs in prod, the select 400s on the unknown column. Retry
+  // without `company` so NO ONE is locked out of the whole app in that window;
+  // company defaults to 'both' (sees all SOPs) until the migration lands.
+  if (error && /company/.test(error.message || '')) {
+    ({ data, error } = await supabase
+      .from('admin_users')
+      .select('id, auth_user_id, email, name, role')
+      .eq('auth_user_id', uid)
+      .maybeSingle());
+  }
   if (error) {
     // A transient failure here (network blip, or an in-flight token refresh)
     // must NOT clear a previously-resolved admin user. Doing so bounces the
@@ -5432,11 +5436,11 @@ async function resolveAdminUser() {
   state.adminUser = data || null;
 }
 
-async function passwordSignIn(email, password) {
-  const err = $('pecSigninError');
-  err.textContent = ''; err.style.color = 'var(--danger)';
+async function passwordSignIn(email, password, errEl) {
+  const err = errEl || $('pecSigninError');
+  if (err) { err.textContent = ''; err.style.color = 'var(--danger)'; }
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) { err.textContent = error.message; return; }
+  if (error) { if (err) err.textContent = error.message; return; }
   // Fire-and-forget sign-in audit (IP + timestamp) via Netlify Function
   try {
     fetch('/.netlify/functions/pec-log-signin', {
@@ -5447,18 +5451,20 @@ async function passwordSignIn(email, password) {
   } catch (_) {}
 }
 
-async function passwordReset(email) {
-  const err = $('pecSigninError');
-  if (!email) { err.style.color = 'var(--danger)'; err.textContent = 'Enter your email above first.'; return; }
+async function passwordReset(email, errEl) {
+  const err = errEl || $('pecSigninError');
+  if (!email) { if (err) { err.style.color = 'var(--danger)'; err.textContent = 'Enter your email above first.'; } return; }
   const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: location.href });
-  err.style.color = error ? 'var(--danger)' : 'var(--success)';
-  err.textContent = error ? error.message : 'Password reset email sent — check your inbox.';
+  if (err) {
+    err.style.color = error ? 'var(--danger)' : 'var(--success)';
+    err.textContent = error ? error.message : 'Password reset email sent — check your inbox.';
+  }
 }
 
 async function signOut() {
   await supabase.auth.signOut();
   state.session = null; state.adminUser = null;
-  renderAuthUI();
+  renderGlobalAuthGate();
 }
 window.pecAuthSignOut = signOut;
 
@@ -5515,6 +5521,54 @@ function renderAuthUI() {
   }
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
+}
+
+// ---- Whole-app auth gate ----------------------------------------------------
+// The #authGate overlay covers the entire app until a Supabase session resolves
+// to an approved admin_users row. It replaces the old shared-password gate, so
+// the legacy HQ dashboard (tasks, SOPs, projects) is now behind per-user login
+// too, not just the CRM.
+const OWNER_ROLES = ['admin', 'office', 'pm'];
+function deriveAuthShell(u) {
+  const isOwner = OWNER_ROLES.includes(u.role);
+  return {
+    mode: isOwner ? 'owner' : 'employee',
+    // getAccessibleSOPs wants {role, company}: company 'both' sees all, role
+    // 'sales'/'crew' match the SOP role tags. Owners pass null (see everything),
+    // which is exactly what the old owner password did.
+    sopProfile: isOwner ? null : { name: u.name, role: u.role, company: u.company || 'both' },
+  };
+}
+
+function setAuthGateState(stateName) {
+  const gate = document.getElementById('authGate');
+  if (!gate) return;
+  gate.style.display = (stateName === 'hidden') ? 'none' : 'flex';
+  ['checking', 'signin', 'pending'].forEach(s => {
+    const el = document.getElementById('authGate-' + s);
+    if (el) el.style.display = (s === stateName) ? '' : 'none';
+  });
+}
+
+// Single global auth controller. Drives the overlay AND, when approved, the
+// owner/employee shell. Called after initAuth() and on every auth change.
+// Mirrors renderAuthUI's session/pending/approved branches but at the app level.
+function renderGlobalAuthGate() {
+  console.log('[crm] global auth gate', { hasSession: !!state.session, hasAdmin: !!state.adminUser });
+  if (!state.session) { setAuthGateState('signin'); return; }
+  if (!state.adminUser) {
+    const em = document.getElementById('authGatePendingEmail');
+    if (em) em.textContent = state.session.user.email || '';
+    setAuthGateState('pending');
+    return;
+  }
+  setAuthGateState('hidden');
+  try { window.applyAuthShell(deriveAuthShell(state.adminUser)); }
+  catch (e) { console.error('[crm] applyAuthShell failed', e); }
+  // Render the CRM tab now only if it is already the active tab; otherwise it
+  // renders lazily when the user opens TopCoat (observer in boot below).
+  const crmTab = document.getElementById('tab-prescott-crm');
+  if (crmTab && crmTab.classList.contains('active')) renderAuthUI();
 }
 
 // Internal staff debug shim. Cowork's 2026-05-24 diagnosis tried to call
@@ -13303,29 +13357,38 @@ if (portalToken) {
   renderCustomerPortal(portalToken);
 } else {
   const tabEl = document.getElementById('tab-prescott-crm');
-  let booted = false;
-  const boot = async () => {
-    if (booted) return; booted = true;
-    $('pecSigninForm').addEventListener('submit', async e => {
-      e.preventDefault();
-      const fd = Object.fromEntries(new FormData(e.target));
-      await passwordSignIn(fd.email, fd.password);
-    });
-    $('pecForgotPw').addEventListener('click', () => {
-      const email = $('pecSigninForm').email.value.trim();
-      passwordReset(email);
-    });
-    $('pecSubnav').addEventListener('click', e => {
-      const btn = e.target.closest('button[data-pec-view]');
-      if (btn) switchView(btn.dataset.pecView);
-    });
-    await initAuth();
-    renderAuthUI();
-  };
-  // Boot when tab first activates (MutationObserver on .active class)
-  if (tabEl.classList.contains('active')) boot();
-  const obs = new MutationObserver(() => { if (tabEl.classList.contains('active')) boot(); });
-  obs.observe(tabEl, { attributes: true, attributeFilter: ['class'] });
+  // Wire the #authGate sign-in form (the whole-app gate). Errors render into
+  // #authGateError. passwordSignIn defaults to #pecSigninError, so pass the
+  // gate's error element explicitly.
+  const authGateForm = document.getElementById('authGateForm');
+  if (authGateForm) authGateForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = Object.fromEntries(new FormData(e.target));
+    await passwordSignIn(fd.email, fd.password, document.getElementById('authGateError'));
+  });
+  const authGateForgot = document.getElementById('authGateForgot');
+  if (authGateForgot) authGateForgot.addEventListener('click', () => {
+    const email = (authGateForm && authGateForm.email.value.trim()) || '';
+    passwordReset(email, document.getElementById('authGateError'));
+  });
+  // CRM subnav (inside the TopCoat tab) — wired once.
+  const subnav = document.getElementById('pecSubnav');
+  if (subnav) subnav.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-pec-view]');
+    if (btn) switchView(btn.dataset.pecView);
+  });
+  // Lazy-render the CRM tab when it activates (only once authed; the global
+  // gate has already run init by then). renderAuthUI shows #pecApp, role-gates
+  // the subnav, and dispatches the first switchView.
+  const crmBoot = () => { if (state.adminUser) renderAuthUI(); };
+  if (tabEl && tabEl.classList.contains('active')) crmBoot();
+  if (tabEl) {
+    const obs = new MutationObserver(() => { if (tabEl.classList.contains('active')) crmBoot(); });
+    obs.observe(tabEl, { attributes: true, attributeFilter: ['class'] });
+  }
+  // Run auth once, at module load, for the WHOLE app (not gated on the CRM tab).
+  await initAuth();
+  renderGlobalAuthGate();
   // Also honor ?view=prescott — click the sidebar button once the shell is up
   if (new URLSearchParams(location.search).get('view') === 'prescott') {
     const tryClick = () => {
