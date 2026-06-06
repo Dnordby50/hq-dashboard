@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: stop the diagnostic logger from recording secrets (request body + query string)
+
+By: Claude Code
+Scope: The temp [mcp-req] diagnostic logger (added in b615e50, extended in e14f77a) was writing the raw request body and full query string to Netlify Function logs. On the OAuth endpoints that means secrets in plaintext: the form body of /oauth/token carries client_secret, the /token exchange body carries the authorization code and PKCE code_verifier, and the query string carries the ?token= bearer fallback. Anyone with Netlify dashboard access could read them, and they persist in the log retention window. Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Fix: removed the `q` (queryStringParameters) and `body` (first 600 chars of event.body) fields from the console.log at mcp.cjs ~285. Kept the non-sensitive fields: method, path, auth-present boolean (not the header value), user-agent, content-type. That is still enough to see WHICH endpoint a client hits and whether it sent an Authorization header, which is what the connector debugging needs, without capturing credentials.
+
+Why this is a stopgap, not the cleanup: the whole [mcp-req] block (and the recently added authorization_code/PKCE/DCR surface) should still be reviewed and the logging removed entirely once Topcoat connects. This change just stops the active credential leak in the meantime.
+
+Still open (carried over): (1) remove the [mcp-req] logger entirely once the connector is stable; (2) rotate MCP_OAUTH_CLIENT_SECRET and MCP_BEARER_TOKEN, both of which were exposed (in chat, and via the body/query logging during the diagnostic window); (3) confirm /register and /authorize are not left open in a way that lets an arbitrary client mint a token against live data.
+
+Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
 ## [2026-06-04 MST] Cowork: implemented authorization_code + PKCE + Dynamic Client Registration on mcp server (Anthropic connector's actual flow)
 
 By: Cowork

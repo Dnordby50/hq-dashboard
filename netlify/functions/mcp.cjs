@@ -282,8 +282,6 @@ exports.handler = async (event) => {
       p: event.path,
       auth: !!(event.headers.authorization || event.headers.Authorization),
       ua: (event.headers['user-agent'] || '').slice(0, 80),
-      q: event.queryStringParameters || null,
-      body: (event.body || '').slice(0, 600),
       ct: event.headers['content-type'] || event.headers['Content-Type'] || '',
     }));
   } catch {}
