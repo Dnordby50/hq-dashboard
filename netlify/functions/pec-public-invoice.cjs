@@ -46,7 +46,7 @@ function notFoundPage() {
 <body style="margin:0;font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;color:#0f172a">
   <div style="max-width:520px;margin:80px auto;padding:0 20px;text-align:center">
     <h1 style="font-size:20px">Invoice not found</h1>
-    <p style="color:#64748b">This link is invalid or has expired. If you believe this is a mistake, please contact the company that sent you the invoice.</p>
+    <p style="color:#64748b">This link is invalid or has expired. If you believe this is a mistake, please contact Prescott Epoxy Company at (928) 800-8154.</p>
   </div>
 </body></html>`);
 }
@@ -183,12 +183,20 @@ exports.handler = async (event) => {
   if (event.httpMethod && event.httpMethod !== 'GET') return htmlResponse(405, 'Method not allowed');
   const token = (event.queryStringParameters && event.queryStringParameters.token) || '';
   // Basic shape check before hitting the DB (v4 UUID).
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) return notFoundPage();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
+    console.warn('public-invoice: token failed UUID shape check');
+    return notFoundPage();
+  }
 
   try {
     const rows = await sb('GET', `/pec_job_ar?public_token=eq.${encodeURIComponent(token)}&select=*&limit=1`);
     const row = Array.isArray(rows) ? rows[0] : null;
-    if (!row) return notFoundPage();
+    if (!row) {
+      // Distinct from the catch below: the query SUCCEEDED but matched no row
+      // (genuinely no such token, or the row is voided/filtered by the view).
+      console.warn('public-invoice: no row for token');
+      return notFoundPage();
+    }
     let brand = { ...BRAND_DEFAULTS };
     try {
       const biRows = await sb('GET', `/pec_brand_identity?brand=eq.${encodeURIComponent(row.customer_company || 'prescott-epoxy')}&select=*&limit=1`);
@@ -200,7 +208,12 @@ exports.handler = async (event) => {
     } catch (_) { /* defaults */ }
     return invoicePage(row, brand);
   } catch (err) {
-    console.error('pec-public-invoice error:', err.message);
+    // Distinct from the no-row case: the pec_job_ar query itself threw. The most
+    // common cause is the 2026-06-01 migration not being fully live in prod (the
+    // view missing the public_token column makes ?public_token=eq.X error). This
+    // log tells "schema/migration missing" apart from "no such token" in the
+    // Netlify function log. The user still sees the generic page (no detail leak).
+    console.error('public-invoice: query error', err.message);
     return notFoundPage();
   }
 };
