@@ -11251,6 +11251,82 @@ function openScheduleModal(jobId) {
 // ============================================================
 // Manual job entry (temporary DripJobs bridge)
 // ============================================================
+
+// Clean manual proposal number. Manual jobs use a 7-digit integer in the
+// 9,000,000+ band so the number looks like a DripJobs one (those use
+// String(deal_id), real deal ids are ~2.8M and climbing) while staying well
+// above them, so the two can never collide. The real manual marker is still
+// dripjobs_deal_id IS NULL; the band only gives a clean human-readable number.
+// WHY a text range works: on fixed 7-char strings a lexicographic compare
+// equals numeric order, and both "MANUAL-..." (starts 'M', > '9') and 7-digit
+// deal ids ("2xxxxxx", < '9') sort outside [9000000, 9999999], so the range
+// isolates exactly the manual band.
+const MANUAL_PROPOSAL_BASE = 9000001;
+async function nextManualProposalNumber() {
+  const res = await withFreshSession(() => supabase
+    .from('pec_prod_jobs')
+    .select('proposal_number')
+    .gte('proposal_number', '9000000')
+    .lte('proposal_number', '9999999')
+    .order('proposal_number', { ascending: false })
+    .limit(1), { label: 'next-manual-proposal' });
+  if (res.error) throw res.error;
+  const top = res.data && res.data[0] && res.data[0].proposal_number;
+  const n = top ? parseInt(top, 10) : 0;
+  return String(Number.isFinite(n) && n >= MANUAL_PROPOSAL_BASE ? n + 1 : MANUAL_PROPOSAL_BASE);
+}
+
+// True for a UNIQUE violation on proposal_number (a rare race between two manual
+// adds). Postgres unique_violation is SQLSTATE 23505; fall back to a message
+// sniff in case the code is not surfaced.
+const isProposalCollision = (err) => !!err && (err.code === '23505'
+  || (/proposal_number/.test(err.message || '') && /duplicate|unique/i.test(err.message || '')));
+
+// Insert a fresh manual pec_prod_jobs row and return its id. This write is
+// NON-IDEMPOTENT, so per the wedge rules it is never blindly retried: on a
+// stale-session stall we rebuild the client (recoverWedgedClient) and VERIFY
+// whether the row already landed (by its unique proposal_number) before
+// retrying, mirroring the payment path so we can never double-insert. On a
+// proposal_number UNIQUE collision we bump to the next number and retry.
+// baseRow must NOT include proposal_number; this function allocates it.
+async function insertManualJob(baseRow) {
+  let proposalNumber = await nextManualProposalNumber();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const row = { ...baseRow, proposal_number: proposalNumber };
+    const doInsert = (label) => withFreshWrite(
+      () => supabase.from('pec_prod_jobs').insert(row).select('id').single(), { label });
+    let ins;
+    try {
+      ins = await doInsert('addjob-insert');
+      // Graceful fallback if the line_items column migration
+      // (2026-05-29_prod_jobs_line_items.sql) has not run yet: retry without it
+      // so the job still saves. revenue already carries the summed total.
+      if (ins.error && /line_items/.test(ins.error.message || '')) {
+        delete row.line_items;
+        ins = await doInsert('addjob-insert-nolineitems');
+      }
+    } catch (err) {
+      if (!isSessionStale(err)) throw err;
+      console.warn('[pec] manual job insert stalled; rebuilding client and verifying before retry', err);
+      await recoverWedgedClient();
+      // In the wedge the request never left the client (zero network), so it did
+      // NOT land -- but verify by the unique proposal_number anyway before re-inserting.
+      const check = await supabase.from('pec_prod_jobs').select('id').eq('proposal_number', proposalNumber).limit(1);
+      if (!check.error && Array.isArray(check.data) && check.data.length) {
+        return check.data[0].id; // it actually landed before the wedge surfaced -- do not re-insert
+      }
+      ins = await doInsert('addjob-insert-retry');
+      if (ins.error && /line_items/.test(ins.error.message || '')) {
+        delete row.line_items;
+        ins = await doInsert('addjob-insert-retry-nolineitems');
+      }
+    }
+    if (!ins.error) return ins.data.id;
+    if (isProposalCollision(ins.error)) { proposalNumber = String(parseInt(proposalNumber, 10) + 1); continue; }
+    throw ins.error;
+  }
+  throw new Error('Could not allocate a unique proposal number after several attempts.');
+}
 // Adds a customer + pec_prod_jobs row + N pec_prod_job_schedule_days rows in
 // one form so jobs that did not flow through the DripJobs proposal-accepted
 // webhook can still land on the calendar. Manual rows are marked implicitly:
@@ -11624,32 +11700,29 @@ function openAddJobModal() {
             // Reschedule path: only touch the schedule-related fields on
             // the existing pec_prod_jobs row (mirrors openScheduleModal),
             // wipe any existing schedule_days, and reinsert the new set.
-            // Address / revenue / notes / proposal_number stay as-is.
+            // Address / revenue / notes / proposal_number stay as-is. Both
+            // ops are idempotent (full-value update, delete-by-job_id) so
+            // withFreshWriteRetry can rebuild a wedged client and retry once.
             jobId = draft.existing_job_id;
-            const upd = await supabase.from('pec_prod_jobs').update({
+            const upd = await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update({
               install_date: sortedIso[0],
               status: 'scheduled',
               crew_id: draft.crew_id,
-            }).eq('id', jobId);
+            }).eq('id', jobId), { label: 'addjob-reschedule' });
             if (upd.error) throw upd.error;
-            const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', jobId);
+            const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', jobId), { label: 'addjob-clear-days' });
             if (del.error) throw del.error;
           } else {
             // New-job path: insert a fresh pec_prod_jobs row linked to the
-            // picked customer. dripjobs_deal_id stays null, the implicit
-            // marker for manual entries; proposal_number is a unique
-            // MANUAL- timestamp so the UNIQUE NOT NULL constraint is met.
-            const n = new Date();
-            const pad = x => String(x).padStart(2, '0');
-            const stamp = `${n.getFullYear()}${pad(n.getMonth()+1)}${pad(n.getDate())}-${pad(n.getHours())}${pad(n.getMinutes())}${pad(n.getSeconds())}-${Math.random().toString(36).slice(2,6).toUpperCase()}`;
-            const proposalNumber = `MANUAL-${stamp}`;
+            // picked customer. dripjobs_deal_id stays null (the implicit
+            // marker for manual entries); insertManualJob allocates a clean
+            // 9xxxxxx proposal_number and handles the wedge + collision cases.
             // Persist the line-item breakdown alongside the summed revenue.
             // Drop fully-empty rows; keep name/price as entered (price -> number).
             const cleanLines = draft.lineItems
               .map(l => ({ name: (l.name || '').trim(), price: Number(l.price) || 0 }))
               .filter(l => l.name || l.price);
             const jobRow = {
-              proposal_number: proposalNumber,
               customer_id: draft.customer_id,
               customer_name: draft.customer_name,
               address,
@@ -11660,16 +11733,7 @@ function openAddJobModal() {
               crew_id: draft.crew_id,
               notes,
             };
-            let jobIns = await supabase.from('pec_prod_jobs').insert(jobRow).select('id').single();
-            // Graceful fallback if the line_items column migration
-            // (2026-05-29_prod_jobs_line_items.sql) hasn't run yet: retry without
-            // it so the job still saves. revenue already carries the summed total.
-            if (jobIns.error && /line_items/.test(jobIns.error.message || '')) {
-              delete jobRow.line_items;
-              jobIns = await supabase.from('pec_prod_jobs').insert(jobRow).select('id').single();
-            }
-            if (jobIns.error) throw jobIns.error;
-            jobId = jobIns.data.id;
+            jobId = await insertManualJob(jobRow);
           }
 
           const dayRows = sortedIso.map((iso, idx) => ({
@@ -11678,13 +11742,19 @@ function openAddJobModal() {
             day_index: idx,
             crew_id: draft.crew_id,
           }));
-          const dayIns = await supabase.from('pec_prod_job_schedule_days').insert(dayRows);
+          // Bounded, no auto-retry: a blind retry could double-insert the day
+          // rows. withFreshWrite warms the session and times out cleanly on a
+          // wedge instead of hanging, so the catch below always runs.
+          const dayIns = await withFreshWrite(() => supabase.from('pec_prod_job_schedule_days').insert(dayRows), { label: 'addjob-days' });
           if (dayIns.error) {
             // On the new-job path only, roll back the orphan pec_prod_jobs
-            // row so the next attempt does not collide on proposal_number.
-            // On the reschedule path we already cleared the day rows; the
-            // existing job stays as-is so the user can retry.
-            if (!draft.existing_job_id) await supabase.from('pec_prod_jobs').delete().eq('id', jobId);
+            // row so it does not linger (best-effort; a wedged client may not
+            // complete the delete, in which case the orphan is cleaned up
+            // manually). On the reschedule path we already cleared the day
+            // rows; the existing job stays as-is so the user can retry.
+            if (!draft.existing_job_id) {
+              try { await withFreshWrite(() => supabase.from('pec_prod_jobs').delete().eq('id', jobId), { label: 'addjob-rollback' }); } catch (_) {}
+            }
             throw dayIns.error;
           }
 
@@ -11699,7 +11769,14 @@ function openAddJobModal() {
           state.scheduleAnchor = sortedIso[0];
           await renderSchedule();
         } catch (err) {
-          errEl.textContent = 'Save failed: ' + (err.message || err);
+          // Every write above is now bounded (withDeadline/withFreshWrite), so a
+          // wedged client surfaces here as a SESSION_TIMEOUT instead of hanging
+          // forever with the button stuck on "Saving…". Always re-enable so the
+          // button is never silently dead, and tell the user it is safe to retry.
+          console.error('[pec] add job save failed', err);
+          errEl.textContent = isSessionStale(err)
+            ? 'The session briefly stalled and the save did not go through. Wait a moment, then tap Save job again.'
+            : 'Save failed: ' + (err.message || err);
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save job';
         }

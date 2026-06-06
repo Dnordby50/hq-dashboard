@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: investigated 7 dashboard cleanup issues in index.html and produced a Claude Code task brief (no code changed)
+
+By: Cowork
+Scope: Read-only investigation of index.html against 7 issues Dylan raised before his next feature chunk, then wrote a prioritized Claude Code prompt. No dashboard code changed. Files touched: PROJECT-LOG.md only. The prompt itself was saved outside the repo (Dylan's HQ folder, claude-code-cleanup-prompt.md) for him to paste into Claude Code.
+
+Findings (located for Claude Code, not yet fixed):
+ 1. Job Schedule "Open Job" (openScheduleModal ~11116-11140, button #schedOpenJob): routes DripJobs jobs to switchView('jobs') and manual jobs to switchView('costing'), neither opens the job detail. Wanted: route to renderJobDetail (~7771).
+ 2. Sqft mismatch: list vs detail read two parallel tables. Production/schedule list computes from pec_prod_areas (sumSqft ~10740, render ~10758); job detail reads job_areas.sqft (~7913, ~8556). Not synced, so they diverge.
+ 3. Add Job buttons inoperable (openAddJobModal ~11261-11709, #addJobSave handler ~11593-11706). Dylan and Anne are BOTH on Chrome and Anne has no issues, so it is not a browser-engine difference. Most likely the supabase write wedge (writes use withDeadline no-retry, a wedged client makes Save look dead with no error) or a handler lost on modal re-render. Flagged for diagnosis, not assumed.
+ 4. Manual proposal_number is MANUAL-<timestamp>-<rand> (~11642-11645). Dylan wants a clean sequential integer like the DripJobs ones (those use String(deal_id)). The real manual marker is dripjobs_deal_id IS NULL, so the MANUAL- prefix is redundant and safe to drop. Need a manual integer range that cannot collide with real deal IDs; left as an open question for Dylan/Claude Code.
+ 5. Front universal-password gate (#loginGate ~1467-1479, checkLogin ~3752-3772, unlockDashboard ~3774-3790, CONFIG.PASSWORD / CONFIG.EMPLOYEE_CODES): Dylan wants it deleted so only per-user Supabase login remains. Guardrail flagged: the gate also sets owner-vs-employee role (hq_mode, currentEmployee), so removal must move the role source to the per-user session without leaving any view unauthenticated.
+ 6. Blank screens / refresh-needed for Dylan but not Anne (both Chrome). Profile (owner, long-lived tab, full dataset) matches the documented supabase-js auth-lock wedge. Pointed Claude Code at the existing recovery machinery and the render-fence logs rather than a browser fix.
+ 7. Search bar: the only search wired to the shell is #rdSearch (input ~4371, handler ~4636), which just hides/shows already-rendered DOM rows and never queries the DB or the CRM tables, so "nothing happens" is expected. Wanted: real search over jobs by name, address, phone with typo tolerance (pg_trgm or normalized compare). Existing customers search (~5889/5926) is a copy-from pattern.
+
+Why this entry exists: Dylan asked Cowork to investigate and hand off a prompt, not to fix. Two clarifications collected from Dylan during the investigation: he is on Chrome (same as Anne, which reframes items 3 and 6 away from a Safari theory), and he wants a clean sequential manual proposal number.
+
+## Handoff to Claude Code
+Execute claude-code-cleanup-prompt.md (in Dylan's HQ folder). Order: confirmed quick fixes (1 open-job routing, 4 proposal number, 5 password gate) first, then investigations (2 sqft reconcile, 3 add-job, 6 blank screens), then the search feature (7) last. Follow the Bug Diagnosis Workflow: confirm root cause from code before changing it. Open questions to resolve and record: the manual proposal-number integer range, which sqft table is authoritative, and the search target table(s).
+
 ## [2026-06-06 MST] Claude Code: add refresh_token grant (connector requests it at DCR; absence kept it from advancing past /register)
 
 By: Claude Code
