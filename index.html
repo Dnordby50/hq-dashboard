@@ -824,6 +824,23 @@ body { padding: 18px; min-height: 100vh; }
   background-position: 16px 50%;
 }
 #rdSearch:focus { outline: none; border-color: var(--rd-accent); box-shadow: 0 0 0 4px var(--rd-accent-ring); }
+/* Job search results dropdown (populated by window.pecJobSearchInput). */
+#rdSearchResults {
+  position: absolute; top: calc(100% - 12px); left: 4px; right: 4px; z-index: 5000;
+  max-height: 60vh; overflow-y: auto;
+  background: var(--rd-bg, #fff); border: 1px solid var(--rd-line);
+  border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,.18); padding: 6px;
+}
+.rd-search-row {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 10px; padding: 9px 12px;
+}
+.rd-search-row:hover { background: var(--rd-softer); }
+.rd-search-row-top { display: flex; align-items: center; gap: 8px; }
+.rd-search-name { font-weight: 600; color: var(--rd-ink); }
+.rd-search-price { margin-left: auto; color: var(--rd-muted); font-size: 13px; }
+.rd-search-row-sub { display: block; color: var(--rd-muted); font-size: 12px; margin-top: 2px; }
+.rd-search-empty { padding: 14px 12px; color: var(--rd-muted); font-size: 13px; }
 .rd-icon-btn {
   width: 38px; height: 38px; border-radius: 50%;
   background: var(--rd-softer); border: 1px solid var(--rd-line);
@@ -4368,7 +4385,7 @@ if (document.readyState === 'loading') {
     main.id = 'rdMain';
     main.innerHTML = `
       <div id="rdTopbar">
-        <input id="rdSearch" placeholder="" />
+        <input id="rdSearch" placeholder="Search jobs by customer, address, phone…" />
         <button class="rd-icon-btn" id="rdBtnRefresh" title="Refresh">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
@@ -4633,12 +4650,12 @@ if (document.readyState === 'loading') {
     document.getElementById('rdBtnImport').addEventListener('click', () => {
       if (typeof refreshAll === 'function') refreshAll();
     });
+    // Real job search. The query logic lives in the CRM module (it needs
+    // supabase/state/switchView); this handler just forwards keystrokes to it.
+    // window.pecJobSearchInput debounces and renders the results dropdown. If
+    // the module has not loaded yet, early keystrokes are ignored harmlessly.
     document.getElementById('rdSearch').addEventListener('input', (e) => {
-      const v = e.target.value.toLowerCase();
-      document.querySelectorAll('.task-item, .sop-card, .jobs-table tbody tr, .project-card').forEach(el => {
-        const t = (el.textContent || '').toLowerCase();
-        el.style.display = (!v || t.includes(v)) ? '' : 'none';
-      });
+      if (typeof window.pecJobSearchInput === 'function') window.pecJobSearchInput(e.target.value);
     });
 
     // ---- Tweaks panel (accent color + orb style + PEC brand) ----
@@ -6561,6 +6578,111 @@ async function renderJobs() {
     tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
   );
 }
+
+// ============================================================
+// Global job search (the topbar #rdSearch box). Lives in this module so it can
+// reach supabase / state / switchView; the RD-shell handler (a separate script
+// block, classic scope) just forwards keystrokes to window.pecJobSearchInput.
+// Backed by the search_jobs RPC (pg_trgm, typo-tolerant). If that function is
+// not deployed yet it returns a PostgREST missing-function error, so we fall
+// back to substring-filtering the already-loaded jobs and never regress.
+// ============================================================
+let _jobSearchTimer = null;
+let _jobSearchSeq = 0;   // monotonic; lets a newer query discard a slower one
+
+function ensureJobSearchDropdown() {
+  let dd = document.getElementById('rdSearchResults');
+  if (dd) return dd;
+  const input = document.getElementById('rdSearch');
+  if (!input) return null;
+  const bar = document.getElementById('rdTopbar') || input.parentElement;
+  if (bar && !bar.style.position) bar.style.position = 'relative';
+  dd = document.createElement('div');
+  dd.id = 'rdSearchResults';
+  dd.style.display = 'none';
+  bar.appendChild(dd);
+  // Close on outside click or Escape.
+  document.addEventListener('click', (e) => {
+    if (!dd.contains(e.target) && e.target !== input) hideJobSearchResults();
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') { hideJobSearchResults(); input.blur(); } });
+  return dd;
+}
+
+function hideJobSearchResults() {
+  const dd = document.getElementById('rdSearchResults');
+  if (dd) { dd.style.display = 'none'; dd.innerHTML = ''; }
+}
+
+function renderJobSearchResults(rows, q) {
+  const dd = ensureJobSearchDropdown();
+  if (!dd) return;
+  if (!rows.length) {
+    dd.innerHTML = `<div class="rd-search-empty">No matches for "${esc(q)}"</div>`;
+    dd.style.display = 'block';
+    return;
+  }
+  dd.innerHTML = rows.map(r => `
+    <button class="rd-search-row" data-job-id="${esc(r.job_id)}">
+      <span class="rd-search-row-top">
+        <span class="rd-search-name">${esc(r.customer_name || '—')}</span>
+        <span class="pec-badge ${esc(r.status || '')}">${esc((r.status || '').replace('_',' ')) || '—'}</span>
+        <span class="rd-search-price">${fmtMoney(r.price)}</span>
+      </span>
+      <span class="rd-search-row-sub">${esc(r.address || 'No address')}${r.phone ? ' · ' + esc(r.phone) : ''} · ${fmtDate(r.created_at)}</span>
+    </button>`).join('');
+  dd.style.display = 'block';
+  dd.querySelectorAll('.rd-search-row').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.jobId;
+    hideJobSearchResults();
+    const input = document.getElementById('rdSearch');
+    if (input) input.value = '';
+    state.openJobId = id;
+    state.view = 'jobs';
+    switchView('jobs');   // renderJobs sees state.openJobId and delegates to renderJobDetail
+  }));
+}
+
+// Fallback when search_jobs is not deployed: substring match over the jobs
+// already loaded by renderJobs (state.jobs), so the box still does something.
+function localJobFallback(q) {
+  const needle = q.toLowerCase();
+  return (state.jobs || []).filter(j => {
+    const hay = `${j.customers?.name || ''} ${j.address || ''}`.toLowerCase();
+    return hay.includes(needle);
+  }).slice(0, 20).map(j => ({
+    job_id: j.id, customer_name: j.customers?.name, address: j.address,
+    phone: null, status: j.status, price: j.price, created_at: j.created_at,
+  }));
+}
+
+async function runJobSearch(raw) {
+  const q = (raw || '').trim();
+  if (q.length < 2) { hideJobSearchResults(); return; }
+  const seq = ++_jobSearchSeq;
+  try {
+    const { data, error } = await withFreshSession(() => supabase.rpc('search_jobs', { q, lim: 20 }), { label: 'search_jobs' });
+    if (seq !== _jobSearchSeq) return;   // superseded by a newer keystroke
+    if (error) {
+      const code = error.code || '';
+      const missing = code === 'PGRST202' || code === '42883' || /search_jobs/.test(error.message || '');
+      if (missing) { renderJobSearchResults(localJobFallback(q), q); return; }   // RPC not deployed yet
+      hideJobSearchResults();
+      return;
+    }
+    renderJobSearchResults(data || [], q);
+  } catch (err) {
+    if (seq !== _jobSearchSeq) return;
+    renderJobSearchResults(localJobFallback(q), q);   // network/wedge -> degrade, don't crash
+  }
+}
+
+// Entry point the RD-shell input handler forwards to. Debounced 250ms (matches
+// the customers search).
+window.pecJobSearchInput = (raw) => {
+  clearTimeout(_jobSearchTimer);
+  _jobSearchTimer = setTimeout(() => runJobSearch(raw), 250);
+};
 
 // ============================================================
 // Invoicing & AR module (Invoicing / Metrics / Docs tabs)
