@@ -182,9 +182,15 @@ function invoicePage(row, brand) {
 exports.handler = async (event) => {
   if (event.httpMethod && event.httpMethod !== 'GET') return htmlResponse(405, 'Method not allowed');
   const token = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  // TEMP diagnostic: when ?diag=pecdiag is present, return the failure reason as
+  // plain text instead of the generic 404. REMOVE after the invoice-404 bug is
+  // solved. Gated by a value so a random visitor cannot trigger it.
+  const diag = !!(event.queryStringParameters && event.queryStringParameters.diag === 'pecdiag');
+  const diagOut = (msg) => ({ statusCode: 200, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }, body: msg });
   // Basic shape check before hitting the DB (v4 UUID).
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
     console.warn('public-invoice: token failed UUID shape check');
+    if (diag) return diagOut('DIAG: token failed UUID shape check: ' + JSON.stringify(token));
     return notFoundPage();
   }
 
@@ -195,6 +201,7 @@ exports.handler = async (event) => {
       // Distinct from the catch below: the query SUCCEEDED but matched no row
       // (genuinely no such token, or the row is voided/filtered by the view).
       console.warn('public-invoice: no row for token');
+      if (diag) return diagOut('DIAG: query OK but NO ROW for token. rows=' + JSON.stringify(rows));
       return notFoundPage();
     }
     let brand = { ...BRAND_DEFAULTS };
@@ -206,14 +213,14 @@ exports.handler = async (event) => {
         if (Array.isArray(fallback) && fallback[0]) brand = { ...BRAND_DEFAULTS, ...fallback[0] };
       }
     } catch (_) { /* defaults */ }
+    if (diag) {
+      try { invoicePage(row, brand); return diagOut('DIAG: ROW FOUND and invoicePage rendered OK. id=' + row.id + ' status=' + row.status + ' price=' + row.price); }
+      catch (e) { return diagOut('DIAG: ROW FOUND but invoicePage THREW: ' + e.message + '\n' + e.stack); }
+    }
     return invoicePage(row, brand);
   } catch (err) {
-    // Distinct from the no-row case: the pec_job_ar query itself threw. The most
-    // common cause is the 2026-06-01 migration not being fully live in prod (the
-    // view missing the public_token column makes ?public_token=eq.X error). This
-    // log tells "schema/migration missing" apart from "no such token" in the
-    // Netlify function log. The user still sees the generic page (no detail leak).
     console.error('public-invoice: query error', err.message);
+    if (diag) return diagOut('DIAG: query/render ERROR: ' + err.message + '\n' + (err.stack || ''));
     return notFoundPage();
   }
 };
