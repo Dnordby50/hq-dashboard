@@ -181,12 +181,24 @@ function invoicePage(row, brand) {
 
 exports.handler = async (event) => {
   if (event.httpMethod && event.httpMethod !== 'GET') return htmlResponse(405, 'Method not allowed');
-  const token = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  // Token normally arrives as ?token= (set by the /pay/* rewrite). But Netlify
+  // does NOT reliably interpolate :splat into a toml redirect's query string, so
+  // through /pay the query token can be empty. Fall back to parsing the UUID out
+  // of the request path (event.path / rawUrl is the original /pay/<token>).
+  let token = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  let rawUrlPath = '';
+  try { rawUrlPath = event.rawUrl ? new URL(event.rawUrl).pathname : ''; } catch (_) {}
+  if (!token) {
+    const src = `${event.path || ''} ${rawUrlPath}`;
+    const m = src.match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
+    if (m) token = m[1];
+  }
   // TEMP diagnostic: when ?diag=pecdiag is present, return the failure reason as
   // plain text instead of the generic 404. REMOVE after the invoice-404 bug is
   // solved. Gated by a value so a random visitor cannot trigger it.
   const diag = !!(event.queryStringParameters && event.queryStringParameters.diag === 'pecdiag');
   const diagOut = (msg) => ({ statusCode: 200, headers: { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }, body: msg });
+  if (diag) return diagOut('DIAG token-source: query=' + JSON.stringify(event.queryStringParameters && event.queryStringParameters.token) + ' path=' + JSON.stringify(event.path) + ' rawUrlPath=' + JSON.stringify(rawUrlPath) + ' resolved=' + JSON.stringify(token));
   // Basic shape check before hitting the DB (v4 UUID).
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
     console.warn('public-invoice: token failed UUID shape check');
