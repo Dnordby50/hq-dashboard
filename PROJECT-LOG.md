@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: verified the full Anthropic-connector OAuth flow end to end against live (server is production-ready)
+
+By: Claude Code
+Scope: Simulated the exact sequence Anthropic's MCP custom-connector runs, with curl against https://hq-prescott.netlify.app, to confirm the authorization_code + PKCE + DCR work (commits 8b3d673 / e14f77a / d914a7c) actually functions before asking Dylan to re-try Cowork. No server changes; this is a verification entry.
+
+Result, 7 of 7 functional checks passed:
+ 1. GET /.well-known/oauth-protected-resource -> 200.
+ 2. GET /.well-known/oauth-authorization-server -> 200, advertises authorization_endpoint, token_endpoint, registration_endpoint, grant authorization_code, code_challenge_methods S256.
+ 3. POST /register (Dynamic Client Registration) -> 201, returns client_id (the single-tenant server returns the pre-configured creds regardless of request body, by design).
+ 4-5. GET /oauth/authorize with a real S256 code_challenge -> 302 redirect to the redirect_uri carrying ?code= and the preserved state. (Auto-approves, no consent screen, by design: single-tenant.)
+ 6. POST /oauth/token grant_type=authorization_code with the matching code_verifier -> 200, access_token issued (= MCP_BEARER_TOKEN).
+ 6b. Same exchange with a WRONG code_verifier -> 400 invalid_grant (PKCE genuinely enforced).
+ 7. POST /mcp Authorization: Bearer <token> tools/call get_schedule limit 3 -> 200, isError false, live rows (Lloyd Wood PEC $5,600, Mandy Lock FTP $3,762, Marla Jirak PEC $3,650; total_matched 1549).
+
+Conclusion: the server speaks exactly what Anthropic's connector expects. Any remaining Cowork failure is now a Cowork-side config issue, not the server. Re-adding the Topcoat connector in Cowork with the URL https://hq-prescott.netlify.app/mcp should self-register via DCR; the OAuth Client ID/Secret fields can be left blank because /register supplies them.
+
+Still open (carried over, unchanged): (1) remove the temp [mcp-req] logger entirely once Cowork confirms connected (it no longer logs secrets after d914a7c, but it is still meant to be temporary); (2) rotate MCP_OAUTH_CLIENT_SECRET and MCP_BEARER_TOKEN, both exposed earlier; (3) review that /register and /oauth/authorize auto-approving is acceptable for a single-tenant server holding live revenue data (current design trusts anyone who reaches discovery).
+
+Files touched: PROJECT-LOG.md.
+
 ## [2026-06-06 MST] Claude Code: stop the diagnostic logger from recording secrets (request body + query string)
 
 By: Claude Code
