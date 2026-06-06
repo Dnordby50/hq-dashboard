@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: ran both 2026-06-06 migrations in PROD Supabase (Handoff to Cowork step 1), verified
+
+By: Cowork
+Scope: Executed step 1 of the Claude Code cleanup-pass handoff (entry below): ran both new migrations in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. Dylan signed in to Supabase, then authorized the run. No code files changed (the migration .sql files were already committed by Claude Code). Did NOT do steps 2 or 3 of that handoff (create the 4 employee accounts, confirm Dylan's owner row); Dylan only asked for the two migrations.
+
+Ran in order, each "Success. No rows returned":
+ 1. supabase/migrations/2026-06-06_admin_users_role_company.sql. Verified: admin_users_role_check now CHECK (role in admin/office/pm/crew/sales); company column exists as text, not null, default 'both'.
+ 2. supabase/migrations/2026-06-06_search_jobs_trgm.sql. Verified in one consolidated query: pg_trgm extension = 1, public.search_jobs function = 1, public.phone_digits function = 1, the three trigram indexes (idx_customers_name_trgm, idx_jobs_address_trgm, idx_customers_phone_digits_trgm) = 3.
+
+Method note: loaded each migration into the SQL editor and ran it, then ran the verify blocks. Created the indexes as plain create index (not concurrently); the tables are small so no lock concern, and concurrently cannot run inside the editor's multi-statement transaction anyway. Did NOT run the file's sample call search_jobs('jonh smyth') as a check: search_jobs is guarded by is_admin_staff() and the SQL editor runs as postgres with no auth.uid(), so it correctly raises "not authorized" there. The real functional test of fuzzy search is from a logged-in staff session in the app after the item-7 client deploys.
+
+Still open (carried from the handoff below, NOT done here): step 2 create the 4 employee Supabase Auth accounts + admin_users rows (Dusty sales/PEC, Doug sales/FTP, Justin crew/PEC, Kyle crew/PEC); step 3 confirm Dylan's own admin_users owner row (role admin, company both) BEFORE the item-5 deploy goes live, or the #authGate locks everyone out. The server side for search now exists, so the item-7 search lights up fully once the client deploys.
+
+Files touched: PROJECT-LOG.md.
+Next steps: Dylan to deploy (per his Handoff to Dylan: run admin_users migration [done] + confirm owner row [still needed] BEFORE pushing the item-5 client). Cowork can do handoff steps 2 and 3 when Dylan gives the word.
+
 ## [2026-06-06 MST] Claude Code: executed the dashboard cleanup pass (items 3, 4, 5, 6, 7 shipped; items 1 + 2 parked for research)
 
 By: Claude Code
