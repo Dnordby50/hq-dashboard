@@ -43,6 +43,39 @@ Still open (carried over): (1) remove ALL the temp diagnostics ([mcp-req], [mcp-
 ## Handoff to Dylan
 Once this deploy publishes (~1 min): in Cowork, delete the Topcoat connector and re-add it with URL https://hq-prescott.netlify.app/mcp, leaving the OAuth Client ID/Secret fields blank. If it still fails, have Cowork pull the mcp function logs and report the [mcp-register] and [mcp-authorize] lines from the attempt; that will show whether the connector now reaches authorize and what it requested.
 
+## [2026-06-06 07:00 MST] Cowork: re-pulled mcp logs after another failed attempt (ofid_6d775eabf3d0717c); the /register RESPONSE is now captured and is RFC-compliant, which flips the diagnosis
+
+By: Cowork
+Changed: Read-only. Re-pulled the mcp function logs (Netlify dashboard, Last hour) after Dylan hit "Couldn't reach the MCP server" (ref ofid_6d775eabf3d0717c). Claude Code has added a second logger, [mcp-register-resp], that records the registration RESPONSE body, so we can now see both sides of DCR. No code or config changed by Cowork.
+Why: Dylan retried again and asked for fresh logs.
+
+Latest connector attempt (python-httpx/0.28.1), ordered, around 06:58:
+ 1. 06:58:17  GET  /.well-known/oauth-protected-resource
+ 2. 06:58:26  GET  /.well-known/oauth-protected-resource/mcp
+ 3. 06:58:27  GET  /.well-known/oauth-authorization-server
+ 4. 06:58:27  POST /register   (+ mcp-register + mcp-register-resp)
+ 5. 06:58:28  POST /register   (again, + resp)
+ 6. 06:58:34  GET  /.well-known/oauth-protected-resource/mcp
+ 7. 06:58:34  GET  /.well-known/oauth-authorization-server
+It is looping through discovery and registration and, as in every prior attempt, never issues GET /oauth/authorize and never POST /oauth/token.
+
+KEY NEW EVIDENCE, the server's /register RESPONSE body ([mcp-register-resp]):
+ {"client_id":"cowork-prod","client_id_issued_at":1780754307,"redirect_uris":["https://claude.ai/api/mcp/auth_callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"client_secret_post","scope":"mcp","client_name":"Claude","client_secret":"<present:48ch>","client_secret_expires_at":0}
+ This response is complete and RFC 7591 compliant: client_id present, client_secret present (48 chars), redirect_uris/grant_types/response_types/token_endpoint_auth_method all echoed correctly, client_secret_expires_at 0 (non-expiring). It even echoes the refresh_token grant the client asked for.
+
+Revised conclusion (the diagnosis has changed): the prior hypothesis (an incomplete /register response) is now RULED OUT. The client registers SUCCESSFULLY, receives a valid client_id (cowork-prod) and secret, and STILL loops back to re-fetch discovery instead of opening the authorize URL. So the break is not in registration at all. It is in how the strict Anthropic client validates the DISCOVERY metadata: it accepts neither the metadata nor the registration enough to advance, and restarts the chain. The single most common cause of this exact "discovers, registers, never authorizes, loops" pattern is an RFC 8414 issuer mismatch, the authorization-server metadata "issuer" must EXACTLY equal the URL it is served from, and the protected-resource metadata "authorization_servers" must point to that exact issuer. Any mismatch makes a compliant client discard the metadata and retry. Note Claude Code's own curl run got all the way through earlier (06:05) because curl does not enforce that validation; the real client (python-httpx) does.
+
+IMPORTANT, this last step is inference, not proof. These [mcp-req] logs do NOT include the discovery RESPONSE bodies, so I cannot see the actual issuer / authorization_servers / authorization_endpoint values from the logs. To confirm, either inspect oauthMetadata + the protected-resource metadata in mcp.cjs directly, or add a one-shot log of those response bodies.
+
+Errors/timeouts: none. No ERROR lines, no timeouts, no 5xx in the window. The only 4xx are by-design 401s on unauthenticated POST /mcp probes. There were also two GET /mcp hits from ua "Mozilla/5.0 (compatible)" at 06:36:39 and 06:53:42 (likely an uptime or link check), unrelated to the connector flow.
+
+Files touched: PROJECT-LOG.md
+Next steps: Claude Code to verify, in mcp.cjs, that (a) the authorization-server metadata "issuer" string is byte-for-byte the origin it is served from (https://hq-prescott.netlify.app), (b) "authorization_endpoint" and "token_endpoint" are absolute HTTPS URLs on that same origin, and (c) the protected-resource metadata "resource" and "authorization_servers" match that issuer exactly. Then have it temporarily log the discovery response bodies so the next connector attempt shows the actual values rather than inferring them.
+Handoff to Cowork: None
+Handoff to Dylan: None. Read-only analysis.
+
+---
+
 ## [2026-06-06 06:28 MST] Cowork: re-pulled mcp logs after a fresh 06:26 connector attempt (same wall, plus new [mcp-register] body evidence)
 
 By: Cowork
