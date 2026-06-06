@@ -68,9 +68,10 @@ async function logRow(row) {
 }
 
 const BRAND_DEFAULTS = {
-  logo_url: null, primary_color: '#1e3a5f', accent_color: '#ea580c',
+  logo_url: null, primary_color: '#14181C', accent_color: '#D8531C',
   business_name: 'Prescott Epoxy Company', address_line: '', phone: '',
   license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
+  zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
 };
 
 // Conservative HTML allowlist for compose-mode bodies. The sender is

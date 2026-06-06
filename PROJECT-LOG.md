@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: investigated the customer-facing invoicing stack and produced a Claude Code launch prompt (no code changed)
+
+By: Cowork
+
+Scope: Read-only investigation ahead of Monday's go-live (all post-sign payment collection + project management moving into the CRM). Dylan flagged six things: bland/unprofessional invoice email, the customer "open invoice" link returning "Invoice not found", the customer invoice page needing to look polished and match his DripJobs screenshots (black/orange branding, Zelle/check/card-by-phone pay options), retroactive invoice line-item editing for the switch-over, defaulting the whole CRM to black/orange, and removing the bottom-right color selector. I mapped the code and wrote a self-contained Claude Code prompt. No dashboard code changed. Files touched: PROJECT-LOG.md only. The prompt was saved outside the repo at Dylan's HQ folder (claude-code-invoicing-launch-prompt.md) for him to paste into Claude Code.
+
+Key findings (located for Claude Code, not fixed here):
+ - Customer invoice page is server-rendered by netlify/functions/pec-public-invoice.cjs at /pay/<token> (the /pay/* rewrite IS present in netlify.toml ~94). The "Invoice not found / link invalid or expired" text Dylan saw is this function's own notFoundPage() (~43-51), so routing + function ARE live. It 404s only on: bad UUID, no pec_job_ar row matching public_token, or a swallowed DB error. Most likely root cause: the 2026-06-01_brand_and_public_invoice.sql migration (adds jobs.public_token + recreates pec_job_ar to expose it) may not be fully live in PROD; I found no log confirmation it ran. Needs a Supabase verify (handoff to me/Dylan).
+ - Brand colors live in the pec_brand_identity DB row (navy #1e3a5f + orange #ea580c), read by both the invoice page and all emails, so a code-only color change would not recolor live sends. Prompt has Claude Code write a migration to set black #14181C / orange #D8531C AND change the three KEEP-IN-SYNC code defaults.
+ - Invoice email chrome is plain (wrapInChrome ~97 in pec-send-email.cjs, mirrored emailWrapChrome ~9877 in index.html). Prompt: rebrand both, keep in sync.
+ - Retroactive lines: only an "Add change order" path exists today (renderJobInvoice ~7104, always flags is_change_order + bumps total). Prompt specs a full add/edit/delete/reorder editor writing to jobs.line_items + recomputed jobs.price. TRAP flagged: index.html ~8028 derives jobs.line_items from estimate areas on save, so manual invoice edits could be overwritten; Claude Code must confirm and make invoice-stage edits durable.
+ - Color selector to remove: #rdTweaks panel (~4654-4728) + #rdBtnTweaks (~4385) + CSS (~1084-1107), default accent 'blue'. CRM accent should default to PEC orange via the redesign-theme tokens (~620). Constraint recorded: ONLY colors change, NOT fonts/layout (so do not just flip data-pec-brand=on, which also swaps fonts to Archivo).
+
+Decisions collected from Dylan during the pass (drove the prompt): full line-item editor (not add-only); customer invoice pay options shown as screenshot-style buttons (Credit Card +3% surcharge with "call (928) 800-8154", check to crew, Zelle dylan@prescottepoxy.com), all informational since there is no online processor; black/orange applied via migration + code defaults. Also: 404 copy to change to "please contact Prescott Epoxy Company at (928) 800-8154."
+
+## Handoff to Claude Code
+Execute claude-code-invoicing-launch-prompt.md (in Dylan's HQ folder). Order: 1 brand-color migration + defaults, 2 remove selector + default orange, 3 customer invoice redesign, 4 diagnose/fix "invoice not found" (Bug Diagnosis Workflow) + 404 copy, 5 email redesign, 6 retroactive line-item editor. Two prod migrations (2026-06-01 if not already run, and the new 2026-06-07) need running in Supabase by Cowork/Dylan, and the whole thing needs pushing + deploying before Monday; have Claude Code spell out the go-live order in its own handoffs.
+
 ## [2026-06-06 MST] Cowork: ran both 2026-06-06 migrations in PROD Supabase (Handoff to Cowork step 1), verified
 
 By: Cowork
