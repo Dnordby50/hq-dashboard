@@ -127,8 +127,13 @@ async function handleRpc(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case 'initialize':
+      // Echo the client's requested protocolVersion when it sends one, so
+      // newer clients (e.g. 2025-11-25) negotiate cleanly instead of seeing a
+      // hard-coded older version; fall back to ours if absent. The auth/tool
+      // surface we implement is version-stable, so agreeing to the client's
+      // version is safe.
       return rpcResult(id, {
-        protocolVersion: PROTOCOL_VERSION,
+        protocolVersion: (params && params.protocolVersion) || PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
       });
@@ -356,19 +361,56 @@ exports.handler = async (event) => {
     let req = {};
     try { req = JSON.parse(event.body || '{}'); } catch {}
     const redirectUris = Array.isArray(req.redirect_uris) ? req.redirect_uris : [];
+
+    // Secret-safe diagnostic: the DCR REQUEST body carries no credentials (just
+    // client metadata), so logging it is safe and tells us exactly what
+    // Anthropic's connector asks for. Remove with the rest of the diagnostics.
+    try {
+      console.log('[mcp-register]', JSON.stringify({
+        name: req.client_name || '',
+        ru: redirectUris,
+        gt: req.grant_types || null,
+        rt: req.response_types || null,
+        am: req.token_endpoint_auth_method || null,
+        scope: req.scope || null,
+      }));
+    } catch {}
+
+    // Honor the client's requested auth method. Anthropic's connector registers
+    // as a PUBLIC client (token_endpoint_auth_method "none", PKCE-only) and has
+    // nowhere safe to store a secret; if we force a confidential registration
+    // and hand back a client_secret it never asked for, its PKCE flow can't
+    // reconcile the response and it stalls before opening the authorize tab.
+    // So: when "none" (or unspecified), return a public-client registration with
+    // NO secret. Only issue a secret for an explicitly confidential client.
+    const requestedAuthMethod = req.token_endpoint_auth_method || 'none';
+    const isPublic = requestedAuthMethod === 'none';
+
+    // Echo back the client's requested grant/response types (intersected with
+    // what we actually support) so strict clients see their request honored.
+    const SUPPORTED_GRANTS = ['authorization_code', 'client_credentials'];
+    const reqGrants = Array.isArray(req.grant_types) ? req.grant_types.filter(g => SUPPORTED_GRANTS.includes(g)) : [];
+    const grantTypes = reqGrants.length ? reqGrants : ['authorization_code'];
+    const responseTypes = Array.isArray(req.response_types) && req.response_types.length ? req.response_types : ['code'];
+
+    const reg = {
+      client_id: expectedId,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      redirect_uris: redirectUris,
+      grant_types: grantTypes,
+      response_types: responseTypes,
+      token_endpoint_auth_method: requestedAuthMethod,
+      scope: req.scope || 'mcp',
+    };
+    if (req.client_name) reg.client_name = req.client_name;
+    if (!isPublic) {
+      reg.client_secret = expectedSecret;
+      reg.client_secret_expires_at = 0; // never
+    }
     return {
       statusCode: 201,
       headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({
-        client_id: expectedId,
-        client_secret: expectedSecret,
-        client_id_issued_at: Math.floor(Date.now() / 1000),
-        client_secret_expires_at: 0, // never
-        redirect_uris: redirectUris,
-        grant_types: ['authorization_code', 'client_credentials'],
-        response_types: ['code'],
-        token_endpoint_auth_method: 'client_secret_post',
-      }),
+      body: JSON.stringify(reg),
     };
   }
 
@@ -388,6 +430,19 @@ exports.handler = async (event) => {
     const codeChallenge = q.code_challenge || '';
     const codeChallengeMethod = q.code_challenge_method || '';
     const state = q.state || '';
+    // Secret-safe diagnostic: authorize query carries no credentials (the
+    // code_challenge is a one-way hash, not the verifier). Confirms whether the
+    // browser step is reached at all and with what params. Remove later.
+    try {
+      console.log('[mcp-authorize]', JSON.stringify({
+        rt: responseType,
+        ci: clientId,
+        ru: redirectUri,
+        ccm: codeChallengeMethod,
+        hasChallenge: !!codeChallenge,
+        scope: q.scope || null,
+      }));
+    } catch {}
     if (responseType !== 'code') {
       return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'unsupported_response_type' }) };
     }

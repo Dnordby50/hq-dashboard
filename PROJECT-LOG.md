@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: fix DCR so public (PKCE-only) clients register without a secret (connector was looping on /register, never authorizing)
+
+By: Claude Code
+Scope: Acting on Cowork's log analysis (entry directly below) of Dylan's failed connect attempt (ofid_d38ea81bbcbbd78e): the connector completed discovery and Dynamic Client Registration, then LOOPED (repeat unauthenticated POST /mcp -> 401 -> repeat POST /register) and never advanced to GET /oauth/authorize. No browser-origin authorize request ever reached the server; no 5xx, no timeouts. So the break was on the client side, between registration and the browser step. Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md.
+
+Root cause (diagnosed, then verified in-process): the /register handler ignored the client's requested token_endpoint_auth_method and ALWAYS returned a confidential registration (token_endpoint_auth_method client_secret_post + a client_secret). Anthropic's connector registers as a PUBLIC client (token_endpoint_auth_method "none", PKCE only) and has nowhere to store a secret. Handed a confidential registration it never asked for, its PKCE-only flow could not reconcile the response, so it abandoned the authorize step and retried registration in a loop. That is exactly the "registers, then Couldn't connect in the browser, never reaches authorize" symptom.
+
+Fix in mcp.cjs:
+ - /register now honors the requested token_endpoint_auth_method. When "none" (or unspecified) it returns a PUBLIC-client registration: client_id, echoed redirect_uris, grant_types (intersected with what we support, defaulting to authorization_code), response_types, scope, client_name, and token_endpoint_auth_method "none" -- and NO client_secret. Only an explicitly confidential client (client_secret_post/basic) still gets a secret, so client_credentials callers do not regress.
+ - initialize now echoes the client's requested protocolVersion when present (Cowork's lead: client advertised 2025-11-25 while we hard-coded 2025-06-18), falling back to ours. Our auth/tool surface is version-stable, so agreeing to the client's version is safe.
+ - Added secret-safe diagnostics: [mcp-register] logs the DCR REQUEST metadata (no credentials in it) and [mcp-authorize] logs the authorize query (the code_challenge is a one-way hash, not the verifier). These plus the existing [mcp-req] tell us exactly what the connector sends and whether it reaches authorize, without logging any secret. The /oauth/token body (which carries code_verifier + client_secret) and the ?token= query are still NOT logged.
+
+Verified in-process (node harness loading the handler directly, 10/10): public-client DCR returns 201 with client_id and NO client_secret and auth method "none"; the same client completes GET /oauth/authorize (302 with code + state) and POST /oauth/token (authorization_code + PKCE, no secret) to receive a token; a confidential registration still receives a secret (no regression). Live end-to-end against the deploy still needs Dylan's real Cowork retry, which the [mcp-register]/[mcp-authorize] logs will confirm.
+
+Still open (carried over): (1) remove ALL the temp diagnostics ([mcp-req], [mcp-register], [mcp-authorize]) once Cowork confirms connected; (2) rotate MCP_OAUTH_CLIENT_SECRET and MCP_BEARER_TOKEN, both exposed earlier; (3) review the auto-approve at /oauth/authorize for a single-tenant server holding live revenue data.
+
+## Handoff to Dylan
+Once this deploy publishes (~1 min): in Cowork, delete the Topcoat connector and re-add it with URL https://hq-prescott.netlify.app/mcp, leaving the OAuth Client ID/Secret fields blank. If it still fails, have Cowork pull the mcp function logs and report the [mcp-register] and [mcp-authorize] lines from the attempt; that will show whether the connector now reaches authorize and what it requested.
+
 ## [2026-06-06 06:15 MST] Cowork: log analysis of the failed Topcoat connector attempt (it stops after /register, never reaches /oauth/authorize)
 
 By: Cowork
