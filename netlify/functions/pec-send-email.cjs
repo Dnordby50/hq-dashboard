@@ -98,15 +98,15 @@ function parseCc(cc) {
 function wrapInChrome(bodyHtml, brand, sender) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const name = b.business_name || (sender && sender.from_name) || 'Prescott Epoxy Company';
-  const header = b.logo_url
-    ? `<img src="${esc(b.logo_url)}" alt="${esc(name)}" style="max-height:48px;max-width:240px">`
-    : `<div style="font-size:20px;font-weight:800;letter-spacing:1px;color:${esc(b.primary_color)}">${esc(name)}</div>`;
+  const headerInner = b.logo_url
+    ? `<img src="${esc(b.logo_url)}" alt="${esc(name)}" style="max-height:46px;max-width:240px">`
+    : `<div style="font-size:21px;font-weight:800;letter-spacing:.5px;color:#ffffff">${esc(name)}</div>`;
   const phoneLine = b.phone ? `<br><a href="tel:${esc(String(b.phone).replace(/[^0-9+]/g, ''))}" style="color:${esc(b.primary_color)};text-decoration:none">${esc(b.phone)}</a>` : '';
   const footerBits = [name, b.address_line, b.license_number ? 'License ' + b.license_number : '', b.footer_disclaimer].filter(Boolean).map(esc).join(' &middot; ');
   return `<div style="background:#f1f5f9;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
     <div style="max-width:600px;margin:0 auto">
-      <div style="text-align:center;padding:12px 0 16px">${header}</div>
-      <div style="background:#fff;border-radius:10px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);color:#0f172a;font-size:14px;line-height:1.5">
+      <div style="background:${esc(b.accent_color)};border-radius:12px 12px 0 0;padding:20px 24px;text-align:center">${headerInner}</div>
+      <div style="background:#fff;border-radius:0 0 12px 12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);color:${esc(b.primary_color)};font-size:14px;line-height:1.5">
         ${bodyHtml}
         <div style="margin-top:22px;padding-top:14px;border-top:1px solid #e2e8f0;color:#334155;font-size:13px">Thank you,<br><strong>${esc(name)}</strong>${phoneLine}</div>
       </div>
@@ -191,7 +191,7 @@ exports.handler = async (event) => {
         auto.balance = usd(ar.balance_remaining);
         auto.line_items_table = lineItemsTableHtml(ar.line_items);
         if (ar.public_token) {
-          auto.cta = `<a href="${SITE_URL}/pay/${ar.public_token}" style="display:inline-block;background:${esc(brandIdentity.primary_color)};color:#fff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:600">View Invoice &amp; Pay</a>`;
+          auto.cta = `<a href="${SITE_URL}/pay/${ar.public_token}" style="display:inline-block;background:${esc(brandIdentity.accent_color)};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">View Invoice &amp; Pay</a>`;
         }
       }
     }
