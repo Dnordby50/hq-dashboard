@@ -1837,11 +1837,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
-          <button data-pec-view="docs">Invoicing Docs</button>
           <div class="pec-subnav-divider"></div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="team" class="pec-role-admin">Team</button>
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
+          <button data-pec-view="docs">Help</button>
         </nav>
       </aside>
       <main class="pec-main">
@@ -7705,6 +7705,25 @@ function openMetricDrilldown(metricKey, wi) {
 function renderInvoicingDocs() {
   const root = $('pecViewRoot');
   root.innerHTML = `<div class="pec-card"><div class="pec-doc">
+    <h3>Help &amp; FAQ</h3>
+    <p>Quick reference for what each tab does, followed by the full invoicing and AR documentation.</p>
+    <h4>What each tab does</h4>
+    <ul>
+      <li><strong>Dashboard</strong>: the top-level snapshot of the business and the landing view.</li>
+      <li><strong>Metrics</strong>: KPI and performance numbers over time (revenue, deposits, jobs sold/completed, AR aging).</li>
+      <li><strong>Customers</strong>: the customer list and contact records; create, edit, and delete customers.</li>
+      <li><strong>Jobs</strong>: the job list backed by public.jobs/customers; open a job for its full detail, pricing, and status.</li>
+      <li><strong>Ordering</strong>: production-side material ordering for booked jobs (part of the Price &amp; Material Catalog module).</li>
+      <li><strong>Job Schedule</strong>: the rolling calendar of scheduled installs by crew and day.</li>
+      <li><strong>Next Day Schedule</strong>: the next-day finalization board, jobs slotted First/Second/Third per crew.</li>
+      <li><strong>Jobs pipeline</strong>: a kanban of where each job sits from accepted to in progress, auto-reconciled to the schedule.</li>
+      <li><strong>Job Costing</strong>: actual cost vs budget per completed job, plus the Pending Job Costing queue.</li>
+      <li><strong>Invoicing</strong>: accounts receivable, payments, and invoice status.</li>
+      <li><strong>Price &amp; Material Catalog</strong>: the system types, products, recipe slots, and color pairings the estimator and material plan use.</li>
+      <li><strong>Team</strong>: staff records and roles (admin only).</li>
+      <li><strong>Settings</strong>: brand identity, email, status descriptions, and configuration (admin only).</li>
+    </ul>
+    <hr style="border:none;border-top:1px solid var(--rd-line, var(--border));margin:18px 0">
     <h3>Invoicing &amp; AR module</h3>
     <p>This module is the source of truth for Prescott Epoxy invoicing and accounts receivable. It answers one question the team could not answer before: who owes us money right now. The goal is collect-on-completion, like an electrician: hand the customer an invoice the day work is done and collect before leaving.</p>
 
