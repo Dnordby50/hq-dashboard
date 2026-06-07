@@ -10135,7 +10135,7 @@ function emailLogRowsHtml(log) {
   return log.map(r => `<tr class="nohover">
     <td>${invFmtDate(r.sent_at)}</td>
     <td>${esc(r.to_email || '—')}</td>
-    <td>${esc(r.template_key || '—')} · ${esc(emailBrandLabel(r.brand))}</td>
+    <td>${esc(r.subject || r.template_key || '—')} · ${esc(emailBrandLabel(r.brand))}</td>
     <td style="color:${statusColor(r.status)};font-weight:600">${esc(r.status || '—')}</td>
     <td style="font-size:.72rem;color:var(--muted)">${r.opened_at ? 'opened ' + invFmtDate(r.opened_at) : ''}${r.clicked_at ? ' · clicked' : ''}${r.bounced_at ? ' · bounced' : ''}</td>
     <td style="font-size:.72rem;color:#dc2626">${esc(r.error_message || '')}</td>
@@ -10423,7 +10423,7 @@ async function renderSettingsEmail() {
         <span style="font-size:.7rem;color:var(--muted)">last 50 · auto-refreshes</span>
       </div>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Sent</th><th>To</th><th>Template</th><th>Status</th><th>Events</th><th>Error</th></tr></thead>
+        <thead><tr><th>Sent</th><th>To</th><th>Subject</th><th>Status</th><th>Events</th><th>Error</th></tr></thead>
         <tbody id="emailLogBody">${emailLogRowsHtml(log)}</tbody>
       </table></div>
     </div>`;
