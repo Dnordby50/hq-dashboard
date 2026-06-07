@@ -13296,6 +13296,41 @@ async function portalJobDetail(token, jobId, bundle) {
     ? `<div style="margin-top:12px;font-size:.9rem;line-height:1.5;color:var(--text)">${esc(statusDesc.replace(/\{scheduled_date\}/g, schedDateText))}</div>`
     : '';
 
+  // Catalog-driven color picker (epoxy, not yet confirmed). Pull ONLY the
+  // options valid for each area's system from the catalog via a token-scoped
+  // RPC; the customer's pick persists to the same per-area job_area_materials
+  // the CRM reads. Falls back to no picker if the RPC/migration isn't live.
+  let catalog = null;
+  if (!job.confirmed && job.type !== 'paint') {
+    try {
+      const cr = await supabase.rpc('get_portal_job_catalog', { p_token: token, p_job_id: jobId });
+      if (!cr.error) catalog = cr.data;
+    } catch (_) { /* picker just won't render */ }
+  }
+  let catalogGridCount = 0;
+  const catalogHtml = (catalog && Array.isArray(catalog.areas) ? catalog.areas : [])
+    .map(a => {
+      const slots = (a.slots || []).filter(s => (s.options || []).length);
+      if (!slots.length) return '';
+      return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px">
+          <div style="font-weight:600;margin-bottom:8px">${esc(a.name || 'Area')}${a.system_name ? ` <span style="color:var(--muted);font-weight:400;font-size:.8rem">· ${esc(a.system_name)}</span>` : ''}</div>
+          ${slots.map(s => {
+            catalogGridCount++;
+            return `<div style="margin-bottom:10px">
+              <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px">${esc(s.label || s.material_type)}</div>
+              <div class="pec-swatch-grid" data-pick-grid data-area="${esc(a.id)}" data-slot="${esc(s.recipe_slot_id)}">
+                ${(s.options || []).map(o => `
+                  <div class="pec-swatch" data-prod="${esc(o.product_id)}"${o.product_id === s.selected_product_id ? ' data-sel="1"' : ''} style="cursor:pointer;${o.product_id === s.selected_product_id ? 'outline:2px solid var(--rd-accent, #D8531C);outline-offset:2px;' : ''}">
+                    <div class="pec-swatch-chip" style="background:${o.image_url ? `center/cover no-repeat url('${esc(o.image_url)}')` : '#ccc'}"></div>
+                    <div class="pec-swatch-name">${esc(o.name)}</div>
+                    <div class="pec-swatch-code">${esc(o.color || '')}</div>
+                  </div>`).join('')}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`;
+    }).join('');
+
   root.innerHTML = `
     <div class="pec-portal-header">
       <a href="#" class="pec-btn ghost">← Back</a>
@@ -13354,24 +13389,19 @@ async function portalJobDetail(token, jobId, bundle) {
           <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
             Your project manager will finalize paint colors with you directly. Sign below to confirm the project scope.
           </p>
-        ` : `
+        ` : catalogGridCount ? `
           <p style="font-size:.85rem;color:var(--muted);margin-bottom:14px">
-            Pick the epoxy flake colors you want for your project. You can add more than one (for example, one for the main floor and one for an accent area), then sign below to lock them in.
+            Pick the colors you want for each area of your project, then sign below to lock them in.
           </p>
-          <div id="pecPortalPicks" style="margin-bottom:10px"></div>
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-            <input id="pecPortalLabel" placeholder="Label (e.g. Garage)" style="flex:1;min-width:160px;max-width:240px">
-            <span style="color:var(--muted);font-size:.78rem">then tap a swatch below</span>
+          <div id="pecPortalCatalog">${catalogHtml}</div>
+          <div style="margin-top:6px;font-size:.8rem;color:#b45309;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.3);border-radius:8px;padding:10px">
+            Changing colors after confirmation could result in project delays and additional charges.
           </div>
-          <div class="pec-swatch-grid" id="pecPortalSwatches">
-            ${(bundle.colors || []).map(c => `
-              <div class="pec-swatch" data-pick-color="${esc(c.id)}" data-name="${esc(c.name)}" data-hex="${esc(c.hex || '#333')}" data-sku="${esc(c.sku || '')}">
-                <div class="pec-swatch-chip" style="background:${esc(c.hex || '#333')}"></div>
-                <div class="pec-swatch-name">${esc(c.name)}</div>
-                <div class="pec-swatch-code">${esc(c.sku || '')}</div>
-              </div>`).join('')}
-          </div>
-          <div style="margin-top:18px;font-size:.85rem;color:var(--muted)">Sign below to lock in your selections.</div>
+          <div style="margin-top:14px;font-size:.85rem;color:var(--muted)">Sign below to lock in your selections.</div>
+        ` : `
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:10px">
+            Your project manager will finalize colors with you directly. Sign below to confirm the project scope.
+          </p>
         `}
         <div class="pec-signature-wrap" style="margin-top:10px"><canvas id="pecPortalSig" class="pec-signature-canvas"></canvas></div>
         <div style="margin-top:10px;display:flex;gap:10px">
@@ -13402,56 +13432,38 @@ async function portalJobDetail(token, jobId, bundle) {
   // Color picker + signature canvas (only if not confirmed)
   if (!job.confirmed) {
     const isPaint = job.type === 'paint';
-    const picks = []; // { color_id, label, name, hex }
-    const labelDefaults = ['Main', 'Accent', 'Border'];
+    // Catalog-driven mode: one selectable swatch grid per area/color slot.
+    const catalogMode = !isPaint && catalogGridCount > 0;
+    const selections = new Map(); // `${areaId}|${slotId}` -> product_id
     let hasInk = false;
 
+    const allGridsPicked = () => {
+      const grids = root.querySelectorAll('[data-pick-grid]');
+      for (const g of grids) if (!selections.has(g.dataset.area + '|' + g.dataset.slot)) return false;
+      return grids.length > 0;
+    };
     const updateConfirmEnabled = () => {
       const btn = document.getElementById('pecSigConfirm');
       if (!btn) return;
-      btn.disabled = !hasInk || (!isPaint && picks.length === 0);
+      btn.disabled = !hasInk || (catalogMode && !allGridsPicked());
     };
 
-    const renderPicks = () => {
-      const el = document.getElementById('pecPortalPicks');
-      if (!el) return;
-      el.innerHTML = picks.length === 0
-        ? '<div style="color:var(--muted);font-size:.78rem">No colors picked yet.</div>'
-        : picks.map((p, i) => `
-            <span style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:999px;padding:4px 10px 4px 4px;margin:0 6px 6px 0;font-size:.78rem">
-              <span style="width:18px;height:18px;border-radius:50%;background:${esc(p.hex)};border:1px solid var(--border);display:inline-block"></span>
-              <span><strong>${esc(p.label)}:</strong> ${esc(p.name)}</span>
-              <button type="button" data-remove-pick="${i}" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:1rem;line-height:1;padding:0 2px">×</button>
-            </span>`).join('');
-      el.querySelectorAll('[data-remove-pick]').forEach(b =>
-        b.addEventListener('click', () => {
-          picks.splice(Number(b.dataset.removePick), 1);
-          renderPicks();
-          updateConfirmEnabled();
-        }));
-    };
-
-    if (!isPaint) {
-      const swatches = document.getElementById('pecPortalSwatches');
-      if (swatches) {
-        swatches.addEventListener('click', e => {
-          const sw = e.target.closest('[data-pick-color]');
+    if (catalogMode) {
+      root.querySelectorAll('[data-pick-grid]').forEach(grid => {
+        const key = grid.dataset.area + '|' + grid.dataset.slot;
+        const preset = grid.querySelector('[data-sel="1"]');
+        if (preset) selections.set(key, preset.dataset.prod);
+        grid.addEventListener('click', e => {
+          const sw = e.target.closest('[data-prod]');
           if (!sw) return;
-          const labelInput = document.getElementById('pecPortalLabel');
-          const fallback = labelDefaults[picks.length] || `Pick ${picks.length + 1}`;
-          const label = (labelInput.value.trim() || fallback);
-          picks.push({
-            color_id: sw.dataset.pickColor,
-            label,
-            name: sw.dataset.name,
-            hex: sw.dataset.hex,
-          });
-          labelInput.value = '';
-          renderPicks();
+          selections.set(key, sw.dataset.prod);
+          grid.querySelectorAll('[data-prod]').forEach(x => { x.style.outline = ''; x.removeAttribute('data-sel'); });
+          sw.style.outline = '2px solid var(--rd-accent, #D8531C)';
+          sw.style.outlineOffset = '2px';
+          sw.setAttribute('data-sel', '1');
           updateConfirmEnabled();
         });
-      }
-      renderPicks();
+      });
     }
 
     const canvas = document.getElementById('pecPortalSig');
@@ -13485,15 +13497,33 @@ async function portalJobDetail(token, jobId, bundle) {
       });
       document.getElementById('pecSigConfirm').addEventListener('click', async () => {
         if (!hasInk) { alert('Please sign first'); return; }
-        if (!isPaint && picks.length === 0) { alert('Please pick at least one color first'); return; }
+        if (catalogMode && !allGridsPicked()) { alert('Please pick a color for each area first'); return; }
         const dataUrl = canvas.toDataURL('image/png');
-        const { error } = await supabase.rpc('portal_confirm_job', {
-          p_token: token,
-          p_job_id: jobId,
-          p_signature: dataUrl,
-          p_colors: isPaint ? null : picks.map(p => ({ color_id: p.color_id, label: p.label })),
-        });
-        if (error) { alert(error.message); return; }
+        const btn = document.getElementById('pecSigConfirm');
+        btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          if (catalogMode) {
+            // Persist colors to the per-area catalog structure the CRM reads,
+            // via the scoped RPC (server validates each product matches its slot).
+            const picks = [];
+            root.querySelectorAll('[data-pick-grid]').forEach(g => {
+              const pid = selections.get(g.dataset.area + '|' + g.dataset.slot);
+              if (pid) picks.push({ job_area_id: g.dataset.area, recipe_slot_id: g.dataset.slot, product_id: pid });
+            });
+            const setRes = await supabase.rpc('portal_set_area_colors', { p_token: token, p_job_id: jobId, p_picks: picks });
+            if (setRes.error) throw setRes.error;
+          }
+          // Signature + confirmed flag. p_colors null: colors are owned by the
+          // per-area path above now, not the legacy job_colors model.
+          const { error } = await supabase.rpc('portal_confirm_job', {
+            p_token: token, p_job_id: jobId, p_signature: dataUrl, p_colors: null,
+          });
+          if (error) throw error;
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Confirm & sign';
+          alert(err.message || String(err));
+          return;
+        }
         location.hash = '#job/' + jobId;
         renderCustomerPortal(token);
       });
