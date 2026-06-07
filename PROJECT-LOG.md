@@ -4,6 +4,43 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: Phase 3 of the portal/CRM pass (portal color selection, internal-notes guard, per-area budget, notification bell)
+
+By: Claude Code
+
+Scope: Phase 3, the largest and riskiest. Local commits only, not pushed/deployed. Four new migrations plus two from Phase 2 need running in prod, in the dependency order in the combined handoff at the bottom. Files: index.html, supabase/migrations/2026-06-06_portal_colors.sql, _notifications.sql, _portal_data_columns.sql. Decisions came from Dylan via the plan-mode questions: catalog-per-area color model; collision = record + flag (no clobber); 3B = remove scope from portal (no new field); bell events = viewed + confirmed + collision.
+
+3A portal color selection wired to the catalog (commit 8014e39). The portal already had a color picker, but it used the legacy colors/job_colors model and let the customer pick anything. Replaced it with a catalog-driven, per-area picker: a new token-scoped get_portal_job_catalog(token, job_id) RPC returns, per area, the system's color slots (Flake/Quartz/Metallic Pigment) and ONLY the pec_prod_products valid for each slot's material type, plus the current pick. The customer taps one swatch per area/slot. On confirm, portal_set_area_colors(token, job_id, picks) (SECURITY DEFINER) validates server-side that each chosen product is active and its material_type matches the slot (rejects tampered product ids), writes the pick into job_area_materials (the exact structure the CRM job detail reads), auto-applies the default basecoat pairing from pec_prod_color_pairings (same rule as the CRM autofillBasecoat), stamps jobs.colors_confirmed = true + colors_confirmed_at (coalesced, so a staff time is preserved) + a NEW jobs.colors_confirmed_by_customer_at, and writes a notification. Collision handling per Dylan: if staff had already confirmed (colors_confirmed true with no customer timestamp) AND the customer's pick differs from the existing swatch picks, it does NOT clobber silently; it records the customer pick and fires a HIGH-priority "colors differ from staff selection, review before ordering" notification. Otherwise a normal "confirmed their colors" notification. Added the required warning near confirm: "Changing colors after confirmation could result in project delays and additional charges." Signature capture is kept (portal_confirm_job still records signature + confirmed), but colors now flow through the per-area path, NOT the legacy job_colors. Migration 2026-06-06_portal_colors.sql.
+
+3B internal-notes guard (commit 6f65199). Dylan did not want a new field; he wanted the existing "Issues / Notes" (jobs.scope) OFF the customer portal. Two parts: (1) removed the scope render from the portal job page; scope still shows in the CRM job detail and the internal work-order print. (2) Audited get_portal_data and found it returned j.* (EVERY jobs column) to the anon portal, so scope and any other internal column were leaking over the wire even if not displayed. Replaced j.* with an explicit customer-facing column allowlist (id, type, status, address, package, price, warranty, confirmed, confirmed_at, signature_data, created_at, colors_confirmed, plus install_date and the timeline/colors/photos/review subqueries). Migration 2026-06-06_portal_data_columns.sql. NOTE: this is the FINAL get_portal_data definition and must be applied AFTER 2026-06-06_portal_install_date.sql (Phase 2), since CREATE OR REPLACE means last-one-wins.
+
+3C per-area materials + budget breakdown (commit c03ff80). renderBudget computed one whole-job material plan and a single labor budget (primary system % x whole revenue). For multi-area jobs it now shows a per-area section (that area's materials computed standalone, plus labor budget = that area's price x its system's labor %), then a combined job total. The combined materials figure is the real orderable number (the existing merged plan shares whole kits across areas), with a note that the per-area sum can be higher because kits are shared. Single-area jobs render exactly as before (the original code path is untouched behind an early return). No migration. Reuses window.computeMaterialPlan.
+
+3D notification bell (commit 073b8cf). New pec_notifications table (type, job_id, body, priority, created_at, read_at) and a bell in the global owner header with an unread badge, a dropdown panel of recent events, mark-one / mark-all read, and click-to-open the related job. Inserts come ONLY from the SECURITY DEFINER portal RPCs: portal_log_view (extended to write a de-duplicated "viewed portal" notice, at most one per customer per 6h so refreshes do not spam), and portal_set_area_colors (the confirmed / high-priority collision notices from 3A). The bell loads when the CRM mounts and on open, backed by the Phase 1B reference cache (30s TTL) so it does not re-add tab-switch latency. Migrations 2026-06-06_notifications.sql.
+
+## Handoff to Cowork
+Run ALL of the following in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor, IN THIS ORDER (later ones depend on earlier ones). All are non-destructive (no DROP TABLE). Each file has a "Verify after running" comment block; paste the verify result into your log entry (By: Cowork).
+
+1. supabase/migrations/2026-06-06_portal_views.sql  (Phase 1E)
+   Creates pec_portal_views + portal_log_view(text,text). Verify: table exists, function exists.
+
+2. supabase/migrations/2026-06-06_status_descriptions.sql  (Phase 2A)
+   Creates pec_status_descriptions + seeds 4 rows. Verify: 4 rows (signed/scheduled/in_progress/completed).
+
+3. supabase/migrations/2026-06-06_portal_install_date.sql  (Phase 2B)
+   CREATE OR REPLACE get_portal_data to add per-job install_date. Verify: a scheduled job's portal JSON has install_date.
+
+4. supabase/migrations/2026-06-06_portal_data_columns.sql  (Phase 3B)
+   CREATE OR REPLACE get_portal_data with the customer-facing column allowlist. MUST run AFTER step 3 (it is the final get_portal_data). Verify: portal job JSON has NO "scope" key and still has id/status/install_date/colors_confirmed.
+
+5. supabase/migrations/2026-06-06_notifications.sql  (Phase 3D)
+   Creates pec_notifications and REPLACES portal_log_view to also write a notification. MUST run BEFORE step 6. Verify: pec_notifications exists (0 rows).
+
+6. supabase/migrations/2026-06-06_portal_colors.sql  (Phase 3A)
+   Adds jobs.colors_confirmed_by_customer_at + get_portal_job_catalog + portal_set_area_colors (the last inserts into pec_notifications, so step 5 must be live first). Verify: column exists; get_portal_job_catalog('<token>','<job_id>') returns areas with valid options.
+
+What NOT to touch: do not run the manual-job cleanup DELETE from CLAUDE.md; do not alter any other RPC or RLS; do not change get_portal_data after step 4 (step 4 is the intended final version). After all six run and verify, tell Dylan the migrations are live so he can push the local commits + deploy and test the portal end to end (open a portal link as a customer, pick colors on a multi-area epoxy job, confirm, and check the CRM job detail shows the pick and the bell shows the notification).
+
 ## [2026-06-06 MST] Claude Code: Phase 2 of the portal/CRM pass (editable per-status customer descriptions)
 
 By: Claude Code
