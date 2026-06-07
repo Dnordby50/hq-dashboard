@@ -5172,6 +5172,10 @@ async function cachedRef(key, fetcher, { ttlMs = REF_CACHE_TTL_MS } = {}) {
   return res;
 }
 function invalidateRefCache(key) { if (key) _refCache.delete(key); else _refCache.clear(); }
+// Bridge to Module 3 (production/catalog): loadCatalog runs in a separate
+// <script type="module"> with an isolated scope, so it cannot see this symbol
+// directly. Same window.* bridge pattern as window.computeMaterialPlan.
+window.invalidateRefCache = invalidateRefCache;
 // Canonical cached read of the system-type catalog (the single most re-fetched
 // reference table). Name-ordered; every consumer either re-sorts (sortSystemTypes)
 // or does not depend on row order, so a shared name-ordered copy is safe.
@@ -14104,7 +14108,9 @@ function _mergeAcrossAreas(areaPlans) {
   async function loadCatalog() {
     // Any catalog edit reloads here; clear the CRM-side reference cache so the
     // Jobs/job-detail/schedule views fetch the updated catalog on next render.
-    invalidateRefCache();
+    // invalidateRefCache lives in Module 2; reach it via window (guarded so a
+    // load-order race can never re-throw and kill the catalog view).
+    window.invalidateRefCache && window.invalidateRefCache();
     const [p, s, r, c] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
