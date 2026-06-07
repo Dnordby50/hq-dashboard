@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Claude Code: Phase 2 of the portal/CRM pass (editable per-status customer descriptions)
+
+By: Claude Code
+
+Scope: Phase 2 of the eight-item prompt. Each job status now shows the customer a plain-English description on their portal, and staff edit that text in Settings without a code change. Local commits only, not pushed/deployed. Two new migrations need running in prod (in the Phase 3 combined handoff). Files: index.html, supabase/migrations/2026-06-06_status_descriptions.sql, supabase/migrations/2026-06-06_portal_install_date.sql.
+
+2A storage (commit 7398ed1). New table pec_status_descriptions(brand, status, body_text, updated_at), primary key (brand, status), with a status CHECK of signed/scheduled/in_progress/completed. RLS mirrors public.colors: anon may SELECT (the portal reads it directly), staff write via is_admin_staff(). Seeded the four statuses with sensible defaults using ON CONFLICT DO NOTHING (re-runnable, never clobbers edited text); the scheduled default contains the {scheduled_date} token.
+
+2B render on the portal (commit 0dd20ff). portalJobDetail now shows the description for the job's current status, resolving {scheduled_date} from the job's install date (fmtDate) with a graceful "date to be confirmed" fallback when unscheduled. renderCustomerPortal fetches the descriptions alongside colors and passes them down; a missing table reads as an empty map so the portal never breaks pre-migration. The install date is sourced from a new migration 2026-06-06_portal_install_date.sql, a purely additive CREATE OR REPLACE of get_portal_data that adds per-job install_date (earliest dated bridged pec_prod_jobs row by dripjobs_deal_id). NOTE: Phase 3B will CREATE OR REPLACE get_portal_data again with a tightened column allowlist and MUST keep install_date; run the allowlist version LAST (see Phase 3 handoff).
+
+2C edit in Settings (commit 8976632). Added a "Status descriptions (customer portal)" card to Settings > Brand (renderSettingsBrand), a textarea per status plus helper text naming the {scheduled_date} token. Saves with the same withFreshWriteRetry pattern brand identity uses, via an idempotent upsert keyed by (brand, status). Admins-only gate already applies to Settings. Pre-migration the load is best-effort (empty text) and a save will surface the table-missing error.
+
+## Handoff to Cowork
+The Phase 2 migrations are listed in the combined, dependency-ordered handoff at the end of the Phase 3 entry (run them there). They are: 2026-06-06_status_descriptions.sql and 2026-06-06_portal_install_date.sql. Both are non-destructive.
+
 ## [2026-06-06 MST] Claude Code: Phase 1 of the portal/CRM pass (two loading bugs diagnosed, tab-switch cache, View-portal buttons, customer-only portal view logging)
 
 By: Claude Code
