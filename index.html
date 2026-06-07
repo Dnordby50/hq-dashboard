@@ -1833,7 +1833,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
-          <button data-pec-view="nextday">Next Day</button>
+          <button data-pec-view="nextday">Next Day Schedule</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
@@ -11135,6 +11135,12 @@ async function renderPipeline() {
 
 let _nextDayRowsById = {};
 
+// Human label for a stored time_slot. The DB values stay AM/PM/EXTRA (CHECK
+// constraint + drag/drop key off them); only the display reads First/Second/Third.
+function slotLabel(s) {
+  return s === 'AM' ? 'First' : s === 'PM' ? 'Second' : s === 'EXTRA' ? 'Third' : (s || '');
+}
+
 async function renderNextDay() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
@@ -11168,7 +11174,7 @@ async function renderNextDay() {
   // Three slots per crew: AM (first), PM (second), and Extra (overflow / a 3rd
   // smaller job). Extra uses time_slot 'EXTRA' (migration 2026-06-07_schedule_time_slot_extra.sql).
   const headerRow = `<div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:6px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--rd-muted,#6b7280)">
-      <div>Crew</div><div>AM (first visit)</div><div>PM (second visit)</div><div>Extra (overflow)</div>
+      <div>Crew</div><div>First</div><div>Second</div><div>Third</div>
     </div>`;
   const crewRows = crews.length ? crews.map(c => `
     <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:8px;align-items:start">
@@ -11182,7 +11188,7 @@ async function renderNextDay() {
 
   root.innerHTML = `
     <div style="padding:4px 2px 0">
-      <h2 style="margin:0">Next Day Finalization</h2>
+      <h2 style="margin:0">Next Day Schedule</h2>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px">
         <button type="button" class="pec-btn ghost sm" id="nextDayPrev">‹ Prev</button>
         <input type="date" id="nextDayDate" value="${esc(target)}" style="max-width:170px">
@@ -11608,8 +11614,9 @@ function openScheduleModal(jobId) {
         <div class="pec-field"><label>Time slot</label>
           <select id="schedSlot">
             <option value="">Not set</option>
-            <option value="AM" ${draft.time_slot==='AM'?'selected':''}>AM (first visit)</option>
-            <option value="PM" ${draft.time_slot==='PM'?'selected':''}>PM (second visit)</option>
+            <option value="AM" ${draft.time_slot==='AM'?'selected':''}>First</option>
+            <option value="PM" ${draft.time_slot==='PM'?'selected':''}>Second</option>
+            <option value="EXTRA" ${draft.time_slot==='EXTRA'?'selected':''}>Third</option>
           </select>
         </div>
       </div>
