@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: ran the two new 2026-06-07 invoicing migrations in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Continuation of the migration run below. Dylan said "run" to the two NEW migrations Claude Code added in its 2026-06-07 invoicing pass. Ran both in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, Primary DB, postgres role) via the SQL editor in Dylan's signed-in browser. No repo code changed. Files touched: PROJECT-LOG.md only.
+
+Ran together, "Success. No rows returned" (no destructive-op prompt; neither has a DROP):
+ 1. 2026-06-07_brand_black_orange.sql -> added pec_brand_identity.zelle_email + card_surcharge_pct (numeric, default 3); set the prescott-epoxy row to primary_color #14181C, accent_color #D8531C, zelle_email dylan@prescottepoxy.com.
+ 2. 2026-06-07_line_items_manual_override.sql -> added jobs.line_items_manual_override (boolean, default false) and recreated the pec_job_ar view to expose it (appended LAST after public_token, per the CREATE OR REPLACE VIEW append-only rule).
+
+Verified in one query: pec_brand_identity row now reads primary_color #14181C, accent_color #D8531C, zelle_email dylan@prescottepoxy.com, card_surcharge_pct 3; jobs.line_items_manual_override exists AND pec_job_ar exposes it (both "yes"). The earlier state check already confirmed the 2026-06-01 brand/public-invoice migration is live, so handoff item 1 (confirm 06-01) needed no action.
+
+All Cowork-side migration handoffs from the 2026-06-07 Claude Code entry are now DONE. Remaining for Dylan before Monday (from that entry's Handoff to Dylan): confirm his own admin_users owner row, push the local commits + trigger a Netlify deploy, then test one invoice end to end (Edit line items -> Email invoice -> open /pay link -> confirm orange branding + the three pay options + that re-saving the estimate does not wipe line edits). Still open from the entry below: the optional 06-04 status backfill (Dylan's call) and the stale .git/index.lock (rm it, though commits are currently landing despite it).
+
 ## [2026-06-06 MST] Cowork: ran the two un-applied 2026-06-04 migrations in PROD Supabase, verified
 
 By: Cowork
