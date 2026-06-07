@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Cowork: ran the log_customer_deleted migration in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Dylan said "run migration". Ran the single pending migration from the Claude Code 10-item-batch handoff (entry directly below) in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, PRODUCTION, Primary Database, role postgres) via the SQL editor in Dylan's signed-in browser. No repo code changed except this PROJECT-LOG entry.
+
+Ran supabase/migrations/2026-06-07_log_customer_deleted.sql ("Success. No rows returned"): created the SECURITY DEFINER function public.log_customer_deleted(p_customer_id uuid, p_name text) and granted execute to authenticated. Non-destructive (function plus grant, no data change, no destructive-op warning). Note on method: typed the statement as a single line because the editor's autocomplete was consuming the Enter key and merging lines on the multi-line paste; SQL is whitespace-insensitive so the single-line form is identical.
+
+Verified (select proname, prosecdef, pg_get_function_identity_arguments(oid) from pg_proc where proname = 'log_customer_deleted'): 1 row, prosecdef = true (security definer), args = "p_customer_id uuid, p_name text". The customer Delete button's bell notification will now fire. Did NOT run the live smoke test (deleting a test customer in the app) to avoid writing a notification row; left that for Dylan's end-to-end pass.
+
+## Handoff to Dylan
+Migration is live in PROD. The customer-delete bell notification is now active. To fully close item 2, delete a test/duplicate customer in the app and confirm a 'customer_deleted' row appears in the bell. Also: this PROJECT-LOG commit is again blocked by the stale .git/index.lock the sandbox cannot remove; run `rm -f .git/index.lock` in the repo then commit this entry (and the prior Cowork investigation entry, still uncommitted for the same reason).
+
 ## [2026-06-07 MST] Claude Code: shipped the 10-item batch (catalog crash, tab-switch reload, plus 8 UI/workflow items)
 
 By: Claude Code
