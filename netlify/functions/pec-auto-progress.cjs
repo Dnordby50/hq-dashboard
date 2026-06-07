@@ -3,7 +3,7 @@
 //
 // Runs daily on a Netlify schedule (see netlify.toml). Also callable on-demand
 // from the browser / curl for manual sweeps and verification:
-//   curl https://hq-prescott.netlify.app/.netlify/functions/pec-auto-progress
+//   curl https://prescottepoxy.netlify.app/.netlify/functions/pec-auto-progress
 //
 // Pairs with the client-side runAutoProgressSweep() in index.html, which runs
 // the same logic at app boot. Idempotent: only rows with status='scheduled'

@@ -16,7 +16,7 @@ const { sb } = require('./_pec-supabase.cjs');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const SITE_URL = process.env.URL || 'https://hq-prescott.netlify.app';
+const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
 
 function cors() {
   return {
@@ -73,9 +73,11 @@ const BRAND_DEFAULTS = {
   license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
   zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
 };
-// Hosted logo, absolute URL so it loads in email clients. Shown on the light
-// background above the orange band (its orange text would vanish on orange).
-const LOGO_URL = 'https://hq-prescott.netlify.app/assets/pec-logo.png';
+// Hosted logo, absolute URL so it loads in email clients. Built from SITE_URL
+// (process.env.URL, the site's primary domain) so it tracks domain renames.
+// Shown on the light background above the orange band (its orange text would
+// vanish on orange).
+const LOGO_URL = `${SITE_URL}/assets/pec-logo.png`;
 
 // Conservative HTML allowlist for compose-mode bodies. The sender is
 // authenticated staff, so this is defense-in-depth, not the primary trust

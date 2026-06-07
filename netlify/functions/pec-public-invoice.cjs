@@ -31,9 +31,9 @@ const BRAND_DEFAULTS = {
 
 // Hosted logo (navy "PRESCOTT" + orange "EPOXY COMPANY" on transparent). Shown
 // on the light background, NOT on the orange band (its orange text would vanish
-// there). Used unless the brand row sets its own logo_url. Absolute URL so it
-// also loads inside emails.
-const LOGO_URL = 'https://hq-prescott.netlify.app/assets/pec-logo.png';
+// there). Used unless the brand row sets its own logo_url. Relative path so it
+// resolves against whatever domain serves the page (domain-rename proof).
+const LOGO_URL = '/assets/pec-logo.png';
 
 function htmlResponse(statusCode, html) {
   return {

@@ -324,7 +324,7 @@ exports.handler = async (event) => {
   // /oauth/token via the redirects in netlify.toml. event.path is the original
   // request path before the rewrite.
   const path = String(event.path || '').replace(/\/+$/, '');
-  const origin = `https://${event.headers['x-forwarded-host'] || event.headers.host || 'hq-prescott.netlify.app'}`;
+  const origin = `https://${event.headers['x-forwarded-host'] || event.headers.host || 'prescottepoxy.netlify.app'}`;
 
   // ---- OAuth 2.1 discovery metadata (unauthenticated GET) ----
   // Served at three layouts so every client convention hits the same handler:

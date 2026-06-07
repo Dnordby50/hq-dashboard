@@ -9872,9 +9872,9 @@ const EMAIL_BRAND_DEFAULTS = {
   license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
   zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
 };
-// Hosted logo (absolute URL so it loads in email clients). KEEP IN SYNC with
-// LOGO_URL in pec-send-email.cjs / pec-public-invoice.cjs.
-const EMAIL_LOGO_URL = 'https://hq-prescott.netlify.app/assets/pec-logo.png';
+// Hosted logo for the Settings email preview. Uses the current origin so it
+// tracks domain renames. The real send uses SITE_URL in pec-send-email.cjs.
+const EMAIL_LOGO_URL = `${location.origin}/assets/pec-logo.png`;
 function emailWrapChrome(bodyHtml, brand) {
   const b = { ...EMAIL_BRAND_DEFAULTS, ...(brand || {}) };
   const name = b.business_name || 'Prescott Epoxy Company';
