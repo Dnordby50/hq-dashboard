@@ -1477,6 +1477,13 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
   </div>
   <div class="header-right">
     <span class="status-dot" id="statusDot" title="Connected"></span>
+    <div class="pec-bell" id="pecBell" style="position:relative;display:none">
+      <button class="refresh-btn" id="pecBellBtn" title="Notifications" style="position:relative;padding:6px 10px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <span id="pecBellBadge" style="display:none;position:absolute;top:-5px;right:-5px;background:#dc2626;color:#fff;font-size:.6rem;line-height:1;min-width:15px;height:15px;border-radius:8px;align-items:center;justify-content:center;padding:0 3px;font-weight:700">0</span>
+      </button>
+      <div id="pecBellPanel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;width:340px;max-height:440px;overflow:auto;background:var(--s1, #fff);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.2);z-index:10001;text-align:left"></div>
+    </div>
     <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
     <button class="refresh-btn" onclick="logout()" style="margin-left:4px">Logout</button>
   </div>
@@ -5080,6 +5087,76 @@ function cachedSystemTypes() {
   return cachedRef('sys', () => supabase.from('pec_prod_system_types').select('*').order('name'));
 }
 
+// --- Notification bell (3D) ---
+// Shows recent staff notifications (customer viewed portal, customer confirmed
+// colors, color collisions) in the global owner header, with an unread badge.
+// Loaded when the CRM mounts (renderAuthUI) and on Refresh; cached briefly so it
+// does not re-add tab-switch latency (1B). Inserts happen server-side in the
+// portal RPCs; the bell only reads and marks rows read.
+function fmtNotifTime(s) { try { return s ? new Date(s).toLocaleString() : ''; } catch (_) { return ''; } }
+function loadNotifications() {
+  return cachedRef('notifs', () => supabase.from('pec_notifications')
+    .select('id,type,job_id,body,priority,created_at,read_at')
+    .order('created_at', { ascending: false }).limit(30), { ttlMs: 30000 });
+}
+async function refreshBell() {
+  const wrap = document.getElementById('pecBell'); if (!wrap) return;
+  let rows = [];
+  try { const r = await loadNotifications(); if (!r || r.error) return; rows = r.data || []; }
+  catch (_) { return; } // table not migrated yet, or transient error: keep bell hidden
+  wireBell();
+  wrap.style.display = '';
+  const unread = rows.filter(n => !n.read_at).length;
+  const badge = document.getElementById('pecBellBadge');
+  if (badge) {
+    if (unread > 0) { badge.textContent = unread > 99 ? '99+' : String(unread); badge.style.display = 'inline-flex'; }
+    else badge.style.display = 'none';
+  }
+  renderBellPanel(rows);
+}
+function renderBellPanel(rows) {
+  const panel = document.getElementById('pecBellPanel'); if (!panel) return;
+  if (!rows.length) { panel.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:.82rem">No notifications yet.</div>'; return; }
+  const hasUnread = rows.some(n => !n.read_at);
+  panel.innerHTML =
+    `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)">
+       <strong style="font-size:.85rem">Notifications</strong>
+       ${hasUnread ? '<button class="pec-btn ghost sm" id="pecBellReadAll">Mark all read</button>' : ''}
+     </div>` +
+    rows.map(n => `<div data-notif="${esc(n.id)}" ${n.job_id ? `data-job="${esc(n.job_id)}"` : ''} style="padding:10px 12px;border-bottom:1px solid var(--border);${n.job_id ? 'cursor:pointer;' : ''}background:${n.read_at ? 'transparent' : 'var(--rd-soft, rgba(216,83,28,.07))'}">
+        <div style="font-size:.8rem;line-height:1.4">${n.priority === 'high' ? '<span style="color:#dc2626;font-weight:700">! </span>' : ''}${esc(n.body || n.type)}</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:3px">${esc(fmtNotifTime(n.created_at))}</div>
+      </div>`).join('');
+  const readAll = document.getElementById('pecBellReadAll');
+  if (readAll) readAll.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try { await withFreshWriteRetry(() => supabase.from('pec_notifications').update({ read_at: new Date().toISOString() }).is('read_at', null), { label: 'notif-read-all' }); }
+    catch (_) { /* best-effort */ }
+    invalidateRefCache('notifs'); refreshBell();
+  });
+  panel.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('click', async () => {
+    const id = el.getAttribute('data-notif'), jobId = el.getAttribute('data-job');
+    try { await supabase.from('pec_notifications').update({ read_at: new Date().toISOString() }).eq('id', id).is('read_at', null); } catch (_) {}
+    invalidateRefCache('notifs');
+    if (jobId) { state.view = 'jobs'; state.openJobId = jobId; panel.style.display = 'none'; switchView('jobs'); }
+    refreshBell();
+  }));
+}
+function wireBell() {
+  const btn = document.getElementById('pecBellBtn'), panel = document.getElementById('pecBellPanel');
+  if (!btn || !panel || btn._wired) return;
+  btn._wired = true;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = panel.style.display !== 'none';
+    panel.style.display = open ? 'none' : 'block';
+    if (!open) refreshBell();
+  });
+  document.addEventListener('click', (e) => {
+    if (panel.style.display !== 'none' && !panel.contains(e.target) && !btn.contains(e.target)) panel.style.display = 'none';
+  });
+}
+
 // Proactive stale-session detection. supabase-js's auth-refresh queue can wedge
 // after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
 // zero network traffic (diagnosed live: ~57min idle, then the next click wedged
@@ -5449,6 +5526,8 @@ function renderAuthUI() {
   }
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
+  // Load the notification bell (best-effort; hidden if the table isn't live yet).
+  refreshBell();
 }
 
 // ---- Whole-app auth gate ----------------------------------------------------
