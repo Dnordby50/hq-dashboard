@@ -10020,6 +10020,14 @@ async function renderSettingsBrand() {
   }
   const b = bi || { ...EMAIL_BRAND_DEFAULTS, brand: 'prescott-epoxy' };
   state.brandIdentity = b;
+  // Per-status customer portal descriptions (editable here). Best-effort load:
+  // before the migration runs the table is absent, so default to empty text.
+  const STATUS_META = [['signed', 'Signed'], ['scheduled', 'Scheduled'], ['in_progress', 'In progress'], ['completed', 'Completed']];
+  let statusDescs = {};
+  try {
+    const { data: sd } = await withFreshSession(() => supabase.from('pec_status_descriptions').select('status,body_text').eq('brand', 'prescott-epoxy'), { label: 'status-desc' });
+    statusDescs = Object.fromEntries((sd || []).map(r => [r.status, r.body_text]));
+  } catch (_) { /* table not migrated yet */ }
   const field = (label, id, val, ph) => `<div class="pec-field"><label>${esc(label)}</label><input id="${id}" value="${esc(val || '')}" placeholder="${esc(ph || '')}"></div>`;
   const colorField = (label, id, val) => `<div class="pec-field"><label>${esc(label)}</label><div style="display:flex;gap:8px;align-items:center"><input type="color" id="${id}c" value="${esc(val || '#000000')}" style="width:46px;height:34px;padding:2px"><input id="${id}" value="${esc(val || '')}" placeholder="#1e3a5f" style="flex:1"></div></div>`;
   root.innerHTML = settingsTabBar('brand') + `
@@ -10037,6 +10045,13 @@ async function renderSettingsBrand() {
         <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Just type normally — leave a blank line between paragraphs. We handle the formatting; no HTML needed.</div></div>
       <button class="pec-btn primary sm" id="biSave">Save brand identity</button>
       <span id="biMsg" style="margin-left:10px;font-size:.8rem"></span>
+    </div>
+    <div class="pec-card">
+      <h3>Status descriptions (customer portal)</h3>
+      <div style="font-size:.75rem;color:var(--muted);margin-bottom:10px">Shown to the customer on their portal for each job status. Available token: <code>{scheduled_date}</code> (the job's install date; falls back to "date to be confirmed" when the job is not scheduled yet).</div>
+      ${STATUS_META.map(([s, label]) => `<div class="pec-field"><label>${esc(label)}</label><textarea id="sd_${s}" rows="3">${esc(statusDescs[s] || '')}</textarea></div>`).join('')}
+      <button class="pec-btn primary sm" id="sdSave">Save status descriptions</button>
+      <span id="sdMsg" style="margin-left:10px;font-size:.8rem"></span>
     </div>`;
   wireSettingsTabs(root);
   [['biPrimary'], ['biAccent']].forEach(([id]) => {
@@ -10069,6 +10084,22 @@ async function renderSettingsBrand() {
       showToast('Brand identity saved', { ttl: 2500 });
     } catch (err) {
       btn.disabled = false; btn.textContent = 'Save brand identity';
+      msg.style.color = '#dc2626'; msg.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+      return;
+    }
+    renderSettingsBrand();
+  });
+  $('sdSave')?.addEventListener('click', async () => {
+    const btn = $('sdSave'), msg = $('sdMsg'); msg.textContent = '';
+    // Full-value upsert keyed by (brand, status) -> idempotent, safe to retry.
+    const rows = STATUS_META.map(([s]) => ({ brand: 'prescott-epoxy', status: s, body_text: ($('sd_' + s).value || '').trim(), updated_at: new Date().toISOString() }));
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('pec_status_descriptions').upsert(rows, { onConflict: 'brand,status' }), { label: 'status-desc' });
+      if (upd.error) throw upd.error;
+      showToast('Status descriptions saved', { ttl: 2500 });
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save status descriptions';
       msg.style.color = '#dc2626'; msg.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
       return;
     }
