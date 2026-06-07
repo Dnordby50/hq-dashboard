@@ -1,4 +1,4 @@
-# CRM / Dashboard Project Log
+# PEC CRM (TopCoat) Project Log
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 

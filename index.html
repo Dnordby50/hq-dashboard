@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TopCoat</title>
+<title>TopCoat · PEC CRM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -741,6 +741,7 @@ body { padding: 18px; min-height: 100vh; }
 }
 .rd-logo-img { width: 38px; height: auto; display: block; flex-shrink: 0; }
 .rd-logo-name { font-weight: 800; letter-spacing: -.3px; color: var(--rd-ink); font-size: 17px; }
+.rd-logo-sub { font-size: 11px; font-weight: 600; letter-spacing: .4px; color: var(--rd-muted); text-transform: uppercase; }
 .rd-logo-sub  { font-size: 11px; color: var(--rd-muted); margin-top: 1px; }
 
 /* Nav group label */
@@ -1471,7 +1472,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 <!-- HEADER -->
 <header class="header" style="display:none">
   <div class="header-left">
-    <div class="logo">HQ</div>
+    <div class="logo">TC</div>
     <span class="header-date" id="headerDate"></span>
   </div>
   <div class="header-right">
@@ -1854,7 +1855,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
 <!-- EMPLOYEE HEADER -->
 <header class="header employee-header" style="display:none">
   <div class="header-left">
-    <div class="logo">HQ</div>
+    <div class="logo">TC</div>
     <div style="margin-left:8px">
       <div id="empName" style="font-size:.9rem;font-weight:500"></div>
       <div style="font-size:.65rem;color:var(--dim)">
@@ -2504,7 +2505,7 @@ function toggleRhythm(i) {
 // --- CLAUDE PROJECTS ---
 const DEFAULT_PROJECTS = [
   {
-    id: 1, project_name: 'HQ Dashboard', description: 'Central command — revenue tracking, goals, crew dispatch view',
+    id: 1, project_name: 'PEC CRM', description: 'Central command: revenue tracking, goals, crew dispatch view',
     status: 'active', company: 'Shared', category: 'Dashboard',
     tasks: [
       { task: 'Revenue tab with DripJobs feed', status: 'done', updated: '2026-04-09' },
@@ -4327,7 +4328,8 @@ if (document.readyState === 'loading') {
       <div class="rd-logo">
         <img class="rd-logo-img" src="assets/pec-logo.png" alt="Prescott Epoxy Company">
         <div>
-          <div class="rd-logo-name">Prescott Epoxy</div>
+          <div class="rd-logo-name">TopCoat</div>
+          <div class="rd-logo-sub">PEC CRM</div>
         </div>
       </div>
       <div>
@@ -4357,7 +4359,7 @@ if (document.readyState === 'loading') {
         <div class="rd-user">
           <!-- SOPs hub button removed for now; the SOPs section + code stay in
                place. Larger SOP project is deferred to a later phase. -->
-          <div class="rd-avatar" id="rdAvatar">HQ</div>
+          <div class="rd-avatar" id="rdAvatar">TC</div>
           <div>
             <div class="rd-user-name" id="rdUserName">Owner</div>
             <div class="rd-user-sub" id="rdUserSub">Command Center</div>

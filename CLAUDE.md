@@ -1,4 +1,4 @@
-# CRM / Dashboard Project — Claude Code Instructions
+# PEC CRM (TopCoat) — Claude Code Instructions
 
 ## Context
 This project contains the multi-arm platform for Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP).
