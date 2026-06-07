@@ -73,6 +73,9 @@ const BRAND_DEFAULTS = {
   license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
   zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
 };
+// Hosted logo, absolute URL so it loads in email clients. Shown on the light
+// background above the orange band (its orange text would vanish on orange).
+const LOGO_URL = 'https://hq-prescott.netlify.app/assets/pec-logo.png';
 
 // Conservative HTML allowlist for compose-mode bodies. The sender is
 // authenticated staff, so this is defense-in-depth, not the primary trust
@@ -98,14 +101,13 @@ function parseCc(cc) {
 function wrapInChrome(bodyHtml, brand, sender) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const name = b.business_name || (sender && sender.from_name) || 'Prescott Epoxy Company';
-  const headerInner = b.logo_url
-    ? `<img src="${esc(b.logo_url)}" alt="${esc(name)}" style="max-height:46px;max-width:240px">`
-    : `<div style="font-size:21px;font-weight:800;letter-spacing:.5px;color:#ffffff">${esc(name)}</div>`;
+  const logoUrl = b.logo_url || LOGO_URL;
   const phoneLine = b.phone ? `<br><a href="tel:${esc(String(b.phone).replace(/[^0-9+]/g, ''))}" style="color:${esc(b.primary_color)};text-decoration:none">${esc(b.phone)}</a>` : '';
   const footerBits = [name, b.address_line, b.license_number ? 'License ' + b.license_number : '', b.footer_disclaimer].filter(Boolean).map(esc).join(' &middot; ');
   return `<div style="background:#f1f5f9;padding:24px 0;font-family:Arial,Helvetica,sans-serif">
     <div style="max-width:600px;margin:0 auto">
-      <div style="background:${esc(b.accent_color)};border-radius:12px 12px 0 0;padding:20px 24px;text-align:center">${headerInner}</div>
+      <div style="text-align:center;padding:4px 0 14px"><img src="${esc(logoUrl)}" alt="${esc(name)}" style="max-height:52px;max-width:260px"></div>
+      <div style="background:${esc(b.accent_color)};border-radius:12px 12px 0 0;padding:18px 24px;text-align:center"><div style="font-size:20px;font-weight:800;letter-spacing:.5px;color:#ffffff">${esc(name)}</div></div>
       <div style="background:#fff;border-radius:0 0 12px 12px;padding:24px;box-shadow:0 1px 4px rgba(0,0,0,.08);color:${esc(b.primary_color)};font-size:14px;line-height:1.5">
         ${bodyHtml}
         <div style="margin-top:22px;padding-top:14px;border-top:1px solid #e2e8f0;color:#334155;font-size:13px">Thank you,<br><strong>${esc(name)}</strong>${phoneLine}</div>

@@ -29,6 +29,12 @@ const BRAND_DEFAULTS = {
   zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
 };
 
+// Hosted logo (navy "PRESCOTT" + orange "EPOXY COMPANY" on transparent). Shown
+// on the light background, NOT on the orange band (its orange text would vanish
+// there). Used unless the brand row sets its own logo_url. Absolute URL so it
+// also loads inside emails.
+const LOGO_URL = 'https://hq-prescott.netlify.app/assets/pec-logo.png';
+
 function htmlResponse(statusCode, html) {
   return {
     statusCode,
@@ -98,17 +104,38 @@ function payButtons(b, due) {
 }
 function name(b) { return b.business_name || 'Prescott Epoxy Company'; }
 
-function invoicePage(row, brand) {
+// Payment ledger for this invoice (from pec_payments). Shows date, method,
+// reference (check #), and amount per payment, plus the total paid.
+function paymentsSection(payments, b) {
+  const list = Array.isArray(payments) ? payments : [];
+  if (!list.length) return '';
+  const methodLabel = (m) => ({ check: 'Check', cash: 'Cash', zelle: 'Zelle', stripe: 'Card', card: 'Card' }[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '—'));
+  const rows = list.map(p => `<tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(fmtDate(p.received_date))}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(methodLabel(p.method))}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(p.reference || '')}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${usd(p.amount)}</td>
+    </tr>`).join('');
+  const totalPaid = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  return `<div class="card" style="margin-top:16px;padding:20px 22px">
+    <h3 style="margin:0 0 12px;color:${esc(b.primary_color)};font-size:16px">Payments received</h3>
+    <table class="li">
+      <thead><tr><th>Date</th><th>Method</th><th>Reference / Check #</th><th style="text-align:right;width:120px">Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="text-align:right;margin-top:10px;font-weight:700;color:${esc(b.primary_color)}">Total paid: ${usd(totalPaid)}</div>
+  </div>`;
+}
+
+function invoicePage(row, brand, payments) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const biz = name(b);
+  const logoUrl = b.logo_url || LOGO_URL;
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
   const pill = statusPill(row);
   const billTo = row.bill_to_address || row.address || '';
   const total = Number(row.price || 0);
   const due = Number(row.balance_remaining || 0);
-  const header = b.logo_url
-    ? `<img src="${esc(b.logo_url)}" alt="${esc(biz)}" style="max-height:52px;max-width:240px">`
-    : `<div style="font-size:22px;font-weight:800;letter-spacing:.5px">${esc(biz)}</div>`;
 
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Invoice ${esc(invNo)} — ${esc(biz)}</title>
@@ -122,17 +149,24 @@ function invoicePage(row, brand) {
   .pill { display:inline-block; background:${pill.bg}; color:#fff; font-size:12px; font-weight:700; border-radius:999px; padding:4px 12px; margin-top:6px; }
   table.li { width:100%; border-collapse:collapse; font-size:14px; }
   table.li th { background:${esc(b.primary_color)}; color:#fff; text-align:left; padding:9px 12px; font-size:12px; }
-  .sumrow { display:flex; justify-content:space-between; padding:4px 0; font-size:14px; }
-  .sumrow.total { border-top:2px solid ${esc(b.primary_color)}; margin-top:6px; padding-top:8px; font-size:16px; font-weight:700; }
+  table.li th:last-child, table.li td:last-child { text-align:right; width:130px; white-space:nowrap; }
+  /* Totals table: same width + last-column width as the line items table, so the
+     amounts line up directly under the line-item Amount column. */
+  table.tot { width:100%; border-collapse:collapse; font-size:14px; margin-top:6px; }
+  table.tot td { padding:4px 12px; }
+  table.tot td:first-child { text-align:right; color:#475569; }
+  table.tot td:last-child { text-align:right; width:130px; white-space:nowrap; }
+  table.tot tr.total td { border-top:2px solid ${esc(b.primary_color)}; padding-top:8px; font-size:16px; font-weight:700; color:${esc(b.primary_color)}; }
   .printbtn { display:inline-block; background:${esc(b.primary_color)}; color:#fff; border:0; border-radius:8px; padding:11px 20px; font-size:14px; font-weight:600; cursor:pointer; }
   @media print { .noprint { display:none !important; } body { background:#fff; } .card { box-shadow:none; } }
 </style></head>
 <body>
   <div class="wrap">
+    <div style="text-align:center;margin-bottom:18px"><img src="${esc(logoUrl)}" alt="${esc(biz)}" style="max-height:64px;max-width:280px"></div>
     <div class="card">
       <div class="band">
         <div>
-          <div style="margin-bottom:6px">${header}</div>
+          <div style="font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:6px">${esc(biz)}</div>
           <div style="font-size:13px;opacity:.95">${esc(b.address_line)}</div>
           ${b.phone ? `<div style="font-size:13px;opacity:.95">${esc(b.phone)}</div>` : ''}
           ${b.license_number ? `<div style="font-size:12px;opacity:.85">License ${esc(b.license_number)}</div>` : ''}
@@ -153,14 +187,16 @@ function invoicePage(row, brand) {
           <thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
           <tbody>${lineItemsRows(row.line_items)}</tbody>
         </table>
-        <div style="max-width:300px;margin-left:auto;margin-top:16px">
-          <div class="sumrow"><span>Invoice amount</span><span>${usd(total)}</span></div>
-          <div class="sumrow"><span>Tax</span><span>${usd(0)}</span></div>
-          <div class="sumrow"><span>Paid to date</span><span>-${usd(row.paid_to_date)}</span></div>
-          <div class="sumrow total"><span>Amount due</span><span>${usd(due)}</span></div>
-        </div>
+        <table class="tot">
+          <tr><td>Invoice amount</td><td>${usd(total)}</td></tr>
+          <tr><td>Tax</td><td>${usd(0)}</td></tr>
+          <tr><td>Paid to date</td><td>-${usd(row.paid_to_date)}</td></tr>
+          <tr class="total"><td>Amount due</td><td>${usd(due)}</td></tr>
+        </table>
       </div>
     </div>
+
+    ${paymentsSection(payments, b)}
 
     ${payButtons(b, due)}
 
@@ -217,7 +253,14 @@ exports.handler = async (event) => {
         if (Array.isArray(fallback) && fallback[0]) brand = { ...BRAND_DEFAULTS, ...fallback[0] };
       }
     } catch (_) { /* defaults */ }
-    return invoicePage(row, brand);
+    // Payment ledger for the "Payments received" section. Best-effort: a failure
+    // here should not blank the invoice, so fall back to an empty list.
+    let payments = [];
+    try {
+      const pr = await sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount,method,reference,received_date&order=received_date.asc`);
+      if (Array.isArray(pr)) payments = pr;
+    } catch (_) { /* show page without the ledger */ }
+    return invoicePage(row, brand, payments);
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);
