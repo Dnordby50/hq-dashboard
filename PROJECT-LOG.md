@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: ran the six 2026-06-06 portal/CRM migrations in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Dylan said "run the migrations". Ran all six migrations from the Claude Code Phase 1/2/3 portal pass (the combined dependency-ordered handoff at the bottom of the Phase 3 entry below) in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, Primary Database, postgres role) via the SQL editor in Dylan's signed-in browser. No repo code changed. Files touched: PROJECT-LOG.md only.
+
+Ran in the required order (later ones depend on earlier ones), each "Success. No rows returned":
+ 1. 2026-06-06_portal_views.sql -> pec_portal_views table + portal_log_view(text,text).
+ 2. 2026-06-06_status_descriptions.sql -> pec_status_descriptions + 4 seed rows. (Supabase destructive-op warning on the idempotent drop policy if exists; confirmed.)
+ 3. 2026-06-06_portal_install_date.sql -> CREATE OR REPLACE get_portal_data adding per-job install_date (still j.* here).
+ 4. 2026-06-06_portal_data_columns.sql -> CREATE OR REPLACE get_portal_data with the customer-facing column allowlist (the FINAL get_portal_data, run after step 3 per the last-one-wins rule).
+ 5. 2026-06-06_notifications.sql -> pec_notifications table + REPLACE portal_log_view to also write a de-duplicated view notification. (Destructive-op warning on drop policy if exists; confirmed.)
+ 6. 2026-06-06_portal_colors.sql -> jobs.colors_confirmed_by_customer_at + get_portal_job_catalog + portal_set_area_colors. (Destructive-op warning fired on the delete from job_area_materials inside the function bodies, which only run at invocation, not at definition; confirmed.)
+
+Verified after all six (one query, 11 checks, all pass): pec_portal_views rows 0; pec_status_descriptions rows 4 with statuses completed,in_progress,scheduled,signed; pec_notifications rows 0; jobs.colors_confirmed_by_customer_at column = yes; functions portal_log_view / get_portal_data / get_portal_job_catalog / portal_set_area_colors each present (count 1); get_portal_data has install_date = yes; get_portal_data references scope (leak) = no (confirms the Phase 3B allowlist closed the j.* leak). Note: ran a portal_log_view smoke test? No, did not invoke any RPC against a live token (would write a notification/view row); left runtime testing for Dylan's end-to-end pass.
+
+## Handoff to Dylan
+All six migrations are live in PROD. Next: push the local Phase 1/2/3 commits and trigger a Netlify deploy, then test the portal end to end (open a portal link as a customer, pick colors on a multi-area epoxy job, confirm, and check the CRM job detail shows the pick and the bell shows the notification). The PROJECT-LOG commit is again blocked by the stale .git/index.lock the sandbox cannot remove; run `rm -f .git/index.lock` in the repo then commit this entry.
+
 ## [2026-06-06 MST] Claude Code: Phase 3 of the portal/CRM pass (portal color selection, internal-notes guard, per-area budget, notification bell)
 
 By: Claude Code
