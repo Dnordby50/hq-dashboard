@@ -11297,6 +11297,9 @@ async function renderSchedule() {
   root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
   await loadScheduleData();
   if (!state.scheduleAnchor) state.scheduleAnchor = isoDate(new Date());
+  // View mode: 'week' (single-week per-crew run sheet) or '3weeks' (the rolling
+  // 3-week calendar). Persisted so the choice sticks across sessions.
+  if (!state.scheduleMode) { try { state.scheduleMode = localStorage.getItem('pec_sched_mode') || '3weeks'; } catch (_) { state.scheduleMode = '3weeks'; } }
 
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
@@ -11336,6 +11339,10 @@ async function renderSchedule() {
           <button class="pec-btn sm" id="pecSchedNext">›</button>
           <span class="pec-sched-period" id="pecSchedPeriod"></span>
           <span style="margin-left:auto"></span>
+          <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden;margin-right:8px">
+            <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'primary' : 'ghost'}" id="pecSchedModeWeek" style="border:none;border-radius:0">Week</button>
+            <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'ghost' : 'primary'}" id="pecSchedMode3" style="border:none;border-radius:0">3 weeks</button>
+          </div>
           <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
         </div>
         <div id="pecSchedCalendar"></div>
@@ -11353,6 +11360,9 @@ async function renderSchedule() {
     state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), 7));
     renderSchedule();
   });
+  const setSchedMode = (m) => { state.scheduleMode = m; try { localStorage.setItem('pec_sched_mode', m); } catch (_) {} renderSchedule(); };
+  $('pecSchedModeWeek').addEventListener('click', () => setSchedMode('week'));
+  $('pecSchedMode3').addEventListener('click', () => setSchedMode('3weeks'));
   root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
   // Remove a job from the Pending list only (a mistake fix). Sets
   // pending_hidden_at; the job stays on the Ordering page with all data intact.
@@ -11492,8 +11502,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
 
   const barHtml = (bar, gridRow) => {
     const parts = [];
-    // AM/PM chip first so it survives the progressive collapse on narrow bars.
-    if (bar.slot) parts.push(`<span class="bar-slot">${esc(bar.slot)}</span>`);
+    // First/Second/Third chip first so it survives the progressive collapse on
+    // narrow bars (the slot is the most important field per Dylan). Stored value
+    // is AM/PM/EXTRA; slotLabel maps it to the human label.
+    if (bar.slot) parts.push(`<span class="bar-slot">${esc(slotLabel(bar.slot))}</span>`);
     parts.push(`<span class="bar-customer">${esc(bar.ev.customer || '(no name)')}</span>`);
     // Revenue first after customer so it survives the progressive collapse
     // (sys + crew drop out on narrow bars before rev does).
@@ -11525,6 +11537,54 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       ${dayCellsHtml}${barsHtml}
     </div>`;
   };
+
+  // WEEK mode: a single week laid out as a per-crew run sheet. One column per
+  // day; within each day the jobs are grouped by crew and ordered by slot
+  // (First/Second/Third, then unslotted), so a day reads as a clear run sheet.
+  if (state.scheduleMode === 'week') {
+    const slotOrder = { AM: 0, PM: 1, EXTRA: 2 };
+    const wStart = startOfWeek(anchor);
+    const wDays = Array.from({ length: 7 }, (_, i) => addDays(wStart, i));
+    periodEl.textContent = `Week of ${wStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${wDays[6].toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    const dayCols = wDays.map(d => {
+      const iso = isoDate(d);
+      const entries = state.scheduleDays.filter(sd => sd.scheduled_date === iso);
+      const byCrew = new Map();
+      for (const sd of entries) { const k = sd.crew_id || ''; if (!byCrew.has(k)) byCrew.set(k, []); byCrew.get(k).push(sd); }
+      const crewSections = [...byCrew.entries()]
+        .sort((a, b) => {
+          const an = a[0] && crewById[a[0]] ? crewById[a[0]].name : 'zzz';
+          const bn = b[0] && crewById[b[0]] ? crewById[b[0]].name : 'zzz';
+          return String(an).localeCompare(String(bn));
+        })
+        .map(([crewId, list]) => {
+          list.sort((a, b) => (slotOrder[a.time_slot] ?? 3) - (slotOrder[b.time_slot] ?? 3));
+          const crewName = crewId && crewById[crewId] ? crewById[crewId].name : 'Unassigned';
+          const jobsHtml = list.map(sd => {
+            const ev = eventFor(sd.job_id); if (!ev) return '';
+            return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(ev.tooltip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:6px 8px;margin-bottom:6px">
+              <div style="display:flex;gap:6px;align-items:center">
+                ${sd.time_slot ? `<span class="bar-slot" style="font-size:.6rem;font-weight:700;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px">${esc(slotLabel(sd.time_slot))}</span>` : ''}
+                <strong style="font-size:.82rem;line-height:1.2;flex:1">${esc(ev.customer || '(no name)')}</strong>
+                ${ev.revLabel ? `<span style="font-size:.72rem;color:var(--rd-muted,var(--muted))">${esc(ev.revLabel)}</span>` : ''}
+              </div>
+              ${ev.sys && ev.sys.name ? `<div style="font-size:.68rem;color:var(--rd-muted,var(--muted));margin-top:2px">${esc(ev.sys.name)}</div>` : ''}
+            </div>`;
+          }).join('');
+          return `<div style="margin-bottom:10px">
+            <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.5px;color:var(--rd-muted,var(--muted));margin-bottom:4px">${esc(crewName)}</div>
+            ${jobsHtml}
+          </div>`;
+        }).join('');
+      return `<div style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:120px">
+        <div class="${sameDay(d, today) ? 'today' : ''}" style="font-weight:700;font-size:.78rem;margin-bottom:8px;${sameDay(d, today) ? 'color:var(--rd-accent,#D8531C)' : ''}">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>
+        ${crewSections || '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>'}
+      </div>`;
+    }).join('');
+    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start">${dayCols}</div>`;
+    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    return;
+  }
 
   // Rolling 3-week view: week containing the anchor at top, then the next
   // two weeks. Prev/Next moves the anchor by 7 days; Today resets to today.
