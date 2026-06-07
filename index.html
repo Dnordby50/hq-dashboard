@@ -13049,9 +13049,10 @@ async function renderCustomerPortal(token) {
   const root = $('customerPortalRoot');
   root.style.display = '';
   root.innerHTML = '<div class="pec-empty">Loading your portal…</div>';
-  const [portalRes, colorsRes] = await Promise.all([
+  const [portalRes, colorsRes, statusDescRes] = await Promise.all([
     supabase.rpc('get_portal_data', { p_token: token }),
     supabase.from('colors').select('*').order('type').order('name'),
+    supabase.from('pec_status_descriptions').select('status,body_text'),
   ]);
   const { data, error } = portalRes;
   if (error || !data) {
@@ -13060,6 +13061,9 @@ async function renderCustomerPortal(token) {
   }
   const { customer, jobs, referral_reward_amount } = data;
   data.colors = colorsRes.data || [];
+  // status -> customer-facing description (editable in Settings). Map for O(1)
+  // lookup in the job detail; tolerates the table not existing yet (empty map).
+  data.statusDescriptions = Object.fromEntries(((statusDescRes && !statusDescRes.error ? statusDescRes.data : []) || []).map(r => [r.status, r.body_text]));
   const brand = customer.company === 'finishing-touch' ? 'Finishing Touch Painting' : 'Prescott Epoxy';
   document.body.classList.toggle('brand-ftp', customer.company === 'finishing-touch');
 
@@ -13098,6 +13102,15 @@ async function portalJobDetail(token, jobId, bundle) {
   if (!job) { location.hash = ''; renderCustomerPortal(token); return; }
   const timeline = (job.timeline || []).slice().sort((a,b)=>a.sort_order-b.sort_order);
 
+  // Customer-facing description for the current status (editable by staff in
+  // Settings). Resolve the {scheduled_date} token from the job's install date;
+  // if it is not scheduled yet, fall back so the sentence still reads cleanly.
+  const statusDesc = (bundle.statusDescriptions || {})[job.status] || '';
+  const schedDateText = job.install_date ? fmtDate(job.install_date) : 'date to be confirmed';
+  const statusDescHtml = statusDesc
+    ? `<div style="margin-top:12px;font-size:.9rem;line-height:1.5;color:var(--text)">${esc(statusDesc.replace(/\{scheduled_date\}/g, schedDateText))}</div>`
+    : '';
+
   root.innerHTML = `
     <div class="pec-portal-header">
       <a href="#" class="pec-btn ghost">← Back</a>
@@ -13113,6 +13126,7 @@ async function portalJobDetail(token, jobId, bundle) {
         ${job.price ? `<div><span style="color:var(--muted)">Price:</span> ${fmtMoney(job.price)}</div>` : ''}
         ${job.warranty ? `<div><span style="color:var(--muted)">Warranty:</span> ${esc(job.warranty)}</div>` : ''}
       </div>
+      ${statusDescHtml}
       ${job.scope ? `<div style="margin-top:10px;font-size:.85rem">${esc(job.scope)}</div>` : ''}
     </div>
 
