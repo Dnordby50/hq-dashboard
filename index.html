@@ -4720,9 +4720,11 @@ let supabase = makeClient();
 window.pecSupabase = supabase;
 
 let _pecRecovering = null;
+let _pecAuthSub = null;   // active onAuthStateChange subscription, so recovery can drop the dead client's
 async function recoverWedgedClient() {
   if (_pecRecovering) return _pecRecovering;        // de-dupe concurrent recoveries
   _pecRecovering = (async () => {
+    const dead = supabase;   // the wedged client we are about to replace
     try {
       // getSession() may itself be wedged (it awaits the stuck refresh), so read
       // the persisted session straight from localStorage. supabase-js v2 stores
@@ -4743,14 +4745,45 @@ async function recoverWedgedClient() {
           new Promise((_, r) => setTimeout(() => r(new Error('setSession timed out')), 8000)),
         ]).catch(() => {});
       }
+      // Tear down the OLD (wedged) client BEFORE swapping so we never leave two
+      // GoTrueClients alive on the same storage key. A lingering old client keeps
+      // its autoRefreshToken ticker AND its onAuthStateChange subscription running
+      // against sb-<ref>-auth-token; two instances then contend on the shared auth
+      // Web Lock, which re-wedges the very NEXT save (the "Multiple GoTrueClient
+      // instances" console warning, and the first-press SESSION_TIMEOUT). Stop the
+      // ticker (bounded, since a wedged client could otherwise hang us) and drop
+      // its listener, then re-bind auth events onto the healthy client.
+      try { if (_pecAuthSub) { _pecAuthSub.unsubscribe(); _pecAuthSub = null; } } catch (_) {}
+      try { await Promise.race([Promise.resolve(dead.auth.stopAutoRefresh()), new Promise(r => setTimeout(r, 1000))]); } catch (_) {}
       supabase = fresh;
       window.pecSupabase = fresh;
-      console.warn('[pec] rebuilt Supabase client to clear wedged auth');
+      wireAuthListener();
+      console.warn('[pec] rebuilt Supabase client to clear wedged auth (old client disposed)');
     } finally {
       _pecRecovering = null;
     }
   })();
   return _pecRecovering;
+}
+
+// Bind auth-state handling to the CURRENT supabase client and remember the
+// subscription so recoverWedgedClient can unsubscribe the dead client and
+// re-bind here onto the fresh one (otherwise post-recovery auth events are lost
+// AND the dead listener leaks). Swallows the first (INITIAL_SESSION) event each
+// time it binds, since boot / recovery already paint state from getSession.
+function wireAuthListener() {
+  let sawInitialAuthEvent = false;
+  const { data } = supabase.auth.onAuthStateChange(async (ev, session) => {
+    const prevUid = state.session?.user?.id;
+    state.session = session;
+    if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
+    // A plain token refresh keeps the same user signed in; skip the churn.
+    if (ev === 'TOKEN_REFRESHED' && session?.user?.id === prevUid && state.adminUser) return;
+    if (session) await resolveAdminUser();
+    else { state.adminUser = null; }
+    renderGlobalAuthGate();
+  });
+  _pecAuthSub = data?.subscription || null;
 }
 
 const portalBase = () => (CFG.PORTAL_BASE_URL || (location.origin + location.pathname)).replace(/\/+$/, '');
@@ -5388,22 +5421,9 @@ async function initAuth() {
   // calls, UI flicker, and the data-fetch races the eval flagged). Swallow only
   // that first event (still keep state.session fresh from it); every real later
   // event (sign-in, sign-out, token refresh) flows through as before.
-  let sawInitialAuthEvent = false;
-  supabase.auth.onAuthStateChange(async (ev, session) => {
-    const prevUid = state.session?.user?.id;
-    state.session = session;
-    if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
-    // A plain token refresh keeps the same user signed in. Re-resolving the
-    // admin row and re-running renderAuthUI() (which calls switchView and wipes
-    // the current view back to "Loading…") on every refresh is needless churn,
-    // so short-circuit when nothing about the user actually changed.
-    if (ev === 'TOKEN_REFRESHED' && session?.user?.id === prevUid && state.adminUser) {
-      return;
-    }
-    if (session) await resolveAdminUser();
-    else { state.adminUser = null; }
-    renderGlobalAuthGate();
-  });
+  // Auth-state listener lives in wireAuthListener() so recoverWedgedClient can
+  // re-bind it onto a rebuilt client (and drop the dead client's subscription).
+  wireAuthListener();
   if (state.session) await resolveAdminUser();
   // Fire-and-forget the install-day auto-progress sweep. Best-effort: any
   // failure is swallowed inside runAutoProgressSweep() so it cannot delay
