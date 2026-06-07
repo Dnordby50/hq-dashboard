@@ -5032,7 +5032,7 @@ function _pecWedgeReload(reason) {
   try { location.reload(); } catch (_) {}
 }
 
-async function withFreshSession(fn, { timeoutMs = 10000, label = 'query' } = {}) {
+async function withFreshSession(fn, { timeoutMs = 12000, label = 'query' } = {}) {
   const race = (p, ms = timeoutMs, lbl = label) => Promise.race([
     p,
     new Promise((_, rej) => setTimeout(() => rej(new Error(`[${lbl}] timed out after ${ms}ms`)), ms)),
@@ -5041,33 +5041,26 @@ async function withFreshSession(fn, { timeoutMs = 10000, label = 'query' } = {})
     return await race(fn());
   } catch (e) {
     if (!String(e && e.message || '').includes('timed out')) throw e;
-    console.warn(`[pec] ${label} timed out; probing for session wedge`);
-    // Wedge signature: supabase.auth.refreshSession() ALSO hangs because it
-    // queues behind the same stuck auth refresh (see CLAUDE.md Architecture
-    // Gotchas: idle JWT wedge). A short-deadline probe distinguishes a wedged
-    // client (force reload, the only real fix) from a legit slow query
-    // (proceed to one retry as before).
-    let refreshTimedOut = false;
-    try {
-      await race(supabase.auth.refreshSession(), 3000, `${label} refresh`);
-    } catch (rerr) {
-      if (String(rerr && rerr.message || '').includes('timed out')) refreshTimedOut = true;
-      // Non-timeout refresh errors fall through to retry, which will surface
-      // the real error to the caller.
-    }
-    if (refreshTimedOut) {
-      _pecWedgeReload(`${label} + refreshSession both timed out`);
-      throw new Error(`SESSION_WEDGED:${label}`);
-    }
-    // Refresh resolved (or errored non-timeout); one retry against a
-    // hopefully-fresh client.
+    // A READ timed out even though pecAuthLock would have STOLEN a stranded
+    // auth lock at 9s (below this 12s fence). Reads are idempotent, so we do
+    // NOT reload the page here -- the old behavior (a 3s refresh probe that
+    // auto-reloaded BEFORE the 9s steal could heal the lock) is exactly what
+    // wiped the user's place and the console on tab switches. Instead rebuild
+    // the auth client in place (no reload) and retry once; if it still fails,
+    // throw SESSION_WEDGED so switchView shows the in-place "Reload" button the
+    // USER chooses.
+    //
+    // Timeout ORDERING (do not re-invert): timedFetch auth 8s < pecAuthLock
+    // steal 9s < this read fence 12s < switchView render fence 30s. Each layer
+    // must sit above the one that heals it, so the steal wins before any wedge
+    // is declared.
+    console.warn(`[pec] ${label} read timed out past the 9s lock-steal window; rebuilding client in place and retrying once (no auto-reload)`);
+    try { await recoverWedgedClient(); } catch (_) { /* best-effort */ }
     try {
       return await race(fn());
     } catch (e2) {
       if (String(e2 && e2.message || '').includes('timed out')) {
-        // Refresh succeeded but the retry still hangs -> wedged after
-        // refresh, reload.
-        _pecWedgeReload(`${label} timed out again after successful refresh`);
+        console.warn(`[pec] ${label} still timed out after in-place recovery; surfacing in-place Reload UI (no auto-reload)`);
         throw new Error(`SESSION_WEDGED:${label}`);
       }
       throw e2;
@@ -5775,11 +5768,15 @@ function switchView(v) {
           // (text between "Loading" and the ellipsis) also trip the fence.
           // Previously they slipped through and left the user stuck with no
           // Retry button.
+          // 30s: this MUST sit above the read path's worst case (12s read fence
+          // + in-place recover + 12s retry inside withFreshSession), so a render
+          // doing its own non-destructive recovery is not cut off early and the
+          // user does not see a premature error flash before the retry lands.
           if (/pec-spinner|Loading/.test(root.innerHTML)) {
-            console.warn('[crm] switchView render timed out (15s) ->', v);
-            showCrmRenderError(new Error('Render timed out (no response in 15s) — the session may have gone stale while idle. Click Reload to reconnect.'), v);
+            console.warn('[crm] switchView render timed out (30s) ->', v);
+            showCrmRenderError(new Error('Render timed out (no response in 30s) — the session may have gone stale. Click Reload to reconnect.'), v);
           }
-        }, 15000);
+        }, 30000);
         ret.then(() => { clearTimeout(renderTimeout); console.log('[crm] switchView render done ->', v); })
            .catch(err => { clearTimeout(renderTimeout); showCrmRenderError(err, v); });
       } else {
