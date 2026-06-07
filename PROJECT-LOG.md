@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: made the schedule the single source of truth for job status; fixed duplicate Next Day heading
+
+By: Claude Code
+
+Follow-up to Dylan's screenshot/report: the Next Day Schedule showed a duplicate heading, and scheduled jobs still sat in the Jobs pipeline "Project Accepted" column, with status disagreeing across views. Commit 4f5592e, pushed to main.
+
+1. Duplicate heading. The global CRM page header (rdPageTitle) already renders the active sub-view's name (it reads the active #pecSubnav button's label), so the Next Day board's own <h2>Next Day Schedule</h2> was a second copy. Removed the board <h2>.
+
+2. Status source of truth = the calendar. The prior pipeline fix (effectiveStatus) was display-only, and syncPublicJobStatusFromSchedule only fired on LIVE scheduling actions, so any job scheduled earlier (or via a path that did not call the sync) stayed 'signed' in jobs.status, which the Pipeline, Jobs list, Dashboard, and job detail all read. Added runScheduleStatusSync(): it reconciles EVERY bridged job's jobs.status to the schedule calendar in one pass: earliest scheduled date (install_date or any schedule day) today/past in MST -> in_progress, in the future -> scheduled, no schedule -> signed. It respects manual overrides (status_manual_at, which the pipeline drag and the job-detail dropdown set, and which the calendar clears when it changes) and never changes a completed job. It runs at boot (initAuth, fire-and-forget) and at the start of renderPipeline and renderSchedule (awaited, throttled to once per 20s). The display-only effectiveStatus in the pipeline stays as instant belt-and-suspenders. Net: open the app (or the Pipeline/Schedule) and scheduled jobs move out of Accepted and read consistently everywhere; manual moves via the pipeline or the dropdown still stick.
+
+No migration needed (the 2026-06-04 status-sync DB trigger remains as a server-side backstop; this is the client reconciliation that also covers legacy rows).
+
+
 ## [2026-06-07 MST] Cowork: ran the log_customer_deleted migration in PROD Supabase, verified
 
 By: Cowork
