@@ -6221,7 +6221,7 @@ async function renderCustomerDetail(id) {
           <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${brand}</span>
             ${c.lead_source ? `<span style="font-size:.72rem;color:var(--muted)">${esc(c.lead_source)}</span>` : ''}
-            ${(c.tags || []).map(t => `<span style="font-size:.7rem;background:var(--rd-soft, var(--s3));padding:2px 8px;border-radius:999px">${esc(t)}</span>`).join('')}
+            ${(c.tags || []).map(t => `<span style="font-size:.7rem;background:var(--rd-soft, var(--s3));color:var(--rd-ink, var(--text));border:1px solid var(--rd-line, var(--border));padding:2px 8px;border-radius:999px">${esc(t)}</span>`).join('')}
           </div>
         </div>
         <div style="text-align:right;font-size:.85rem;line-height:1.5">
@@ -6379,7 +6379,7 @@ async function openCustomerForm(c) {
     const renderTags = () => {
       tagsHost.innerHTML = tags.length === 0
         ? '<span style="color:var(--muted);font-size:.7rem;align-self:center">No tags yet.</span>'
-        : tags.map((t, i) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;background:var(--rd-soft, var(--s3));font-size:.72rem">${esc(t)}<button type="button" data-rm-tag="${i}" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;line-height:1;padding:0">×</button></span>`).join('');
+        : tags.map((t, i) => `<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;background:var(--rd-soft, var(--s3));color:var(--rd-ink, var(--text));border:1px solid var(--rd-line, var(--border));font-size:.72rem">${esc(t)}<button type="button" data-rm-tag="${i}" style="background:none;border:none;color:var(--rd-muted, var(--muted));cursor:pointer;font-size:.85rem;line-height:1;padding:0">×</button></span>`).join('');
       tagsHost.querySelectorAll('[data-rm-tag]').forEach(b => b.addEventListener('click', () => { tags.splice(Number(b.dataset.rmTag), 1); renderTags(); }));
     };
     renderTags();
