@@ -8144,7 +8144,7 @@ async function renderJobDetailInner(id) {
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
-      .select('*,customers(id,name,email,phone,company,token),photos(*)')
+      .select('*,customers(id,name,first_name,last_name,company_name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
     cachedSystemTypes(),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
@@ -8317,6 +8317,9 @@ async function renderJobDetailInner(id) {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
         <div>
           <div style="font-size:1.15rem;font-weight:700">${esc(job.customers?.name || '—')}</div>
+          ${job.customers?.company_name && (job.customers?.first_name || job.customers?.last_name)
+            ? `<div style="color:var(--muted);font-size:.82rem;margin-top:1px">${esc([job.customers.first_name, job.customers.last_name].filter(Boolean).join(' '))}</div>`
+            : ''}
           <div style="color:var(--muted);font-size:.82rem;margin-top:2px">${esc(job.address || 'No address on file')} <button class="pec-btn ghost sm" id="pecJobEditContact" style="padding:1px 8px;font-size:.68rem;vertical-align:middle">Edit</button></div>
           <div style="color:var(--muted);font-size:.8rem;margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             ${systemBadgeHtml(areasRes.data || [], Object.fromEntries(systemTypes.map(s => [s.id, s])))}
