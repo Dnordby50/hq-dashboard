@@ -1834,7 +1834,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="nextday">Next Day</button>
-          <button data-pec-view="pipeline">Pipeline</button>
+          <button data-pec-view="pipeline">Jobs pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="docs">Invoicing Docs</button>
@@ -10915,15 +10915,27 @@ async function loadPipelineData() {
     return best || null;
   };
 
+  const mstToday = mstTodayIso();
   const rows = [];
   for (const r of arRes.data || []) {
     const extra = extraById[r.id] || {};
     if (extra.archived_at) continue; // pec_job_ar keeps archived rows; drop them here
     const inst = installInfo(r.dripjobs_deal_id);
+    // Reconcile the pipeline with the schedule calendar: a job that is ON the
+    // calendar (has an install date) but whose stored status is still 'signed'
+    // belongs in Scheduled (or In progress once the install day arrives). This
+    // is the same rule renderJobDetail auto-syncs, applied display-only here so
+    // a placed-but-not-yet-resynced job stops sitting in Project Accepted. Only
+    // 'signed' is promoted; any other status is left exactly as stored.
+    let effectiveStatus = r.status;
+    if (inst.start && r.status === 'signed') {
+      effectiveStatus = (inst.start <= mstToday) ? 'in_progress' : 'scheduled';
+    }
     rows.push({
       id: r.id,
       customerName: r.customer_name || '(no name)',
       status: r.status,
+      effectiveStatus,
       colorsConfirmedAt: extra.colors_confirmed_at || null,
       leadSource: (extra.customers && extra.customers.lead_source) || '',
       price: Number(r.price) || 0,
@@ -10940,12 +10952,14 @@ async function loadPipelineData() {
   return { rows, leadSources: (leadRes.data || []).map(l => l.name) };
 }
 
+// Columns match on effectiveStatus (schedule-reconciled, see loadPipelineData)
+// so a job placed on the calendar moves out of Project Accepted automatically.
 const PIPELINE_COLUMNS = [
-  { key: 'signed',      title: 'Project Accepted',    status: 'signed',      colors: null,  match: r => r.status === 'signed' },
-  { key: 'scheduled',   title: 'Project Scheduled',   status: 'scheduled',   colors: false, match: r => r.status === 'scheduled' && !r.colorsConfirmedAt },
-  { key: 'colors',      title: 'Colors Confirmed',    status: 'scheduled',   colors: true,  match: r => r.status === 'scheduled' && !!r.colorsConfirmedAt },
-  { key: 'in_progress', title: 'Project In Progress', status: 'in_progress', colors: null,  match: r => r.status === 'in_progress' },
-  { key: 'completed',   title: 'Project Complete',    status: 'completed',   colors: null,  match: r => r.status === 'completed' },
+  { key: 'signed',      title: 'Project Accepted',    status: 'signed',      colors: null,  match: r => (r.effectiveStatus || r.status) === 'signed' },
+  { key: 'scheduled',   title: 'Project Scheduled',   status: 'scheduled',   colors: false, match: r => (r.effectiveStatus || r.status) === 'scheduled' && !r.colorsConfirmedAt },
+  { key: 'colors',      title: 'Colors Confirmed',    status: 'scheduled',   colors: true,  match: r => (r.effectiveStatus || r.status) === 'scheduled' && !!r.colorsConfirmedAt },
+  { key: 'in_progress', title: 'Project In Progress', status: 'in_progress', colors: null,  match: r => (r.effectiveStatus || r.status) === 'in_progress' },
+  { key: 'completed',   title: 'Project Complete',    status: 'completed',   colors: null,  match: r => (r.effectiveStatus || r.status) === 'completed' },
 ];
 
 // Build one pipeline card. canEdit toggles drag + the read-only cursor.
@@ -10961,22 +10975,22 @@ function pipelineCardHtml(r, canEdit) {
   const crewLabel = r.crew ? esc(r.crew) : 'No Crew Assigned';
   const updated = r.lastTouched ? fmtRelativeTime(new Date(r.lastTouched).toISOString()) : '';
   return `<div class="pipeline-card" draggable="${canEdit ? 'true' : 'false'}" data-job-id="${esc(r.id)}"
-      style="background:var(--s2,#fff);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;${canEdit ? 'cursor:grab;' : ''}box-shadow:0 1px 2px rgba(0,0,0,.04)">
+      style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;${canEdit ? 'cursor:grab;' : ''}box-shadow:0 1px 2px rgba(15,20,32,.04)">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
       <strong style="font-size:.9rem;line-height:1.2">${esc(r.customerName)}</strong>
       <button type="button" class="pec-btn ghost sm" data-pipeline-open="${esc(r.id)}" title="Open job detail" style="padding:1px 7px;font-size:.72rem;flex-shrink:0">open</button>
     </div>
-    ${r.leadSource ? `<div style="font-size:.72rem;color:var(--muted);margin-top:2px">${esc(r.leadSource)}</div>` : ''}
-    <div style="margin:8px 0 6px;font-size:.95rem;font-weight:600">${invUSD(r.paid)} <span style="color:var(--muted);font-weight:400">of ${invUSD(r.price)}</span></div>
+    ${r.leadSource ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:2px">${esc(r.leadSource)}</div>` : ''}
+    <div style="margin:8px 0 6px;font-size:.95rem;font-weight:600">${invUSD(r.paid)} <span style="color:var(--rd-muted,#6b7280);font-weight:400">of ${invUSD(r.price)}</span></div>
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
       ${paidChip}
       <button type="button" class="pec-btn ghost sm" data-pipeline-invoice="${esc(r.id)}" style="padding:1px 7px;font-size:.72rem">invoice</button>
     </div>
-    <div style="font-size:.75rem;color:var(--muted)">Install: ${esc(installLabel)}</div>
-    <div style="font-size:.75rem;color:var(--muted)">Crew: ${crewLabel}</div>
+    <div style="font-size:.75rem;color:var(--rd-muted,#6b7280)">Install: ${esc(installLabel)}</div>
+    <div style="font-size:.75rem;color:var(--rd-muted,#6b7280)">Crew: ${crewLabel}</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
       <button type="button" class="pec-btn sm" data-pipeline-wo="${esc(r.id)}" style="padding:2px 9px;font-size:.72rem">Work Order</button>
-      ${updated ? `<span style="font-size:.7rem;color:var(--muted)">Updated ${esc(updated)}</span>` : ''}
+      ${updated ? `<span style="font-size:.7rem;color:var(--rd-muted,#6b7280)">Updated ${esc(updated)}</span>` : ''}
     </div>
   </div>`;
 }
@@ -11028,13 +11042,13 @@ async function renderPipeline() {
     const body = colRows.length
       ? colRows.map(r => pipelineCardHtml(r, canEdit)).join('')
       : `<div class="pec-empty" style="font-size:.8rem;padding:16px 8px">No Jobs</div>`;
-    return `<div class="pipeline-col" data-col="${col.key}" style="flex:0 0 270px;display:flex;flex-direction:column;background:var(--bg-soft,#f1f3f5);border-radius:10px;padding:10px;max-height:calc(100vh - 230px)">
+    return `<div class="pipeline-col" data-col="${col.key}" style="flex:0 0 270px;display:flex;flex-direction:column;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px;max-height:calc(100vh - 230px)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">${esc(col.title)}</strong>
         <span class="pec-badge" style="--pec-badge-bg:#475569">${colRows.length}</span>
       </div>
       <div class="pipeline-col-body" style="overflow-y:auto;flex:1">${body}</div>
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.8rem;font-weight:600">${invUSD(colValue)}</div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--rd-line,#e6e8ec);font-size:.8rem;font-weight:600">${invUSD(colValue)}</div>
     </div>`;
   }).join('');
 
@@ -11134,27 +11148,30 @@ async function renderNextDay() {
   const cardHtml = (d) => {
     const j = jobById[d.job_id] || {};
     return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
-        style="background:var(--s2,#fff);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(0,0,0,.04)">
+        style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
       <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>
-      <div style="font-size:.72rem;color:var(--muted)">${esc(j.address || 'No address')}</div>
-      <div style="font-size:.72rem;color:var(--muted)">${invUSD(Number(j.revenue) || 0)}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(Number(j.revenue) || 0)}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
     </div>`;
   };
   const cell = (crew, slot) => {
     const rows = dayRows.filter(d => d.crew_id === crew.id && d.time_slot === slot);
     const body = rows.length ? rows.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.72rem;padding:12px 6px">Empty</div>`;
     return `<div class="nextday-cell" data-crew="${esc(crew.id)}" data-slot="${slot}"
-        style="min-height:74px;background:var(--bg-soft,#f1f3f5);border-radius:8px;padding:6px">${body}</div>`;
+        style="min-height:74px;background:var(--rd-soft,#f5f6f8);border-radius:8px;padding:6px">${body}</div>`;
   };
 
-  const headerRow = `<div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:8px;margin-bottom:6px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">
-      <div>Crew</div><div>AM (first visit)</div><div>PM (second visit)</div>
+  // Three slots per crew: AM (first), PM (second), and Extra (overflow / a 3rd
+  // smaller job). Extra uses time_slot 'EXTRA' (migration 2026-06-07_schedule_time_slot_extra.sql).
+  const headerRow = `<div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:6px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--rd-muted,#6b7280)">
+      <div>Crew</div><div>AM (first visit)</div><div>PM (second visit)</div><div>Extra (overflow)</div>
     </div>`;
   const crewRows = crews.length ? crews.map(c => `
-    <div style="display:grid;grid-template-columns:140px 1fr 1fr;gap:8px;margin-bottom:8px;align-items:start">
+    <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:8px;align-items:start">
       <div style="font-weight:600;padding-top:10px">${esc(c.name)}</div>
       ${cell(c, 'AM')}
       ${cell(c, 'PM')}
+      ${cell(c, 'EXTRA')}
     </div>`).join('') : `<div class="pec-empty">No active crews. Add crews in Settings.</div>`;
 
   const niceDate = parseISO(target).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
@@ -11173,9 +11190,9 @@ async function renderNextDay() {
           ${headerRow}
           ${crewRows}
         </div>
-        <div class="nextday-cell" data-crew="" data-slot="" style="background:var(--bg-soft,#f1f3f5);border-radius:10px;padding:10px">
+        <div class="nextday-cell" data-crew="" data-slot="" style="background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px">
           <strong style="font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">No slot yet · ${unslotted.length}</strong>
-          <div style="font-size:.7rem;color:var(--muted);margin:4px 0 8px">Scheduled this day, AM/PM not set. Drag into a crew slot. Drop here to clear a slot.</div>
+          <div style="font-size:.7rem;color:var(--rd-muted,#6b7280);margin:4px 0 8px">Scheduled this day, slot not set. Drag into a crew slot. Drop here to clear a slot.</div>
           ${unslotted.length ? unslotted.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.75rem">All assigned</div>`}
         </div>
       </div>
