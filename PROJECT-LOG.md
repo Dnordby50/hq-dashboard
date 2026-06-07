@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: Jobs pipeline + Next Day polish (white cards, rename, schedule-reconciled columns, 3rd slot)
+
+By: Claude Code
+
+Four UI/UX asks from Dylan. Commits 6bb43b8 (index.html) and 29478ec (migration), pushed to main. One migration needs running in prod (Handoff to Cowork below).
+
+1. White kanban cards. The Next Day board and the Jobs pipeline rendered their cards/columns with inline var(--s2)/var(--bg-soft)/var(--border)/var(--muted) styles. Those tokens are only remapped to light values in portal mode (body.pec-portal-mode); in the CRM they fall back to the dark :root palette, so the cards showed black and stuck out. Switched the inline styles to the CRM redesign tokens the rest of the CRM uses (--rd-card #fff, --rd-soft #f5f6f8, --rd-line, --rd-muted, --rd-ink), matching the white .pec-card look.
+
+2. Renamed the subnav button "Pipeline" -> "Jobs pipeline" (the view's own H2 was already "Jobs Pipeline"; the sidebar clone picks up the new label from the source #pecSubnav button).
+
+3. Jobs pipeline auto-reconciles to the schedule calendar. Problem: jobs placed on the calendar were still showing under "Project Accepted" (signed) because pec_job_ar.status had not caught up. Fix in loadPipelineData: compute effectiveStatus per row -- if the job has an install date (inst.start) but stored status is still 'signed', show it under Scheduled (or In progress once the install day is today/past, MST). PIPELINE_COLUMNS now match on effectiveStatus. Display-only: stored jobs.status is NOT written here (the job-detail auto-sync still persists it when a job is opened), and the drag-to-move manual override is unchanged. Only 'signed' is promoted; any other stored status is left as-is.
+
+4. Next Day third slot. The board had AM (first visit) and PM (second visit) per crew; added a third "Extra (overflow)" column for a 3rd smaller job or an overflow job (time_slot 'EXTRA'). The grid went from 2 to 3 slot columns; the existing drag/drop already generalises over data-slot. Needs the time_slot CHECK widened (migration below); pre-migration, dropping into Extra fails the CHECK and shows a toast, the AM/PM slots are unaffected.
+
+## Handoff to Cowork
+Run in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor:
+1. supabase/migrations/2026-06-07_schedule_time_slot_extra.sql -- drops and re-adds pec_prod_job_schedule_days_time_slot_check to allow 'EXTRA' in addition to 'AM'/'PM'. Non-destructive (constraint swap only, no data change). Verify with the constraint-definition query at the bottom of the file (it should list AM, PM, EXTRA), or by inserting a throwaway row with time_slot='EXTRA' and deleting it. Until this runs, the new Next Day "Extra (overflow)" slot will reject drops with a toast; AM/PM keep working.
+
 ## [2026-06-07 MST] Claude Code: third (root) fix for the save wedge - bounded custom auth lock (stranded navigator.locks lock)
 
 By: Claude Code
