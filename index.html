@@ -5374,6 +5374,58 @@ async function syncPublicJobStatusFromSchedule(prodJob, { cleared = false } = {}
   }
 }
 
+// Reconcile jobs.status to the SCHEDULE CALENDAR for EVERY bridged job, so the
+// calendar is the single source of truth everywhere (Pipeline, Jobs list,
+// Dashboard, job detail) and not just on the view you happen to open or the
+// action you happen to take. syncPublicJobStatusFromSchedule above handles live
+// scheduling actions; this catches jobs that were scheduled earlier (or via a
+// path that did not call it) and were left stuck on 'signed'. Rules: a job with
+// any scheduled date is 'in_progress' if its earliest date is today/past (MST)
+// else 'scheduled'; a job with no schedule is 'signed'. NEVER touches a job an
+// admin pinned by hand (status_manual_at) -- that is the manual override via the
+// pipeline drag or the job-detail dropdown, which wins until the calendar
+// changes again (that path clears status_manual_at). Completed is never changed.
+// Best-effort; throttled so repeated view opens do not re-sweep.
+let _schedSyncAt = 0;
+async function runScheduleStatusSync({ force = false } = {}) {
+  try {
+    if (!state.adminUser) return;
+    if (!force && (Date.now() - _schedSyncAt) < 20000) return;
+    _schedSyncAt = Date.now();
+    const today = mstTodayIso();
+    const [pjRes, dayRes, jobsRes] = await Promise.all([
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
+      supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
+      supabase.from('jobs').select('id,status,status_manual_at,dripjobs_deal_id').not('dripjobs_deal_id', 'is', null).is('archived_at', null).neq('status', 'completed'),
+    ]);
+    if (pjRes.error || jobsRes.error) return;
+    const daysByProd = {};
+    for (const d of (dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
+    // Earliest scheduled date per deal (install_date or any schedule day).
+    const startByDeal = {};
+    for (const p of (pjRes.data || [])) {
+      const ds = [];
+      if (p.install_date) ds.push(p.install_date);
+      for (const sd of (daysByProd[p.id] || [])) ds.push(sd);
+      if (!ds.length) continue;
+      ds.sort();
+      if (!startByDeal[p.dripjobs_deal_id] || ds[0] < startByDeal[p.dripjobs_deal_id]) startByDeal[p.dripjobs_deal_id] = ds[0];
+    }
+    let n = 0;
+    for (const j of (jobsRes.data || [])) {
+      if (j.status_manual_at) continue;                 // manual override wins
+      const start = startByDeal[j.dripjobs_deal_id];
+      const target = start ? (start <= today ? 'in_progress' : 'scheduled') : 'signed';
+      if (j.status === target) continue;
+      const upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id);
+      if (upd.error) { console.warn('[pec] schedule status sync:', upd.error.message); continue; }
+      n++;
+      try { await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule_sync' }); } catch (_) {}
+    }
+    if (n) console.log('[pec] schedule status sync reconciled', n, 'job(s) to match the calendar');
+  } catch (e) { console.warn('[pec] runScheduleStatusSync threw:', e); }
+}
+
 // Build the human-readable phrase for one audit_log row.
 function activityPhrase(row) {
   const b = row.before_json || {}, a = row.after_json || {};
@@ -5482,6 +5534,8 @@ async function initAuth() {
   wireAuthListener();
   if (state.session) await resolveAdminUser();
   // Fire-and-forget the install-day auto-progress sweep. Best-effort: any
+  // Reconcile every bridged job's status to the calendar (source of truth).
+  runScheduleStatusSync();
   // failure is swallowed inside runAutoProgressSweep() so it cannot delay
   // or break the first paint.
   runAutoProgressSweep();
@@ -11048,6 +11102,9 @@ function pipelineCardHtml(r, canEdit) {
 async function renderPipeline() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading pipeline…</div>';
+  // Reconcile statuses to the calendar first so the columns reflect the schedule
+  // (throttled; a no-op if it ran in the last 20s).
+  await runScheduleStatusSync();
   let data;
   try {
     data = await loadPipelineData();
@@ -11234,7 +11291,6 @@ async function renderNextDay() {
 
   root.innerHTML = `
     <div style="padding:4px 2px 0">
-      <h2 style="margin:0">Next Day Schedule</h2>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px">
         <button type="button" class="pec-btn ghost sm" id="nextDayPrev">‹ Prev</button>
         <input type="date" id="nextDayDate" value="${esc(target)}" style="max-width:170px">
@@ -11295,6 +11351,7 @@ async function renderNextDay() {
 async function renderSchedule() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
+  await runScheduleStatusSync(); // calendar is the source of truth; keep statuses in step (throttled)
   await loadScheduleData();
   if (!state.scheduleAnchor) state.scheduleAnchor = isoDate(new Date());
   // View mode: 'week' (single-week per-crew run sheet) or '3weeks' (the rolling
