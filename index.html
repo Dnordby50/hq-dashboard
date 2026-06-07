@@ -6212,6 +6212,7 @@ async function renderCustomerDetail(id) {
       ${portalLink
         ? `<button class="pec-btn sm" id="pecCustViewPortal">View customer portal</button>`
         : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
+      <button class="pec-btn sm" id="pecCustDelete" style="margin-left:auto;color:#dc2626" title="Archive this customer (reversible)">Delete</button>
     </div>
 
     <div class="pec-card">
@@ -6273,6 +6274,32 @@ async function renderCustomerDetail(id) {
     switchView('customers');
   });
   $('pecCustEdit').addEventListener('click', () => openCustomerForm(c));
+  // Soft-delete (archive) the customer. Reversible (sets archived_at, the same
+  // pattern jobs use), never touches the linked jobs. Warns hard if the customer
+  // still has active jobs, listing them. Writes a bell notification via a scoped
+  // RPC (client cannot insert pec_notifications directly under RLS).
+  $('pecCustDelete').addEventListener('click', async () => {
+    const jobNote = allJobs.length
+      ? `\n\nWARNING: this customer still has ${allJobs.length} active job(s):\n`
+        + allJobs.slice(0, 8).map(j => `- ${j.address || '(no address)'} [${j.status || ''}]`).join('\n')
+        + (allJobs.length > 8 ? `\n...and ${allJobs.length - 8} more` : '')
+        + `\n\nThe jobs are NOT deleted; they stay in the system, but the customer will be hidden.`
+      : '';
+    if (!confirm(`Delete customer "${c.name || ''}"? This archives the customer (reversible).${jobNote}`)) return;
+    const btn = $('pecCustDelete'); btn.disabled = true; btn.textContent = 'Deleting…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('customers').update({ archived_at: new Date().toISOString() }).eq('id', c.id), { label: 'customer-delete' });
+      if (upd.error) throw upd.error;
+      // Bell notification; best-effort so a not-yet-migrated RPC never blocks the delete.
+      try { await supabase.rpc('log_customer_deleted', { p_customer_id: c.id, p_name: c.name || '' }); } catch (_) { /* RPC may not be live yet */ }
+      showToast('Customer deleted', { ttl: 2500 });
+      state.openCustomerId = null;
+      renderCustomers();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Delete';
+      alert('Delete failed: ' + (err.message || err));
+    }
+  });
   if (portalLink) {
     $('pecCustCopyLink').addEventListener('click', () => {
       navigator.clipboard.writeText(portalLink).then(() => {
