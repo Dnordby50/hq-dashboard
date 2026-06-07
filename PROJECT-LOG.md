@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: found the REAL root cause of the recurring save wedge (multiple GoTrueClient instances) - corrects the Phase 1 1C conclusion
+
+By: Claude Code
+
+Correction to the Phase 1 entry's item 1C, which concluded the "Martin Trout" save failure was just the documented auth-lock wedge surfacing after recovery also failed, with "no code change warranted." That was incomplete. Dylan hit it AGAIN on the FIRST press of finalize-estimate after adding a custom system, with this console signature: "Multiple GoTrueClient instances detected in the same browser context ... under the same storage key", then "[pec] rebuilt Supabase client", then "job save failed Error: SESSION_TIMEOUT:job-save". Local commit 97271fb (index.html).
+
+Real root cause: recoverWedgedClient() built a fresh client and reassigned the `supabase` binding but NEVER disposed the old one. The dead client kept BOTH its autoRefreshToken background ticker AND its onAuthStateChange subscription (registered in initAuth) running against the same sb-<ref>-auth-token storage key. So after the very first recovery in a session there were two (then three, etc.) GoTrueClient instances all auto-refreshing the same token and contending on the shared auth Web Lock. That contention is what wedged the NEXT save on its FIRST attempt (not idle-related), and because each recovery added another zombie client, the problem COMPOUNDED across the session instead of healing, which is why retries did not reliably save and why it kept recurring until a full reload. The "Multiple GoTrueClient instances" warning was the smoking gun.
+
+Fix: guarantee exactly one live GoTrue. recoverWedgedClient now, before swapping, unsubscribes the old auth listener (_pecAuthSub) and stops the old client's auto-refresh ticker (bounded by a 1s race so a wedged client cannot hang the teardown), then re-binds the listener onto the fresh client via a new wireAuthListener() (also now used by initAuth, so the listener and the swallow-initial-event logic live in one place). With a single client plus supabase-js's default navigator.locks exclusive lock plus the existing timedFetch 8s auth-fetch ceiling, the pre-write refresh (ensureFreshSession) and the write's own getSession serialize cleanly through one lock, so the first finalize press succeeds without depending on the retry. Recovery also no longer leaves the new client without an auth listener (a latent bug: pre-fix, after any recovery, sign-out / token-refresh events stopped being handled).
+
+Note for Dylan: existing zombie clients from before this fix are cleared by one hard reload (Cmd+Shift+R); after that, recoveries stop accumulating. CLAUDE.md's wedge note still holds (keep timedFetch, keep the default lock); this fix is strictly about not running more than one client at a time.
+
 ## [2026-06-06 MST] Cowork: ran the six 2026-06-06 portal/CRM migrations in PROD Supabase, verified
 
 By: Cowork
