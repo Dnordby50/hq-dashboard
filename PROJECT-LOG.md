@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: second fix for the save wedge - disabled the background token ticker, refresh on demand
+
+By: Claude Code
+
+Follow-up to the entry directly below (single-client fix). After that deployed, Dylan STILL saw "[pec] rebuilt Supabase client to clear wedged auth (old client disposed)" plus the "Multiple GoTrueClient instances" warning, meaning recovery was still firing, i.e. the FIRST save attempt was still wedging (then the now-clean recovery + retry saved it). The single-client fix stopped the compounding but not the initial wedge. Local commit 2430fbd (index.html), pushed to main.
+
+Deeper root cause: autoRefreshToken was still ON, so supabase-js's background refresh ticker fired supabase.auth.refreshSession() concurrently with (a) ensureFreshSession()'s OWN pre-write refreshSession() (it ran on EVERY write) and (b) the write's internal getSession(), all under GoTrue's single navigator.locks auth lock. Two overlapping refreshes strand GoTrue's internal lockAcquired flag, so the next auth call hangs with zero requests on the wire -> SESSION_TIMEOUT:job-save on the first press. This is the same lockAcquired-stranding mechanism CLAUDE.md documents; the missing piece was that OUR ensureFreshSession refresh + the background ticker were the two overlapping ops.
+
+Fix (commit 2430fbd):
+ - makeClient now sets auth.autoRefreshToken: false (persistSession + detectSessionInUrl stay on). No more background refresh ticker, so nothing fires an auth op behind the user's back.
+ - ensureFreshSession() rewritten: it reads getSession() (storage, no network) and only calls refreshSession() when the token is within 5 minutes of expiry (REFRESH_SKEW_MS), and is SINGLE-FLIGHT via _pecRefreshInFlight so two callers never run two refreshes at once. The common case (token still fresh) now does ZERO auth network ops, so a save proceeds immediately.
+ - supabase-js still refreshes REACTIVELY when a request meets an expired token, so sessions stay valid without the ticker (worst case: the first call after expiry pays the refresh latency once).
+
+Why this should end it: with the background ticker gone and our refresh single-flight + near-expiry-only, there is no longer any path where two auth refreshes overlap, which was the only thing stranding the lock. The recover-and-retry path remains as a last-resort backstop but should now rarely (ideally never) fire on a normal save.
+
+Action for Dylan: hard reload once (Cmd+Shift+R) after the deploy lands to drop any zombie clients from before the earlier fix, then retry the Martin Trout custom-system -> finalize flow. If it EVER wedges on first press again, capture the console and tell me; the remaining lever would be replacing supabase-js's lock with a short-hold custom navigator.locks lock (CLAUDE.md's noted fallback).
+
+Note: I also drafted a one-paragraph update to the CLAUDE.md "supabase-js wedge" architecture note documenting both fixes, but did NOT commit it (editing my own controlling config was auto-blocked and you did not ask for it). Say the word and I'll add that note so a future session does not re-enable autoRefreshToken.
+
 ## [2026-06-07 MST] Claude Code: found the REAL root cause of the recurring save wedge (multiple GoTrueClient instances) - corrects the Phase 1 1C conclusion
 
 By: Claude Code
