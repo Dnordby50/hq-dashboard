@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: fixed the invoice 404, added logo/payments/aligned totals, handled the domain rename, and renamed the project to TopCoat / PEC CRM
+
+By: Claude Code
+Scope: Post-launch follow-ups. All pushed to main and deployed. Files: netlify/functions/pec-public-invoice.cjs, pec-send-email.cjs, mcp.cjs, pec-auto-progress.cjs, netlify.toml, index.html, CLAUDE.md, PROJECT-LOG.md. Stripe was explicitly shelved to next week (assessment below).
+
+Invoice "not found" 404 (root cause found, fixed): NOT the DB or a migration. The /pay/* redirect in netlify.toml uses to="/.netlify/functions/pec-public-invoice?token=:splat", and Netlify does NOT interpolate :splat into the toml redirect's query string, so the function received token="" and returned its not-found page. Confirmed via a temporary ?diag branch: direct function calls (where I supplied ?token=) returned 200 and rendered fine, while /pay/<token> showed query=undefined, path="/pay/<token>", resolved from path. Fix: the function now falls back to parsing the UUID out of event.path / rawUrl when the query token is absent (commit 7633500). Temp diag removed (401f0cf). This had been broken since the first emailed test; my earlier "migration missing" hypothesis was wrong (Cowork had already confirmed the 2026-06-01 view exposes public_token).
+
+Invoice polish (commit 3651cd9): logo at the top of the invoice page AND the email (on the light area above the orange band, because the logo's orange "EPOXY COMPANY" text would vanish on orange); invoice summary totals converted to a table whose amount column matches the line-items Amount column so they line up; new "Payments received" ledger on the public invoice (date, method, reference/check #, amount + total paid) from pec_payments. With Cowork's 2026-06-07 brand migration now live, the page + emails render black/orange.
+
+Domain rename (commit 97606c8): site renamed hq-prescott -> prescottepoxy.netlify.app. Made the logo domain-proof (invoice page uses relative /assets path; email builds from SITE_URL=process.env.URL; Settings preview uses location.origin) and updated the remaining hardcoded fallbacks (pec-send-email SITE_URL, mcp origin fallback, auto-progress comment) + the netlify.toml referrer note.
+
+Project rename (commit c14d774): TopCoat is the product wordmark (sidebar now shows "TopCoat" + "PEC CRM" descriptor; the PEC logo image already carries the company name), tab title "TopCoat · PEC CRM", leftover "HQ" chips/avatar -> "TC", demo project name -> "PEC CRM", CLAUDE.md + PROJECT-LOG titles updated. Left "Cockpit" (feature) and "Dashboard" (section/tab) labels alone. Repo/GitHub name unchanged per Dylan's scope.
+
+Stripe assessment (shelved to next week): ~1.5-2.5 focused days for a production-safe version. Recommended path = Stripe Checkout (hosted, keeps us out of PCI scope): a pec-create-checkout function (session for the balance due), wire the invoice "Credit Card" button to redirect there, and a pec-stripe-webhook that verifies the signature and inserts into pec_payments idempotently (dedupe on the payment-intent id; record from the webhook, never the client redirect). pec_payments.method already allows 'stripe'. Flag: card-surcharge legality/disclosure rules before passing the 3% through Stripe.
+
+## Handoff to Dylan (external configs that the domain rename breaks; do these or Maps/jobs/auth fail on the new domain)
+1. Google Cloud Console: update the Maps/Sheets API key HTTP-referrer restriction from hq-prescott.netlify.app/* to prescottepoxy.netlify.app/* (else the dashboard's Google calls are rejected).
+2. DripJobs: update the three webhook URLs (proposal-accepted, stage-changed, project-completed) to https://prescottepoxy.netlify.app/.netlify/functions/... (else new jobs stop syncing into the CRM).
+3. Supabase Auth (dashboard > Authentication > URL config): set Site URL + add prescottepoxy.netlify.app to the redirect allowlist (for password-reset / auth redirects).
+4. If/when reconnecting the Topcoat MCP connector: use https://prescottepoxy.netlify.app/mcp.
+Note: any invoice links already emailed under the old domain are dead; re-send those. New sends use the new domain automatically.
+
 ## [2026-06-06 MST] Cowork: ran the two new 2026-06-07 invoicing migrations in PROD Supabase, verified
 
 By: Cowork
