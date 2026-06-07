@@ -4701,25 +4701,53 @@ const timedFetch = (input, init = {}) => {
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(t));
 };
+// Custom auth lock -- the real cure for the recurring save wedge. supabase-js's
+// DEFAULT lock is navigator.locks keyed by the storage key, so it is shared by
+// EVERY client instance in the tab. That is why recoverWedgedClient() (rebuild
+// the client) never helped: a rebuilt client gets a NEW client but the SAME web
+// lock, so if the lock is stranded (an auth op that hangs with zero requests on
+// the wire -- no fetch, so timedFetch cannot rescue it), every later auth call,
+// even on the fresh client, waits on it forever -> SESSION_TIMEOUT on the write,
+// retry, then again. This lock keeps full mutual exclusion in the normal case
+// but BOUNDS the wait: if it cannot acquire within `deadline` (set above
+// timedFetch's 8s auth ceiling, so any legit in-flight auth op has already
+// finished or aborted), it STEALS the lock to clear a stranded holder, and as a
+// last resort runs without it. It can no longer hang forever. (CLAUDE.md's noted
+// fallback: "prefer a SHORT-HOLD custom navigator.locks lock over a no-op.")
+async function pecAuthLock(name, _acquireTimeout, fn) {
+  const L = (typeof navigator !== 'undefined') && navigator.locks;
+  if (!L || !L.request) return await fn();           // no Web Locks API -> just run
+  const deadline = 9000;
+  const ac = new AbortController();
+  const t = setTimeout(() => { try { ac.abort(); } catch (_) {} }, deadline);
+  try {
+    return await L.request(name, { signal: ac.signal }, async () => { clearTimeout(t); return await fn(); });
+  } catch (e) {
+    clearTimeout(t);
+    if (!(e && e.name === 'AbortError')) throw e;     // a real error -> propagate
+    console.warn('[pec] auth lock stuck >' + deadline + 'ms; stealing to clear a stranded lock');
+    try {
+      return await L.request(name, { steal: true }, async () => await fn());
+    } catch (e2) {
+      console.warn('[pec] auth lock steal failed; proceeding without lock', e2);
+      return await fn();                              // last resort: never wedge
+    }
+  }
+}
 const makeClient = () => createClient(
   CFG.SUPABASE_URL || 'https://missing.supabase.co',
   CFG.SUPABASE_ANON_KEY || 'missing',
-  // No `auth.lock` override -> supabase-js's default navigator.locks exclusive
-  // lock (real mutual exclusion). timedFetch bounds the auth fetch so the lock
-  // can't be held by a stalled refresh.
-  //
-  // autoRefreshToken is OFF on purpose. The background refresh ticker fired
-  // CONCURRENTLY with our own ensureFreshSession refresh (run before every
-  // write) and the write's getSession, all under GoTrue's single auth lock.
-  // Two overlapping refreshes strand GoTrue's internal `lockAcquired` flag, and
-  // the next auth call then hangs with zero requests on the wire -- the "first
-  // save wedges" bug. We refresh ON DEMAND instead (ensureFreshSession: only
-  // near expiry, single-flight), and supabase-js still refreshes REACTIVELY
-  // when a request meets an expired token, so the session stays valid without a
-  // background ticker. Keep timedFetch; persistSession/detectSessionInUrl stay
-  // at their defaults (on).
+  // autoRefreshToken OFF: its background ticker fired refreshSession()
+  // concurrently with ensureFreshSession's own refresh and the write's
+  // getSession, overlapping auth ops that strand GoTrue's lockAcquired flag. We
+  // refresh ON DEMAND instead (ensureFreshSession: near-expiry, single-flight),
+  // and supabase-js still refreshes REACTIVELY on an expired token, so sessions
+  // stay valid without the ticker.
+  // lock: pecAuthLock -- bounded custom navigator.locks lock so a stranded lock
+  // can never hang every auth call forever (see pecAuthLock above). Keep
+  // timedFetch; persistSession/detectSessionInUrl stay at their defaults (on).
   {
-    auth: { autoRefreshToken: false, persistSession: true, detectSessionInUrl: true },
+    auth: { autoRefreshToken: false, persistSession: true, detectSessionInUrl: true, lock: pecAuthLock },
     global: { fetch: timedFetch },
   }
 );
