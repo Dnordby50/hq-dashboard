@@ -13396,6 +13396,19 @@ if (portalToken) {
   document.body.classList.add('pec-portal-mode');
   window.addEventListener('hashchange', () => renderCustomerPortal(portalToken));
   renderCustomerPortal(portalToken);
+  // Log a CUSTOMER portal view exactly once per page load (not per hashchange).
+  // Skip staff previews: &staff=1 from the CRM "View customer portal" button,
+  // or any context with an active CRM login (staff opening the link in their
+  // own signed-in browser). Token-scoped RPC; best-effort, never breaks the page.
+  if (new URLSearchParams(location.search).get('staff') !== '1') {
+    (async () => {
+      try {
+        const { data: sess } = await supabase.auth.getSession();
+        if (sess?.session) return; // authenticated staff session -> not a customer visit
+        await supabase.rpc('portal_log_view', { p_token: portalToken, p_user_agent: navigator.userAgent });
+      } catch (_) { /* view logging is best-effort */ }
+    })();
+  }
 } else {
   const tabEl = document.getElementById('tab-prescott-crm');
   // Wire the #authGate sign-in form (the whole-app gate). Errors render into
