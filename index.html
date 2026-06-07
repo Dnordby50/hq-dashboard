@@ -13110,6 +13110,33 @@ async function renderJobCosting() {
     return areas[0] ? sysById[areas[0].system_type_id] : null;
   };
 
+  // Pending Job Costing: completed-but-not-costed jobs. "Completed" uses the SAME
+  // rule as the Jobs pipeline (status 'completed' OR an install date that is
+  // today/past in MST, via mstTodayIso) so the views agree. A job leaves this
+  // queue once a costing row exists for it. Archived jobs are excluded.
+  const _mstToday = mstTodayIso();
+  const pendingCosting = (state.prodJobs || []).filter(j => {
+    if (j.archived_at) return false;
+    const completed = j.status === 'completed' || (j.install_date && j.install_date <= _mstToday);
+    return completed && !costByJob[j.id];
+  }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+  const pendingHtml = pendingCosting.length ? `
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      <h3 style="margin:0 0 8px">Pending Job Costing <span style="color:var(--muted);font-size:.72rem;font-weight:400">${pendingCosting.length} completed job${pendingCosting.length === 1 ? '' : 's'} not yet costed</span></h3>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${pendingCosting.map(j => {
+          const sys = areaSystem(j);
+          return `<div data-pending-cost="${esc(j.id)}" style="display:flex;gap:10px;align-items:center;cursor:pointer;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text))">
+            <span style="flex:1;font-weight:600">${esc(j.customer_name || '(no name)')}</span>
+            <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
+            ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
+            <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.install_date ? 'Installed ' + esc(j.install_date) : esc(j.status || '')}</span>
+            <span class="pec-badge" style="--pec-badge-bg:#d97706">Needs costing</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
+
   const filt = state.costingFilter;
   const jobs = state.prodJobs.filter(j => {
     if (filt === 'all') return true;
@@ -13202,6 +13229,7 @@ async function renderJobCosting() {
         <button class="pec-btn sm" id="costPrint">Print</button>
       </div>
     </div>
+    ${pendingHtml}
     ${rollupHtml}
     <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
       <div style="overflow-x:auto;padding-bottom:8px">
@@ -13344,6 +13372,10 @@ async function renderJobCosting() {
     set('[data-derived="revHr"]',      r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
   }
 
+  root.querySelectorAll('[data-pending-cost]').forEach(el => el.addEventListener('click', () => {
+    state.openUnifiedJobId = el.dataset.pendingCost;
+    renderJobCosting();
+  }));
   root.querySelectorAll('tr[data-job-id]').forEach(tr => {
     const jobId = tr.dataset.jobId;
     tr.style.cursor = 'pointer';
