@@ -4,6 +4,53 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: shipped the 10-item batch (catalog crash, tab-switch reload, plus 8 UI/workflow items)
+
+By: Claude Code
+
+Executed the 10-item batch (the Cowork prompt below). One commit per item, all local + pushed to main per Dylan's working mode this week. One new migration needs running in prod (Handoff to Cowork). Syntax-checked each edit via node --check on the extracted module. Items shipped in priority order 9, 1, then 3, 4, 5, 10, 2, 8, 7, 6.
+
+Item 9 (commit 11dbde5) Price & Material Catalog was dead with "invalidateRefCache is not defined". It is declared in the CRM module but loadCatalog runs in the separate production module (isolated scope). Bridged it on window (window.invalidateRefCache, same pattern as window.computeMaterialPlan) and called it guarded from loadCatalog.
+
+Item 1 (commit e4370ca) tab switches were hard-reloading the page. Cause: withFreshSession raced a 3s refreshSession wedge-probe that auto-reloaded at 3s, BELOW pecAuthLock's 9s steal, so 3-9s auth-lock contention was wrongly declared an unrecoverable wedge. Reads are idempotent, so a read failure must not reload. Fix: the read-timeout branch now rebuilds the client in place (recoverWedgedClient, no reload) and retries once; if it still fails it throws SESSION_WEDGED so switchView shows its in-place Reload button the user chooses. Reconciled the constants with a documented ordering: timedFetch auth 8s < pecAuthLock steal 9s < read fence 12s (was 10s) < switchView render fence 30s (was 15s). Added console.warn lines naming which layer fired; with no auto-reload the console now survives. Write paths (payments, finalize) untouched. BEFORE: clicking tabs -> "session wedge" message -> spontaneous reload. AFTER: a slow read shows a spinner then content, or at worst an in-place Reload button; no automatic reload.
+
+Item 3 (commit e638cb1) contact-tag chips rendered black: they set --rd-soft background but no text color so text inherited the dark --text. Added --rd-ink text + --rd-line border on both the openCustomerForm editor chips and the renderCustomerDetail display chips.
+
+Item 4 (commit 3d9bf73) job detail now shows the contact person under the business name. Added first_name,last_name,company_name to the job-detail customer select and rendered the person as a secondary line when company_name is set; individuals unchanged.
+
+Item 5 (commit 25d9794) renamed the tab + board heading to "Next Day Schedule" and the slots to First/Second/Third (new slotLabel helper; stored values stay AM/PM/EXTRA). Added the missing Third option to the schedule modal's time-slot picker so it matches the board. No clear duplicate heading was found in the schedule modal (only "Schedule job"); after the rename the tab and board read consistently.
+
+Item 10 (commit 328425d) Settings > Email "Recent sends": renamed the Template column to Subject and show r.subject with a fallback to the template key. No server change needed: pec_email_log already has a subject column and pec-send-email.cjs already stores it.
+
+Item 2 (commit 752ff5e; NEEDS MIGRATION) added a Delete button to the customer detail. Soft delete (sets customers.archived_at via withFreshWriteRetry, reversible, mirrors job archive); never touches linked jobs; warns hard and lists active jobs first if any exist. After deleting it calls a new SECURITY DEFINER RPC log_customer_deleted (migration 2026-06-07_log_customer_deleted.sql) that writes a customer_deleted row into pec_notifications so it shows in the bell, naming the customer + actor. The RPC call is best-effort so the delete works before the migration runs. Decisions from Dylan: SOFT delete, in-app bell only (email/Slack is a noted follow-up, NOT built).
+
+Item 8 (commit 23f6e4d) turned "Invoicing Docs" into a Help/FAQ: relabeled the subnav button to "Help" and moved it to the end near Settings; renderInvoicingDocs now leads with a "What each tab does" section (one line per tab) and keeps the full invoicing/AR docs below. Reused the existing docs view plumbing (no dispatch/route change).
+
+Item 7 (commit 3a57485) added a "Pending Job Costing" queue at the top of Job Costing: completed-but-not-costed jobs, where completed = status 'completed' OR install_date today/past in MST (same mstTodayIso rule the pipeline uses) AND no costing row AND not archived. Clicking a row opens that job's costing detail; it drops off once costed.
+
+Item 6 (commit b3dbfba) Job Schedule readability. Part 1: the schedule bar's slot chip now reads First/Second/Third; the bar already leads slot -> name -> price -> system with crew last and progressive collapse shedding crew then system. Part 2 (built now, per Dylan): a Week / 3-week toggle by the nav, persisted in localStorage (default 3 weeks). 3-week mode is unchanged; Week mode renders the anchor's week as a 7-day per-crew run sheet (one column per day, jobs grouped by crew, ordered by slot First/Second/Third, today highlighted), clicking a job opens the schedule modal.
+
+## Handoff to Cowork
+Run in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor:
+1. supabase/migrations/2026-06-07_log_customer_deleted.sql -- creates the SECURITY DEFINER function public.log_customer_deleted(uuid, text) and grants execute to authenticated. Non-destructive (function only). Verify: select proname from pg_proc where proname = 'log_customer_deleted'; returns 1 row. Until this runs, the customer Delete button still works (soft delete lands); only the bell notification is skipped.
+
+## Handoff to Dylan
+All 10 items are pushed to main and will deploy. Two follow-ups: (a) the Item 2 bell notification needs the migration above run before it shows; (b) "send me a notification" on delete is in-app bell only for now -- say the word if you also want email/Slack and I will wire that send path.
+
+
+## [2026-06-07 MST] Cowork: investigated Dylan's 10-item batch, produced a Claude Code prompt (no repo code changed)
+
+By: Cowork
+
+Scope: Dylan pasted 10 issues/asks and said "investigate each and write a detailed Claude Code prompt." Investigated each against index.html and wrote a self-contained, file-line-referenced prompt for Claude Code. Saved the deliverable to the HQ workspace folder (claude-code-prompt-2026-06-07.md), NOT into this repo. No index.html or other repo code changed by Cowork; this entry is the only repo file touched.
+
+Two findings worth recording so Claude Code does not re-derive them:
+1. Price & Material Catalog crash ("invalidateRefCache is not defined", loadCatalog index.html:14107). Root cause is module-scope isolation: invalidateRefCache is declared at 5174 in the first <script type="module"> (CRM app), loadCatalog runs in the separate bootProd module (13895-15769). computeMaterialPlan is bridged via window (13944) but invalidateRefCache was never bridged. Fix is a two-line window bridge. One-line-class critical bug, whole catalog/ordering tab is down.
+2. Recurring tab-switch session wedge + auto hard reload is, on the read path, caused by inconsistent timeout constants layered across the three prior fixes: pecAuthLock steals a stranded lock at 9s (4720), but withFreshSession's wedge probe declares the session dead and reloads at 3s (5052) and its read fence at 10s (5035), both partly below the 9s self-heal, and timedFetch aborts REST at 20s (4699). So a recoverable lock contention (or a merely slow read) gets misdiagnosed as an unrecoverable wedge and triggers location.reload() on a plain tab switch. The prompt tells Claude Code to diagnose-before-patch (it is attempt #4), stop auto-reloading on idempotent reads (retry in place), and reconcile the constants so the bounded lock can win before anything declares a wedge.
+
+## Handoff to Dylan
+Review claude-code-prompt-2026-06-07.md in the HQ folder. Recommend handing Claude Code items 9 and 1 as their own sessions first (catalog fix is trivial and unblocks a dead tab; the wedge deserves a focused diagnose-first session). Items 6 (one-week view) part 2 is flagged to wait on your sign-off before build.
+
 ## [2026-06-07 MST] Cowork: ran the Next-Day 'EXTRA' time_slot migration in PROD Supabase, verified
 
 By: Cowork
