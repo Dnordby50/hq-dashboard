@@ -6050,6 +6050,9 @@ async function renderCustomerDetail(id) {
       <button class="pec-btn ghost" id="pecCustBack">← Back to customers</button>
       <button class="pec-btn sm" id="pecCustEdit">Edit customer</button>
       ${portalLink ? `<button class="pec-btn sm" id="pecCustCopyLink">Copy portal link</button>` : ''}
+      ${portalLink
+        ? `<button class="pec-btn sm" id="pecCustViewPortal">View customer portal</button>`
+        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
     </div>
 
     <div class="pec-card">
@@ -6118,6 +6121,9 @@ async function renderCustomerDetail(id) {
         setTimeout(() => { $('pecCustCopyLink').textContent = 'Copy portal link'; }, 1500);
       });
     });
+    // Open the customer's real portal in a new tab. &staff=1 tells the portal
+    // this is a staff preview so it does NOT record a customer view (see 1E).
+    $('pecCustViewPortal')?.addEventListener('click', () => window.open(portalLink + '&staff=1', '_blank', 'noopener'));
   }
   root.querySelectorAll('[data-open-job]').forEach(el => el.addEventListener('click', () => {
     state.view = 'jobs';
@@ -8143,6 +8149,9 @@ async function renderJobDetailInner(id) {
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
       <button class="pec-btn sm" id="pecJobViewInvoice">View Invoice</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
+      ${job.customers?.token
+        ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
+        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
     </div>
 
     <div class="pec-card">
@@ -8380,6 +8389,8 @@ async function renderJobDetailInner(id) {
       setTimeout(() => { $('pecJobCopyPortal').textContent = 'Copy portal link'; }, 1500);
     });
   });
+  // Staff preview of the customer's portal. &staff=1 suppresses view logging (1E).
+  $('pecJobViewPortal')?.addEventListener('click', () => window.open(portalLink + '&staff=1', '_blank', 'noopener'));
   $('pecJobPrintWO').addEventListener('click', () => renderWorkOrder({
     job, areasFromState: () => areas, systemTypes, products, productById,
     colorPairings, recipeSlots, defaultLaborRate,
