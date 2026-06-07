@@ -8522,6 +8522,7 @@ async function renderJobDetailInner(id) {
         id: a.id, name: a.name,
         sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
         system_type_id: a.system_type_id,
+        price: Number(a.price) || 0, // for per-area labor budget (3C); ignored by computeMaterialPlan
         flake_product_id: firstSlotPick(t => SWATCH_TYPES.has(t)),
         basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
       };
@@ -8552,47 +8553,121 @@ async function renderJobDetailInner(id) {
     const laborBudget = (laborPct != null && revenue > 0) ? (revenue * laborPct / 100) : null;
     const budgetedHours = (laborBudget != null && defaultLaborRate > 0) ? (laborBudget / defaultLaborRate) : null;
 
-    const materialsBlock = planErr
-      ? `<div style="color:var(--danger);font-size:.78rem">${esc(planErr)}</div>`
-      : matLines.length
-        ? `<table class="pec-table" style="font-size:.75rem;margin:0">
-            <thead><tr><th>Product</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Line</th></tr></thead>
-            <tbody>
-              ${matLines.map(l => `<tr>
-                <td>${esc(l.product_name || '')}</td>
-                <td style="text-align:right">${l.qty_needed != null ? esc(l.qty_needed) : '—'}</td>
-                <td style="text-align:right">${l.unit_cost_snapshot != null ? fmtMoney(l.unit_cost_snapshot) : '—'}</td>
-                <td style="text-align:right">${l.line_cost != null ? fmtMoney(l.line_cost) : '—'}</td>
-              </tr>`).join('')}
-              <tr style="font-weight:600;background:var(--rd-soft, var(--s2))">
-                <td colspan="3" style="text-align:right">Materials total</td>
-                <td style="text-align:right">${fmtMoney(materialsBudget)}</td>
-              </tr>
-            </tbody>
-          </table>`
-        : `<div style="color:var(--muted);font-size:.78rem">Pick a system and enter sqft to compute the materials budget.</div>`;
+    // Small reusable material-lines table (used for the whole job and per area).
+    const matTable = (lines, totalLabel, total) => `<table class="pec-table" style="font-size:.75rem;margin:0">
+        <thead><tr><th>Product</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Line</th></tr></thead>
+        <tbody>
+          ${lines.map(l => `<tr>
+            <td>${esc(l.product_name || '')}</td>
+            <td style="text-align:right">${l.qty_needed != null ? esc(l.qty_needed) : '—'}</td>
+            <td style="text-align:right">${l.unit_cost_snapshot != null ? fmtMoney(l.unit_cost_snapshot) : '—'}</td>
+            <td style="text-align:right">${l.line_cost != null ? fmtMoney(l.line_cost) : '—'}</td>
+          </tr>`).join('')}
+          <tr style="font-weight:600;background:var(--rd-soft, var(--s2))">
+            <td colspan="3" style="text-align:right">${totalLabel}</td>
+            <td style="text-align:right">${fmtMoney(total)}</td>
+          </tr>
+        </tbody>
+      </table>`;
 
-    const laborBlock = laborPct == null
-      ? `<div style="color:var(--muted);font-size:.78rem">Set <strong>Labor budget %</strong> on ${primarySystem ? esc(primarySystem.name) : 'the system'} in the Material Catalog to compute labor budget.</div>`
-      : revenue <= 0
-        ? `<div style="color:var(--muted);font-size:.78rem">Set the job's <strong>Price</strong> (top right) to compute labor budget.</div>`
-        : `<div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem;font-variant-numeric:tabular-nums">
-            <div><span style="color:var(--muted)">Revenue ${fmtMoney(revenue)} × ${laborPct.toFixed(2)}% =</span> <strong>${fmtMoney(laborBudget)}</strong></div>
-            <div><span style="color:var(--muted)">Budget ÷ $${defaultLaborRate}/hr =</span> <strong>${budgetedHours.toFixed(1)} hours</strong></div>
-            <div style="font-size:.7rem;color:var(--muted)">Hourly rate set in <em>public.settings.default_labor_hourly_rate</em>.</div>
-          </div>`;
+    const laborLine = (pct, price, label) => {
+      if (pct == null) return `<div style="color:var(--muted);font-size:.78rem">Set <strong>Labor budget %</strong> on the system in the Material Catalog.</div>`;
+      if (!(price > 0)) return `<div style="color:var(--muted);font-size:.78rem">Set the ${label} <strong>price</strong> to compute labor budget.</div>`;
+      const lb = price * pct / 100;
+      const hrs = defaultLaborRate > 0 ? lb / defaultLaborRate : null;
+      return `<div style="display:flex;flex-direction:column;gap:4px;font-size:.85rem;font-variant-numeric:tabular-nums">
+          <div><span style="color:var(--muted)">${fmtMoney(price)} × ${pct.toFixed(2)}% =</span> <strong>${fmtMoney(lb)}</strong></div>
+          ${hrs != null ? `<div><span style="color:var(--muted)">÷ $${defaultLaborRate}/hr =</span> <strong>${hrs.toFixed(1)} hours</strong></div>` : ''}
+        </div>`;
+    };
+
+    // Single-area (or zero) jobs: keep the original whole-job layout unchanged.
+    if (planAreas.length <= 1) {
+      const materialsBlock = planErr
+        ? `<div style="color:var(--danger);font-size:.78rem">${esc(planErr)}</div>`
+        : matLines.length
+          ? matTable(matLines, 'Materials total', materialsBudget)
+          : `<div style="color:var(--muted);font-size:.78rem">Pick a system and enter sqft to compute the materials budget.</div>`;
+      const laborBlock = laborPct == null
+        ? `<div style="color:var(--muted);font-size:.78rem">Set <strong>Labor budget %</strong> on ${primarySystem ? esc(primarySystem.name) : 'the system'} in the Material Catalog to compute labor budget.</div>`
+        : revenue <= 0
+          ? `<div style="color:var(--muted);font-size:.78rem">Set the job's <strong>Price</strong> (top right) to compute labor budget.</div>`
+          : `<div style="display:flex;flex-direction:column;gap:6px;font-size:.85rem;font-variant-numeric:tabular-nums">
+              <div><span style="color:var(--muted)">Revenue ${fmtMoney(revenue)} × ${laborPct.toFixed(2)}% =</span> <strong>${fmtMoney(laborBudget)}</strong></div>
+              <div><span style="color:var(--muted)">Budget ÷ $${defaultLaborRate}/hr =</span> <strong>${budgetedHours.toFixed(1)} hours</strong></div>
+              <div style="font-size:.7rem;color:var(--muted)">Hourly rate set in <em>public.settings.default_labor_hourly_rate</em>.</div>
+            </div>`;
+      host.innerHTML = `
+        <div class="pec-card">
+          <h3>Budget <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
+          <div class="pec-row-2" style="align-items:flex-start;gap:24px">
+            <div>
+              <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>
+              ${materialsBlock}
+            </div>
+            <div>
+              <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Labor</div>
+              ${laborBlock}
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Multi-area jobs: break materials AND budget down per area, plus a combined
+    // job total. Each area's materials are computed standalone (so a tampered or
+    // partial pick on one area cannot hide cost on another). NOTE: standalone
+    // per-area material costs can sum to MORE than the combined job total,
+    // because whole kits are shared across areas in the real order (the merged
+    // plan rounds kit counts once across all areas); the combined total below is
+    // the orderable number. Labor budget is per area (area price × its system %).
+    let laborTotalKnown = true, laborTotal = 0;
+    const areaSections = planAreas.map((pa, i) => {
+      let p = null, err = null;
+      try {
+        p = window.computeMaterialPlan({ areas: [pa], productsById: productById, recipeSlotsBySystemType: fullSlotsBySystem, defaultBasecoatByFlake });
+      } catch (e) { err = e && e.message ? e.message : String(e); }
+      const lines = p ? (p.lines || []) : [];
+      const matCost = lines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0);
+      const sys = systemTypes.find(s => s.id === pa.system_type_id);
+      const pct = sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null;
+      const price = Number(pa.price) || 0;
+      if (pct != null && price > 0) laborTotal += price * pct / 100; else laborTotalKnown = false;
+      const matBlock = err
+        ? `<div style="color:var(--danger);font-size:.78rem">${esc(err)}</div>`
+        : lines.length ? matTable(lines, 'Area materials', matCost)
+          : `<div style="color:var(--muted);font-size:.78rem">Pick a system and enter sqft for this area.</div>`;
+      return `<div style="border:1px solid var(--rd-line, var(--border));border-radius:8px;padding:12px;margin-bottom:12px">
+          <div style="font-weight:600;margin-bottom:8px">${esc(pa.name || ('Area ' + (i + 1)))}${sys ? ` <span style="color:var(--muted);font-weight:400;font-size:.78rem">· ${esc(sys.name)}</span>` : ''}</div>
+          <div class="pec-row-2" style="align-items:flex-start;gap:24px">
+            <div><div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>${matBlock}</div>
+            <div><div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Labor</div>${laborLine(pct, price, 'area')}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const combinedMat = planErr
+      ? `<div style="color:var(--danger);font-size:.78rem">${esc(planErr)}</div>`
+      : matLines.length ? matTable(matLines, 'Combined materials (orderable)', materialsBudget)
+        : `<div style="color:var(--muted);font-size:.78rem">No materials yet.</div>`;
+    const combinedLaborHtml = laborTotalKnown && laborTotal > 0
+      ? `<div style="display:flex;flex-direction:column;gap:4px;font-size:.85rem;font-variant-numeric:tabular-nums">
+          <div><span style="color:var(--muted)">Sum of area labor budgets =</span> <strong>${fmtMoney(laborTotal)}</strong></div>
+          ${defaultLaborRate > 0 ? `<div><span style="color:var(--muted)">÷ $${defaultLaborRate}/hr =</span> <strong>${(laborTotal / defaultLaborRate).toFixed(1)} hours</strong></div>` : ''}
+        </div>`
+      : `<div style="color:var(--muted);font-size:.78rem">Set a price and a system labor % on every area for a combined labor total.</div>`;
 
     host.innerHTML = `
       <div class="pec-card">
-        <h3>Budget <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
-        <div class="pec-row-2" style="align-items:flex-start;gap:24px">
-          <div>
-            <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>
-            ${materialsBlock}
-          </div>
-          <div>
-            <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Labor</div>
-            ${laborBlock}
+        <h3>Budget by area <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
+        ${areaSections}
+        <div style="border-top:2px solid var(--rd-line, var(--border));padding-top:12px;margin-top:4px">
+          <div style="font-weight:700;margin-bottom:8px">Combined job total</div>
+          <div class="pec-row-2" style="align-items:flex-start;gap:24px">
+            <div><div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>${combinedMat}
+              <div style="font-size:.68rem;color:var(--muted);margin-top:6px">Combined materials can be lower than the sum of areas because whole kits are shared across areas.</div></div>
+            <div><div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Labor</div>${combinedLaborHtml}</div>
           </div>
         </div>
       </div>
