@@ -5345,6 +5345,18 @@ function mstTodayIso() {
   return new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
+// Fallback bridge keys. The only DB link between public.jobs and the schedule
+// (pec_prod_jobs) is dripjobs_deal_id; jobs scheduled via a manual "+ Add Job"
+// calendar entry sit on a pec_prod_jobs row with NO deal id, so the deal bridge
+// misses them and they wrongly read as 'signed' (Project Accepted). When the
+// deal bridge is empty we fall back to matching on normalized customer name +
+// address. pec_prod_jobs has no customer_id, so this is the only available key.
+function _normKey(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function _nameAddrKey(name, addr) {
+  const n = _normKey(name), a = _normKey(addr);
+  return (n && a) ? n + '|' + a : ''; // require BOTH so we never match on a blank
+}
+
 // Propagate a production-calendar change to the bridged public.jobs row(s) so
 // the CRM status (Pipeline, Jobs list, job detail) matches the calendar right
 // away. The 2026-06-04 status-sync DB trigger does the same server-side as a
@@ -5394,39 +5406,58 @@ async function runScheduleStatusSync({ force = false } = {}) {
     _schedSyncAt = Date.now();
     const today = mstTodayIso();
     const [pjRes, dayRes, jobsRes] = await Promise.all([
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
+      // ALL prod rows (incl. manual, deal-id-null), so manual calendar entries
+      // are matched via the name+address fallback below.
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address'),
       supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
-      supabase.from('jobs').select('id,status,status_manual_at,dripjobs_deal_id').not('dripjobs_deal_id', 'is', null).is('archived_at', null).neq('status', 'completed'),
+      // ALL non-archived, non-completed jobs (deal id optional; some match only
+      // by name+address). customers(name) + address feed the fallback bridge.
+      supabase.from('jobs').select('id,status,status_manual_at,dripjobs_deal_id,address,completed_date,customers(name)').is('archived_at', null).neq('status', 'completed'),
     ]);
     if (pjRes.error || jobsRes.error) return;
     const daysByProd = {};
     for (const d of (dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
-    // Earliest scheduled date per deal (install_date or any schedule day).
-    const startByDeal = {};
+    // Earliest scheduled date by deal id AND by normalized name+address. The
+    // name+address map aggregates every prod row sharing the same customer+
+    // address (almost always the same job split across a webhook row + a manual
+    // row), which is exactly what we want to reunite.
+    const startByDeal = {}, startByNA = {};
+    const consider = (mapKey, map, ds) => {
+      if (!mapKey || !ds.length) return;
+      const earliest = ds.slice().sort()[0];
+      if (!map[mapKey] || earliest < map[mapKey]) map[mapKey] = earliest;
+    };
     for (const p of (pjRes.data || [])) {
       const ds = [];
       if (p.install_date) ds.push(p.install_date);
       for (const sd of (daysByProd[p.id] || [])) ds.push(sd);
       if (!ds.length) continue;
-      ds.sort();
-      if (!startByDeal[p.dripjobs_deal_id] || ds[0] < startByDeal[p.dripjobs_deal_id]) startByDeal[p.dripjobs_deal_id] = ds[0];
+      if (p.dripjobs_deal_id) consider(p.dripjobs_deal_id, startByDeal, ds);
+      consider(_nameAddrKey(p.customer_name, p.address), startByNA, ds);
     }
     let n = 0, scheduledTotal = 0, blocked = 0, firstErr = '';
     for (const j of (jobsRes.data || [])) {
-      const start = startByDeal[j.dripjobs_deal_id];
+      const start = (j.dripjobs_deal_id && startByDeal[j.dripjobs_deal_id])
+        || startByNA[_nameAddrKey(j.customers && j.customers.name, j.address)]
+        || null;
       if (start) scheduledTotal++;
       // Calendar wins: a job that is ON the schedule must not read as 'signed',
       // even if it was pinned by hand (a stale manual override). For any other
       // status we honor the manual pin.
       const onCalContradiction = start && j.status === 'signed';
       if (j.status_manual_at && !onCalContradiction) continue; // honor manual pin
-      const target = start ? (start <= today ? 'in_progress' : 'scheduled') : 'signed';
+      // Schedule is the source of truth: future/today -> scheduled; the date has
+      // PASSED -> completed; nothing on the calendar -> signed.
+      const target = !start ? 'signed' : (start < today ? 'completed' : 'scheduled');
       if (j.status === target) continue;
-      // Clear the manual pin only when the calendar is overriding it.
       const patch = onCalContradiction ? { status: target, status_manual_at: null } : { status: target };
+      // Stamp completed_date (to the install date) when auto-completing, so AR
+      // aging is correct -- mirrors markJobComplete. Only when not already set.
+      if (target === 'completed' && !j.completed_date) patch.completed_date = start;
       let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
       if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
-        upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id); // pre-migration fallback
+        const { status_manual_at, ...rest } = patch; // pre-migration fallback
+        upd = await supabase.from('jobs').update(rest).eq('id', j.id);
       }
       if (upd.error) {
         blocked++; if (!firstErr) firstErr = upd.error.message || String(upd.error);
@@ -5436,7 +5467,7 @@ async function runScheduleStatusSync({ force = false } = {}) {
       n++;
       try { await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule_sync' }); } catch (_) {}
     }
-    console.log(`[pec] schedule status sync: ${(jobsRes.data || []).length} bridged jobs, ${scheduledTotal} on the calendar, ${n} updated, ${blocked} blocked`);
+    console.log(`[pec] schedule status sync: ${(jobsRes.data || []).length} jobs, ${scheduledTotal} on the calendar, ${n} updated, ${blocked} blocked`);
     if (blocked) {
       // Surface the real reason in-app (most likely the jobs_scheduled_needs_price
       // CHECK: a job cannot be 'scheduled' without a price on the jobs row).
@@ -11002,7 +11033,7 @@ async function loadPipelineData() {
     supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
     // pec_job_ar carries money + status but not colors_confirmed_at, archived_at,
     // or lead_source, so pull those from jobs (lead_source lives on customers).
-    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,customers(lead_source)'),
+    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,address,customers(lead_source)'),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
   ]), { label: 'loadPipelineData' });
   if (arRes.error) throw new Error(arRes.error.message);
@@ -11019,7 +11050,23 @@ async function loadPipelineData() {
   for (const d of state.scheduleDays || []) (daysByProdJob[d.job_id] ||= []).push(d);
   const crewNameById = Object.fromEntries((state.crews || []).map(c => [c.id, c.name]));
 
-  const installInfo = (dealId) => {
+  // Fallback bridge: jobs scheduled via a manual calendar row have no deal id,
+  // so also index every prod row's schedule by normalized customer name+address.
+  const naSched = {}; // key -> { dates:[], crew:'' }
+  for (const p of state.prodJobs || []) {
+    const k = _nameAddrKey(p.customer_name, p.address); if (!k) continue;
+    const ds = [];
+    if (p.install_date) ds.push(p.install_date);
+    for (const d of daysByProdJob[p.id] || []) if (d.scheduled_date) ds.push(d.scheduled_date);
+    if (!ds.length) continue;
+    const e = (naSched[k] ||= { dates: [], crew: '' });
+    e.dates.push(...ds);
+    if (!e.crew) e.crew = crewNameById[p.crew_id] || p.crew || '';
+  }
+
+  // Earliest scheduled date + crew for a job: deal-id bridge first, then the
+  // name+address fallback (manual calendar entries).
+  const installInfo = (dealId, name, addr) => {
     const rows = dealId ? (prodByDeal[dealId] || []) : [];
     const dates = [];
     let crew = '';
@@ -11028,9 +11075,10 @@ async function loadPipelineData() {
       for (const d of daysByProdJob[p.id] || []) if (d.scheduled_date) dates.push(d.scheduled_date);
       if (!crew) crew = crewNameById[p.crew_id] || p.crew || '';
     }
-    if (!dates.length) return { start: null, end: null, crew };
-    dates.sort();
-    return { start: dates[0], end: dates[dates.length - 1], crew };
+    if (dates.length) { dates.sort(); return { start: dates[0], end: dates[dates.length - 1], crew }; }
+    const e = naSched[_nameAddrKey(name, addr)];
+    if (e && e.dates.length) { const ds = e.dates.slice().sort(); return { start: ds[0], end: ds[ds.length - 1], crew: e.crew }; }
+    return { start: null, end: null, crew };
   };
 
   const maxTs = (...vals) => {
@@ -11044,16 +11092,15 @@ async function loadPipelineData() {
   for (const r of arRes.data || []) {
     const extra = extraById[r.id] || {};
     if (extra.archived_at) continue; // pec_job_ar keeps archived rows; drop them here
-    const inst = installInfo(r.dripjobs_deal_id);
+    const inst = installInfo(r.dripjobs_deal_id, r.customer_name, extra.address);
     // Reconcile the pipeline with the schedule calendar: a job that is ON the
-    // calendar (has an install date) but whose stored status is still 'signed'
-    // belongs in Scheduled (or In progress once the install day arrives). This
-    // is the same rule renderJobDetail auto-syncs, applied display-only here so
-    // a placed-but-not-yet-resynced job stops sitting in Project Accepted. Only
-    // 'signed' is promoted; any other status is left exactly as stored.
+    // calendar but still stored as 'signed' belongs in Scheduled (future/today)
+    // or Project Complete (its date has passed). runScheduleStatusSync persists
+    // this; this display rule covers the brief window before that write lands.
+    // Only 'signed' is reconciled; any other status is left exactly as stored.
     let effectiveStatus = r.status;
     if (inst.start && r.status === 'signed') {
-      effectiveStatus = (inst.start <= mstToday) ? 'in_progress' : 'scheduled';
+      effectiveStatus = (inst.start < mstToday) ? 'completed' : 'scheduled';
     }
     rows.push({
       id: r.id,
@@ -11181,8 +11228,7 @@ async function renderPipeline() {
 
   root.innerHTML = `
     <div style="padding:4px 2px 0">
-      <h2 style="margin:0">Jobs Pipeline</h2>
-      <div style="color:var(--muted);font-size:.85rem;margin-top:2px">Total Deals: ${rows.length} · Total Value: ${invUSD(totalValue)}</div>
+      <div style="color:var(--muted);font-size:.85rem">Total Deals: ${rows.length} · Total Value: ${invUSD(totalValue)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:12px 0">
         <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="pipeFilterSales">${optList(salesOpts, f.salesperson)}</select></div>
         <div class="pec-field" style="margin:0"><label>Crew</label><select id="pipeFilterCrew">${optList(crewOpts, f.crew)}</select></div>
