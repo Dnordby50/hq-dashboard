@@ -4706,9 +4706,22 @@ const makeClient = () => createClient(
   CFG.SUPABASE_ANON_KEY || 'missing',
   // No `auth.lock` override -> supabase-js's default navigator.locks exclusive
   // lock (real mutual exclusion). timedFetch bounds the auth fetch so the lock
-  // can't be held by a stalled refresh. Other auth defaults stay on
-  // (persistSession, autoRefreshToken, detectSessionInUrl).
-  { global: { fetch: timedFetch } }
+  // can't be held by a stalled refresh.
+  //
+  // autoRefreshToken is OFF on purpose. The background refresh ticker fired
+  // CONCURRENTLY with our own ensureFreshSession refresh (run before every
+  // write) and the write's getSession, all under GoTrue's single auth lock.
+  // Two overlapping refreshes strand GoTrue's internal `lockAcquired` flag, and
+  // the next auth call then hangs with zero requests on the wire -- the "first
+  // save wedges" bug. We refresh ON DEMAND instead (ensureFreshSession: only
+  // near expiry, single-flight), and supabase-js still refreshes REACTIVELY
+  // when a request meets an expired token, so the session stays valid without a
+  // background ticker. Keep timedFetch; persistSession/detectSessionInUrl stay
+  // at their defaults (on).
+  {
+    auth: { autoRefreshToken: false, persistSession: true, detectSessionInUrl: true },
+    global: { fetch: timedFetch },
+  }
 );
 // `let`, not `const`: when the auth client wedges (a stuck internal token-refresh
 // promise from an idle tab — the hang happens BEFORE any fetch, so timedFetch
@@ -5060,12 +5073,30 @@ const isSessionStale = (err) => { const m = String(err && err.message || ''); re
 // fail CLEANLY within a few seconds and self-heal on the next attempt. Auto-
 // reloading here (the old behavior) discarded the user's unsaved form input on a
 // Save, which is worse than a one-tap retry now that the client recovers itself.
+// On-demand token refresh, replacing supabase-js's background ticker. Only
+// refreshes when the token is within REFRESH_SKEW of expiry, and SINGLE-FLIGHT
+// so two callers (e.g. two writes, or a write + an idle probe) never run two
+// refreshSession() calls at once -- that overlap is what wedged GoTrue's lock.
+// The common case (token still fresh) does ZERO auth network ops, so a save
+// proceeds immediately instead of waiting on a refresh every time.
+let _pecRefreshInFlight = null;
+const REFRESH_SKEW_MS = 5 * 60 * 1000;
 async function ensureFreshSession(label = 'session') {
   try {
-    await Promise.race([
-      supabase.auth.refreshSession(),
-      new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
+    const { data } = await Promise.race([
+      supabase.auth.getSession(), // reads storage; no network unless already expired
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} getSession] timed out`)), 5000)),
     ]);
+    const expMs = data?.session?.expires_at ? data.session.expires_at * 1000 : 0;
+    if (!expMs) return;                              // no session -> nothing to refresh
+    if (expMs - Date.now() > REFRESH_SKEW_MS) return; // still fresh -> skip the auth op (fast path)
+    if (!_pecRefreshInFlight) {
+      _pecRefreshInFlight = Promise.race([
+        supabase.auth.refreshSession(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`[${label} refresh] timed out`)), 5000)),
+      ]).finally(() => { _pecRefreshInFlight = null; });
+    }
+    await _pecRefreshInFlight.catch(() => {});
   } catch (rerr) {
     console.warn(`[pec] ${label} pre-write refresh skipped:`, (rerr && rerr.message) || rerr);
   }
