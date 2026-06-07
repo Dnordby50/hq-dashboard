@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: schedule truly drives job status (name+address fallback bridge); removed duplicate pipeline heading
+
+By: Claude Code
+
+Dylan: scheduled jobs still sat in the Jobs pipeline "Project Accepted" column. The screenshot was decisive: every stuck Accepted card showed "Install: No install date" and "No Crew Assigned" despite having a real price (so the jobs_scheduled_needs_price constraint was NOT the blocker). Dylan confirmed those jobs ARE on the in-app Job Schedule calendar. Commit 0860291, pushed to main.
+
+Root cause: the ONLY database link between public.jobs and the schedule (pec_prod_jobs + pec_prod_job_schedule_days) is dripjobs_deal_id. Jobs scheduled via a manual "+ Add Job" calendar entry sit on a pec_prod_jobs row with dripjobs_deal_id = null (pec_prod_jobs has no customer_id, only customer_name/address/proposal_number), so the deal-id bridge returned nothing and the job fell back to 'signed' -> Accepted. The 6 jobs scheduled through Pending -> Schedule (which writes the existing deal-id row) bridged fine. Worse, my own runScheduleStatusSync had filtered the prod-jobs query to dripjobs_deal_id NOT NULL, so it never even loaded the manual rows.
+
+Fix (client-side, no migration): a fallback bridge by normalized customer name + address (_nameAddrKey near mstTodayIso), used by BOTH loadPipelineData's installInfo and runScheduleStatusSync. Both now load ALL prod rows (incl. manual) and ALL non-archived/non-completed jobs, and resolve a job's schedule by deal id first, then by name+address. State machine (the calendar is the source of truth), applied in the pipeline effectiveStatus and persisted by runScheduleStatusSync: on the calendar for today/future -> scheduled; scheduled date has PASSED (start < today MST) -> completed (stamps completed_date to the install date so AR aging is right, mirroring markJobComplete); nothing on the calendar -> signed. Manual overrides (status_manual_at from the pipeline drag and the job-detail dropdown) are honored, except the calendar overrides a stale 'signed'. Completed jobs are never downgraded. The blocked-write toast/diagnostic stays.
+
+Also removed the duplicate "Jobs Pipeline" <h2> (the global CRM header already shows the active view name; same duplication Dylan flagged on Next Day, now both fixed).
+
+Behavior note (Dylan approved): auto-completing past-dated scheduled jobs moves them into the invoicing "Completed, not paid" AR bucket and starts aging from the install date. Reversible via the job-detail dropdown / pipeline drag (which pin the status). The name+address fallback is an exact normalized match; the rare two-different-jobs-same-address case could mis-link, but it is reversible and visible.
+
+No migration / no Cowork handoff.
+
+
 ## [2026-06-07 MST] Claude Code: made the schedule the single source of truth for job status; fixed duplicate Next Day heading
 
 By: Claude Code
