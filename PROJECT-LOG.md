@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-06 MST] Cowork: domain migration hq-prescott.netlify.app -> prescottepoxy.netlify.app across the 3 external consoles
+
+By: Cowork
+
+Scope: The site was renamed at the hosting layer (old https://hq-prescott.netlify.app -> new https://prescottepoxy.netlify.app). The app code/deploy were already updated; this entry covers swapping the domain in the three EXTERNAL admin consoles that still pointed at the old domain. Did each console in Dylan's signed-in browser. ONLY swapped the domain; changed no secrets, API key values, webhook signing headers, RLS, or API restrictions. Files touched: PROJECT-LOG.md only.
+
+1. Supabase Auth URL config (project zdfpzmmrgotynrwkeakd > Authentication > URL Configuration). Site URL was still the default http://localhost:3000 (never set to the old prod domain); set it to https://prescottepoxy.netlify.app. Redirect URLs list was EMPTY; added https://prescottepoxy.netlify.app/** and https://prescottepoxy.netlify.app ("Successfully added 2 URLs"). No old-domain entries existed to preserve.
+
+2. DripJobs webhooks = Zapier (Dylan corrected: these are Zaps, not DripJobs-native webhooks; DripJobs Settings has no webhook section). Inspected every Zap owned by Dylan. Only TWO POST to the CRM Netlify endpoints (identified by the Webhooks-by-Zapier action); updated the URL domain on each, skipped the live test (a real POST would create a junk job), and republished:
+   - "PEC Proposal Accepted" (zap 353945579) -> https://prescottepoxy.netlify.app/.netlify/functions/pec-webhook-proposal-accepted (published v6).
+   - "PEC Deal Scheduled -> Set Install Date in CRM" (zap 364602082) -> https://prescottepoxy.netlify.app/.netlify/functions/pec-webhook-appointment-set (published v4). This one carries an x-webhook-secret header; left it UNCHANGED. It had a pre-existing draft based on the live v3, so editing it was safe.
+   The other Zaps go to Google Sheets / Slack / Outlook / Quo, NOT the CRM (the two "Untitled Zap"s are DripJobs->Slack; "PEC On Site Lead" is Sheets->DripJobs). NOTE FOR DYLAN: three endpoints from the handoff (pec-webhook-stage-changed, pec-webhook-project-completed, pec-webhook-resend) have NO matching Zap in this Zapier account. Either they are not wired through Zapier (configured elsewhere and still need the domain swap), or they do not exist yet. Worth confirming how stage-change / project-complete events currently reach the CRM.
+
+3. Google Cloud API key referrer (project "Cowork Automations" > APIs & Services > Credentials). Key "New Google Sheets - Dashboard", confirmed by value AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY (matches netlify.toml/index.html). Application restriction = Websites (HTTP referrers). BEFORE: one entry https://hq-prescott.netlify.app/*. AFTER: ADDED https://prescottepoxy.netlify.app/* and KEPT the old one (two entries now). Did NOT rotate the key or change the API restriction (still Google Sheets API only, "1 API" -- note: this key is Sheets-only, not Maps+Sheets).
+
+Verifications left to Dylan (each needs sign-in / an email I should not trigger): (a) load https://prescottepoxy.netlify.app, sign in, confirm the Sheets/revenue widgets load with no Google RefererNotAllowed console error (Google noted the referrer change can take up to ~5 minutes to propagate); (b) confirm a real DripJobs proposal-accepted / install-date event now reaches the CRM (I skipped Zapier's live test to avoid inserting a junk job); (c) "Forgot password?" on the new domain and confirm the reset link points at prescottepoxy.netlify.app.
+
+Heads-up for Dylan (from the handoff): any invoice links emailed under the OLD domain are now dead and should be re-sent; new sends already use the new domain.
+
 ## [2026-06-07 MST] Claude Code: fixed the invoice 404, added logo/payments/aligned totals, handled the domain rename, and renamed the project to TopCoat / PEC CRM
 
 By: Claude Code
