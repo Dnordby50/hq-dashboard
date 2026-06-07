@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Cowork: ran the Next-Day 'EXTRA' time_slot migration in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Dylan said "run migration". Ran the single migration from the Claude Code "Jobs pipeline + Next Day polish" handoff (entry directly below) in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, Primary Database, postgres role) via the SQL editor in Dylan's signed-in browser. No repo code changed. Files touched: PROJECT-LOG.md only. Note: Claude Code had already pushed and deployed the matching index.html, so this just catches the DB up.
+
+Ran 2026-06-07_schedule_time_slot_extra.sql ("Success. No rows returned"): dropped and re-added pec_prod_job_schedule_days_time_slot_check to allow 'EXTRA' alongside 'AM'/'PM' (still nullable). Constraint swap only, no data change; Supabase showed no destructive-op warning on this one.
+
+Verified: pg_get_constraintdef now reads CHECK (((time_slot IS NULL) OR (time_slot = ANY (ARRAY['AM'::text, 'PM'::text, 'EXTRA'::text])))). The Next Day board "Extra (overflow)" column will now accept drops.
+
 ## [2026-06-07 MST] Claude Code: Jobs pipeline + Next Day polish (white cards, rename, schedule-reconciled columns, 3rd slot)
 
 By: Claude Code
