@@ -5411,18 +5411,38 @@ async function runScheduleStatusSync({ force = false } = {}) {
       ds.sort();
       if (!startByDeal[p.dripjobs_deal_id] || ds[0] < startByDeal[p.dripjobs_deal_id]) startByDeal[p.dripjobs_deal_id] = ds[0];
     }
-    let n = 0;
+    let n = 0, scheduledTotal = 0, blocked = 0, firstErr = '';
     for (const j of (jobsRes.data || [])) {
-      if (j.status_manual_at) continue;                 // manual override wins
       const start = startByDeal[j.dripjobs_deal_id];
+      if (start) scheduledTotal++;
+      // Calendar wins: a job that is ON the schedule must not read as 'signed',
+      // even if it was pinned by hand (a stale manual override). For any other
+      // status we honor the manual pin.
+      const onCalContradiction = start && j.status === 'signed';
+      if (j.status_manual_at && !onCalContradiction) continue; // honor manual pin
       const target = start ? (start <= today ? 'in_progress' : 'scheduled') : 'signed';
       if (j.status === target) continue;
-      const upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id);
-      if (upd.error) { console.warn('[pec] schedule status sync:', upd.error.message); continue; }
+      // Clear the manual pin only when the calendar is overriding it.
+      const patch = onCalContradiction ? { status: target, status_manual_at: null } : { status: target };
+      let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
+      if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+        upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id); // pre-migration fallback
+      }
+      if (upd.error) {
+        blocked++; if (!firstErr) firstErr = upd.error.message || String(upd.error);
+        console.warn('[pec] schedule status sync could not update job', j.id, '->', target, ':', upd.error.message);
+        continue;
+      }
       n++;
       try { await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule_sync' }); } catch (_) {}
     }
-    if (n) console.log('[pec] schedule status sync reconciled', n, 'job(s) to match the calendar');
+    console.log(`[pec] schedule status sync: ${(jobsRes.data || []).length} bridged jobs, ${scheduledTotal} on the calendar, ${n} updated, ${blocked} blocked`);
+    if (blocked) {
+      // Surface the real reason in-app (most likely the jobs_scheduled_needs_price
+      // CHECK: a job cannot be 'scheduled' without a price on the jobs row).
+      const why = /needs_price|price/i.test(firstErr) ? 'those jobs need a price on the Jobs record before they can be marked scheduled.' : firstErr;
+      try { showToast(`${blocked} scheduled job(s) could not update: ${why}`, { ttl: 8000 }); } catch (_) {}
+    }
   } catch (e) { console.warn('[pec] runScheduleStatusSync threw:', e); }
 }
 
