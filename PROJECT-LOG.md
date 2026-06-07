@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: third (root) fix for the save wedge - bounded custom auth lock (stranded navigator.locks lock)
+
+By: Claude Code
+
+The two prior fixes (single-client recovery, then autoRefreshToken off + on-demand refresh) did NOT stop it. Dylan still got SESSION_TIMEOUT:job-save on the first finalize press AND on the post-recovery retry, with recoverWedgedClient firing and not helping. Local commit 30204c6 (index.html), pushed to main.
+
+The decisive clue was that the retry on a FRESH client also timed out. Root cause: supabase-js's default auth lock is navigator.locks keyed by the storage key (lock:sb-<ref>-auth-token), so it is shared by EVERY client instance in the tab. recoverWedgedClient() builds a new client but it contends for the SAME web lock. So when the lock strands (an auth op that hangs with zero requests on the wire, i.e. no fetch, so timedFetch's 8s abort cannot release it -- GoTrue's lockAcquired stranded), every later auth call, even on the rebuilt client, waits on that one lock forever: the write's internal getSession hangs -> withDeadline 12s -> SESSION_TIMEOUT, recover (same lock) -> retry -> hangs again. Recovery was structurally incapable of fixing a stranded process-global lock.
+
+Fix: supply a custom auth.lock to createClient (pecAuthLock). It still uses navigator.locks for real mutual exclusion in the normal case, but bounds acquisition: it waits at most 9s (above timedFetch's 8s auth-fetch ceiling, so any legitimate in-flight auth op has already completed or aborted by then), and if it still cannot acquire it STEALS the lock (navigator.locks { steal:true }) to clear the stranded holder, with a final fallback of running without the lock. Auth can no longer hang indefinitely, so the first save's getSession resolves (instantly when healthy; within ~9s in the rare stranded case, still under the 12s write deadline) instead of timing out. This is the fallback CLAUDE.md anticipated ("prefer a SHORT-HOLD custom navigator.locks lock over a no-op"); it differs from the old no-op lock, which removed mutual exclusion ALWAYS -- this keeps it and only breaks a provably stuck lock.
+
+How we will know it worked: on a normal save there is no "rebuilt Supabase client" line at all. If a stranded lock is ever hit, the console shows "[pec] auth lock stuck >9000ms; stealing to clear a stranded lock" and the save still completes (that log also confirms the lock was the culprit). If saves still time out with NO steal log, the hang is NOT auth (it would point to a server-side jobs.update/RPC block) and we investigate the request path next.
+
+Action for Dylan: wait for the deploy, hard reload once (Cmd+Shift+R), retry Martin Trout custom-system -> finalize. Report whether you see the "stealing" line and whether the save lands.
+
 ## [2026-06-07 MST] Claude Code: second fix for the save wedge - disabled the background token ticker, refresh on demand
 
 By: Claude Code
