@@ -5052,6 +5052,34 @@ async function withFreshWriteRetry(fn, opts) {
   }
 }
 
+// --- Reference-data cache (tab-switch latency fix) ---
+// The catalog/reference tables (system types, products, recipe slots, color
+// pairings) change rarely but were re-fetched from Supabase on EVERY tab switch
+// and EVERY job-detail open, which is the main reason switching CRM tabs felt
+// slow. cachedRef() memoises a successful read for a short TTL and serves it
+// from memory on the next call, so repeat reads cost nothing on the wire. Only
+// successful results are cached (an errored read is never stored, so a transient
+// wedge does not get pinned). Any catalog EDIT in the catalog admin clears the
+// cache via invalidateRefCache() (called from loadCatalog), so staff never see
+// stale catalog data after changing it. WHY a fetcher + key instead of caching
+// the query: the call sites pass their own Supabase query, we just gate it.
+const _refCache = new Map(); // key -> { at: epochMs, data }
+const REF_CACHE_TTL_MS = 60000;
+async function cachedRef(key, fetcher, { ttlMs = REF_CACHE_TTL_MS } = {}) {
+  const hit = _refCache.get(key);
+  if (hit && (Date.now() - hit.at) < ttlMs) return { data: hit.data, error: null };
+  const res = await fetcher();
+  if (res && !res.error) _refCache.set(key, { at: Date.now(), data: res.data });
+  return res;
+}
+function invalidateRefCache(key) { if (key) _refCache.delete(key); else _refCache.clear(); }
+// Canonical cached read of the system-type catalog (the single most re-fetched
+// reference table). Name-ordered; every consumer either re-sorts (sortSystemTypes)
+// or does not depend on row order, so a shared name-ordered copy is safe.
+function cachedSystemTypes() {
+  return cachedRef('sys', () => supabase.from('pec_prod_system_types').select('*').order('name'));
+}
+
 // Proactive stale-session detection. supabase-js's auth-refresh queue can wedge
 // after the tab sits idle on a stale JWT; the FIRST call afterward hangs with
 // zero network traffic (diagnosed live: ~57min idle, then the next click wedged
@@ -5767,7 +5795,7 @@ async function renderDashboard() {
     supabase.from('jobs').select('id,status,confirmed,created_at,address,type,price,dripjobs_deal_id,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
     supabase.from('reviews').select('rating'),
-    supabase.from('pec_prod_system_types').select('*'),
+    cachedSystemTypes(),
     // Active sold jobs whose colors aren't confirmed yet. Kept as its own query
     // (not folded into the Recent Jobs select) so that before the
     // 2026-05-30_colors_confirmed.sql migration runs, the missing column errors
@@ -5953,7 +5981,7 @@ async function renderCustomers() {
           .select('id,address,type,status,created_at,job_areas(system_type_id,order_index)')
           .eq('customer_id', cid).is('archived_at', null)
           .order('created_at', { ascending: false }),
-        supabase.from('pec_prod_system_types').select('*'),
+        cachedSystemTypes(),
       ]);
       if (error) { bodyEl.innerHTML = `<div class="prod-msg-err">${esc(error.message)}</div>`; return; }
       const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
@@ -6481,7 +6509,7 @@ async function renderJobs() {
   if (state.jobsFilter.status) q = q.eq('status', state.jobsFilter.status);
   const [jobsRes, sysRes] = await withFreshSession(() => Promise.all([
     q,
-    supabase.from('pec_prod_system_types').select('*'),
+    cachedSystemTypes(),
   ]), { label: 'renderJobs' });
   const { data, count, error } = jobsRes;
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
@@ -7953,11 +7981,11 @@ async function renderJobDetailInner(id) {
     supabase.from('jobs')
       .select('*,customers(id,name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
-    supabase.from('pec_prod_system_types').select('*').order('name'),
+    cachedSystemTypes(),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
-    supabase.from('pec_prod_products').select('id,name,color,material_type,image_url,active,spread_rate,kit_size,unit_cost').order('name'),
-    supabase.from('pec_prod_color_pairings').select('flake_product_id,basecoat_product_id,is_default'),
-    supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
+    cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
+    cachedRef('pair', () => supabase.from('pec_prod_color_pairings').select('*')),
+    cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
@@ -10459,7 +10487,7 @@ async function loadProdCore() {
   const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
-    supabase.from('pec_prod_system_types').select('*'),
+    cachedSystemTypes(),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
@@ -13726,6 +13754,9 @@ function _mergeAcrossAreas(areaPlans) {
 
   // -------------------- Loaders --------------------
   async function loadCatalog() {
+    // Any catalog edit reloads here; clear the CRM-side reference cache so the
+    // Jobs/job-detail/schedule views fetch the updated catalog on next render.
+    invalidateRefCache();
     const [p, s, r, c] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
