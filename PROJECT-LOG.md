@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: ran the four 2026-06-08 migrations in PROD Supabase, verified (plus Aron seed fix + constraint validate)
+
+By: Cowork
+
+Scope: Dylan said "run migration". Ran all four pending 2026-06-08 migrations from the Claude Code handoffs in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, PRODUCTION, role postgres) via the SQL editor in Dylan's signed-in browser. No repo code changed except this entry. Each migration typed as a single line (the editor's autocomplete eats Enter on multi-line paste; SQL is whitespace-insensitive). Each returned "Success. No rows returned".
+
+1. 2026-06-08_user_permissions.sql: created public.user_permissions + RLS (up_admin_all, up_select_own) + touch trigger + backfill. (Confirmed the expected destructive-op warning on the drop policy/trigger if exists; proceeded.)
+2. 2026-06-08_sales_team_commission.sql: added commission_pct numeric(5,2) default 0 to pec_sales_team_members; the seed UPDATE used where lower(name)='aron' which did NOT match the actual roster name "Aron Bronson", so Aron came back 0.
+3. 2026-06-08_edit_payment.sql: created edit_recorded_payment + log_payment_edited (both SECURITY DEFINER) + grants.
+4. 2026-06-08_touchup_callback.sql: added is_callback + original_job_id to pec_prod_jobs, re-added pec_prod_jobs_scheduled_needs_revenue widened to exempt callbacks (NOT VALID), added the original_job_id index.
+
+Verified (one combined query): user_permissions rows 5 = admin_users 5 (every user has a row), all 5 all-true, RLS enabled; commission_pct column present; edit_recorded_payment + log_payment_edited both present (prosecdef true, count 2); is_callback + original_job_id both present (count 2); and 0 existing scheduled non-callback rows with null/<=0 revenue (so the widened constraint had no violations).
+
+Follow-ups done after verifying: (a) the commission seed missed Aron because the roster name is "Aron Bronson" (other member: "Dylan Nordby"); set commission_pct = 6 on Aron Bronson by id (c893da3f-6659-4a40-95ec-9cfaa57c2782) to honor the documented "Aron is 6%". (b) Since violations = 0, ran VALIDATE on pec_prod_jobs_scheduled_needs_revenue (now fully validated, not just NOT VALID). Both "Success. No rows returned".
+
+## Handoff to Dylan
+All four migrations are live and verified in PROD. Anne (and everyone) now has an all-true permissions row, so her pipeline-move and Job Costing access should work once she reloads. Aron is set to 6% commission. The repo commit for this log entry is local only (Cowork does not push).
+
 ## [2026-06-08 MST] Claude Code: Item 4, schedule a touch-up / warranty callback (no-charge, linked to original)
 
 By: Claude Code
