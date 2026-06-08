@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 1, idempotent auth listener (stop mid-session re-boot) + reload instrumentation
+
+By: Claude Code
+
+First of the 4-item batch (Cowork's live-captured prompt below). Dylan: finalizing a job "does not save at first ... then it times out, reloads, and ends up saving", and "STILL having to reload moving between tabs". Cowork's live capture showed, after the 9s auth-lock steal, a burst of [crm] global auth gate -> renderAuthUI -> dispatching initial switchView -> dashboard (the app re-running its boot in place), with NO "session wedge detected -> auto-reload" line, so the re-boot came through a different path than _pecWedgeReload.
+
+Root cause A (fixed): wireAuthListener (index.html:4815) was not idempotent. After swallowing the first event it only skipped a same-user TOKEN_REFRESHED; any OTHER same-user mid-session event (SIGNED_IN, USER_UPDATED, focus revalidation) fell through to renderGlobalAuthGate -> renderAuthUI -> switchView(state.view), re-running the initial boot and resetting the active view to dashboard. supabase-js emits SIGNED_IN after every setSession(), which recoverWedgedClient calls during wedge recovery and which the finalize path triggers, so a finalize made the app re-boot, which is exactly the "looked like it failed, reloaded, then saved". Fix: added an idempotent guard, if the event is for the SAME already-resolved signed-in user (newUid === prevUid && state.adminUser), return and do nothing, regardless of event type. Only a real transition (sign in, sign out, user change) repaints the gate. This removes the redundant TOKEN_REFRESHED special-case (the new guard subsumes it).
+
+Root cause B (instrumented, needs one repro to close): added console.warn('[pec] RELOAD via <path>') before every location.reload() (logout, _pecWedgeReload, and the render-error Retry button). The next repro will name any remaining real reload. Likely A alone removes the burst (it was an in-place re-gate, not a true page reload).
+
+Root cause C (deliberately NOT touched): the 9s auth-lock steal stall persists; per the prompt's "do not add a sixth recovery layer" guardrail and CLAUDE.md, I did not tweak timeouts or add recovery this round. Fixing A removes a lot of redundant auth churn (fewer auth ops = fewer chances to strand the lock). If the 9s stall remains, the prime suspect is multi-tab navigator.locks contention, which needs a single-tab-vs-two-tabs repro to confirm before any lock-hold change. Kept timedFetch; did not touch payment/finalize write atomicity.
+
+Verified CRM module passes node --check; all three location.reload() sites carry a RELOAD marker.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Items 3 (costing materials), 2 (TBD color), 4 (commission) follow in this batch.
+Handoff to Cowork: None for this item.
+Handoff to Dylan: Hard-refresh, then (1) finalize a real job and confirm it saves on the FIRST press with no reload/reset, and (2) switch tabs repeatedly, including after idle and with the CRM open in TWO tabs. With DevTools open, confirm you no longer see "[crm] global auth gate" or "[prod] module booted" after the first load. If a reload still happens, paste the "[pec] RELOAD via ..." line plus the surrounding [pec]/[crm] lines (that names cause B), and tell me whether it only happens with two tabs open (that confirms cause C is multi-tab lock contention).
+
 ## [2026-06-08 MST] Cowork: live-captured the auth wedge in the browser, wrote a 4-item Claude Code prompt
 
 By: Cowork

@@ -3782,7 +3782,7 @@ function logout() {
   // the #authGate comes back up.
   Promise.resolve(window.pecAuthSignOut && window.pecAuthSignOut())
     .catch(() => {})
-    .finally(() => location.reload());
+    .finally(() => { console.warn('[pec] RELOAD via logout'); location.reload(); });
 }
 
 async function init() {
@@ -4818,8 +4818,20 @@ function wireAuthListener() {
     const prevUid = state.session?.user?.id;
     state.session = session;
     if (!sawInitialAuthEvent) { sawInitialAuthEvent = true; return; }
-    // A plain token refresh keeps the same user signed in; skip the churn.
-    if (ev === 'TOKEN_REFRESHED' && session?.user?.id === prevUid && state.adminUser) return;
+    // IDEMPOTENT GUARD (the fix for the mid-session "re-boot/reset to dashboard"):
+    // supabase-js emits SIGNED_IN / USER_UPDATED / TOKEN_REFRESHED for the SAME
+    // already-signed-in user on token revalidation, tab focus, and after every
+    // setSession() -- which recoverWedgedClient() calls during wedge recovery and
+    // which the finalize path triggers. The old code only skipped a same-user
+    // TOKEN_REFRESHED, so any OTHER same-user event fell through to
+    // renderGlobalAuthGate() -> renderAuthUI() -> switchView(state.view), re-running
+    // the initial boot in place (the burst Dylan sees as a reload that resets him to
+    // the dashboard, and that makes a finalize look like it failed then saved).
+    // If this is still the same signed-in user we already resolved, do NOTHING,
+    // regardless of event type. Only a REAL transition repaints the gate:
+    // no-session -> session (sign in), session -> no-session (sign out), user change.
+    const newUid = session?.user?.id || null;
+    if (session && newUid === prevUid && state.adminUser) return;
     if (session) await resolveAdminUser();
     else { state.adminUser = null; }
     renderGlobalAuthGate();
@@ -5034,6 +5046,7 @@ function _pecWedgeReload(reason) {
   }
   _pecReloadingForWedge = true;
   console.warn(`[pec] session wedge detected (${reason}) -> auto-reload`);
+  console.warn('[pec] RELOAD via _pecWedgeReload', reason);
   try { location.reload(); } catch (_) {}
 }
 
@@ -5935,6 +5948,7 @@ function showCrmRenderError(err, view) {
     // refreshSession() -- that call queues behind the same stuck refresh and
     // hangs too (diagnosed live). A full reload re-instantiates the client with
     // a fresh refresh cycle and is the only reliable fix, so Retry now reloads.
+    console.warn('[pec] RELOAD via render-error Retry button');
     location.reload();
   });
 }
