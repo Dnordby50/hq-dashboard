@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: scoped portal redesign + diagnosed the manual-job schedule revenue bug, wrote a Claude Code prompt
+
+By: Cowork
+
+Scope: Dylan asked for the next Claude Code prompt covering (1) restyling the customer portal to match the CRM (black + orange, drop the gradient text wordmark for the logo) and (2) a VA-blocking bug where scheduling a manually-added job fails with "violates check constraint pec_prod_jobs_scheduled_needs_revenue". Investigated the code and wrote claude-code-prompt-portal-and-schedule-bug-2026-06-08.md to the HQ folder. No repo code changed except this entry. No migration needed for either item.
+
+Bug root cause (confirmed): the constraint (supabase/migrations/2026-06-02_price_integrity.sql:57-61) is CHECK (status <> 'scheduled' OR revenue > 0) on pec_prod_jobs. The "Schedule a job" modal openAddJobModal (index.html:12185) reschedule path (12547-12559) sets status='scheduled' but intentionally leaves revenue as-is (comment 12551), and the revenue validation at 12528 only runs on the new-job path (if (!isReschedule), 12526). So rescheduling an existing manual job that has no revenue flips status to scheduled with null revenue and violates the constraint, leaking the raw Postgres message. Dylan framed it as a missing address, but address is NOT what the constraint enforces; revenue is. Fix: on the reschedule path, when the existing job lacks revenue, reveal/require a price input and include revenue in the update; catch the constraint error and show a friendly message; keep the constraint.
+
+Portal redesign: renderCustomerPortal (index.html:13698), portal theme override body.pec-portal-mode at 580-597 uses indigo --accent #2b59ff (the off-brand bit). The "cheesy" wordmark is the gradient text at 13727 styled at 596; replace with assets/pec-logo.png (already used at CRM sidebar 4336, auth gate 1450, work order 8219). Repalette to the CRM --rd-* tokens (607-643, accent #D8531C). Fonts already match.
+
+## Handoff to Dylan
+Review claude-code-prompt-portal-and-schedule-bug-2026-06-08.md in the HQ folder. The schedule bug is a quick, high-value fix that unblocks your VA today; the portal redesign is a visual pass. Heads up: the real cause of the schedule error is missing REVENUE on the manual job, not the missing address you mentioned.
+
 ## [2026-06-08 MST] Claude Code: Item 3, Job Costing now derives materials when prod material lines are empty
 
 By: Claude Code
