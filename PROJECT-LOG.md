@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 3, Job Costing now derives materials when prod material lines are empty
+
+By: Claude Code
+
+Second of the batch. Bug: opening a job in Job Costing showed "No material lines yet" even for jobs with a real system (e.g. Peter Cilliers #2806792, "Flake"), so you could not cost them. Root cause: costing reads materials ONLY from pec_prod_material_lines (loadCostingData at index.html:12639 -> state.materialLinesByJob; renderUnifiedJob reads it). Those rows are written by the New Job sync flow, so a job created another way has areas + a system but zero material lines, while the work order shows materials fine because it DERIVES them on the fly via window.computeMaterialPlan.
+
+Fix: in loadCostingData, for any job that has areas (state.productAreasByJob) but no persisted material lines, derive the lines the SAME way the work order does. loadProdCore only selects trimmed area columns (no color ids) and does not load the catalog, so the fallback does its own fetch: pec_prod_areas (select * for the color ids), pec_prod_products, pec_prod_recipe_slots, pec_prod_color_pairings; builds productById / recipeSlotsBySystemType / defaultBasecoatByFlake; runs window.computeMaterialPlan per job; and fills state.materialLinesByJob + materialOrderedByJob from plan.lines. No second material calculation, the same bridged calculator the work order and budget card use. Persisted pec_prod_material_lines still win when present; derivation is the fallback only.
+
+Derived lines are DISPLAY ONLY: they get synthetic ids and a _derived flag because there is no pec_prod_material_lines row to write actual-used against. renderUnifiedJob shows a short note for derived materials and renders the per-line "Actual Used" cell as a read-only dash instead of an editable input (so a PM cannot type a number that would silently fail to save). Once a job is properly synced through the New Job flow, real rows replace the derived ones and editing works as before. The whole derivation is wrapped in try/catch so a calculator throw (e.g. a system that requires a flake but the color is still TBD) just leaves that job on the existing empty-state, never breaks the costing load.
+
+Verified CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Item 2 (TBD color), then Item 4 (commission, needs a migration).
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, open Peter Cilliers (#2806792) and a couple of other "NEEDS COSTING" jobs in Job Costing; materials should now populate with the same product names/quantities as each job's work order (read-only Actual Used, with a "derived" note). The empty-state should only remain for jobs with no system at all.
+
 ## [2026-06-08 MST] Claude Code: Item 1, idempotent auth listener (stop mid-session re-boot) + reload instrumentation
 
 By: Claude Code

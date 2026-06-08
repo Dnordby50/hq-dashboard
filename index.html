@@ -12662,6 +12662,57 @@ async function loadCostingData() {
   state.materialOrderedByJob = ordered;
   state.materialUsedByJob = used;
   state.materialLinesByJob = linesByJob;
+  // FALLBACK: a job created outside the New Job sync flow has areas + a system but
+  // NO rows in pec_prod_material_lines, so costing showed "No material lines yet"
+  // even though the work order lists materials fine. Derive those lines the SAME
+  // way the work order does (window.computeMaterialPlan, bridged from the prod
+  // module) so the two screens agree. Derived lines are DISPLAY ONLY (flagged
+  // _derived, synthetic ids) since there is no row to persist actual-used against.
+  try {
+    const needIds = (state.prodJobs || [])
+      .filter(j => !(linesByJob[j.id] && linesByJob[j.id].length) && (state.productAreasByJob[j.id] && state.productAreasByJob[j.id].length))
+      .map(j => j.id);
+    if (needIds.length && typeof window.computeMaterialPlan === 'function') {
+      const [fullAreasRes, prodRes, slotRes, pairRes] = await withFreshSession(() => Promise.all([
+        supabase.from('pec_prod_areas').select('*').in('job_id', needIds),
+        supabase.from('pec_prod_products').select('*'),
+        supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
+        supabase.from('pec_prod_color_pairings').select('*'),
+      ]), { label: 'loadCostingData:derive' });
+      const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
+      const slotsBySystem = {};
+      for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
+      for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+      const defaultBasecoatByFlake = {};
+      for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+      const areasByJob = {};
+      for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
+      for (const jid of needIds) {
+        const planAreas = (areasByJob[jid] || []).map(a => {
+          const n = Number(a.sqft);
+          return {
+            id: a.id, name: a.name,
+            sqft: Number.isFinite(n) && n >= 0 ? n : 0,
+            system_type_id: a.system_type_id,
+            flake_product_id: a.flake_product_id || null,
+            basecoat_product_id: a.basecoat_product_id || null,
+            topcoat_cure_speed: a.topcoat_cure_speed || null,
+          };
+        });
+        if (!planAreas.length) continue;
+        let dlines = [];
+        try {
+          const plan = window.computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
+          dlines = (plan && plan.lines) || [];
+        } catch (e) { console.warn('[pec] costing derive plan failed for job', jid, e); continue; }
+        if (!dlines.length) continue;
+        linesByJob[jid] = dlines.map((l, i) => ({ ...l, id: `derived-${jid}-${i}`, _derived: true }));
+        ordered[jid] = dlines.reduce((s, l) => s + Number(l.line_cost || 0), 0);
+      }
+      state.materialLinesByJob = linesByJob;
+      state.materialOrderedByJob = ordered;
+    }
+  } catch (e) { console.warn('[pec] costing material derivation skipped:', e); }
   // Bonus rows grouped per job; the per-job bonus total is the derived sum
   // shown in the Costs card on the unified page (replaces the stored
   // pec_prod_job_costing.bonus_cost number for jobs that have rows).
@@ -13082,9 +13133,10 @@ async function renderUnifiedJob(jobId) {
     return q > 0 && u > 0 ? q * u : null;
   };
 
+  const linesDerived = lines.some(l => l._derived);
   const linesHtml = lines.length === 0
     ? `<div class="pec-empty">No material lines yet. They populate from the Production module's New Job flow once areas + systems are saved.</div>`
-    : `<div class="pec-table-wrap">
+    : `${linesDerived ? '<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Materials derived from the saved system + colors (same as the work order). Not yet persisted through the New Job sync, so per-line Actual Used is read-only here.</div>' : ''}<div class="pec-table-wrap">
          <table class="pec-table">
            <thead><tr>
              <th>Material</th><th>Product</th><th>Color</th><th>Cure</th>
@@ -13105,7 +13157,7 @@ async function renderUnifiedJob(jobId) {
                  <td>${l.line_cost == null ? '—' : '$' + Number(l.line_cost).toLocaleString()}</td>
                  <td>${l.ordered ? 'Yes' : 'No'}</td>
                  <td>${l.delivered ? 'Yes' : 'No'}</td>
-                 <td><input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px"></td>
+                 <td>${l._derived ? '<span style="color:var(--muted)">—</span>' : `<input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px">`}</td>
                  <td class="cost-derived" data-line-used-cost="${esc(l.id)}">${lineUsedCost(l) == null ? '—' : '$' + Math.round(lineUsedCost(l)).toLocaleString()}</td>
                </tr>`).join('')}
            </tbody>
