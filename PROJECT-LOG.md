@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: work order tweaks per Dylan, Issues/Notes moved up, logo-only header
+
+By: Claude Code
+
+Dylan reviewed the redesigned work order (entry below): "everything else looks good," with two asks. Both done in renderWorkOrder (index.html:8062), presentation only.
+
+1. Moved the ISSUES / NOTES section up to sit directly under the Site Conditions group (it was at the bottom after the checklist). Implementation: split the intake grid so Job Identity + Site Conditions render, then the Notes box, then Budget as its own short grid. The notes are site notes, so this reads better and matches Dylan's ask.
+2. Dropped the plain-text "PRESCOTT / EPOXY COMPANY" wordmark and enlarged the logo (assets/pec-logo.png, 40px to 104px in the main header; the page-2 line-items header switched from the same wordmark to a 64px logo for consistency since the .wo-brand text class was removed). Kept the img alt text as the offline-print fallback now that there is no text wordmark.
+
+Verified node --check passes. Visual/print acceptance is Dylan's.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Phase 2 (native Sales/Lead pipeline fed by Zapier) when ready; needs a migration + Zapier setup, its own session.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, reprint a job, confirm Notes now sits under Site Conditions and the header is just the bigger logo.
+
 ## [2026-06-07 MST] Claude Code: Phase 1, redesigned the crew work order to match the CRM and fixed the Issues/Notes HTML bug
 
 By: Claude Code

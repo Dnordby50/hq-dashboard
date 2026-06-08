@@ -8189,7 +8189,7 @@ async function renderWorkOrder(ctx) {
   const lineItemsPage = woLineItems.length ? `
   <div class="li-page">
     <div class="li-head">
-      <div class="wo-brand" style="text-align:left;font-size:15px">PRESCOTT<div class="sub">EPOXY COMPANY</div></div>
+      <img class="wo-logo" style="width:64px" src="${location.origin}/assets/pec-logo.png" alt="Prescott Epoxy Company">
       <div class="li-meta">${e(job.customers?.name || '')}${job.address ? ' · ' + e(job.address) : ''}${installDate ? ' · Install ' + e(dateFmt(installDate)) : ''}${job.dripjobs_deal_id ? ' · DJ #' + e(job.dripjobs_deal_id) : ''}</div>
     </div>
     <div class="li-title">LINE ITEMS / SCOPE OF WORK</div>
@@ -8228,10 +8228,8 @@ async function renderWorkOrder(ctx) {
   .wo-banner { background: var(--accent); color: #fff; text-align: center; padding: 8px; font-weight: 700; font-size: 11px; letter-spacing: 0.6px; }
   .wo-header { display: flex; justify-content: space-between; align-items: flex-end; margin: 14px 0 10px; }
   .wo-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-2); }
-  .wo-brandwrap { display: flex; align-items: center; gap: 10px; }
-  .wo-logo { width: 40px; height: auto; display: block; }
-  .wo-brand { font-family: 'Syne', sans-serif; color: var(--accent); font-weight: 800; font-size: 18px; letter-spacing: 1.5px; line-height: 1.05; text-align: left; }
-  .wo-brand .sub { font-size: 9px; letter-spacing: 3px; font-weight: 600; color: var(--muted); }
+  .wo-brandwrap { display: flex; align-items: center; }
+  .wo-logo { width: 104px; height: auto; display: block; }
 
   .intake { display: grid; grid-template-columns: 116px 1fr 116px 1fr; gap: 5px 10px; align-items: stretch; margin-bottom: 14px; }
   .intake .grp { grid-column: 1 / -1; font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); border-bottom: 1.5px solid var(--accent); padding: 6px 0 3px; margin-top: 6px; }
@@ -8286,8 +8284,7 @@ async function renderWorkOrder(ctx) {
   <div class="wo-header">
     <div class="wo-title">Crew Work Order</div>
     <div class="wo-brandwrap">
-      <img class="wo-logo" src="${location.origin}/assets/pec-logo.png" alt="" onerror="this.style.display='none'">
-      <div class="wo-brand">PRESCOTT<div class="sub">EPOXY COMPANY</div></div>
+      <img class="wo-logo" src="${location.origin}/assets/pec-logo.png" alt="Prescott Epoxy Company">
     </div>
   </div>
   <div class="intake">
@@ -8309,6 +8306,12 @@ async function renderWorkOrder(ctx) {
     <div class="lbl">Coat past garage:</div><div class="val">${yn(job.coat_past_garage)}</div>
     <div class="lbl">Additional non slip:</div><div class="val">${yn(job.additional_non_slip)}</div>
     <div class="lbl"></div>                <div class="val"></div>
+  </div>
+  <div class="section">
+    <h3>ISSUES / NOTES</h3>
+    <div class="notes-box">${sanitizeNotes(job.scope)}</div>
+  </div>
+  <div class="intake">
     <div class="grp">Budget</div>
     <div class="lbl">Hour Budget:</div>    <div class="val num">${hourBudget != null ? hourBudget.toFixed(1) + ' hrs' : ''}</div>
     <div class="lbl">Hours actual:</div>   <div class="val num"></div>
@@ -8332,10 +8335,6 @@ async function renderWorkOrder(ctx) {
       <div class="item"><span class="box"></span>Unused product returned to shop</div>
       <div class="item"><span class="box"></span>Completed job card uploaded to Slack + dropped off at office</div>
     </div>
-  </div>
-  <div class="section">
-    <h3>ISSUES / NOTES</h3>
-    <div class="notes-box">${sanitizeNotes(job.scope)}</div>
   </div>
   ${lineItemsPage}
   <div class="wo-foot">Source: HQ CRM · Generated ${new Date().toLocaleString()} · Prescott Epoxy Company, Work Order (Sheets-fillable Template)</div>
