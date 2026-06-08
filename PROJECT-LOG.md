@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: scoped permissions + one-source-of-truth status + edit-payment + touch-up callback, wrote a Claude Code prompt
+
+By: Cowork
+
+Scope: Dylan reported, via Anne, that the job-detail status dropdown does not match the Jobs pipeline or Job Schedule (wants one source of truth for job status), that Anne cannot move pipeline cards or see Job Costing (wants admin-controlled per-user permissions defaulting to all-on), plus two new features (schedule a touch-up callback, edit a recorded payment with activity log + notification). Investigated all of it (3 subagents) and wrote claude-code-prompt-status-permissions-callback-payment-2026-06-08.md to the HQ folder. No repo code changed except this entry.
+
+Key findings:
+1. Permissions are purely role-based (admin_users.role, no per-user table). Anne cannot drag pipeline cards because canEdit = isAdmin() (index.html:11393, handlers only attached if canEdit at 11485-11503); Job Costing is gated admin/pm (13571, 5729). Plan: new user_permissions table (one boolean per capability, default true), load in resolveAdminUser (5619), convert the role gates to permission checks with admin as a super-role, admin-only editor in Settings, all-true default on staff creation (pec-create-staff.cjs) + backfill so Anne gets full access.
+2. Job status has NO single source of truth: public.jobs.status (signed/scheduled/in_progress/completed) and pec_prod_jobs.status (unscheduled/ordered/delivered/completed) are two incompatible enums; pec_job_ar is a view over public.jobs; the pipeline shows a reconciled effectiveStatus (11306-11314); the job-detail dropdown writes only public.jobs.status (4948); a DB trigger mirrors pec_prod_jobs->public.jobs one way (2026-06-04); webhooks write inconsistently; 3 auto-progress mechanisms all touch public.jobs.status. The pending mismatch is the same root cause (schedule pending reads pec_prod_jobs 11649, pipeline reads public.jobs). This is architectural, so the prompt gates it: Phase A propose the single source of truth (recommended: public.jobs.status canonical everywhere, pec_prod_jobs.status demoted to production-only) and get Dylan sign-off, THEN Phase B implement.
+3. Edit payment: pec_payments is an insert-only ledger; use a reversal-ledger or an atomic edit_recorded_payment RPC (never a naive UPDATE, double-apply risk under the wedge), then logJobActivity('payment_edited', ...) (4894) and a new log_payment_edited SECURITY DEFINER RPC into pec_notifications (log_customer_deleted pattern).
+4. Touch-up callback: the existing pec_prod_jobs.callback boolean is a quality flag, not a scheduled visit; recommend adding is_callback + original_job_id columns and exempting callbacks from pec_prod_jobs_scheduled_needs_revenue so a no-charge touch-up can be scheduled and labeled on the calendar.
+
+## Handoff to Dylan
+Review claude-code-prompt-status-permissions-callback-payment-2026-06-08.md in the HQ folder. Order: permissions first (unblocks Anne today). The status source-of-truth is a real refactor, not a quick fix, so the prompt makes Claude Code propose the design and get your yes before touching invoicing/scheduling. Items 3 and 4 each need a migration run in PROD.
+
 ## [2026-06-08 MST] Claude Code: restyled the customer portal to match the CRM (orange accent + logo, dropped the gradient wordmark)
 
 By: Claude Code
