@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Cowork: scoped the next CRM phase, wrote a detailed phased Claude Code prompt (no repo code changed)
+
+By: Cowork
+
+Scope: Dylan asked for a detailed Claude Code prompt for the next phase (work order redesign FIRST, then native Sales pipeline to replace DripJobs fed by Zapier, Google Calendar for Dylan + Aron, QUO.com messages/transcripts per customer, and CompanyCam). Investigated the relevant code and researched the integrations, then wrote a phased prompt saved to the HQ workspace folder (claude-code-prompt-next-phase-2026-06-07.md). No repo code changed except this PROJECT-LOG entry.
+
+Findings recorded so the build sessions do not re-derive them:
+1. Work order: renderWorkOrder at index.html:8062 builds a standalone HTML doc opened via window.open (8273), CSS at 8179-8217, body 8218-8271. The Issues/Notes bug is index.html:8267 (e(job.scope) HTML-escapes stored HTML so the p tags print literally). It uses hard-coded indigo #e0e7ff fields and near-black #0f172a table headers, not the CRM --rd-* tokens (610-638). Phase 1 is a pure presentation pass plus the notes sanitize/render fix; fully buildable, no external deps.
+2. QUO.com is the OpenPhone rebrand. Use the OpenPhone REST API (api.openphone.com/v1, static API key, 10 req/sec, transcripts need Business plan) plus signed webhooks. Match comms to customers by E.164 phone.
+3. CompanyCam is already partly built: netlify/functions/pec-companycam.cjs (read proxy, actions projects and photos, needs COMPANYCAM_API_TOKEN). Remaining work is job association (store companycam_project_id), a gallery on the job detail, and optional webhooks.
+4. No appointments/Google-Calendar view exists yet (only the production Job Schedule at renderScheduleCalendar:11471); the existing Jobs pipeline (renderPipeline:11169 / loadPipelineData:11030, PIPELINE_COLUMNS:11128) is job/AR-stage focused, not a lead pipeline, and pulls from pec_job_ar plus DripJobs. The new lead pipeline (pec_leads table plus Zapier webhook plus kanban) is net-new and feeds the existing jobs pipeline.
+5. E.164 phone normalization is the shared join key for both Zapier leads and QUO comms; the prompt builds it once in Phase 2A and reuses it.
+
+## Handoff to Dylan
+Review claude-code-prompt-next-phase-2026-06-07.md in the HQ folder. It is phased: Phase 1 (work order) is ready to run now with no external setup. Phases 2-5 each list the credential/OAuth/Zapier/migration handoffs they need (Google Cloud OAuth app, QUO API key plus Business plan, CompanyCam Pro plan plus token, Zapier webhooks). Hand Claude Code one phase at a time.
+
 ## [2026-06-07 MST] Claude Code: schedule truly drives job status (name+address fallback bridge); removed duplicate pipeline heading
 
 By: Claude Code
