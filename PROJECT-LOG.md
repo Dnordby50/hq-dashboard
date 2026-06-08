@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: live-captured the auth wedge in the browser, wrote a 4-item Claude Code prompt
+
+By: Cowork
+
+Scope: Dylan reported 5 issues (finalize does not save first try, flake-color TBD option, tab-switch reload STILL happening, job costing not pulling materials, commission tab) and told Cowork to use Chrome and diagnose. Cowork signed into the live site (prescottepoxy.netlify.app) as Dylan, reproduced the wedge, read the code, and wrote claude-code-prompt-2026-06-08.md to the HQ folder. No repo code changed except this entry.
+
+LIVE EVIDENCE (this advances past the attempt-5 fix in the entry below, which did NOT stop it):
+1. The auth lock strands repeatedly. Console logged "[pec] auth lock stuck >9000ms; stealing to clear a stranded lock" (pecAuthLock 4728) on the initial session check AND again during tab switching. Token had ~47 min to expiry and navigator.locks.query() showed no held lock between events, so this is transient stranding around auth ops, not an expired-token refresh. The 9s steal is the visible "nothing happening" stall.
+2. Right after the steal, the whole app re-bootstraps: console showed "[prod] module booted" then "[crm] global auth gate" -> "renderAuthUI" -> "dispatching initial switchView -> dashboard". That re-boot is the "reload" Dylan sees, and "[pec] session wedge detected -> auto-reload" did NOT appear, so the reload path is NOT _pecWedgeReload.
+
+Root causes identified: (A) wireAuthListener (4815-4827) only swallows INITIAL_SESSION (4820) and same-user TOKEN_REFRESHED (4822); a redundant SIGNED_IN for the already-signed-in user (supabase-js emits it after setSession/recovery and on tab focus) falls through to renderGlobalAuthGate (4825) and re-runs the boot. Fix = make the listener idempotent for the same already-signed-in user. (B) a remaining reload/re-boot path that is not _pecWedgeReload (instrument every location.reload and repro to name it). (C) the lock stranding itself, prime suspect being navigator.locks shared across multiple open tabs of the same origin.
+
+Other items confirmed: job costing materials empty was reproduced live on Peter Cilliers #2806792 ("No material lines yet") because renderUnifiedJob/loadCostingData read only pec_prod_material_lines (12625-12630, 13011) while the working materials live in job_area_materials / computeMaterialPlan as the job detail uses (8132, 8384, 8494). Flake TBD option goes in renderAreas color selects (14814-14832, already saves null) and slotHtml swatches (9079). Commission needs a per-salesperson % in renderSettings (admin-gated 10155, sales team 10165) plus a new Commission tab computing % of paid_to_date (arRows ~7047) over a date range.
+
+## Handoff to Dylan
+Review claude-code-prompt-2026-06-08.md in the HQ folder. Item 1 (auth wedge) is the priority and now has concrete, live-captured root causes (idempotent auth listener + named reload path + multi-tab lock contention) rather than another constant tweak. The finalize-save and tab-reload are the same root cause. Note for your own use: having the CRM open in two tabs at once likely worsens the lock stranding (navigator.locks is shared across tabs of the same origin); worth testing single-tab while the fix is built.
+
 ## [2026-06-07 MST] Claude Code: tab-switch render timeout (wedge attempt #5), fenced 3 unfenced views + made the timeout budget coherent
 
 By: Claude Code
