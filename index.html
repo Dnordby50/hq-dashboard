@@ -5055,14 +5055,18 @@ async function withFreshSession(fn, { timeoutMs = 12000, label = 'query' } = {})
     // throw SESSION_WEDGED so switchView shows the in-place "Reload" button the
     // USER chooses.
     //
-    // Timeout ORDERING (do not re-invert): timedFetch auth 8s < pecAuthLock
-    // steal 9s < this read fence 12s < switchView render fence 30s. Each layer
-    // must sit above the one that heals it, so the steal wins before any wedge
-    // is declared.
+    // Timeout ORDERING (do not re-invert), with the arithmetic written out so it
+    // cannot silently invert again: timedFetch auth 8s < pecAuthLock steal 9s <
+    // first read fence 12s < THIS path's worst case (12 first fence + 8
+    // recoverWedgedClient + 6 retry fence = 26s) < switchView render fence 30s.
+    // The retry fence is 6s (not 12s) precisely so 12 + 8 + 6 = 26 < 30: a hung
+    // read surfaces the in-place Reload affordance BEFORE the generic 30s render
+    // fence can pre-empt it. Each layer must sit above the one that heals it, so
+    // the steal wins before any wedge is declared.
     console.warn(`[pec] ${label} read timed out past the 9s lock-steal window; rebuilding client in place and retrying once (no auto-reload)`);
     try { await recoverWedgedClient(); } catch (_) { /* best-effort */ }
     try {
-      return await race(fn());
+      return await race(fn(), 6000);
     } catch (e2) {
       if (String(e2 && e2.message || '').includes('timed out')) {
         console.warn(`[pec] ${label} still timed out after in-place recovery; surfacing in-place Reload UI (no auto-reload)`);
@@ -5878,10 +5882,14 @@ function switchView(v) {
           // (text between "Loading" and the ellipsis) also trip the fence.
           // Previously they slipped through and left the user stuck with no
           // Retry button.
-          // 30s: this MUST sit above the read path's worst case (12s read fence
-          // + in-place recover + 12s retry inside withFreshSession), so a render
-          // doing its own non-destructive recovery is not cut off early and the
-          // user does not see a premature error flash before the retry lands.
+          // 30s: this MUST sit above the read path's worst case, which is now
+          // 12 (first read fence) + 8 (recoverWedgedClient) + 6 (retry fence) =
+          // 26 < 30 inside withFreshSession, so a render doing its own
+          // non-destructive recovery is not cut off early and the user does not
+          // see a premature error flash before the retry lands. (Before the retry
+          // fence was shortened to 6s the worst case was 12 + 8 + 12 = 32 > 30,
+          // which inverted this ordering and let the generic timeout pre-empt the
+          // in-place Reload.)
           if (/pec-spinner|Loading/.test(root.innerHTML)) {
             console.warn('[crm] switchView render timed out (30s) ->', v);
             showCrmRenderError(new Error('Render timed out (no response in 30s) — the session may have gone stale. Click Reload to reconnect.'), v);
@@ -6059,7 +6067,7 @@ function randomToken() {
 // ============================================================
 async function renderDashboard() {
   const root = $('pecViewRoot');
-  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc, prodInstall] = await Promise.all([
+  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc, prodInstall] = await withFreshSession(() => Promise.all([
     supabase.from('customers').select('id', { count: 'exact', head: true }).is('archived_at', null),
     supabase.from('jobs').select('id,status,confirmed,created_at,address,type,price,dripjobs_deal_id,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
@@ -6073,7 +6081,7 @@ async function renderDashboard() {
     supabase.from('jobs').select('id,address,status,created_at,dripjobs_deal_id,customers(name)').eq('colors_confirmed', false).is('archived_at', null).in('status', ['confirmed', 'scheduled', 'in_progress']).order('created_at', { ascending: false }),
     // Install dates for joining onto jobs (same bridge pattern renderInvoicing uses).
     supabase.from('pec_prod_jobs').select('dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
-  ]);
+  ]), { label: 'renderDashboard' });
   const jobs = jobsAll.data || [];
   const installByDeal = {};
   ((prodInstall && !prodInstall.error) ? (prodInstall.data || []) : []).forEach(p => { if (p.dripjobs_deal_id) installByDeal[p.dripjobs_deal_id] = p.install_date; });
@@ -9964,10 +9972,10 @@ async function renderReviews() {
 async function renderTeam() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
-  const [teamRes, signInsRes] = await Promise.all([
+  const [teamRes, signInsRes] = await withFreshSession(() => Promise.all([
     supabase.from('admin_users').select('*').order('created_at'),
     supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20),
-  ]);
+  ]), { label: 'renderTeam' });
   state.team = teamRes.data || [];
   const signIns = signInsRes.data || [];
   root.innerHTML = `
@@ -10150,12 +10158,12 @@ async function renderSettings() {
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
-  const [{ data: settingsRows }, crewsRes, leadRes, salesRes] = await Promise.all([
+  const [{ data: settingsRows }, crewsRes, leadRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_lead_sources').select('*').order('name'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
-  ]);
+  ]), { label: 'renderSettings' });
   const map = Object.fromEntries((settingsRows||[]).map(s => [s.key, s.value]));
   state.crews = crewsRes.data || [];
   state.leadSources = leadRes.data || [];

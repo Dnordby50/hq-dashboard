@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: tab-switch render timeout (wedge attempt #5), fenced 3 unfenced views + made the timeout budget coherent
+
+By: Claude Code
+
+Ran the latest Cowork entry (the wedge-attempt-5 diagnosis prompt, ~/Desktop/HQ/claude-code-prompt-wedge-attempt5-2026-06-07.md). Dylan kept getting "Render timed out (no response in 30s)" switching tabs. The prompt said: diagnose first, do not blindly re-tune constants, prefer unifying the existing layers over adding a sixth. I diagnosed statically with two parallel code audits (the live console capture was not available to me this session) and shipped the two fixes the prompt's own Step 3 recommends. No new recovery layer, reads only, write paths untouched.
+
+Cause B (the actual hang), confirmed by audit: three frequently-used views ran bare "await Promise.all([supabase.from(...)])" blocks that were NOT wrapped in withFreshSession, so a hung read there had no 12s fence and no in-place recovery, and fell straight through to the generic 30s switchView render fence (exactly what Dylan saw). renderDashboard (index.html:6062), renderTeam (9967), renderSettings (10153). Every other dispatch-map view already routes its reads through withFreshSession or loadProdCore. Fix: wrapped each batch as withFreshSession(() => Promise.all([...]), { label }); wrapping the dashboard batch also fences the bare cachedSystemTypes() call inside it. The notification bell is unfenced but fire-and-forget (never awaited in a render), so it cannot hang a view and was left alone.
+
+Cause A (the budget was 2s short), confirmed by arithmetic: withFreshSession's worst case was 12s first read fence + ~8s recoverWedgedClient + 12s retry fence = 32s, which EXCEEDS the 30s render fence, so even a fenced read could be pre-empted by the generic timeout before its in-place recovery finished. The ordering comments asserted coherence but never added it up. Fix: shortened the retry fence from 12s to 6s (race(fn(), 6000) at index.html:5065), so the worst case is 12 + 8 + 6 = 26 < 30 with a 4s margin, and wrote the arithmetic explicitly into both comment blocks (the withFreshSession ordering note and the render-fence rationale) so it cannot silently invert again. Net effect: a hung read now surfaces the in-place Reload affordance within ~26s instead of the generic 30s timeout.
+
+Verified both CRM and prod modules pass node --check; confirmed the three new wraps match the pattern of the ~10 reads already wrapped elsewhere.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: This addresses causes A and B by inspection. Cause C (a genuinely stranded auth lock the 9s steal cannot clear, or a REST request stuck on the wire) is not fixable by fences and needs the live capture to confirm or rule out.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, then switch among Dashboard, Team, Settings and other tabs repeatedly (including after 15+ min idle). Expect the view to load, or within ~26s an in-place Reload button, not the generic "Render timed out (30s)". If a hang still happens, that points at cause C, so reproduce once with DevTools open and paste: the console lines starting with [pec] and [crm], the Network tab's pending request path, and the output of `await navigator.locks.query()` at the moment of the hang.
+
 ## [2026-06-07 MST] Claude Code: fixed System Types not opening (cross-module scope bug)
 
 By: Claude Code
