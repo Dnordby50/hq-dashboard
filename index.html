@@ -4837,6 +4837,11 @@ const $ = id => document.getElementById(id);
 // runs -- a missing sort_order falls back to name order.
 const sortSystemTypes = arr => [...(arr || [])].sort((a, b) =>
   ((a.sort_order ?? 1e9) - (b.sort_order ?? 1e9)) || String(a.name || '').localeCompare(String(b.name || '')));
+// Bridge to window: the production module (a separate, isolated <script type="module">)
+// calls this from its System Types editor and cannot see this module's scope. Same
+// pattern as window.invalidateRefCache below. Single source of truth so the CRM pickers
+// and the catalog editor sort identically.
+window.sortSystemTypes = sortSystemTypes;
 
 // ============================================================
 // Activity log (per-job audit_log helpers)
@@ -15633,7 +15638,7 @@ function _mergeAcrossAreas(areaPlans) {
         <button class="pec-btn primary" id="prodAddSystemBtn">+ Add system type</button>
       </div>
       <div style="font-size:.72rem;color:var(--muted);margin:0 0 10px">Drag the &#9776; handle to reorder. The order here sets the order systems appear in the job and schedule pickers, so put the most-used ones at the top.</div>
-      ${sortSystemTypes(state.systemTypes).map(s => `
+      ${window.sortSystemTypes(state.systemTypes).map(s => `
         <div class="pec-card" data-sys-id="${esc(s.id)}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div style="display:flex;align-items:flex-start;gap:10px;min-width:0">
@@ -15704,7 +15709,7 @@ function _mergeAcrossAreas(areaPlans) {
         e.preventDefault();
         const targetId = card.dataset.sysId;
         if (!dragSysId || dragSysId === targetId) return;
-        const arr = sortSystemTypes(state.systemTypes);
+        const arr = window.sortSystemTypes(state.systemTypes);
         const from = arr.findIndex(s => s.id === dragSysId);
         const to = arr.findIndex(s => s.id === targetId);
         if (from < 0 || to < 0) return;

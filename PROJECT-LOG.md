@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: fixed System Types not opening (cross-module scope bug)
+
+By: Claude Code
+
+Dylan: the System Types editor would not open (Settings > System Types > Open editor, or the Price & Material Catalog > System Types tab). Presentation/logic bug, no schema change.
+
+Root cause: index.html is two separate ES modules (two <script type="module"> blocks) with isolated scopes, the CRM module (~4657-14126) and the production module (~14243-16117). The helper sortSystemTypes is defined only in the CRM module (index.html:4838), but the production module's renderSystemTypes calls it (at 15636 and 15707) to order and drag-reorder the system cards. In the prod module's scope that name does not exist, so it threw "ReferenceError: sortSystemTypes is not defined", which prodSwitchView catches and shows as a "Production module error" panel. The Products and Color Pairings tabs kept working because they never call sortSystemTypes, which is why only System Types looked broken. Same class of bug as the earlier Item 9 invalidateRefCache fix.
+
+Fix: bridged the helper to window in the CRM module (window.sortSystemTypes = sortSystemTypes, right after the const at 4838) and pointed the two prod-module call sites at window.sortSystemTypes. Bridging (not duplicating) keeps a single source of truth so the CRM job/schedule pickers and the catalog editor always sort systems the same way. Verified both modules pass node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: None. Phase 2 (Sales/Lead pipeline) remains the next planned build.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, then open Settings > System Types > Open editor (and the Catalog > System Types tab). It should now show the system cards with drag handles and recipe-slot tables instead of an error. Dragging to reorder should persist.
+
 ## [2026-06-07 MST] Cowork: diagnosed the tab-switch render timeout (wedge attempt #5), wrote a Claude Code prompt
 
 By: Cowork
