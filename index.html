@@ -581,7 +581,7 @@ body.pec-portal-mode{
   --bg:#eef0f3;--s1:#ffffff;--s2:#f5f6f8;--s3:#fafbfc;
   --border:#e6e8ec;--border-light:#d1d5db;
   --text:#0f1420;--muted:#6b7280;--dim:#9aa1ad;
-  --accent:#2b59ff;
+  --accent:#D8531C;
   background:var(--bg);color:var(--text);
 }
 body.pec-portal-mode.brand-ftp{--accent:#ff6b1a}
@@ -590,10 +590,11 @@ body.pec-portal-mode .pec-btn.primary{color:#fff}
 body.pec-portal-mode .pec-btn.primary:disabled{opacity:.5;cursor:not-allowed}
 body.pec-portal-mode .pec-swatch.selected{box-shadow:0 0 0 2px var(--accent) inset}
 body.pec-portal-mode input,body.pec-portal-mode textarea,body.pec-portal-mode select{background:#fff;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-family:inherit;font-size:.85rem}
-body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-portal-mode select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(43,89,255,.15)}
+body.pec-portal-mode input:focus,body.pec-portal-mode textarea:focus,body.pec-portal-mode select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(216,83,28,.18)}
 #customerPortalRoot{max-width:820px;margin:0 auto;padding:24px 20px;color:var(--text)}
 #customerPortalRoot .pec-portal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px}
-#customerPortalRoot .pec-portal-brand{font-family:var(--sans);font-weight:800;font-size:1.4rem;background:linear-gradient(135deg,var(--pec),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+#customerPortalRoot .pec-portal-brand{font-family:var(--sans);font-weight:800;font-size:1.3rem;color:var(--rd-ink,#0f1420)}
+#customerPortalRoot .pec-portal-logo{height:42px;width:auto;display:block}
 #customerPortalRoot .pec-portal-name{color:var(--muted);font-size:.85rem}
 </style>
 
@@ -13913,7 +13914,9 @@ async function renderCustomerPortal(token) {
   root.innerHTML = `
     <div class="pec-portal-header">
       <div>
-        <div class="pec-portal-brand">${esc(brand)}</div>
+        ${customer.company === 'finishing-touch'
+          ? `<div class="pec-portal-brand">${esc(brand)}</div>`
+          : `<img class="pec-portal-logo" src="assets/pec-logo.png" alt="Prescott Epoxy Company">`}
         <div class="pec-portal-name">Welcome, ${esc(customer.name)}</div>
       </div>
       <a href="#referral" class="pec-btn">Refer a friend ($${esc(referral_reward_amount)})</a>

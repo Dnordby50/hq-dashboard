@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: restyled the customer portal to match the CRM (orange accent + logo, dropped the gradient wordmark)
+
+By: Claude Code
+
+Dylan: "Make the customer portal match the CRM, black and orange, drop the cheesy gradient Prescott Epoxy font and use our logo." The portal already used a light theme whose surfaces matched the CRM (white cards, #eef0f3 page, #e6e8ec borders, ink text); the only off-brand parts were an indigo accent and the gradient text wordmark. Visual-only pass, scoped to body.pec-portal-mode and the portal landing header; no data flow, RPC, token, or color/signature logic touched.
+
+Changes (index.html): in body.pec-portal-mode, flipped --accent from indigo #2b59ff to PEC orange #D8531C and the input focus ring from rgba(43,89,255,.15) to the CRM orange ring rgba(216,83,28,.18). Replaced the .pec-portal-brand gradient text-clip rule with a plain Syne ink wordmark (now used only as a fallback) and added a .pec-portal-logo rule. In renderCustomerPortal's header, replaced the text wordmark with the existing assets/pec-logo.png image for PEC (the portal renders at the app origin, so the relative path resolves); Finishing Touch Painting keeps the text wordmark since there is no FTP logo asset. All portal cards, the status timeline, swatch grid, photo gallery, signature card, buttons, and the referral form use var(--accent)/var(--s1)/var(--border), so they pick up the orange + CRM surfaces automatically; no indigo remains anywhere in the portal.
+
+Verified CRM module passes node --check and grep shows no indigo left in the portal CSS/render (the remaining #2b59ff hits are the legacy dark HQ-dashboard logo and unused var(--rd-accent, ...) fallbacks, not the portal).
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: None blocking.
+Handoff to Cowork: None.
+Handoff to Dylan: Open a real customer portal token URL and confirm it reads like the CRM, white cards, orange accent (no indigo), dark ink text, and the Prescott logo image in the header instead of the gradient wordmark; check the color picker, signature, and referral still work. Follow-up: if you want Finishing Touch Painting portals to show a logo too, drop an FTP logo asset in assets/ and I will wire it the same way (right now FTP falls back to the text wordmark).
+
 ## [2026-06-08 MST] Claude Code: fixed manual-job scheduling failing the revenue check constraint
 
 By: Claude Code
