@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 2, explicit "Not yet selected (TBD)" color option
+
+By: Claude Code
+
+Third of the batch. Dylan wanted to save a job's system with the flake (or quartz/metallic) color left unchosen, for when the customer has not picked yet, without it looking unfinished. Good news from the code read: null color is ALREADY saved (saveNewJob persists flake_product_id || null and its validation requires only system + sqft, not a color) and already renders gracefully everywhere (work order shows blank, portal hides the colors card, the dashboard "colors not confirmed" list keys off the colors_confirmed boolean, not the color value). So this was UX clarity, not a schema or persistence change.
+
+Changes: relabeled the empty placeholder option in the three new-job color dropdowns (flake, quartz, metallic) from "Pick a flake/Q-Color/pigment" to "Not yet selected (TBD)", so deliberately leaving it there reads as an intentional TBD. On the job detail, the swatch-grid color picker already lets you deselect (clicking a selected swatch clears it) and already supports an empty pick; relabeled its summary from "none chosen" to "Not yet selected (TBD)" to match. Persistence stays null.
+
+Deliberately NOT changed: the non-swatch product dropdown's "— none —" option (basecoat/topcoat/sealer) stays "— none —", because for those slots "none" is a valid intentional choice, not an undecided color; relabeling it TBD would mislead. The FINALIZE-only validateRequiredSlots() still gates a finalize on slots with min_select > 0; that is the deliberate gate for sending an estimate to production and is NOT on the save path, so saving with a TBD color is unaffected (TBD-save was the ask; finalize still wants a real color where a system requires one).
+
+Verified CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Item 4 (commission) last; it needs a migration (Cowork handoff).
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh; in New Job (or the job detail), pick a system and leave the color on "Not yet selected (TBD)", save, and confirm it saves and the area shows "TBD"; choosing a real color later still works.
+
 ## [2026-06-08 MST] Cowork: scoped portal redesign + diagnosed the manual-job schedule revenue bug, wrote a Claude Code prompt
 
 By: Cowork

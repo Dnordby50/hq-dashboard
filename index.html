@@ -9115,7 +9115,7 @@ async function renderJobDetailInner(id) {
         const chosen = selectedIds.map(pid => productById[pid]).filter(Boolean);
         const summary = chosen.length
           ? chosen.map(p => `<span style="font-weight:600">${esc(isSpecialOrder(p) ? 'Special Order' : (p.color || p.name))}</span>`).join(', ')
-          : '<span style="color:var(--muted)">none chosen</span>';
+          : '<span style="color:var(--muted)">Not yet selected (TBD)</span>';
         const soTile = soProd ? `
               <div class="pec-swatch pec-swatch-so ${soSelected?'selected':''}" data-slot-swatch="${idx}|${esc(slot.id)}" data-pid="${esc(soProd.id)}">
                 <div class="prod-chip-empty pec-swatch-so-chip" style="width:100%;height:54px">Special<br>Order</div>
@@ -14879,21 +14879,21 @@ function _mergeAcrossAreas(areaPlans) {
             <div class="pec-field" style="${showFlake && !a.special_order ? '' : 'display:none'}">
               <label>Flake color</label>
               <select data-aprop="flake_product_id">
-                <option value="">Pick a flake…</option>
+                <option value="">Not yet selected (TBD)</option>
                 ${flakes.filter(p => p.name !== 'Special Order Flake').map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
             <div class="pec-field" style="${showQuartz && !a.special_order ? '' : 'display:none'}">
               <label>Quartz color</label>
               <select data-aprop="flake_product_id">
-                <option value="">Pick a Q-Color blend…</option>
+                <option value="">Not yet selected (TBD)</option>
                 ${quartz.filter(p => p.name !== 'Special Order Quartz').map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
             <div class="pec-field" style="${showPigment && !a.special_order ? '' : 'display:none'}">
               <label>Metallic pigment color</label>
               <select data-aprop="flake_product_id">
-                <option value="">Pick a pigment…</option>
+                <option value="">Not yet selected (TBD)</option>
                 ${pigments.map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
               </select>
             </div>
