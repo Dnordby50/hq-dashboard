@@ -12305,6 +12305,10 @@ function openAddJobModal() {
     customer_name: '',
     customer_query: '',
     existing_job_id: '',
+    // Set true when the picked existing job has no revenue yet: the reschedule
+    // path then reveals + requires a price and writes it, so the row does not
+    // violate pec_prod_jobs_scheduled_needs_revenue when status flips to scheduled.
+    reschedule_needs_revenue: false,
     address: '',
     quote_number: '',
     revenue: '',
@@ -12422,6 +12426,10 @@ function openAddJobModal() {
           <div class="pec-field"><label>Scope / notes</label><textarea id="addJobScope" rows="3" placeholder="What the crew is doing on site"></textarea></div>
         </div>
         <div id="addJobLinkedNote" style="display:none;font-size:.72rem;color:var(--muted);margin-top:6px"></div>
+        <div id="addJobReschedPriceBox" style="display:none;margin-top:10px">
+          <div class="pec-field"><label>Job total ($)</label><input id="addJobReschedPrice" type="number" min="0" step="1" placeholder="e.g. 4200"></div>
+          <div style="font-size:.7rem;color:var(--muted)">This job has no price yet. A scheduled job needs a total before it can be saved.</div>
+        </div>
       </div>
 
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
@@ -12500,6 +12508,8 @@ function openAddJobModal() {
       const existingSel = modal.querySelector('#addJobExisting');
       const fieldsBox = modal.querySelector('#addJobFields');
       const linkedNote = modal.querySelector('#addJobLinkedNote');
+      const reschedPriceBox = modal.querySelector('#addJobReschedPriceBox');
+      const reschedPriceEl = modal.querySelector('#addJobReschedPrice');
       const addrEl = modal.querySelector('#addJobAddress');
       const quoteEl = modal.querySelector('#addJobQuote');
       const scopeEl = modal.querySelector('#addJobScope');
@@ -12598,6 +12608,8 @@ function openAddJobModal() {
           // anything the user typed is preserved.
           fieldsBox.style.display = '';
           linkedNote.style.display = 'none';
+          reschedPriceBox.style.display = 'none';
+          draft.reschedule_needs_revenue = false;
           return;
         }
         const j = (state.prodJobs || []).find(j => j.id === id);
@@ -12616,12 +12628,20 @@ function openAddJobModal() {
         ].filter(Boolean).join(' · ');
         linkedNote.innerHTML = `Rescheduling existing job. ${summary}. Saving will replace any previously scheduled days; the job's address, value, and scope stay as-is.`;
         if (j.crew_id) { crewEl.value = j.crew_id; draft.crew_id = j.crew_id; }
+        // A scheduled job must have revenue > 0 (pec_prod_jobs_scheduled_needs_revenue).
+        // If this existing job has none yet, require a price before saving; otherwise
+        // leave its revenue untouched.
+        const hasRev = Number(j.revenue) > 0;
+        draft.reschedule_needs_revenue = !hasRev;
+        reschedPriceBox.style.display = hasRev ? 'none' : '';
+        if (!hasRev) { draft.revenue = ''; reschedPriceEl.value = ''; }
       };
 
       queryEl.addEventListener('input', e => { draft.customer_query = e.target.value; renderResults(); });
       modal.querySelector('#addJobCustClear').addEventListener('click', clearCustomer);
       existingSel.addEventListener('change', applyExistingPick);
       addrEl.addEventListener('input', e => { draft.address = e.target.value; });
+      reschedPriceEl.addEventListener('input', e => { draft.revenue = e.target.value; });
       quoteEl.addEventListener('input', e => { draft.quote_number = e.target.value; });
       scopeEl.addEventListener('input', e => { draft.scope = e.target.value; });
       crewEl.addEventListener('change', e => { draft.crew_id = e.target.value; });
@@ -12638,6 +12658,8 @@ function openAddJobModal() {
         if (!isReschedule) {
           if (!address) return errEl.textContent = 'Service address is required.';
           if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Add at least one line item with a price.';
+        } else if (draft.reschedule_needs_revenue) {
+          if (!Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'This job has no price yet. Enter the job total before scheduling.';
         }
 
         const saveBtn = modal.querySelector('#addJobSave');
@@ -12664,11 +12686,11 @@ function openAddJobModal() {
             // ops are idempotent (full-value update, delete-by-job_id) so
             // withFreshWriteRetry can rebuild a wedged client and retry once.
             jobId = draft.existing_job_id;
-            const upd = await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update({
-              install_date: sortedIso[0],
-              status: 'scheduled',
-              crew_id: draft.crew_id,
-            }).eq('id', jobId), { label: 'addjob-reschedule' });
+            // Only write revenue when the job had none (and the user just entered
+            // it); a job that already has revenue keeps it untouched.
+            const reschedPayload = { install_date: sortedIso[0], status: 'scheduled', crew_id: draft.crew_id };
+            if (draft.reschedule_needs_revenue) reschedPayload.revenue = revenueNum;
+            const upd = await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update(reschedPayload).eq('id', jobId), { label: 'addjob-reschedule' });
             if (upd.error) throw upd.error;
             const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', jobId), { label: 'addjob-clear-days' });
             if (del.error) throw del.error;
@@ -12734,9 +12756,12 @@ function openAddJobModal() {
           // forever with the button stuck on "Saving…". Always re-enable so the
           // button is never silently dead, and tell the user it is safe to retry.
           console.error('[pec] add job save failed', err);
+          const msg = String(err && err.message || err || '');
           errEl.textContent = isSessionStale(err)
             ? 'The session briefly stalled and the save did not go through. Wait a moment, then tap Save job again.'
-            : 'Save failed: ' + (err.message || err);
+            : /scheduled_needs_revenue|violates check constraint/i.test(msg)
+              ? 'This job needs a price greater than $0 before it can be scheduled. Enter the job total and try again.'
+              : 'Save failed: ' + msg;
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save job';
         }

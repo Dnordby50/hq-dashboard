@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: fixed manual-job scheduling failing the revenue check constraint
+
+By: Claude Code
+
+Live bug: Dylan's VA could not schedule a manually-added job, getting "Save failed: new row for relation pec_prod_jobs violates check constraint pec_prod_jobs_scheduled_needs_revenue". Dylan thought it was a missing address, but the real blocker is REVENUE.
+
+Root cause: the constraint (2026-06-02_price_integrity.sql) requires a 'scheduled' pec_prod_jobs row to have revenue > 0, which is correct and protects costing + commission. The "+ Add Job" modal's reschedule path (openAddJobModal, index.html:12297) updates an existing row to status 'scheduled' but deliberately leaves revenue as-is, and the revenue validation only ran on the NEW-job path. Manual jobs can be created with no revenue (the "No system yet" MANUAL- rows), so rescheduling one flipped status to scheduled while revenue stayed null, tripping the constraint, and the raw Postgres text was shown to the VA.
+
+Fix (no migration; constraint kept): when an existing job with no revenue is picked for reschedule, the modal now reveals a "Job total ($)" field (new #addJobReschedPriceBox, shown by applyExistingPick when Number(j.revenue) is not > 0, tracked by draft.reschedule_needs_revenue). Save requires that price with a plain-English message ("This job has no price yet. Enter the job total before scheduling.") and includes revenue in the reschedule update ONLY when the job lacked it (jobs that already have revenue keep it untouched, unchanged behavior). Kept the existing withFreshWriteRetry idempotent update. Also mapped any scheduled_needs_revenue / check-constraint error in the catch to a friendly message instead of the raw Postgres text, so any other path that flips status to scheduled fails legibly.
+
+Address was a red herring (the constraint does not require it); left the address flow unchanged. Optionally revealing/requiring the service address on reschedule when missing is a clean follow-up, not done here.
+
+Verified CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: portal restyle (the other item in this batch).
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, then in Job Schedule > + Add Job pick a customer and select one of the "No system yet" MANUAL- jobs (Steve Bruns, Irene Varelas, Gordon Clarry, Chris Clevenger). Confirm the price field appears, enter the job total, pick a crew + day, and Save: it should schedule with no constraint error. Scheduling a job that already has a price should be unchanged.
+
 ## [2026-06-08 MST] Claude Code: Item 4, per-salesperson commission % in Settings + a Commission tab on revenue collected
 
 By: Claude Code
