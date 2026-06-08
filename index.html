@@ -4918,6 +4918,14 @@ function isAdmin() {
   return !!(state.adminUser && state.adminUser.role === 'admin');
 }
 
+// Per-user capability check. Admin is a super-role that always passes; otherwise
+// read the boolean from the user's loaded user_permissions row (resolveAdminUser
+// defaults every capability to true when no row exists, so this is fail-open for
+// existing users until an admin unchecks something).
+function can(capability) {
+  return isAdmin() || !!(state.adminUser && state.adminUser.permissions && state.adminUser.permissions[capability]);
+}
+
 // Shared manual status-override flow. Opens a confirm modal (reason optional),
 // then writes jobs.status + status_manual_at and logs the change to audit_log
 // with source 'manual_override'. status_manual_at tells the schedule auto-sync
@@ -5644,7 +5652,23 @@ async function resolveAdminUser() {
     return;
   }
   state.adminUser = data || null;
+  // Load this user's per-capability permissions (layered on top of role). RLS
+  // lets a user read only their own row. If the row (or the table, pre-migration)
+  // is missing, default EVERY capability to true so nobody is locked out before
+  // the backfill runs. Admins ignore this anyway (isAdmin() is a super-role).
+  if (state.adminUser) {
+    state.adminUser.permissions = PERMS_ALL_TRUE();
+    try {
+      const { data: perm, error: pErr } = await supabase
+        .from('user_permissions').select('*').eq('admin_user_id', state.adminUser.id).maybeSingle();
+      if (!pErr && perm) state.adminUser.permissions = perm;
+    } catch (_) { /* keep all-true default */ }
+  }
 }
+
+// The capability keys, and an all-true default used when no row exists yet.
+const PERMS_KEYS = ['can_move_pipeline','can_view_job_costing','can_override_status','can_view_commission','can_edit_catalog','can_manage_team','can_manage_settings'];
+function PERMS_ALL_TRUE() { const o = {}; for (const k of PERMS_KEYS) o[k] = true; return o; }
 
 async function passwordSignIn(email, password, errEl) {
   const err = errEl || $('pecSigninError');
@@ -5716,19 +5740,20 @@ function renderAuthUI() {
   const avEl = document.getElementById('rdAvatar'); if (avEl) avEl.textContent = initials;
   const nmEl = document.getElementById('rdUserName'); if (nmEl) nmEl.textContent = name;
   const sbEl = document.getElementById('rdUserSub');  if (sbEl) sbEl.textContent = roleLabel;
-  // Role-gate admin-only sub-nav buttons. Material Catalog is open to admin+pm,
-  // not just admin, so override its visibility after the default rule runs.
+  // Sub-nav visibility. Default: admin-only buttons (Team, Settings) hide for
+  // non-admins. Then Catalog / Job Costing / Commission are governed by per-user
+  // capabilities (can() = admin super-role OR the user's granted permission), so
+  // an admin can hand a specific staffer those views without making them admin.
   document.querySelectorAll('#pecSubnav .pec-role-admin').forEach(b => {
     b.style.display = state.adminUser.role === 'admin' ? '' : 'none';
   });
-  const catalogBtn = document.querySelector('#pecSubnav button[data-pec-view="catalog"]');
-  if (catalogBtn) {
-    catalogBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
-  }
-  const costingBtn = document.querySelector('#pecSubnav button[data-pec-view="costing"]');
-  if (costingBtn) {
-    costingBtn.style.display = ['admin', 'pm'].includes(state.adminUser.role) ? '' : 'none';
-  }
+  const setNav = (view, allowed) => {
+    const btn = document.querySelector(`#pecSubnav button[data-pec-view="${view}"]`);
+    if (btn) btn.style.display = allowed ? '' : 'none';
+  };
+  setNav('catalog', can('can_edit_catalog'));
+  setNav('costing', can('can_view_job_costing'));
+  setNav('commission', can('can_view_commission'));
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
@@ -8474,7 +8499,7 @@ async function renderJobDetailInner(id) {
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
   const STATUSES = ['signed','scheduled','in_progress','completed'];
   // Only admins can manually override status; everyone else sees it read-only.
-  const canEditStatus = isAdmin();
+  const canEditStatus = can('can_override_status');
 
   // Recipe slots grouped per system, ordered, editor-visible only. Slots with
   // editor_hidden = true (calculator-only internals like a fixed body coat)
@@ -10165,7 +10190,7 @@ function commissionDefaultRange() {
 }
 async function renderCommission() {
   const root = $('pecViewRoot');
-  if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
+  if (!can('can_view_commission')) { root.innerHTML = '<div class="pec-empty">You do not have access to Commission.</div>'; return; }
   if (!state.commissionRange) state.commissionRange = commissionDefaultRange();
   const { start, end } = state.commissionRange;
   let res;
@@ -10290,6 +10315,29 @@ async function renderSettings() {
   state.leadSources = leadRes.data || [];
   state.salesTeam = salesRes.data || [];
 
+  // Per-user permissions grid data (admins only; RLS lets an admin read all).
+  // Missing row = treat every capability as on (matches the in-memory default).
+  let permStaff = [], permByUser = {};
+  try {
+    const [uRes, pRes] = await Promise.all([
+      supabase.from('admin_users').select('id,name,email,role').order('name'),
+      supabase.from('user_permissions').select('*'),
+    ]);
+    permStaff = uRes.data || [];
+    for (const p of (pRes.data || [])) permByUser[p.admin_user_id] = p;
+  } catch (e) { console.warn('[pec] permissions load failed', e); }
+  // Capabilities an admin can delegate to a non-admin. Team + Settings management
+  // are intentionally NOT here: they stay admin-only so nobody can be handed the
+  // power to mint admins or edit other people's permissions.
+  const DELEGABLE_PERMS = [
+    ['can_move_pipeline', 'Move pipeline cards'],
+    ['can_view_job_costing', 'Job Costing'],
+    ['can_override_status', 'Override status'],
+    ['can_view_commission', 'Commission'],
+    ['can_edit_catalog', 'Catalog'],
+  ];
+  const permVal = (uid, key) => { const r = permByUser[uid]; return r ? !!r[key] : true; };
+
   root.innerHTML = `
     ${settingsTabBar('general')}
     ${(() => {
@@ -10349,6 +10397,38 @@ async function renderSettings() {
                 </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No sales team members yet.</td></tr>'}
             </tbody>
           </table>
+        ` : ''}
+      </div>`;
+    })()}
+
+    ${(() => {
+      const permsOpen = state.permissionsOpen === true;
+      return `
+      <div class="pec-card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:${permsOpen ? '10px' : '0'}">
+          <div style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1" data-permissions-toggle>
+            <span class="prod-cat-chevron">${permsOpen ? '▼' : '▶'}</span>
+            <h3 style="margin:0">User Permissions</h3>
+            <span style="color:var(--muted);font-size:.7rem">${permStaff.length} user${permStaff.length === 1 ? '' : 's'}</span>
+          </div>
+          ${permsOpen ? '<button class="pec-btn primary sm" id="pecPermsSave">Save permissions</button>' : ''}
+        </div>
+        ${permsOpen ? `
+          <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">New accounts get every capability by default. Uncheck to remove a capability for that user. Admins always have full access (the role is a super-role); Team and Settings stay admin-only.</div>
+          <div class="pec-table-wrap">
+            <table class="pec-table">
+              <thead><tr><th>User</th>${DELEGABLE_PERMS.map(([, lbl]) => `<th style="text-align:center">${esc(lbl)}</th>`).join('')}</tr></thead>
+              <tbody>
+                ${permStaff.map(u => `
+                  <tr class="nohover">
+                    <td><strong>${esc(u.name || u.email || '')}</strong><div style="color:var(--muted);font-size:.7rem">${esc(u.role)}</div></td>
+                    ${u.role === 'admin'
+                      ? `<td colspan="${DELEGABLE_PERMS.length}" style="color:var(--muted);font-size:.72rem">Admin (full access)</td>`
+                      : DELEGABLE_PERMS.map(([key]) => `<td style="text-align:center"><input type="checkbox" data-perm-user="${esc(u.id)}" data-perm-key="${esc(key)}" ${permVal(u.id, key) ? 'checked' : ''}></td>`).join('')}
+                  </tr>`).join('') || `<tr class="nohover"><td colspan="${DELEGABLE_PERMS.length + 1}" class="pec-empty">No staff yet.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
         ` : ''}
       </div>`;
     })()}
@@ -10416,6 +10496,37 @@ async function renderSettings() {
   if (salesToggle) salesToggle.addEventListener('click', () => {
     state.salesTeamOpen = !(state.salesTeamOpen === true);
     renderSettings();
+  });
+  const permsToggle = root.querySelector('[data-permissions-toggle]');
+  if (permsToggle) permsToggle.addEventListener('click', () => {
+    state.permissionsOpen = !(state.permissionsOpen === true);
+    renderSettings();
+  });
+  const permsSaveBtn = $('pecPermsSave');
+  if (permsSaveBtn) permsSaveBtn.addEventListener('click', async () => {
+    permsSaveBtn.disabled = true; permsSaveBtn.textContent = 'Saving…';
+    // Collect the checkbox grid into one upsert per non-admin user.
+    const byUser = {};
+    root.querySelectorAll('[data-perm-user]').forEach(cb => {
+      const uid = cb.dataset.permUser;
+      (byUser[uid] ||= { admin_user_id: uid })[cb.dataset.permKey] = cb.checked;
+    });
+    try {
+      const rows = Object.values(byUser);
+      if (rows.length) {
+        const { error } = await supabase.from('user_permissions').upsert(rows, { onConflict: 'admin_user_id' });
+        if (error) throw error;
+      }
+      showToast('Permissions saved. Affected users see the change on their next load.');
+      // Refresh the current admin's own permissions in case they changed their own row.
+      await resolveAdminUser();
+      renderSettings();
+    } catch (err) {
+      console.error('[pec] permissions save failed', err);
+      permsSaveBtn.disabled = false; permsSaveBtn.textContent = 'Save permissions';
+      const hint = /user_permissions/.test(err.message || '') ? ' (Run the 2026-06-08_user_permissions.sql migration first.)' : '';
+      alert('Could not save permissions: ' + (err.message || err) + hint);
+    }
   });
   $('pecOpenSystemTypes').addEventListener('click', () => {
     state.catalogTab = 'system_types';
@@ -11390,7 +11501,7 @@ async function renderPipeline() {
     root.innerHTML = `<div class="pec-empty">Could not load the pipeline: ${esc(e.message || String(e))}${hint}</div>`;
     return;
   }
-  const canEdit = isAdmin();
+  const canEdit = can('can_move_pipeline');
   const f = state.pipelineFilters;
 
   // Apply filters. Window filters on the last-changed timestamp.
@@ -13181,8 +13292,8 @@ async function deleteBonusRow(rowId, jobId) {
 
 async function renderUnifiedJob(jobId) {
   const root = $('pecViewRoot');
-  if (!['admin','pm'].includes(state.adminUser?.role)) {
-    root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>';
+  if (!can('can_view_job_costing')) {
+    root.innerHTML = '<div class="pec-empty">You do not have access to Job Costing.</div>';
     return;
   }
   // Ensure the COSTING data is loaded, regardless of entry path. The old guard
@@ -13568,7 +13679,7 @@ async function renderUnifiedJob(jobId) {
 
 async function renderJobCosting() {
   const root = $('pecViewRoot');
-  if (!['admin','pm'].includes(state.adminUser?.role)) { root.innerHTML = '<div class="pec-empty">Admins and PMs only.</div>'; return; }
+  if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Job Costing.</div>'; return; }
   if (state.openUnifiedJobId) return renderUnifiedJob(state.openUnifiedJobId);
   root.innerHTML = '<div class="pec-empty">Loading job costing…</div>';
   await loadCostingData();

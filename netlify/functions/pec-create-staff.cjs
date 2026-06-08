@@ -67,7 +67,18 @@ exports.handler = async (event) => {
       role: newRole,
     }, true);
 
-    return { statusCode: 200, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, id: inserted[0]?.id, auth_user_id: newUser.id }) };
+    // 5. Seed an all-on user_permissions row so a new account has every
+    // capability by default (the table's columns all default true, so inserting
+    // just the FK is enough). Best-effort: if the migration is not live yet the
+    // app falls back to all-true in memory anyway, so a failure must not block
+    // staff creation.
+    const newAdminId = inserted[0]?.id;
+    if (newAdminId) {
+      try { await sb('POST', '/user_permissions', { admin_user_id: newAdminId }, true); }
+      catch (e) { console.warn('pec-create-staff: user_permissions seed failed:', e.message); }
+    }
+
+    return { statusCode: 200, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, id: newAdminId, auth_user_id: newUser.id }) };
   } catch (err) {
     console.error('pec-create-staff error:', err);
     return json(500, { error: err.message });

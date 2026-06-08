@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 1, per-user permissions (default all-on, admin super-role); unblocks Anne
+
+By: Claude Code
+
+First of the 4-item batch. Dylan: Anne cannot move Jobs pipeline cards and has no Job Costing access; he wants an admin-only Settings UI to control permissions PER USER with checkboxes, defaulting to ALL on for a new account, and to grant Anne everything. Access was purely role-based before (admin_users.role); there was no per-user permission. NEEDS MIGRATION (Cowork handoff).
+
+Migration supabase/migrations/2026-06-08_user_permissions.sql: new table public.user_permissions, one row per admin_user_id (unique FK, on delete cascade), a boolean per capability (can_move_pipeline, can_view_job_costing, can_override_status, can_view_commission, can_edit_catalog, plus reserved can_manage_team / can_manage_settings), every column NOT NULL DEFAULT true. RLS reuses is_admin_role(): admins read/write all; a non-admin can SELECT only their own row and can write NONE, so a non-admin can never grant themselves a capability. Backfills an all-true row for every existing admin_users, so Anne (and everyone) gets full access the moment the app starts reading permissions.
+
+Client (index.html): resolveAdminUser now also loads the caller's user_permissions row into state.adminUser.permissions, defaulting to all-true in memory when the row or table is missing (fail-open, nobody locked out pre-backfill). New can(capability) helper = isAdmin() (super-role, always passes) OR the user's granted boolean. Converted the gates from role-checks to can(): pipeline drag (canEdit), Job Costing view + unified-job view + nav button (can_view_job_costing), manual status override (can_override_status), Commission view + nav (can_view_commission), Catalog nav (can_edit_catalog). Team and Settings stay isAdmin()-only on purpose (a non-admin must never be handed staff/permission management, the way to mint admins), so those two reserved columns are intentionally not wired as the sole gate. Added an admin-only "User Permissions" grid in Settings (collapsible card): one row per staff member with a checkbox per delegable capability, Save upserts user_permissions by admin_user_id; admin rows show "Admin (full access)". pec-create-staff.cjs now seeds an all-on user_permissions row after creating a staff account (best-effort), so new accounts are all-on by default.
+
+Verified CRM module and pec-create-staff.cjs pass node --check.
+
+Files touched: index.html, netlify/functions/pec-create-staff.cjs, supabase/migrations/2026-06-08_user_permissions.sql, PROJECT-LOG.md
+Next steps: Item 2 (status source of truth) Phase A proposal, then Items 3 + 4.
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_user_permissions.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. Non-destructive (creates a table + RLS + a backfill insert). Verify: (a) select count(*) from public.user_permissions equals select count(*) from public.admin_users (every user has a row); (b) RLS is enabled (select relrowsecurity from pg_class where relname = 'user_permissions' is true); (c) a quick sanity check that every backfilled row is all-true (e.g. select count(*) from public.user_permissions where can_move_pipeline and can_view_job_costing and can_override_status and can_view_commission and can_edit_catalog equals the total). Then append a PROJECT-LOG entry (By: Cowork) with the counts.
+
+## Handoff to Dylan
+After Cowork runs the migration, hard-refresh. In Settings open the "User Permissions" card: Anne should show all boxes checked (so she can now move pipeline cards and open Job Costing). To restrict someone, uncheck a box and Save; they lose exactly that capability on their next load. You (admin) always keep full access.
+
 ## [2026-06-08 MST] Cowork: scoped permissions + one-source-of-truth status + edit-payment + touch-up callback, wrote a Claude Code prompt
 
 By: Cowork
