@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 2 Phase A proposal, one source of truth for job status (NEEDS DYLAN SIGN-OFF, no code change)
+
+By: Claude Code
+
+This is the required design proposal before touching the status system. No repo code changed except this entry. Item 2 Phase B (the actual collapse) does NOT ship until Dylan approves a direction, per the prompt's guardrail.
+
+THE PROBLEM (confirmed by a full read/write audit). Job status lives in TWO tables with TWO incompatible enums, loosely synced, so the job-detail dropdown, the Jobs pipeline, and the Job Schedule can each show a different value, and the "pending" lists disagree.
+- public.jobs.status: signed / scheduled / in_progress / completed (the CUSTOMER lifecycle). Read by the Jobs page (renderJobs), the job detail, and via the pec_job_ar view by the pipeline. Written by the job-detail dropdown (status + status_manual_at), three auto-progress reconcilers (runAutoProgressSweep, runScheduleStatusSync, pec-auto-progress.cjs), the DB trigger, and the stage-changed / project-completed webhooks.
+- pec_prod_jobs.status: unscheduled / scheduled / ordered / delivered / completed (the PRODUCTION/ordering lifecycle). Read by the Job Schedule (pending = status 'unscheduled' + no install_date + no schedule_days). Written by the proposal-accepted webhook (seeds 'unscheduled', never advances), the appointment-set webhook (install_date only), and the schedule modals.
+- The pipeline shows a DISPLAY-ONLY effectiveStatus (reconciles public.jobs.status against the schedule) so it can differ from the stored value. The DB trigger mirrors pec_prod_jobs -> public.jobs but ONLY for rows with a dripjobs_deal_id, never the reverse. Manual "+ Add Job" entries (pec_prod_jobs only, no public.jobs row, no deal id) appear in the schedule but never in the pipeline; orphaned public.jobs (bridge failed) appear in the pipeline but not the schedule. That is the pending mismatch.
+
+RECOMMENDED DESIGN (for Dylan to approve):
+1. ONE canonical job status = public.jobs.status. It is the only thing shown as "job status" on every customer-lifecycle surface (Jobs page, job-detail dropdown, Jobs pipeline). pec_prod_jobs.status is demoted to a PRODUCTION/ORDERING stage (unscheduled / ordered / delivered) and is never presented as "job status"; the Job Schedule displays the canonical job status (and may show the production stage as a clearly separate, secondary label).
+2. ONE read helper jobStatus(job) used by every surface, so no screen computes its own status. Retire the pipeline's display-only effectiveStatus by folding its calendar reconciliation into the canonical value itself.
+3. ONE reconciler. Collapse the three auto-progress paths (client boot sweep, on-demand sync, daily function) into a single well-defined function (one definition of the state machine and of when status_manual_at wins vs the calendar). Keep exactly one trigger point server-side. Every write path updates the canonical field.
+4. Consistent webhooks. proposal-accepted already seeds both rows with the deal-id bridge; keep that. Make stage-changed / project-completed continue to write the canonical public.jobs.status (they already do) AND, where it matters, keep the production stage coherent; make appointment-set drive the canonical status through the schedule the same way a manual schedule does (today it only sets install_date and leans on the trigger).
+5. Guarantee the bridge so the two pending lists describe the SAME jobs. Options to pick from: (a) require every scheduled job to have a public.jobs row (create one for manual "+ Add Job" entries so they appear in the pipeline too), or (b) define manual production-only entries as an explicit, labeled bucket that intentionally appears only on the schedule. Decide which, so "pending" means one thing.
+
+EXACT CHANGE LIST if approved (Phase B): the read sites (job detail dropdown, renderJobs badge, pipeline effectiveStatus + columns, schedule pending) all route through jobStatus(); the write sites (dropdown, the three reconcilers, the trigger, the webhooks) all converge on the canonical field; a migration to (depending on option 5) create-public-job-on-manual-schedule or to add an explicit production-only marker; and a backfill to reconcile existing drifted rows. Rollback: the reconciler and helper are client-side and revertible by commit; any constraint is added NOT VALID and validated only after checking real rows; the migration is written reversible.
+
+RISKS / GUARDRAILS carried into Phase B: this touches invoicing (pec_job_ar), scheduling, and the pipeline; price/revenue constraints stay; status_manual_at semantics are preserved (a human override is not stomped except the documented calendar-contradiction case). No Phase B code until sign-off.
+
+Files touched: PROJECT-LOG.md (proposal only).
+Next steps: Dylan approves a direction (especially option 5a vs 5b), then Phase B ships as its own commit + migration. Meanwhile I am proceeding with Items 3 (edit payment) and 4 (touch-up callback), which are independent of this.
+Handoff to Cowork: None (no migration in Phase A).
+
+## Handoff to Dylan
+Please approve (or adjust) the recommended design above, in particular: (1) make public.jobs.status the single canonical status shown everywhere, with pec_prod_jobs.status relabeled as a production stage, and (2) for the pending mismatch, choose 5a (auto-create a public.jobs row for manual "+ Add Job" entries so they show in the pipeline too) or 5b (keep manual entries as a schedule-only labeled bucket on purpose). Once you pick, I will implement Phase B with the migration + a one-pass backfill and the single reconciler.
+
 ## [2026-06-08 MST] Claude Code: Item 1, per-user permissions (default all-on, admin super-role); unblocks Anne
 
 By: Claude Code
