@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 3, edit a recorded payment (atomic RPC) + activity log + notification
+
+By: Claude Code
+
+Dylan wanted to change a recorded payment, log it to job activity, and notify. Payments are an insert-only ledger, so a naive client UPDATE under the session wedge could be risky; this routes the edit through an atomic, idempotent server RPC. NEEDS MIGRATION (Cowork handoff).
+
+Migration supabase/migrations/2026-06-08_edit_payment.sql (two SECURITY DEFINER functions, granted to authenticated, each guarded by is_admin_staff()):
+- edit_recorded_payment(p_payment_id, p_amount, p_method, p_reference, p_received_date): one atomic UPDATE to ABSOLUTE values (not a delta), so a wedge retry just re-sets the same row and never double-applies. Raises if the row is missing.
+- log_payment_edited(p_job_id, p_amount_before, p_amount_after): inserts a payment_edited row into pec_notifications naming the actor, the customer, and the before/after amount (mirrors log_customer_deleted).
+
+Client (index.html): each payment row in the per-job invoice view (renderJobInvoice) now has an Edit button. New openEditPaymentModal pre-fills amount/method/reference/received_date (methods check/cash/zelle/card/stripe, matching the record-payment modal and the pec_payments method constraint). On save it calls edit_recorded_payment, then best-effort logJobActivity(jobId, 'payment_edited', before, after) to audit_log and best-effort log_payment_edited for the bell (both no-ops gracefully before the migration runs), then re-renders the invoice so paid_to_date / balance update from pec_job_ar.
+
+Verified CRM module passes node --check.
+
+Files touched: index.html, supabase/migrations/2026-06-08_edit_payment.sql, PROJECT-LOG.md
+Next steps: Item 4 (touch-up callback).
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_edit_payment.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd). Non-destructive (creates two functions + grants). Verify both exist: select proname, prosecdef from pg_proc where proname in ('edit_recorded_payment','log_payment_edited') returns 2 rows with prosecdef = true. Optionally smoke-test: in the app, edit a test payment's amount and confirm the invoice balance updates and a payment_edited row appears in the bell. Append a PROJECT-LOG entry (By: Cowork) with the result.
+
 ## [2026-06-08 MST] Claude Code: Item 2 Phase A proposal, one source of truth for job status (NEEDS DYLAN SIGN-OFF, no code change)
 
 By: Claude Code

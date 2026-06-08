@@ -7246,8 +7246,9 @@ async function renderJobInvoice(jobId) {
       <td>${esc(String(p.method || '').replace('_', ' '))}</td>
       <td>${esc(p.reference || '—')}</td>
       <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
-      <td>${esc(p.recorded_by || '—')}</td></tr>`).join('')
-    : '<tr class="nohover"><td colspan="5" class="pec-empty">No payments recorded yet.</td></tr>';
+      <td>${esc(p.recorded_by || '—')}</td>
+      <td><button class="pec-btn sm ghost" data-edit-pay="${esc(p.id)}">Edit</button></td></tr>`).join('')
+    : '<tr class="nohover"><td colspan="6" class="pec-empty">No payments recorded yet.</td></tr>';
   const canComplete = ['scheduled', 'in_progress'].includes(row.status);
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
@@ -7289,10 +7290,14 @@ async function renderJobInvoice(jobId) {
     <div class="pec-card">
       <h3>Payments</h3>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right">Amount</th><th>Recorded by</th></tr></thead>
+        <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right">Amount</th><th>Recorded by</th><th></th></tr></thead>
         <tbody>${payRows}</tbody></table></div>
     </div>
   `;
+  root.querySelectorAll('[data-edit-pay]').forEach(b => b.addEventListener('click', () => {
+    const p = payments.find(x => x.id === b.dataset.editPay);
+    if (p) openEditPaymentModal(p, jobId);
+  }));
   $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
@@ -7533,6 +7538,68 @@ async function renderJobInvoice(jobId) {
   const requireDepB = $('pecInvRequireDep');
   if (requireDepB) requireDepB.addEventListener('click', () => depFlag(requireDepB, { deposit_waived: false }, 'Deposit required again'));
   const compB = $('pecInvComplete'); if (compB) compB.addEventListener('click', () => markJobComplete(row));
+}
+
+// Edit a previously-recorded payment. Goes through the atomic edit_recorded_payment
+// RPC (absolute values, idempotent, retry-safe), then writes a job-activity row and
+// fires the bell notification best-effort, then re-renders the invoice so balances
+// update. Payments stay auditable (audit_log keeps before/after).
+function openEditPaymentModal(payment, jobId) {
+  if (!payment) return;
+  const methods = [['check', 'Check'], ['cash', 'Cash'], ['zelle', 'Zelle'], ['card', 'Credit card'], ['stripe', 'Stripe']];
+  const cur = String(payment.method || '');
+  openModal(`
+    <h3>Edit payment</h3>
+    <div class="pec-ar-sub" style="margin-bottom:14px">This records the change in the job's activity log and posts a notification.</div>
+    <form id="pecEditPayForm">
+      <div class="pec-field"><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" value="${esc(invNum(payment.amount).toFixed(2))}" required></div>
+      <div class="pec-field"><label>Method</label>
+        <div class="pec-radios">
+          ${methods.map(([v, l]) => `<label><input type="radio" name="method" value="${v}" ${cur === v ? 'checked' : ''}> ${l}</label>`).join('')}
+        </div>
+      </div>
+      <div class="pec-field"><label>Reference (check # / Zelle confirmation)</label><input name="reference" value="${esc(payment.reference || '')}" placeholder="optional"></div>
+      <div class="pec-field"><label>Received date</label><input name="received_date" type="date" value="${esc(payment.received_date || invToday())}" required></div>
+      <div class="prod-msg-err" id="pecEditPayErr"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="submit" class="pec-btn primary" id="pecEditPaySave">Save changes</button>
+      </div>
+    </form>
+  `, { onMount(modal) {
+    modal.querySelector('#pecEditPayForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const errEl = modal.querySelector('#pecEditPayErr'); errEl.textContent = '';
+      const saveBtn = modal.querySelector('#pecEditPaySave');
+      const fd = new FormData(e.target);
+      const amount = invRound2(invNum(fd.get('amount')));
+      if (!(amount > 0)) { errEl.textContent = 'Amount must be greater than 0.'; return; }
+      const method = fd.get('method');
+      const reference = (fd.get('reference') || '').trim() || null;
+      const received_date = fd.get('received_date');
+      const before = { amount: invNum(payment.amount), method: payment.method, reference: payment.reference || null, received_date: payment.received_date };
+      const after = { amount, method, reference, received_date };
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        const { error } = await supabase.rpc('edit_recorded_payment', {
+          p_payment_id: payment.id, p_amount: amount, p_method: method, p_reference: reference, p_received_date: received_date,
+        });
+        if (error) throw error;
+      } catch (err) {
+        console.error('[pec] edit payment failed', err);
+        saveBtn.disabled = false; saveBtn.textContent = 'Save changes';
+        const hint = /edit_recorded_payment/.test(err.message || '') ? ' (Run the 2026-06-08_edit_payment.sql migration first.)' : '';
+        errEl.textContent = 'Could not save: ' + (err.message || err) + hint;
+        return;
+      }
+      // Best-effort audit + notification; never block the edit if pre-migration.
+      try { await logJobActivity(jobId, 'payment_edited', before, after); } catch (_) {}
+      try { await supabase.rpc('log_payment_edited', { p_job_id: jobId, p_amount_before: before.amount, p_amount_after: after.amount }); } catch (_) {}
+      closeModal();
+      showToast('Payment updated.');
+      renderJobInvoice(jobId);
+    });
+  } });
 }
 
 function openPaymentModal(row, { deposit }) {
