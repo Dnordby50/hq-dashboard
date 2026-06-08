@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 4, per-salesperson commission % in Settings + a Commission tab on revenue collected
+
+By: Claude Code
+
+Last of the 4-item batch. Dylan wanted a commission percentage per salesperson, set only by him (admin), and a Commission tab that pays out a % of revenue COLLECTED (not sold), pullable for a date period. Aron is 6% of collected.
+
+Good news from the code read: pec_payments already stores per-payment amount + received_date (a DATE), so period-accurate collected revenue is fully supported, no estimating. Build:
+
+1. Migration supabase/migrations/2026-06-08_sales_team_commission.sql: adds commission_pct numeric(5,2) not null default 0 to pec_sales_team_members and seeds Aron at 6. RLS already is_admin_staff on that table, so the column inherits it, no new policy. NEEDS RUNNING IN PROD (Cowork handoff).
+
+2. Settings (admin only, reuses the existing role gate): the Sales Team table shows a Commission % column, and the sales-team edit/add modal (openSalesTeamModal) has a Commission % field that persists to the new column. Only admins can open Settings, so only Dylan can set it. The salesTeam load already uses select('*'), so the new column flows through with no query change.
+
+3. Commission tab: new admin-only subnav button (data-pec-view="commission", class pec-role-admin) and commission: renderCommission in the switchView map. renderCommission is admin-gated and modeled on renderInvoicing.
+
+4. Calculation, only on money actually received: it loads pec_payments filtered to received_date within the chosen range, maps each payment to its job's salesperson via pec_job_ar (job_id -> salesperson), groups by salesperson, sums amounts as revenue collected, and multiplies by that person's commission_pct (matched by name, case-insensitive, against pec_sales_team_members). Per-salesperson row shows name, %, revenue collected, commission payable, and payment count, with a totals footer; clicking a row lists the underlying payments. Date range defaults to the current month with This month / Last month / Year to date presets plus From/To date inputs (state.commissionRange). Salespeople with no matching rate show "(no rate set)" at 0% so they are visible but not paid until added in Settings. Uncollected balances are excluded by construction (only payment rows count).
+
+Did NOT build the optional per-job commission line on the costing detail (noted as a clean follow-up) to keep this change focused. Did not change how payments are recorded.
+
+Verified CRM module passes node --check (caught and fixed one missing paren in a forEach during the build).
+
+Files touched: index.html, supabase/migrations/2026-06-08_sales_team_commission.sql, PROJECT-LOG.md
+Next steps: after the migration runs, set/confirm rates in Settings and spot-check the Commission tab against a known period.
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_sales_team_commission.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. It is non-destructive (adds one column with a default, plus a seed UPDATE). After running, verify: (a) select column_name from information_schema.columns where table_name = 'pec_sales_team_members' and column_name = 'commission_pct' returns one row; (b) select name, commission_pct from public.pec_sales_team_members where lower(name) = 'aron' shows 6 (only if an Aron row exists yet; if not, Dylan can set it in Settings once the column is live). Then append a PROJECT-LOG entry (By: Cowork) noting the result.
+
+## Handoff to Dylan
+After Cowork runs the migration, hard-refresh. In Settings > Sales Team, Edit a member and set their Commission % (Aron should already read 6 if his row existed). Open the new Commission tab, confirm Aron's commission = 6% of what his jobs collected in the period, change the period (This month / Last month / YTD) and confirm the number changes, and that uncollected balances are excluded. A non-admin should not see the Commission tab at all.
+
 ## [2026-06-08 MST] Claude Code: Item 2, explicit "Not yet selected (TBD)" color option
 
 By: Claude Code

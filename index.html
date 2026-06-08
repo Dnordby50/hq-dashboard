@@ -1837,6 +1837,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="invoicing">Invoicing</button>
+          <button data-pec-view="commission" class="pec-role-admin">Commission</button>
           <div class="pec-subnav-divider"></div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="team" class="pec-role-admin">Team</button>
@@ -5867,6 +5868,7 @@ function switchView(v) {
       customers: renderCustomers,
       jobs: renderJobs,
       invoicing: renderInvoicing,
+      commission: renderCommission,
       metrics: renderMetrics,
       docs: renderInvoicingDocs,
       schedule: renderSchedule,
@@ -10148,6 +10150,110 @@ function openTeamForm(t) {
 }
 
 // ============================================================
+// Commission (admin only)
+// ============================================================
+// Commission is paid ONLY on money actually received, so it is computed from
+// pec_payments (per-payment amount + received_date), never the contract/sold
+// price. Each payment is attributed to its job's salesperson (via pec_job_ar),
+// grouped, and multiplied by that salesperson's commission_pct (set in Settings,
+// admin only). The date range defaults to the current month; filtering on
+// received_date means partial collections land in the period they were received.
+function commissionDefaultRange() {
+  const today = invToday();                 // YYYY-MM-DD in Phoenix time
+  return { start: today.slice(0, 8) + '01', end: today };
+}
+async function renderCommission() {
+  const root = $('pecViewRoot');
+  if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
+  if (!state.commissionRange) state.commissionRange = commissionDefaultRange();
+  const { start, end } = state.commissionRange;
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_payments').select('id,job_id,amount,received_date,method').gte('received_date', start).lte('received_date', end),
+      supabase.from('pec_job_ar').select('id,customer_name,salesperson'),
+      supabase.from('pec_sales_team_members').select('id,name,active,commission_pct').order('name'),
+    ]), { label: 'renderCommission' });
+  } catch (e) { res = [{ error: e }, {}, {}]; }
+  const [payRes, arRes, teamRes] = res;
+  if (payRes.error) {
+    const hint = /pec_payments/.test(payRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
+    root.innerHTML = `<div class="pec-empty">${esc(payRes.error.message)}${hint}</div>`;
+    return;
+  }
+  // job_id -> { salesperson, customer_name }
+  const arById = Object.fromEntries((arRes.data || []).map(r => [r.id, r]));
+  // commission_pct by lowercased salesperson name (the canonical rate source)
+  const pctByName = {};
+  for (const m of (teamRes.data || [])) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
+  // Group payments by the job's salesperson (free text on jobs.salesperson).
+  const groups = {};
+  for (const p of (payRes.data || [])) {
+    const ar = arById[p.job_id];
+    const sp = (ar && ar.salesperson) ? ar.salesperson : 'Unassigned';
+    const g = (groups[sp] ||= { name: sp, collected: 0, pct: (sp.toLowerCase() in pctByName ? pctByName[sp.toLowerCase()] : null), payments: [] });
+    g.collected += invNum(p.amount);
+    g.payments.push({ ...p, customer_name: ar?.customer_name || '' });
+  }
+  const list = Object.values(groups).sort((a, b) => b.collected - a.collected);
+  const totalCollected = list.reduce((s, g) => s + g.collected, 0);
+  const commissionOf = g => g.collected * ((g.pct || 0) / 100);
+  const totalCommission = list.reduce((s, g) => s + commissionOf(g), 0);
+
+  // Range presets (string math; last-month end uses the JS month-0 trick).
+  const today = invToday();
+  const y = +today.slice(0, 4), m = +today.slice(5, 7);
+  const lmY = m === 1 ? y - 1 : y, lmM = m === 1 ? 12 : m - 1;
+  const lmStart = `${lmY}-${String(lmM).padStart(2, '0')}-01`;
+  const lmEnd = `${lmStart.slice(0, 7)}-${String(new Date(y, m - 1, 0).getDate()).padStart(2, '0')}`;
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div class="pec-field" style="margin:0"><label>From</label><input type="date" id="comFrom" value="${esc(start)}"></div>
+      <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="comTo" value="${esc(end)}"></div>
+      <button class="pec-btn sm" data-com-preset="month">This month</button>
+      <button class="pec-btn sm" data-com-preset="lastmonth">Last month</button>
+      <button class="pec-btn sm" data-com-preset="ytd">Year to date</button>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">Commission is on revenue COLLECTED in the range (payments received), not sold. Set the % per person in Settings &gt; Sales Team.</span>
+    </div>
+    <div class="pec-card">
+      <table class="pec-table">
+        <thead><tr><th>Salesperson</th><th>Commission %</th><th>Revenue Collected</th><th>Commission Payable</th><th>Payments</th></tr></thead>
+        <tbody>
+          ${list.map(g => `
+            <tr data-com-row="${esc(g.name)}" style="cursor:pointer">
+              <td><strong>${esc(g.name)}</strong>${g.pct == null ? ' <span style="color:var(--warn);font-size:.7rem">(no rate set)</span>' : ''}</td>
+              <td>${g.pct == null ? '0%' : esc(g.pct) + '%'}</td>
+              <td>${invUSD(g.collected)}</td>
+              <td><strong>${invUSD(commissionOf(g))}</strong></td>
+              <td>${g.payments.length}</td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No payments collected in this range.</td></tr>'}
+        </tbody>
+        ${list.length ? `<tfoot><tr class="li-total"><td><strong>Total</strong></td><td></td><td><strong>${invUSD(totalCollected)}</strong></td><td><strong>${invUSD(totalCommission)}</strong></td><td></td></tr></tfoot>` : ''}
+      </table>
+      <div style="color:var(--muted);font-size:.72rem;margin-top:8px">Click a row to see the underlying payments. Salespeople with "no rate set" are matched by name to Settings &gt; Sales Team; add them there (with a %) to include their commission.</div>
+    </div>
+    <div id="comDetail"></div>
+  `;
+  $('comFrom').addEventListener('change', e => { state.commissionRange = { start: e.target.value, end }; renderCommission(); });
+  $('comTo').addEventListener('change', e => { state.commissionRange = { start, end: e.target.value }; renderCommission(); });
+  root.querySelectorAll('[data-com-preset]').forEach(b => b.addEventListener('click', () => {
+    const p = b.dataset.comPreset;
+    if (p === 'month') state.commissionRange = { start: today.slice(0, 8) + '01', end: today };
+    else if (p === 'lastmonth') state.commissionRange = { start: lmStart, end: lmEnd };
+    else if (p === 'ytd') state.commissionRange = { start: today.slice(0, 4) + '-01-01', end: today };
+    renderCommission();
+  }));
+  root.querySelectorAll('[data-com-row]').forEach(tr => tr.addEventListener('click', () => {
+    const g = groups[tr.dataset.comRow]; if (!g) return;
+    $('comDetail').innerHTML = `<div class="pec-card"><h3 style="margin:0 0 10px">${esc(g.name)}: payments in range</h3>
+      <table class="pec-table"><thead><tr><th>Date</th><th>Customer</th><th>Method</th><th style="text-align:right">Amount</th></tr></thead><tbody>
+      ${g.payments.slice().sort((a, b) => String(b.received_date).localeCompare(String(a.received_date))).map(p => `<tr class="nohover"><td>${invFmtDate(p.received_date)}</td><td>${esc(p.customer_name || '—')}</td><td>${esc(p.method || '')}</td><td style="text-align:right">${invUSD(invNum(p.amount))}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }));
+}
+
+// ============================================================
 // Settings (admin role only)
 // ============================================================
 // Settings tab shell. General = the existing config sections; Email = the
@@ -10230,15 +10336,16 @@ async function renderSettings() {
         </div>
         ${salesOpen ? `
           <table class="pec-table">
-            <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Commission %</th><th>Active</th><th>Notes</th><th></th></tr></thead>
             <tbody>
               ${state.salesTeam.map(s => `
                 <tr data-sales-id="${esc(s.id)}">
                   <td><strong>${esc(s.name)}</strong></td>
+                  <td>${s.commission_pct != null ? esc(Number(s.commission_pct)) + '%' : '0%'}</td>
                   <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
                   <td>${esc(s.notes || '')}</td>
                   <td><button class="pec-btn sm ghost" data-edit-sales="${esc(s.id)}">Edit</button></td>
-                </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No sales team members yet.</td></tr>'}
+                </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No sales team members yet.</td></tr>'}
             </tbody>
           </table>
         ` : ''}
@@ -10855,8 +10962,11 @@ function openSalesTeamModal(salesId) {
       <div class="pec-field"><label>Active</label>
         <select id="salesActive"><option value="true" ${s.active?'selected':''}>Yes</option><option value="false" ${!s.active?'selected':''}>No</option></select>
       </div>
-      <div class="pec-field"><label>Notes</label><input id="salesNotes" value="${esc(s.notes || '')}"></div>
+      <div class="pec-field"><label>Commission % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">of revenue collected</span></label>
+        <input id="salesCommission" type="number" min="0" max="100" step="0.5" value="${esc(s.commission_pct ?? 0)}">
+      </div>
     </div>
+    <div class="pec-field"><label>Notes</label><input id="salesNotes" value="${esc(s.notes || '')}"></div>
     <div class="pec-modal-actions">
       ${existing ? '<button class="pec-btn danger" id="salesDelete">Delete</button>' : ''}
       <span style="flex:1"></span>
@@ -10876,9 +10986,11 @@ function openSalesTeamModal(salesId) {
       };
       modal.querySelector('#salesSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#salesError'); errEl.textContent = '';
+        const commVal = parseFloat(modal.querySelector('#salesCommission').value);
         const payload = {
           name: modal.querySelector('#salesName').value.trim(),
           active: modal.querySelector('#salesActive').value === 'true',
+          commission_pct: Number.isFinite(commVal) && commVal >= 0 ? commVal : 0,
           notes: modal.querySelector('#salesNotes').value || null,
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
