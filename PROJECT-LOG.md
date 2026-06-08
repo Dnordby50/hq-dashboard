@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Cowork: diagnosed the tab-switch render timeout (wedge attempt #5), wrote a Claude Code prompt
+
+By: Cowork
+
+Scope: Dylan hit "Render timed out (no response in 30s)" switching tabs again. Diagnosed from the current code and wrote a diagnosis-first prompt saved to the HQ folder (claude-code-prompt-wedge-attempt5-2026-06-07.md). No repo code changed except this entry. Note: the ~6 console lines Dylan pasted did not reach Cowork, so the prompt makes capturing them Step 1.
+
+Provable finding (independent of the missing console lines): the timeout budget is still incoherent after e4370ca. withFreshSession worst case = 12s first read fence (index.html:5035) + up to ~9s recoverWedgedClient (setSession raced 8s at 4786 + stopAutoRefresh raced 1s at 4798) + 12s retry (5060) = up to ~33s, which EXCEEDS the 30s switchView render fence (5868-5884). The comment at 5876-5879 asserts 30s sits above "12s + recover + 12s" but does not add it up (12+9+12=33). So a genuinely hung read trips the generic 30s render fence BEFORE the in-place SESSION_WEDGED retry can finish, which is what Dylan sees.
+
+The prompt: (Step 1) capture console + Network-tab pending request + navigator.locks.query() at the moment of hang to distinguish (A) fenced-retry overrunning the 30s fence, (B) an UNFENCED await in a render path (loadNotifications/refreshBell/cachedRef or bare supabase reads in renderDashboard/metrics/team/settings/brand-identity/status-desc), or (C) a truly stranded lock the steal cannot clear / a REST request stuck on the wire. (Step 3) prefer unifying the fences and making the budget coherent with explicit arithmetic over adding a sixth recovery layer. Reads only; writes untouched.
+
+## Handoff to Dylan
+Reproduce once, open DevTools console, and paste the lines starting with [pec] and [crm] (plus, if you can, the Network tab's pending request path and the output of `await navigator.locks.query()`). That capture tells us A vs B vs C and lets the fix be definitive instead of another constant tweak.
+
 ## [2026-06-07 MST] Claude Code: work order tweaks per Dylan, Issues/Notes moved up, logo-only header
 
 By: Claude Code
