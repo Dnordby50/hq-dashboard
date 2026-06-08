@@ -11923,7 +11923,9 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
          : '$' + Math.round(revNum).toLocaleString())
       : '';
     const revFull = revNum > 0 ? '$' + Math.round(revNum).toLocaleString() : '';
+    const isCallback = !!job.is_callback;
     const tooltip = [
+      isCallback ? 'TOUCH-UP CALLBACK' : '',
       job.customer_name || '',
       sys ? sys.name : '',
       crew ? crew + ' crew' : '',
@@ -11931,11 +11933,12 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       job.proposal_number ? '#' + job.proposal_number : '',
     ].filter(Boolean).join(' · ');
     return {
-      job, sys,
-      color: (sys && sys.color) || '#6366f1',
-      customer: job.customer_name || '',
+      job, sys, isCallback,
+      // Callbacks get a distinct color so they read as a touch-up, not sold work.
+      color: isCallback ? '#0ea5e9' : ((sys && sys.color) || '#6366f1'),
+      customer: isCallback ? 'Touch-up: ' + (job.customer_name || '') : (job.customer_name || ''),
       crew, revLabel,
-      label: `${sys ? sys.name + ' · ' : ''}${job.customer_name}`,
+      label: `${isCallback ? 'Touch-up · ' : (sys ? sys.name + ' · ' : '')}${job.customer_name}`,
       tooltip,
     };
   };
@@ -11957,7 +11960,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     let total = 0;
     for (const [jobId, daysInWeek] of Object.entries(daysInWeekByJob)) {
       const job = state.prodJobs.find(j => j.id === jobId);
-      if (!job) continue;
+      if (!job || job.is_callback) continue; // touch-up callbacks are no-charge, never in revenue
       const rev = Number(job.revenue || 0);
       const totalDays = totalDaysByJob[jobId] || 1;
       total += rev * (daysInWeek / totalDays);
@@ -12126,6 +12129,40 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
 }
 
+// Create a no-charge touch-up / warranty callback linked to an original job, then
+// open the normal scheduler so the user places it on a day/crew/time-slot. The
+// callback is its own pec_prod_jobs row (is_callback=true, original_job_id set,
+// revenue null), which the widened scheduled_needs_revenue constraint allows. It
+// is excluded from revenue/commission/costing rollups and never reaches the
+// pipeline (it has no public.jobs row).
+async function addTouchupCallback(prodJob) {
+  if (!prodJob) return;
+  if (!confirm(`Add a touch-up / warranty callback for ${prodJob.customer_name || 'this job'}? It is a no-charge visit you will then place on the schedule.`)) return;
+  const row = {
+    customer_id: prodJob.customer_id || null,
+    customer_name: prodJob.customer_name,
+    address: prodJob.address || null,
+    is_callback: true,
+    original_job_id: prodJob.id,
+    revenue: null,
+    status: 'unscheduled',
+    notes: 'Touch-up / warranty callback' + (prodJob.proposal_number ? ' for #' + prodJob.proposal_number : ''),
+  };
+  let newId;
+  try {
+    newId = await insertManualJob(row);
+  } catch (err) {
+    console.error('[pec] add touch-up callback failed', err);
+    const hint = /is_callback|original_job_id/.test(err.message || '') ? ' (Run the 2026-06-08_touchup_callback.sql migration first.)' : '';
+    alert('Could not create the callback: ' + (err.message || err) + hint);
+    return;
+  }
+  closeModal();
+  await loadScheduleData(); // refresh state.prodJobs + scheduleDays so the new row is schedulable
+  showToast('Touch-up callback created. Pick the day, crew, and time slot to schedule it.');
+  openScheduleModal(newId);
+}
+
 function openScheduleModal(jobId) {
   const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
@@ -12197,10 +12234,11 @@ function openScheduleModal(jobId) {
     <div class="prod-modal-wide" style="max-width:760px;margin:auto">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
         <div>
-          <h3 style="margin:0">Schedule job</h3>
-          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">${esc(job.customer_name)} · ${esc(job.address || 'No address')} · #${esc(job.proposal_number)}</div>
+          <h3 style="margin:0">${job.is_callback ? 'Schedule touch-up callback' : 'Schedule job'}</h3>
+          <div style="color:var(--muted);font-size:.78rem;margin-top:4px">${job.is_callback ? '<span style="color:var(--rd-info,#0ea5e9);font-weight:600">Touch-up</span> · ' : ''}${esc(job.customer_name)} · ${esc(job.address || 'No address')} · #${esc(job.proposal_number)}</div>
         </div>
         <div style="display:flex;gap:8px">
+          ${job.is_callback ? '' : '<button class="pec-btn sm" id="schedAddCallback">+ Touch-up callback</button>'}
           <button class="pec-btn sm" id="schedOpenJob">Open job</button>
           <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
         </div>
@@ -12252,6 +12290,8 @@ function openScheduleModal(jobId) {
   `, {
     onMount(modal) {
       renderBody(modal);
+      const addCbBtn = modal.querySelector('#schedAddCallback');
+      if (addCbBtn) addCbBtn.addEventListener('click', () => addTouchupCallback(job));
       const openJobBtn = modal.querySelector('#schedOpenJob');
       // Open the CRM job detail for a DripJobs-sourced job (bridged to a
       // public.jobs row by dripjobs_deal_id). Manual prod-only entries have no
@@ -13787,6 +13827,7 @@ async function renderJobCosting() {
 
   const filt = state.costingFilter;
   const jobs = state.prodJobs.filter(j => {
+    if (j.is_callback) return false; // touch-ups are no-charge; never costed as sold work
     if (filt === 'all') return true;
     if (filt === 'active') return j.status !== 'completed';
     return j.status === filt;

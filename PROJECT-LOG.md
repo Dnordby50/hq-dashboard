@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Item 4, schedule a touch-up / warranty callback (no-charge, linked to original)
+
+By: Claude Code
+
+Last of the batch. Dylan wanted to add a touch-up callback for a job to the schedule. The existing pec_prod_jobs.callback boolean is a QUALITY flag (crew-lead callback counts), so it is left alone; this is a separate scheduled-visit concept. NEEDS MIGRATION (Cowork handoff).
+
+Migration supabase/migrations/2026-06-08_touchup_callback.sql: adds is_callback boolean (default false) and original_job_id uuid (FK to pec_prod_jobs.id, on delete set null) to pec_prod_jobs, and widens the revenue gate to CHECK (status <> 'scheduled' OR is_callback = true OR (revenue is not null and revenue > 0)) so a no-charge callback can be scheduled without a price (re-added NOT VALID, VALIDATE after confirming clean rows). Adds an index on original_job_id.
+
+Client (index.html): a touch-up callback is its OWN pec_prod_jobs row (is_callback=true, original_job_id=the original, revenue null) so it carries its own schedule days / crew / time slot. New addTouchupCallback(prodJob) creates that row via insertManualJob (which spreads the row, so the two new columns pass through) and then opens the proven openScheduleModal on it, so scheduling reuses the existing day+crew+time-slot picker and save path (the widened constraint lets status go 'scheduled' with no revenue). Entry point: a "+ Touch-up callback" button in the Schedule-job modal header (reached by clicking a job on the calendar); when the modal is itself a callback the title reads "Schedule touch-up callback" and the button is hidden. The calendar marks callbacks distinctly: eventFor flags is_callback, uses a distinct info-blue color, prefixes the label/customer with "Touch-up", and tags the tooltip "TOUCH-UP CALLBACK". Callbacks are excluded from money everywhere: weekRevenue skips them, the Job Costing list filters them out, and they never reach the Jobs pipeline (a callback has no public.jobs row). So a touch-up never inflates revenue, commission, or costing.
+
+Verified CRM module passes node --check.
+
+Files touched: index.html, supabase/migrations/2026-06-08_touchup_callback.sql, PROJECT-LOG.md
+Next steps: optional follow-up, also surface "Add touch-up callback" directly on the customer-facing job detail (today it lives on the schedule modal, which already has the pec_prod_jobs row in hand; the job detail is public.jobs and would need the deal-id / name+address bridge to resolve the prod row).
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_touchup_callback.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd). Adds two columns + an index and re-adds the scheduled_needs_revenue constraint (NOT VALID). Verify: (a) the two columns exist on pec_prod_jobs (information_schema.columns); (b) the constraint definition now includes "is_callback = true" (select pg_get_constraintdef(oid) from pg_constraint where conname = 'pec_prod_jobs_scheduled_needs_revenue'). Then, after confirming no existing scheduled row violates it (it cannot, the rule only widened), run: alter table public.pec_prod_jobs validate constraint pec_prod_jobs_scheduled_needs_revenue; Append a PROJECT-LOG entry (By: Cowork) with the result.
+
 ## [2026-06-08 MST] Claude Code: Item 3, edit a recorded payment (atomic RPC) + activity log + notification
 
 By: Claude Code
