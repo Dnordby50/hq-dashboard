@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-07 MST] Claude Code: Phase 1, redesigned the crew work order to match the CRM and fixed the Issues/Notes HTML bug
+
+By: Claude Code
+
+Dylan: the printed work order "has all the info we need but it looks like trash." This is the first phase of the new multi-phase prompt (work order first, then the Sales pipeline / Calendar / QUO / CompanyCam phases that need external setup). Phase 1 only: a visual + layout pass plus one bug fix, no fields removed, no data inputs changed. All in one function, renderWorkOrder at index.html:8062 (it builds a standalone HTML doc opened in a new window, so it cannot read the app's --rd-* tokens). One commit, local + pushed to main per this week's working mode.
+
+The bug (the literal-tags one in Dylan's screenshot). The Issues/Notes box printed raw "<p>764 ft</p>" tags and "&nbsp;" instead of formatted text. Root cause: job.scope holds staff-authored stored HTML, but the notes line ran it through e() (the HTML-escaper used for every plain field), which turns "<" into "&lt;" so the tags show up as text. You can't just stop escaping (that would let any stored HTML, including a stray script, run in the new window). Fix: a new sanitizeNotes() helper parses the stored HTML with an INERT DOMParser document (it does not execute scripts or load images), then rebuilds the string keeping only a safe subset (p, br, ul, ol, li, strong, em, b, i) and dropping every attribute, and decodes &nbsp; to a normal space. So the notes now render as clean paragraphs and a malicious tag can never run. Also switched the notes box off white-space:pre-wrap (which would have doubled the blank lines now that real <p> blocks carry their own spacing) and gave the paragraphs tight margins.
+
+The redesign (match the CRM). Restated the CRM palette as plain CSS at the top of the generated doc (soft #f5f6f8 fills, #e6e8ec hairline borders, #0f1420 ink, #6b7280 muted, and the standard PEC orange #D8531C, replacing the old indigo #e0e7ff field blocks, near-black #0f172a table headers, and the off-brand #ea580c/#f97316 oranges). Pulled in Syne/Inter/DM Mono via a Google Fonts link with the old system-font stack kept as the print fallback. Section headings and the brand lockup are now Syne uppercase with an orange underline rule; labels are muted Inter, values are ink; numbers (sqft, hour budget, DJ#, qty, prices) are DM Mono. Field boxes read as clean light input cards. Table headers are now a soft-gray fill with ink text and an orange bottom rule (an adaptation of the app's light header pattern that stays legible on a sheet the crew writes on). Regrouped the intake grid into three labeled groups, Job Identity / Site Conditions / Budget, keeping all 16 fields, so it reads top-to-bottom. Reused the existing assets/pec-logo.png next to the wordmark (referenced by absolute URL since the new window is about:blank, with an onerror fallback to the text wordmark so offline printing still works). Kept the orange "incomplete = no bonus" banner, the polyaspartic row, the checklist, and the page-2 line-items table; page break and US Letter @page are unchanged. Cleaned the few em dashes in the generated sheet per the no-em-dash rule.
+
+Verified: node --check passes on the function; traced sanitizeNotes against the screenshot's exact data and the script/img/attribute XSS cases (all neutralized by the inert parse + whitelist rebuild). The visual/print acceptance is screenshot-driven, so that pass is Dylan's (see handoff).
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Phase 2 (native Sales/Lead pipeline fed by Zapier) is next in the prompt; it needs a migration + Zapier setup, so start it as its own session.
+Handoff to Cowork: None.
+Handoff to Dylan: Hard-refresh, open a real scheduled job (e.g. Wayne Rhodes from your screenshot), click Print work order, and confirm: the Issues/Notes read as clean text with no "<p>" tags or "&nbsp;"; every field still pre-fills; and in Print preview (Cmd+P) the main sheet is one page, line items are page 2, and the Print button is hidden. If anything looks off visually, send a screenshot.
+
 ## [2026-06-07 MST] Cowork: scoped the next CRM phase, wrote a detailed phased Claude Code prompt (no repo code changed)
 
 By: Cowork
