@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Claude Code: stretched the Job Schedule 1-week and 3-week calendars vertically (more info per job)
+
+By: Claude Code
+
+Dylan wanted both schedule calendars taller so each job shows more information. The 3-week (rolling) view drew each job as a single 28px bar that truncated on narrow cells and hid the system + crew entirely on 1-day cells; the 1-week run sheet capped each day column at a short min-height.
+
+Client (index.html, renderScheduleCalendar): 3-week view, the lane height went from a single 28px row to a 24px day-number header row plus 50px lanes, and .pec-cal-event-bar now flex-wraps (gap 2px x 6px, align-content center). So instead of dropping system/crew when a bar is narrow, those fields wrap to a second line and stay visible. The old progressive-collapse container queries (hide crew under 200px, hide system under 140px) are replaced by a single guard that hides crew only under an extremely narrow 96px (to avoid a third line); system always shows now. 1-week run sheet, each day column min-height went from 120px to 320px so the columns stretch and the per-crew job cards have room. Pure CSS/layout, no data or behavior change.
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: none.
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh the Job Schedule. The 3-week bars are taller and now wrap the system + crew onto a second line (no longer hidden on short jobs); the 1-week run sheet columns are taller. If you want them even taller or shorter, the knobs are the LANE value (currently 50px) for the 3-week view and the day-column min-height (currently 320px) for the 1-week view.
+
 ## [2026-06-09 MST] Claude Code: Commission payday logic, drive the check date off the RECEIVED date (Sun–Sat period, Friday payday)
 
 By: Claude Code

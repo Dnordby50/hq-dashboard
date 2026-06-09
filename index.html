@@ -12313,8 +12313,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     }).join('');
     // Bars start at row 2 (row 1 is the day-num row).
     const barsHtml = bars.map(b => barHtml(b, 2 + b.lane)).join('');
-    const ROW = 28;
-    const rowTemplate = `${ROW}px repeat(${lanesShown}, minmax(${ROW}px, max-content)) 1fr`;
+    // Header row just holds the day number; lanes are tall enough for each job
+    // bar to wrap to two lines (customer/rev on top, system/crew below).
+    const HEADER = 24, LANE = 50;
+    const rowTemplate = `${HEADER}px repeat(${lanesShown}, minmax(${LANE}px, max-content)) 1fr`;
     return `<div class="pec-cal-week-grid" style="grid-template-rows:${rowTemplate}">
       ${dayCellsHtml}${barsHtml}
     </div>`;
@@ -12358,7 +12360,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
             ${jobsHtml}
           </div>`;
         }).join('');
-      return `<div style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:120px">
+      return `<div style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:320px">
         <div class="${sameDay(d, today) ? 'today' : ''}" style="font-weight:700;font-size:.78rem;margin-bottom:8px;${sameDay(d, today) ? 'color:var(--rd-accent,#D8531C)' : ''}">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>
         ${crewSections || '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>'}
       </div>`;
@@ -14884,7 +14886,7 @@ if (portalToken) {
      re-flowing the layout. The 3px left stripe is solid color across the
      whole bar; the body uses a 22% color-mix of the same color so the
      connected days read as continuous fill rather than per-day chips. */
-  .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; gap:6px; align-items:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--fg, #0f172a); container-type:inline-size }
+  .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; flex-wrap:wrap; gap:2px 6px; align-items:center; align-content:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--fg, #0f172a); container-type:inline-size }
   .pec-cal-event-bar::before { content:''; position:absolute; left:3px; top:2px; bottom:2px; width:3px; background:var(--ev-color, #6366f1); border-radius:2px }
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
@@ -14895,11 +14897,10 @@ if (portalToken) {
   .pec-cal-event-bar > .bar-crew { flex:0 1 auto; color:var(--fg, #0f172a) }
   .pec-cal-event-bar > :not(:first-child) { position:relative; padding-left:11px }
   .pec-cal-event-bar > :not(:first-child)::before { content:'·'; position:absolute; left:2px; color:var(--muted) }
-  /* Progressive collapse: narrow bars drop system + crew but always keep
-     the revenue compact (e.g. $10k) -- the office wants to see dollars at
-     a glance even on a 1-day cell. */
-  @container (max-width: 200px) { .pec-cal-event-bar .bar-crew { display:none } }
-  @container (max-width: 140px) { .pec-cal-event-bar .bar-system { display:none } }
+  /* Lanes are tall enough for two lines now, so narrow bars WRAP system + crew
+     onto a second line instead of dropping them -- more info per job. Only an
+     extremely narrow cell hides crew to avoid a third line. */
+  @container (max-width: 96px) { .pec-cal-event-bar .bar-crew { display:none } }
   /* Toast notifications */
   .pec-toast-host { position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:10000; pointer-events:none }
   .pec-toast { background:var(--rd-card, #1f2937); color:var(--fg, #f8fafc); border:1px solid var(--rd-line, var(--border)); border-left:3px solid var(--rd-accent, var(--accent)); border-radius:6px; box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:.78rem; display:flex; align-items:center; gap:10px; min-width:260px; max-width:420px; pointer-events:auto; animation:pec-toast-in .18s ease-out }
