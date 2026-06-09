@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Cowork: ran the commission_payroll_date migration in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Dylan said "run new migration". Ran the Claude Code handoff for the Commission Item 4 payroll report. Ran supabase/migrations/2026-06-08_commission_payroll_date.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, PRODUCTION, role postgres) via the SQL editor in Dylan's signed-in browser. Typed as a single statement block. Non-destructive (adds one nullable column + an index, reuses existing RLS), no destructive-op warning. No repo code changed except this entry.
+
+Added payroll_date date (nullable) + cp_payroll_date_idx index to public.pec_commission_payouts. Verified (one query): column present (count 1) and index present (count 1). This unblocks the Commission "Mark selected paid" action (it writes payroll_date) and the Payroll report sub-tab.
+
+## Handoff to Dylan
+The Commission Friday-payroll feature is fully live now: marking a pay period paid stamps each payout with its correlating Friday check date, and the Payroll report groups payouts by check date. Any payouts marked paid before this column existed (if any) will show under "No check date assigned" until undone and re-marked. The repo commit for this log entry is local only (Cowork does not push).
+
 ## [2026-06-08 MST] Claude Code: Commission Item 4, Friday payroll report + sub-tabs (NEEDS MIGRATION)
 
 By: Claude Code
