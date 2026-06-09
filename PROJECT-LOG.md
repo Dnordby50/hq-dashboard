@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Commission Item 2, sold-jobs rollup with a Deposit-collected column
+
+By: Claude Code
+
+Item 2 of 4. The list was payment-driven, so a signed job with no payment yet was invisible. Dylan wants every signed job to show, with a column telling him whether the deposit has come in. Core rule kept intact: commission is earned ONLY on collected dollars, the sold price is shown for context but is never payable.
+
+Client (index.html, renderCommission): expanded the pec_job_ar select to status, price, deposit_collected, deposit_waived, signed_date, paid_to_date (same view the Invoicing page reads, so the deposit definition is not re-invented). New "Sold jobs" section (under the period totals): one row per pec_job_ar job that has a salesperson and status in (signed, scheduled, in_progress, completed), respecting the salesperson filter, sorted by signed_date newest first, NOT bounded by the pay-period range (the range is for payouts). Per-job money is rolled up from the same per-payment commission lines grouped by job_id, so it ties out exactly to the Pending/Paid queues including any per-payment amount overrides: collected = sum of payments, earned = paid payouts + still-pending commission, paid = sum of payouts, owed = earned - paid. A signed job with no payments still lists with $0 across the board (visible, but no phantom payable commission off the sold price). Columns: Customer (job link from Item 1), Salesperson, Sold price, Deposit collected (green "Yes" if deposit_collected, cyan "Waived" if deposit_waived, red "No" otherwise), Collected, Commission earned, Paid, Owed, with a totals footer.
+
+Design note (deviation from the prompt, intentional): the prompt suggested earned = commission_pct * paid_to_date; I compute earned from the line sum instead so it ties exactly to the actual payable/paid amounts (identical when no per-payment override exists).
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Item 3 (stamp each payout with a payroll/check date), then Item 4 (Friday payroll report + payroll_date migration).
+Handoff to Cowork: None
+Handoff to Dylan: None
+
 ## [2026-06-08 MST] Claude Code: Commission Item 1, click a commission to open its job detail
 
 By: Claude Code

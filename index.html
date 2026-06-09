@@ -10273,7 +10273,7 @@ async function renderCommission() {
     res = await withFreshSession(() => Promise.all([
       // All payments (no date gate): pending commission carries forward from any date.
       supabase.from('pec_payments').select('id,job_id,amount,received_date,method'),
-      supabase.from('pec_job_ar').select('id,customer_name,salesperson'),
+      supabase.from('pec_job_ar').select('id,customer_name,salesperson,status,price,deposit_collected,deposit_waived,signed_date,paid_to_date'),
       supabase.from('pec_sales_team_members').select('id,name,active,commission_pct').order('name'),
       supabase.from('pec_commission_payouts').select('payment_id,amount,paid_on'),
     ]), { label: 'renderCommission' });
@@ -10334,6 +10334,37 @@ async function renderCommission() {
   for (const l of paidInPeriod) { (bySales[l.sp] ||= { name: l.sp, pct: l.pct, amount: 0, n: 0 }); bySales[l.sp].amount += l.paidAmount; bySales[l.sp].n++; }
   const breakdown = Object.values(bySales).sort((a, b) => b.amount - a.amount);
 
+  // Sold-jobs rollup: per-job commission aggregated from the payment lines, so it
+  // ties out exactly to the queue (including any per-payment amount overrides).
+  // earned = paid payouts + still-pending commission; owed = earned - paid.
+  const jobAgg = {};
+  for (const l of lines) {
+    const a = (jobAgg[l.job_id] ||= { collected: 0, earned: 0, paid: 0 });
+    a.collected += l.collected;
+    a.earned += l.paid ? l.paidAmount : l.commission;
+    a.paid += l.paid ? l.paidAmount : 0;
+  }
+  // Every SIGNED job with a salesperson appears (even with $0 collected), so a rep
+  // sees the job and its deposit status before any money lands. Sold price is shown
+  // for visibility only; it is NEVER payable (earned is on collected dollars).
+  const SIGNED_STATUSES = new Set(['signed', 'scheduled', 'in_progress', 'completed']);
+  const soldJobs = (arRes.data || [])
+    .filter(j => j.salesperson && SIGNED_STATUSES.has(j.status))
+    .filter(j => filt === 'all' || String(j.salesperson).toLowerCase() === String(filt).toLowerCase())
+    .map(j => {
+      const agg = jobAgg[j.id] || { collected: 0, earned: 0, paid: 0 };
+      const pct = (String(j.salesperson).toLowerCase() in pctByName) ? pctByName[String(j.salesperson).toLowerCase()] : null;
+      return {
+        id: j.id, customer: j.customer_name || '—', sp: j.salesperson, pct,
+        signed_date: j.signed_date, price: invNum(j.price),
+        depo: j.deposit_waived ? 'Waived' : (j.deposit_collected ? 'Yes' : 'No'),
+        collected: agg.collected, earned: round2(agg.earned), paid: round2(agg.paid), owed: round2(agg.earned - agg.paid),
+      };
+    })
+    .sort((a, b) => String(b.signed_date || '').localeCompare(String(a.signed_date || '')));
+  const soldTot = soldJobs.reduce((t, j) => { t.price += j.price; t.collected += j.collected; t.earned += j.earned; t.paid += j.paid; t.owed += j.owed; return t; }, { price: 0, collected: 0, earned: 0, paid: 0, owed: 0 });
+  const depoBadge = d => d === 'Yes' ? '<span style="color:#22c55e;font-weight:600">Yes</span>' : d === 'Waived' ? '<span style="color:var(--cyan);font-weight:600">Waived</span>' : '<span style="color:var(--warn);font-weight:600">No</span>';
+
   // Range presets (string math; last-month end uses the JS month-0 trick).
   const today = invToday();
   const y = +today.slice(0, 4), m = +today.slice(5, 7);
@@ -10369,6 +10400,29 @@ async function renderCommission() {
       ${breakdown.length ? `<table class="pec-table" style="margin-top:12px"><thead><tr><th>Salesperson</th><th>%</th><th style="text-align:right">Paid this period</th><th style="text-align:right">Payments</th></tr></thead><tbody>
         ${breakdown.map(b => `<tr class="nohover"><td><strong>${esc(b.name)}</strong></td><td>${b.pct == null ? '—' : esc(b.pct) + '%'}</td><td style="text-align:right"><strong>${invUSD(b.amount)}</strong></td><td style="text-align:right">${b.n}</td></tr>`).join('')}
       </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem;margin-top:10px">No commission paid out in this pay period yet.</div>'}
+    </div>
+
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <h3 style="margin:0">Sold jobs</h3>
+        <span style="color:var(--muted);font-size:.72rem">Every signed job and whether its deposit is in. Sold price is shown for context only, commission is earned on collected dollars.</span>
+      </div>
+      <table class="pec-table">
+        <thead><tr><th>Customer</th><th>Salesperson</th><th style="text-align:right">Sold price</th><th>Deposit collected</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission earned</th><th style="text-align:right">Paid</th><th style="text-align:right">Owed</th></tr></thead>
+        <tbody>
+          ${soldJobs.map(j => `<tr class="nohover">
+            <td>${jobLink(j.id, j.customer)}</td>
+            <td>${esc(j.sp)} ${j.pct == null ? '<span style="color:var(--warn);font-size:.7rem">(no rate)</span>' : ''}</td>
+            <td style="text-align:right">${invUSD(j.price)}</td>
+            <td>${depoBadge(j.depo)}</td>
+            <td style="text-align:right">${invUSD(j.collected)}</td>
+            <td style="text-align:right">${invUSD(j.earned)}</td>
+            <td style="text-align:right">${invUSD(j.paid)}</td>
+            <td style="text-align:right"><strong>${invUSD(j.owed)}</strong></td>
+          </tr>`).join('') || '<tr class="nohover"><td colspan="8" class="pec-empty">No signed jobs for this salesperson yet.</td></tr>'}
+        </tbody>
+        ${soldJobs.length ? `<tfoot><tr class="li-total"><td colspan="2"><strong>Total (${soldJobs.length})</strong></td><td style="text-align:right"><strong>${invUSD(soldTot.price)}</strong></td><td></td><td style="text-align:right"><strong>${invUSD(soldTot.collected)}</strong></td><td style="text-align:right"><strong>${invUSD(soldTot.earned)}</strong></td><td style="text-align:right"><strong>${invUSD(soldTot.paid)}</strong></td><td style="text-align:right"><strong>${invUSD(soldTot.owed)}</strong></td></tr></tfoot>` : ''}
+      </table>
     </div>
 
     <div class="pec-card">
