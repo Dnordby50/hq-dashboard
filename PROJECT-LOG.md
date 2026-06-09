@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Commission tab redesign into a pay-period payout ledger (NEEDS MIGRATION)
+
+By: Claude Code
+
+Dylan wants the Commission tab to work like his commission spreadsheet: one place where the office manager sees what commission is getting paid out for a given pay period, and where a salesperson (Aron) sees what is coming to him. The old tab (renderCommission) was only a per-salesperson summary for a date range, with no per-line breakdown and no record of when commission was actually paid. Confirmed with Dylan: commission stays on dollars COLLECTED (each payment as it is brought in: deposit, progress, final are all the same), so the calculation is unchanged; the new part is persistent payout tracking, a pay-period view, and everyone seeing all salespeople. NEEDS MIGRATION (Cowork handoff).
+
+Migration supabase/migrations/2026-06-08_commission_payouts.sql: new sidecar table public.pec_commission_payouts, one row per PAID payment (payment_id PK + FK to pec_payments on delete cascade, amount numeric(12,2) frozen at payout, paid_on date, paid_by text, created/updated timestamps). Kept out of the insert-only pec_payments ledger on purpose. RLS reuses the existing helpers: cp_select using is_admin_staff() (so reps with can_view_commission can see), cp_write for all using/with check is_admin_role() (only an admin office manager can mark payouts). Index on paid_on; touch trigger via pec_prod_touch_updated_at(). A payment is PENDING when it has no row here, PAID when it has one.
+
+Client (index.html, renderCommission ~10246): rewrote the view. Loads all pec_payments (no date gate, so unpaid commission carries forward from any date), pec_job_ar (salesperson + customer), pec_sales_team_members (the % by name), and pec_commission_payouts. Each payment becomes a commission line: commission = amount x the rep's commission_pct (matched case-insensitively on the free-text salesperson name, same as before). Layout: (1) toolbar with a pay-period from/to + This-month/Last-month/YTD presets that now filter by PAID-OUT date, plus a salesperson dropdown filter (All + every name seen) so Aron can narrow to himself; (2) a totals card showing commission paid out in the period, count, and pending-carryforward total, with a per-salesperson breakdown of what was paid that period; (3) a Pending payout section listing every collected-but-unpaid payment oldest-first, admin-only checkboxes + an editable commission amount per row + a "Pay out on [date]" + "Mark selected paid" bulk action (upsert by payment_id, idempotent, wrapped in withFreshWriteRetry); (4) a Paid this period section (paid_on in range) with an admin-only per-row Undo that deletes the payout row and returns the payment to Pending. Non-admin reps see the lists but no mark/undo controls (RLS also blocks the write). Shows a clear "payout tracking not enabled yet" banner if the table is missing so it degrades gracefully before the migration runs.
+
+Verified the CRM module passes node --check (extracted lines 4659-14669).
+
+Files touched: index.html, supabase/migrations/2026-06-08_commission_payouts.sql, PROJECT-LOG.md
+Next steps: after the migration is live, optionally seed/confirm each active rep has a commission_pct in Settings > Sales Team so pending rows show a rate instead of "(no rate)".
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_commission_payouts.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. Non-destructive (creates one table + RLS + index + touch trigger). Verify: (a) the table exists, select relrowsecurity from pg_class where relname = 'pec_commission_payouts' is true; (b) both policies exist, select polname from pg_policy where polrelid = 'public.pec_commission_payouts'::regclass returns cp_select and cp_write; (c) optional smoke test: in the app as admin, open Commission, check a pending row, set "Pay out on", click "Mark selected paid", confirm it moves to "Paid this period" and the period total updates, then Undo it and confirm it returns to Pending. Append a PROJECT-LOG entry (By: Cowork) with the result.
+
+## Handoff to Dylan
+After Cowork runs the migration, hard-refresh and open Commission. The pay-period date range now filters by when commission was PAID OUT. On first load every past collected payment shows under "Pending payout" (nothing has been marked paid yet); check the ones you are paying this period, set the pay date, and "Mark selected paid". Aron (or anyone with commission access) can pick himself in the Salesperson filter to see just what is coming; only admins see the mark-paid/undo controls. Make sure each active rep has a % set in Settings > Sales Team, or their rows show "(no rate)" and compute $0.
+
+---
+
 ## [2026-06-08 MST] Cowork: ran the four 2026-06-08 migrations in PROD Supabase, verified (plus Aron seed fix + constraint validate)
 
 By: Cowork

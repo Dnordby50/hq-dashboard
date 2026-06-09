@@ -10245,12 +10245,18 @@ function openTeamForm(t) {
 // ============================================================
 // Commission (admin only)
 // ============================================================
-// Commission is paid ONLY on money actually received, so it is computed from
-// pec_payments (per-payment amount + received_date), never the contract/sold
-// price. Each payment is attributed to its job's salesperson (via pec_job_ar),
-// grouped, and multiplied by that salesperson's commission_pct (set in Settings,
-// admin only). The date range defaults to the current month; filtering on
-// received_date means partial collections land in the period they were received.
+// Commission is paid ONLY on money actually received: every pec_payments row is
+// a payment brought in (deposit, progress, or final, all the same), and the
+// commission for that payment = payment.amount * the salesperson's commission_pct
+// (rate set in Settings > Sales Team, matched by free-text name on pec_job_ar).
+//
+// This tab is a PAY-PERIOD LEDGER, not just a summary. A payment is PENDING until
+// its commission is marked paid out, then PAID with a frozen amount + a paid-out
+// date (stored in pec_commission_payouts, one row per paid payment). The date
+// range selects a PAY PERIOD and filters by paid-out date: the totals show what
+// went out that period, while the Pending queue carries forward every earned-but-
+// unpaid payment from any date (so nothing falls through). Office managers mark
+// payouts (admin only); reps with can_view_commission can see what is coming.
 function commissionDefaultRange() {
   const today = invToday();                 // YYYY-MM-DD in Phoenix time
   return { start: today.slice(0, 8) + '01', end: today };
@@ -10259,39 +10265,74 @@ async function renderCommission() {
   const root = $('pecViewRoot');
   if (!can('can_view_commission')) { root.innerHTML = '<div class="pec-empty">You do not have access to Commission.</div>'; return; }
   if (!state.commissionRange) state.commissionRange = commissionDefaultRange();
+  if (!state.commissionSales) state.commissionSales = 'all';
   const { start, end } = state.commissionRange;
+  const isAdm = isAdmin();
   let res;
   try {
     res = await withFreshSession(() => Promise.all([
-      supabase.from('pec_payments').select('id,job_id,amount,received_date,method').gte('received_date', start).lte('received_date', end),
+      // All payments (no date gate): pending commission carries forward from any date.
+      supabase.from('pec_payments').select('id,job_id,amount,received_date,method'),
       supabase.from('pec_job_ar').select('id,customer_name,salesperson'),
       supabase.from('pec_sales_team_members').select('id,name,active,commission_pct').order('name'),
+      supabase.from('pec_commission_payouts').select('payment_id,amount,paid_on'),
     ]), { label: 'renderCommission' });
-  } catch (e) { res = [{ error: e }, {}, {}]; }
-  const [payRes, arRes, teamRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}]; }
+  const [payRes, arRes, teamRes, poRes] = res;
   if (payRes.error) {
     const hint = /pec_payments/.test(payRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(payRes.error.message)}${hint}</div>`;
     return;
   }
+  const payoutMissing = poRes && poRes.error && /pec_commission_payouts/.test(poRes.error.message || '');
   // job_id -> { salesperson, customer_name }
   const arById = Object.fromEntries((arRes.data || []).map(r => [r.id, r]));
   // commission_pct by lowercased salesperson name (the canonical rate source)
   const pctByName = {};
   for (const m of (teamRes.data || [])) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
-  // Group payments by the job's salesperson (free text on jobs.salesperson).
-  const groups = {};
-  for (const p of (payRes.data || [])) {
+  // payment_id -> payout row ({ amount, paid_on }); empty if the table is missing.
+  const payoutByPid = Object.fromEntries(((poRes && poRes.data) || []).map(r => [r.payment_id, r]));
+
+  // Normalize every payment into a commission line; attribute to its salesperson.
+  const round2 = n => Math.round(n * 100) / 100;
+  const salesSet = new Set(Object.keys(pctByName).length ? (teamRes.data || []).map(m => m.name) : []);
+  const lines = (payRes.data || []).map(p => {
     const ar = arById[p.job_id];
     const sp = (ar && ar.salesperson) ? ar.salesperson : 'Unassigned';
-    const g = (groups[sp] ||= { name: sp, collected: 0, pct: (sp.toLowerCase() in pctByName ? pctByName[sp.toLowerCase()] : null), payments: [] });
-    g.collected += invNum(p.amount);
-    g.payments.push({ ...p, customer_name: ar?.customer_name || '' });
-  }
-  const list = Object.values(groups).sort((a, b) => b.collected - a.collected);
-  const totalCollected = list.reduce((s, g) => s + g.collected, 0);
-  const commissionOf = g => g.collected * ((g.pct || 0) / 100);
-  const totalCommission = list.reduce((s, g) => s + commissionOf(g), 0);
+    salesSet.add(sp);
+    const pct = (sp.toLowerCase() in pctByName) ? pctByName[sp.toLowerCase()] : null;
+    const amount = invNum(p.amount);
+    const payout = payoutByPid[p.id] || null;
+    return {
+      id: p.id, sp, pct,
+      customer: ar?.customer_name || '—',
+      received_date: p.received_date, method: p.method,
+      collected: amount,
+      commission: round2(amount * ((pct || 0) / 100)),   // default (pending) commission
+      paid: !!payout,
+      paidOn: payout ? payout.paid_on : null,
+      paidAmount: payout ? invNum(payout.amount) : null,
+    };
+  });
+
+  // Salesperson filter (case-insensitive on the free-text name).
+  const filt = state.commissionSales;
+  const inFilter = l => filt === 'all' || String(l.sp).toLowerCase() === String(filt).toLowerCase();
+  const scoped = lines.filter(inFilter);
+
+  // Pending: not yet paid out (any date, oldest first so the backlog drains in order).
+  const pending = scoped.filter(l => !l.paid)
+    .sort((a, b) => String(a.received_date).localeCompare(String(b.received_date)));
+  const pendingTotal = pending.reduce((s, l) => s + l.commission, 0);
+
+  // Paid this period: paid_on inside the selected pay period (newest first).
+  const paidInPeriod = scoped.filter(l => l.paid && l.paidOn >= start && l.paidOn <= end)
+    .sort((a, b) => String(b.paidOn).localeCompare(String(a.paidOn)));
+  const periodTotal = paidInPeriod.reduce((s, l) => s + l.paidAmount, 0);
+  // Per-salesperson breakdown of what was paid out this period.
+  const bySales = {};
+  for (const l of paidInPeriod) { (bySales[l.sp] ||= { name: l.sp, pct: l.pct, amount: 0, n: 0 }); bySales[l.sp].amount += l.paidAmount; bySales[l.sp].n++; }
+  const breakdown = Object.values(bySales).sort((a, b) => b.amount - a.amount);
 
   // Range presets (string math; last-month end uses the JS month-0 trick).
   const today = invToday();
@@ -10300,36 +10341,81 @@ async function renderCommission() {
   const lmStart = `${lmY}-${String(lmM).padStart(2, '0')}-01`;
   const lmEnd = `${lmStart.slice(0, 7)}-${String(new Date(y, m - 1, 0).getDate()).padStart(2, '0')}`;
 
+  const salesOpts = ['all', ...Array.from(salesSet).filter(Boolean).sort((a, b) => String(a).localeCompare(String(b)))];
+  const rate = l => l.pct == null ? '<span style="color:var(--warn);font-size:.7rem">(no rate)</span>' : esc(l.pct) + '%';
+
   root.innerHTML = `
     <div class="pec-toolbar" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
-      <div class="pec-field" style="margin:0"><label>From</label><input type="date" id="comFrom" value="${esc(start)}"></div>
+      <div class="pec-field" style="margin:0"><label>Pay period from</label><input type="date" id="comFrom" value="${esc(start)}"></div>
       <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="comTo" value="${esc(end)}"></div>
       <button class="pec-btn sm" data-com-preset="month">This month</button>
       <button class="pec-btn sm" data-com-preset="lastmonth">Last month</button>
       <button class="pec-btn sm" data-com-preset="ytd">Year to date</button>
-      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">Commission is on revenue COLLECTED in the range (payments received), not sold. Set the % per person in Settings &gt; Sales Team.</span>
+      <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="comSales">${salesOpts.map(s => `<option value="${esc(s)}"${s === filt ? ' selected' : ''}>${s === 'all' ? 'All salespeople' : esc(s)}</option>`).join('')}</select></div>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">Period filters by PAID-OUT date. Commission is on dollars collected (each payment x the rep's %). Set the % in Settings &gt; Sales Team.</span>
     </div>
+    ${payoutMissing ? '<div class="pec-card" style="border-color:var(--warn)"><strong>Payout tracking not enabled yet.</strong> Apply the 2026-06-08_commission_payouts.sql migration to record paid-out commission. Until then, everything shows as Pending.</div>' : ''}
+
     <div class="pec-card">
-      <table class="pec-table">
-        <thead><tr><th>Salesperson</th><th>Commission %</th><th>Revenue Collected</th><th>Commission Payable</th><th>Payments</th></tr></thead>
-        <tbody>
-          ${list.map(g => `
-            <tr data-com-row="${esc(g.name)}" style="cursor:pointer">
-              <td><strong>${esc(g.name)}</strong>${g.pct == null ? ' <span style="color:var(--warn);font-size:.7rem">(no rate set)</span>' : ''}</td>
-              <td>${g.pct == null ? '0%' : esc(g.pct) + '%'}</td>
-              <td>${invUSD(g.collected)}</td>
-              <td><strong>${invUSD(commissionOf(g))}</strong></td>
-              <td>${g.payments.length}</td>
-            </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No payments collected in this range.</td></tr>'}
-        </tbody>
-        ${list.length ? `<tfoot><tr class="li-total"><td><strong>Total</strong></td><td></td><td><strong>${invUSD(totalCollected)}</strong></td><td><strong>${invUSD(totalCommission)}</strong></td><td></td></tr></tfoot>` : ''}
-      </table>
-      <div style="color:var(--muted);font-size:.72rem;margin-top:8px">Click a row to see the underlying payments. Salespeople with "no rate set" are matched by name to Settings &gt; Sales Team; add them there (with a %) to include their commission.</div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><div style="color:var(--muted);font-size:.72rem">Paid out ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(periodTotal)}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Payments paid out</div><div style="font-size:1.5rem;font-weight:700">${paidInPeriod.length}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Pending payout (carrying forward)</div><div style="font-size:1.5rem;font-weight:700;color:var(--warn)">${invUSD(pendingTotal)}</div></div>
+      </div>
+      ${breakdown.length ? `<table class="pec-table" style="margin-top:12px"><thead><tr><th>Salesperson</th><th>%</th><th style="text-align:right">Paid this period</th><th style="text-align:right">Payments</th></tr></thead><tbody>
+        ${breakdown.map(b => `<tr class="nohover"><td><strong>${esc(b.name)}</strong></td><td>${b.pct == null ? '—' : esc(b.pct) + '%'}</td><td style="text-align:right"><strong>${invUSD(b.amount)}</strong></td><td style="text-align:right">${b.n}</td></tr>`).join('')}
+      </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem;margin-top:10px">No commission paid out in this pay period yet.</div>'}
     </div>
-    <div id="comDetail"></div>
+
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <h3 style="margin:0">Pending payout</h3>
+        <span style="color:var(--muted);font-size:.72rem">Earned (collected) but not yet paid out. Carries forward until paid.</span>
+        ${isAdm && pending.length ? `<div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
+          <div class="pec-field" style="margin:0"><label>Pay out on</label><input type="date" id="comPayDate" value="${esc(today)}"></div>
+          <button class="pec-btn sm primary" id="comMarkPaid">Mark selected paid</button>
+        </div>` : ''}
+      </div>
+      <table class="pec-table">
+        <thead><tr>${isAdm ? '<th style="width:28px"><input type="checkbox" id="comPendAll"></th>' : ''}<th>Received</th><th>Customer</th><th>Salesperson</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission</th></tr></thead>
+        <tbody>
+          ${pending.map(l => `<tr class="nohover">
+            ${isAdm ? `<td><input type="checkbox" class="com-pend" data-pid="${esc(l.id)}"></td>` : ''}
+            <td>${invFmtDate(l.received_date)}</td>
+            <td>${esc(l.customer)}</td>
+            <td>${esc(l.sp)} ${rate(l)}</td>
+            <td style="text-align:right">${invUSD(l.collected)}</td>
+            <td style="text-align:right">${isAdm ? `<input type="number" step="0.01" min="0" class="com-amt" data-pid="${esc(l.id)}" value="${l.commission.toFixed(2)}" style="width:90px;text-align:right">` : `<strong>${invUSD(l.commission)}</strong>`}</td>
+          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 6 : 5}" class="pec-empty">Nothing pending. All collected commission has been paid out.</td></tr>`}
+        </tbody>
+        ${pending.length ? `<tfoot><tr class="li-total"><td colspan="${isAdm ? 5 : 4}"><strong>Total pending</strong></td><td style="text-align:right"><strong>${invUSD(pendingTotal)}</strong></td></tr></tfoot>` : ''}
+      </table>
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Paid this period</h3>
+      <table class="pec-table">
+        <thead><tr><th>Paid on</th><th>Received</th><th>Customer</th><th>Salesperson</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission</th>${isAdm ? '<th></th>' : ''}</tr></thead>
+        <tbody>
+          ${paidInPeriod.map(l => `<tr class="nohover">
+            <td>${invFmtDate(l.paidOn)}</td>
+            <td>${invFmtDate(l.received_date)}</td>
+            <td>${esc(l.customer)}</td>
+            <td>${esc(l.sp)}</td>
+            <td style="text-align:right">${invUSD(l.collected)}</td>
+            <td style="text-align:right"><strong>${invUSD(l.paidAmount)}</strong></td>
+            ${isAdm ? `<td style="text-align:right"><button class="pec-btn sm" data-com-undo="${esc(l.id)}">Undo</button></td>` : ''}
+          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 7 : 6}" class="pec-empty">No commission paid out in this pay period.</td></tr>`}
+        </tbody>
+        ${paidInPeriod.length ? `<tfoot><tr class="li-total"><td colspan="5"><strong>Total paid this period</strong></td><td style="text-align:right"><strong>${invUSD(periodTotal)}</strong></td>${isAdm ? '<td></td>' : ''}</tr></tfoot>` : ''}
+      </table>
+    </div>
   `;
+
+  // --- Wire toolbar ---
   $('comFrom').addEventListener('change', e => { state.commissionRange = { start: e.target.value, end }; renderCommission(); });
   $('comTo').addEventListener('change', e => { state.commissionRange = { start, end: e.target.value }; renderCommission(); });
+  $('comSales').addEventListener('change', e => { state.commissionSales = e.target.value; renderCommission(); });
   root.querySelectorAll('[data-com-preset]').forEach(b => b.addEventListener('click', () => {
     const p = b.dataset.comPreset;
     if (p === 'month') state.commissionRange = { start: today.slice(0, 8) + '01', end: today };
@@ -10337,12 +10423,36 @@ async function renderCommission() {
     else if (p === 'ytd') state.commissionRange = { start: today.slice(0, 4) + '-01-01', end: today };
     renderCommission();
   }));
-  root.querySelectorAll('[data-com-row]').forEach(tr => tr.addEventListener('click', () => {
-    const g = groups[tr.dataset.comRow]; if (!g) return;
-    $('comDetail').innerHTML = `<div class="pec-card"><h3 style="margin:0 0 10px">${esc(g.name)}: payments in range</h3>
-      <table class="pec-table"><thead><tr><th>Date</th><th>Customer</th><th>Method</th><th style="text-align:right">Amount</th></tr></thead><tbody>
-      ${g.payments.slice().sort((a, b) => String(b.received_date).localeCompare(String(a.received_date))).map(p => `<tr class="nohover"><td>${invFmtDate(p.received_date)}</td><td>${esc(p.customer_name || '—')}</td><td>${esc(p.method || '')}</td><td style="text-align:right">${invUSD(invNum(p.amount))}</td></tr>`).join('')}
-      </tbody></table></div>`;
+
+  if (!isAdm) return;   // reps can view but not mark payouts
+
+  // --- Select-all toggle ---
+  const allBox = $('comPendAll');
+  if (allBox) allBox.addEventListener('change', e => { root.querySelectorAll('.com-pend').forEach(c => { c.checked = e.target.checked; }); });
+
+  // --- Mark selected paid (bulk upsert; idempotent by payment_id) ---
+  const markBtn = $('comMarkPaid');
+  if (markBtn) markBtn.addEventListener('click', async () => {
+    const payDate = ($('comPayDate') && $('comPayDate').value) || today;
+    const rows = Array.from(root.querySelectorAll('.com-pend')).filter(c => c.checked).map(c => {
+      const pid = c.dataset.pid;
+      const amtEl = root.querySelector(`.com-amt[data-pid="${pid}"]`);
+      return { payment_id: pid, amount: round2(invNum(amtEl ? amtEl.value : 0)), paid_on: payDate, paid_by: state.adminUser?.name || null };
+    });
+    if (!rows.length) { alert('Select at least one payment to mark paid.'); return; }
+    markBtn.disabled = true; markBtn.textContent = 'Saving...';
+    const up = await withFreshWriteRetry(() => supabase.from('pec_commission_payouts').upsert(rows, { onConflict: 'payment_id' }), { label: 'commission-payout' });
+    if (up.error) { markBtn.disabled = false; markBtn.textContent = 'Mark selected paid'; alert('Could not save payout: ' + up.error.message); return; }
+    renderCommission();
+  });
+
+  // --- Undo a payout (delete the payout row, returns the payment to Pending) ---
+  root.querySelectorAll('[data-com-undo]').forEach(b => b.addEventListener('click', async () => {
+    const pid = b.dataset.comUndo;
+    b.disabled = true;
+    const del = await withFreshWriteRetry(() => supabase.from('pec_commission_payouts').delete().eq('payment_id', pid), { label: 'commission-unpay' });
+    if (del.error) { b.disabled = false; alert('Could not undo: ' + del.error.message); return; }
+    renderCommission();
   }));
 }
 
