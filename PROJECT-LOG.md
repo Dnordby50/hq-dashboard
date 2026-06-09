@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Claude Code: 1-week run sheet, taller columns + every job field on the card
+
+By: Claude Code
+
+Follow-up to the calendar stretch (Dylan: the 3-week view looks good; make the 1-week even taller and show ALL info per job). The run-sheet card only showed slot, customer, compact revenue, and system.
+
+Client (index.html, renderScheduleCalendar week mode): each per-crew job card now shows the full operational set, sourced from the state.prodJobs row (loadProdCore selects *): slot chip + customer + FULL revenue (e.g. $12,500 instead of $12k) on the top line, then address, system, crew lead, job/proposal number, and notes (wrapped, pre-line). Card padding bumped slightly and the day-column min-height went from 320px to 560px so the columns stretch tall. Columns auto-grow with content (align-items:start, no clipping), so nothing truncates. Pure presentation, no data/behavior change.
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: none.
+Handoff to Cowork: None
+Handoff to Dylan: Hard-refresh the Job Schedule 1-week view. Each job card now lists address, system, crew lead, job number, and notes with the full revenue. If 560px columns feel too tall on light days, say so and I will trim the min-height (it only sets the minimum; busy days grow on their own).
+
 ## [2026-06-09 MST] Claude Code: stretched the Job Schedule 1-week and 3-week calendars vertically (more info per job)
 
 By: Claude Code
