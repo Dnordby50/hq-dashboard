@@ -10261,11 +10261,22 @@ function commissionDefaultRange() {
   const today = invToday();                 // YYYY-MM-DD in Phoenix time
   return { start: today.slice(0, 8) + '01', end: today };
 }
-// Payroll runs weekly on Friday: the check date a payout correlates to is the
-// Friday ON OR AFTER the pay-out date. getUTCDay() 0=Sun..5=Fri; add the gap.
+// Pay periods run Sunday–Saturday; payday is the Friday of that week. The check
+// date a payment correlates to is the Friday ON OR AFTER the date the money was
+// RECEIVED: a deposit received Sun–Fri pays that week's Friday, and one received
+// Saturday (after that week's Friday payroll already ran) rolls to the next
+// Friday. Dusty can override per batch when she finalizes a run early/late.
+// getUTCDay() 0=Sun..5=Fri; add the gap to the next Friday.
 function commissionFriday(dateStr) {
   const d = invParse(dateStr); if (!d) return dateStr;
   return invAddDays(dateStr, (5 - d.getUTCDay() + 7) % 7);
+}
+// The Sun–Sat pay period that a payday Friday closes (Friday is day 5, so back up
+// to the Sunday and forward to the Saturday).
+function commissionPeriod(dateStr) {
+  const d = invParse(dateStr); if (!d) return { start: dateStr, end: dateStr };
+  const start = invAddDays(dateStr, -d.getUTCDay());   // Sunday on/before
+  return { start, end: invAddDays(start, 6) };         // Saturday after
 }
 async function renderCommission() {
   const root = $('pecViewRoot');
@@ -10314,6 +10325,8 @@ async function renderCommission() {
       id: p.id, job_id: p.job_id, sp, pct,
       customer: ar?.customer_name || '—',
       received_date: p.received_date, method: p.method,
+      payday: commissionFriday(p.received_date),   // correlating Friday from when money came in
+
       collected: amount,
       commission: round2(amount * ((pct || 0) / 100)),   // default (pending) commission
       paid: !!payout,
@@ -10328,9 +10341,10 @@ async function renderCommission() {
   const inFilter = l => filt === 'all' || String(l.sp).toLowerCase() === String(filt).toLowerCase();
   const scoped = lines.filter(inFilter);
 
-  // Pending: not yet paid out (any date, oldest first so the backlog drains in order).
+  // Pending: not yet paid out (any date). Sort by correlating payday then receipt,
+  // so a pay-period's items sit together and the oldest cycle drains first.
   const pending = scoped.filter(l => !l.paid)
-    .sort((a, b) => String(a.received_date).localeCompare(String(b.received_date)));
+    .sort((a, b) => String(a.payday).localeCompare(String(b.payday)) || String(a.received_date).localeCompare(String(b.received_date)));
   const pendingTotal = pending.reduce((s, l) => s + l.commission, 0);
 
   // Paid this period: paid_on inside the selected pay period (newest first).
@@ -10420,7 +10434,7 @@ async function renderCommission() {
     ${reportList.map(g => `
       <div class="pec-card">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
-          <h3 style="margin:0">${g.isNone ? 'No check date assigned' : 'Check date ' + invFmtDate(g.date)}</h3>
+          <h3 style="margin:0">${g.isNone ? 'No check date assigned' : 'Payday ' + invFmtDate(g.date) + ' <span style="color:var(--muted);font-size:.78rem;font-weight:400">(pay period ' + invFmtDate(commissionPeriod(g.date).start) + ' – ' + invFmtDate(commissionPeriod(g.date).end) + ')</span>'}</h3>
           <div style="font-size:1.2rem;font-weight:700">${invUSD(g.total)}</div>
         </div>
         ${g.isNone ? '<div style="color:var(--muted);font-size:.72rem;margin-bottom:6px">Paid before a payroll check date was recorded. Undo and re-mark these to assign a check date.</div>' : ''}
@@ -10500,23 +10514,24 @@ async function renderCommission() {
         <span style="color:var(--muted);font-size:.72rem">Earned (collected) but not yet paid out. Carries forward until paid.</span>
         ${isAdm && pending.length ? `<div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
           <div class="pec-field" style="margin:0"><label>Pay out on</label><input type="date" id="comPayDate" value="${esc(today)}"></div>
-          <div class="pec-field" style="margin:0"><label>Payroll check date</label><input type="date" id="comPayrollDate" value="${esc(commissionFriday(today))}"></div>
+          <div class="pec-field" style="margin:0"><label>Override payday <span style="color:var(--muted);font-weight:400">(optional)</span></label><input type="date" id="comPayrollDate" value="" title="Leave blank to pay each item on its own payday (the Payday column). Set a date to force all selected onto that Friday."></div>
           <button class="pec-btn sm primary" id="comMarkPaid">Mark selected paid</button>
         </div>` : ''}
       </div>
       <table class="pec-table">
-        <thead><tr>${isAdm ? '<th style="width:28px"><input type="checkbox" id="comPendAll"></th>' : ''}<th>Received</th><th>Customer</th><th>Salesperson</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission</th></tr></thead>
+        <thead><tr>${isAdm ? '<th style="width:28px"><input type="checkbox" id="comPendAll"></th>' : ''}<th>Received</th><th>Payday</th><th>Customer</th><th>Salesperson</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission</th></tr></thead>
         <tbody>
           ${pending.map(l => `<tr class="nohover">
-            ${isAdm ? `<td><input type="checkbox" class="com-pend" data-pid="${esc(l.id)}"></td>` : ''}
+            ${isAdm ? `<td><input type="checkbox" class="com-pend" data-pid="${esc(l.id)}" data-received="${esc(l.received_date)}"></td>` : ''}
             <td>${invFmtDate(l.received_date)}</td>
+            <td>${invFmtDate(l.payday)}</td>
             <td>${jobLink(l.job_id, l.customer)}</td>
             <td>${esc(l.sp)} ${rate(l)}</td>
             <td style="text-align:right">${invUSD(l.collected)}</td>
             <td style="text-align:right">${isAdm ? `<input type="number" step="0.01" min="0" class="com-amt" data-pid="${esc(l.id)}" value="${l.commission.toFixed(2)}" style="width:90px;text-align:right">` : `<strong>${invUSD(l.commission)}</strong>`}</td>
-          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 6 : 5}" class="pec-empty">Nothing pending. All collected commission has been paid out.</td></tr>`}
+          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 7 : 6}" class="pec-empty">Nothing pending. All collected commission has been paid out.</td></tr>`}
         </tbody>
-        ${pending.length ? `<tfoot><tr class="li-total"><td colspan="${isAdm ? 5 : 4}"><strong>Total pending</strong></td><td style="text-align:right"><strong>${invUSD(pendingTotal)}</strong></td></tr></tfoot>` : ''}
+        ${pending.length ? `<tfoot><tr class="li-total"><td colspan="${isAdm ? 6 : 5}"><strong>Total pending</strong></td><td style="text-align:right"><strong>${invUSD(pendingTotal)}</strong></td></tr></tfoot>` : ''}
       </table>
     </div>
 
@@ -10567,19 +10582,19 @@ async function renderCommission() {
   const allBox = $('comPendAll');
   if (allBox) allBox.addEventListener('change', e => { root.querySelectorAll('.com-pend').forEach(c => { c.checked = e.target.checked; }); });
 
-  // Re-default the payroll check date to the correlating Friday whenever the
-  // pay-out date changes (admin can still override it afterward).
-  const payDateEl = $('comPayDate'), payrollEl = $('comPayrollDate');
-  if (payDateEl && payrollEl) payDateEl.addEventListener('change', () => { payrollEl.value = commissionFriday(payDateEl.value || today); });
-
   // --- Mark selected paid (bulk upsert; idempotent by payment_id) ---
+  // Each payment defaults to ITS OWN payday (the Friday of the Sun–Sat week it was
+  // received), so a mixed-week batch stamps the correct check date per row. The
+  // optional override forces every selected row onto one Friday (Dusty's call when
+  // she finalizes a run early/late).
   const markBtn = $('comMarkPaid');
   if (markBtn) markBtn.addEventListener('click', async () => {
     const payDate = ($('comPayDate') && $('comPayDate').value) || today;
-    const payrollDate = ($('comPayrollDate') && $('comPayrollDate').value) || commissionFriday(payDate);
+    const overridePayroll = ($('comPayrollDate') && $('comPayrollDate').value) || null;
     const rows = Array.from(root.querySelectorAll('.com-pend')).filter(c => c.checked).map(c => {
       const pid = c.dataset.pid;
       const amtEl = root.querySelector(`.com-amt[data-pid="${pid}"]`);
+      const payrollDate = overridePayroll || commissionFriday(c.dataset.received || payDate);
       return { payment_id: pid, amount: round2(invNum(amtEl ? amtEl.value : 0)), paid_on: payDate, payroll_date: payrollDate, paid_by: state.adminUser?.name || null };
     });
     if (!rows.length) { alert('Select at least one payment to mark paid.'); return; }

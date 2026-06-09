@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Claude Code: Commission payday logic, drive the check date off the RECEIVED date (Sun–Sat period, Friday payday)
+
+By: Claude Code
+
+Dylan clarified the real payroll cadence: pay periods run Sunday–Saturday, payday is Friday, and the cycle a deposit/payment belongs to is set by WHEN THE MONEY CAME IN, not when Dusty clicks. Example: Lloyd Wood's deposit (received this week) should pay out this coming Friday; a check received Wednesday, before she runs that Friday's payroll, makes that cycle. Whether a late/boundary item makes a run depends on when Dusty finalizes, so the default must be smart but overridable. The prior code defaulted the payroll date off today and stamped one shared date on the whole batch, which is wrong for a mixed-week batch.
+
+Client (index.html, renderCommission): commissionFriday now documents and is applied to the payment's received_date (Friday ON OR AFTER receipt: Sun–Fri receipts pay that week's Friday; a Saturday receipt rolls to the next Friday since that week's payroll already ran). Each commission line carries payday = commissionFriday(received_date). The Pending payout queue gained a "Payday" column and is now sorted by payday then receipt so a pay period's items group together. New commissionPeriod(date) returns the Sun–Sat period a payday closes (back up to Sunday, forward to Saturday); the Payroll report header now reads "Payday M/D (pay period Sun–Sat)". The mark-paid action changed: each selected payment defaults to ITS OWN payday (so a mixed-week batch stamps the correct Friday per row), and the old "Payroll check date" field became "Override payday (optional)" that, when set, forces all selected rows onto one Friday (Dusty's discretion for early/late finalization). Verified the math against real dates: received Mon 6/8 or Wed 6/10 -> payday Fri 6/12 (this coming Friday); Sat 6/13 -> Fri 6/19; payday 6/12 -> period 6/7–6/13.
+
+No migration (the payroll_date column already exists). Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: none.
+Handoff to Cowork: None
+Handoff to Dylan: When you mark deposits paid, each row already shows the Friday it correlates to in the new Payday column and pays on that date by default, so a mixed-week batch is handled correctly. Use "Override payday" only when you finalize a run early or late and want to pull items onto a specific Friday.
+
 ## [2026-06-09 MST] Cowork: ran the commission_payroll_date migration in PROD Supabase, verified
 
 By: Cowork
