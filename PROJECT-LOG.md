@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Cowork: diagnosed job-status fragmentation, wrote Claude Code prompts (status unification + calendar crew tasks)
+
+By: Cowork
+
+Dylan reported the CRM shows different job statuses in different places (even on the job detail card) and wants one source of truth with manual override plus two-way sync between the job card and the Pipeline. Investigated index.html and supabase/migrations. No code changed; this entry and the prompts are the deliverable.
+
+Root cause: six independent status derivation/sync paths with conflicting rules. (1) DB trigger pec_prod_jobs_sync_public_status (2026-06-04_prod_status_sync_trigger.sql): install_date <= today means in_progress, always clears status_manual_at. (2) syncPublicJobStatusFromSchedule (~5398): same in_progress rule. (3) runScheduleStatusSync (~5483): start < today means COMPLETED (uses the EARLIEST scheduled day, so a multi-day job is auto-completed mid-job), never yields in_progress, contradicting its own comment at ~5426. (4) runAutoProgressSweep (~5341): flips scheduled to in_progress on install morning. (5) Job detail render sync (~8542): in_progress when start <= today, persisted async at ~8862. (6) Pipeline effectiveStatus (~11757): display-only remap matching rule 3, not rule 5. Paths 3 vs 4/5 actively ping-pong a today-start job between scheduled and in_progress, and path 3 marks day-2 jobs completed while the calendar still shows them active. Manual overrides die because the trigger clears status_manual_at on any prod-row change, and a pipeline drag to Complete never mirrors to pec_prod_jobs so the calendar disagrees.
+
+Decisions captured from Dylan: a job auto-completes the day AFTER its LAST scheduled day (not the first); new calendar crew tasks are single-day (crew + short description, no job link).
+
+Deliverable: two self-contained Claude Code prompts printed in chat. Prompt 1 collapses all six paths onto one canonical derivation (shared client function + rewritten DB trigger, new migration 2026-06-09_unified_status_trigger.sql, explicit manual-override precedence, completed mirrored both directions). Prompt 2 adds single-day crew tasks to the Job Schedule calendar in a new pec_prod_tasks table, isolated from all status sync.
+
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pastes Prompt 1 into Claude Code first, then Prompt 2. Each will end with a Cowork handoff to run its migration in PROD.
+Handoff to Cowork: None yet (migration handoffs will come from Claude Code).
+Handoff to Dylan: Run the two prompts in Claude Code, status unification first.
+
 ## [2026-06-09 MST] Claude Code: 1-week run sheet, taller columns + every job field on the card
 
 By: Claude Code
