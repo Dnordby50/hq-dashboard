@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: ran the commission_payouts migration in PROD Supabase, verified
+
+By: Cowork
+
+Scope: Ran the Claude Code handoff for commit d14c897 (Commission tab payout-ledger redesign). Ran supabase/migrations/2026-06-08_commission_payouts.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd, PRODUCTION, role postgres) via the SQL editor in Dylan's signed-in browser. Typed as a single statement block (editor autocomplete eats Enter on multi-line). "Success. No rows returned" (confirmed the expected destructive-op warning on the drop policy/trigger if exists). No repo code changed except this entry. Did NOT touch pec_payments, pec_job_ar, or pec_sales_team_members.
+
+Created public.pec_commission_payouts (one row per paid payment: payment_id PK -> pec_payments on delete cascade, amount, paid_on, paid_by, created_at, updated_at) + RLS + the cp_paid_on_idx index + the touch trigger.
+
+Verified (one query): relrowsecurity = true; policies = cp_select, cp_write (both present); column count = 6. Acceptance met. Did NOT run the optional in-app smoke test (marking a payout paid/undo) to avoid writing a real payout row into PROD; left that for Dylan.
+
+## Handoff to Dylan
+The Commission tab is live: the pec_commission_payouts table exists with RLS (admin staff read, admin role write). On first load every past collected payment shows under "Pending payout" (nothing marked paid yet), as Claude Code noted, work the backlog or start from the current pay period. The repo commit for this log entry is local only (Cowork does not push).
+
 ## [2026-06-08 MST] Claude Code: Commission tab redesign into a pay-period payout ledger (NEEDS MIGRATION)
 
 By: Claude Code
