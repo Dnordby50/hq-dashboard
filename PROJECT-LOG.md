@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Commission Item 3, stamp each payout with a Friday payroll check date
+
+By: Claude Code
+
+Item 3 of 4. Dylan pays commission weekly on Friday, so each payout needs to carry the payroll/check date it correlates to (Item 4 reports on it). The existing mark-paid flow (pick a pay-out date, mark selected pending payments paid, upsert into pec_commission_payouts) is unchanged except it now also records a payroll_date.
+
+Client (index.html, renderCommission): new module-level helper commissionFriday(dateStr) returns the Friday ON OR AFTER a date (UTC day math via the existing invParse/invAddDays, single fixed MST, no DST). Expanded the pec_commission_payouts select to include payroll_date and carried it onto each commission line. Added a "Payroll check date" input (#comPayrollDate) next to "Pay out on", defaulting to commissionFriday(today) and auto-re-defaulting to the correlating Friday whenever the pay-out date changes (admin can still override). The mark-paid bulk upsert now writes payroll_date on every row in the batch.
+
+DEPENDENCY: the payroll_date column is added by Item 4's migration (2026-06-08_commission_payroll_date.sql). This code and that migration ship together; until the migration runs in PROD, marking paid will error on the unknown column (the handler already alerts on error). Item 4's Cowork handoff runs it.
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Item 4 (payroll_date migration + the Friday payroll report, sub-tabs).
+Handoff to Cowork: None (the migration ships with Item 4).
+Handoff to Dylan: None
+
 ## [2026-06-08 MST] Claude Code: Commission Item 2, sold-jobs rollup with a Deposit-collected column
 
 By: Claude Code

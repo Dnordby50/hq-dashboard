@@ -10261,6 +10261,12 @@ function commissionDefaultRange() {
   const today = invToday();                 // YYYY-MM-DD in Phoenix time
   return { start: today.slice(0, 8) + '01', end: today };
 }
+// Payroll runs weekly on Friday: the check date a payout correlates to is the
+// Friday ON OR AFTER the pay-out date. getUTCDay() 0=Sun..5=Fri; add the gap.
+function commissionFriday(dateStr) {
+  const d = invParse(dateStr); if (!d) return dateStr;
+  return invAddDays(dateStr, (5 - d.getUTCDay() + 7) % 7);
+}
 async function renderCommission() {
   const root = $('pecViewRoot');
   if (!can('can_view_commission')) { root.innerHTML = '<div class="pec-empty">You do not have access to Commission.</div>'; return; }
@@ -10275,7 +10281,7 @@ async function renderCommission() {
       supabase.from('pec_payments').select('id,job_id,amount,received_date,method'),
       supabase.from('pec_job_ar').select('id,customer_name,salesperson,status,price,deposit_collected,deposit_waived,signed_date,paid_to_date'),
       supabase.from('pec_sales_team_members').select('id,name,active,commission_pct').order('name'),
-      supabase.from('pec_commission_payouts').select('payment_id,amount,paid_on'),
+      supabase.from('pec_commission_payouts').select('payment_id,amount,paid_on,payroll_date'),
     ]), { label: 'renderCommission' });
   } catch (e) { res = [{ error: e }, {}, {}, {}]; }
   const [payRes, arRes, teamRes, poRes] = res;
@@ -10312,6 +10318,7 @@ async function renderCommission() {
       paid: !!payout,
       paidOn: payout ? payout.paid_on : null,
       paidAmount: payout ? invNum(payout.amount) : null,
+      payrollDate: payout ? (payout.payroll_date || null) : null,
     };
   });
 
@@ -10431,6 +10438,7 @@ async function renderCommission() {
         <span style="color:var(--muted);font-size:.72rem">Earned (collected) but not yet paid out. Carries forward until paid.</span>
         ${isAdm && pending.length ? `<div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
           <div class="pec-field" style="margin:0"><label>Pay out on</label><input type="date" id="comPayDate" value="${esc(today)}"></div>
+          <div class="pec-field" style="margin:0"><label>Payroll check date</label><input type="date" id="comPayrollDate" value="${esc(commissionFriday(today))}"></div>
           <button class="pec-btn sm primary" id="comMarkPaid">Mark selected paid</button>
         </div>` : ''}
       </div>
@@ -10494,14 +10502,20 @@ async function renderCommission() {
   const allBox = $('comPendAll');
   if (allBox) allBox.addEventListener('change', e => { root.querySelectorAll('.com-pend').forEach(c => { c.checked = e.target.checked; }); });
 
+  // Re-default the payroll check date to the correlating Friday whenever the
+  // pay-out date changes (admin can still override it afterward).
+  const payDateEl = $('comPayDate'), payrollEl = $('comPayrollDate');
+  if (payDateEl && payrollEl) payDateEl.addEventListener('change', () => { payrollEl.value = commissionFriday(payDateEl.value || today); });
+
   // --- Mark selected paid (bulk upsert; idempotent by payment_id) ---
   const markBtn = $('comMarkPaid');
   if (markBtn) markBtn.addEventListener('click', async () => {
     const payDate = ($('comPayDate') && $('comPayDate').value) || today;
+    const payrollDate = ($('comPayrollDate') && $('comPayrollDate').value) || commissionFriday(payDate);
     const rows = Array.from(root.querySelectorAll('.com-pend')).filter(c => c.checked).map(c => {
       const pid = c.dataset.pid;
       const amtEl = root.querySelector(`.com-amt[data-pid="${pid}"]`);
-      return { payment_id: pid, amount: round2(invNum(amtEl ? amtEl.value : 0)), paid_on: payDate, paid_by: state.adminUser?.name || null };
+      return { payment_id: pid, amount: round2(invNum(amtEl ? amtEl.value : 0)), paid_on: payDate, payroll_date: payrollDate, paid_by: state.adminUser?.name || null };
     });
     if (!rows.length) { alert('Select at least one payment to mark paid.'); return; }
     markBtn.disabled = true; markBtn.textContent = 'Saving...';
