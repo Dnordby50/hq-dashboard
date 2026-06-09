@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Cowork: scoped Commission enhancements (job links, signed-job + deposit column, Friday payroll report), wrote a Claude Code prompt
+
+By: Cowork
+
+Scope: Dylan wants four Commission additions on top of the payout ledger (commit d14c897): (1) click a commission to open its job detail, (2) a signed job appears on the commission list with a "Deposit collected" yes/no column, (3) keep the pay-period payout flow, (4) log paid commissions against a Friday payroll/check date with a report of which jobs paid out per check. Investigated the code and wrote claude-code-prompt-commission-enhancements-2026-06-08.md to the HQ folder. No repo code changed except this entry.
+
+Findings: renderCommission (index.html:10264) is payment-driven (pec_payments + pec_job_ar + pec_sales_team_members + pec_commission_payouts, 10275-10278); rows already carry p.job_id = public.jobs.id, which is exactly what renderJobDetail expects, so linking is a data-attr + the existing state.openJobId/switchView('jobs') pattern (6853, 6911-6913). Signed + deposit data live in pec_job_ar (status, salesperson, price, deposit_collected, deposit_waived, paid_to_date); "deposit in" = deposit_collected OR deposit_waived, same as the Invoicing view (7104-7106). No payroll/check-date concept exists yet; the prompt adds a payroll_date column to pec_commission_payouts (migration -> Cowork handoff), defaults the mark-paid check date to the correlating Friday, and adds a "Payouts by check date" report. Kept the core rule explicit: commission is payable ONLY on collected dollars; showing signed jobs/sold price is visibility only, never payable.
+
+## Handoff to Dylan
+Review claude-code-prompt-commission-enhancements-2026-06-08.md in the HQ folder. One design note baked in: a signed job with no deposit yet shows on the list (Deposit collected = No) with $0 earned, so it is visible without creating phantom payable commission. The payroll_date migration will come back to me as a "run migration" once Claude Code ships it.
+
 ## [2026-06-08 MST] Cowork: ran the commission_payouts migration in PROD Supabase, verified
 
 By: Cowork
