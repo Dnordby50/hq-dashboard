@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Commission Item 4, Friday payroll report + sub-tabs (NEEDS MIGRATION)
+
+By: Claude Code
+
+Last of the 4-item batch. Dylan wanted a report of which jobs paid out on each Friday check date, for himself and the reps. NEEDS MIGRATION (Cowork handoff). This is the migration Item 3's payroll_date writes depend on.
+
+Migration supabase/migrations/2026-06-08_commission_payroll_date.sql: adds a nullable payroll_date date column to public.pec_commission_payouts plus the cp_payroll_date_idx index. Non-destructive; reuses the table's existing RLS (admin staff read, admin role write), no policy change.
+
+Client (index.html, renderCommission): split the tab into two sub-tabs (state.commissionTab, default 'payouts') with a tab bar styled like the Settings bar, sharing the one date-range + salesperson toolbar. "Payouts" holds everything built in Items 1-3 (period totals, Sold jobs, Pending queue, Paid this period), wrapped in an isPayouts conditional. "Payroll report" groups paid commission by payroll_date (the Friday check date), newest first: a totals header (total paid + number of check dates in range), then one card per check date showing the date, its total, and a per-salesperson then per-job breakdown (Customer as a job link from Item 1, Collected, Commission paid) with a salesperson subtotal. A check date appears when its payroll_date is inside the selected range; paid rows with a null payroll_date (e.g. anything marked paid before this column existed) always appear under a separate "No check date assigned" bucket so they are never silently hidden, with a hint to undo+re-mark them to assign a date. The report respects the salesperson filter, so a rep sees only their own checks. A Print button (window.print(), same pattern as Job Costing's costPrint) prints the report.
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, supabase/migrations/2026-06-08_commission_payroll_date.sql, PROJECT-LOG.md
+Next steps: none; batch complete. Optional later: a CSV export of a check date if Dylan wants to hand it to a bookkeeper.
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-08_commission_payroll_date.sql in PROD Supabase (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. Non-destructive (adds one nullable column + an index to pec_commission_payouts; reuses existing RLS). Type as a single statement block (the editor autocomplete eats Enter on multi-line paste). Verify: (a) the column exists, select column_name from information_schema.columns where table_name = 'pec_commission_payouts' and column_name = 'payroll_date' returns 1 row; (b) the index exists, select indexname from pg_indexes where tablename = 'pec_commission_payouts' and indexname = 'cp_payroll_date_idx' returns 1 row. IMPORTANT: until this runs, the Commission "Mark selected paid" action will error (it writes payroll_date), so run it before anyone marks a payout. Append a PROJECT-LOG entry (By: Cowork) with the result.
+
+## Handoff to Dylan
+After Cowork runs the migration, hard-refresh. The Commission tab now has two sub-tabs: "Payouts" (the working view, unchanged) and "Payroll report". When you mark a pay period paid, the "Payroll check date" defaults to the correlating Friday (override if needed). The Payroll report lists each Friday check date with the jobs and per-rep totals that paid out on it; click any customer to open the job; pick a salesperson in the filter to see just their checks; Print for a paper copy. Anything you marked paid before this update lands under "No check date assigned" until you undo and re-mark it.
+
 ## [2026-06-08 MST] Claude Code: Commission Item 3, stamp each payout with a Friday payroll check date
 
 By: Claude Code

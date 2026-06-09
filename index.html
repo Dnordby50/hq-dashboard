@@ -10272,6 +10272,7 @@ async function renderCommission() {
   if (!can('can_view_commission')) { root.innerHTML = '<div class="pec-empty">You do not have access to Commission.</div>'; return; }
   if (!state.commissionRange) state.commissionRange = commissionDefaultRange();
   if (!state.commissionSales) state.commissionSales = 'all';
+  if (!state.commissionTab) state.commissionTab = 'payouts';
   const { start, end } = state.commissionRange;
   const isAdm = isAdmin();
   let res;
@@ -10386,7 +10387,67 @@ async function renderCommission() {
   // selecting/editing a pending row never triggers navigation.
   const jobLink = (jobId, label) => jobId ? `<span class="com-joblink" data-job-id="${esc(jobId)}" style="cursor:pointer;color:var(--accent)">${esc(label)}</span>` : esc(label);
 
+  // ---- Payroll report: paid commission grouped by the Friday check date ----
+  // A check date shows when its payroll_date is in the selected range; paid lines
+  // with no payroll_date (e.g. paid before the payroll_date column existed) always
+  // show under a "No check date assigned" bucket so they are never silently hidden.
+  const isPayouts = state.commissionTab === 'payouts';
+  const NO_CHECK = '__none__';
+  const reportGroups = {};
+  for (const l of scoped) {
+    if (!l.paid) continue;
+    const key = l.payrollDate || NO_CHECK;
+    if (key !== NO_CHECK && !(l.payrollDate >= start && l.payrollDate <= end)) continue;
+    const g = (reportGroups[key] ||= { date: l.payrollDate, total: 0, bySp: {} });
+    g.total += l.paidAmount;
+    const sp = (g.bySp[l.sp] ||= { name: l.sp, total: 0, byJob: {} });
+    sp.total += l.paidAmount;
+    const jb = (sp.byJob[l.job_id] ||= { job_id: l.job_id, customer: l.customer, collected: 0, commission: 0 });
+    jb.collected += l.collected;
+    jb.commission += l.paidAmount;
+  }
+  const reportList = Object.entries(reportGroups)
+    .sort((a, b) => a[0] === NO_CHECK ? 1 : b[0] === NO_CHECK ? -1 : String(b[1].date).localeCompare(String(a[1].date)))
+    .map(([k, g]) => ({ key: k, isNone: k === NO_CHECK, ...g }));
+  const reportTotal = reportList.reduce((s, g) => s + g.total, 0);
+  const reportHTML = `
+    <div class="pec-card">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><div style="color:var(--muted);font-size:.72rem">Commission paid on check dates ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(reportTotal)}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Check dates</div><div style="font-size:1.5rem;font-weight:700">${reportList.filter(g => !g.isNone).length}</div></div>
+      </div>
+    </div>
+    ${reportList.map(g => `
+      <div class="pec-card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0">${g.isNone ? 'No check date assigned' : 'Check date ' + invFmtDate(g.date)}</h3>
+          <div style="font-size:1.2rem;font-weight:700">${invUSD(g.total)}</div>
+        </div>
+        ${g.isNone ? '<div style="color:var(--muted);font-size:.72rem;margin-bottom:6px">Paid before a payroll check date was recorded. Undo and re-mark these to assign a check date.</div>' : ''}
+        <table class="pec-table" style="margin-top:8px">
+          <thead><tr><th>Salesperson</th><th>Customer</th><th style="text-align:right">Collected</th><th style="text-align:right">Commission paid</th></tr></thead>
+          <tbody>
+            ${Object.values(g.bySp).sort((a, b) => b.total - a.total).map(sp => {
+              const jobs = Object.values(sp.byJob).sort((a, b) => b.commission - a.commission);
+              return jobs.map((jb, i) => `<tr class="nohover">
+                <td>${i === 0 ? `<strong>${esc(sp.name)}</strong>` : ''}</td>
+                <td>${jobLink(jb.job_id, jb.customer)}</td>
+                <td style="text-align:right">${invUSD(jb.collected)}</td>
+                <td style="text-align:right">${invUSD(jb.commission)}</td>
+              </tr>`).join('') + `<tr class="nohover" style="color:var(--muted)"><td></td><td style="text-align:right;font-size:.75rem">${esc(sp.name)} subtotal</td><td></td><td style="text-align:right"><strong>${invUSD(sp.total)}</strong></td></tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`).join('') || '<div class="pec-card"><div class="pec-empty">No commission paid out for the selected check dates. Widen the date range or mark a pay period paid first.</div></div>'}
+  `;
+
   root.innerHTML = `
+    <div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
+      <strong style="margin-right:6px">Commission</strong>
+      <button class="pec-btn ${isPayouts ? 'primary' : 'ghost'} sm" data-com-tab="payouts">Payouts</button>
+      <button class="pec-btn ${!isPayouts ? 'primary' : 'ghost'} sm" data-com-tab="report">Payroll report</button>
+      ${!isPayouts ? '<button class="pec-btn sm" id="comPrint" style="margin-left:auto">Print</button>' : ''}
+    </div>
     <div class="pec-toolbar" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
       <div class="pec-field" style="margin:0"><label>Pay period from</label><input type="date" id="comFrom" value="${esc(start)}"></div>
       <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="comTo" value="${esc(end)}"></div>
@@ -10398,6 +10459,7 @@ async function renderCommission() {
     </div>
     ${payoutMissing ? '<div class="pec-card" style="border-color:var(--warn)"><strong>Payout tracking not enabled yet.</strong> Apply the 2026-06-08_commission_payouts.sql migration to record paid-out commission. Until then, everything shows as Pending.</div>' : ''}
 
+    ${isPayouts ? `
     <div class="pec-card">
       <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
         <div><div style="color:var(--muted);font-size:.72rem">Paid out ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(periodTotal)}</div></div>
@@ -10476,12 +10538,15 @@ async function renderCommission() {
         ${paidInPeriod.length ? `<tfoot><tr class="li-total"><td colspan="5"><strong>Total paid this period</strong></td><td style="text-align:right"><strong>${invUSD(periodTotal)}</strong></td>${isAdm ? '<td></td>' : ''}</tr></tfoot>` : ''}
       </table>
     </div>
+    ` : reportHTML}
   `;
 
   // --- Wire toolbar ---
   $('comFrom').addEventListener('change', e => { state.commissionRange = { start: e.target.value, end }; renderCommission(); });
   $('comTo').addEventListener('change', e => { state.commissionRange = { start, end: e.target.value }; renderCommission(); });
   $('comSales').addEventListener('change', e => { state.commissionSales = e.target.value; renderCommission(); });
+  root.querySelectorAll('[data-com-tab]').forEach(b => b.addEventListener('click', () => { state.commissionTab = b.dataset.comTab; renderCommission(); }));
+  if ($('comPrint')) $('comPrint').addEventListener('click', () => window.print());
   root.querySelectorAll('[data-com-preset]').forEach(b => b.addEventListener('click', () => {
     const p = b.dataset.comPreset;
     if (p === 'month') state.commissionRange = { start: today.slice(0, 8) + '01', end: today };
