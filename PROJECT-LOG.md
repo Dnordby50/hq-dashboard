@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-08 MST] Claude Code: Commission Item 1, click a commission to open its job detail
+
+By: Claude Code
+
+First of the 4-item Commission enhancement batch (builds on the payout ledger, commit d14c897). Dylan wanted to click a commission and land on that job. Each commission line is driven by a pec_payments row whose job_id IS public.jobs.id, exactly what renderJobDetail expects, so no id translation is needed.
+
+Client (index.html, renderCommission): added job_id to each normalized commission line, a jobLink(jobId, label) helper that renders the customer name as an accent-colored link carrying data-job-id, and used it for the Customer cell in both the Pending payout queue and Paid this period sections. A single delegated handler on the view root navigates on click of any .com-joblink via the existing pattern (state.openJobId = jobId; switchView('jobs')). The link is wired for reps too (it runs before the admin-only return), so anyone with commission access can open a job. Navigation is link-only: the pending row's select checkbox (.com-pend) and editable amount input (.com-amt) live in other cells, so selecting or editing a payout never triggers navigation (no row-level click target to swallow those interactions).
+
+Verified the CRM module passes node --check.
+
+Files touched: index.html, PROJECT-LOG.md
+Next steps: Item 2 (sold-jobs rollup with a Deposit-collected column).
+Handoff to Cowork: None
+Handoff to Dylan: None
+
 ## [2026-06-08 MST] Cowork: scoped Commission enhancements (job links, signed-job + deposit column, Friday payroll report), wrote a Claude Code prompt
 
 By: Cowork
