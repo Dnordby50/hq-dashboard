@@ -12412,21 +12412,22 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
             const ev = eventFor(sd.job_id); if (!ev) return '';
             const job = ev.job;
             const revFull = Number(job.revenue || 0) > 0 ? '$' + Math.round(Number(job.revenue)).toLocaleString() : '';
-            // Run sheet: show every operational field per job (slot, customer, full
-            // revenue, address, system, job #, notes). Columns are tall, so nothing
-            // is truncated.
+            // Run sheet: stacked card per job (slot + customer, then price, system,
+            // address, crew lead, job #). Everything on its own line so nothing
+            // trails off to the side. Job notes intentionally omitted (Dylan,
+            // 2026-06-10: too much info on the schedule). Columns are tall, so
+            // nothing is truncated.
             const muted = 'font-size:.7rem;color:var(--rd-muted,var(--muted));margin-top:3px;line-height:1.35';
             return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(ev.tooltip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:8px 10px;margin-bottom:8px">
               <div style="display:flex;gap:6px;align-items:center">
                 ${sd.time_slot ? `<span class="bar-slot" style="font-size:.62rem;font-weight:700;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px">${esc(slotLabel(sd.time_slot))}</span>` : ''}
                 <strong style="font-size:.86rem;line-height:1.2;flex:1">${esc(ev.customer || '(no name)')}</strong>
-                ${revFull ? `<span style="font-size:.76rem;font-weight:700;color:var(--rd-ink,var(--text))">${esc(revFull)}</span>` : ''}
               </div>
+              ${revFull ? `<div style="font-size:.8rem;font-weight:700;color:var(--rd-ink,var(--text));margin-top:3px">${esc(revFull)}</div>` : ''}
+              <div style="${muted}">${ev.sys && ev.sys.name ? `<span class="pec-color-dot" style="background:${esc(ev.sys.color || '#888')}"></span>${esc(ev.sys.name)}` : 'No system yet'}</div>
               ${job.address ? `<div style="${muted}">${esc(job.address)}</div>` : ''}
-              ${ev.sys && ev.sys.name ? `<div style="${muted}">${esc(ev.sys.name)}</div>` : ''}
               ${job.crew_lead ? `<div style="${muted}">Lead: ${esc(job.crew_lead)}</div>` : ''}
               ${job.proposal_number ? `<div style="${muted}">#${esc(job.proposal_number)}</div>` : ''}
-              ${job.notes ? `<div style="${muted};white-space:pre-wrap">${esc(job.notes)}</div>` : ''}
             </div>`;
           }).join('');
           return `<div style="margin-bottom:10px">
