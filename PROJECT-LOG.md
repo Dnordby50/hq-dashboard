@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Claude Code: 1-week run sheet card restacked (notes removed, price stacked, system always shown)
+By: Claude Code
+Changed: The per-job card on the Job Schedule 1-week run sheet (renderScheduleCalendar week mode, the pec-runsheet-job markup) no longer shows job notes, and nothing sits to the side anymore. New stacked layout: slot chip + customer name on top, then the full price on its own bold line, then the system type with its color dot (or "No system yet" when the job has no production area to derive a system from, same fallback wording as the Pending cards), then address, crew lead, and job number. Week view only; the tooltip, click-to-open-schedule-modal behavior, and the 3-week and month views are untouched.
+Why: Dylan: too much info on the schedule. He wanted everything kept except the job notes, the price stacked instead of trailing off the right side of the card, and the system type clearly on the card.
+How the system line works: the schedule side derives a job's system from its first production area (areaSystem -> pec_prod_areas.system_type_id -> pec_prod_system_types), the same source the Pending cards and the calendar bar colors use. The line now always renders, so a job missing a system reads "No system yet" instead of silently omitting the row.
+Verification: node --check passes on all six inline script blocks. The pec-color-dot class is global (defined in the main PEC style block) and already renders in the Pending cards on the same view.
+Files touched: index.html
+Commit: 29f8f93
+Next steps: Dylan hard-refreshes the Job Schedule 1-week view and eyeballs a card.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-06-09 MST] Claude Code: visual cleanup of the estimate line items on the job detail card
 By: Claude Code
 Changed: Presentation only, inside renderAreas (#jobAreas). (1) The line price input moved from the bottom of each editable card up into the header row, right-aligned next to the area name with a muted $ prefix; the bottom "Line price $" field is gone. (2) Consecutive line-item cards now get a 3px accent top border, and the finalized table a 2px rule between rows, via two new CSS rules scoped under #jobAreas (line cards carry a new pec-line-card class so the Estimate header card keeps its normal border). (3) Scope text is condensed: the "Detail / scope of work" textarea went from 2 to 3 rows with overflow-y auto (still drag-resizable), and the finalized Detail cells (both area lines and change orders) wrap their text in a div capped at 84px with overflow-y auto, so a long pasted proposal scrolls instead of stretching the row.
