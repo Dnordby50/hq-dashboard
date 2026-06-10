@@ -18,6 +18,21 @@ Handoff to Dylan: None.
 
 ---
 
+## [2026-06-09 MST] Cowork: investigated job-detail line-item layout, wrote Claude Code prompt for the visual cleanup
+
+By: Cowork
+
+Dylan wants the estimate line items on the job detail card cleaned up: a sharper, bolder dividing line between line items, the line price moved up in line with the title row of each line, all titles and totals at the top of each line, and the scope-of-work text condensed into a smaller scrollable box.
+
+Investigated index.html, no code changed. The line items are the renderAreas area cards in #jobAreas: editable state ~9415-9444 (title row at top, Line price input at the BOTTOM at ~9437, Detail / scope of work textarea at ~9436), finalized read-only table ~9388-9413 where the Detail cell (~9400) prints the full pasted proposal text with no height cap, which is the main vertical-space eater on finalized jobs. The Issues / Notes card (~8798, #jobScope, backed by jobs.scope) is a different element and was explicitly excluded.
+
+Deliverable: one self-contained Claude Code prompt printed in chat. Presentation only: move the price input into the header row (keep data-area-price and listeners so the live total still works), heavier divider between cards and between finalized table rows scoped to #jobAreas, cap the scope/detail boxes with overflow-y auto in both editable and finalized states. No migration, no behavior change.
+
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pastes the prompt into Claude Code. This is independent of the status-unification and calendar-tasks prompts from earlier today and can run in any order relative to them.
+Handoff to Cowork: None
+Handoff to Dylan: Run the prompt in Claude Code whenever convenient.
+
 ## [2026-06-09 MST] Cowork: diagnosed job-status fragmentation, wrote Claude Code prompts (status unification + calendar crew tasks)
 
 By: Cowork
