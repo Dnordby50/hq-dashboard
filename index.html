@@ -4934,11 +4934,18 @@ function can(capability) {
 // the job-detail dropdown and the Pipeline kanban drag. onDone() runs after a
 // successful write so the caller can re-render. Deploy-safe: if status_manual_at
 // does not exist yet (migration not run), it falls back to a status-only write.
-function openStatusChangeModal(jobId, fromStatus, toStatus, onDone) {
+function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
   const pretty = s => (s || '').replace('_', ' ');
+  // When an admin hand-picks a NON-completed status for a job that is currently
+  // on the calendar, the pin protects it from background sweeps, but the next
+  // genuine calendar change (reschedule / clear) is a human action that takes
+  // over. Say so, so the choice does not look like it "did nothing" later.
+  const onCalNote = (ctx.onCalendar && ['signed', 'scheduled', 'in_progress'].includes(toStatus))
+    ? ' This job is on the calendar; it will hold until the next calendar change, which then takes over.'
+    : '';
   openModal(`
     <h3>Change status</h3>
-    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Set status from <strong>${esc(pretty(fromStatus))}</strong> to <strong>${esc(pretty(toStatus))}</strong>? This is a manual override, so the schedule will not change it back automatically.</div>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Set status from <strong>${esc(pretty(fromStatus))}</strong> to <strong>${esc(pretty(toStatus))}</strong>? This is a manual override, so the schedule will not change it back automatically.${onCalNote}</div>
     <div class="pec-field"><label>Reason (optional)</label><input id="statusChangeReason" placeholder="Why are you changing this?" autocomplete="off"></div>
     <div class="pec-modal-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -4963,6 +4970,8 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone) {
         const after = { status: toStatus, source: 'manual_override' };
         if (reason) after.reason = reason;
         await logJobActivity(jobId, 'status_change', { status: fromStatus }, after);
+        // Two-way sync: a manual move to Complete also completes the calendar row(s).
+        if (toStatus === 'completed') await mirrorProdStatus({ dealId: ctx.dealId, name: ctx.name, addr: ctx.addr }, 'completed');
         closeModal();
         showToast('Status updated', { ttl: 2000 });
         if (typeof onDone === 'function') onDone();
@@ -5332,49 +5341,48 @@ setInterval(() => {
   _pecProbeSession('wall-clock');
 }, 60 * 1000);
 
-// Client-side auto-status sweep. Flips public.jobs.status from 'scheduled' to
-// 'in_progress' for every job whose bridged pec_prod_jobs.install_date is
-// today. Runs at app boot from initAuth so any staffer opening the dashboard
-// on install morning sees the new status without waiting for the daily
-// scheduled function. Idempotent: only status='scheduled' rows flip.
-// Best-effort: errors logged to console, never block boot.
-async function runAutoProgressSweep() {
-  try {
-    if (!state.adminUser) return;
-    // Today in MST. Project is single-timezone per CLAUDE.md context; no DST.
-    const now = new Date();
-    const mst = new Date(now.getTime() - 7 * 60 * 60 * 1000);
-    const today = mst.toISOString().slice(0, 10);
-    const dueRes = await supabase.from('pec_prod_jobs')
-      .select('dripjobs_deal_id, install_date')
-      .eq('install_date', today)
-      .not('dripjobs_deal_id', 'is', null);
-    const due = dueRes.data || [];
-    if (!due.length) return;
-    const dealIds = [...new Set(due.map(r => r.dripjobs_deal_id))];
-    // select('*') (not an explicit column list) so reading status_manual_at is
-    // safe before the 2026-06-03 migration runs: the field is just undefined
-    // then, and the manual-override filter below is a no-op until it exists.
-    const jobsRes = await supabase.from('jobs')
-      .select('*')
-      .in('dripjobs_deal_id', dealIds)
-      .eq('status', 'scheduled');
-    // Skip rows an admin pinned by hand; automation must not override them.
-    const jobs = (jobsRes.data || []).filter(j => !j.status_manual_at);
-    for (const j of jobs) {
-      const upd = await supabase.from('jobs').update({ status: 'in_progress' }).eq('id', j.id);
-      if (upd.error) { console.warn('[pec] auto-progress update failed:', j.id, upd.error.message); continue; }
-      await logJobActivity(j.id, 'status_change', { status: 'scheduled' }, { status: 'in_progress', source: 'auto_install_day' });
-    }
-    if (jobs.length) console.log('[pec] auto-progress: flipped', jobs.length, 'job(s) to in_progress for', today);
-  } catch (e) {
-    console.warn('[pec] auto-progress sweep threw:', e);
-  }
-}
+// (runAutoProgressSweep removed 2026-06-09: it was one of six conflicting status
+// paths and fought runScheduleStatusSync over today-start jobs. The unified
+// sweep + deriveJobStatus now yields in_progress for those jobs in one place.)
 
 // Phoenix-local today (UTC-7, no DST per project context).
 function mstTodayIso() {
   return new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// THE one canonical job-status rule. Every status derivation path (the schedule
+// sweep, the live calendar sync, the job-detail render, the Pipeline display,
+// and the DB trigger 2026-06-09_unified_status_trigger.sql) must produce the
+// SAME answer, so a job reads identically everywhere. This is the client copy;
+// the trigger is the path-independent server copy of the exact same machine.
+//
+// Inputs (all ISO YYYY-MM-DD strings except the two flags):
+//   start        EARLIEST scheduled day = min(install_date, schedule days)
+//   end          LAST scheduled day     = max(install_date, schedule days)
+//   today        Phoenix-local today (mstTodayIso())
+//   storedStatus the current jobs.status
+//   manualPinned !!jobs.status_manual_at (an admin set this by hand)
+//
+// Returns the TARGET status, or null meaning "leave the stored status alone".
+// null is used by BOTH the persist paths (skip the write) and the display
+// fallback (render the stored value), so they can never disagree.
+//
+// Rules (decided by Dylan):
+//   1. 'completed' never auto-downgrades.
+//   2. A manual pin wins; only a genuine human calendar action (or the DB
+//      trigger on a real prod-row change) clears it -- background sweeps never do.
+//   3. No schedule -> 'signed'. start > today -> 'scheduled'.
+//      start <= today <= end -> 'in_progress'. today > end -> 'completed'
+//      (auto-complete the day AFTER the LAST scheduled day, not the first).
+// Callers stamp completed_date = end themselves; this stays pure (status only).
+function deriveJobStatus({ start, end, today, storedStatus, manualPinned }) {
+  if (storedStatus === 'completed') return null;   // rule 1
+  if (manualPinned) return null;                   // rule 2
+  if (!start) return 'signed';                     // rule 3: not on the calendar
+  const last = end || start;                       // end always exists if start does; defensive
+  if (start > today) return 'scheduled';
+  if (today <= last) return 'in_progress';         // start <= today <= end
+  return 'completed';                              // today > end
 }
 
 // Fallback bridge keys. The only DB link between public.jobs and the schedule
@@ -5389,26 +5397,57 @@ function _nameAddrKey(name, addr) {
   return (n && a) ? n + '|' + a : ''; // require BOTH so we never match on a blank
 }
 
+// Two-way sync, CRM -> calendar. Mirror a status onto the bridged production
+// row(s) so the schedule agrees with the Pipeline / job detail. The reliable
+// bridge is dripjobs_deal_id; manual calendar entries have none, so fall back to
+// the same normalized name+address key the sweep uses. Best-effort: the public.
+// jobs write is the source of truth, this is a convenience mirror, so every
+// error is swallowed. Mirroring 'completed' is trigger-safe: prod 'completed'
+// maps back to CRM 'completed', and the trigger's status<>'completed' guard means
+// it will not re-touch (or unpin) the job we just set.
+async function mirrorProdStatus({ dealId, name, addr } = {}, prodStatus) {
+  try {
+    if (dealId) {
+      await withFreshWriteRetry(() => supabase.from('pec_prod_jobs').update({ status: prodStatus }).eq('dripjobs_deal_id', dealId), { label: 'prod-status-mirror' });
+      return;
+    }
+    const key = _nameAddrKey(name, addr);
+    if (!key) return; // no deal id and no usable name+address -> nothing to mirror
+    const res = await supabase.from('pec_prod_jobs').select('id,customer_name,address').is('dripjobs_deal_id', null);
+    if (res.error) return;
+    for (const p of res.data || []) {
+      if (_nameAddrKey(p.customer_name, p.address) !== key) continue;
+      await supabase.from('pec_prod_jobs').update({ status: prodStatus }).eq('id', p.id);
+    }
+  } catch (_) {}
+}
+
 // Propagate a production-calendar change to the bridged public.jobs row(s) so
 // the CRM status (Pipeline, Jobs list, job detail) matches the calendar right
-// away. The 2026-06-04 status-sync DB trigger does the same server-side as a
+// away. The 2026-06-09 status-sync DB trigger does the same server-side as a
 // path-independent backstop; this client write gives instant feedback and
-// attributes the actor in audit_log. Calendar wins: it clears status_manual_at.
-// Never downgrades a completed job. No-op for manual prod-only jobs (no deal id).
-async function syncPublicJobStatusFromSchedule(prodJob, { cleared = false } = {}) {
+// attributes the actor in audit_log. This is a GENUINE human calendar action,
+// the one case that clears a manual pin (calendar wins) -- so it derives with
+// manualPinned:false and writes status_manual_at:null. Uses deriveJobStatus, so
+// it produces the exact same status as the sweep and the trigger; completed is
+// never downgraded. No-op for manual prod-only jobs (no deal id).
+// Pass the span of the just-edited schedule: start = earliest day, end = last
+// day. On the clear path pass { cleared:true } (no span -> 'signed').
+async function syncPublicJobStatusFromSchedule(dealId, { cleared = false, start = null, end = null } = {}) {
   try {
-    const dealId = prodJob && prodJob.dripjobs_deal_id;
     if (!dealId) return;
-    const target = cleared
-      ? 'signed'
-      : (prodJob.install_date && prodJob.install_date <= mstTodayIso() ? 'in_progress' : 'scheduled');
-    const res = await supabase.from('jobs').select('id,status').eq('dripjobs_deal_id', dealId).is('archived_at', null);
+    const today = mstTodayIso();
+    const res = await supabase.from('jobs').select('id,status,completed_date').eq('dripjobs_deal_id', dealId).is('archived_at', null);
     if (res.error) { console.warn('[pec] schedule status sync lookup:', res.error.message); return; }
     for (const j of res.data || []) {
-      if (j.status === 'completed' || j.status === target) continue;
-      let upd = await supabase.from('jobs').update({ status: target, status_manual_at: null }).eq('id', j.id);
+      const target = deriveJobStatus({ start: cleared ? null : start, end: cleared ? null : end, today, storedStatus: j.status, manualPinned: false });
+      if (!target || j.status === target) continue;
+      const patch = { status: target, status_manual_at: null };
+      if (target === 'completed' && !j.completed_date) patch.completed_date = end || start;
+      let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
       if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
-        upd = await supabase.from('jobs').update({ status: target }).eq('id', j.id); // pre-migration fallback
+        const { status_manual_at, ...rest } = patch; // pre-migration fallback
+        upd = await supabase.from('jobs').update(rest).eq('id', j.id);
       }
       if (upd.error) { console.warn('[pec] schedule status sync update:', upd.error.message); continue; }
       await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule' });
@@ -5423,13 +5462,14 @@ async function syncPublicJobStatusFromSchedule(prodJob, { cleared = false } = {}
 // Dashboard, job detail) and not just on the view you happen to open or the
 // action you happen to take. syncPublicJobStatusFromSchedule above handles live
 // scheduling actions; this catches jobs that were scheduled earlier (or via a
-// path that did not call it) and were left stuck on 'signed'. Rules: a job with
-// any scheduled date is 'in_progress' if its earliest date is today/past (MST)
-// else 'scheduled'; a job with no schedule is 'signed'. NEVER touches a job an
-// admin pinned by hand (status_manual_at) -- that is the manual override via the
-// pipeline drag or the job-detail dropdown, which wins until the calendar
-// changes again (that path clears status_manual_at). Completed is never changed.
-// Best-effort; throttled so repeated view opens do not re-sweep.
+// path that did not call it) and were left stuck on 'signed'. The rule lives in
+// deriveJobStatus (the single canonical machine): no schedule -> 'signed';
+// start in the future -> 'scheduled'; start <= today <= end -> 'in_progress';
+// today past the LAST day -> 'completed'. NEVER touches a job an admin pinned by
+// hand (status_manual_at) -- that is the manual override via the pipeline drag
+// or the job-detail dropdown, which wins until the calendar changes again (only
+// that path clears the pin). Completed is never changed. Best-effort; throttled
+// so repeated view opens do not re-sweep.
 let _schedSyncAt = 0;
 async function runScheduleStatusSync({ force = false } = {}) {
   try {
@@ -5449,43 +5489,44 @@ async function runScheduleStatusSync({ force = false } = {}) {
     if (pjRes.error || jobsRes.error) return;
     const daysByProd = {};
     for (const d of (dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
-    // Earliest scheduled date by deal id AND by normalized name+address. The
-    // name+address map aggregates every prod row sharing the same customer+
-    // address (almost always the same job split across a webhook row + a manual
-    // row), which is exactly what we want to reunite.
-    const startByDeal = {}, startByNA = {};
-    const consider = (mapKey, map, ds) => {
+    // EARLIEST and LATEST scheduled date by deal id AND by normalized name+
+    // address. The name+address maps aggregate every prod row sharing the same
+    // customer+address (almost always the same job split across a webhook row +
+    // a manual row), which is exactly what we want to reunite. We need both ends
+    // of the span: deriveJobStatus completes a job only the day AFTER its LAST
+    // scheduled day, so the latest date matters as much as the earliest.
+    const startByDeal = {}, startByNA = {}, endByDeal = {}, endByNA = {};
+    const consider = (mapKey, startMap, endMap, ds) => {
       if (!mapKey || !ds.length) return;
-      const earliest = ds.slice().sort()[0];
-      if (!map[mapKey] || earliest < map[mapKey]) map[mapKey] = earliest;
+      const sorted = ds.slice().sort();
+      const earliest = sorted[0], latest = sorted[sorted.length - 1];
+      if (!startMap[mapKey] || earliest < startMap[mapKey]) startMap[mapKey] = earliest;
+      if (!endMap[mapKey] || latest > endMap[mapKey]) endMap[mapKey] = latest;
     };
     for (const p of (pjRes.data || [])) {
       const ds = [];
       if (p.install_date) ds.push(p.install_date);
       for (const sd of (daysByProd[p.id] || [])) ds.push(sd);
       if (!ds.length) continue;
-      if (p.dripjobs_deal_id) consider(p.dripjobs_deal_id, startByDeal, ds);
-      consider(_nameAddrKey(p.customer_name, p.address), startByNA, ds);
+      if (p.dripjobs_deal_id) consider(p.dripjobs_deal_id, startByDeal, endByDeal, ds);
+      consider(_nameAddrKey(p.customer_name, p.address), startByNA, endByNA, ds);
     }
     let n = 0, scheduledTotal = 0, blocked = 0, firstErr = '';
     for (const j of (jobsRes.data || [])) {
-      const start = (j.dripjobs_deal_id && startByDeal[j.dripjobs_deal_id])
-        || startByNA[_nameAddrKey(j.customers && j.customers.name, j.address)]
-        || null;
+      const naKey = _nameAddrKey(j.customers && j.customers.name, j.address);
+      const start = (j.dripjobs_deal_id && startByDeal[j.dripjobs_deal_id]) || startByNA[naKey] || null;
+      const end = (j.dripjobs_deal_id && endByDeal[j.dripjobs_deal_id]) || endByNA[naKey] || null;
       if (start) scheduledTotal++;
-      // Calendar wins: a job that is ON the schedule must not read as 'signed',
-      // even if it was pinned by hand (a stale manual override). For any other
-      // status we honor the manual pin.
-      const onCalContradiction = start && j.status === 'signed';
-      if (j.status_manual_at && !onCalContradiction) continue; // honor manual pin
-      // Schedule is the source of truth: future/today -> scheduled; the date has
-      // PASSED -> completed; nothing on the calendar -> signed.
-      const target = !start ? 'signed' : (start < today ? 'completed' : 'scheduled');
-      if (j.status === target) continue;
-      const patch = onCalContradiction ? { status: target, status_manual_at: null } : { status: target };
-      // Stamp completed_date (to the install date) when auto-completing, so AR
-      // aging is correct -- mirrors markJobComplete. Only when not already set.
-      if (target === 'completed' && !j.completed_date) patch.completed_date = start;
+      // ONE rule for everyone: deriveJobStatus. Background sweeps NEVER clear a
+      // manual pin (it returns null when pinned -> we leave the job alone); only
+      // a genuine human calendar action or the DB trigger clears it. null also
+      // covers "already completed" and any no-op.
+      const target = deriveJobStatus({ start, end, today, storedStatus: j.status, manualPinned: !!j.status_manual_at });
+      if (!target || j.status === target) continue;
+      const patch = { status: target };
+      // Stamp completed_date (to the LAST scheduled day) when auto-completing, so
+      // AR aging is correct -- mirrors markJobComplete. Only when not already set.
+      if (target === 'completed' && !j.completed_date) patch.completed_date = end || start;
       let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
       if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
         const { status_manual_at, ...rest } = patch; // pre-migration fallback
@@ -5616,12 +5657,12 @@ async function initAuth() {
   // re-bind it onto a rebuilt client (and drop the dead client's subscription).
   wireAuthListener();
   if (state.session) await resolveAdminUser();
-  // Fire-and-forget the install-day auto-progress sweep. Best-effort: any
-  // Reconcile every bridged job's status to the calendar (source of truth).
+  // Fire-and-forget: reconcile every bridged job's status to the calendar (the
+  // single source of truth) via deriveJobStatus. Best-effort, failures swallowed
+  // inside, so it cannot delay or break the first paint. This unified sweep also
+  // yields in_progress for today-start jobs, so the old runAutoProgressSweep is
+  // gone (it was one of the six conflicting paths).
   runScheduleStatusSync();
-  // failure is swallowed inside runAutoProgressSweep() so it cannot delay
-  // or break the first paint.
-  runAutoProgressSweep();
 }
 
 async function resolveAdminUser() {
@@ -8165,7 +8206,7 @@ function deriveScheduleState(prodJobRows, scheduleDayRows, crews) {
   const crewId = (prodJob && prodJob.crew_id) || (days[0] && days[0].crew_id) || null;
   const crewsById = Array.isArray(crews) ? Object.fromEntries(crews.map(c => [c.id, c])) : (crews || {});
   const crewName = crewId && crewsById[crewId] ? (crewsById[crewId].name || '') : '';
-  return { prodJob, isScheduled: scheduledDates.length > 0, scheduledDates, installDate: scheduledDates[0] || null, crewId, crewName };
+  return { prodJob, isScheduled: scheduledDates.length > 0, scheduledDates, installDate: scheduledDates[0] || null, lastDate: scheduledDates[scheduledDates.length - 1] || null, crewId, crewName };
 }
 // Header label for a derived schedule state: "Install <date>", a comma list
 // (<=3 days), or a range, plus the crew. Returns "Unscheduled" when not on the
@@ -8534,20 +8575,19 @@ async function renderJobDetailInner(id) {
   const isScheduled = scheduleState.isScheduled;
   const jobInstallDate = scheduleState.installDate; // earliest scheduled date (urgency + header)
   const scheduleLabel = scheduleLabelFromState(scheduleState);
-  // Auto-sync the job's status to the real schedule (only with a reliable
-  // bridge). 'completed' is never auto-changed. On schedule -> in_progress if
-  // the first install day is today/past (MST), else scheduled. Not on schedule
-  // -> signed, but never downgrade a job that's already in_progress. Same
-  // today-in-MST basis as runAutoProgressSweep.
+  // Auto-sync the job's status to the real schedule via deriveJobStatus -- the
+  // ONE canonical rule the sweep, the live calendar sync, the Pipeline, and the
+  // DB trigger all share, so the detail card never disagrees with them. Only run
+  // it when we have a reliable bridge; otherwise leave the stored status alone
+  // (we cannot see this job's calendar). deriveJobStatus returns null for "leave
+  // alone": already completed, an admin's manual pin (status_manual_at), or no
+  // change. So a hand-set status sticks here too (this is what made the dropdown
+  // appear to "do nothing" before the pin existed).
   const statusBeforeSync = job.status;
   let statusTarget = job.status;
-  // status_manual_at means an admin set this status by hand; the schedule must
-  // not override it (this is what made the dropdown appear to "do nothing").
-  // Undefined before the migration runs, so behaviour is unchanged until then.
-  if (scheduleBridged && job.status !== 'completed' && !job.status_manual_at) {
-    const mstTodayISO = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
-    if (isScheduled) statusTarget = (jobInstallDate && jobInstallDate <= mstTodayISO) ? 'in_progress' : 'scheduled';
-    else if (job.status !== 'in_progress') statusTarget = 'signed';
+  if (scheduleBridged) {
+    const derived = deriveJobStatus({ start: jobInstallDate, end: scheduleState.lastDate, today: mstTodayIso(), storedStatus: job.status, manualPinned: !!job.status_manual_at });
+    if (derived) statusTarget = derived;
   }
   if (statusTarget !== job.status) job.status = statusTarget; // reflect immediately in the Status dropdown
   // jobs.line_items is now DERIVED from the estimate lines (areas) on save:
@@ -8860,9 +8900,13 @@ async function renderJobDetailInner(id) {
   // when the schedule implied a different status. Idempotent full-value update,
   // so the wedge-safe recover+retry helper is appropriate. Non-blocking.
   if (statusTarget !== statusBeforeSync) {
+    // Stamp completed_date (to the LAST scheduled day) when auto-completing, so
+    // AR aging matches the sweep and markJobComplete. Only when not already set.
+    const syncPatch = { status: statusTarget };
+    if (statusTarget === 'completed' && !job.completed_date) syncPatch.completed_date = scheduleState.lastDate || jobInstallDate;
     (async () => {
       try {
-        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ status: statusTarget }).eq('id', id), { label: 'status-schedule-sync' });
+        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update(syncPatch).eq('id', id), { label: 'status-schedule-sync' });
         if (upd.error) throw upd.error;
         try { await logJobActivity(id, 'status_change', { status: statusBeforeSync }, { status: statusTarget, source: 'schedule_sync' }); } catch (_) {}
       } catch (e) { console.warn('[pec] status schedule-sync failed', e); }
@@ -8917,7 +8961,9 @@ async function renderJobDetailInner(id) {
       const fromStatus = job.status;
       if (newStatus === fromStatus) return;
       e.target.value = fromStatus;
-      openStatusChangeModal(id, fromStatus, newStatus, () => renderJobDetail(id));
+      openStatusChangeModal(id, fromStatus, newStatus, () => renderJobDetail(id), {
+        dealId: job.dripjobs_deal_id, name: job.customers?.name, addr: job.address, onCalendar: scheduleState.isScheduled,
+      });
     });
   }
   // Job Complete button (open to staff, not just admins -- Dusty / crew lead).
@@ -11636,9 +11682,15 @@ function openPipelineMoveModal(row, target, onDone) {
   const summary = statusChanges
     ? `Set status from <strong>${esc(pretty(row.status))}</strong> to <strong>${esc(pretty(target.status))}</strong>${colorsChanges ? ` and mark colors <strong>${target.colors ? 'confirmed' : 'not confirmed'}</strong>` : ''}?`
     : `Mark colors <strong>${target.colors ? 'confirmed' : 'not confirmed'}</strong> for this job?`;
+  // Same on-calendar note as the job-detail dropdown: a manual move to a non-
+  // completed status holds (the pin blocks sweeps) until the next genuine
+  // calendar change takes over.
+  const onCalNote = (statusChanges && row.installStart && ['signed', 'scheduled', 'in_progress'].includes(target.status))
+    ? ' This job is on the calendar; it will hold until the next calendar change, which then takes over.'
+    : '';
   openModal(`
     <h3>Move to ${esc(target.title)}</h3>
-    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">${summary} This is a manual override, so the schedule will not change it back automatically.</div>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">${summary} This is a manual override, so the schedule will not change it back automatically.${onCalNote}</div>
     <div class="pec-field"><label>Reason (optional)</label><input id="pipelineMoveReason" placeholder="Why are you moving this?" autocomplete="off"></div>
     <div class="pec-modal-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -11666,6 +11718,8 @@ function openPipelineMoveModal(row, target, onDone) {
           const after = { status: target.status, source: 'pipeline_drag' };
           if (reason) after.reason = reason;
           await logJobActivity(row.id, 'status_change', { status: row.status }, after);
+          // Two-way sync: dragging to Project Complete also completes the calendar row(s).
+          if (target.status === 'completed') await mirrorProdStatus({ dealId: row.dealId, name: row.customerName, addr: row.address }, 'completed');
         }
         if (colorsChanges) {
           await logJobActivity(row.id, 'save', { colors_confirmed: curColors }, { colors_confirmed: target.colors });
@@ -11689,7 +11743,7 @@ async function loadPipelineData() {
     supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
     // pec_job_ar carries money + status but not colors_confirmed_at, archived_at,
     // or lead_source, so pull those from jobs (lead_source lives on customers).
-    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,address,customers(lead_source)'),
+    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,address,status_manual_at,customers(lead_source)'),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
   ]), { label: 'loadPipelineData' });
   if (arRes.error) throw new Error(arRes.error.message);
@@ -11749,18 +11803,18 @@ async function loadPipelineData() {
     const extra = extraById[r.id] || {};
     if (extra.archived_at) continue; // pec_job_ar keeps archived rows; drop them here
     const inst = installInfo(r.dripjobs_deal_id, r.customer_name, extra.address);
-    // Reconcile the pipeline with the schedule calendar: a job that is ON the
-    // calendar but still stored as 'signed' belongs in Scheduled (future/today)
-    // or Project Complete (its date has passed). runScheduleStatusSync persists
-    // this; this display rule covers the brief window before that write lands.
-    // Only 'signed' is reconciled; any other status is left exactly as stored.
-    let effectiveStatus = r.status;
-    if (inst.start && r.status === 'signed') {
-      effectiveStatus = (inst.start < mstToday) ? 'completed' : 'scheduled';
-    }
+    // Reconcile the pipeline column with the schedule calendar using the SAME
+    // canonical rule (deriveJobStatus) the sweep will persist, so the column the
+    // user sees always matches where the job is about to land. This covers the
+    // brief window before runScheduleStatusSync writes the value. A manual pin
+    // (status_manual_at) or a completed job returns null -> show the stored value.
+    const derived = deriveJobStatus({ start: inst.start, end: inst.end, today: mstToday, storedStatus: r.status, manualPinned: !!extra.status_manual_at });
+    const effectiveStatus = derived || r.status;
     rows.push({
       id: r.id,
       customerName: r.customer_name || '(no name)',
+      dealId: r.dripjobs_deal_id || null, // bridge to pec_prod_jobs for the completed mirror
+      address: extra.address || '',       // name+address fallback bridge for the mirror
       status: r.status,
       effectiveStatus,
       colorsConfirmedAt: extra.colors_confirmed_at || null,
@@ -12671,9 +12725,10 @@ function openScheduleModal(jobId) {
               if (areaUpd.error) return errEl.textContent = 'System update failed: ' + areaUpd.error.message;
             }
           }
-          // Calendar -> CRM status: reflect 'scheduled' (or 'in_progress' if the
-          // first day is today/past) on the bridged public.jobs row immediately.
-          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: job.dripjobs_deal_id, install_date: sortedIso[0] });
+          // Calendar -> CRM status: reflect the schedule on the bridged
+          // public.jobs row immediately (scheduled / in_progress / completed per
+          // deriveJobStatus). Pass the full span so the LAST day drives completion.
+          await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, { start: sortedIso[0], end: sortedIso[sortedIso.length - 1] });
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -12695,7 +12750,7 @@ function openScheduleModal(jobId) {
           const upd = await supabase.from('pec_prod_jobs').update({ install_date: null, status: 'unscheduled', crew_id: null }).eq('id', job.id);
           if (upd.error) return errEl.textContent = upd.error.message;
           // Calendar -> CRM status: clearing the schedule moves the CRM job back to 'signed'.
-          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: job.dripjobs_deal_id }, { cleared: true });
+          await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, { cleared: true });
         } catch (err) {
           errEl.textContent = 'Clear failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -13243,7 +13298,7 @@ function openAddJobModal() {
           // null, no public.jobs row); for a rescheduled DripJobs job it syncs
           // the bridged CRM row. state.prodJobs carries dripjobs_deal_id.
           const prodForSync = (state.prodJobs || []).find(p => p.id === jobId) || {};
-          await syncPublicJobStatusFromSchedule({ dripjobs_deal_id: prodForSync.dripjobs_deal_id, install_date: sortedIso[0] });
+          await syncPublicJobStatusFromSchedule(prodForSync.dripjobs_deal_id, { start: sortedIso[0], end: sortedIso[sortedIso.length - 1] });
 
           closeModal();
           showToast(`${draft.existing_job_id ? 'Rescheduled' : 'Added'} job for ${esc(draft.customer_name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
