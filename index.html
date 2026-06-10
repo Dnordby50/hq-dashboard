@@ -461,6 +461,13 @@ textarea{resize:vertical;min-height:60px}
 .pec-btn.ghost{background:transparent}
 .pec-btn.sm{padding:4px 10px;font-size:.7rem}
 .pec-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px}
+/* Job-detail estimate: heavy divider between consecutive line-item cards only.
+   Scoped to #jobAreas + .pec-line-card so the Estimate header card (also a
+   .pec-card inside #jobAreas) and every other card in the app keep the normal
+   1px border. The finalized table gets the same clarity with a 2px rule
+   between rows (on top of the standard 1px td border-bottom). */
+#jobAreas .pec-line-card + .pec-line-card{border-top:3px solid var(--accent)}
+#jobAreas .pec-table tbody tr + tr td{border-top:2px solid rgba(129,140,248,.45)}
 .pec-card h3{font-family:var(--sans);font-weight:700;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
 .pec-grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .pec-stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
@@ -9397,12 +9404,12 @@ async function renderJobDetailInner(id) {
                 <td>${esc(a.name || (idx === 0 ? 'Main Area' : `Area ${idx+1}`))}</td>
                 <td>${esc(sysNameFor(a.system_type_id))}</td>
                 <td style="text-align:right">${a.sqft !== '' && a.sqft != null ? esc(a.sqft) : '—'}</td>
-                <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(a.description || '')}</td>
+                <td style="font-size:.8rem;color:var(--muted)"><div style="max-height:84px;overflow-y:auto;white-space:pre-wrap">${esc(a.description || '')}</div></td>
                 <td style="text-align:right">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')}
               ${changeOrderLines.map(l => `<tr class="nohover">
                 <td>${esc(l.name || '—')} <span class="pec-age pec-age-yellow">Change order</span></td>
                 <td>—</td><td style="text-align:right">—</td>
-                <td style="white-space:pre-wrap;font-size:.8rem;color:var(--muted)">${esc(l.description || '')}</td>
+                <td style="font-size:.8rem;color:var(--muted)"><div style="max-height:84px;overflow-y:auto;white-space:pre-wrap">${esc(l.description || '')}</div></td>
                 <td style="text-align:right">${invUSD(lineItemPrice(l))}</td></tr>`).join('')}
             </tbody>
           </table></div>
@@ -9419,12 +9426,16 @@ async function renderJobDetailInner(id) {
         ? (slots.map(s => slotHtml(a, idx, s)).join('') || '<div style="margin-top:10px;color:var(--muted);font-size:.78rem">This system has no recipe slots yet — use Custom options below, or add slots in Material Catalog.</div>')
         : '';
       return `
-        <div class="pec-card">
+        <div class="pec-card pec-line-card">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
             <input data-area-name="${idx}" value="${esc(a.name)}" placeholder="${placeholderName}" style="flex:1;min-width:120px;font-size:1rem;font-weight:600">
             <div style="display:flex;gap:6px;align-items:center">
               ${idx > 0 ? `<button type="button" class="pec-btn ghost sm" data-area-mirror="${idx}" title="Copy the system + colors from line 1">Same as line 1</button>` : ''}
               ${areas.length > 1 ? `<button type="button" class="pec-btn ghost sm" data-area-remove="${idx}">Remove</button>` : ''}
+            </div>
+            <div style="display:flex;gap:4px;align-items:center" title="Line price">
+              <span style="color:var(--muted);font-weight:600">$</span>
+              <input type="number" step="0.01" data-area-price="${idx}" value="${esc(a.price)}" placeholder="0.00" style="width:120px;text-align:right;font-weight:600">
             </div>
           </div>
           <div class="pec-row-2">
@@ -9433,8 +9444,7 @@ async function renderJobDetailInner(id) {
           </div>
           ${slotsBody}
           ${customHtml(a, idx)}
-          <div class="pec-field" style="margin-top:12px"><label>Detail / scope of work</label><textarea data-area-desc="${idx}" rows="2" placeholder="What's included in this line (paste from the proposal)" style="width:100%;resize:vertical">${esc(a.description)}</textarea></div>
-          <div class="pec-field" style="margin-top:8px;max-width:200px"><label>Line price $</label><input type="number" step="0.01" data-area-price="${idx}" value="${esc(a.price)}" placeholder="0.00"></div>
+          <div class="pec-field" style="margin-top:12px"><label>Detail / scope of work</label><textarea data-area-desc="${idx}" rows="3" placeholder="What's included in this line (paste from the proposal)" style="width:100%;resize:vertical;overflow-y:auto">${esc(a.description)}</textarea></div>
         </div>`;
     }).join('') + `
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
