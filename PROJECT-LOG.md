@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-09 MST] Claude Code: visual cleanup of the estimate line items on the job detail card
+By: Claude Code
+Changed: Presentation only, inside renderAreas (#jobAreas). (1) The line price input moved from the bottom of each editable card up into the header row, right-aligned next to the area name with a muted $ prefix; the bottom "Line price $" field is gone. (2) Consecutive line-item cards now get a 3px accent top border, and the finalized table a 2px rule between rows, via two new CSS rules scoped under #jobAreas (line cards carry a new pec-line-card class so the Estimate header card keeps its normal border). (3) Scope text is condensed: the "Detail / scope of work" textarea went from 2 to 3 rows with overflow-y auto (still drag-resizable), and the finalized Detail cells (both area lines and change orders) wrap their text in a div capped at 84px with overflow-y auto, so a long pasted proposal scrolls instead of stretching the row.
+Why: Dylan wanted the line items easier to scan: everything identifying a line (name, price, sqft, system) at the top, an obvious dividing line between lines, and long proposal text no longer blowing up the card or table height.
+How it stays safe: the price input keeps the exact same data-area-price attribute, and the input listeners select by attribute anywhere in the card, so moving the markup changes nothing about behavior; the live Estimate total and the no-re-render-while-typing pattern both still work. All new CSS is scoped under #jobAreas, and the Issues/Notes card sits outside #jobAreas, so it (plus the work order, invoice, portal, and Add Job modal) cannot be affected.
+Verification: node --check passes on all six inline script blocks. Greps confirm exactly one data-area-price in the markup (header row) with the listener untouched, the bottom price field removed, and the finalized estimate table is the only .pec-table inside #jobAreas (the budget table renders into #jobBudget), so the row-divider rule cannot leak.
+Files touched: index.html
+Commit: 8ec5c2d
+Next steps: Dylan eyeballs an editable job with 2+ lines and a finalized job with a long pasted proposal on the live deploy.
+Handoff to Cowork: None (no migration, no external systems).
+Handoff to Dylan: None.
+
+---
+
 ## [2026-06-09 MST] Claude Code: collapsed six conflicting job-status paths into ONE canonical rule (deriveJobStatus + new trigger)
 By: Claude Code
 Changed: Added one pure client function, deriveJobStatus({ start, end, today, storedStatus, manualPinned }) (index.html, just below mstTodayIso), that returns the target status or null for "leave alone". Routed all four client status paths through it: runScheduleStatusSync (now computes the LAST scheduled day, not just the first, and completes a job only the day AFTER its last day), syncPublicJobStatusFromSchedule (now takes the schedule span and is the one path that clears a manual pin, since a live calendar action is a genuine human change), the job-detail render sync, and the Pipeline effectiveStatus display fallback (now covers every stored status, not just 'signed', so the column always matches what the sweep will persist). Deleted runAutoProgressSweep and its boot call (it fought the sweep over today-start jobs; the unified rule yields in_progress for them in one place). Added a two-way mirror: moving a job to Project Complete via the job-detail dropdown or a Pipeline drag now also sets the bridged pec_prod_jobs row(s) to completed (new mirrorProdStatus helper, deal-id bridge first, name+address fallback). Both manual modals now warn, when an admin hand-picks a non-completed status for a job that is on the calendar, that the next calendar change will take over. New migration supabase/migrations/2026-06-09_unified_status_trigger.sql replaces pec_prod_jobs_sync_public_status with the SAME state machine (start/end from the prod row's install_date + its schedule days), stamping completed_date and still clearing the pin only on a genuine prod-row change.
