@@ -11626,13 +11626,14 @@ function sameDay(a, b) {
 // two views could leave a shared slot wrong-shaped. Each view sorts prodJobs as
 // it needs (renderSchedule filters pending; renderJobCosting sorts recent-first).
 async function loadProdCore() {
-  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes] = await withFreshSession(() => Promise.all([
+  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes, tasksRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
     cachedSystemTypes(),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
+    supabase.from('pec_prod_tasks').select('*').order('task_date'),
   ]), { label: 'loadProdCore' });
   // Drop archived jobs (archived from the CRM job-detail Delete box) from every
   // production surface (Schedule, Pending, Costing) that reads state.prodJobs.
@@ -11643,6 +11644,11 @@ async function loadProdCore() {
   state.systemTypes = sysRes.data || [];
   state.crews = crewsRes.data || [];
   state.salesTeam = salesRes.data || [];
+  // Crew tasks degrade gracefully until the 2026-06-10 migration runs in PROD:
+  // a missing table comes back as an error INSIDE the result object (supabase-js
+  // never rejects), so the schedule still renders, just with zero task chips.
+  state.prodTasks = tasksRes.error ? [] : (tasksRes.data || []);
+  if (tasksRes.error) console.warn('[pec] pec_prod_tasks not available yet:', tasksRes.error.message);
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
@@ -12186,6 +12192,7 @@ async function renderSchedule() {
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'primary' : 'ghost'}" id="pecSchedModeWeek" style="border:none;border-radius:0">Week</button>
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'ghost' : 'primary'}" id="pecSchedMode3" style="border:none;border-radius:0">3 weeks</button>
           </div>
+          <button class="pec-btn" id="pecSchedAddTask" style="margin-right:8px">+ Add Task</button>
           <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
         </div>
         <div id="pecSchedCalendar"></div>
@@ -12194,6 +12201,7 @@ async function renderSchedule() {
   `;
 
   $('pecSchedAddJob').addEventListener('click', () => openAddJobModal());
+  $('pecSchedAddTask').addEventListener('click', () => openTaskModal(null));
   $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
   $('pecSchedPrev').addEventListener('click', () => {
     state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), -7));
@@ -12238,6 +12246,22 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   const daysByJob = {};
   for (const d of state.scheduleDays) (daysByJob[d.job_id] ||= []).push(d);
   for (const k in daysByJob) daysByJob[k].sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
+
+  // Crew tasks, grouped by day. task_date is an opaque YYYY-MM-DD string and
+  // is only ever compared to isoDate(d) strings (never parsed via new Date(),
+  // which would shift across timezones). Tasks are standalone reminders: they
+  // have no job link and never touch job status logic.
+  const tasksByDate = {};
+  for (const t of state.prodTasks || []) (tasksByDate[t.task_date] ||= []).push(t);
+  for (const k in tasksByDate) tasksByDate[k].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const taskChipHtml = (t) => `<div class="pec-cal-task ${t.completed ? 'done' : ''}" data-task-id="${esc(t.id)}" title="${esc((t.crew_lead ? t.crew_lead + ': ' : '') + t.description)}">
+    ${t.crew_lead ? `<span class="task-lead">${esc(t.crew_lead)}</span>` : ''}<span class="task-desc">${esc(t.description)}</span>
+  </div>`;
+  const wireTaskClicks = (scope) => scope.querySelectorAll('[data-task-id]').forEach(el =>
+    el.addEventListener('click', () => {
+      const t = (state.prodTasks || []).find(x => x.id === el.dataset.taskId);
+      if (t) openTaskModal(t);
+    }));
 
   // Helper: build event metadata for a job. Full meta (customer, crew,
   // revenue) shows on the day the job starts; continuation days show just
@@ -12377,12 +12401,20 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     }).join('');
     // Bars start at row 2 (row 1 is the day-num row).
     const barsHtml = bars.map(b => barHtml(b, 2 + b.lane)).join('');
+    // Task chips live in the trailing 1fr filler row, BELOW the job-bar lanes,
+    // so they never collide with the lane assignment math above. The 1fr track
+    // auto-grows to fit its content.
+    const tasksRowHtml = weekDays.map((d, i) => {
+      const list = tasksByDate[isoDate(d)] || [];
+      if (!list.length) return '';
+      return `<div class="pec-cal-task-strip" style="grid-column:${i + 1};grid-row:${2 + lanesShown}">${list.map(taskChipHtml).join('')}</div>`;
+    }).join('');
     // Header row just holds the day number; lanes are tall enough for each job
     // bar to wrap to two lines (customer/rev on top, system/crew below).
     const HEADER = 24, LANE = 50;
     const rowTemplate = `${HEADER}px repeat(${lanesShown}, minmax(${LANE}px, max-content)) 1fr`;
     return `<div class="pec-cal-week-grid" style="grid-template-rows:${rowTemplate}">
-      ${dayCellsHtml}${barsHtml}
+      ${dayCellsHtml}${barsHtml}${tasksRowHtml}
     </div>`;
   };
 
@@ -12435,13 +12467,17 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
             ${jobsHtml}
           </div>`;
         }).join('');
+      const dayTasks = tasksByDate[iso] || [];
+      const tasksHtml = dayTasks.length ? `<div class="pec-runsheet-tasks">${dayTasks.map(taskChipHtml).join('')}</div>` : '';
       return `<div style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:560px">
         <div class="${sameDay(d, today) ? 'today' : ''}" style="font-weight:700;font-size:.78rem;margin-bottom:8px;${sameDay(d, today) ? 'color:var(--rd-accent,#D8531C)' : ''}">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>
+        ${tasksHtml}
         ${crewSections || '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>'}
       </div>`;
     }).join('');
     host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start">${dayCols}</div>`;
     host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    wireTaskClicks(host);
     return;
   }
 
@@ -12472,6 +12508,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   `;
 
   host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+  wireTaskClicks(host);
 }
 
 // Create a no-charge touch-up / warranty callback linked to an original job, then
@@ -13329,6 +13366,106 @@ function openAddJobModal() {
               : 'Save failed: ' + msg;
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save job';
+        }
+      });
+    },
+  });
+}
+
+// ============================================================
+// Crew tasks (single-day reminders on the schedule calendar)
+// ============================================================
+// One modal for create (task = null) and edit (task = row). Tasks live in
+// pec_prod_tasks and are fully isolated from job status logic: no job link,
+// no interaction with deriveJobStatus / runScheduleStatusSync / pec_prod_jobs.
+// task_date is treated as an opaque YYYY-MM-DD string end to end (never
+// round-tripped through new Date(), which would shift across timezones).
+// crew_lead stores the crew NAME as text, same convention as
+// pec_prod_jobs.crew_lead, so chips render with no crew-id lookup.
+function openTaskModal(task) {
+  const isEdit = !!task;
+  const crewNames = (state.crews || []).filter(c => c.active).map(c => c.name);
+  // A stale lead (crew renamed or deactivated since the task was created)
+  // stays selectable so editing never silently drops it.
+  if (isEdit && task.crew_lead && !crewNames.includes(task.crew_lead)) crewNames.unshift(task.crew_lead);
+  const selLead = isEdit ? (task.crew_lead || '') : '';
+  const crewOptions = `<option value="">Unassigned</option>` + crewNames.map(n =>
+    `<option value="${esc(n)}" ${n === selLead ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  const defaultDate = state.scheduleAnchor || isoDate(new Date());
+
+  openModal(`
+    <h3 style="margin-top:0">${isEdit ? 'Edit task' : 'Add task'}</h3>
+    <div style="color:var(--muted);font-size:.75rem;margin-bottom:12px">A single-day crew reminder on the calendar. Not a job: it has no price, no status, and no effect on job scheduling.</div>
+    <div class="pec-field" style="margin-bottom:8px"><label>Date</label><input type="date" id="pecTaskDate" value="${esc(isEdit ? task.task_date : defaultDate)}"></div>
+    <div class="pec-field" style="margin-bottom:8px"><label>Crew lead</label><select id="pecTaskCrew">${crewOptions}</select></div>
+    <div class="pec-field" style="margin-bottom:8px"><label>Description <span style="color:var(--accent,#D8531C)">*</span></label><textarea id="pecTaskDesc" rows="2" placeholder="What the crew needs to do, e.g. pick up flake order at Torginol">${isEdit ? esc(task.description) : ''}</textarea></div>
+    ${isEdit ? `<div class="pec-field" style="margin-bottom:8px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none"><input type="checkbox" id="pecTaskDone" ${task.completed ? 'checked' : ''}> Completed</label></div>` : ''}
+    <div class="pec-modal-actions">
+      ${isEdit ? '<button class="pec-btn danger ghost" id="pecTaskDelete">Delete</button>' : ''}
+      <span style="flex:1"></span>
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn primary" id="pecTaskSave">${isEdit ? 'Save changes' : 'Save task'}</button>
+    </div>
+    <div class="prod-msg-err" id="pecTaskError"></div>
+  `, {
+    onMount(modal) {
+      const errEl = modal.querySelector('#pecTaskError');
+      const saveBtn = modal.querySelector('#pecTaskSave');
+
+      // After a write, make sure the saved day is on screen: if the date falls
+      // outside the visible range, jump the anchor to it (mirrors Add Job).
+      const visibleDays = state.scheduleMode === 'week' ? 7 : 21;
+      const rangeStart = isoDate(startOfWeek(parseISO(state.scheduleAnchor)));
+      const rangeEnd = isoDate(addDays(startOfWeek(parseISO(state.scheduleAnchor)), visibleDays - 1));
+      const finish = async (toast, savedDate) => {
+        closeModal();
+        showToast(toast);
+        if (savedDate && (savedDate < rangeStart || savedDate > rangeEnd)) state.scheduleAnchor = savedDate;
+        await renderSchedule();
+      };
+
+      saveBtn.addEventListener('click', async () => {
+        errEl.textContent = '';
+        const task_date = modal.querySelector('#pecTaskDate').value;
+        const crew_lead = modal.querySelector('#pecTaskCrew').value || null;
+        const description = modal.querySelector('#pecTaskDesc').value.trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(task_date)) { errEl.textContent = 'Pick a date.'; return; }
+        if (!description) { errEl.textContent = 'Enter a short description.'; return; }
+        saveBtn.disabled = true;
+        try {
+          let res;
+          if (isEdit) {
+            // Full-value update: idempotent, safe to auto-retry on a wedge.
+            const completed = !!modal.querySelector('#pecTaskDone')?.checked;
+            res = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+              .update({ task_date, crew_lead, description, completed }).eq('id', task.id), { label: 'task-update' });
+          } else {
+            // Insert is non-idempotent: bounded write, NO auto-retry (a retry
+            // after a stall could double-insert; worst case the user taps Save
+            // again and deletes a duplicate, so no verify dance is needed).
+            res = await withFreshWrite(() => supabase.from('pec_prod_tasks')
+              .insert({ task_date, crew_lead, description }), { label: 'task-insert' });
+          }
+          if (res.error) throw res.error;
+          await finish(isEdit ? 'Task updated.' : 'Task added.', task_date);
+        } catch (err) {
+          console.error('[pec] task save:', err);
+          errEl.textContent = 'Save failed: ' + (err?.message || err);
+          saveBtn.disabled = false;
+        }
+      });
+
+      modal.querySelector('#pecTaskDelete')?.addEventListener('click', async () => {
+        if (!confirm('Delete this task?')) return;
+        errEl.textContent = '';
+        try {
+          const res = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+            .delete().eq('id', task.id), { label: 'task-delete' });
+          if (res.error) throw res.error;
+          await finish('Task deleted.', null);
+        } catch (err) {
+          console.error('[pec] task delete:', err);
+          errEl.textContent = 'Delete failed: ' + (err?.message || err);
         }
       });
     },
@@ -14977,6 +15114,17 @@ if (portalToken) {
      onto a second line instead of dropping them -- more info per job. Only an
      extremely narrow cell hides crew to avoid a third line. */
   @container (max-width: 96px) { .pec-cal-event-bar .bar-crew { display:none } }
+  /* Crew task chips: dashed border + muted background so they read as
+     reminders, clearly distinct from the solid color-coded job bars. */
+  .pec-cal-task { position:relative; z-index:2; margin:1px 3px; padding:2px 6px; font-size:.66rem; line-height:1.3; border:1px dashed var(--rd-line, var(--border)); border-radius:5px; background:var(--rd-soft, var(--s2)); color:var(--rd-ink, var(--text)); cursor:pointer; display:flex; gap:4px; align-items:baseline; overflow:hidden }
+  .pec-cal-task:hover { filter:brightness(.97) }
+  .pec-cal-task .task-lead { font-weight:700; flex:0 0 auto }
+  .pec-cal-task .task-desc { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0 }
+  .pec-cal-task.done { opacity:.55; text-decoration:line-through }
+  .pec-cal-task-strip { display:flex; flex-direction:column; gap:2px; padding:2px 0; align-self:start }
+  .pec-runsheet-tasks { margin-bottom:10px }
+  .pec-runsheet-tasks .pec-cal-task { padding:5px 8px }
+  .pec-runsheet-tasks .pec-cal-task .task-desc { white-space:normal }
   /* Toast notifications */
   .pec-toast-host { position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:10000; pointer-events:none }
   .pec-toast { background:var(--rd-card, #1f2937); color:var(--fg, #f8fafc); border:1px solid var(--rd-line, var(--border)); border-left:3px solid var(--rd-accent, var(--accent)); border-radius:6px; box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:.78rem; display:flex; align-items:center; gap:10px; min-width:260px; max-width:420px; pointer-events:auto; animation:pec-toast-in .18s ease-out }
