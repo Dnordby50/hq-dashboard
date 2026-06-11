@@ -7153,7 +7153,7 @@ async function renderInvoicing() {
     .sort((a, b) => (a.signed_date || '').localeCompare(b.signed_date || ''));
   const active = rows.filter(r => (r.deposit_collected || r.deposit_waived) && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS)
     .sort((a, b) => (a.install_date || a.signed_date || '').localeCompare(b.install_date || b.signed_date || ''));
-  const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 30)
+  const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 60)
     .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
 
   const completedOwed = completed.reduce((s, r) => s + r.balance, 0);
@@ -7199,7 +7199,7 @@ async function renderInvoicing() {
     <td>${invUSD(r.price)}</td><td>${invFmtDate(r.completed_date)}</td>
     <td>${invFmtDate(r.last_payment_date)}</td><td>${esc(r.salesperson || '—')}</td>
     <td style="white-space:nowrap">${viewBtn(r)}</td></tr>`).join('')
-    || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs closed in the last 30 days.</td></tr>';
+    || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs closed in the last 60 days.</td></tr>';
 
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
@@ -7232,7 +7232,7 @@ async function renderInvoicing() {
     </details>
 
     <details class="pec-card pec-ar-sec">
-      <summary>Recently closed (last 30 days) <span class="pec-ar-meta">${closed.length} job${closed.length === 1 ? '' : 's'}</span></summary>
+      <summary>Recently closed (last 60 days) <span class="pec-ar-meta">${closed.length} job${closed.length === 1 ? '' : 's'} · ${invUSD(closed.reduce((s, r) => s + r.price, 0))} total</span></summary>
       <div class="pec-scroll-x"><table class="pec-table">
         <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Completed</th><th>Last payment</th><th>Salesperson</th><th></th></tr></thead>
         <tbody>${closedRows}</tbody></table></div>
@@ -8033,7 +8033,7 @@ function renderInvoicingDocs() {
       <li><strong>Completed work, not paid in full</strong>: status is completed and balance &gt; 0. Counts toward AR. Aging from <code>completed_date</code>: green 0 to 7 days, yellow 8 to 14, red 15+.</li>
       <li><strong>Signed proposal, no deposit collected</strong>: deposit not collected, not waived, and not yet completed. Counts toward AR (the deposit owed). Aging from <code>signed_date</code>: green 0 to 3 days, yellow 4 to 7, red 8+. A job marked "no deposit needed" (<code>deposit_waived</code>) drops out of this bucket and owes no deposit.</li>
       <li><strong>In progress (deposit paid)</strong>: deposit collected and status signed, scheduled, or in_progress, with a balance remaining. Shown for visibility but NOT counted in AR until the job is completed.</li>
-      <li><strong>Recently closed</strong>: balance is zero and the last payment landed within the last 30 days.</li>
+      <li><strong>Recently closed</strong>: balance is zero and the last payment landed within the last 60 days.</li>
     </ul>
 
     <h4>Workflows</h4>
