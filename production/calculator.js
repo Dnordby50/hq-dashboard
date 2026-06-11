@@ -116,8 +116,56 @@ export function computeMaterialPlan({
   }
 
   const lines = mergeAcrossAreas(areaPlans, productsById);
+  appendPlaceholderLines(lines, areaPlans);
 
   return { lines, areaPlans };
+}
+
+// Custom-blend placeholders (a required swatch slot with no catalog product)
+// are appended AFTER the merge, never routed through it: the merge keys on
+// product_id (all-null placeholders would collapse Flake and Quartz into one
+// group), its qty formula divides by spread_rate (zero here), and its
+// sqft_total <= 0 guard would drop the line entirely. One line per
+// material_type regardless of how many areas miss that swatch (qty 1, cost 0
+// until priced in the line editor); area_ids carries the union for
+// traceability. product_id stays null on purpose: it is the manual-line flag
+// the line editor keys on to make unit cost editable.
+function appendPlaceholderLines(lines, areaPlans) {
+  const names = {
+    'Flake': 'Custom blend flake (enter cost)',
+    'Quartz': 'Custom blend quartz (enter cost)',
+    'Metallic Pigment': 'Custom metallic pigment (enter cost)',
+  };
+  const byType = new Map();
+  for (const p of areaPlans) {
+    for (const m of (p.placeholders || [])) {
+      if (!byType.has(m.material_type)) byType.set(m.material_type, { material_type: m.material_type, area_ids: [] });
+      if (m.area_id) byType.get(m.material_type).area_ids.push(m.area_id);
+    }
+  }
+  for (const p of byType.values()) {
+    lines.push({
+      material_type: p.material_type,
+      product_id: null,
+      product_name: names[p.material_type] || `Custom ${p.material_type} (enter cost)`,
+      supplier: null,
+      color: null,
+      spread_rate: 0,
+      kit_size: 1,
+      qty_needed: 1,
+      backstock_qty: 0,
+      order_qty: 1,
+      use_backstock: false,
+      ordered: false,
+      delivered: false,
+      unit_cost_snapshot: 0,
+      line_cost: 0,
+      cure_speed: null,
+      area_ids: p.area_ids,
+      sqft_total: 0,
+      order_index: lines.length,
+    });
+  }
 }
 
 function planForArea(area, ctx) {
@@ -133,6 +181,7 @@ function planForArea(area, ctx) {
 
   const slots = recipeSlotsBySystemType[area.system_type_id] || [];
   const slotLines = [];
+  const placeholders = [];
 
   // Resolve the basecoat the area will use:
   // 1) explicit area.basecoat_product_id wins
@@ -162,10 +211,20 @@ function planForArea(area, ctx) {
 
     if (!productId) {
       if (slot.required) {
-        throw new CalculatorError(
-          `Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`,
-          'MISSING_PRODUCT'
-        );
+        // Swatch slots (Flake / Quartz / Metallic Pigment) can legitimately
+        // have no catalog product: a custom blend mixed in-house. Those emit
+        // a manual placeholder line (collected here, appended post-merge in
+        // computeMaterialPlan) priced per job in the line editor. Basecoat /
+        // Topcoat are always catalog products, so a missing one stays a hard
+        // data error.
+        const isSwatch = slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment';
+        if (!isSwatch) {
+          throw new CalculatorError(
+            `Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`,
+            'MISSING_PRODUCT'
+          );
+        }
+        placeholders.push({ material_type: slot.material_type, area_id: area.id || null });
       }
       continue;
     }
@@ -251,7 +310,7 @@ function planForArea(area, ctx) {
     });
   }
 
-  return { area, lines: slotLines };
+  return { area, lines: slotLines, placeholders };
 }
 
 function mergeAcrossAreas(areaPlans, productsById) {

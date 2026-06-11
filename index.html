@@ -15206,7 +15206,37 @@ function computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, def
     }
   }
   const lines = _mergeAcrossAreas(areaPlans);
+  _appendPlaceholderLines(lines, areaPlans);
   return { lines, areaPlans };
+}
+// Custom-blend placeholders (a required swatch slot with no catalog product)
+// are appended AFTER the merge, never routed through it: the merge keys on
+// product_id (all-null placeholders would collapse Flake and Quartz into one
+// group), its qty formula divides by spread_rate (zero here), and its
+// sqft_total <= 0 guard would drop the line entirely. One line per
+// material_type regardless of how many areas miss that swatch (qty 1, cost 0
+// until priced in the line editor); product_id stays null on purpose: it is
+// the manual-line flag the line editor keys on to make unit cost editable.
+function _appendPlaceholderLines(lines, areaPlans) {
+  const names = { 'Flake': 'Custom blend flake (enter cost)', 'Quartz': 'Custom blend quartz (enter cost)', 'Metallic Pigment': 'Custom metallic pigment (enter cost)' };
+  const byType = new Map();
+  for (const p of areaPlans) {
+    for (const m of (p.placeholders || [])) {
+      if (!byType.has(m.material_type)) byType.set(m.material_type, { material_type: m.material_type, area_ids: [] });
+      if (m.area_id) byType.get(m.material_type).area_ids.push(m.area_id);
+    }
+  }
+  for (const p of byType.values()) {
+    lines.push({
+      material_type: p.material_type, product_id: null,
+      product_name: names[p.material_type] || `Custom ${p.material_type} (enter cost)`,
+      supplier: null, color: null, spread_rate: 0, kit_size: 1,
+      qty_needed: 1, backstock_qty: 0, order_qty: 1,
+      use_backstock: false, ordered: false, delivered: false,
+      unit_cost_snapshot: 0, line_cost: 0, cure_speed: null,
+      area_ids: p.area_ids, sqft_total: 0, order_index: lines.length,
+    });
+  }
 }
 // Bridge the calculator to the first <script type="module"> block (the CRM
 // app). slotHtml / renderBudget / renderWorkOrder live there and call these,
@@ -15221,6 +15251,7 @@ function _planForArea(area, ctx) {
   if (!Number.isFinite(sqft) || sqft < 0) throw new CalculatorError(`Area "${area.name || area.id}": sqft must be a non-negative number`, 'INVALID_SQFT');
   const slots = recipeSlotsBySystemType[area.system_type_id] || [];
   const slotLines = [];
+  const placeholders = [];
   const resolvedBasecoatId = area.basecoat_product_id || (area.flake_product_id ? defaultBasecoatByFlake[area.flake_product_id] : null) || null;
   for (const slot of slots) {
     // Choice / free-text recipe slots (e.g. "Single|Double broadcast", job
@@ -15232,7 +15263,16 @@ function _planForArea(area, ctx) {
     else if (slot.material_type === 'Basecoat') productId = resolvedBasecoatId || productId;
     else if (slot.material_type === 'Topcoat') productId = area.topcoat_product_id || productId;
     if (!productId) {
-      if (slot.required) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
+      if (slot.required) {
+        // Swatch slots (Flake / Quartz / Metallic Pigment) can legitimately
+        // have no catalog product: a custom blend mixed in-house. Those emit
+        // a manual placeholder line (appended post-merge in computeMaterialPlan)
+        // priced per job in the line editor. Basecoat / Topcoat are always
+        // catalog products, so a missing one stays a hard data error.
+        const isSwatch = slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment';
+        if (!isSwatch) throw new CalculatorError(`Area "${area.name || area.id}": ${slot.material_type} is required but no product was selected`, 'MISSING_PRODUCT');
+        placeholders.push({ material_type: slot.material_type, area_id: area.id || null });
+      }
       continue;
     }
     const product = productsById[productId];
@@ -15274,7 +15314,7 @@ function _planForArea(area, ctx) {
       _tint_packs: _packs, _tint_attach_to: _t.attach_to || null,
     });
   }
-  return { area, lines: slotLines };
+  return { area, lines: slotLines, placeholders };
 }
 function _mergeAcrossAreas(areaPlans) {
   const groups = new Map();
@@ -16181,7 +16221,7 @@ function _mergeAcrossAreas(areaPlans) {
       <table class="pec-table">
         <thead><tr>
           <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th><th>Cure</th>
-          <th>Qty</th><th>Backstock</th><th>Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
+          <th>Qty</th><th>Unit cost</th><th>Backstock</th><th>Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
         </tr></thead>
         <tbody>
           ${lines.map(l => `
@@ -16194,6 +16234,9 @@ function _mergeAcrossAreas(areaPlans) {
               <td><span class="prod-readonly">${esc(l.color || '')}</span></td>
               <td><span class="prod-readonly">${esc(l.cure_speed || '')}</span></td>
               <td><input data-prop="qty_needed"    type="number" min="0" step="1" value="${esc(l.qty_needed)}"    class="prod-num"></td>
+              <td>${l.product_id
+                ? `<span class="prod-readonly">${l.unit_cost_snapshot == null ? '' : '$' + Number(l.unit_cost_snapshot).toFixed(2)}</span>`
+                : `<input data-prop="unit_cost_snapshot" type="number" min="0" step="0.01" value="${esc(l.unit_cost_snapshot ?? 0)}" class="prod-num" title="Custom blend: enter the per-unit cost for this job">`}</td>
               <td><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" class="prod-num"></td>
               <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num"></td>
               <td><input data-prop="use_backstock" type="checkbox" ${l.use_backstock?'checked':''}></td>
@@ -16203,7 +16246,7 @@ function _mergeAcrossAreas(areaPlans) {
         </tbody>
       </table>
       </div>
-      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product, Color and Cure come from the catalog and area settings (read-only here). Edit cure speed on the area; everything else in Price &amp; Material Catalog.</div>
+      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product, Color and Cure come from the catalog and area settings (read-only here). Edit cure speed on the area; everything else in Price &amp; Material Catalog. Unit cost is editable only on custom blend lines (no catalog product); enter the per-job cost there and Save line edits.</div>
     `;
     host.querySelectorAll('tr[data-line-id]').forEach(tr => {
       const id = tr.dataset.lineId;
@@ -16224,11 +16267,20 @@ function _mergeAcrossAreas(areaPlans) {
     const errEl = $('prodDetailError'); const okEl = $('prodDetailOk');
     errEl.textContent = ''; okEl.textContent = '';
     for (const l of j.lines) {
-      const { error } = await supabase.from('pec_prod_material_lines').update({
+      const patch = {
         supplier: l.supplier || null, color: l.color || null,
         qty_needed: Number(l.qty_needed || 0), backstock_qty: Number(l.backstock_qty || 0), order_qty: Number(l.order_qty || 0),
         use_backstock: !!l.use_backstock, ordered: !!l.ordered, delivered: !!l.delivered,
-      }).eq('id', l.id);
+      };
+      // Manual (custom blend) lines only: persist the per-job unit cost and
+      // recompute line_cost so it flows into the Job Costing materials totals.
+      // Catalog lines keep their snapshot untouched (same behavior as before:
+      // editing qty on a catalog line never recomputes its line_cost).
+      if (l.product_id == null) {
+        patch.unit_cost_snapshot = Number(l.unit_cost_snapshot || 0);
+        patch.line_cost = Math.round(Number(l.qty_needed || 0) * patch.unit_cost_snapshot * 100) / 100;
+      }
+      const { error } = await supabase.from('pec_prod_material_lines').update(patch).eq('id', l.id);
       if (error) return errEl.textContent = error.message;
     }
     okEl.textContent = 'Saved.';
@@ -16272,6 +16324,14 @@ function _mergeAcrossAreas(areaPlans) {
     await loadJobs();
     state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
     renderJobDetail();
+    // Non-blocking 0-sqft warning. Set AFTER renderJobDetail(), which rebuilds
+    // the modal and wipes the message elements. With sqft 0 the merge drops
+    // every sqft-driven line, so without this note the recalc looks like it
+    // silently deleted everything.
+    const totalSqft = areasInput.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+    $('prodDetailOk').textContent = totalSqft > 0
+      ? 'Recalculated from catalog.'
+      : 'Recalculated. Warning: total job sqft is 0, so all sqft-based quantities computed to zero lines. Enter the real sqft on the areas and recalculate again.';
   }
 
   async function completeActiveJob() {

@@ -158,15 +158,79 @@ assertThrows(() => {
   });
 }, 'INVALID_SQFT', 'negative sqft rejected');
 
-// --- Missing required product (flake not picked) ---------------------------
-assertThrows(() => {
-  computeMaterialPlan({
+// --- Missing required SWATCH product (flake not picked) ---------------------
+// Behavior change 2026-06-10 (Dylan): a required swatch slot (Flake / Quartz /
+// Metallic Pigment) with no product is a custom in-house blend, not an error.
+// It emits a manual placeholder line (product_id null, qty 1, cost 0) priced
+// per job in the line editor. Basecoat/Topcoat keep the hard MISSING_PRODUCT
+// throw (tested below) since those are always catalog products.
+{
+  const plan = computeMaterialPlan({
     areas: [{ id: 'a1', name: 'NoFlake', sqft: 600, system_type_id: 'std' }],
     productsById,
     recipeSlotsBySystemType,
     defaultBasecoatByFlake,
   });
-}, 'MISSING_PRODUCT', 'missing required Flake selection rejected');
+  const ph = lineByMaterial(plan, 'Flake');
+  assertEq(ph.product_id, null, 'custom blend flake: product_id is null (manual flag)');
+  assertEq(ph.product_name, 'Custom blend flake (enter cost)', 'custom blend flake: placeholder name');
+  assertEq([ph.qty_needed, ph.order_qty, ph.unit_cost_snapshot, ph.line_cost], [1, 1, 0, 0], 'custom blend flake: qty 1, zero cost until priced');
+  assertEq(ph.order_index, plan.lines.length - 1, 'custom blend flake: placeholder sorts last');
+  assertEq(plan.lines.length, 3, 'custom blend flake: basecoat + topcoat lines still generated');
+}
+
+// --- Two areas both missing flake merge into ONE placeholder ----------------
+{
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage', sqft: 400, system_type_id: 'std' },
+      { id: 'a2', name: 'Patio',  sqft: 200, system_type_id: 'std' },
+    ],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake,
+  });
+  const phs = plan.lines.filter((l) => l.product_id === null);
+  assertEq(phs.length, 1, 'two flakeless areas: one merged placeholder');
+  assertEq(phs[0].area_ids, ['a1', 'a2'], 'two flakeless areas: placeholder carries both area ids');
+}
+
+// --- Missing Flake AND missing Quartz yield TWO placeholders ----------------
+{
+  const slotsWithQuartz = {
+    ...recipeSlotsBySystemType,
+    qtz: [
+      { id: 'q1', order_index: 1, material_type: 'Basecoat', default_product_id: 'basecoat', required: true },
+      { id: 'q2', order_index: 2, material_type: 'Quartz',   default_product_id: null,        required: true },
+      { id: 'q3', order_index: 3, material_type: 'Topcoat',  default_product_id: 'topcoat',   required: true },
+    ],
+  };
+  const plan = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Flake area',  sqft: 300, system_type_id: 'std' },
+      { id: 'a2', name: 'Quartz area', sqft: 300, system_type_id: 'qtz' },
+    ],
+    productsById,
+    recipeSlotsBySystemType: slotsWithQuartz,
+    defaultBasecoatByFlake,
+  });
+  const phs = plan.lines.filter((l) => l.product_id === null);
+  assertEq(phs.map((l) => l.material_type).sort(), ['Flake', 'Quartz'], 'missing flake + quartz: one placeholder per material type');
+}
+
+// --- Missing required Basecoat still throws ----------------------------------
+assertThrows(() => {
+  computeMaterialPlan({
+    areas: [{ id: 'a1', name: 'NoBase', sqft: 600, system_type_id: 'noBaseDefault' }],
+    productsById,
+    recipeSlotsBySystemType: {
+      noBaseDefault: [
+        { id: 'n1', order_index: 1, material_type: 'Basecoat', default_product_id: null, required: true },
+      ],
+    },
+    defaultBasecoatByFlake,
+  });
+}, 'MISSING_PRODUCT', 'missing required Basecoat still rejected');
 
 // --- Multi-area: same product across areas merges by sqft (not sum-of-ceils)
 {
