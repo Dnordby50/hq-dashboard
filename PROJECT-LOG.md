@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Claude Code: Metrics tab restructured (DripJobs-style KPI cards, every metric drillable)
+By: Claude Code
+Changed: renderMetrics rebuilt. Top row: five big KPI cards (Sales volume, Revenue collected, Jobs completed, Average job size, Callback rate). Below, in order: Sales by salesperson, Revenue collected by crew lead, GP by crew lead (new), Revenue collected per week, AR per week (new), Jobs completed per week, Callback rate by crew lead (replaces the raw callback count table). The metrics Dylan did not name (revenue completed per week, deposits per week, jobs sold per week, reviews per week, and the timing/aging stat grid) moved into one collapsed "More metrics" section at the bottom, nothing deleted. The window and salesperson filters are unchanged.
+The core feature: EVERY metric is clickable. KPI cards, table rows, and chart bars all open a drilldown listing the underlying records (customer, dollar amount, relevant date, salesperson or crew lead), with a total row that visibly sums or counts to the number that was clicked, and customer names link to the job (same data-openjob pattern as Invoicing; the modal closes itself before switching views).
+How the drilldowns work: each render builds a registry of lazy drill builders (state.metricsDrills); every clickable surface carries a data-drill id into it, and ONE renderer (openMetricsDrill, replacing the old bar-only openMetricDrilldown) draws the modal. Builders close over that render's data, so payloads materialize only on click and ids cannot go stale across filter changes. Modal uses openModal()/#pecModalRoot only, per the two-modal-root gotcha.
+GP by crew lead: price of jobs completed in the window minus those jobs' tracked costs, grouped by crew via the dripjobs_deal_id bridge. Reuses computeCostingRow, the Job Costing tab's one canonical formula (cost = materials USED plus equipment, wages, subs, bonuses, commission, misc), fed by the same aggregates (sum of line_cost, actual_used_qty x unit_cost_snapshot, bonus amounts). The card says what the cost basis includes; labor hours are not costed. A completed job with no costing data at all is EXCLUDED and counted in a footnote ("n completed jobs excluded: no costing data"), never treated as zero cost.
+AR per week: reconstructed end-of-week snapshots using the same rule as the Invoicing Total AR headline (completed unpaid balance + deposits owed on signed-no-deposit jobs), with payments time-filtered by received_date per snapshot date; the current partial week snapshots at today, so the latest bar matches the Invoicing headline. Known approximation, noted in the caption: deposit_waived and deposit_amount have no history, so they apply retroactively. Computed in one ascending pass with per-job payment cursors, so YTD (53 weeks) stays cheap.
+Callback rate: all-time, callbacks / completed production jobs, overall on the KPI card and per crew in the table, with the denominator stated in the drilldown. Touch-up callback VISIT rows (is_callback) are excluded from both sides; the callback boolean flag on the real job is what counts. Prod jobs carry no salesperson, so the salesperson filter does not apply to the two callback surfaces; their labels say "(all salespeople)" when a salesperson is selected.
+One schema gotcha caught during the build: estimated_hours/actual_hours live on pec_prod_jobs, NOT on pec_prod_job_costing, so the metrics costing fetch selects only the eight cost buckets (selecting hours there would have errored). GP does not use hours.
+Verification: node --check passes on all six inline script blocks. Greps confirm the old mechanism is fully gone (zero hits for openMetricDrilldown, data-metric, state.metricsData). If the three costing fetches fail (e.g. RLS), only the GP section degrades to an inline note; the rest of the tab still renders.
+Files touched: index.html
+Commit: 2f95900
+Next steps: Dylan hard-refreshes, clicks a few KPI cards and table rows, and clicks the latest AR per week bar to compare it against the Invoicing tab's Total AR headline (they should match; small deltas mean a job marked completed with no completed_date, or a deposit flagged collected with no payment row).
+Handoff to Cowork: None.
+Handoff to Dylan: None beyond the spot checks above.
+
+---
+
 ## [2026-06-10 MST] Claude Code: Invoicing "Recently closed" widened to 60 days, dollar total added
 By: Claude Code
 Changed: The Invoicing "Recently closed" bucket now shows jobs whose last payment landed within 60 days (was 30): the filter, the section heading, the empty-state text, and the help-page description all moved together. The section summary now also shows the total job value, e.g. "7 jobs · $58,400.00 total", matching the dollar-amount meta the other three sections already had.
