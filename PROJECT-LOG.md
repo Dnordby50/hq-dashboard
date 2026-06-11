@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-11 MST] Cowork: diagnosed "metrics still look old" (commits never pushed), wrote visual redesign prompt for the Metrics tab
+By: Cowork
+Changed: No code. Two findings: (1) Dylan's screenshot of the "updated" Metrics tab is the OLD layout because local main is 10 commits ahead of origin/main; Netlify deploys from the remote, so none of yesterday's four tasks (crew tasks, flake costing, invoicing window, metrics restructure) are live. Pushing is gated on Dylan per project rules. (2) Even the new code reuses invBarChart and plain pec-stat cards, so it will not look like the DripJobs reference; the unreadable numbers come from .pec-bar-v being absolutely positioned at top:2px while bars grow to 100% height, so tall bars collide with their own labels. Researched current KPI dashboard design patterns (labeled KPI card anatomy: label + description + big value + delta vs prior period; ranking rows as horizontal bars with value and share; proper charts with axes and tooltips) and wrote a visual redesign prompt for Claude Code: DripJobs-style grouped KPI card rows, delta indicators vs the previous equal-length window, horizontal-bar ranking tables for the by-salesperson/by-crew sections, and weekly charts rebuilt on Chart.js lazy-loaded from cdnjs using the existing Quill pattern (index.html:11370), all preserving the universal drilldowns.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pushes the 10 pending commits (or approves a push) so the restructure deploys, then runs the redesign prompt in Claude Code.
+Handoff to Cowork: None yet.
+Handoff to Dylan: git push (or say the word and Claude Code/Cowork can). Then run the redesign prompt.
+
+---
+
 ## [2026-06-10 MST] Claude Code: Metrics tab restructured (DripJobs-style KPI cards, every metric drillable)
 By: Claude Code
 Changed: renderMetrics rebuilt. Top row: five big KPI cards (Sales volume, Revenue collected, Jobs completed, Average job size, Callback rate). Below, in order: Sales by salesperson, Revenue collected by crew lead, GP by crew lead (new), Revenue collected per week, AR per week (new), Jobs completed per week, Callback rate by crew lead (replaces the raw callback count table). The metrics Dylan did not name (revenue completed per week, deposits per week, jobs sold per week, reviews per week, and the timing/aging stat grid) moved into one collapsed "More metrics" section at the bottom, nothing deleted. The window and salesperson filters are unchanged.
