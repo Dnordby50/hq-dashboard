@@ -471,6 +471,13 @@ textarea{resize:vertical;min-height:60px}
 .pec-card h3{font-family:var(--sans);font-weight:700;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
 .pec-grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .pec-stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+/* Metrics KPI cards are <button>s so every stat can drill down; reset the UA
+   button styles so they render identically to the plain div stat cards used
+   on the Dashboard and Invoicing tabs (which this rule does not touch). */
+button.pec-stat{font:inherit;color:inherit;text-align:left;cursor:pointer;width:100%;display:block}
+button.pec-stat:hover{border-color:var(--accent)}
+.pec-row-drill{cursor:pointer}
+.pec-row-drill:hover td{background:rgba(255,255,255,.04)}
 .pec-stat-label{font-size:.65rem;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted)}
 .pec-stat-val{font-family:var(--mono);font-size:1.7rem;font-weight:500;margin-top:4px}
 .pec-table{width:100%;border-collapse:collapse;font-size:.8rem}
@@ -7774,11 +7781,13 @@ async function markJobComplete(row) {
   }
 }
 
-function invBarChart(values, weeks, metricKey, fmt) {
+// drillIds[i] is a metrics drill-registry id (see regDrill in renderMetrics);
+// every bar is a click target that opens the drilldown for its week.
+function invBarChart(values, weeks, drillIds, fmt) {
   const max = Math.max(1, ...values);
   return `<div class="pec-bars">${values.map((v, i) => {
     const h = max > 0 ? Math.round((v / max) * 100) : 0;
-    return `<button class="pec-bar" data-metric="${metricKey}" data-week="${i}" title="${esc(weeks[i].label + ': ' + fmt(v))}">
+    return `<button class="pec-bar" data-drill="${esc(drillIds[i])}" title="${esc(weeks[i].label + ': ' + fmt(v))}">
       <span class="pec-bar-v">${v ? esc(fmt(v)) : ''}</span>
       <span class="pec-bar-fill" style="height:${h}%"></span>
       <span class="pec-bar-l">${esc(weeks[i].label)}</span>
@@ -7791,32 +7800,104 @@ async function renderMetrics() {
   let res;
   try {
     res = await withFreshSession(() => Promise.all([
-      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id').eq('customer_company', 'prescott-epoxy'),
+      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,deposit_waived,deposit_amount,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
-      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,crew_lead,callback'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback'),
       supabase.from('reviews').select('created_at,rating,job_id'),
+      // Costing data for the GP-by-crew section, same three sources the Job
+      // Costing tab derives from (narrow column lists to keep payloads small).
+      // Hours live on pec_prod_jobs, NOT on pec_prod_job_costing, so they are
+      // not selected here; GP does not use them.
+      supabase.from('pec_prod_job_costing').select('job_id,materials_ordered_cost,materials_used_cost,equipment_rental_cost,salary_wages_cost,subcontractor_cost,misc_cost,bonus_cost,commission_cost'),
+      supabase.from('pec_prod_material_lines').select('job_id,line_cost,actual_used_qty,unit_cost_snapshot'),
+      supabase.from('pec_prod_job_bonuses').select('job_id,amount'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}]; }
-  const [jobsRes, payRes, prodRes, revRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}]; }
+  const [jobsRes, payRes, prodRes, revRes, costRes, lineRes, bonusRes] = res;
   if (jobsRes.error) {
     const hint = /pec_job_ar/.test(jobsRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(jobsRes.error.message)}${hint}</div>`; return;
   }
-  const jobs = (jobsRes.data || []).map(j => ({ ...j, price: invNum(j.price), balance: invNum(j.balance_remaining), paid_to_date: invNum(j.paid_to_date) }));
+  const jobs = (jobsRes.data || []).map(j => ({
+    ...j, price: invNum(j.price), balance: invNum(j.balance_remaining), paid_to_date: invNum(j.paid_to_date),
+    deposit_amount: j.deposit_amount == null ? null : invNum(j.deposit_amount),
+  }));
   const jobById = Object.fromEntries(jobs.map(j => [j.id, j]));
   const payments = (payRes.data || []).filter(p => jobById[p.job_id]).map(p => ({ ...p, amount: invNum(p.amount) }));
   const payByJob = {};
   for (const p of payments) { (payByJob[p.job_id] = payByJob[p.job_id] || []).push(p); }
   for (const k in payByJob) payByJob[k].sort((a, b) => (a.received_date || '').localeCompare(b.received_date || ''));
-  // Bridge each job's DripJobs deal id -> crew lead (crew lives on pec_prod_jobs,
-  // not on public.jobs / the AR view). Used for the revenue-by-crew-lead metric.
-  const dealToLead = {};
-  (prodRes.data || []).forEach(r => { if (r.dripjobs_deal_id) dealToLead[r.dripjobs_deal_id] = r.crew_lead || null; });
+  // Bridge each job's DripJobs deal id -> production row (crew lead lives on
+  // pec_prod_jobs, costing rows key on pec_prod_jobs.id). Used by the
+  // revenue-by-crew, GP-by-crew, and callback metrics. The reverse map
+  // (arByDeal) links a production row back to its AR job for drilldowns.
+  const dealToProd = {};
+  (prodRes.data || []).forEach(r => { if (r.dripjobs_deal_id) dealToProd[r.dripjobs_deal_id] = r; });
+  const arByDeal = {};
+  for (const j of jobs) { if (j.dripjobs_deal_id) arByDeal[j.dripjobs_deal_id] = j; }
+  // Touch-up callback VISITS (is_callback rows) are no-charge revisits, not
+  // jobs; they are excluded from every metric here, including the callback-rate
+  // denominator. The `callback` boolean is the quality flag on the real job.
+  const prodJobs = (prodRes.data || []).filter(r => !r.is_callback);
+  // Per-prod-job cost aggregates, built exactly like loadCostingData does for
+  // the Job Costing tab: ordered = sum(line_cost), used = sum(actual_used_qty
+  // * unit_cost_snapshot), bonus = sum(amount). computeCostingRow (the ONE
+  // canonical GP formula) then derives GP from these plus the costing row.
+  const costingOk = !costRes.error && !lineRes.error && !bonusRes.error;
+  const orderedByJob = {}, usedByJob = {}, bonusByJob = {};
+  for (const l of (lineRes.data || [])) {
+    orderedByJob[l.job_id] = (orderedByJob[l.job_id] || 0) + Number(l.line_cost || 0);
+    const q = Number(l.actual_used_qty || 0), u = Number(l.unit_cost_snapshot || 0);
+    if (q > 0 && u > 0) usedByJob[l.job_id] = (usedByJob[l.job_id] || 0) + q * u;
+  }
+  for (const b of (bonusRes.data || [])) bonusByJob[b.job_id] = (bonusByJob[b.job_id] || 0) + Number(b.amount || 0);
+  const costByProdJob = Object.fromEntries((costRes.data || []).map(c => [c.job_id, c]));
   // Reviews are PEC-only by virtue of their job being in jobById (the AR view is
   // already filtered to prescott-epoxy). created_at is UTC; bucket in America/Phoenix.
   const mstDay = ts => ts ? new Date(new Date(ts).getTime() - 7 * 3600e3).toISOString().slice(0, 10) : null;
   const reviews = (revRes.data || []).filter(r => jobById[r.job_id]);
-  state.metricsData = { jobs, payments, payByJob, jobById, reviews };
+
+  // ---- Drill registry -------------------------------------------------------
+  // Every metric surface (KPI card, table row, chart bar) carries a data-drill
+  // attribute pointing at a lazy builder here. Builders close over this
+  // render's data, so payloads materialize only on click and ids can never go
+  // stale (the registry is rebuilt on every render). One renderer
+  // (openMetricsDrill) serves all of them.
+  const drills = {};
+  let drillSeq = 0;
+  const regDrill = (build) => { const id = 'd' + (drillSeq++); drills[id] = build; return id; };
+  state.metricsDrills = drills;
+  const countOf = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const jobsDrill = (title, list, dateOf, opts = {}) => () => ({
+    title,
+    summary: opts.summary || null,
+    columns: ['Customer', 'Date', 'Salesperson', 'Price'],
+    rows: list.slice().sort((a, b) => (dateOf(a) || '').localeCompare(dateOf(b) || ''))
+      .map(j => ({ openjob: j.id, cells: [j.customer_name || '—', invFmtDate(dateOf(j)), j.salesperson || '—', invUSD(j.price)] })),
+    total: [countOf(list.length, 'job'), '', '', invUSD(list.reduce((s, j) => s + j.price, 0))],
+    footnote: opts.footnote || null,
+  });
+  const paymentsDrill = (title, list, opts = {}) => () => ({
+    title,
+    summary: opts.summary || null,
+    columns: ['Customer', 'Date', 'Method', 'Amount'],
+    rows: list.slice().sort((a, b) => (a.received_date || '').localeCompare(b.received_date || ''))
+      .map(p => ({ openjob: p.job_id, cells: [jobById[p.job_id]?.customer_name || '—', invFmtDate(p.received_date), p.method || '—', invUSD(p.amount)] })),
+    total: [countOf(list.length, 'payment'), '', '', invUSD(list.reduce((s, p) => s + p.amount, 0))],
+    footnote: opts.footnote || null,
+  });
+  const callbacksDrill = (title, list, opts = {}) => () => ({
+    title,
+    summary: opts.summary || null,
+    columns: ['Customer', 'Install date', 'Crew lead', 'Price'],
+    rows: list.slice().sort((a, b) => (a.install_date || '').localeCompare(b.install_date || ''))
+      .map(r => {
+        const ar = r.dripjobs_deal_id ? arByDeal[r.dripjobs_deal_id] : null;
+        return { openjob: ar ? ar.id : null, cells: [r.customer_name || '—', invFmtDate(r.install_date), r.crew_lead || 'Unassigned', ar ? invUSD(ar.price) : '—'] };
+      }),
+    total: [countOf(list.length, 'callback'), '', '', ''],
+    footnote: opts.footnote || null,
+  });
 
   const spList = [...new Set(jobs.map(j => j.salesperson).filter(Boolean))].sort();
   const sp = state.metricsSalesperson;
@@ -7884,97 +7965,311 @@ async function renderMetrics() {
   }
   const avgRating = ratingN ? ratingSum / ratingN : null;
 
-  // Revenue collected grouped by crew lead (window total; salesperson filter applies).
-  const crewLeadRev = {};
+  // Sales volume grouped by salesperson (window sum of signed-job price).
+  const spGroups = {};
+  for (const j of soldInWin) {
+    const k = j.salesperson || 'Unassigned';
+    (spGroups[k] ||= { sum: 0, jobs: [] });
+    spGroups[k].sum += j.price; spGroups[k].jobs.push(j);
+  }
+  const spRows = Object.entries(spGroups).sort((a, b) => b[1].sum - a[1].sum);
+
+  // Revenue collected grouped by crew lead (window total; salesperson filter
+  // applies). Same math as before, but the payment lists are kept per crew so
+  // each row can drill down to its payments.
+  const crewPayments = {};
   for (const p of payments) {
     if (!payOk(p) || !inWin(p.received_date)) continue;
     const deal = jobById[p.job_id]?.dripjobs_deal_id;
-    const lead = (deal && dealToLead[deal]) ? dealToLead[deal] : 'Unassigned';
-    crewLeadRev[lead] = (crewLeadRev[lead] || 0) + p.amount;
+    const lead = (deal && dealToProd[deal]?.crew_lead) ? dealToProd[deal].crew_lead : 'Unassigned';
+    (crewPayments[lead] ||= []).push(p);
   }
-  const crewLeadRows = Object.entries(crewLeadRev).sort((a, b) => b[1] - a[1]);
+  const crewLeadRows = Object.entries(crewPayments)
+    .map(([lead, list]) => [lead, list.reduce((s, p) => s + p.amount, 0), list])
+    .sort((a, b) => b[1] - a[1]);
 
-  // Callbacks grouped by crew lead (all-time count of jobs flagged callback=true;
-  // crew_lead is the text field on the production job). Window-independent: a
-  // callback is a quality signal, not a dated event.
-  const callbacksByLead = {};
-  for (const r of (prodRes.data || [])) {
-    if (r.callback !== true) continue;
-    const lead = r.crew_lead || 'Unassigned';
-    callbacksByLead[lead] = (callbacksByLead[lead] || 0) + 1;
+  // GP by crew lead: price of jobs COMPLETED in the window minus those jobs'
+  // tracked costs, grouped by crew via the deal bridge. Reuses
+  // computeCostingRow (the Job Costing tab's formula: totalVar counts
+  // materials USED, not ordered, plus equipment/wages/subs/bonus/commission/
+  // misc) rather than inventing a second GP definition. A completed job with
+  // NO costing signal at all is EXCLUDED and counted in gpMissing, never
+  // treated as cost 0. Deliberately skips the Job Costing tab's derived-plan
+  // fallback (recomputing a material plan from areas for jobs with no
+  // persisted lines); such jobs land in the gpMissing footnote instead.
+  const gpByLead = {};
+  let gpMissing = 0;
+  if (costingOk) {
+    for (const j of compInWin) {
+      const prod = j.dripjobs_deal_id ? dealToProd[j.dripjobs_deal_id] : null;
+      if (!prod || (!costByProdJob[prod.id] && !usedByJob[prod.id] && !bonusByJob[prod.id])) { gpMissing++; continue; }
+      const row = computeCostingRow({ revenue: j.price }, costByProdJob[prod.id], null, orderedByJob[prod.id], usedByJob[prod.id], bonusByJob[prod.id]);
+      const lead = prod.crew_lead || 'Unassigned';
+      (gpByLead[lead] ||= { price: 0, cost: 0, gp: 0, jobs: [] });
+      gpByLead[lead].price += j.price;
+      gpByLead[lead].cost += row.totalVar;
+      gpByLead[lead].gp += row.gp;
+      gpByLead[lead].jobs.push({ j, cost: row.totalVar, gp: row.gp });
+    }
   }
-  const callbackRows = Object.entries(callbacksByLead).sort((a, b) => b[1] - a[1]);
+  const gpRows = Object.entries(gpByLead).sort((a, b) => b[1].gp - a[1].gp);
+
+  // AR per week: reconstructed END-OF-WEEK snapshots using the same rule as
+  // the Invoicing Total AR headline (completed unpaid balance + deposits owed
+  // on signed-no-deposit jobs). For each week's end date D (today for the
+  // current partial week): paid_as_of(D) sums payments received on or before
+  // D; a job completed by D owes its remaining balance; a job signed but not
+  // completed by D with zero payments and no waiver owes its deposit
+  // (deposit_amount, else 50% of price). Two known divergences from the
+  // headline, which keys on status==='completed' and the deposit_collected
+  // flag instead of dates/payments: a job marked completed with no
+  // completed_date, and a deposit flagged collected with no payment row.
+  // deposit_waived / deposit_amount have no history, so they apply
+  // retroactively to past snapshots (noted in the caption).
+  const todayIso = invToday();
+  const arJobsAll = jobs.filter(jobOk);
+  const arD = weeks.map(wk => wk.end > todayIso ? todayIso : wk.end);
+  const depositDue = j => j.deposit_amount != null ? j.deposit_amount : invRound2(j.price * 0.5);
+  const dueAt = (j, D, paid) => {
+    if (j.completed_date && j.completed_date <= D) return (j.price - paid > 0.005) ? j.price - paid : 0;
+    if (j.signed_date && j.signed_date <= D && paid <= 0.005 && !j.deposit_waived) return depositDue(j);
+    return 0;
+  };
+  const arPerWeek = Array(weeks.length).fill(0);
+  {
+    // Single ascending pass: weeks are sorted, so each job's payment cursor
+    // only ever advances. O(jobs x weeks + payments).
+    const payIdx = {}, paidSoFar = {};
+    weeks.forEach((wk, i) => {
+      const D = arD[i];
+      for (const j of arJobsAll) {
+        const list = payByJob[j.id] || [];
+        let k = payIdx[j.id] || 0;
+        while (k < list.length && list[k].received_date && list[k].received_date <= D) { paidSoFar[j.id] = (paidSoFar[j.id] || 0) + list[k].amount; k++; }
+        payIdx[j.id] = k;
+        arPerWeek[i] += dueAt(j, D, paidSoFar[j.id] || 0);
+      }
+    });
+  }
+  const arCaption = 'Reconstructed from current data. deposit_amount and deposit_waived have no history, so they apply retroactively to past weeks.';
+  const arDrillFor = (i) => () => {
+    const D = arD[i];
+    const rows = [];
+    let total = 0;
+    for (const j of arJobsAll) {
+      const paid = (payByJob[j.id] || []).reduce((s, p) => (p.received_date && p.received_date <= D) ? s + p.amount : s, 0);
+      const due = dueAt(j, D, paid);
+      if (due <= 0.005) continue;
+      const isFinal = j.completed_date && j.completed_date <= D;
+      rows.push({ openjob: j.id, _d: isFinal ? j.completed_date : j.signed_date, cells: [j.customer_name || '—', isFinal ? 'Final balance' : 'Deposit due', invFmtDate(isFinal ? j.completed_date : j.signed_date), invUSD(due)] });
+      total += due;
+    }
+    rows.sort((a, b) => (a._d || '').localeCompare(b._d || ''));
+    return {
+      title: `AR snapshot as of ${invFmtDate(D)}`,
+      summary: 'Completed unpaid balances plus deposits owed on signed jobs, as of this date.',
+      columns: ['Customer', 'Type', 'Reference date', 'Due'],
+      rows,
+      total: [countOf(rows.length, 'job'), '', '', invUSD(total)],
+      footnote: arCaption,
+    };
+  };
+
+  // Callback rate, all-time: jobs flagged callback=true over completed
+  // production jobs (touch-up visit rows excluded from both sides). The flag
+  // is undated and prod jobs carry no salesperson, so neither the window nor
+  // the salesperson filter applies; the labels say so when a salesperson is
+  // selected.
+  const cbByLead = {}, compByLead = {};
+  for (const r of prodJobs) {
+    const lead = r.crew_lead || 'Unassigned';
+    if (r.status === 'completed') compByLead[lead] = (compByLead[lead] || 0) + 1;
+    if (r.callback === true) cbByLead[lead] = (cbByLead[lead] || 0) + 1;
+  }
+  const callbackJobs = prodJobs.filter(r => r.callback === true);
+  const totalCallbacks = callbackJobs.length;
+  const totalProdCompleted = Object.values(compByLead).reduce((s, n) => s + n, 0);
+  const callbackPct = totalProdCompleted ? totalCallbacks / totalProdCompleted : null;
+  const callbackLeads = [...new Set([...Object.keys(cbByLead), ...Object.keys(compByLead)])];
+  const callbackRows = callbackLeads
+    .map(lead => ({ lead, cb: cbByLead[lead] || 0, comp: compByLead[lead] || 0, pct: (compByLead[lead] || 0) > 0 ? (cbByLead[lead] || 0) / compByLead[lead] : null }))
+    .filter(r => r.cb > 0 || r.comp > 0)
+    .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1) || b.cb - a.cb);
+  const allSp = sp ? ' (all salespeople)' : '';
+
+  // ---- Per-bar drill builders ----------------------------------------------
+  const depositPaymentsInWeek = (wk) => {
+    const list = [];
+    for (const k in payByJob) { const j = jobById[k]; if (!j || !jobOk(j)) continue; const first = payByJob[k][0]; if (invInWeek(first.received_date, wk)) list.push(first); }
+    return list;
+  };
+  const reviewsDrillFor = (wk) => () => {
+    const list = reviews
+      .filter(rv => { const j = jobById[rv.job_id]; return j && jobOk(j) && invInWeek(mstDay(rv.created_at), wk); })
+      .sort((a, b) => (mstDay(a.created_at) || '').localeCompare(mstDay(b.created_at) || ''));
+    return {
+      title: `Reviews, week of ${wk.label}`,
+      summary: null,
+      columns: ['Customer', 'Date', 'Rating'],
+      rows: list.map(rv => ({ openjob: rv.job_id, cells: [jobById[rv.job_id].customer_name || '—', invFmtDate(mstDay(rv.created_at)), rv.rating != null ? rv.rating + '★' : '—'] })),
+      total: [countOf(list.length, 'review'), '', ''],
+      footnote: null,
+    };
+  };
+  const barIds = {
+    revCollected: weeks.map(wk => regDrill(paymentsDrill(`Revenue collected, week of ${wk.label}`, payments.filter(p => payOk(p) && invInWeek(p.received_date, wk))))),
+    ar: weeks.map((wk, i) => regDrill(arDrillFor(i))),
+    jobsCompleted: weeks.map(wk => regDrill(jobsDrill(`Jobs completed, week of ${wk.label}`, jobs.filter(j => jobOk(j) && invInWeek(j.completed_date, wk)), j => j.completed_date))),
+    revCompleted: weeks.map(wk => regDrill(jobsDrill(`Revenue completed, week of ${wk.label}`, jobs.filter(j => jobOk(j) && invInWeek(j.completed_date, wk)), j => j.completed_date))),
+    deposits: weeks.map(wk => regDrill(paymentsDrill(`Deposits collected, week of ${wk.label}`, depositPaymentsInWeek(wk)))),
+    jobsSold: weeks.map(wk => regDrill(jobsDrill(`Jobs sold, week of ${wk.label}`, jobs.filter(j => jobOk(j) && invInWeek(j.signed_date, wk)), j => j.signed_date))),
+    reviews: weeks.map(wk => regDrill(reviewsDrillFor(wk))),
+  };
+
+  // ---- KPI cards ------------------------------------------------------------
+  const salesVolume = soldInWin.reduce((s, j) => s + j.price, 0);
+  const revCollectedWin = payments.filter(p => payOk(p) && inWin(p.received_date));
+  const revCollectedTotal = revCollectedWin.reduce((s, p) => s + p.amount, 0);
+  const kpiIds = {
+    salesVolume: regDrill(jobsDrill('Sales volume: jobs signed in window', soldInWin, j => j.signed_date)),
+    revCollected: regDrill(paymentsDrill('Revenue collected in window', revCollectedWin)),
+    jobsCompleted: regDrill(jobsDrill('Jobs completed in window', compInWin, j => j.completed_date)),
+    avgJobSize: regDrill(jobsDrill('Average job size: jobs signed in window', soldInWin, j => j.signed_date, {
+      summary: avgJobSize == null ? null : `Average of ${countOf(soldInWin.length, 'job')} = ${invUSD(avgJobSize)} (${invUSD(salesVolume)} / ${soldInWin.length})`,
+    })),
+    callbackPct: regDrill(callbacksDrill('Callback jobs (all time)', callbackJobs, {
+      summary: `${totalCallbacks} callback${totalCallbacks === 1 ? '' : 's'} / ${totalProdCompleted} completed production job${totalProdCompleted === 1 ? '' : 's'} (all time) = ${invPct(callbackPct)}`,
+    })),
+  };
+  const kpiCard = (drillId, label, val, sub) => `<button type="button" class="pec-stat" data-drill="${esc(drillId)}" title="Click for the underlying records">
+    <div class="pec-stat-label">${label}</div><div class="pec-stat-val">${val}</div>${sub ? `<div class="pec-ar-sub">${sub}</div>` : ''}
+  </button>`;
+
+  // ---- Row drills for the tables ---------------------------------------------
+  const spRowIds = spRows.map(([name, g]) => regDrill(jobsDrill(`${name}: jobs signed in window`, g.jobs, j => j.signed_date)));
+  const crewRowIds = crewLeadRows.map(([lead, , list]) => regDrill(paymentsDrill(`${lead} crew: payments collected in window`, list)));
+  const gpRowIds = gpRows.map(([lead, g]) => regDrill(() => ({
+    title: `${lead} crew: GP on jobs completed in window`,
+    summary: 'GP = job price minus tracked costs (materials used, equipment, wages, subs, bonuses, commission, misc).',
+    columns: ['Job', 'Completed', 'Price', 'Cost', 'GP'],
+    rows: g.jobs.slice().sort((a, b) => (a.j.completed_date || '').localeCompare(b.j.completed_date || ''))
+      .map(({ j, cost, gp }) => ({ openjob: j.id, cells: [j.customer_name || '—', invFmtDate(j.completed_date), invUSD(j.price), invUSD(cost), invUSD(gp)] })),
+    total: [countOf(g.jobs.length, 'job'), '', invUSD(g.price), invUSD(g.cost), invUSD(g.gp)],
+    footnote: null,
+  })));
+  const cbRowIds = callbackRows.map(r => regDrill(callbacksDrill(`${r.lead}: callback jobs (all time)`, callbackJobs.filter(c => (c.crew_lead || 'Unassigned') === r.lead), {
+    summary: `${r.cb} callback${r.cb === 1 ? '' : 's'} / ${r.comp} completed job${r.comp === 1 ? '' : 's'} = ${invPct(r.pct)}`,
+  })));
 
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
       <select id="pecMetWin">${winOpts.map(([v, l]) => `<option value="${v}" ${state.metricsWindow === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="pecMetSp"><option value="">All salespeople</option>${spList.map(n => `<option value="${esc(n)}" ${sp === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <span style="color:var(--muted);font-size:.72rem;margin-left:auto">Click any card, row, or bar for the records behind it.</span>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Revenue completed per week</div>${invBarChart(revCompleted, weeks, 'revCompleted', invUSD0)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>${invBarChart(revCollected, weeks, 'revCollected', invUSD0)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, 'deposits', invUSD0)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>${invBarChart(jobsCompleted, weeks, 'jobsCompleted', String)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, 'jobsSold', String)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Reviews per week</div>${invBarChart(reviewsPerWeek, weeks, 'reviews', String)}</div>
+    <div class="pec-grid-stats" style="margin-bottom:14px">
+      ${kpiCard(kpiIds.salesVolume, 'Sales volume', invUSD0(salesVolume), countOf(soldInWin.length, 'job') + ' signed in window')}
+      ${kpiCard(kpiIds.revCollected, 'Revenue collected', invUSD0(revCollectedTotal), countOf(revCollectedWin.length, 'payment') + ' in window')}
+      ${kpiCard(kpiIds.jobsCompleted, 'Jobs completed', String(compInWin.length), 'in window')}
+      ${kpiCard(kpiIds.avgJobSize, 'Average job size', invUSD0(avgJobSize), 'jobs signed in window')}
+      ${kpiCard(kpiIds.callbackPct, 'Callback rate', invPct(callbackPct), `all time${allSp}`)}
+    </div>
+    <div class="pec-card"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Salesperson</th><th style="text-align:right">Jobs</th><th style="text-align:right">Signed value</th></tr></thead>
+        <tbody>${spRows.map(([name, g], i) => `<tr class="pec-row-drill" data-drill="${esc(spRowIds[i])}"><td>${esc(name)}</td><td style="text-align:right">${g.jobs.length}</td><td style="text-align:right">${invUSD0(g.sum)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="3" class="pec-empty">No jobs signed in this window.</td></tr>'}</tbody>
+      </table></div>
+    </div>
     <div class="pec-card"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
       <div class="pec-scroll-x"><table class="pec-table">
         <thead><tr><th>Crew lead</th><th style="text-align:right">Collected</th></tr></thead>
-        <tbody>${crewLeadRows.map(([lead, amt]) => `<tr class="nohover"><td>${esc(lead)}</td><td style="text-align:right">${invUSD0(amt)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No payments in this window.</td></tr>'}</tbody>
+        <tbody>${crewLeadRows.map(([lead, amt], i) => `<tr class="pec-row-drill" data-drill="${esc(crewRowIds[i])}"><td>${esc(lead)}</td><td style="text-align:right">${invUSD0(amt)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No payments in this window.</td></tr>'}</tbody>
       </table></div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Callbacks by crew lead (all time)</div>
+    <div class="pec-card"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
+      <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, wages, subs, bonuses, commission, misc. Labor hours are not costed unless entered as wages.</div>
+      ${costingOk ? `
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Crew lead</th><th style="text-align:right">Callbacks</th></tr></thead>
-        <tbody>${callbackRows.map(([lead, n]) => `<tr class="nohover"><td>${esc(lead)}</td><td style="text-align:right">${n}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No callbacks recorded.</td></tr>'}</tbody>
+        <thead><tr><th>Crew lead</th><th style="text-align:right">Jobs</th><th style="text-align:right">Price</th><th style="text-align:right">Cost</th><th style="text-align:right">GP</th></tr></thead>
+        <tbody>${gpRows.map(([lead, g], i) => `<tr class="pec-row-drill" data-drill="${esc(gpRowIds[i])}"><td>${esc(lead)}</td><td style="text-align:right">${g.jobs.length}</td><td style="text-align:right">${invUSD0(g.price)}</td><td style="text-align:right">${invUSD0(g.cost)}</td><td style="text-align:right">${invUSD0(g.gp)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No completed jobs with costing data in this window.</td></tr>'}</tbody>
+      </table></div>
+      ${gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data.</div>` : ''}`
+      : '<div class="pec-empty">Costing data could not be loaded; GP is unavailable right now.</div>'}
+    </div>
+    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>${invBarChart(revCollected, weeks, barIds.revCollected, invUSD0)}</div>
+    <div class="pec-card"><div class="pec-metric-h">AR per week (end-of-week snapshot)</div>
+      ${invBarChart(arPerWeek, weeks, barIds.ar, invUSD0)}
+      <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${esc(arCaption)} Latest bar uses today as the snapshot date and matches the Invoicing Total AR headline.</div>
+    </div>
+    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>${invBarChart(jobsCompleted, weeks, barIds.jobsCompleted, String)}</div>
+    <div class="pec-card"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Crew lead</th><th style="text-align:right">Callbacks</th><th style="text-align:right">Completed</th><th style="text-align:right">Callback rate</th></tr></thead>
+        <tbody>${callbackRows.map((r, i) => `<tr class="pec-row-drill" data-drill="${esc(cbRowIds[i])}"><td>${esc(r.lead)}</td><td style="text-align:right">${r.cb}</td><td style="text-align:right">${r.comp}</td><td style="text-align:right">${invPct(r.pct)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No completed production jobs yet.</td></tr>'}</tbody>
       </table></div>
     </div>
-    <div class="pec-grid-stats">
-      <div class="pec-stat"><div class="pec-stat-label">Average job size</div><div class="pec-stat-val">${invUSD0(avgJobSize)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Avg days sign to deposit</div><div class="pec-stat-val">${invDays(avgSignToDep)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Avg days completion to paid</div><div class="pec-stat-val">${invDays(avgComplToFinal)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Paid in full on completion day</div><div class="pec-stat-val">${invPct(pctPaidOnDay)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">AR aged 30+ days</div><div class="pec-stat-val">${invUSD0(arAged30)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Average review rating</div><div class="pec-stat-val">${avgRating == null ? '—' : avgRating.toFixed(1)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Reviews (window)</div><div class="pec-stat-val">${ratingN}</div></div>
-    </div>
+    <details class="pec-card pec-ar-sec">
+      <summary>More metrics <span class="pec-ar-meta">deposits, jobs sold, reviews, payment timing, AR aging</span></summary>
+      <div style="padding:14px 18px">
+        <div class="pec-card" style="margin-top:0"><div class="pec-metric-h">Revenue completed per week</div>${invBarChart(revCompleted, weeks, barIds.revCompleted, invUSD0)}</div>
+        <div class="pec-card"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, barIds.deposits, invUSD0)}</div>
+        <div class="pec-card"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, barIds.jobsSold, String)}</div>
+        <div class="pec-card"><div class="pec-metric-h">Reviews per week</div>${invBarChart(reviewsPerWeek, weeks, barIds.reviews, String)}</div>
+        <div class="pec-grid-stats">
+          <div class="pec-stat"><div class="pec-stat-label">Avg days sign to deposit</div><div class="pec-stat-val">${invDays(avgSignToDep)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Avg days completion to paid</div><div class="pec-stat-val">${invDays(avgComplToFinal)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Paid in full on completion day</div><div class="pec-stat-val">${invPct(pctPaidOnDay)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">AR aged 30+ days</div><div class="pec-stat-val">${invUSD0(arAged30)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Average review rating</div><div class="pec-stat-val">${avgRating == null ? '—' : avgRating.toFixed(1)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Reviews (window)</div><div class="pec-stat-val">${ratingN}</div></div>
+        </div>
+      </div>
+    </details>
   `;
 
   $('pecMetWin').addEventListener('change', e => { state.metricsWindow = e.target.value; renderMetrics(); });
   $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
-  root.querySelectorAll('.pec-bar').forEach(b => b.addEventListener('click', () => openMetricDrilldown(b.dataset.metric, parseInt(b.dataset.week, 10))));
+  // One universal hook serves every drillable surface: KPI cards, table rows,
+  // and chart bars all carry data-drill ids into the same registry.
+  root.querySelectorAll('[data-drill]').forEach(el => el.addEventListener('click', () => openMetricsDrill(el.dataset.drill)));
 }
 
-function openMetricDrilldown(metricKey, wi) {
-  const d = state.metricsData; if (!d) return;
-  const weeks = invBuildWeeks(state.metricsWindow); const wk = weeks[wi]; if (!wk) return;
-  const sp = state.metricsSalesperson;
-  const jobOk = j => !sp || j.salesperson === sp;
-  let title = '', rows = [];
-  if (metricKey === 'revCompleted' || metricKey === 'jobsCompleted') {
-    title = metricKey === 'revCompleted' ? 'Revenue completed' : 'Jobs completed';
-    rows = d.jobs.filter(j => jobOk(j) && invInWeek(j.completed_date, wk)).map(j => ({ name: j.customer_name, date: j.completed_date, val: invUSD(j.price) }));
-  } else if (metricKey === 'jobsSold') {
-    title = 'Jobs sold';
-    rows = d.jobs.filter(j => jobOk(j) && invInWeek(j.signed_date, wk)).map(j => ({ name: j.customer_name, date: j.signed_date, val: invUSD(j.price) }));
-  } else if (metricKey === 'revCollected') {
-    title = 'Revenue collected';
-    rows = d.payments.filter(p => { const j = d.jobById[p.job_id]; return j && jobOk(j) && invInWeek(p.received_date, wk); })
-      .map(p => ({ name: d.jobById[p.job_id].customer_name, date: p.received_date, val: invUSD(p.amount) + ' · ' + p.method }));
-  } else if (metricKey === 'deposits') {
-    title = 'Deposits collected';
-    for (const k in d.payByJob) { const j = d.jobById[k]; if (!j || !jobOk(j)) continue; const first = d.payByJob[k][0]; if (invInWeek(first.received_date, wk)) rows.push({ name: j.customer_name, date: first.received_date, val: invUSD(first.amount) + ' · ' + first.method }); }
-  } else if (metricKey === 'reviews') {
-    title = 'Reviews';
-    const day = ts => ts ? new Date(new Date(ts).getTime() - 7 * 3600e3).toISOString().slice(0, 10) : null;
-    rows = (d.reviews || []).filter(rv => { const j = d.jobById[rv.job_id]; return j && jobOk(j) && invInWeek(day(rv.created_at), wk); })
-      .map(rv => ({ name: d.jobById[rv.job_id].customer_name, date: day(rv.created_at), val: (rv.rating != null ? rv.rating + '★' : '—') }));
-  }
-  rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  openModal(`<h3>${esc(title)}, week of ${esc(wk.label)}</h3>
-    <div class="pec-scroll-x"><table class="pec-table"><thead><tr><th>Customer</th><th>Date</th><th>Amount</th></tr></thead>
-    <tbody>${rows.map(r => `<tr class="nohover"><td>${esc(r.name || '—')}</td><td>${invFmtDate(r.date)}</td><td>${esc(r.val)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="3" class="pec-empty">No items this week.</td></tr>'}</tbody></table></div>
-    <div class="pec-modal-actions"><button class="pec-btn ghost" onclick="pecCloseModal()">Close</button></div>`);
+// Universal metrics drilldown renderer. `id` indexes the per-render registry
+// built by renderMetrics (state.metricsDrills); the registry holds lazy
+// builders, so the record list materializes only when clicked. Every drill
+// shows the underlying records plus a total/count row that visibly adds up to
+// the number on the card, row, or bar that opened it. Uses openModal()
+// (#pecModalRoot) per the two-modal-root rule; #prodModalRoot is untouched.
+function openMetricsDrill(id) {
+  const build = (state.metricsDrills || {})[id];
+  if (!build) return;
+  const d = build();
+  const cols = d.columns || [];
+  const lastIdx = cols.length - 1;
+  const cellTd = (val, ci) => `<td${ci === lastIdx ? ' style="text-align:right"' : ''}>${esc(val == null || val === '' ? (ci === 0 ? '—' : '') : val)}</td>`;
+  const rowsHtml = (d.rows || []).map(r => `<tr class="nohover">${r.cells.map((c, ci) => {
+    if (ci === 0 && r.openjob) return `<td><button type="button" class="pec-cust-name" data-openjob="${esc(r.openjob)}">${esc(c || '—')}</button></td>`;
+    return cellTd(c, ci);
+  }).join('')}</tr>`).join('') || `<tr class="nohover"><td colspan="${cols.length}" class="pec-empty">No records.</td></tr>`;
+  const totalHtml = d.total ? `<tfoot><tr class="nohover">${d.total.map((c, ci) => `<td${ci === lastIdx ? ' style="text-align:right"' : ''}><strong>${esc(c)}</strong></td>`).join('')}</tr></tfoot>` : '';
+  openModal(`<h3 style="margin-top:0">${esc(d.title)}</h3>
+    ${d.summary ? `<div style="color:var(--muted);font-size:.78rem;margin:-4px 0 10px">${esc(d.summary)}</div>` : ''}
+    <div class="pec-scroll-x" style="max-height:60vh;overflow-y:auto"><table class="pec-table">
+      <thead><tr>${cols.map((c, ci) => `<th${ci === lastIdx ? ' style="text-align:right"' : ''}>${esc(c)}</th>`).join('')}</tr></thead>
+      <tbody>${rowsHtml}</tbody>${totalHtml}
+    </table></div>
+    ${d.footnote ? `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">${esc(d.footnote)}</div>` : ''}
+    <div class="pec-modal-actions"><button class="pec-btn ghost" onclick="pecCloseModal()">Close</button></div>`, {
+    onMount(modal) {
+      // Same open-the-job pattern the invoicing tables use, plus closeModal()
+      // first so the modal does not overlay the Jobs view it navigates to.
+      modal.querySelectorAll('[data-openjob]').forEach(b => b.addEventListener('click', () => {
+        closeModal();
+        state.openJobId = b.dataset.openjob; state.openInvoiceJobId = null; switchView('jobs');
+      }));
+    },
+  });
 }
 
 function renderInvoicingDocs() {
