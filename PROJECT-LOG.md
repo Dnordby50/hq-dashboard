@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Cowork: refined the metrics portion of today's Claude Code prompt (universal drilldowns, avg job size KPI, AR per week)
+By: Cowork
+Changed: No code. Refined Task 4 of the prompt from the previous entry per Dylan: (1) EVERY metric is clickable, KPI cards, table rows, and chart bars all open a drilldown listing the underlying records, extending openMetricDrilldown (index.html:7948) which today only handles bar charts. (2) Average job size promoted to an explicit named KPI (it was already in the top cards) with its own drilldown. (3) New "AR per week" chart: reconstructed end-of-week AR snapshots, per-job amount due as of each week's end date using the same rule as the Invoicing tab headline (completed unpaid balance + deposits owed on signed-no-deposit jobs, index.html:7159-7167), with payments time-filtered by received_date. Known approximation: deposit_waived has no history so it applies retroactively in old snapshots.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pastes the refined prompt (reprinted in full in the Cowork chat) into Claude Code. This supersedes the Task 4 wording from the previous entry; Tasks 1-3 are unchanged.
+Handoff to Cowork: None yet.
+Handoff to Dylan: Run the refined prompt in Claude Code.
+
+---
+
 ## [2026-06-10 MST] Cowork: investigated 4 requested changes, wrote one Claude Code prompt (calendar tasks, custom blend flake costing, invoicing closed window, metrics restructure)
 By: Cowork
 Changed: No code. Investigated index.html at commit 29f8f93 and wrote one self-contained Claude Code prompt covering four tasks Dylan requested: (1) a "+ Add Task" button next to "+ Add Job" on the Job Schedule. Finding: the crew-task feature does NOT exist anywhere in the PEC module (zero task references below line 5814, no pec_prod_tasks migration). The 2026-06-09 Cowork entry specced it (single-day, crew + description, no job link) but that prompt was never run, so the prompt builds it from scratch. (2) Custom blend flake job costing: "Recalculate from catalog" throws CalculatorError at index.html:15087 when a required Flake slot has no product (slot resolution 15082-15085). Seen on Eric Huff MANUAL-20260526-131919-IWKO. Fix specced: emit a manually priced placeholder line instead of throwing, price entered case by case via the existing Save line edits flow. Note: that job also has 0 sqft, so quantities will be zero until sqft is entered. (3) Invoicing "Recently closed": extend 30 to 60 days (filter at 7156, heading 7235, empty text 7202) and add a dollar total to the section summary to match the other sections. (4) Metrics tab restructured DripJobs-style: KPI cards on top (sales volume, revenue collected, jobs completed, avg job size, callback pct), then sales by salesperson, revenue by crew, GP by crew (reusing renderJobCosting cost math, materials + bonuses, labeled honestly), revenue per week, jobs completed per week, callback pct by crew; unnamed existing metrics move to a collapsed More Metrics section, not deleted.
