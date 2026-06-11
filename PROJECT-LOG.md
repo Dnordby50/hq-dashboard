@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Claude Code: Invoicing "Recently closed" widened to 60 days, dollar total added
+By: Claude Code
+Changed: The Invoicing "Recently closed" bucket now shows jobs whose last payment landed within 60 days (was 30): the filter, the section heading, the empty-state text, and the help-page description all moved together. The section summary now also shows the total job value, e.g. "7 jobs · $58,400.00 total", matching the dollar-amount meta the other three sections already had.
+Why: Dylan wanted a longer rear-view window on closed work and a value total at a glance, consistent with the rest of the tab.
+How it works: the total sums r.price over the closed list (the full job value, not the payments in the window), using the same invUSD formatter the sibling sections use. Nothing about AR math changed: the closed bucket has zero balance by definition and never feeds the Total AR headline.
+Verification: node --check passes on all six inline script blocks.
+Files touched: index.html
+Commit: 6b3d340
+Next steps: none.
+Handoff to Cowork: None.
+Handoff to Dylan: None.
+
+---
+
 ## [2026-06-10 MST] Claude Code: custom blend flake no longer breaks job costing (manual price per job)
 By: Claude Code
 Changed: "Recalculate from catalog" no longer fails with `Flake is required but no product was selected` when a required swatch slot (Flake, Quartz, or Metallic Pigment) has no catalog product, the situation Dylan hit on Eric Huff #MANUAL-20260526-131919-IWKO with an in-house custom blend. The calculator now emits a placeholder material line instead: "Custom blend flake (enter cost)" (wording matches the material type), qty 1, unit cost 0, product_id NULL. The job detail line editor gained a Unit cost column: read-only for catalog lines, editable for these custom blend lines; Save line edits persists the entered unit_cost_snapshot and recomputes line_cost, which flows straight into the Job Costing materials totals (they sum line_cost). Missing required Basecoat or Topcoat still hard-errors, since those are always catalog products and a missing one is a data mistake. Recalculate also now reports a non-blocking warning when the job's total sqft is 0 (every sqft-based quantity computes to zero lines, which previously looked like the recalc silently deleted everything).
