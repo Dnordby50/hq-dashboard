@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Claude Code: single-day crew tasks on the Job Schedule (+ Add Task, NEEDS MIGRATION)
+By: Claude Code
+Changed: New crew-task feature on the Job Schedule. A "+ Add Task" button now sits next to "+ Add Job" in the schedule toolbar. It opens a small modal (date defaulting to the visible week's anchor, crew lead select sourced from the same active-crews list as Add Job, required description). Tasks render as small chips in the matching day cell of BOTH calendar modes: at the top of each day column on the 1-week run sheet, and in the filler row below the job bars on the 3-week grid. Clicking a chip opens the same modal in edit mode with a Completed checkbox and a Delete button; completed tasks render dimmed and struck through. New table public.pec_prod_tasks via supabase/migrations/2026-06-10_prod_tasks.sql (id, task_date, crew_lead text, description, completed, timestamps, the shared pec_prod_touch_updated_at trigger, staff RLS, task_date index, idempotent).
+Why: Dylan wants crew reminders (pickups, drop-offs, shop work) visible on the calendar without faking them as jobs. Decisions captured 2026-06-09: single-day, crew plus short description, NO job link.
+How it stays isolated: a task has no job_id and no status. The render path only reads state.prodTasks; deriveJobStatus, runScheduleStatusSync, and every other status sync path are untouched. The chips are visually distinct (dashed border, muted background) so they cannot be mistaken for job bars. One non-obvious detail: the 3-week grid places chips in the trailing 1fr grid row AFTER the job-bar lanes, so the lane-assignment math in buildWeek did not change at all. Another: task_date is compared only as a YYYY-MM-DD string (never parsed via new Date()), avoiding the timezone day-shift trap.
+Graceful pre-migration behavior: the pec_prod_tasks select in loadProdCore tolerates the missing table (supabase-js returns the error inside the result object), so the schedule renders normally with zero chips until the migration runs; only a task save would surface an error.
+Note re the prompt: the prompt asked for chips in "all three calendar modes (1-week, 3-week, month)". The calendar has exactly two modes (week and 3weeks); the 3-week grid's container class is pec-cal-month, which is where "month" came from. Chips render in both real modes.
+Verification: node --check passes on all six inline script blocks. No em dashes. Status paths untouched (grep confirms no new references).
+Files touched: index.html, supabase/migrations/2026-06-10_prod_tasks.sql
+Commit: ad2efed
+Next steps: Cowork runs the migration in PROD (handoff below), then Dylan hard-refreshes and tries a task in both calendar modes.
+
+## Handoff to Cowork
+Run supabase/migrations/2026-06-10_prod_tasks.sql in the PEC PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor. It is idempotent and non-destructive (one new table, no existing objects touched). Verify with the three queries in the file footer (table exists, 1 policy, 1 trigger). Until it runs, the schedule works normally but saving a task shows "relation pec_prod_tasks does not exist". Full self-contained prompt printed in the Claude Code chat for this session.
+Handoff to Dylan: After the migration, hard-refresh the Job Schedule and create a task; check it appears in both the Week and 3 weeks views.
+
+---
+
 ## [2026-06-10 MST] Cowork: refined the metrics portion of today's Claude Code prompt (universal drilldowns, avg job size KPI, AR per week)
 By: Cowork
 Changed: No code. Refined Task 4 of the prompt from the previous entry per Dylan: (1) EVERY metric is clickable, KPI cards, table rows, and chart bars all open a drilldown listing the underlying records, extending openMetricDrilldown (index.html:7948) which today only handles bar charts. (2) Average job size promoted to an explicit named KPI (it was already in the top cards) with its own drilldown. (3) New "AR per week" chart: reconstructed end-of-week AR snapshots, per-job amount due as of each week's end date using the same rule as the Invoicing tab headline (completed unpaid balance + deposits owed on signed-no-deposit jobs, index.html:7159-7167), with payments time-filtered by received_date. Known approximation: deposit_waived has no history so it applies retroactively in old snapshots.
