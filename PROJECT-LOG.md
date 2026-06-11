@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-10 MST] Claude Code: custom blend flake no longer breaks job costing (manual price per job)
+By: Claude Code
+Changed: "Recalculate from catalog" no longer fails with `Flake is required but no product was selected` when a required swatch slot (Flake, Quartz, or Metallic Pigment) has no catalog product, the situation Dylan hit on Eric Huff #MANUAL-20260526-131919-IWKO with an in-house custom blend. The calculator now emits a placeholder material line instead: "Custom blend flake (enter cost)" (wording matches the material type), qty 1, unit cost 0, product_id NULL. The job detail line editor gained a Unit cost column: read-only for catalog lines, editable for these custom blend lines; Save line edits persists the entered unit_cost_snapshot and recomputes line_cost, which flows straight into the Job Costing materials totals (they sum line_cost). Missing required Basecoat or Topcoat still hard-errors, since those are always catalog products and a missing one is a data mistake. Recalculate also now reports a non-blocking warning when the job's total sqft is 0 (every sqft-based quantity computes to zero lines, which previously looked like the recalc silently deleted everything).
+Why: a custom blend is blended in-house, so there is legitimately no catalog product to select; the price has to be entered case by case per job.
+How it works: the placeholder is appended AFTER the merge step on purpose. The merge groups lines by product_id (all-null placeholders for Flake and Quartz would collapse into one), divides by spread_rate to get quantities (zero here), and drops zero-sqft groups, so routing the placeholder through it would corrupt or lose the line. product_id IS NULL doubles as the manual flag the line editor keys on, so no schema change was needed (pec_prod_material_lines.product_id was already nullable, and the insert payload already passed product_id || null). The special-order pattern was considered and rejected: it works by stamping a real catalog product id onto the area, which would have required seeding placeholder product rows in PROD.
+Both calculator copies changed identically (production/calculator.js, the canonical npm-test source, and the inline mirror in index.html), per the comment that mandates keeping them in lockstep. The old test asserting the Flake throw was rewritten to assert the new placeholder behavior (that behavior change is the point of this task), and four new tests cover: one placeholder per material type, two flakeless areas merging into ONE placeholder, flake + quartz yielding TWO, and Basecoat still throwing.
+Verification: npm test 56 passed 0 failed. node --check passes on all six inline script blocks. Normal catalog jobs are byte-identical: the new code path only executes for inputs that previously THREW.
+Files touched: index.html, production/calculator.js, production/calculator.test.js
+Commit: aa77ddc
+Next steps: Dylan hard-refreshes, opens Job Costing on the Eric Huff job, recalculates (expect the custom blend line plus the 0-sqft warning), enters the real sqft and the flake price, saves.
+Handoff to Cowork: None (no migration, no external systems).
+Handoff to Dylan: Enter the real sqft on the Eric Huff job or its spread-rate lines will stay at zero quantity even after this fix.
+
+---
+
 ## [2026-06-10 MST] Claude Code: single-day crew tasks on the Job Schedule (+ Add Task, NEEDS MIGRATION)
 By: Claude Code
 Changed: New crew-task feature on the Job Schedule. A "+ Add Task" button now sits next to "+ Add Job" in the schedule toolbar. It opens a small modal (date defaulting to the visible week's anchor, crew lead select sourced from the same active-crews list as Add Job, required description). Tasks render as small chips in the matching day cell of BOTH calendar modes: at the top of each day column on the 1-week run sheet, and in the filler row below the job bars on the 3-week grid. Clicking a chip opens the same modal in edit mode with a Completed checkbox and a Delete button; completed tasks render dimmed and struck through. New table public.pec_prod_tasks via supabase/migrations/2026-06-10_prod_tasks.sql (id, task_date, crew_lead text, description, completed, timestamps, the shared pec_prod_touch_updated_at trigger, staff RLS, task_date index, idempotent).
