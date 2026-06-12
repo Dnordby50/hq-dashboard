@@ -15810,16 +15810,79 @@ function _mergeAcrossAreas(areaPlans) {
     const d = new Date(); d.setDate(d.getDate() + offset);
     return d.toISOString().slice(0, 10);
   }
-  // Aggregates needed material across jobs whose install_date falls in
-  // [startISO, endISO] inclusive. Groups by product_id; sums (order_qty for
-  // ordered=false) - (backstock_qty when use_backstock=true) clamped to >= 0.
-  // Pure function so the math stays testable later.
-  function aggregateMaterialPull(jobs, startISO, endISO) {
-    const inRange = (j) => j.install_date && j.install_date >= startISO && j.install_date <= endISO && j.status !== 'completed';
+  // Memoizing line generator for jobs that have areas but NO saved material
+  // lines (webhook / calendar-bridge jobs before anyone ran Recalculate).
+  // Reuses computeMaterialPlan with the EXACT same inputs the job-detail
+  // Recalculate uses (see recalcActiveJob), so the pull previews precisely
+  // what Recalculate would persist. Results are in-memory only, never saved,
+  // and cached per job id in state._pullData.calcCache so date and preset
+  // changes re-render without recomputing. Errors (e.g. a required Basecoat
+  // with no product) are returned per job, never thrown, so one bad job can
+  // never blank the whole pull.
+  function makePullCalcLines() {
+    const cache = (state._pullData || (state._pullData = { daysByJob: {}, daysError: false, calcCache: new Map() })).calcCache;
+    let ctx = null;
+    return (job) => {
+      if (cache.has(job.id)) return cache.get(job.id);
+      let res;
+      try {
+        ctx = ctx || { productsById: indexById(state.products), recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake() };
+        const areasInput = (job.areas || []).map(a => ({
+          id: a.id, name: a.name, sqft: Number(a.sqft),
+          system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
+          topcoat_product_id: a.topcoat_product_id || null,
+          basecoat_cure_speed: a.basecoat_cure_speed || null,
+          topcoat_cure_speed: a.topcoat_cure_speed || null,
+          tints: (a.tints || []).map(t => ({
+            product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
+          })),
+        }));
+        res = { lines: computeMaterialPlan({ areas: areasInput, ...ctx }).lines };
+      } catch (err) { res = { error: err && err.message ? err.message : String(err) }; }
+      cache.set(job.id, res);
+      return res;
+    };
+  }
+
+  // Aggregates needed material across jobs in the [startISO, endISO] window.
+  // A job is in-window when its install_date OR at least one of its schedule
+  // days (pec_prod_job_schedule_days, passed in as daysByJob) falls in range,
+  // and it is not completed. Lines come from the job's saved material lines
+  // when present; otherwise they are computed in memory by the injected
+  // computeLinesFor callback (never persisted). Per line: sums (order_qty for
+  // ordered=false) - (backstock_qty when use_backstock=true) clamped to >= 0,
+  // grouped by product_id. Returns { rows, summary }; summary buckets are
+  // disjoint, so inWindow = saved + calculated + skipped.length +
+  // fullyDelivered. Deterministic given its arguments (the calculator is
+  // injected) so the math stays testable later.
+  function aggregateMaterialPull(jobs, startISO, endISO, daysByJob, computeLinesFor) {
+    const summary = { inWindow: 0, saved: 0, calculated: 0, fullyDelivered: 0, skipped: [] };
     const out = new Map();
+    if (!startISO || !endISO) return { rows: [], summary };
+    const inRange = (d) => d >= startISO && d <= endISO;
     for (const job of jobs) {
-      if (!inRange(job)) continue;
-      for (const l of (job.lines || [])) {
+      if (job.status === 'completed') continue;
+      const days = (daysByJob && daysByJob[job.id]) || []; // sorted ascending
+      if (!((job.install_date && inRange(job.install_date)) || days.some(inRange))) continue;
+      summary.inWindow++;
+      // Schedule-only jobs have no install_date; show the earliest in-window
+      // scheduled day instead so the breakdown still reads chronologically.
+      const displayDate = job.install_date || days.find(inRange) || '?';
+      const skip = (reason) => summary.skipped.push({ customer: job.customer_name, proposal: job.proposal_number, reason });
+      let lines, calculated = false;
+      if ((job.lines || []).length) {
+        if (job.lines.every(l => l.delivered)) { summary.fullyDelivered++; continue; }
+        summary.saved++;
+        lines = job.lines;
+      } else if ((job.areas || []).length) {
+        const res = computeLinesFor(job);
+        if (res.error) { skip(res.error); continue; }
+        if (!res.lines.length) { skip('calculator produced no lines (check area sqft)'); continue; }
+        summary.calculated++;
+        calculated = true;
+        lines = res.lines;
+      } else { skip('no areas'); continue; }
+      for (const l of lines) {
         if (l.delivered) continue;
         const have = l.use_backstock ? Number(l.backstock_qty || 0) : 0;
         const need = Math.max(0, Number(l.order_qty || l.qty_needed || 0) - have);
@@ -15836,7 +15899,10 @@ function _mergeAcrossAreas(areaPlans) {
           cure_speed: l.cure_speed || null,
           kit_size: l.kit_size,
           spread_rate: l.spread_rate,
-          unit_cost: l.unit_cost_snapshot ?? null,
+          // An unpriced custom blend (manual line: no product, snapshot 0)
+          // has an UNKNOWN cost, not $0; null renders the placeholder glyph
+          // and keeps it out of the cost totals.
+          unit_cost: (l.product_id == null && !Number(l.unit_cost_snapshot)) ? null : (l.unit_cost_snapshot ?? null),
           total_qty: 0,
           jobs: [],
         });
@@ -15848,26 +15914,46 @@ function _mergeAcrossAreas(areaPlans) {
           proposal: job.proposal_number,
           customer: job.customer_name,
           address: job.address,
-          install_date: job.install_date,
+          install_date: displayDate,
           qty: need,
+          calculated,
         });
       }
     }
-    return Array.from(out.values()).sort((a, b) => {
+    const rows = Array.from(out.values()).sort((a, b) => {
       if (a.supplier !== b.supplier) return (a.supplier || '').localeCompare(b.supplier || '');
       if (a.material_type !== b.material_type) return a.material_type.localeCompare(b.material_type);
       return a.product_name.localeCompare(b.product_name);
     });
+    // Breakdown entries chronological, unknown dates last.
+    for (const r of rows) r.jobs.sort((a, b) => String(a.install_date === '?' ? '9999' : a.install_date).localeCompare(String(b.install_date === '?' ? '9999' : b.install_date)));
+    return { rows, summary };
   }
 
-  function openMaterialPull() {
+  async function openMaterialPull() {
     state._pull = state._pull || { start: isoDay(0), end: isoDay(14) };
+    // _pullData lives OUTSIDE state._pull on purpose: the preset buttons
+    // replace state._pull wholesale, which would wipe anything stashed there.
+    // Rebuilt on every open, which doubles as cache invalidation (job data
+    // cannot change while the pull modal is open; it shares prodModalRoot
+    // with the job detail).
+    state._pullData = { daysByJob: {}, daysError: false, calcCache: new Map() };
+    try {
+      const { data, error } = await supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date');
+      if (error) throw error;
+      for (const r of (data || [])) (state._pullData.daysByJob[r.job_id] ||= []).push(r.scheduled_date);
+      for (const k of Object.keys(state._pullData.daysByJob)) state._pullData.daysByJob[k].sort();
+    } catch (err) {
+      // Degrade to install_date-only matching; renderMaterialPull shows a note.
+      console.warn('[prod] pull schedule days:', err);
+      state._pullData.daysError = true;
+    }
     renderMaterialPull();
   }
 
   function renderMaterialPull() {
     const { start, end } = state._pull;
-    const rows = aggregateMaterialPull(state.jobs, start, end);
+    const { rows, summary } = aggregateMaterialPull(state.jobs, start, end, (state._pullData || {}).daysByJob || {}, makePullCalcLines());
     const groupedBySupplier = rows.reduce((acc, r) => {
       (acc[r.supplier] ||= []).push(r);
       return acc;
@@ -15900,8 +15986,20 @@ function _mergeAcrossAreas(areaPlans) {
             <button class="pec-btn primary sm" id="prodPullPrint">Print</button>
           </div>
 
+          <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.75rem;color:var(--muted)">
+            <strong style="color:var(--rd-ink)">${summary.inWindow}</strong> job${summary.inWindow===1?'':'s'} in window:
+            ${summary.saved} with saved lines · ${summary.calculated} calculated from catalog ·
+            ${summary.skipped.length} skipped · ${summary.fullyDelivered} fully delivered.
+            ${(state._pullData || {}).daysError ? '<div style="color:var(--danger);margin-top:4px">Could not load the job schedule; matching on install date only.</div>' : ''}
+            ${summary.skipped.length ? `<div style="margin-top:4px">Skipped: ${summary.skipped.map(x => `${esc(x.customer)} (#${esc(x.proposal)}): ${esc(x.reason)}`).join(' · ')}</div>` : ''}
+          </div>
+
           ${supplierKeys.length === 0
-            ? '<div class="pec-empty" style="margin-top:14px">No outstanding material in this window. Either no jobs are scheduled, or every line is already marked delivered.</div>'
+            ? `<div class="pec-empty" style="margin-top:14px">${
+                (!start || !end) ? 'Pick both a start and an end date.'
+                : summary.inWindow === 0 ? 'No jobs have an install date or scheduled day between these dates.'
+                : 'No outstanding material: every in-window job is fully delivered, skipped, or already covered by backstock. See the summary above.'
+              }</div>`
             : supplierKeys.map(sup => {
               const supRows = groupedBySupplier[sup];
               const supCost = supRows.reduce((s, r) => s + lineCost(r), 0);
@@ -15923,7 +16021,7 @@ function _mergeAcrossAreas(areaPlans) {
                       <td style="text-align:right">${row.unit_cost == null ? '—' : money2(row.unit_cost)}</td>
                       <td style="text-align:right">${row.unit_cost == null ? '—' : money(lineCost(row))}</td>
                       <td style="font-size:.7rem;color:var(--muted)">
-                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}`).join('<br>')}
+                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}${j.calculated ? ' <em>(calculated, not saved)</em>' : ''}`).join('<br>')}
                       </td>
                     </tr>
                   `).join('')}
