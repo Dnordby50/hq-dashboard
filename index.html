@@ -557,6 +557,11 @@ button.pec-stat:hover{border-color:var(--accent)}
 #tab-prescott-crm .pec-m-rank-val{font-size:.82rem;font-weight:700;color:var(--rd-ink,var(--text));text-align:right;white-space:nowrap}
 #tab-prescott-crm .pec-m-rank-share{font-size:.72rem;color:var(--rd-muted,var(--muted));text-align:right;min-width:38px;white-space:nowrap}
 #tab-prescott-crm .pec-m-chart-wrap{position:relative;height:220px}
+/* Job Costing save-failure surfacing: a failed inline save marks the input red
+   and raises a fixed banner until every marked field saves or it is dismissed. */
+.cost-save-failed{border-color:var(--rd-danger,#ef4444)!important;box-shadow:0 0 0 2px color-mix(in srgb,var(--rd-danger,#ef4444) 30%,transparent)!important}
+.pec-cost-banner{position:fixed;top:0;left:0;right:0;z-index:10000;background:var(--rd-danger,#ef4444);color:#fff;font-size:.82rem;font-weight:600;padding:8px 14px;display:flex;align-items:center;gap:12px;justify-content:center;flex-wrap:wrap}
+.pec-cost-banner button{background:rgba(255,255,255,.18);border:0;color:#fff;border-radius:6px;padding:4px 12px;cursor:pointer;font:inherit;font-weight:600}
 .pec-radios{display:flex;gap:8px;flex-wrap:wrap}
 .pec-radios label{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border:1px solid var(--rd-line,var(--border));border-radius:8px;cursor:pointer;font-size:.82rem;flex:1;min-width:90px}
 .pec-radios input{width:auto!important;margin:0}
@@ -14184,26 +14189,81 @@ function bonusTotalForJob(jobId) {
   return (state.bonusesByJob?.[jobId] || []).reduce((s, b) => s + Number(b.amount || 0), 0);
 }
 
+// ---- Costing save-failure surfacing --------------------------------------
+// Until 2026-06-12 every inline Job Costing write was a bare supabase call
+// that logged errors only to the console and left the typed value in memory,
+// so a failed save was indistinguishable from a successful one until reload
+// (Cowork diagnosis, PROJECT-LOG 2026-06-11). Failures now mark the input,
+// toast, and raise a fixed banner; the banner clears once every marked field
+// saves (or on dismiss). The in-memory value is intentionally KEPT on failure
+// so the user's typing is not thrown away; the red mark says "not persisted".
+function costingSaveBanner(show) {
+  let b = document.getElementById('pecCostSaveBanner');
+  if (!show) { if (b) b.remove(); return; }
+  if (b) return;
+  b = document.createElement('div');
+  b.id = 'pecCostSaveBanner';
+  b.className = 'pec-cost-banner';
+  b.innerHTML = '<span>Some Job Costing edits did NOT save. Fields marked in red still hold unsaved values. Check your connection or reload, then re-enter them.</span><button type="button">Dismiss</button>';
+  b.querySelector('button').addEventListener('click', () => b.remove());
+  document.body.appendChild(b);
+}
+function costingSaveFailed(err, inp, what) {
+  console.error('[costing] save failed:', what, err);
+  const msg = isSessionStale(err)
+    ? 'The session stalled, so the value was NOT saved. Re-enter it, or reload and retry.'
+    : (err && err.message) || String(err);
+  if (inp) { inp.classList.add('cost-save-failed'); inp.title = 'NOT SAVED: ' + msg; }
+  try { showToast(`Costing save failed (${esc(what)}): ${esc(msg)}`, { ttl: 8000 }); } catch (_) {}
+  costingSaveBanner(true);
+}
+function costingSaveOk(inp) {
+  if (inp) { inp.classList.remove('cost-save-failed'); inp.removeAttribute('title'); }
+  if (!document.querySelector('.cost-save-failed')) costingSaveBanner(false);
+}
+
 const _costingDebounce = {};
-function saveCostingField(jobId, field, value) {
+// One idempotent UPSERT (job_id is unique not null in the schema) replaces the
+// old find-then-update/insert branching. That branching had a silent killer:
+// the call sites push a stub { job_id } into state.costing BEFORE this runs,
+// so the find() matched the id-less stub and the update went out as
+// .eq('id', undefined), which Postgres rejects on a uuid column. Every save
+// on a job with no pre-existing costing row therefore failed forever, and
+// only to the console. The upsert works whether or not the row exists, and
+// being idempotent it is safe under withFreshWriteRetry's one retry.
+function saveCostingField(jobId, field, value, inp) {
   clearTimeout(_costingDebounce[jobId + '|' + field]);
   _costingDebounce[jobId + '|' + field] = setTimeout(async () => {
-    const existing = state.costing.find(c => c.job_id === jobId);
-    if (existing) {
-      const { error } = await supabase.from('pec_prod_job_costing').update({ [field]: value }).eq('id', existing.id);
-      if (error) console.error('[costing] update', field, error);
-      else existing[field] = value;
-    } else {
-      const { data, error } = await supabase.from('pec_prod_job_costing').insert({ job_id: jobId, [field]: value }).select().single();
-      if (error) console.error('[costing] insert', field, error);
+    try {
+      const { data, error } = await withFreshWriteRetry(
+        () => supabase.from('pec_prod_job_costing').upsert({ job_id: jobId, [field]: value }, { onConflict: 'job_id' }).select().single(),
+        { label: 'costing-field' });
+      if (error) throw error;
+      // Merge the returned row INTO the existing object (often the call site's
+      // stub) rather than replacing it: render closures hold that reference.
+      // Then re-apply this field: `data` is the post-upsert row, but a slower
+      // concurrent upsert of ANOTHER field could have returned a row snapshot
+      // predating this one; the local value is authoritative for this field.
+      const existing = state.costing.find(c => c.job_id === jobId);
+      if (existing) { Object.assign(existing, data); existing[field] = value; }
       else state.costing.push(data);
+      costingSaveOk(inp);
+    } catch (err) {
+      costingSaveFailed(err, inp, field);
     }
   }, 250);
 }
-async function saveJobField(jobId, field, value) {
-  const { error } = await supabase.from('pec_prod_jobs').update({ [field]: value }).eq('id', jobId);
-  if (error) console.error('[costing] job update', field, error);
-  const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = value;
+async function saveJobField(jobId, field, value, inp) {
+  try {
+    const { error } = await withFreshWriteRetry(
+      () => supabase.from('pec_prod_jobs').update({ [field]: value }).eq('id', jobId),
+      { label: 'costing-job-field' });
+    if (error) throw error;
+    const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = value;
+    costingSaveOk(inp);
+  } catch (err) {
+    costingSaveFailed(err, inp, field);
+  }
 }
 
 function fmtMoneyOrDash(n) { return Number.isFinite(n) && n !== 0 ? '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'; }
@@ -14374,12 +14434,12 @@ function openCostingDetail(jobId) {
         else val = inp.value;
         if (tbl === 'job') {
           const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
-          await saveJobField(jobId, field, val);
+          await saveJobField(jobId, field, val, inp);
         } else {
           let c = state.costing.find(c => c.job_id === jobId);
           if (!c) { c = { job_id: jobId }; state.costing.push(c); }
           c[field] = val;
-          saveCostingField(jobId, field, val);
+          saveCostingField(jobId, field, val, inp);
         }
       };
       inp.addEventListener('change', handler);
@@ -14403,9 +14463,13 @@ function openCostingDetail(jobId) {
 // ------------------------------------------------------------
 
 // Per-line "actually used" qty. Cost is derived on read (qty * unit_cost_snapshot)
-// so we only persist the qty. Returns the supabase promise so callers can await.
+// so we only persist the qty. Session-hardened (idempotent full-value update);
+// a deadline rejection is normalized into the { error } shape callers expect.
 function saveLineActualUsedQty(lineId, qty) {
-  return supabase.from('pec_prod_material_lines').update({ actual_used_qty: qty }).eq('id', lineId);
+  return withFreshWriteRetry(
+    () => supabase.from('pec_prod_material_lines').update({ actual_used_qty: qty }).eq('id', lineId),
+    { label: 'costing-line-used' }
+  ).catch(err => ({ error: err }));
 }
 
 // Bonus rows: per-job, per-crew-member. crew_member_name is a snapshot so the
@@ -14419,8 +14483,10 @@ async function addBonusRow(jobId, crewMember) {
     amount: 0,
     hours_actual: null,
   };
-  const { data, error } = await supabase.from('pec_prod_job_bonuses').insert(payload).select().single();
-  if (error) { console.error('[bonus] insert', error); return null; }
+  // withFreshWrite, NOT withFreshWriteRetry: a retried insert could double the
+  // bonus row. The caller already tolerates null; the toast makes it visible.
+  const { data, error } = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(payload).select().single(), { label: 'bonus-insert' }).catch(err => ({ error: err }));
+  if (error) { costingSaveFailed(error, null, 'bonus row'); return null; }
   (state.bonusesByJob ||= {});
   (state.bonusesByJob[jobId] ||= []).push(data);
   return data;
@@ -14434,21 +14500,28 @@ async function addCrewLeadBonus(jobId, leadName) {
     hours_actual: null,
     note: 'Crew lead bonus',
   };
-  const { data, error } = await supabase.from('pec_prod_job_bonuses').insert(payload).select().single();
-  if (error) { console.error('[bonus] crew-lead insert', error); return null; }
+  // Same non-idempotent insert rule as addBonusRow: withFreshWrite, no retry.
+  const { data, error } = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(payload).select().single(), { label: 'bonus-crew-lead' }).catch(err => ({ error: err }));
+  if (error) { costingSaveFailed(error, null, 'crew lead bonus'); return null; }
   (state.bonusesByJob ||= {});
   (state.bonusesByJob[jobId] ||= []).push(data);
   return data;
 }
-async function saveBonusField(rowId, jobId, field, value) {
-  const { error } = await supabase.from('pec_prod_job_bonuses').update({ [field]: value }).eq('id', rowId);
-  if (error) console.error('[bonus] update', field, error);
-  const row = (state.bonusesByJob?.[jobId] || []).find(b => b.id === rowId);
-  if (row) row[field] = value;
+async function saveBonusField(rowId, jobId, field, value, inp) {
+  try {
+    const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').update({ [field]: value }).eq('id', rowId), { label: 'bonus-field' });
+    if (error) throw error;
+    const row = (state.bonusesByJob?.[jobId] || []).find(b => b.id === rowId);
+    if (row) row[field] = value;
+    costingSaveOk(inp);
+  } catch (err) {
+    costingSaveFailed(err, inp, 'bonus ' + field);
+  }
 }
 async function deleteBonusRow(rowId, jobId) {
-  const { error } = await supabase.from('pec_prod_job_bonuses').delete().eq('id', rowId);
-  if (error) { console.error('[bonus] delete', error); return; }
+  // Idempotent (delete by id); safe under the one-retry helper.
+  const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').delete().eq('id', rowId), { label: 'bonus-delete' }).catch(err => ({ error: err }));
+  if (error) { costingSaveFailed(error, null, 'bonus delete'); return; }
   state.bonusesByJob[jobId] = (state.bonusesByJob[jobId] || []).filter(b => b.id !== rowId);
 }
 
@@ -14736,12 +14809,12 @@ async function renderUnifiedJob(jobId) {
       else val = inp.value;
       if (tbl === 'job') {
         const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
-        await saveJobField(jobId, field, val);
+        await saveJobField(jobId, field, val, inp);
       } else {
         let c = state.costing.find(c => c.job_id === jobId);
         if (!c) { c = { job_id: jobId }; state.costing.push(c); }
         c[field] = val;
-        saveCostingField(jobId, field, val);
+        saveCostingField(jobId, field, val, inp);
       }
       refreshUnifiedTotals();
     };
@@ -14774,7 +14847,7 @@ async function renderUnifiedJob(jobId) {
         cell.innerHTML = display;
       }
       const { error } = await saveLineActualUsedQty(lineId, qty);
-      if (error) console.error('[line] actual_used_qty', error);
+      if (error) costingSaveFailed(error, inp, 'material used qty'); else costingSaveOk(inp);
       refreshUnifiedTotals();
     };
     inp.addEventListener('change', handler);
@@ -14792,7 +14865,7 @@ async function renderUnifiedJob(jobId) {
         let val;
         if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
         else val = inp.value;
-        await saveBonusField(rowId, jobId, field, val);
+        await saveBonusField(rowId, jobId, field, val, inp);
         refreshUnifiedTotals();
       };
       inp.addEventListener('change', handler);
@@ -15141,12 +15214,12 @@ async function renderJobCosting() {
         else val = inp.value;
         if (tbl === 'job') {
           const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
-          await saveJobField(jobId, field, val);
+          await saveJobField(jobId, field, val, inp);
         } else {
           let c = state.costing.find(c => c.job_id === jobId);
           if (!c) { c = { job_id: jobId }; state.costing.push(c); }
           c[field] = val;
-          saveCostingField(jobId, field, val);
+          saveCostingField(jobId, field, val, inp);
         }
         refreshDerived(tr, jobId);
       };
