@@ -526,6 +526,37 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-bar-v{font-size:.62rem;color:var(--rd-muted,var(--muted));position:absolute;top:2px;font-family:var(--mono)}
 .pec-bar-l{font-size:.6rem;color:var(--rd-muted,var(--muted));margin-top:7px;text-align:center;white-space:nowrap;line-height:1.2}
 .pec-metric-h{font-size:.7rem;letter-spacing:.8px;text-transform:uppercase;color:var(--rd-muted,var(--muted));margin:0 0 4px;font-weight:700}
+/* Metrics tab redesign (DripJobs-style stats). pec-m- classes are scoped to the
+   CRM tab so nothing leaks into other PEC views. */
+#tab-prescott-crm .pec-m-group-h{font-size:.68rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--rd-muted,var(--muted));font-weight:700;margin:16px 0 10px}
+#tab-prescott-crm .pec-m-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+#tab-prescott-crm .pec-m-kpi{background:var(--rd-card,var(--s1));border:1px solid var(--rd-line,var(--border));border-radius:14px;padding:16px 18px;text-align:left;cursor:pointer;font:inherit;color:inherit;display:flex;flex-direction:column;gap:8px;transition:box-shadow .15s,border-color .15s}
+#tab-prescott-crm .pec-m-kpi:hover{border-color:var(--rd-accent,var(--accent));box-shadow:0 4px 14px rgba(16,24,40,.08)}
+#tab-prescott-crm .pec-m-kpi-top{display:flex;align-items:center;gap:8px;min-width:0}
+#tab-prescott-crm .pec-m-kpi-chip{width:28px;height:28px;border-radius:8px;background:var(--rd-accent-soft,rgba(216,83,28,.1));display:flex;align-items:center;justify-content:center;flex:none}
+#tab-prescott-crm .pec-m-kpi-chip svg{width:15px;height:15px;stroke:var(--rd-accent,#D8531C);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#tab-prescott-crm .pec-m-kpi-label{font-size:.66rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--rd-ink,var(--text));font-weight:700}
+#tab-prescott-crm .pec-m-kpi-desc{font-size:.72rem;color:var(--rd-muted,var(--muted));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tab-prescott-crm .pec-m-kpi-val{font-family:var(--sans);font-size:2rem;font-weight:700;color:var(--rd-ink,var(--text));line-height:1.1}
+#tab-prescott-crm .pec-m-kpi-delta{font-size:.72rem;font-weight:600}
+#tab-prescott-crm .pec-m-kpi-delta.up{color:var(--rd-success,#10b981)}
+#tab-prescott-crm .pec-m-kpi-delta.down{color:var(--rd-danger,#ef4444)}
+#tab-prescott-crm .pec-m-kpi-delta.flat{color:var(--rd-muted,var(--muted))}
+#tab-prescott-crm .pec-m-kpi-link{margin-top:auto;align-self:flex-start;font-size:.7rem;font-weight:600;color:var(--rd-accent,#D8531C);border:1px solid var(--rd-line,var(--border));border-radius:999px;padding:4px 10px}
+#tab-prescott-crm .pec-m-kpi:hover .pec-m-kpi-link{border-color:var(--rd-accent,#D8531C)}
+#tab-prescott-crm .pec-m-rank-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start;margin-bottom:14px}
+@media (max-width:900px){#tab-prescott-crm .pec-m-rank-grid{grid-template-columns:1fr}}
+#tab-prescott-crm .pec-m-rank-row{display:grid;grid-template-columns:minmax(90px,1fr) 2fr auto auto;gap:10px;align-items:center;width:100%;background:none;border:0;padding:7px 8px;font:inherit;color:inherit;text-align:left;cursor:pointer;border-radius:8px}
+#tab-prescott-crm .pec-m-rank-row:hover{background:var(--rd-softer,rgba(0,0,0,.03))}
+#tab-prescott-crm .pec-m-rank-name{font-size:.82rem;font-weight:600;color:var(--rd-ink,var(--text));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#tab-prescott-crm .pec-m-rank-sub{font-size:.7rem;color:var(--rd-muted,var(--muted));font-weight:500}
+#tab-prescott-crm .pec-m-rank-bar{height:10px;border-radius:999px;background:var(--rd-soft,rgba(0,0,0,.05));overflow:hidden}
+#tab-prescott-crm .pec-m-rank-bar i{display:block;height:100%;border-radius:999px;background:var(--rd-accent,#D8531C);opacity:.75}
+#tab-prescott-crm .pec-m-rank-row.is-top .pec-m-rank-bar{height:12px}
+#tab-prescott-crm .pec-m-rank-row.is-top .pec-m-rank-bar i{opacity:1}
+#tab-prescott-crm .pec-m-rank-val{font-size:.82rem;font-weight:700;color:var(--rd-ink,var(--text));text-align:right;white-space:nowrap}
+#tab-prescott-crm .pec-m-rank-share{font-size:.72rem;color:var(--rd-muted,var(--muted));text-align:right;min-width:38px;white-space:nowrap}
+#tab-prescott-crm .pec-m-chart-wrap{position:relative;height:220px}
 .pec-radios{display:flex;gap:8px;flex-wrap:wrap}
 .pec-radios label{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border:1px solid var(--rd-line,var(--border));border-radius:8px;cursor:pointer;font-size:.82rem;flex:1;min-width:90px}
 .pec-radios input{width:auto!important;margin:0}
@@ -7781,12 +7812,92 @@ async function markJobComplete(row) {
   }
 }
 
+// Lazy-load Chart.js from cdnjs on first Metrics render, mirroring the Quill
+// pattern (ensureQuill). On failure the promise rejects, the caller leaves the
+// CSS fallback bars in place, and _chartJsLoading resets so the next Metrics
+// open retries the CDN.
+let _chartJsLoading = null;
+function ensureChartJs() {
+  if (window.Chart) return Promise.resolve();
+  if (_chartJsLoading) return _chartJsLoading;
+  _chartJsLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _chartJsLoading = null; reject(new Error('Could not load Chart.js.')); };
+    document.head.appendChild(s);
+  });
+  return _chartJsLoading;
+}
+
+// Live Chart.js instances keyed by holder id. Each is destroyed before its
+// holder is repopulated on a Metrics re-render (filter change), so instances
+// never stack up against dead canvases.
+const metricsCharts = {};
+// Compact axis ticks: $18.9k style for money, plain integers for counts
+// (fractional auto-ticks on count axes render as empty strings).
+function metricsTick(v, money) {
+  if (money) return Math.abs(v) >= 1000 ? '$' + (Math.round(v / 100) / 10) + 'k' : '$' + Math.round(v);
+  return Number.isInteger(v) ? String(v) : '';
+}
+// Upgrades fallback bar holders to Chart.js charts. Each spec: { id, type
+// ('bar'|'line'), values, weeks, drillIds, money }. Holders that are no longer
+// in the document (a newer render replaced the view while the CDN script was
+// loading) are skipped. Clicks reuse the same drill-registry ids as the
+// fallback bars, so drilldown behavior is identical in both renderers.
+function initMetricsCharts(specs) {
+  const cssAccent = (getComputedStyle(document.documentElement).getPropertyValue('--pec-orange') || '').trim();
+  const accent = /^#[0-9a-f]{6}$/i.test(cssAccent) ? cssAccent : '#D8531C';
+  for (const spec of specs) {
+    const holder = document.getElementById(spec.id);
+    if (!holder || !document.body.contains(holder)) continue;
+    if (metricsCharts[spec.id]) { metricsCharts[spec.id].destroy(); delete metricsCharts[spec.id]; }
+    holder.innerHTML = '<canvas></canvas>';
+    const fmt = spec.money ? invUSD0 : String;
+    metricsCharts[spec.id] = new Chart(holder.querySelector('canvas'), {
+      type: spec.type,
+      data: {
+        labels: spec.weeks.map(w => w.label),
+        datasets: [spec.type === 'line' ? {
+          // AR is a balance snapshot: a line reads as "level over time" where
+          // bars would read as "amount per week". Subtle area fill + a dot per
+          // week per the design spec.
+          data: spec.values, borderColor: accent, backgroundColor: accent + '1f',
+          fill: true, tension: 0.3, pointRadius: 3, pointHoverRadius: 5,
+          pointBackgroundColor: accent, borderWidth: 2,
+        } : {
+          data: spec.values, backgroundColor: accent, borderRadius: 6, maxBarThickness: 46,
+        }],
+      },
+      options: {
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => fmt(ctx.parsed.y) } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+          y: { beginAtZero: true, grid: { color: 'rgba(16,24,40,.07)' }, ticks: { font: { size: 10 }, callback: v => metricsTick(v, spec.money) } },
+        },
+        // intersect:false so clicking anywhere in a week's column drills in,
+        // matching the full-height click targets of the old CSS bars.
+        onClick: (evt, els, chart) => {
+          const hit = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: false, axis: 'x' }, true)[0];
+          if (hit) openMetricsDrill(spec.drillIds[hit.index]);
+        },
+      },
+    });
+  }
+}
+
 // drillIds[i] is a metrics drill-registry id (see regDrill in renderMetrics);
 // every bar is a click target that opens the drilldown for its week.
 function invBarChart(values, weeks, drillIds, fmt) {
   const max = Math.max(1, ...values);
   return `<div class="pec-bars">${values.map((v, i) => {
-    const h = max > 0 ? Math.round((v / max) * 100) : 0;
+    // Cap at 78% so the value label (.pec-bar-v, absolutely positioned at the
+    // top of the column) can never overlap the tallest bar.
+    const h = max > 0 ? Math.round((v / max) * 78) : 0;
     return `<button class="pec-bar" data-drill="${esc(drillIds[i])}" title="${esc(weeks[i].label + ': ' + fmt(v))}">
       <span class="pec-bar-v">${v ? esc(fmt(v)) : ''}</span>
       <span class="pec-bar-fill" style="height:${h}%"></span>
@@ -8130,6 +8241,29 @@ async function renderMetrics() {
   const salesVolume = soldInWin.reduce((s, j) => s + j.price, 0);
   const revCollectedWin = payments.filter(p => payOk(p) && inWin(p.received_date));
   const revCollectedTotal = revCollectedWin.reduce((s, p) => s + p.amount, 0);
+
+  // Prior equal-length window for the KPI deltas: the N weeks immediately
+  // before the current window, under the same jobOk/payOk filters so the
+  // comparison moves with the salesperson filter. Callback rate is all-time
+  // and gets no delta. Note the current window includes the partial current
+  // week, so an in-progress week reads slightly low against a full prior one.
+  const prevStart = invAddDays(wStart, -7 * weeks.length);
+  const prevEnd = invAddDays(wStart, -1);
+  const inPrev = d => d && d >= prevStart && d <= prevEnd;
+  const prevSold = jobs.filter(j => jobOk(j) && inPrev(j.signed_date));
+  const prevSalesVolume = prevSold.reduce((s, j) => s + j.price, 0);
+  const prevAvgJobSize = prevSold.length ? prevSalesVolume / prevSold.length : null;
+  const prevRevCollected = payments.reduce((s, p) => (payOk(p) && inPrev(p.received_date)) ? s + p.amount : s, 0);
+  const prevJobsCompleted = jobs.reduce((s, j) => s + (jobOk(j) && inPrev(j.completed_date) ? 1 : 0), 0);
+  const deltaHtml = (cur, prev) => {
+    const win = `prior ${weeks.length} wk${weeks.length === 1 ? '' : 's'}`;
+    if (cur == null || prev == null || (prev === 0 && cur === 0)) return '<div class="pec-m-kpi-delta flat">no prior-window data</div>';
+    if (prev === 0) return `<div class="pec-m-kpi-delta up">▲ new vs ${win}</div>`;
+    const pct = Math.round(((cur - prev) / prev) * 100);
+    const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+    const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '•';
+    return `<div class="pec-m-kpi-delta ${cls}">${arrow} ${Math.abs(pct)}% vs ${win}</div>`;
+  };
   const kpiIds = {
     salesVolume: regDrill(jobsDrill('Sales volume: jobs signed in window', soldInWin, j => j.signed_date)),
     revCollected: regDrill(paymentsDrill('Revenue collected in window', revCollectedWin)),
@@ -8141,9 +8275,35 @@ async function renderMetrics() {
       summary: `${totalCallbacks} callback${totalCallbacks === 1 ? '' : 's'} / ${totalProdCompleted} completed production job${totalProdCompleted === 1 ? '' : 's'} (all time) = ${invPct(callbackPct)}`,
     })),
   };
-  const kpiCard = (drillId, label, val, sub) => `<button type="button" class="pec-stat" data-drill="${esc(drillId)}" title="Click for the underlying records">
-    <div class="pec-stat-label">${label}</div><div class="pec-stat-val">${val}</div>${sub ? `<div class="pec-ar-sub">${sub}</div>` : ''}
+  // DripJobs-style KPI card: icon chip + uppercase label, one-line muted
+  // definition, large value, delta line, "View details" pill. The whole card
+  // is the drill button; the pill is decorative (a span, never a nested
+  // button, which would be invalid HTML).
+  const ico = {
+    dollar: '<svg viewBox="0 0 24 24"><path d="M12 2v20M17 5.5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+    banknote: '<svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>',
+    trend: '<svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>',
+    check: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>',
+    redo: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>',
+  };
+  const kpiCard = (drillId, icon, label, desc, val, delta) => `<button type="button" class="pec-m-kpi" data-drill="${esc(drillId)}" title="Click for the underlying records">
+    <div class="pec-m-kpi-top"><span class="pec-m-kpi-chip">${ico[icon]}</span><span class="pec-m-kpi-label">${label}</span></div>
+    <div class="pec-m-kpi-desc">${desc}</div>
+    <div class="pec-m-kpi-val">${val}</div>
+    ${delta || ''}
+    <span class="pec-m-kpi-link">View details →</span>
   </button>`;
+
+  // Ranking panel row (name | horizontal bar as % of max | value | share).
+  // rows: [{ drill, name, sub, pctOfMax, value, share }]. The top row is
+  // visually emphasized; every row keeps its drilldown click.
+  const rankRows = (rows, emptyText) => rows.length ? rows.map((r, i) => `<button type="button" class="pec-m-rank-row${i === 0 ? ' is-top' : ''}" data-drill="${esc(r.drill)}" title="Click for the underlying records">
+      <span class="pec-m-rank-name">${esc(r.name)}${r.sub ? ` <span class="pec-m-rank-sub">${esc(r.sub)}</span>` : ''}</span>
+      <span class="pec-m-rank-bar"><i style="width:${r.pctOfMax}%"></i></span>
+      <span class="pec-m-rank-val">${r.value}</span>
+      <span class="pec-m-rank-share">${r.share || ''}</span>
+    </button>`).join('') : `<div class="pec-empty">${emptyText}</div>`;
+  const pctOfMax = (v, max) => max > 0 ? Math.max(0, Math.min(100, Math.round((v / max) * 100))) : 0;
 
   // ---- Row drills for the tables ---------------------------------------------
   const spRowIds = spRows.map(([name, g]) => regDrill(jobsDrill(`${name}: jobs signed in window`, g.jobs, j => j.signed_date)));
@@ -8161,6 +8321,35 @@ async function renderMetrics() {
     summary: `${r.cb} callback${r.cb === 1 ? '' : 's'} / ${r.comp} completed job${r.comp === 1 ? '' : 's'} = ${invPct(r.pct)}`,
   })));
 
+  // Rank-panel row data: bars sized vs the section max, share vs the section
+  // total where a share reads naturally (sales, revenue). GP shows value only
+  // (a negative GP clamps to a zero-width bar but still shows its value);
+  // callback shows callbacks/completed plus the rate.
+  const spMax = spRows.length ? spRows[0][1].sum : 0;
+  const spRankRows = spRows.map(([name, g], i) => ({
+    drill: spRowIds[i], name, sub: countOf(g.jobs.length, 'job'),
+    pctOfMax: pctOfMax(g.sum, spMax), value: invUSD0(g.sum),
+    share: salesVolume > 0 ? Math.round((g.sum / salesVolume) * 100) + '%' : '',
+  }));
+  const crewTotal = crewLeadRows.reduce((s, [, amt]) => s + amt, 0);
+  const crewMax = crewLeadRows.length ? crewLeadRows[0][1] : 0;
+  const crewRankRows = crewLeadRows.map(([lead, amt], i) => ({
+    drill: crewRowIds[i], name: lead, sub: '',
+    pctOfMax: pctOfMax(amt, crewMax), value: invUSD0(amt),
+    share: crewTotal > 0 ? Math.round((amt / crewTotal) * 100) + '%' : '',
+  }));
+  const gpMax = gpRows.reduce((m, [, g]) => Math.max(m, g.gp), 0);
+  const gpRankRows = gpRows.map(([lead, g], i) => ({
+    drill: gpRowIds[i], name: lead, sub: countOf(g.jobs.length, 'job'),
+    pctOfMax: pctOfMax(g.gp, gpMax), value: invUSD0(g.gp), share: '',
+  }));
+  const cbMax = callbackRows.reduce((m, r) => Math.max(m, r.pct || 0), 0);
+  const cbRankRows = callbackRows.map((r, i) => ({
+    drill: cbRowIds[i], name: r.lead, sub: '',
+    pctOfMax: pctOfMax(r.pct || 0, cbMax), value: `${r.cb}/${r.comp}`,
+    share: invPct(r.pct),
+  }));
+
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -8168,46 +8357,43 @@ async function renderMetrics() {
       <select id="pecMetSp"><option value="">All salespeople</option>${spList.map(n => `<option value="${esc(n)}" ${sp === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
       <span style="color:var(--muted);font-size:.72rem;margin-left:auto">Click any card, row, or bar for the records behind it.</span>
     </div>
-    <div class="pec-grid-stats" style="margin-bottom:14px">
-      ${kpiCard(kpiIds.salesVolume, 'Sales volume', invUSD0(salesVolume), countOf(soldInWin.length, 'job') + ' signed in window')}
-      ${kpiCard(kpiIds.revCollected, 'Revenue collected', invUSD0(revCollectedTotal), countOf(revCollectedWin.length, 'payment') + ' in window')}
-      ${kpiCard(kpiIds.jobsCompleted, 'Jobs completed', String(compInWin.length), 'in window')}
-      ${kpiCard(kpiIds.avgJobSize, 'Average job size', invUSD0(avgJobSize), 'jobs signed in window')}
-      ${kpiCard(kpiIds.callbackPct, 'Callback rate', invPct(callbackPct), `all time${allSp}`)}
+    <div class="pec-m-group-h" style="margin-top:2px">Revenue &amp; wins</div>
+    <div class="pec-m-kpis">
+      ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume))}
+      ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected))}
+      ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize))}
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
-      <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Salesperson</th><th style="text-align:right">Jobs</th><th style="text-align:right">Signed value</th></tr></thead>
-        <tbody>${spRows.map(([name, g], i) => `<tr class="pec-row-drill" data-drill="${esc(spRowIds[i])}"><td>${esc(name)}</td><td style="text-align:right">${g.jobs.length}</td><td style="text-align:right">${invUSD0(g.sum)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="3" class="pec-empty">No jobs signed in this window.</td></tr>'}</tbody>
-      </table></div>
+    <div class="pec-m-group-h">Production &amp; quality</div>
+    <div class="pec-m-kpis" style="margin-bottom:16px">
+      ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted))}
+      ${kpiCard(kpiIds.callbackPct, 'redo', 'Callback rate', `Callbacks over completed production jobs, all time${allSp}.`, invPct(callbackPct), '')}
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
-      <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Crew lead</th><th style="text-align:right">Collected</th></tr></thead>
-        <tbody>${crewLeadRows.map(([lead, amt], i) => `<tr class="pec-row-drill" data-drill="${esc(crewRowIds[i])}"><td>${esc(lead)}</td><td style="text-align:right">${invUSD0(amt)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="2" class="pec-empty">No payments in this window.</td></tr>'}</tbody>
-      </table></div>
+    <div class="pec-m-rank-grid">
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
+        ${rankRows(spRankRows, 'No jobs signed in this window.')}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
+        ${rankRows(crewRankRows, 'No payments in this window.')}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, wages, subs, bonuses, commission, misc. Labor hours are not costed unless entered as wages.</div>
+        ${costingOk ? rankRows(gpRankRows, 'No completed jobs with costing data in this window.')
+          + (gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data.</div>` : '')
+          : '<div class="pec-empty">Costing data could not be loaded; GP is unavailable right now.</div>'}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
+        ${rankRows(cbRankRows, 'No completed production jobs yet.')}
+      </div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
-      <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, wages, subs, bonuses, commission, misc. Labor hours are not costed unless entered as wages.</div>
-      ${costingOk ? `
-      <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Crew lead</th><th style="text-align:right">Jobs</th><th style="text-align:right">Price</th><th style="text-align:right">Cost</th><th style="text-align:right">GP</th></tr></thead>
-        <tbody>${gpRows.map(([lead, g], i) => `<tr class="pec-row-drill" data-drill="${esc(gpRowIds[i])}"><td>${esc(lead)}</td><td style="text-align:right">${g.jobs.length}</td><td style="text-align:right">${invUSD0(g.price)}</td><td style="text-align:right">${invUSD0(g.cost)}</td><td style="text-align:right">${invUSD0(g.gp)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No completed jobs with costing data in this window.</td></tr>'}</tbody>
-      </table></div>
-      ${gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data.</div>` : ''}`
-      : '<div class="pec-empty">Costing data could not be loaded; GP is unavailable right now.</div>'}
+    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>
+      <div class="pec-m-chart-wrap" id="pecChartRevCollected">${invBarChart(revCollected, weeks, barIds.revCollected, invUSD0)}</div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>${invBarChart(revCollected, weeks, barIds.revCollected, invUSD0)}</div>
     <div class="pec-card"><div class="pec-metric-h">AR per week (end-of-week snapshot)</div>
-      ${invBarChart(arPerWeek, weeks, barIds.ar, invUSD0)}
-      <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${esc(arCaption)} Latest bar uses today as the snapshot date and matches the Invoicing Total AR headline.</div>
+      <div class="pec-m-chart-wrap" id="pecChartAr">${invBarChart(arPerWeek, weeks, barIds.ar, invUSD0)}</div>
+      <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${esc(arCaption)} Latest point uses today as the snapshot date and matches the Invoicing Total AR headline.</div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>${invBarChart(jobsCompleted, weeks, barIds.jobsCompleted, String)}</div>
-    <div class="pec-card"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
-      <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Crew lead</th><th style="text-align:right">Callbacks</th><th style="text-align:right">Completed</th><th style="text-align:right">Callback rate</th></tr></thead>
-        <tbody>${callbackRows.map((r, i) => `<tr class="pec-row-drill" data-drill="${esc(cbRowIds[i])}"><td>${esc(r.lead)}</td><td style="text-align:right">${r.cb}</td><td style="text-align:right">${r.comp}</td><td style="text-align:right">${invPct(r.pct)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No completed production jobs yet.</td></tr>'}</tbody>
-      </table></div>
+    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>
+      <div class="pec-m-chart-wrap" id="pecChartJobsCompleted">${invBarChart(jobsCompleted, weeks, barIds.jobsCompleted, String)}</div>
     </div>
     <details class="pec-card pec-ar-sec">
       <summary>More metrics <span class="pec-ar-meta">deposits, jobs sold, reviews, payment timing, AR aging</span></summary>
@@ -8230,9 +8416,19 @@ async function renderMetrics() {
 
   $('pecMetWin').addEventListener('change', e => { state.metricsWindow = e.target.value; renderMetrics(); });
   $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
-  // One universal hook serves every drillable surface: KPI cards, table rows,
-  // and chart bars all carry data-drill ids into the same registry.
+  // One universal hook serves every drillable surface: KPI cards, ranking
+  // rows, and chart bars all carry data-drill ids into the same registry.
   root.querySelectorAll('[data-drill]').forEach(el => el.addEventListener('click', () => openMetricsDrill(el.dataset.drill)));
+
+  // Upgrade the three main weekly charts to Chart.js once the lazy CDN script
+  // is in. The holders already contain the CSS fallback bars (drill-wired
+  // above), so a CDN failure degrades to a readable chart, not an empty card.
+  // The More Metrics section intentionally stays on the fallback renderer.
+  ensureChartJs().then(() => initMetricsCharts([
+    { id: 'pecChartRevCollected', type: 'bar', values: revCollected, weeks, drillIds: barIds.revCollected, money: true },
+    { id: 'pecChartAr', type: 'line', values: arPerWeek, weeks, drillIds: barIds.ar, money: true },
+    { id: 'pecChartJobsCompleted', type: 'bar', values: jobsCompleted, weeks, drillIds: barIds.jobsCompleted, money: false },
+  ])).catch(() => {});
 }
 
 // Universal metrics drilldown renderer. `id` indexes the per-render registry
