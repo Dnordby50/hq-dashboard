@@ -5540,7 +5540,7 @@ async function runScheduleStatusSync({ force = false } = {}) {
     const [pjRes, dayRes, jobsRes] = await Promise.all([
       // ALL prod rows (incl. manual, deal-id-null), so manual calendar entries
       // are matched via the name+address fallback below.
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address,status,is_callback'),
       supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
       // ALL non-archived, non-completed jobs (deal id optional; some match only
       // by name+address). customers(name) + address feed the fallback bridge.
@@ -5599,6 +5599,29 @@ async function runScheduleStatusSync({ force = false } = {}) {
       }
       n++;
       try { await logJobActivity(j.id, 'status_change', { status: j.status }, { status: target, source: 'schedule_sync' }); } catch (_) {}
+    }
+    // Repair half-written PROD rows: schedule days exist but the job row is
+    // still 'unscheduled' (the pre-2026-06-12 schedule save inserted days
+    // before the pec_prod_jobs update, so a revenue-constraint rejection left
+    // exactly this state). Re-point the job at its earliest day; if the update
+    // still fails on the revenue constraint, surface the job by name instead
+    // of burying it in the console. Touch-up callbacks are skipped: they stay
+    // 'unscheduled' by design (no-charge, the calendar reads day rows).
+    const needsRevenue = [];
+    for (const p of (pjRes.data || [])) {
+      if (p.is_callback || p.status !== 'unscheduled') continue;
+      const ds = (daysByProd[p.id] || []).slice().sort();
+      if (!ds.length) continue;
+      const upd = await supabase.from('pec_prod_jobs').update({ install_date: ds[0], status: 'scheduled' }).eq('id', p.id);
+      if (upd.error) {
+        if (/scheduled_needs_revenue/.test(upd.error.message || '')) needsRevenue.push(p.customer_name || p.id);
+        else console.warn('[pec] schedule repair failed for', p.customer_name || p.id, ':', upd.error.message);
+      } else {
+        console.log('[pec] schedule repair: re-scheduled half-written job', p.customer_name || p.id);
+      }
+    }
+    if (needsRevenue.length) {
+      try { showToast(`On the calendar but missing revenue: ${esc(needsRevenue.join(', '))}. Enter revenue on the job (Job Costing or the schedule modal) so it can be marked scheduled.`, { ttl: 10000 }); } catch (_) {}
     }
     console.log(`[pec] schedule status sync: ${(jobsRes.data || []).length} jobs, ${scheduledTotal} on the calendar, ${n} updated, ${blocked} blocked`);
     if (blocked) {
@@ -13134,6 +13157,7 @@ function openScheduleModal(jobId) {
     time_slot: existingDays[0]?.time_slot || '',
     estimated_hours: job.estimated_hours || '',
     sales_team: job.sales_team || '',
+    revenue: job.revenue ?? '',
     // Inline system pick. If the job already has an area its system wins,
     // otherwise the user picks here and Save inserts a default "Main" area.
     system_type_id: sys ? sys.id : '',
@@ -13227,6 +13251,11 @@ function openScheduleModal(jobId) {
         <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
         <div class="pec-field"><label>Sales team</label>${salesTeamSelectHtml(draft.sales_team, 'id="schedSales"')}</div>
       </div>
+      ${job.is_callback ? '' : `
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Revenue ($)</label><input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.revenue)}" placeholder="required to schedule"></div>
+        <div class="pec-field"><div style="font-size:.7rem;color:var(--muted);margin-top:20px">Scheduled jobs must carry revenue (price integrity constraint). The value saves to the job.</div></div>
+      </div>`}
       <div class="pec-modal-actions">
         ${existingDays.length ? '<button class="pec-btn danger" id="schedClear">Clear schedule</button>' : ''}
         <span style="flex:1"></span>
@@ -13270,9 +13299,23 @@ function openScheduleModal(jobId) {
       modal.querySelector('#schedSlot').addEventListener('change', e => { draft.time_slot = e.target.value; });
       modal.querySelector('#schedHours').addEventListener('input', e => { draft.estimated_hours = e.target.value; });
       modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
+      const schedRevEl = modal.querySelector('#schedRevenue');
+      if (schedRevEl) schedRevEl.addEventListener('input', e => { draft.revenue = e.target.value; });
       modal.querySelector('#schedSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+        // Revenue gate BEFORE any write: pec_prod_jobs_scheduled_needs_revenue
+        // rejects status 'scheduled' with no revenue, and the old flow only
+        // discovered that AFTER the schedule days were already inserted,
+        // leaving a half-written job (on the calendar, status unscheduled).
+        // Touch-up callbacks are no-charge by design and never get status
+        // 'scheduled' (see the update payload below), so they skip this gate.
+        let revenue = null;
+        if (!job.is_callback) {
+          revenue = (draft.revenue === '' || draft.revenue == null) ? null : Number(draft.revenue);
+          if (!(revenue > 0)) return errEl.textContent = 'This job has no revenue yet. Enter it in the Revenue field above (or in Job Costing) before scheduling; scheduled jobs must carry revenue.';
+          if (!(revenue <= 100000)) return errEl.textContent = 'Revenue must be $100,000 or less.';
+        }
         // Snapshot the job state BEFORE save so Undo (in scheduleSaveToast) can
         // revert. Capture only the fields the save handler mutates.
         const undoSnapshot = {
@@ -13282,12 +13325,40 @@ function openScheduleModal(jobId) {
           crew_lead: job.crew_lead || null,
           estimated_hours: job.estimated_hours == null ? null : Number(job.estimated_hours),
           sales_team: job.sales_team || null,
+          revenue: job.revenue ?? null,
         };
         let firstSavedIso = null;
         try {
+          const sortedIso = draft.selectedDates.slice().sort();
+          firstSavedIso = sortedIso[0];
+          // Job row FIRST: the revenue constraint can only fail on this
+          // statement, so a rejection writes NOTHING (the schedule days have
+          // not been touched yet). The old order (days first) is what produced
+          // the half-written job. Touch-up callbacks keep their status
+          // ('unscheduled'): the calendar renders from day rows and the
+          // Pending list keys on install_date/day rows, so the status flag is
+          // not needed, and 'scheduled' would trip the revenue constraint on
+          // a no-charge visit.
+          const jobPatch = {
+            install_date: sortedIso[0],
+            crew_id: draft.crew_id || null,
+            estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
+            sales_team: draft.sales_team || null,
+          };
+          if (!job.is_callback) { jobPatch.status = 'scheduled'; jobPatch.revenue = revenue; }
+          const update = await supabase.from('pec_prod_jobs').update(jobPatch).eq('id', job.id);
+          if (update.error) {
+            const m = update.error.message || '';
+            return errEl.textContent = /scheduled_needs_revenue/.test(m)
+              ? 'Scheduled jobs need revenue. Enter it in the Revenue field and save again.'
+              : /revenue_in_range/.test(m) ? 'Revenue must be between $0 and $100,000.' : m;
+          }
+          // Best-effort rollback if the day writes fail after the job row
+          // committed, so the job is not left looking scheduled with no days.
+          const revertJob = async () => { try { await supabase.from('pec_prod_jobs').update(undoSnapshot).eq('id', job.id); } catch (_) {} };
           // Replace existing schedule rows
           const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
-          if (del.error) return errEl.textContent = del.error.message;
+          if (del.error) { await revertJob(); return errEl.textContent = del.error.message; }
           const rows = draft.selectedDates.map((iso, idx) => ({
             job_id: job.id,
             scheduled_date: iso,
@@ -13299,17 +13370,7 @@ function openScheduleModal(jobId) {
           if (ins.error && /time_slot/.test(ins.error.message || '')) {
             ins = await supabase.from('pec_prod_job_schedule_days').insert(rows.map(({ time_slot, ...r }) => r)); // pre-migration fallback
           }
-          if (ins.error) return errEl.textContent = ins.error.message;
-          const sortedIso = draft.selectedDates.slice().sort();
-          firstSavedIso = sortedIso[0];
-          const update = await supabase.from('pec_prod_jobs').update({
-            install_date: sortedIso[0],
-            status: 'scheduled',
-            crew_id: draft.crew_id || null,
-            estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
-            sales_team: draft.sales_team || null,
-          }).eq('id', job.id);
-          if (update.error) return errEl.textContent = update.error.message;
+          if (ins.error) { await revertJob(); return errEl.textContent = ins.error.message; }
           // Persist the system pick. Two cases:
           //  - No area yet: insert a default "Main" area so this job can carry
           //    material lines authored later from the Unified Job page. sqft=0
@@ -14954,6 +15015,9 @@ async function renderJobCosting() {
   const _mstToday = mstTodayIso();
   const pendingCosting = (state.prodJobs || []).filter(j => {
     if (j.archived_at) return false;
+    // Touch-up callbacks are no-charge revisits; now that scheduling gives
+    // them an install_date they would otherwise land here once the date passes.
+    if (j.is_callback) return false;
     const completed = j.status === 'completed' || (j.install_date && j.install_date <= _mstToday);
     return completed && !costByJob[j.id];
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
@@ -16124,7 +16188,7 @@ function _mergeAcrossAreas(areaPlans) {
   window.prodState = state;
 
   function blankNewJob() {
-    return { proposal_number: '', customer_name: '', address: '', install_date: '', crew: '', notes: '', job_class: 'residential', standalone_mvb: false, areas: [blankArea()] };
+    return { proposal_number: '', customer_name: '', address: '', install_date: '', revenue: '', crew: '', notes: '', job_class: 'residential', standalone_mvb: false, areas: [blankArea()] };
   }
   function blankArea() {
     return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', topcoat_product_id: '', basecoat_cure_speed: '', topcoat_cure_speed: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '', tints: [] };
@@ -16822,7 +16886,10 @@ function _mergeAcrossAreas(areaPlans) {
         </div>
         <div class="pec-row-3">
           <div class="pec-field"><label>Install date</label><input type="date" id="njDate" value="${esc(j.install_date)}"></div>
+          <div class="pec-field"><label>Revenue ($) <span style="color:var(--muted);text-transform:none;letter-spacing:0">required if install date set</span></label><input type="number" id="njRevenue" min="0" step="0.01" value="${esc(j.revenue)}" placeholder="e.g. 5400"></div>
           <div class="pec-field"><label>Crew</label><input id="njCrew" value="${esc(j.crew)}"></div>
+        </div>
+        <div class="pec-row-3">
           <div class="pec-field"><label>Job class</label>
             <select id="njJobClass">
               <option value="residential" ${j.job_class==='residential'?'selected':''}>Residential</option>
@@ -17123,7 +17190,7 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   function bindNewJobInputs() {
-    const map = { njProposal: 'proposal_number', njCustomer: 'customer_name', njAddress: 'address', njDate: 'install_date', njCrew: 'crew', njNotes: 'notes', njJobClass: 'job_class' };
+    const map = { njProposal: 'proposal_number', njCustomer: 'customer_name', njAddress: 'address', njDate: 'install_date', njRevenue: 'revenue', njCrew: 'crew', njNotes: 'notes', njJobClass: 'job_class' };
     Object.entries(map).forEach(([id, prop]) => {
       const el = $(id); if (el) el.addEventListener('input', () => { state.newJob[prop] = el.value; });
     });
@@ -17201,6 +17268,18 @@ function _mergeAcrossAreas(areaPlans) {
         if (!a.system_type_id) return setErr(`Area ${i+1}: pick a system type.`);
         if (!(Number(a.sqft) > 0)) return setErr(`Area ${i+1}: sqft must be greater than 0.`);
       }
+      // Revenue rules mirror the DB constraints from 2026-06-02_price_integrity.sql:
+      // an install date makes the job 'scheduled', and scheduled jobs must carry
+      // revenue > 0 (pec_prod_jobs_scheduled_needs_revenue); any revenue must be
+      // 0..100000 (pec_prod_jobs_revenue_in_range). Validating here keeps the
+      // raw constraint text away from the user.
+      const revenue = (j.revenue === '' || j.revenue == null) ? null : Number(j.revenue);
+      if (revenue != null && (!Number.isFinite(revenue) || revenue < 0 || revenue > 100000)) {
+        return setErr('Revenue must be a number between 0 and 100,000.');
+      }
+      if (j.install_date && !(revenue > 0)) {
+        return setErr('A job with an install date saves as scheduled, and scheduled jobs need revenue. Enter the Revenue amount or clear the install date.');
+      }
       let plan;
       try { plan = computeMaterialPlan(buildCalcInput(j.areas)); } catch (err) { return setErr(err.message); }
 
@@ -17210,13 +17289,22 @@ function _mergeAcrossAreas(areaPlans) {
         customer_name: j.customer_name.trim(),
         address: j.address || null,
         install_date: j.install_date || null,
+        revenue,
         crew: j.crew || null,
         notes: j.notes || null,
         job_class: j.job_class || null,
         standalone_mvb: !!j.standalone_mvb,
         status,
       }).select().single();
-      if (insJob.error) return setErr(insJob.error.message.includes('duplicate') ? 'A job with that Proposal # already exists.' : insJob.error.message);
+      // Fallback translation so raw constraint text can never reach the user
+      // from this form even if a rule is added or the client check is bypassed.
+      if (insJob.error) {
+        const m = insJob.error.message || '';
+        return setErr(/duplicate/.test(m) ? 'A job with that Proposal # already exists.'
+          : /scheduled_needs_revenue/.test(m) ? 'Scheduled jobs need revenue. Enter the Revenue amount or clear the install date.'
+          : /revenue_in_range/.test(m) ? 'Revenue must be between $0 and $100,000.'
+          : m);
+      }
       const jobId = insJob.data.id;
 
       const areaPayload = j.areas.map((a, idx) => ({
