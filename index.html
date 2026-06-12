@@ -13803,15 +13803,23 @@ async function loadCostingData() {
   // module) so the two screens agree. Derived lines are DISPLAY ONLY (flagged
   // _derived, synthetic ids) since there is no row to persist actual-used against.
   try {
-    const needIds = (state.prodJobs || [])
-      .filter(j => !(linesByJob[j.id] && linesByJob[j.id].length) && (state.productAreasByJob[j.id] && state.productAreasByJob[j.id].length))
-      .map(j => j.id);
+    // A bridged job (dripjobs_deal_id set) qualifies even with no prod areas:
+    // its areas live on the CRM job card (job_areas + job_area_materials),
+    // which is the source of truth for what the job needs.
+    const needJobs = (state.prodJobs || [])
+      .filter(j => !(linesByJob[j.id] && linesByJob[j.id].length)
+        && ((state.productAreasByJob[j.id] && state.productAreasByJob[j.id].length) || j.dripjobs_deal_id));
+    const needIds = needJobs.map(j => j.id);
     if (needIds.length && typeof window.computeMaterialPlan === 'function') {
-      const [fullAreasRes, prodRes, slotRes, pairRes] = await withFreshSession(() => Promise.all([
+      const dealIds = [...new Set(needJobs.map(j => j.dripjobs_deal_id).filter(Boolean))];
+      const [fullAreasRes, prodRes, slotRes, pairRes, crmRes] = await withFreshSession(() => Promise.all([
         supabase.from('pec_prod_areas').select('*').in('job_id', needIds),
         supabase.from('pec_prod_products').select('*'),
         supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
         supabase.from('pec_prod_color_pairings').select('*'),
+        dealIds.length
+          ? supabase.from('jobs').select('id,dripjobs_deal_id,areas:job_areas(*, materials:job_area_materials(*))').in('dripjobs_deal_id', dealIds).is('archived_at', null).order('created_at', { ascending: true })
+          : Promise.resolve({ data: [] }),
       ]), { label: 'loadCostingData:derive' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
       const slotsBySystem = {};
@@ -13821,18 +13829,31 @@ async function loadCostingData() {
       for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
       const areasByJob = {};
       for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
+      const crmByDeal = {};
+      for (const row of (crmRes.data || [])) {
+        if (crmByDeal[row.dripjobs_deal_id]) { console.warn('[pec] duplicate CRM jobs for deal', row.dripjobs_deal_id); continue; }
+        crmByDeal[row.dripjobs_deal_id] = row;
+      }
+      const prodJobById = Object.fromEntries(needJobs.map(j => [j.id, j]));
       for (const jid of needIds) {
-        const planAreas = (areasByJob[jid] || []).map(a => {
-          const n = Number(a.sqft);
-          return {
-            id: a.id, name: a.name,
-            sqft: Number.isFinite(n) && n >= 0 ? n : 0,
-            system_type_id: a.system_type_id,
-            flake_product_id: a.flake_product_id || null,
-            basecoat_product_id: a.basecoat_product_id || null,
-            topcoat_cure_speed: a.topcoat_cure_speed || null,
-          };
-        });
+        // CRM job card picks win for bridged jobs, exactly like Ordering
+        // (window.crmPlanAreas is the same canonical mapping both use), so
+        // the unified job page and the Ordering tab can never disagree.
+        const deal = prodJobById[jid]?.dripjobs_deal_id;
+        const crmAreas = deal && crmByDeal[deal] ? (crmByDeal[deal].areas || []) : [];
+        const planAreas = (crmAreas.length && typeof window.crmPlanAreas === 'function')
+          ? window.crmPlanAreas(crmAreas, slotsBySystem)
+          : (areasByJob[jid] || []).map(a => {
+            const n = Number(a.sqft);
+            return {
+              id: a.id, name: a.name,
+              sqft: Number.isFinite(n) && n >= 0 ? n : 0,
+              system_type_id: a.system_type_id,
+              flake_product_id: a.flake_product_id || null,
+              basecoat_product_id: a.basecoat_product_id || null,
+              topcoat_cure_speed: a.topcoat_cure_speed || null,
+            };
+          });
         if (!planAreas.length) continue;
         let dlines = [];
         try {
@@ -15544,6 +15565,62 @@ function _appendPlaceholderLines(lines, areaPlans) {
 // this keeps the CRM callers working without duplicating the whole calculator.
 window.cureSpeedSpec = cureSpeedSpec;
 window.computeMaterialPlan = computeMaterialPlan;
+// Canonical picks-to-plan mapping for CRM job card areas (job_areas rows,
+// each with an embedded `materials` array of job_area_materials rows). The
+// job card is the SOURCE OF TRUTH for what a bridged job needs, so Ordering
+// and the Job Costing derived fallback both build calculator input through
+// this one function. It replicates the Work Order / Budget mapping
+// (firstSlotPick over the system's slots, first non-null pick wins) PLUS a
+// Topcoat pick (the Work Order leaves topcoat to the slot default; honoring
+// a real pick is strictly more faithful and falls back identically when no
+// pick exists). Customs (is_custom rows) and second-and-later picks of a
+// multi-product slot are intentionally ignored, exactly like the Work Order.
+// Exposed on window for the CRM module (same bridge pattern as
+// computeMaterialPlan above).
+function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
+  const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+  return (crmAreas || []).slice()
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+    .map(a => {
+      const mine = a.materials || [];
+      // picks: recipe_slot_id -> productIds[] ordered by pick_index (compacted)
+      const picks = {};
+      for (const m of mine) {
+        if (m.is_custom || !m.recipe_slot_id || !m.product_id) continue;
+        (picks[m.recipe_slot_id] ||= [])[m.pick_index || 0] = m.product_id;
+      }
+      for (const k in picks) picks[k] = picks[k].filter(Boolean);
+      let firstSlotPick = (pred) => {
+        for (const slot of (recipeSlotsBySystemType[a.system_type_id] || [])) {
+          if (!pred(slot.material_type)) continue;
+          const pid = (picks[slot.id] || [])[0];
+          if (pid) return pid;
+        }
+        return null;
+      };
+      // Legacy mirror fallback (mirrors buildArea in the CRM module): a job
+      // with areas but ZERO materials rows predates the picks backfill; its
+      // selections live on the job_areas flake/basecoat columns directly.
+      if (!mine.length && (a.flake_product_id || a.basecoat_product_id)) {
+        firstSlotPick = (pred) => {
+          if (pred('Flake')) return a.flake_product_id || null;       // swatch predicate
+          if (pred('Basecoat')) return a.basecoat_product_id || null;
+          return null;
+        };
+      }
+      const sqftNum = Number(a.sqft);
+      return {
+        id: a.id, name: a.name,
+        sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+        system_type_id: a.system_type_id,
+        flake_product_id: firstSlotPick(t => SWATCH.has(t)),
+        basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
+        topcoat_product_id: firstSlotPick(t => t === 'Topcoat'),
+        topcoat_cure_speed: a.topcoat_cure_speed || null,
+      };
+    });
+}
+window.crmPlanAreas = crmPlanAreas;
 function _planForArea(area, ctx) {
   const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake } = ctx;
   const sqft = Number(area.sqft);
@@ -15683,6 +15760,7 @@ function _mergeAcrossAreas(areaPlans) {
     orderScope: 'all',     // material sections on the Ordering page: 'all' | '7' | '14' | '30'
     daysByJob: {},         // pec_prod_job_schedule_days: job_id -> sorted ISO dates
     daysError: false,      // schedule-days fetch failed; degrade to install_date matching
+    crmAreasByProdJob: {}, // prod job id -> CRM job_areas rows (with materials) for bridged jobs; refreshed by loadJobs
     _calcCache: new Map(), // job_id -> {lines}|{error}; cleared by loadJobs/loadCatalog
     _savingLines: new Set(), // job ids with a Save-lines write in flight
   };
@@ -15759,6 +15837,45 @@ function _mergeAcrossAreas(areaPlans) {
       state.daysError = true;
     }
   }
+  // CRM job card areas for bridged jobs. The job card (job_areas +
+  // job_area_materials, edited on the CRM job detail) is the source of truth
+  // for what a DripJobs-sourced job needs; pec_prod_areas for those jobs is a
+  // schedule-modal stub with no product picks. Fetched per loadJobs so picks
+  // edited on the job card show up in Ordering on the next tab visit. Never
+  // throws: any failure degrades to the pec_prod_areas path with a warn, and
+  // the map is assigned ONCE at the end so a partial failure can never leave
+  // half-bridged state.
+  async function loadCrmAreas(jobs) {
+    const dealIds = [...new Set(jobs.map(j => j.dripjobs_deal_id).filter(Boolean))];
+    if (!dealIds.length) { state.crmAreasByProdJob = {}; return; }
+    try {
+      // Two-level embed (jobs -> job_areas -> job_area_materials). If
+      // PostgREST ever rejects it, replace with the sequential three-query
+      // chain inside this function only; callers are unaffected.
+      const { data, error } = await supabase
+        .from('jobs')
+        .select('id,dripjobs_deal_id,areas:job_areas(*, materials:job_area_materials(*))')
+        .in('dripjobs_deal_id', dealIds)
+        .is('archived_at', null)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      const byDeal = {};
+      for (const row of (data || [])) {
+        if (byDeal[row.dripjobs_deal_id]) { console.warn('[prod] duplicate CRM jobs for deal', row.dripjobs_deal_id); continue; }
+        byDeal[row.dripjobs_deal_id] = row;
+      }
+      const out = {};
+      for (const j of jobs) {
+        if (!j.dripjobs_deal_id) continue;
+        const crm = byDeal[j.dripjobs_deal_id];
+        if (crm && (crm.areas || []).length) out[j.id] = crm.areas;
+      }
+      state.crmAreasByProdJob = out;
+    } catch (err) {
+      console.warn('[prod] CRM areas fetch failed; Ordering falls back to pec_prod_areas:', err);
+      state.crmAreasByProdJob = {};
+    }
+  }
   async function loadJobs() {
     const [res] = await Promise.all([
       supabase
@@ -15770,7 +15887,9 @@ function _mergeAcrossAreas(areaPlans) {
     if (res.error) console.error('[prod] jobs:', res.error);
     // Drop archived jobs from Ordering (same client-side filter as loadProdCore).
     state.jobs = (res.data || []).filter(j => !j.archived_at);
-    // Jobs changed; in-memory calculated lines may be stale.
+    await loadCrmAreas(state.jobs);
+    // Jobs or CRM picks changed; in-memory calculated lines may be stale.
+    // This clear must stay LAST so it postdates every fetch above.
     state._calcCache = new Map();
   }
 
@@ -15955,25 +16074,20 @@ function _mergeAcrossAreas(areaPlans) {
     const d = new Date(); d.setDate(d.getDate() + offset);
     return d.toISOString().slice(0, 10);
   }
-  // Memoizing line generator for jobs that have areas but NO saved material
-  // lines (webhook / calendar-bridge jobs before anyone ran Recalculate).
-  // Reuses computeMaterialPlan with the EXACT same inputs the job-detail
-  // Recalculate uses (see recalcActiveJob), so the Ordering page and the pull
-  // both preview precisely what Recalculate would persist. Results are
-  // in-memory only, never saved, and cached per job id in state._calcCache,
-  // which loadJobs and loadCatalog clear (the only events that can change the
-  // inputs), so every render shares the memoized results. Errors (e.g. a
-  // required Basecoat with no product) are returned per job, never thrown, so
-  // one bad job can never blank the page or the pull.
-  function makePullCalcLines() {
-    const cache = (state._calcCache ||= new Map());
-    let ctx = null;
-    return (job) => {
-      if (cache.has(job.id)) return cache.get(job.id);
-      let res;
-      try {
-        ctx = ctx || { productsById: indexById(state.products), recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake() };
-        const areasInput = (job.areas || []).map(a => ({
+  // The ONE source-of-truth resolution for which areas feed the calculator.
+  // Priority ladder (saved pec_prod_material_lines win before this is ever
+  // consulted, see resolveJobLines): CRM job card picks for bridged jobs
+  // (Dylan's rule: the job detail is the source of truth for what the job
+  // needs), then pec_prod_areas for everything else (manual calendar jobs,
+  // module 2 native jobs, and touch-up callbacks, which never carry a deal
+  // id). Returns { areas, fromCrm } or { empty: true }.
+  function calcAreasInputFor(job, slotsBySystem) {
+    const crmAreas = state.crmAreasByProdJob[job.id];
+    if (crmAreas && crmAreas.length) return { areas: crmPlanAreas(crmAreas, slotsBySystem), fromCrm: true };
+    if ((job.areas || []).length) {
+      return {
+        fromCrm: false,
+        areas: job.areas.map(a => ({
           id: a.id, name: a.name, sqft: Number(a.sqft),
           system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
           topcoat_product_id: a.topcoat_product_id || null,
@@ -15982,8 +16096,33 @@ function _mergeAcrossAreas(areaPlans) {
           tints: (a.tints || []).map(t => ({
             product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
           })),
-        }));
-        res = { lines: computeMaterialPlan({ areas: areasInput, ...ctx }).lines };
+        })),
+      };
+    }
+    return { empty: true };
+  }
+
+  // Memoizing line generator for jobs with NO saved material lines. Builds
+  // calculator input through calcAreasInputFor (CRM job card picks first for
+  // bridged jobs, pec_prod_areas otherwise) and computeMaterialPlan, the same
+  // pipeline the job-detail Recalculate persists, so the Ordering page, the
+  // pull, and Recalculate can never disagree. Results are in-memory only,
+  // never saved, cached per job id in state._calcCache, which loadJobs and
+  // loadCatalog clear (the only events that can change the inputs: jobs, CRM
+  // picks, schedule, catalog). Errors (e.g. a required Basecoat with no
+  // product) are returned per job, never thrown, so one bad job can never
+  // blank the page or the pull.
+  function makePullCalcLines() {
+    const cache = (state._calcCache ||= new Map());
+    let ctx = null;
+    return (job) => {
+      if (cache.has(job.id)) return cache.get(job.id);
+      let res;
+      try {
+        ctx = ctx || { productsById: indexById(state.products), recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake() };
+        const src = calcAreasInputFor(job, ctx.recipeSlotsBySystemType);
+        if (src.empty) res = { empty: true };
+        else res = { lines: computeMaterialPlan({ areas: src.areas, ...ctx }).lines, fromCrm: src.fromCrm };
       } catch (err) { res = { error: err && err.message ? err.message : String(err) }; }
       cache.set(job.id, res);
       return res;
@@ -16011,16 +16150,21 @@ function _mergeAcrossAreas(areaPlans) {
     if (startISO === null && endISO === null) return days[0] || '?';
     return days.find((d) => d >= startISO && d <= endISO) || '?';
   }
-  // -> {kind:'saved'|'calculated', lines} or {kind:'skipped', reason}
+  // -> {kind:'saved'|'calculated', lines} or {kind:'skipped', reason}.
+  // Saved lines always win; otherwise the injected calculator decides which
+  // area source applies (CRM job card picks vs pec_prod_areas, see
+  // calcAreasInputFor) and reports {empty:true} when neither exists.
   function resolveJobLines(job, computeLinesFor) {
     if ((job.lines || []).length) return { kind: 'saved', lines: job.lines };
-    if ((job.areas || []).length) {
-      const res = computeLinesFor(job);
-      if (res.error) return { kind: 'skipped', reason: res.error };
-      if (!res.lines.length) return { kind: 'skipped', reason: 'calculator produced no lines (check area sqft)' };
-      return { kind: 'calculated', lines: res.lines };
+    const res = computeLinesFor(job);
+    if (res.empty) return { kind: 'skipped', reason: 'no areas' };
+    if (res.error) return { kind: 'skipped', reason: res.error };
+    if (!res.lines.length) {
+      return { kind: 'skipped', reason: res.fromCrm
+        ? 'calculator produced no lines (check area sqft on the CRM job card)'
+        : 'calculator produced no lines (check area sqft)' };
     }
-    return { kind: 'skipped', reason: 'no areas' };
+    return { kind: 'calculated', lines: res.lines };
   }
 
   // Aggregates needed material across jobs in scope (see jobInScope: a date
@@ -16942,16 +17086,12 @@ function _mergeAcrossAreas(areaPlans) {
   async function recalcActiveJob() {
     const j = state.activeJob;
     if (!confirm('Recalculate will overwrite all material lines for this job from the catalog. Manual edits to qty/supplier/color will be lost. Continue?')) return;
-    const areasInput = (j.areas || []).map(a => ({
-      id: a.id, name: a.name, sqft: Number(a.sqft),
-      system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
-      topcoat_product_id: a.topcoat_product_id || null,
-      basecoat_cure_speed: a.basecoat_cure_speed || null,
-      topcoat_cure_speed: a.topcoat_cure_speed || null,
-      tints: (a.tints || []).map(t => ({
-        product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
-      })),
-    }));
+    // Same source resolution as the Ordering page and the pull: CRM job card
+    // picks for bridged jobs, pec_prod_areas otherwise. Critical because the
+    // lines persisted here win over everything downstream; recalculating a
+    // bridged job from its stub pec_prod_areas would persist garbage.
+    const src = calcAreasInputFor(j, recipeSlotsBySystemType());
+    const areasInput = src.empty ? [] : src.areas;
     let plan;
     try {
       plan = computeMaterialPlan({
@@ -16973,7 +17113,7 @@ function _mergeAcrossAreas(areaPlans) {
     // silently deleted everything.
     const totalSqft = areasInput.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     $('prodDetailOk').textContent = totalSqft > 0
-      ? 'Recalculated from catalog.'
+      ? (src.fromCrm ? 'Recalculated from the CRM job card picks.' : 'Recalculated from catalog.')
       : 'Recalculated. Warning: total job sqft is 0, so all sqft-based quantities computed to zero lines. Enter the real sqft on the areas and recalculate again.';
   }
 
