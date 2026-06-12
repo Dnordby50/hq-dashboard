@@ -36,6 +36,16 @@ Handoff to Dylan: Push to deploy, then have her re-enter the values that vanishe
 
 ---
 
+## [2026-06-12 MST] Cowork: ran the pec_prod_tasks migration in PROD (outstanding since 2026-06-10), verified
+By: Cowork
+Changed: Executed supabase/migrations/2026-06-10_prod_tasks.sql in the PROD Supabase project (HQ Dashboard, ref zdfpzmmrgotynrwkeakd) via the SQL editor (Primary Database, role postgres), per Dylan's instruction and the outstanding 2026-06-10 handoff. Result: Success, no rows returned. All three footer verification queries pass: table_exists 1, policies 1, triggers 1. Functional check from the live dashboard client: select on pec_prod_tasks returns count 0 with no error, so the PostgREST schema cache sees the table and the per-load console warning is gone. The Job Schedule "+ Add Task" feature (commit ad2efed) is now fully usable in prod. The query was saved in the SQL editor as "Production Tasks Tracking Table".
+Files touched: none (PROJECT-LOG.md only). External systems: PROD Supabase DDL (one new table pec_prod_tasks, idempotent migration).
+Next steps: Dylan can create a crew task from the Job Schedule toolbar and confirm chips render in both calendar modes. Crew-members seed for pec_prod_crew_members is still outstanding (needs Dylan's roster).
+Handoff to Cowork: None.
+Handoff to Dylan: Try + Add Task on the Job Schedule.
+
+---
+
 ## [2026-06-12 MST] Cowork: live end-to-end Job Costing test in PROD with a test job; 8 findings, fix prompt written, test data fully removed
 By: Cowork
 Changed: No code. Ran the full costing flow on the live site (Dylan's admin session, Chrome) with a throwaway job (ZZ TEST Cowork, #TEST-COWORK-DELETE): Ordering New Job -> schedule -> save material lines -> ordered checkbox -> costing table fields -> unified job page. Test job and all cascaded rows (schedule days, costing row, material lines) verified deleted afterward; no customer row was created.
