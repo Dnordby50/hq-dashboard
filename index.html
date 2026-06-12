@@ -4894,7 +4894,17 @@ function wireAuthListener() {
 const portalBase = () => (CFG.PORTAL_BASE_URL || (location.origin + location.pathname)).replace(/\/+$/, '');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 const fmtMoney = n => n == null ? '—' : '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
-const fmtDate = s => s ? new Date(s).toLocaleDateString() : '—';
+// DB DATE columns (YYYY-MM-DD, e.g. scheduled_date / install_date) must parse
+// as LOCAL midnight: new Date('YYYY-MM-DD') parses as UTC midnight, which
+// renders as the PREVIOUS day anywhere west of Greenwich (MST = UTC-7).
+// Timestamps (anything with a time part) fall through to native parsing.
+// Bridged to window because the production module formats the same columns.
+function parseLocalDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim());
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : (s ? new Date(s) : null);
+}
+window.pecParseLocalDay = parseLocalDay;
+const fmtDate = s => { const d = parseLocalDay(s); return d ? d.toLocaleDateString() : '—'; };
 const $ = id => document.getElementById(id);
 // System types display in custom order (Settings > System Types drag-reorder):
 // by sort_order (nulls last), then name. Safe before the sort_order migration
@@ -6132,7 +6142,7 @@ function showToast(html, opts = {}) {
 // pec_prod_job_schedule_days rows and reverts the pec_prod_jobs fields back to
 // the pre-save snapshot captured by openScheduleModal.
 function scheduleSaveToast(job, dateIso, { undoSnapshot } = {}) {
-  const dateLabel = dateIso ? new Date(dateIso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const dateLabel = dateIso ? parseLocalDay(dateIso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const msg = `Scheduled <strong>${esc(job.customer_name || 'job')}</strong>${dateLabel ? ` on <strong>${esc(dateLabel)}</strong>` : ''}`;
   showToast(msg, {
     ttl: 5000,
@@ -8799,7 +8809,7 @@ async function renderWorkOrder(ctx) {
 
   const e = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const yn = (v) => v === true ? 'YES' : v === false ? 'NO' : '';
-  const dateFmt = (s) => s ? new Date(s).toLocaleDateString() : '';
+  const dateFmt = (s) => { const d = parseLocalDay(s); return d ? d.toLocaleDateString() : ''; };
   const moneyOrBlank = (n) => Number.isFinite(n) ? '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '';
 
   // job.scope is staff-authored stored HTML (e.g. "<p>764 ft</p>", "&nbsp;").
@@ -14350,7 +14360,7 @@ function openCostingDetail(jobId) {
       <div>
         <h3 style="margin:0">${esc(job.customer_name || '')} <span style="color:var(--muted);font-weight:400">#${esc(job.proposal_number || '')}</span></h3>
         <div style="color:var(--muted);font-size:.75rem;margin-top:4px">${esc(job.address || '')}</div>
-        <div style="color:var(--muted);font-size:.75rem">Install ${job.install_date ? esc(new Date(job.install_date).toLocaleDateString()) : 'unscheduled'} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span>${sys ? ` · ${esc(sys.name)}` : ''}${crew ? ` · ${esc(crew)} crew` : ''}</div>
+        <div style="color:var(--muted);font-size:.75rem">Install ${job.install_date ? esc(fmtDate(job.install_date)) : 'unscheduled'} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span>${sys ? ` · ${esc(sys.name)}` : ''}${crew ? ` · ${esc(crew)} crew` : ''}</div>
       </div>
       <button class="pec-btn ghost sm" data-cost-detail-close>Close</button>
     </div>
@@ -14597,8 +14607,8 @@ async function renderUnifiedJob(jobId) {
     job.address || '',
     schedState.isScheduled
       ? 'Install ' + (schedState.scheduledDates.length === 1
-          ? new Date(schedState.scheduledDates[0]).toLocaleDateString()
-          : new Date(schedState.scheduledDates[0]).toLocaleDateString() + ' +' + (schedState.scheduledDates.length - 1) + ' more')
+          ? fmtDate(schedState.scheduledDates[0])
+          : fmtDate(schedState.scheduledDates[0]) + ' +' + (schedState.scheduledDates.length - 1) + ' more')
       : 'Unscheduled',
     sys ? sys.name : '',
     crewName ? `${crewName} crew` : '',
@@ -14612,7 +14622,7 @@ async function renderUnifiedJob(jobId) {
            ${sched.map(s => `
              <tr class="nohover">
                <td>Day ${esc((s.day_index ?? 0) + 1)}</td>
-               <td>${s.scheduled_date ? esc(new Date(s.scheduled_date).toLocaleDateString()) : '—'}</td>
+               <td>${s.scheduled_date ? esc(fmtDate(s.scheduled_date)) : '—'}</td>
                <td>${s.crew_id && crewById[s.crew_id] ? esc(crewById[s.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
                <td>${esc(s.crew_lead || '')}</td>
                <td>${esc(s.notes || '')}</td>
@@ -16122,7 +16132,9 @@ function _mergeAcrossAreas(areaPlans) {
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-  const fmtDate = (s) => s ? new Date(s).toLocaleDateString() : '—';
+  // window.pecParseLocalDay (CRM module) parses YYYY-MM-DD as LOCAL midnight;
+  // bare new Date('YYYY-MM-DD') is UTC midnight = the previous day in MST.
+  const fmtDate = (s) => { const d = s ? (window.pecParseLocalDay ? window.pecParseLocalDay(s) : new Date(s)) : null; return d ? d.toLocaleDateString() : '—'; };
   const fmtDateTime = (s) => s ? new Date(s).toLocaleString() : '—';
   function indexById(rows) { return Object.fromEntries(rows.map((r) => [r.id, r])); }
   function recipeSlotsBySystemType() {
