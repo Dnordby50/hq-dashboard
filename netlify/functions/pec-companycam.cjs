@@ -32,20 +32,47 @@ function photoUrls(uris) {
   return { url, thumb };
 }
 
+// Verify the caller's Supabase session token. The dashboard sends its signed-in
+// user's access token as Authorization: Bearer; GoTrue's /auth/v1/user endpoint
+// validates it (signature, expiry, revocation) in one cheap GET. Without this
+// gate the proxy leaked project names, addresses, and photo URLs to anyone on
+// the internet.
+async function callerIsStaff(event) {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return false;
+  const auth = event.headers.authorization || event.headers.Authorization || '';
+  const userToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  if (!userToken) return false;
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { apikey: serviceKey, Authorization: `Bearer ${userToken}` },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Content-Type': 'application/json',
   };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
 
   // Return HTTP 200 with an { error } body for every failure (unconfigured,
-  // upstream error, exception). The dashboard reads res.error and shows a
-  // graceful "CompanyCam unavailable" state; returning a non-2xx here only adds
-  // a red error to the browser console on every job-detail open for no benefit.
+  // unauthorized, upstream error, exception). The dashboard reads res.error and
+  // shows a graceful "CompanyCam unavailable" state; returning a non-2xx here
+  // only adds a red error to the browser console on every job-detail open for
+  // no benefit.
   const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, projects: [], photos: [], ...extra }) });
+
+  if (!(await callerIsStaff(event))) {
+    return fail('Not authorized');
+  }
 
   const token = process.env.COMPANYCAM_API_TOKEN;
   if (!token) {
@@ -60,8 +87,12 @@ exports.handler = async (event) => {
 
   try {
     if (action === 'projects') {
-      // Most-recent projects first. CompanyCam returns newest-first by default.
-      const res = await ccGet('/projects?per_page=100');
+      // With ?query=<text>, CompanyCam filters by project name or address line
+      // 1 server-side (the account is shared by FTP and PEC, so the 100 most
+      // recent are not enough for older jobs). Without it, today's behavior:
+      // most-recent first, CompanyCam returns newest-first by default.
+      const q = (params.query || '').trim();
+      const res = await ccGet(q ? `/projects?per_page=30&query=${encodeURIComponent(q)}` : '/projects?per_page=100');
       const data = await res.json();
       if (!res.ok) {
         return fail(data && data.message ? data.message : 'CompanyCam projects fetch failed');

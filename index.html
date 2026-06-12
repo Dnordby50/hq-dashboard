@@ -9314,10 +9314,18 @@ async function renderJobDetailInner(id) {
         `).join('') || '<div class="pec-empty" style="grid-column:1/-1">No photos yet</div>'}
       </div>
       <div id="ccSection" style="margin-top:14px;border-top:1px dashed var(--rd-line, var(--border));padding-top:12px;display:none">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">CompanyCam project</label>
-          <select id="ccProjectSelect" style="max-width:340px"><option value="">Loading projects…</option></select>
-          <span id="ccStatus" style="font-size:.72rem;color:var(--muted)"></span>
+        <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);padding-top:9px">CompanyCam project</label>
+          <div style="flex:1;min-width:240px;max-width:380px">
+            <input id="ccProjQuery" placeholder="Search projects by name or address…" autocomplete="off" style="width:100%">
+            <div id="ccProjResults" style="display:none;border:1px solid var(--rd-line, var(--border));border-radius:6px;margin-top:4px;max-height:200px;overflow-y:auto;background:var(--rd-card, var(--s1))"></div>
+            <div id="ccProjSelected" style="display:none;padding:6px 10px;border-radius:6px;background:color-mix(in srgb, var(--rd-accent, var(--accent)) 12%, transparent);align-items:center;gap:8px">
+              <span id="ccProjSelectedName" style="font-weight:600;font-size:.85rem;flex:1"></span>
+              <button type="button" class="pec-btn ghost sm" id="ccProjChange">Change</button>
+              <button type="button" class="pec-btn ghost sm" id="ccProjUnlink">Unlink</button>
+            </div>
+          </div>
+          <span id="ccStatus" style="font-size:.72rem;color:var(--muted);padding-top:9px"></span>
         </div>
         <div class="pec-gallery" id="ccPhotos"></div>
       </div>
@@ -10403,13 +10411,23 @@ async function renderJobDetailInner(id) {
     renderJobDetail(id);
   });
 
-  // CompanyCam: fill the project dropdown, let the user link a project to this
-  // job, and show that project's photos. All reads go through the Netlify
-  // proxy (pec-companycam.cjs); the chosen project id is saved on the job.
+  // CompanyCam: type-to-search project picker (mirrors the Add Job modal's
+  // customer-search interaction: input + results list + selected chip). The
+  // search goes server-side via the proxy's new ?query= passthrough because
+  // the CompanyCam account is shared by FTP and PEC, so the 100 most recent
+  // projects are not enough. The chosen project id is saved on the job. Every
+  // proxy call carries the signed-in Supabase access token; the proxy rejects
+  // anonymous callers, so a logged-out browser behaves like a proxy error.
   (async () => {
-    const sel = $('ccProjectSelect'), status = $('ccStatus'), gal = $('ccPhotos');
-    if (!sel || !gal) return;
-    const ccApi = (qs) => fetch(`/.netlify/functions/pec-companycam?${qs}`).then(r => r.json());
+    const queryEl = $('ccProjQuery'), resultsEl = $('ccProjResults'), selectedEl = $('ccProjSelected'),
+      selectedNameEl = $('ccProjSelectedName'), status = $('ccStatus'), gal = $('ccPhotos');
+    if (!queryEl || !gal) return;
+    const ccApi = async (qs) => {
+      const { data } = await supabase.auth.getSession();
+      const tok = data?.session?.access_token || '';
+      return fetch(`/.netlify/functions/pec-companycam?${qs}`, { headers: { Authorization: `Bearer ${tok}` } }).then(r => r.json());
+    };
+    const searchProjects = (q) => ccApi(`action=projects&query=${encodeURIComponent(q)}`);
     const showPhotos = async (projectId) => {
       if (!projectId) { gal.innerHTML = ''; return; }
       gal.innerHTML = '<div class="pec-empty" style="grid-column:1/-1">Loading photos…</div>';
@@ -10425,38 +10443,80 @@ async function renderJobDetailInner(id) {
         gal.innerHTML = '<div class="pec-empty" style="grid-column:1/-1">CompanyCam unavailable</div>';
       }
     };
-    try {
-      const res = await ccApi('action=projects');
-      // CompanyCam (eval §3): when the proxy has no COMPANYCAM_API_TOKEN it
-      // returns { error: 'CompanyCam is not configured...' }. That string used
-      // to render as a dead dropdown on EVERY job detail. #ccSection now starts
-      // hidden; bail on any error so production never shows the placeholder, and
-      // only reveal the section once the proxy actually returns projects (i.e.
-      // the token is set). The linking dropdown then appears as normal.
-      if (res.error) { return; }
-      const ccSection = document.getElementById('ccSection');
-      if (ccSection) ccSection.style.display = '';
-      const projects = res.projects || [];
-      const current = job.companycam_project_id || '';
-      sel.innerHTML = '<option value="">— not linked —</option>' +
-        projects.map(p => `<option value="${esc(p.id)}" ${p.id===current?'selected':''}>${esc(p.name)}${p.address ? ' — ' + esc(p.address) : ''}</option>`).join('');
-      // Keep a saved project selectable even if it has dropped off the recent list.
-      if (current && !projects.some(p => p.id === current)) {
-        sel.insertAdjacentHTML('beforeend', `<option value="${esc(current)}" selected>Linked project ${esc(current)}</option>`);
-      }
-      if (current) showPhotos(current);
-    } catch (err) {
-      sel.innerHTML = '<option value="">CompanyCam unavailable</option>'; sel.disabled = true;
-      return;
-    }
-    sel.addEventListener('change', async () => {
-      const pid = sel.value || null;
+    const showSelected = (label) => {
+      queryEl.style.display = 'none'; resultsEl.style.display = 'none';
+      selectedEl.style.display = 'flex'; selectedNameEl.textContent = label;
+    };
+    const showSearch = () => {
+      selectedEl.style.display = 'none'; queryEl.style.display = '';
+      resultsEl.style.display = 'none'; resultsEl.innerHTML = '';
+    };
+    const save = async (pid, label) => {
       status.textContent = 'Saving…';
       const { error } = await supabase.from('jobs').update({ companycam_project_id: pid }).eq('id', id);
       status.textContent = error ? 'Save failed' : (pid ? 'Linked' : 'Unlinked');
       setTimeout(() => { status.textContent = ''; }, 1500);
+      if (error) return; // keep the current picker state; nothing was saved
+      job.companycam_project_id = pid;
+      if (pid) showSelected(label); else { showSearch(); queryEl.focus(); }
       showPhotos(pid);
+    };
+    const renderResults = (list) => {
+      resultsEl.style.display = 'block';
+      resultsEl.innerHTML = list.length ? list.map(p => `
+        <div class="cc-proj-row" data-id="${esc(p.id)}" data-name="${esc(p.name)}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--rd-line, var(--border));font-size:.85rem">
+          <div style="font-weight:600">${esc(p.name)}</div>
+          <div style="font-size:.7rem;color:var(--muted)">${esc(p.address || 'No address on file')}</div>
+        </div>`).join('')
+        : '<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">No matching CompanyCam projects.</div>';
+      resultsEl.querySelectorAll('.cc-proj-row').forEach(row => row.addEventListener('click', () => save(row.dataset.id, row.dataset.name)));
+    };
+
+    const custName = (job.customers?.name || '').trim();
+    const current = job.companycam_project_id || '';
+    let res;
+    try {
+      // The first call doubles as the availability check (token configured,
+      // caller authorized). #ccSection starts hidden; bail on any error so
+      // production never shows a dead picker. Searching the customer name up
+      // front serves both states: it resolves a linked project's display name
+      // and pre-seeds the results list when nothing is linked yet.
+      res = await (custName.length >= 2 ? searchProjects(custName) : ccApi('action=projects'));
+    } catch (err) { return; }
+    if (!res || res.error) return;
+    const ccSection = document.getElementById('ccSection');
+    if (ccSection) ccSection.style.display = '';
+    const projects = res.projects || [];
+    if (current) {
+      const match = projects.find(p => p.id === current);
+      showSelected(match ? match.name : `Linked project ${current}`);
+      showPhotos(current);
+    } else if (projects.length && custName.length >= 2) {
+      queryEl.value = custName;
+      renderResults(projects);
+    }
+
+    let ccDebounce = null, ccSeq = 0;
+    queryEl.addEventListener('input', () => {
+      const q = queryEl.value.trim();
+      clearTimeout(ccDebounce);
+      if (q.length < 2) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+      ccDebounce = setTimeout(async () => {
+        const seq = ++ccSeq;
+        try {
+          const r = await searchProjects(q);
+          if (seq !== ccSeq) return; // a newer keystroke superseded this search
+          if (r.error) {
+            resultsEl.style.display = 'block';
+            resultsEl.innerHTML = `<div style="padding:10px 12px;font-size:.78rem;color:var(--muted)">${esc(r.error)}</div>`;
+            return;
+          }
+          renderResults(r.projects || []);
+        } catch (err) { /* transient network failure; next keystroke retries */ }
+      }, 300);
     });
+    $('ccProjChange').addEventListener('click', () => { showSearch(); queryEl.focus(); queryEl.select(); });
+    $('ccProjUnlink').addEventListener('click', () => save(null, ''));
   })();
 }
 
