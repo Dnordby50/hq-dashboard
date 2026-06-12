@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-11 MST] Cowork: diagnosed empty Material Pull (Ordering), wrote Claude Code fix prompt
+By: Cowork
+Changed: No code. Dylan reports: jobs are on the Job Schedule but Pull Material shows nothing. Investigated the production module. The pull flow is prodPullMaterialBtn (index.html:15777, Ordering jobs view) -> openMaterialPull (15863) -> renderMaterialPull (15868) -> aggregateMaterialPull (15817). Two structural causes ranked most likely: (1) window membership is decided by pec_prod_jobs.install_date alone (15818), never by pec_prod_job_schedule_days, so a job scheduled on the calendar whose install_date is null, stale, or outside the default next-14-days window is invisible; (2) aggregation iterates job.lines (pec_prod_material_lines, loaded at 15736), and jobs that arrived via the webhook or the calendar "+ Add Job" bridge have areas but often NO saved material lines until someone opens the job and recalculates, so they contribute zero lines silently. Both failure modes are silent: the modal's empty state (15904) cannot distinguish "no jobs in window" from "jobs in window but no lines". Wrote a self-contained Claude Code prompt: confirm diagnosis in code, switch window membership to install_date OR scheduled days in range, generate lines on the fly from the catalog calculator for in-window jobs that have areas but no saved lines (tolerating the new custom-blend manual-line behavior from commit aa77ddc), and make the empty state itemize what was found and excluded.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan runs the prompt in Claude Code. Reminder: local main is still ahead of origin, nothing recent is deployed until a push happens.
+Handoff to Cowork: None yet.
+Handoff to Dylan: Run the prompt. Push when ready to deploy.
+
+---
+
 ## [2026-06-11 MST] Cowork: diagnosed "metrics still look old" (commits never pushed), wrote visual redesign prompt for the Metrics tab
 By: Cowork
 Changed: No code. Two findings: (1) Dylan's screenshot of the "updated" Metrics tab is the OLD layout because local main is 10 commits ahead of origin/main; Netlify deploys from the remote, so none of yesterday's four tasks (crew tasks, flake costing, invoicing window, metrics restructure) are live. Pushing is gated on Dylan per project rules. (2) Even the new code reuses invBarChart and plain pec-stat cards, so it will not look like the DripJobs reference; the unreadable numbers come from .pec-bar-v being absolutely positioned at top:2px while bars grow to 100% height, so tall bars collide with their own labels. Researched current KPI dashboard design patterns (labeled KPI card anatomy: label + description + big value + delta vs prior period; ranking rows as horizontal bars with value and share; proper charts with axes and tooltips) and wrote a visual redesign prompt for Claude Code: DripJobs-style grouped KPI card rows, delta indicators vs the previous equal-length window, horizontal-bar ranking tables for the by-salesperson/by-crew sections, and weekly charts rebuilt on Chart.js lazy-loaded from cdnjs using the existing Quill pattern (index.html:11370), all preserving the universal drilldowns.
