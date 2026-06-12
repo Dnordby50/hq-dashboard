@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-11 MST] Cowork: full CRM gap analysis vs the "built for us, start to finish" goal
+By: Cowork
+Changed: No code. Dylan asked for an analysis of where the CRM stands and what the gaps are, given the goal of a fully functioning start-to-finish CRM with CompanyCam and Quo integrations. Surveyed index.html (17,890 lines), all 16 netlify functions, the 38 supabase migrations, docs/job-schedule-future-todos.md, and the phased prompt in the HQ folder (claude-code-prompt-next-phase-2026-06-07.md). Headline findings, delivered to Dylan in chat: (1) the post-sale half (scheduling, ordering, costing, AR, work orders) is mature and in daily use, but the pre-sale half (leads, estimates, proposals) is 0% native and lives entirely in DripJobs, which has no public API, so that, not the two integrations, is the real gap. (2) CompanyCam is ~80% built and blocked only on COMPANYCAM_API_TOKEN being set in Netlify (deferred since May); remaining build is the link picker, gallery polish, and optional webhooks per Phase 5. (3) Quo has zero code but a complete Phase 4 spec; it intentionally depends on the Phase 2A E.164 utility, so build 2A first. (4) Payments are recording-only, not collection; Stripe Checkout remains shelved (~1.5-2.5 days est from the 2026-06-08 assessment). (5) Costing quality depends on input discipline; this week's bugs all trace to the two-parallel-job-tables shape, and unification (future-todos #5) should land before any ARM 2 portal work. (6) Loose thread from the 2026-06-08 Zapier audit: pec-webhook-stage-changed, pec-webhook-project-completed, and pec-webhook-resend had no matching Zap; if unconfirmed, pipeline statuses may be silently stale. Recommended order given in chat: token + Zap verification now, Stripe Checkout, Phase 2 lead pipeline, then Quo and CompanyCam UI in parallel, then job-table unification.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan picks the order; quickest wins are setting COMPANYCAM_API_TOKEN and confirming the three Zaps.
+Handoff to Cowork: None.
+Handoff to Dylan: Confirm whether the three webhook endpoints above are wired in Zapier; set COMPANYCAM_API_TOKEN if proceeding with CompanyCam.
+
+---
+
 ## [2026-06-11 MST] Claude Code: Ordering now computes from the CRM job card picks (root cause of missing epoxy/topcoat and wrong "Custom blend flake")
 By: Claude Code
 Changed: For any production job bridged to a CRM job (dripjobs_deal_id), the Ordering tab, the Pull modal, Save lines to job, and the job-detail Recalculate now compute material from the CRM JOB CARD's picks (job_areas + job_area_materials, the same data the Work Order prints), instead of pec_prod_areas. The unified Job Costing page's derived materials fallback uses the same resolution, so the job card and Ordering can never disagree again. Non-bridged jobs (manual calendar entries, jobs created in Ordering's New Job flow, touch-up callbacks) keep using pec_prod_areas exactly as before, and saved pec_prod_material_lines still win over everything.
