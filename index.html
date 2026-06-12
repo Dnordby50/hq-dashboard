@@ -14141,6 +14141,11 @@ async function loadCostingData() {
   for (const s of state.scheduleDays || []) (schedByJob[s.job_id] ||= []).push(s);
   state.scheduleByJob = schedByJob;
   state.costingLoaded = true; // all costing slots above are now hydrated
+  // Cross-module freshness handshake: the Ordering/production module sets
+  // window.pecCostingStale = true after every pec_prod_material_lines write
+  // (save lines, ordered/delivered toggles, recalc, line edits). A fresh load
+  // clears it, so renderUnifiedJob knows when its hydrated state went stale.
+  window.pecCostingStale = false;
 }
 
 function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCost, derivedBonusCost) {
@@ -14374,7 +14379,7 @@ function openCostingDetail(jobId) {
         ${moneyInput('Equipment Rental', 'equipment_rental_cost', 'cost', cost?.equipment_rental_cost)}
         ${derivedField('Materials Ordered', fmtMoneyOrDash(r.buckets.materials_ordered_cost) + ' <span style="color:var(--muted);font-size:.65rem">from material_lines</span>')}
         ${moneyInput('Materials Used',    'materials_used_cost', 'cost', cost?.materials_used_cost)}
-        ${moneyInput('Salary &amp; Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
+        ${moneyInput('Salary & Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
         ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
         ${moneyInput('Bonus',             'bonus_cost',         'cost', cost?.bonus_cost)}
         ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
@@ -14537,7 +14542,11 @@ async function renderUnifiedJob(jobId) {
   // so opening a job from the schedule skipped the load and crashed on the first
   // costing-slot read. costingLoaded is set only by loadCostingData, so this is
   // true whether we arrive from the schedule, a cold refresh, or the costing list.
-  if (!state.costingLoaded) {
+  // pecCostingStale is the Ordering module's signal that material lines changed
+  // since the last load; without this check, a job whose lines were saved via
+  // Ordering kept rendering the OLD derived (read-only) Materials card because
+  // the sticky openUnifiedJobId path skips renderJobCosting's fresh load.
+  if (!state.costingLoaded || window.pecCostingStale) {
     root.innerHTML = '<div class="pec-empty">Loading job…</div>';
     await loadCostingData();
   }
@@ -14703,7 +14712,9 @@ async function renderUnifiedJob(jobId) {
       <div class="pec-card" id="sec-materials">
         <h3>Materials <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · ordered <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span></h3>
         ${linesHtml}
-        <div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>
+        ${lines.length === 0 ? '' : linesDerived
+          ? '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">These lines are calculated for display only. Use Ordering (Save lines to job) or Recalculate on the job detail to persist them; Actual Used becomes editable then.</div>'
+          : '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>'}
       </div>
 
       <div class="pec-card" id="sec-hours">
@@ -14735,7 +14746,7 @@ async function renderUnifiedJob(jobId) {
           ${moneyInput('Equipment Rental', 'equipment_rental_cost', 'cost', cost?.equipment_rental_cost)}
           ${derivedField('Materials Ordered', `<span data-uderived="ordered">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span>`, '', 'ordered-box')}
           ${derivedField('Materials Used',    `<span data-uderived="used">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span>`, '', 'used-box')}
-          ${moneyInput('Salary &amp; Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
+          ${moneyInput('Salary & Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
           ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
           ${derivedField('Bonus',           `<span data-uderived="bonus">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span>`, '', 'bonus-box')}
           ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
@@ -15661,7 +15672,14 @@ if (portalToken) {
   const subnav = document.getElementById('pecSubnav');
   if (subnav) subnav.addEventListener('click', e => {
     const btn = e.target.closest('button[data-pec-view]');
-    if (btn) switchView(btn.dataset.pecView);
+    if (!btn) return;
+    // Clicking the Job Costing NAV button always returns to the list: the
+    // sticky openUnifiedJobId otherwise reopens the last job forever.
+    // Programmatic flows that intentionally deep-link into a job (e.g. the
+    // schedule modal's Open job) set openUnifiedJobId AND call switchView
+    // directly, so they bypass this click handler and keep working.
+    if (btn.dataset.pecView === 'costing') state.openUnifiedJobId = null;
+    switchView(btn.dataset.pecView);
   });
   // Lazy-render the CRM tab when it activates (only once authed; the global
   // gate has already run init by then). renderAuthUI shows #pecApp, role-gates
@@ -16645,6 +16663,7 @@ function _mergeAcrossAreas(areaPlans) {
       await supabase.from('pec_prod_material_lines').delete().eq('job_id', jobId);
       const ins = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(jobId, res.lines));
       if (ins.error) throw ins.error;
+      window.pecCostingStale = true; // unified Job Costing page re-loads lines
       await loadJobs();
       render();
     } catch (err) {
@@ -16670,6 +16689,7 @@ function _mergeAcrossAreas(areaPlans) {
       input.disabled = false;
       return;
     }
+    window.pecCostingStale = true; // unified Job Costing page re-loads lines
     for (const j of state.jobs) {
       const l = (j.lines || []).find(x => x.id === lineId);
       if (l) { l[prop] = checked; break; }
@@ -17255,6 +17275,7 @@ function _mergeAcrossAreas(areaPlans) {
         if (insLines.error) return setErr(insLines.error.message);
       }
 
+      window.pecCostingStale = true; // unified Job Costing page re-loads lines
       state.newJob = blankNewJob();
       await loadJobs();
       setProdView('jobs');
@@ -17409,6 +17430,7 @@ function _mergeAcrossAreas(areaPlans) {
       if (error) return errEl.textContent = error.message;
     }
     okEl.textContent = 'Saved.';
+    window.pecCostingStale = true; // unified Job Costing page re-loads lines
     await loadJobs();
   }
 
@@ -17433,6 +17455,7 @@ function _mergeAcrossAreas(areaPlans) {
       const ins = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(j.id, plan.lines));
       if (ins.error) return $('prodDetailError').textContent = ins.error.message;
     }
+    window.pecCostingStale = true; // unified Job Costing page re-loads lines
     await loadJobs();
     state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
     renderJobDetail();
