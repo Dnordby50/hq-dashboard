@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-11 MST] Cowork: diagnosed Job Costing saves failing silently for a staff user, wrote Claude Code fix prompt
+By: Cowork
+Changed: No code. Dylan reports a staff user (office role) cannot save anything she enters on Job Costing; values vanish on reload. Investigated the save paths. Findings: saveCostingField (index.html:14188) and saveJobField (14203) are bare supabase calls that log errors only to the console and keep the typed value in memory, so every failure looks like a successful save until reload. They also bypass the repo's own session-hardening rule (CLAUDE.md wedge gotcha: writes go through withDeadline / withFreshWriteRetry), so a stale or expired session on a long-idle tab fails every costing write silently. RLS and permissions were largely ruled out from code: all costing tables share the same is_admin_staff() predicate for reads AND writes, and the CRM resolves her login through the same auth_user_id linkage, so if she can see job rows at all, write RLS passes too. Wrote a self-contained Claude Code prompt (printed in the Cowork chat): a one-step console check on her machine to confirm the cause, then route costing writes through withFreshWriteRetry (idempotent field updates), surface save failures visibly (input mark + toast + persistent banner), with an RLS fallback handoff if her console says otherwise.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan runs the prompt in Claude Code; have her do the DevTools console check when convenient, it pins the root cause in one step.
+Handoff to Cowork: None yet (the prompt may generate an admin_users linkage check if the console shows an RLS error).
+Handoff to Dylan: Run the prompt.
+
+---
+
 ## [2026-06-11 MST] Claude Code: CompanyCam searchable project picker + the proxy now requires a staff session
 By: Claude Code
 Changed: Two things on the CompanyCam integration that went live earlier today. (1) The job-detail project picker is no longer a plain dropdown of the 100 most recent projects. It is now a type-to-search input mirroring the Add Job modal's customer-search interaction: type 2+ characters, a debounced (300ms) search hits the proxy's new query passthrough (CompanyCam's GET /v2/projects?query= filters by project name or address line 1 server-side), results show name + address, click to link. A linked project shows as a chip with Change and Unlink buttons. On open, the picker searches the job's customer name up front: if the job is already linked that resolves the project's display name (falling back to "Linked project <id>"), and if not linked it pre-seeds the results so the right project is usually one click away. (2) The proxy (pec-companycam.cjs) now rejects callers without a valid Supabase session. It previously answered anyone on the internet with project names, addresses, and photo URLs.
