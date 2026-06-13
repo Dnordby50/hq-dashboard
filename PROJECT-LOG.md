@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-12 22:08] Cowork: investigated "job costing still broken / Ordering forces save-to-populate"; root-caused the visibility gate, paused for a Dylan decision
+By: Cowork
+Changed: No code. Dylan reported Job Costing is still broken: the Ordering tab wants a "Save lines to job" step before costing populates, and (clarified via question) jobs should not appear in the costing column until a job is marked complete; he wants to keep a single material number, not split estimated vs ordered. Traced the code. Findings: (1) The save-to-populate behavior is by design, not a bug. Jobs with no rows in pec_prod_material_lines get DERIVED lines via computeMaterialPlan (index.html:14145-14199, synthetic ids, _derived flag); derived lines have no DB row so Actual Used and Ordered/Delivered are read-only until "Save lines to job" materializes them. The 2026-06-12 fixes only addressed the stale-cache symptom, not this gate. (2) The real cause of jobs cluttering the costing column: the main costing table filters on state.costingFilter which DEFAULTS to 'all' (index.html:5708, filter at 15042-15049), so every non-callback job shows regardless of completion. (3) The "Pending Job Costing" queue (index.html:15016-15023) keys completion as status==='completed' OR install_date<=today (line 15021), so a job auto-surfaces the day its install date passes even if never marked complete. (4) "Materials Ordered $" is mislabeled: materials_ordered_cost sums ALL line_cost regardless of the per-line Ordered checkbox (index.html:14122), so it is really estimated material cost; the Ordered checkboxes feed no cost bucket.
+Why: Dylan wants costing to be a post-completion activity that does not nag during Ordering and does not list incomplete jobs.
+Files touched: PROJECT-LOG.md only. No index.html edits (paused on a decision per below).
+Next steps: On Dylan's answer, gate both lists on explicit status==='completed' (default main filter to completed-only; drop the install-date heuristic from the pending queue) and relabel "Materials Ordered" to "Materials (est.)" leaving the math unchanged.
+Handoff to Cowork: None.
+Handoff to Dylan: Confirm whether jobs reliably get status='completed' today (DripJobs sync or manual). The 2026-06-11 log flagged pec-webhook-project-completed may have no Zap; if completion never syncs, gating strictly on 'completed' would empty the costing list. If unreliable, fix the completion sync or add a manual "mark complete" control before gating. Reply with that one point and Cowork (or Claude Code) will implement.
+
+---
+
 ## [2026-06-12 MST] Claude Code: fixed the four bugs from Cowork's live e2e costing test (stale Materials card, New Job revenue, half-written schedules, day-early dates)
 By: Claude Code
 Changed: Commits a923424, c980dc3, 9f64c64, fixing Cowork's findings 1-4 plus the cosmetics.
