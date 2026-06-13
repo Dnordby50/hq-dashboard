@@ -624,7 +624,12 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-stars .star.on{color:var(--warn)}
 .pec-lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:10010;display:flex;align-items:center;justify-content:center;padding:20px}
 .pec-lightbox img{max-width:100%;max-height:100%;border-radius:6px}
-.pec-lightbox-close{position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.1rem}
+.pec-lightbox-close{position:absolute;top:20px;right:20px;background:rgba(255,255,255,.1);color:#fff;border:none;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:1.1rem;z-index:2}
+.pec-lightbox-nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.12);color:#fff;border:none;width:48px;height:64px;border-radius:8px;cursor:pointer;font-size:2rem;line-height:1;display:flex;align-items:center;justify-content:center;z-index:2}
+.pec-lightbox-nav:hover{background:rgba(255,255,255,.24)}
+.pec-lightbox-nav.prev{left:20px}
+.pec-lightbox-nav.next{right:20px}
+.pec-lightbox-count{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:#fff;font-size:.85rem;background:rgba(0,0,0,.45);padding:4px 12px;border-radius:999px;z-index:2}
 
 /* Customer portal — full-bleed, light-theme override of the dark dashboard palette */
 body.pec-portal-mode{
@@ -6214,11 +6219,56 @@ window.addEventListener('unhandledrejection', (ev) => {
   showCrmRenderError(ev.reason, (typeof state !== 'undefined' && state && state.view) || 'dashboard');
 });
 
-function openLightbox(src) {
+// Fullscreen image viewer. Pass a single src (back-compat) OR an array of srcs
+// plus a start index to get a navigable gallery: prev/next buttons, arrow keys,
+// mouse wheel, and touch swipe all move between photos. Index wraps around.
+function openLightbox(srcOrList, startIndex = 0) {
+  const items = (Array.isArray(srcOrList) ? srcOrList : [srcOrList]).filter(Boolean);
+  if (!items.length) return;
+  const multi = items.length > 1;
+  let i = Math.max(0, Math.min(items.length - 1, startIndex));
   const wrap = document.createElement('div');
   wrap.className = 'pec-lightbox';
-  wrap.innerHTML = `<button class="pec-lightbox-close">&times;</button><img src="${esc(src)}" alt="">`;
-  wrap.addEventListener('click', () => wrap.remove());
+  wrap.innerHTML = `
+    <button class="pec-lightbox-close" aria-label="Close">&times;</button>
+    ${multi ? '<button class="pec-lightbox-nav prev" aria-label="Previous">&#8249;</button>' : ''}
+    <img src="${esc(items[i])}" alt="">
+    ${multi ? '<button class="pec-lightbox-nav next" aria-label="Next">&#8250;</button>' : ''}
+    ${multi ? `<div class="pec-lightbox-count">${i + 1} / ${items.length}</div>` : ''}`;
+  const imgEl = wrap.querySelector('img');
+  const countEl = wrap.querySelector('.pec-lightbox-count');
+  const show = (n) => { i = (n + items.length) % items.length; imgEl.src = items[i]; if (countEl) countEl.textContent = `${i + 1} / ${items.length}`; };
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    else if (multi && e.key === 'ArrowLeft') show(i - 1);
+    else if (multi && e.key === 'ArrowRight') show(i + 1);
+  };
+  // Backdrop click closes; clicks on the image or controls do not.
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelector('.pec-lightbox-close').addEventListener('click', close);
+  if (multi) {
+    wrap.querySelector('.prev').addEventListener('click', () => show(i - 1));
+    wrap.querySelector('.next').addEventListener('click', () => show(i + 1));
+    // Wheel + swipe to move between photos ("scroll between"). Wheel is
+    // throttled so one gesture advances one photo.
+    let wheelAt = 0;
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (Date.now() - wheelAt < 250) return;
+      wheelAt = Date.now();
+      show(i + ((e.deltaY || e.deltaX) > 0 ? 1 : -1));
+    }, { passive: false });
+    let touchX = null;
+    wrap.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
+    wrap.addEventListener('touchend', (e) => {
+      if (touchX == null) return;
+      const dx = e.changedTouches[0].clientX - touchX;
+      if (Math.abs(dx) > 40) show(i + (dx < 0 ? 1 : -1));
+      touchX = null;
+    });
+  }
+  document.addEventListener('keydown', onKey);
   $('pecLightboxRoot').appendChild(wrap);
 }
 
@@ -9345,13 +9395,7 @@ async function renderJobDetailInner(id) {
 
     <div class="pec-card">
       <h3>Photos</h3>
-      <div style="margin-bottom:10px"><input id="pecPhotoUp" type="file" accept="image/jpeg,image/png,image/webp" multiple></div>
-      <div class="pec-gallery">
-        ${(job.photos || []).map(p => `
-          <div class="pec-gallery-item"><img src="${esc(p.url)}" alt=""><button class="pec-gallery-del" data-del-photo="${p.id}" data-path="${esc(p.storage_path || '')}">Delete</button></div>
-        `).join('') || '<div class="pec-empty" style="grid-column:1/-1">No photos yet</div>'}
-      </div>
-      <div id="ccSection" style="margin-top:14px;border-top:1px dashed var(--rd-line, var(--border));padding-top:12px;display:none">
+      <div id="ccSection" style="display:none">
         <div style="display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:10px">
           <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);padding-top:9px">CompanyCam project</label>
           <div style="flex:1;min-width:240px;max-width:380px">
@@ -10427,27 +10471,9 @@ async function renderJobDetailInner(id) {
      }
     }
   }
-  root.querySelectorAll('.pec-gallery-item img').forEach(img => img.addEventListener('click', () => openLightbox(img.src)));
-  root.querySelectorAll('[data-del-photo]').forEach(b => {
-    b.addEventListener('click', async e => {
-      e.stopPropagation();
-      if (b.dataset.path) await supabase.storage.from('pec-photos').remove([b.dataset.path]);
-      await supabase.from('photos').delete().eq('id', b.dataset.delPhoto);
-      renderJobDetail(id);
-    });
-  });
-  $('pecPhotoUp').addEventListener('change', async e => {
-    const files = Array.from(e.target.files || []);
-    for (const f of files) {
-      const ext = (f.name.split('.').pop() || 'jpg').toLowerCase();
-      const path = `${id}/${crypto.randomUUID()}.${ext}`;
-      const up = await supabase.storage.from('pec-photos').upload(path, f, { contentType: f.type, upsert: false });
-      if (up.error) { alert(up.error.message); continue; }
-      const { data: pub } = supabase.storage.from('pec-photos').getPublicUrl(path);
-      await supabase.from('photos').insert({ job_id: id, url: pub.publicUrl, storage_path: path });
-    }
-    renderJobDetail(id);
-  });
+  // Photos on the job detail are now sourced from CompanyCam (read-only, via
+  // the proxy) rather than the old Supabase-storage uploader, which has been
+  // removed. The customer portal still renders any legacy public.photos rows.
 
   // CompanyCam: type-to-search project picker (mirrors the Add Job modal's
   // customer-search interaction: input + results list + selected chip). The
@@ -10474,9 +10500,13 @@ async function renderJobDetailInner(id) {
         if (res.error) { gal.innerHTML = `<div class="pec-empty" style="grid-column:1/-1">${esc(res.error)}</div>`; return; }
         const photos = res.photos || [];
         gal.innerHTML = photos.length
-          ? photos.map(p => `<div class="pec-gallery-item"><img src="${esc(p.thumb || p.url)}" data-full="${esc(p.url)}" alt=""></div>`).join('')
+          ? photos.map(p => `<div class="pec-gallery-item"><img src="${esc(p.thumb || p.url)}" alt=""></div>`).join('')
           : '<div class="pec-empty" style="grid-column:1/-1">No photos in this CompanyCam project</div>';
-        gal.querySelectorAll('img').forEach(img => img.addEventListener('click', () => openLightbox(img.dataset.full || img.src)));
+        // Clicking any photo opens the fullscreen viewer at that photo; the
+        // full-resolution URLs are passed as a set so the user can page through
+        // the whole project (arrows, wheel, swipe, arrow keys).
+        const fulls = photos.map(p => p.url || p.thumb);
+        gal.querySelectorAll('img').forEach((img, idx) => img.addEventListener('click', () => openLightbox(fulls, idx)));
       } catch (err) {
         gal.innerHTML = '<div class="pec-empty" style="grid-column:1/-1">CompanyCam unavailable</div>';
       }
