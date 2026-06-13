@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-13 02:45] Cowork: captured the live BusyBusy API contract for Part B (it is GraphQL, not REST)
+By: Cowork
+Changed: No code. Captured the BusyBusy API contract from the live web app (app.busybusy.io) via Claude-in-Chrome, using resource timings and the in-page Apollo cache (field names), and a temporary read-only fetch wrapper to read header NAMES (the wrapper clears on page refresh; NO secret/token value was recorded anywhere).
+
+CORRECTION to the task premise: the live API is GraphQL, NOT a versioned REST /v1 API. Claude Code should build GraphQL POST queries, not action=timeentries REST calls.
+
+1) Base URL / transport: HTTPS POST to https://graphql.busybusy.io/ (single GraphQL endpoint; operations are anonymous, operationName null). Also observed: wss/rpc at api.busybusy.io/subscription-rpc (live updates) and file-api.busybusy.io (images). No /v1/ REST traffic from the web app.
+
+2) Auth header: NAME = key-authorization; FORMAT = the bare token, NO "Bearer " prefix (web app sends a session JWT there; value redacted, never recorded). key-authorization is BusyBusy's standard Integration-Key header, so the Integration Key almost certainly authenticates the SAME way: header key-authorization: <BUSYBUSY_API_TOKEN> against the same GraphQL endpoint. Claude Code should confirm with a probe and can run GraphQL introspection with the key to get the exact schema.
+
+3) Resource field names (from the normalized Apollo cache; these are GraphQL types):
+ - TimeEntry: id, memberId, projectId, costCodeId, equipmentId, startTime, endTime, startDeviceTime, daylightSavingTime, metaDaylightSavingTime, actionType, description, createdOn, submittedOn, updatedOn, deletedOn, breaks (array), hasLocation, startLocation, endLocation, clientLogs, addOns, member, project, costCode, equipment. NOTE: there is NO direct hours field. Duration = endTime - startTime minus breaks. Work date = from startTime. Sample (redacted): startTime "2026-06-08T06:40-07:00", endTime "2026-06-08T08:15-07:00" (ISO 8601 with offset), memberId/projectId are UUIDs, actionType 20, deletedOn null. EDIT marker = updatedOn; DELETE marker = deletedOn (soft delete, exactly what our pec_prod_busybusy_time_entries.deleted_at mirrors); an OPEN/running entry has endTime null.
+ - Project: id, title (the project name), depth, rootProjectId, parentProjectId, ancestors, projectInfo. ProjectInfo: id, customer, number, latitude, longitude, locationRadius. (Sub-projects exist via parentProjectId; busybusy_project_id should map to the project id used on time entries.)
+ - Member: id, firstName, lastName, email, username, memberNumber, positionId, positionId, organizationId, imageId, archivedOn, deletedOn, createdOn, updatedOn, submittedOn, lastAccess, phone, memberGroupId, etc. (memberNumber is the human "employee code"; id is the UUID our pec_prod_crew_members.busybusy_member_id was seeded with.)
+
+4) Integration-Key docs: none found in-app (Settings -> Integration Keys has Add Key + the existing "Zapier" key, no Docs link; web app uses session auth in the key-authorization header). Recommendation: set BUSYBUSY_API_URL = https://graphql.busybusy.io/ and send key-authorization: <key>; verify via the proxy's probe, and use GraphQL introspection with the key to lock the exact query field/arg names (incremental sync should filter time entries by updatedOn/deletedOn so edits and deletes flow through).
+
+Why: Claude Code was blocked with no API contract; this unblocks wiring the sync against real field names and the correct transport.
+Files touched: PROJECT-LOG.md only. External: read-only browsing of app.busybusy.io; nothing created/edited/deleted in BusyBusy.
+Next steps: Dylan still must (a) rename the Netlify env var to BUSYBUSY_API_TOKEN, (b) add BUSYBUSY_API_URL = https://graphql.busybusy.io/, (c) push local commits. Then Claude Code wires the GraphQL time-entry/project/member queries + the per-entry upsert sync keyed on TimeEntry.id with deletedOn -> deleted_at.
+Handoff to Cowork: re-probe specific GraphQL query/arg names if Claude Code's introspection is blocked.
+Handoff to Dylan: rename env var to BUSYBUSY_API_TOKEN; add BUSYBUSY_API_URL = https://graphql.busybusy.io/; push to deploy.
+
 ## [2026-06-13 02:10] Cowork: seeded pec_prod_crew_members from BusyBusy (8 employees with member ids); flagged a misnamed env var
 By: Cowork
 Changed: Pulled the employee roster from PEC's BusyBusy account (app.busybusy.io, via Claude-in-Chrome reading the Apollo cache, no auth token handled) and seeded all 8 into public.pec_prod_crew_members in PROD Supabase (ref zdfpzmmrgotynrwkeakd) with name + busybusy_member_id + active=true, via an idempotent INSERT (where-not-exists on busybusy_member_id). Verified 8 rows. The busybusy_member_id is BusyBusy's internal member UUID, which is what time entries key on, so per-person hour sums will match once the time sync runs. Members seeded: Aron Bronson (99803523-23e0-42ee-80f3-7a3254a926b2), Caden Maier (cc24ecad-051c-4f1e-8f55-f7d35ba2e3c7), Davey Milligan (1189f66b-a847-4acf-83c6-ff664fe71975), Dylan Nordby (54e6b577-cd4d-42c8-adaa-d7dc5324b76e, the office account, included for completeness), Justin Horton (a10a219a-a4f5-40cd-a646-44c2fa1742c1), Kyle Floyd (d6dbb320-76d3-4e51-b6eb-b149332d7239), Landen Johnson (6246146d-9b96-476e-a5b0-fc100cf006b7), Preston McCoy (e2df839a-7de2-4d4f-af77-90b74abd226d).
