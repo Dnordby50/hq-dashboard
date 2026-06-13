@@ -1892,6 +1892,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="nextday">Next Day Schedule</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
+          <button data-pec-view="crew-bonus" class="pec-role-admin">Crew Bonus</button>
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
           <div class="pec-subnav-divider"></div>
@@ -6030,6 +6031,7 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       costing: renderJobCosting,
+      'crew-bonus': renderCrewBonus,
       team: renderTeam,
       settings: renderSettings,
     })[v] || renderDashboard;
@@ -14324,6 +14326,118 @@ function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCo
 
 function bonusTotalForJob(jobId) {
   return (state.bonusesByJob?.[jobId] || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+}
+
+// ============================================================
+// Crew Bonus tab (Part C): when a completed job's actual labor comes in UNDER
+// its labor budget, pay the crew a share of the savings, split by how much
+// time each person spent on the job.
+//
+// POLICY (Dylan, 2026-06-13, reconfirm before any payout goes live):
+//   pool = max(0, laborBudget - actualLabor) * 0.75   (crew gets 75% of savings)
+//   per-member share = member hours / total hours on the job
+//   over-budget job => no pool; bonus shown only once the job is COMPLETE.
+// Labor budget is the Part A estimate (window.computeJobEstimate, same number
+// the front-end Budget card shows). Actual hours come from Part B's
+// pec_prod_busybusy_time_entries; until BusyBusy is wired a job with no time
+// entries reads as "awaiting hours" and pays nothing (never a bonus on zero
+// actuals). This tab is read-only: it computes and displays, it does not write
+// to the pec_prod_job_bonuses ledger until the payout path is greenlit.
+const CREW_BONUS_FRACTION = 0.75;
+async function renderCrewBonus() {
+  const root = $('pecViewRoot');
+  if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Crew Bonus.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty">Loading crew bonus…</div>';
+  // loadCostingData populates state.estimateByJob (labor budgets) + prodJobs.
+  await loadCostingData();
+  const rate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
+  const memberById = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
+
+  // Actual hours per job and per member from the BusyBusy mirror. Degrades to
+  // empty (every job "awaiting hours") if the table is missing or the sync has
+  // not run yet, so the tab never invents labor.
+  const hoursByJob = {};      // job_id -> total non-deleted hours
+  const hoursByJobMember = {}; // job_id -> { crew_member_id|busybusy_member_id -> hours }
+  let timeError = null;
+  try {
+    const res = await withFreshSession(() => supabase
+      .from('pec_prod_busybusy_time_entries')
+      .select('job_id,crew_member_id,busybusy_member_id,hours,deleted_at'), { label: 'crewBonusTime' });
+    if (res.error) throw res.error;
+    for (const e of (res.data || [])) {
+      if (e.deleted_at || !e.job_id) continue;
+      const h = Number(e.hours || 0);
+      if (!(h > 0)) continue;
+      hoursByJob[e.job_id] = (hoursByJob[e.job_id] || 0) + h;
+      const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
+      (hoursByJobMember[e.job_id] ||= {})[key] = (hoursByJobMember[e.job_id]?.[key] || 0) + h;
+    }
+  } catch (err) { timeError = err && err.message ? err.message : String(err); }
+
+  const completed = (state.prodJobs || []).filter(j => j.status === 'completed' && !j.archived_at)
+    .sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+
+  const memberName = (key) => {
+    if (key.startsWith('bb:')) return 'BusyBusy member ' + key.slice(3) + ' (unmapped)';
+    return memberById[key]?.name || 'Crew member';
+  };
+
+  const rows = completed.map(j => {
+    const est = (state.estimateByJob || {})[j.id] || {};
+    const laborBudget = est.laborBudget == null ? null : Number(est.laborBudget);
+    const totalHours = hoursByJob[j.id] || 0;
+    const actualLabor = totalHours > 0 ? totalHours * rate : null;
+    const hasActuals = totalHours > 0;
+    const savings = (laborBudget != null && actualLabor != null) ? laborBudget - actualLabor : null;
+    const pool = savings != null ? Math.max(0, savings) * CREW_BONUS_FRACTION : null;
+    const members = hasActuals
+      ? Object.entries(hoursByJobMember[j.id] || {}).map(([key, h]) => ({
+          name: memberName(key), hours: h, share: totalHours > 0 ? h / totalHours : 0,
+          bonus: pool != null ? pool * (h / totalHours) : 0,
+        })).sort((a, b) => b.hours - a.hours)
+      : [];
+    return { j, laborBudget, totalHours, actualLabor, savings, pool, hasActuals, members };
+  });
+
+  const fmtH = (n) => (Math.round(n * 10) / 10).toLocaleString();
+  const bodyRows = rows.map(r => {
+    const status = r.laborBudget == null
+      ? '<span style="color:var(--muted)">no labor budget (set system labor % + revenue)</span>'
+      : !r.hasActuals
+        ? '<span style="color:var(--muted)">awaiting BusyBusy hours</span>'
+        : r.pool > 0
+          ? `<strong style="color:var(--rd-success,#16a34a)">${invUSD0(r.pool)} pool</strong>`
+          : '<span style="color:var(--muted)">over budget, no bonus</span>';
+    const memberHtml = r.members.length
+      ? `<table class="pec-table" style="font-size:.74rem;margin:6px 0 0">
+           <thead><tr><th>Crew member</th><th style="text-align:right">Hours</th><th style="text-align:right">Share</th><th style="text-align:right">Bonus</th></tr></thead>
+           <tbody>${r.members.map(m => `<tr class="nohover"><td>${esc(m.name)}</td><td style="text-align:right">${fmtH(m.hours)}</td><td style="text-align:right">${Math.round(m.share * 100)}%</td><td style="text-align:right">${r.pool > 0 ? invUSD0(m.bonus) : '—'}</td></tr>`).join('')}</tbody>
+         </table>`
+      : '';
+    return `<div class="pec-card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">
+        <div>
+          <strong>${esc(r.j.customer_name || '—')}</strong>
+          <div style="color:var(--muted);font-size:.72rem">${esc(r.j.address || '')}${r.j.address ? ' · ' : ''}#${esc(r.j.proposal_number || '')}</div>
+        </div>
+        <div style="text-align:right;font-size:.8rem">
+          <div>Labor budget: <strong>${r.laborBudget == null ? '—' : invUSD0(r.laborBudget)}</strong></div>
+          <div>Actual labor: <strong>${r.actualLabor == null ? '—' : invUSD0(r.actualLabor)}</strong>${r.hasActuals ? ` <span style="color:var(--muted)">(${fmtH(r.totalHours)} hrs × $${rate}/hr)</span>` : ''}</div>
+          <div style="margin-top:2px">${status}</div>
+        </div>
+      </div>
+      ${memberHtml}
+    </div>`;
+  }).join('') || '<div class="pec-empty">No completed jobs yet.</div>';
+
+  root.innerHTML = `
+    <div class="pec-card">
+      <h3 style="margin:0 0 4px">Crew Bonus <span style="color:var(--muted);font-size:.7rem;font-weight:400">under-budget labor savings, shared with the crew</span></h3>
+      <div style="font-size:.78rem;color:var(--muted)">Policy: the crew receives <strong>${Math.round(CREW_BONUS_FRACTION * 100)}%</strong> of the difference when a completed job's actual labor lands under its labor budget, split by each person's share of hours on that job. Over-budget jobs pay no bonus. This view is read-only; nothing is paid out automatically.</div>
+      ${timeError ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-top:6px">Actual hours unavailable (${esc(timeError)}). Jobs show their budget and wait for BusyBusy hours.</div>` : ''}
+    </div>
+    ${bodyRows}
+  `;
 }
 
 // ---- Costing save-failure surfacing --------------------------------------
