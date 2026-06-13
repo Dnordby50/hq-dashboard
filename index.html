@@ -8884,7 +8884,6 @@ async function renderWorkOrder(ctx) {
     ? ((revenue * laborPct / 100) / defaultLaborRate)
     : null;
   const totalSqft = planAreas.reduce((s, a) => s + (Number(a.sqft) || 0), 0);
-  const polyCureLine = planAreas.find(a => a.topcoat_cure_speed)?.topcoat_cure_speed || 'Slow';
 
   const e = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const yn = (v) => v === true ? 'YES' : v === false ? 'NO' : '';
@@ -8924,8 +8923,7 @@ async function renderWorkOrder(ctx) {
   };
 
   // Materials table: prefill product name + color + estimated qty (kits). Qty
-  // Used / Qty returned stay blank for the crew. Append the polyaspartic
-  // SLOW/FAST line at the bottom matching the paper sheet's pre-printed row.
+  // Used / Qty returned stay blank for the crew.
   const matRowsHtml = lines.map(l => `
     <tr>
       <td>${e(l.product_name || '')}</td>
@@ -9075,7 +9073,6 @@ async function renderWorkOrder(ctx) {
     <thead><tr><th>Material Required</th><th>Color or Sheen</th><th>Estimated/pulled for job</th><th>Qty Used (kits or boxes)</th><th>Qty returned to shop</th></tr></thead>
     <tbody>
       ${matRowsHtml}
-      <tr class="poly"><td>Polyaspartic 5g or 2g</td><td>${e(polyCureLine.toUpperCase())}</td><td></td><td></td><td></td></tr>
     </tbody>
   </table>
   <div class="section">
@@ -10548,26 +10545,44 @@ async function renderJobDetailInner(id) {
 
     const custName = (job.customers?.name || '').trim();
     const current = job.companycam_project_id || '';
-    let res;
-    try {
-      // The first call doubles as the availability check (token configured,
-      // caller authorized). #ccSection starts hidden; bail on any error so
-      // production never shows a dead picker. Searching the customer name up
-      // front serves both states: it resolves a linked project's display name
-      // and pre-seeds the results list when nothing is linked yet.
-      res = await (custName.length >= 2 ? searchProjects(custName) : ccApi('action=projects'));
-    } catch (err) { return; }
-    if (!res || res.error) return;
     const ccSection = document.getElementById('ccSection');
-    if (ccSection) ccSection.style.display = '';
-    const projects = res.projects || [];
+
     if (current) {
-      const match = projects.find(p => p.id === current);
-      showSelected(match ? match.name : `Linked project ${current}`);
+      // A project is already linked: show the gallery the moment the job detail
+      // opens. Photo loading is NOT gated on the customer-name lookup anymore --
+      // previously a linked job's photos rode on that search succeeding, so any
+      // hiccup in the name lookup left the section hidden with no photos. Reveal
+      // the section, render the linked chip, and fire showPhotos straight away.
+      if (ccSection) ccSection.style.display = '';
+      showSelected(`Linked project ${current}`);
       showPhotos(current);
-    } else if (projects.length && custName.length >= 2) {
-      queryEl.value = custName;
-      renderResults(projects);
+      // Best-effort, non-blocking: resolve the friendly project name to replace
+      // the "Linked project <id>" placeholder. A failure here never hides photos.
+      if (custName.length >= 2) {
+        searchProjects(custName)
+          .then(r => {
+            const match = ((r && r.projects) || []).find(p => p.id === current);
+            if (match) showSelected(match.name);
+          })
+          .catch(() => {});
+      }
+    } else {
+      // Not linked: the first proxy call doubles as the availability check (token
+      // configured, caller authorized). #ccSection starts hidden; bail on any
+      // error so production never shows a dead picker. Searching the customer
+      // name up front pre-seeds the results list so the right project is usually
+      // one click away.
+      let res;
+      try {
+        res = await (custName.length >= 2 ? searchProjects(custName) : ccApi('action=projects'));
+      } catch (err) { return; }
+      if (!res || res.error) return;
+      if (ccSection) ccSection.style.display = '';
+      const projects = res.projects || [];
+      if (projects.length && custName.length >= 2) {
+        queryEl.value = custName;
+        renderResults(projects);
+      }
     }
 
     let ccDebounce = null, ccSeq = 0;
