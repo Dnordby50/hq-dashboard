@@ -1,21 +1,25 @@
 // Netlify Function: BusyBusy read proxy (Part B of the Job Costing build).
 // Session-gated, read-only. NEVER writes back to BusyBusy.
 //
-// Why this exists: the BusyBusy API token must not ship in client code, and
-// the browser cannot call BusyBusy directly (no CORS). This runs server-side,
-// authenticates with the token, and returns JSON from the dashboard's origin.
+// Why this exists: the BusyBusy API key must not ship in client code, and the
+// browser cannot call BusyBusy directly (no CORS). This runs server-side,
+// authenticates with the key, and returns JSON from the dashboard's origin.
 //
-// IMPORTANT (honest scaffold): BusyBusy publishes no public developer / Open
-// API docs. The endpoint, auth scheme, and query shape are UNKNOWN until the
-// Integration Key + its docs land (Dylan handoff). So this proxy does NOT
-// hardcode an unverified endpoint: it reads BUSYBUSY_API_URL from the env and,
-// for `action=introspect`, runs a standard GraphQL introspection so we can
-// discover the time-entries schema once the key is set, THEN wire
-// `action=timeentries` and `action=projects` on the real field names.
+// API SHAPE (researched 2026-06-13 from the @busybusy/data npm client): the
+// BusyBusy API is a VERSIONED JSON/REST API (PHP backend, JSON-API style:
+// /<version>/<dasherized-resource>, `filter` query params), NOT GraphQL. There
+// are no public docs, so this proxy hardcodes NOTHING about paths, auth, or
+// schema. Everything comes from env, and `action=probe` is a generic
+// authenticated passthrough so we can discover the real resource names + shape
+// once the key is configured, THEN wire action=timeentries / action=projects.
 //
-// Env: BUSYBUSY_API_TOKEN (the Integration Key), BUSYBUSY_API_URL (the GraphQL
-// endpoint, once confirmed), plus the shared SUPABASE_URL /
-// SUPABASE_SERVICE_ROLE_KEY used to verify the caller's session.
+// Env (set in Netlify; Dylan handoff):
+//   BUSYBUSY_API_TOKEN   the Integration Key value (required)
+//   BUSYBUSY_API_URL     API base, e.g. https://api.busybusy.io  (required)
+//   BUSYBUSY_AUTH_HEADER header that carries the key (default: Key-Authorization)
+//   BUSYBUSY_AUTH_PREFIX optional value prefix, e.g. "Bearer " (default: none)
+// Plus the shared SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY used to verify the
+// caller's Supabase session.
 // .cjs extension is deliberate (package.json has "type":"module").
 
 // Verify the caller's Supabase session (same gate as pec-companycam.cjs): the
@@ -38,10 +42,6 @@ async function callerIsStaff(event) {
   }
 }
 
-const INTROSPECTION_QUERY = `query IntrospectionQuery {
-  __schema { queryType { name } types { name kind fields { name } } }
-}`;
-
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -52,7 +52,7 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
 
   // 200-with-{error} for every failure, like pec-companycam.cjs: the dashboard
-  // reads res.error and degrades gracefully (manual-hours fallback) instead of
+  // reads res.error and degrades to the manual-hours fallback instead of
   // logging a console error on every costing open.
   const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, entries: [], projects: [], ...extra }) });
 
@@ -60,33 +60,41 @@ exports.handler = async (event) => {
 
   const token = process.env.BUSYBUSY_API_TOKEN;
   if (!token) return fail('BusyBusy is not configured. Set BUSYBUSY_API_TOKEN in the Netlify environment.');
-  const apiUrl = process.env.BUSYBUSY_API_URL;
-  if (!apiUrl) return fail('BusyBusy endpoint not set. Add BUSYBUSY_API_URL once the Integration Key docs confirm it.');
+  const base = process.env.BUSYBUSY_API_URL;
+  if (!base) return fail('BusyBusy base URL not set. Add BUSYBUSY_API_URL (e.g. https://api.busybusy.io) once the key docs confirm it.');
+
+  // Auth header is configurable because BusyBusy publishes no docs: the key may
+  // ride on Key-Authorization (their historical scheme) or Authorization.
+  const authHeader = process.env.BUSYBUSY_AUTH_HEADER || 'Key-Authorization';
+  const authPrefix = process.env.BUSYBUSY_AUTH_PREFIX || '';
+  const baseHeaders = { [authHeader]: authPrefix + token, Accept: 'application/json' };
 
   const params = event.queryStringParameters || {};
-  const action = params.action || 'introspect';
-
-  // Single GraphQL POST helper. Auth header scheme is a placeholder until the
-  // key docs confirm it (Bearer is the common default); change here only.
-  const gql = (query, variables = {}) => fetch(apiUrl, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables }),
-  });
+  const action = params.action || 'probe';
 
   try {
-    if (action === 'introspect') {
-      const res = await gql(INTROSPECTION_QUERY);
-      const data = await res.json();
-      if (!res.ok) return fail(`BusyBusy introspection failed (${res.status})`, { raw: data });
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ schema: data }) };
+    // Generic authenticated GET passthrough for DISCOVERY. Give it a path (and
+    // optional raw query string) and it returns the live status + JSON, so we
+    // can find the real time-entry / project / member resources and their
+    // field names before wiring typed actions. Path is constrained to a
+    // relative path under the configured base (no host override).
+    if (action === 'probe') {
+      const path = String(params.path || '').replace(/^\/+/, '');
+      const qs = params.query ? ('?' + params.query) : '';
+      const url = base.replace(/\/+$/, '') + '/' + path + qs;
+      const res = await fetch(url, { headers: baseHeaders });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* return raw text below */ }
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ status: res.status, url, data: json, raw: json ? undefined : text.slice(0, 2000) }) };
     }
 
-    // action=timeentries and action=projects are intentionally NOT implemented
-    // against guessed field names. Once introspection reveals the real schema,
-    // add them here (and a since=<ISO> param for incremental sync).
+    // action=timeentries / action=projects are intentionally NOT implemented
+    // against guessed resource paths or field names. Once `probe` reveals the
+    // real resource (e.g. /v1/time-entries) and its shape, map them here and
+    // add a since=<ISO> filter for incremental sync.
     if (action === 'timeentries' || action === 'projects') {
-      return fail(`action "${action}" is not wired yet: run action=introspect first to discover the BusyBusy schema, then implement it on the real field names.`);
+      return fail(`action "${action}" is not wired yet: use action=probe&path=<resource> to discover the BusyBusy resource + fields first, then implement it on the real shape.`);
     }
 
     return fail(`Unknown action "${action}"`);
