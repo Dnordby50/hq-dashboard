@@ -4,6 +4,15 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-13 03:05] Cowork: BusyBusy Netlify env vars corrected and completed
+By: Cowork
+Changed: Resolved the env-var naming issue from the prior entry. Netlify does NOT allow renaming an env var key (the Key field is disabled in Edit), so the misnamed BusybusyAPItoken could not be renamed. Dylan added a correctly-named BUSYBUSY_API_TOKEN (secret, scoped Builds/Functions/Runtime, 5 deploy contexts). Cowork then added BUSYBUSY_API_URL = https://graphql.busybusy.io/ (not secret, all scopes) via the Netlify UI, since it is a non-secret value Cowork had offered to set. Verified both appear in the env list. The old BusybusyAPItoken still exists but is unused (nothing reads it); safe to delete anytime. No secret values were entered or recorded by Cowork.
+Why: the proxy pec-busybusy.cjs reads process.env.BUSYBUSY_API_TOKEN and BUSYBUSY_API_URL; both must exist with exact names for the BusyBusy GraphQL calls to work.
+Files touched: PROJECT-LOG.md only. External: Netlify env config (added BUSYBUSY_API_URL; BUSYBUSY_API_TOKEN added by Dylan).
+Next steps: Netlify env changes only take effect on a new deploy, so Dylan needs to push the local commits (repo is ahead of origin) which triggers a redeploy that picks up both vars. Then Claude Code can wire the GraphQL time-entry/project/member queries (key-authorization header, bare token) and the per-entry upsert sync. The BusyBusy "TopCoat" Integration Key still shows "Never Used" until the proxy makes its first authenticated call.
+Handoff to Cowork: None.
+Handoff to Dylan: Push the local commits to deploy (this also activates the new env vars). Optionally delete the stray BusybusyAPItoken var.
+
 ## [2026-06-13 02:45] Cowork: captured the live BusyBusy API contract for Part B (it is GraphQL, not REST)
 By: Cowork
 Changed: No code. Captured the BusyBusy API contract from the live web app (app.busybusy.io) via Claude-in-Chrome, using resource timings and the in-page Apollo cache (field names), and a temporary read-only fetch wrapper to read header NAMES (the wrapper clears on page refresh; NO secret/token value was recorded anywhere).
