@@ -9649,6 +9649,27 @@ async function renderJobDetailInner(id) {
   // the budget shown here matches what the order-pull / costing surfaces use.
   function renderBudget() {
     const host = $('jobBudget'); if (!host) return;
+    // Deep-link to this job's Job Costing page. The prod row is matched by deal
+    // id, else by the same normalized name+address fallback the costing derive
+    // uses, so a manual (deal-null) prod row still resolves. Prod data is loaded
+    // on demand if the costing tab has not been opened yet this session.
+    const goToJobCosting = async (btn) => {
+      if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
+      let prods = state.prodJobs || [];
+      if (!prods.length) { try { await loadProdCore(); prods = state.prodJobs || []; } catch (_) {} }
+      const naKey = _nameAddrKey(job.customers && job.customers.name, job.address);
+      const match = (job.dripjobs_deal_id && prods.find(p => p.dripjobs_deal_id === job.dripjobs_deal_id))
+        || (naKey ? prods.find(p => _nameAddrKey(p.customer_name, p.address) === naKey) : null);
+      if (!match) {
+        try { showToast('No production record for this job yet.', { ttl: 4000 }); } catch (_) {}
+        if (btn) { btn.disabled = false; btn.textContent = 'Go to Job Costing →'; }
+        return;
+      }
+      state.openUnifiedJobId = match.id; state.openInvoiceJobId = null;
+      switchView('costing');
+    };
+    const goCostingBtnHtml = '<button type="button" id="jobGoCosting" class="pec-btn sm" style="float:right">Go to Job Costing →</button>';
+    const wireGoCosting = () => host.querySelector('#jobGoCosting')?.addEventListener('click', (e) => goToJobCosting(e.currentTarget));
     // Derive the legacy area shape (flake_product_id / basecoat_product_id)
     // that computeMaterialPlan expects, by walking each area's picks. Same
     // logic the Save handler uses to mirror picks back onto job_areas.
@@ -9738,7 +9759,7 @@ async function renderJobDetailInner(id) {
             </div>`;
       host.innerHTML = `
         <div class="pec-card">
-          <h3>Budget <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
+          <h3>${goCostingBtnHtml}Budget <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
           <div class="pec-row-2" style="align-items:flex-start;gap:24px">
             <div>
               <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Materials</div>
@@ -9751,6 +9772,7 @@ async function renderJobDetailInner(id) {
           </div>
         </div>
       `;
+      wireGoCosting();
       return;
     }
 
@@ -9799,7 +9821,7 @@ async function renderJobDetailInner(id) {
 
     host.innerHTML = `
       <div class="pec-card">
-        <h3>Budget by area <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
+        <h3>${goCostingBtnHtml}Budget by area <span style="color:var(--muted);font-size:.7rem;font-weight:400">derived from areas + system catalog</span></h3>
         ${areaSections}
         <div style="border-top:2px solid var(--rd-line, var(--border));padding-top:12px;margin-top:4px">
           <div style="font-weight:700;margin-bottom:8px">Combined job total</div>
@@ -9811,6 +9833,7 @@ async function renderJobDetailInner(id) {
         </div>
       </div>
     `;
+    wireGoCosting();
   }
 
   function renderAreas() {
@@ -14194,22 +14217,29 @@ async function loadCostingData() {
   state.estimateByJob = estimateByJob;
   try {
     if ((state.prodJobs || []).length && typeof window.computeJobEstimate === 'function') {
-      const allDealIds = [...new Set((state.prodJobs || []).map(j => j.dripjobs_deal_id).filter(Boolean))];
-      // Jobs that have no saved lines (need a DERIVED display list).
-      const needIds = (state.prodJobs || [])
-        .filter(j => !(linesByJob[j.id] && linesByJob[j.id].length)
-          && ((state.productAreasByJob[j.id] && state.productAreasByJob[j.id].length) || j.dripjobs_deal_id))
-        .map(j => j.id);
-      const [fullAreasRes, prodRes, slotRes, pairRes, crmRes] = await withFreshSession(() => Promise.all([
-        needIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', needIds) : Promise.resolve({ data: [] }),
+      // Resolve each prod job to its CRM job card. The reliable bridge is
+      // dripjobs_deal_id, but a MANUAL "+ Add Job" prod row has none (deal NULL)
+      // even when the same customer exists as a bridged CRM job (the two-
+      // parallel-job-tables shape in CLAUDE.md). Lisa Santana was exactly this:
+      // her prod row is deal-null, her CRM job (with the real estimate) is
+      // bridged, so the old deal-only lookup never found her materials and the
+      // costing Materials card was empty. So we ALSO match by normalized
+      // name+address (the same _nameAddrKey mirrorProdStatus uses), which fixes
+      // EVERY manual prod job at once, not just Santana. Deal match takes
+      // priority; name+address is the fallback. _nameAddrKey requires BOTH
+      // fields, so a blank name or address can never produce a false match.
+      const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
+      const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
+      const needSet = new Set(noSavedLines.map(j => j.id));
+      // Phase 1: costing inputs + a LIGHTWEIGHT CRM identity for every
+      // non-archived job (id, deal, price, address, name; no areas, so cheap,
+      // the same all-jobs read runScheduleStatusSync already does).
+      const [fullAreasRes, prodRes, slotRes, pairRes, crmIdentRes] = await withFreshSession(() => Promise.all([
+        areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
         supabase.from('pec_prod_products').select('*'),
         supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
         supabase.from('pec_prod_color_pairings').select('*'),
-        // price rides along so labor budget uses the SAME revenue as the front
-        // end (public.jobs.price), not pec_prod_jobs.revenue which can differ.
-        allDealIds.length
-          ? supabase.from('jobs').select('id,dripjobs_deal_id,price,areas:job_areas(*, materials:job_area_materials(*))').in('dripjobs_deal_id', allDealIds).is('archived_at', null).order('created_at', { ascending: true })
-          : Promise.resolve({ data: [] }),
+        supabase.from('jobs').select('id,dripjobs_deal_id,price,address,customers(name)').is('archived_at', null),
       ]), { label: 'loadCostingData:estimate' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
       const slotsBySystem = {};
@@ -14219,20 +14249,38 @@ async function loadCostingData() {
       for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
       const areasByJob = {};
       for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
-      const crmByDeal = {}, priceByDeal = {};
-      for (const row of (crmRes.data || [])) {
-        if (crmByDeal[row.dripjobs_deal_id]) { console.warn('[pec] duplicate CRM jobs for deal', row.dripjobs_deal_id); continue; }
-        crmByDeal[row.dripjobs_deal_id] = row;
-        priceByDeal[row.dripjobs_deal_id] = Number(row.price) || 0;
+      // Deal + name|address indexes of CRM job identities (first row wins).
+      const crmByDeal = {}, crmByNameAddr = {};
+      for (const row of (crmIdentRes.data || [])) {
+        const ident = { id: row.id, price: Number(row.price) || 0 };
+        if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
+        const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
+        if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
       }
-      const needSet = new Set(needIds);
+      // Resolve prod job -> CRM job (deal first, then name+address; the ONE
+      // tested resolver) and collect the CRM ids whose areas we actually need.
+      const resolvedByProd = {};
+      const neededCrmIds = new Set();
+      for (const job of (state.prodJobs || [])) {
+        const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
+        if (ident) { resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id); }
+      }
+      // Phase 2: areas + materials for only the resolved CRM jobs.
+      const crmAreasByCrmId = {};
+      if (neededCrmIds.size) {
+        const areaRes = await withFreshSession(() => supabase
+          .from('job_areas').select('*, materials:job_area_materials(*)')
+          .in('job_id', [...neededCrmIds]), { label: 'loadCostingData:crmAreas' });
+        for (const a of (areaRes.data || [])) (crmAreasByCrmId[a.job_id] ||= []).push(a);
+      }
       for (const job of (state.prodJobs || [])) {
         const jid = job.id;
-        const deal = job.dripjobs_deal_id;
-        const crmAreas = deal && crmByDeal[deal] ? (crmByDeal[deal].areas || []) : [];
-        // planAreas: CRM job card picks for bridged jobs (source of truth,
-        // matches the Budget card); else pec_prod_areas with saved picks; else
-        // the schedule-stub areas (system + sqft only, enough for hours).
+        const resolved = resolvedByProd[jid];
+        const crmAreas = resolved ? (crmAreasByCrmId[resolved.id] || []) : [];
+        // planAreas: CRM job card picks (source of truth, matches the Budget
+        // card) for any prod job resolved to a CRM job (bridged OR matched by
+        // name+address); else pec_prod_areas with saved picks; else the
+        // schedule-stub areas (system + sqft only, enough for hours).
         let planAreas;
         if (crmAreas.length && typeof window.crmPlanAreas === 'function') {
           planAreas = window.crmPlanAreas(crmAreas, slotsBySystem);
@@ -14244,7 +14292,9 @@ async function loadCostingData() {
         } else {
           planAreas = (state.productAreasByJob[jid] || []).map(a => ({ id: a.id, sqft: Number(a.sqft) || 0, system_type_id: a.system_type_id }));
         }
-        const revenue = (deal && priceByDeal[deal] != null) ? priceByDeal[deal] : (Number(job.revenue) || 0);
+        // Revenue = the matched CRM job's price (matches the front-end Budget
+        // card), else the prod job's own revenue.
+        const revenue = resolved ? resolved.price : (Number(job.revenue) || 0);
         const est = window.computeJobEstimate({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake, systemTypes: state.systemTypes, revenue, laborRate: defaultLaborRate });
         estimateByJob[jid] = est;
         if (needSet.has(jid) && est.materialLines.length) {
@@ -16187,9 +16237,28 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
 // but module scopes are isolated, so expose them on window (same pattern as
 // window.prodSwitchView). A past refactor moved these out of the CRM module;
 // this keeps the CRM callers working without duplicating the whole calculator.
+// Resolve a prod job to its CRM job card by deal id, else normalized
+// name+address (mirror of production/calculator.js; keep byte-identical). This
+// is what lets a MANUAL (deal-null) prod row find its CRM materials.
+function jobNameAddrKey(name, addr) {
+  const n = String(name == null ? '' : name).toLowerCase().replace(/\s+/g, ' ').trim();
+  const a = String(addr == null ? '' : addr).toLowerCase().replace(/\s+/g, ' ').trim();
+  return n && a ? n + '|' + a : '';
+}
+function resolveCrmForProdJob(prodJob, indexes) {
+  if (!prodJob) return null;
+  const byDeal = (indexes && indexes.byDeal) || {};
+  const byNameAddr = (indexes && indexes.byNameAddr) || {};
+  const deal = prodJob.dripjobs_deal_id;
+  if (deal && byDeal[deal]) return byDeal[deal];
+  const key = jobNameAddrKey(prodJob.customer_name, prodJob.address);
+  return (key && byNameAddr[key]) || null;
+}
 window.cureSpeedSpec = cureSpeedSpec;
 window.computeMaterialPlan = computeMaterialPlan;
 window.computeJobEstimate = computeJobEstimate;
+window.jobNameAddrKey = jobNameAddrKey;
+window.resolveCrmForProdJob = resolveCrmForProdJob;
 // Canonical picks-to-plan mapping for CRM job card areas (job_areas rows,
 // each with an embedded `materials` array of job_area_materials rows). The
 // job card is the SOURCE OF TRUTH for what a bridged job needs, so Ordering

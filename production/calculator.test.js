@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, CalculatorError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
 
 let passed = 0;
 let failed = 0;
@@ -510,6 +510,39 @@ assertThrows(() => {
   });
   const topcoat = withTopcoatPick.materialLines.find((l) => l.material_type === 'Topcoat');
   assertEq(topcoat.product_id, 'topcoat', 'topcoat pick ignored; slot default used (matches front-end)');
+}
+
+// --- resolveCrmForProdJob: bridge a prod job to its CRM job card -------------
+// The deal id is the reliable bridge; manual (deal-null) prod rows fall back to
+// normalized name+address. This is what fixed Lisa Santana (manual prod row,
+// bridged CRM job): the deal-only lookup missed her, name+address finds her.
+{
+  const crmBridged = { id: 'crm-1', price: 5000 };
+  const crmSantana = { id: 'crm-santana', price: 7400 };
+  const indexes = {
+    byDeal: { '2776218-other': crmBridged },
+    byNameAddr: {
+      [jobNameAddrKey('Lisa Santana', '123 Main St')]: crmSantana,
+      [jobNameAddrKey('Bridged Bob', '9 Oak Ave')]: crmBridged,
+    },
+  };
+  // Deal match wins.
+  assertEq(
+    resolveCrmForProdJob({ dripjobs_deal_id: '2776218-other', customer_name: 'X', address: 'Y' }, indexes),
+    crmBridged, 'deal id match takes priority');
+  // Manual (deal-null) prod row resolves by name+address.
+  assertEq(
+    resolveCrmForProdJob({ dripjobs_deal_id: null, customer_name: 'Lisa Santana', address: '123 Main St' }, indexes),
+    crmSantana, 'deal-null prod row matched by name+address (the Santana fix)');
+  // Case / whitespace insensitive.
+  assertEq(
+    resolveCrmForProdJob({ dripjobs_deal_id: null, customer_name: '  lisa   santana ', address: '123 main st' }, indexes),
+    crmSantana, 'name+address match is case/whitespace insensitive');
+  // No false match when address is blank (key requires BOTH fields).
+  assertEq(
+    resolveCrmForProdJob({ dripjobs_deal_id: null, customer_name: 'Lisa Santana', address: '' }, indexes),
+    null, 'blank address never matches');
+  assertEq(jobNameAddrKey('Name', ''), '', 'jobNameAddrKey requires both fields');
 }
 
 // ----------------------------------------------------------------------------

@@ -200,6 +200,36 @@ export function computeJobEstimate({
   return { materialLines, materialsBudget, laborPct, laborBudget, budgetedHours, planError };
 }
 
+/**
+ * Normalized name+address key. Requires BOTH fields so a blank name or address
+ * can never produce a false match. Mirrors index.html's _nameAddrKey.
+ */
+export function jobNameAddrKey(name, addr) {
+  const n = String(name == null ? '' : name).toLowerCase().replace(/\s+/g, ' ').trim();
+  const a = String(addr == null ? '' : addr).toLowerCase().replace(/\s+/g, ' ').trim();
+  return n && a ? n + '|' + a : '';
+}
+
+/**
+ * Resolve a production job (pec_prod_jobs) to its CRM job card identity. The
+ * reliable bridge is dripjobs_deal_id, but a MANUAL "+ Add Job" prod row has
+ * none (deal NULL) even when the same customer exists as a bridged CRM job (the
+ * two-parallel-job-tables shape). So we fall back to a normalized name+address
+ * match. Deal match takes priority. Returns the CRM identity or null.
+ *
+ * @param {Object} prodJob  { dripjobs_deal_id, customer_name, address }
+ * @param {Object} indexes  { byDeal: {dealId->ident}, byNameAddr: {key->ident} }
+ */
+export function resolveCrmForProdJob(prodJob, indexes) {
+  if (!prodJob) return null;
+  const byDeal = (indexes && indexes.byDeal) || {};
+  const byNameAddr = (indexes && indexes.byNameAddr) || {};
+  const deal = prodJob.dripjobs_deal_id;
+  if (deal && byDeal[deal]) return byDeal[deal];
+  const key = jobNameAddrKey(prodJob.customer_name, prodJob.address);
+  return (key && byNameAddr[key]) || null;
+}
+
 // Custom-blend placeholders (a required swatch slot with no catalog product)
 // are appended AFTER the merge, never routed through it: the merge keys on
 // product_id (all-null placeholders would collapse Flake and Quartz into one
