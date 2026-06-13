@@ -16232,6 +16232,7 @@ function _mergeAcrossAreas(areaPlans) {
     daysByJob: {},         // pec_prod_job_schedule_days: job_id -> sorted ISO dates
     daysError: false,      // schedule-days fetch failed; degrade to install_date matching
     crmAreasByProdJob: {}, // prod job id -> CRM job_areas rows (with materials) for bridged jobs; refreshed by loadJobs
+    crmColorsConfirmedByProdJob: {}, // prod job id -> colors_confirmed (bridged jobs only); gates the pull. false => held out
     _calcCache: new Map(), // job_id -> {lines}|{error}; cleared by loadJobs/loadCatalog
     _savingLines: new Set(), // job ids with a Save-lines write in flight
   };
@@ -16320,14 +16321,16 @@ function _mergeAcrossAreas(areaPlans) {
   // half-bridged state.
   async function loadCrmAreas(jobs) {
     const dealIds = [...new Set(jobs.map(j => j.dripjobs_deal_id).filter(Boolean))];
-    if (!dealIds.length) { state.crmAreasByProdJob = {}; return; }
+    if (!dealIds.length) { state.crmAreasByProdJob = {}; state.crmColorsConfirmedByProdJob = {}; return; }
     try {
       // Two-level embed (jobs -> job_areas -> job_area_materials). If
       // PostgREST ever rejects it, replace with the sequential three-query
       // chain inside this function only; callers are unaffected.
+      // colors_confirmed rides along so the pull can hold out bridged jobs the
+      // office has not confirmed colors on yet (Dylan's "ready to order" gate).
       const { data, error } = await supabase
         .from('jobs')
-        .select('id,dripjobs_deal_id,areas:job_areas(*, materials:job_area_materials(*))')
+        .select('id,dripjobs_deal_id,colors_confirmed,areas:job_areas(*, materials:job_area_materials(*))')
         .in('dripjobs_deal_id', dealIds)
         .is('archived_at', null)
         .order('created_at', { ascending: true });
@@ -16338,15 +16341,24 @@ function _mergeAcrossAreas(areaPlans) {
         byDeal[row.dripjobs_deal_id] = row;
       }
       const out = {};
+      const colors = {};
       for (const j of jobs) {
         if (!j.dripjobs_deal_id) continue;
         const crm = byDeal[j.dripjobs_deal_id];
-        if (crm && (crm.areas || []).length) out[j.id] = crm.areas;
+        if (!crm) continue;
+        if ((crm.areas || []).length) out[j.id] = crm.areas;
+        // Record the flag for every bridged job that has a CRM row, even one
+        // with no areas, so resolveJobLines can hold it out explicitly.
+        colors[j.id] = crm.colors_confirmed === true;
       }
       state.crmAreasByProdJob = out;
+      state.crmColorsConfirmedByProdJob = colors;
     } catch (err) {
+      // Fail OPEN: a fetch hiccup must not silently hold every job out of the
+      // pull. An empty map means resolveJobLines never sees an explicit false.
       console.warn('[prod] CRM areas fetch failed; Ordering falls back to pec_prod_areas:', err);
       state.crmAreasByProdJob = {};
+      state.crmColorsConfirmedByProdJob = {};
     }
   }
   async function loadJobs() {
@@ -16629,6 +16641,17 @@ function _mergeAcrossAreas(areaPlans) {
   // calcAreasInputFor) and reports {empty:true} when neither exists.
   function resolveJobLines(job, computeLinesFor) {
     if ((job.lines || []).length) return { kind: 'saved', lines: job.lines };
+    // Colors-confirmed gate (Dylan's "ready to order" rule): a bridged job
+    // whose CRM card has no material picks still emits slot-default lines
+    // (Basecoat / Topcoat / activator from sqft alone), which used to pull
+    // material for a job nobody had specified. Hold any bridged job out of the
+    // pull until colors are confirmed on the job card. Saved lines win above,
+    // so a fully-specified job orders regardless. Only an EXPLICIT false holds
+    // a job back: a missing entry (CRM fetch degraded, or a non-bridged job)
+    // never trips this, so the pull fails open.
+    if (job.dripjobs_deal_id && state.crmColorsConfirmedByProdJob[job.id] === false) {
+      return { kind: 'skipped', reason: 'colors not confirmed yet on the CRM job card' };
+    }
     const res = computeLinesFor(job);
     if (res.empty) return { kind: 'skipped', reason: 'no areas' };
     if (res.error) return { kind: 'skipped', reason: res.error };
