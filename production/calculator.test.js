@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, CalculatorError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, CalculatorError } from './calculator.js';
 
 let passed = 0;
 let failed = 0;
@@ -478,6 +478,38 @@ assertThrows(() => {
   const tints = plan.lines.filter(l => l.material_type === 'Tint Pack');
   assertEq(tints.length, 1,   'same tint across two areas merges into one Tint Pack line');
   assertEq(tints[0].qty_needed, 4, 'merged Tint Pack qty = sum of packs (1+3)');
+}
+
+// --- computeJobEstimate: ONE estimate shared by the front-end + Job Costing --
+// The front-end Budget card and Job Costing both call computeJobEstimate, so
+// there is no second copy of the estimate math. These assert its two outputs.
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const est = computeJobEstimate({
+    areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes, revenue: 10000, laborRate: 50,
+  });
+  // Materials are exactly the computeMaterialPlan lines for the same areas.
+  const plan = computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake });
+  assertEq(est.materialLines, plan.lines, 'estimate materials == computeMaterialPlan lines (one source)');
+  assertEq(est.materialsBudget, plan.lines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0), 'materialsBudget = sum of positive line costs');
+  // Labor: revenue 10000 x 20% = 2000 budget; / $50/hr = 40 budgeted hours.
+  assertEq(est.laborBudget, 2000, 'laborBudget = revenue x labor_budget_pct');
+  assertEq(est.budgetedHours, 40, 'budgetedHours = laborBudget / laborRate');
+}
+
+// --- computeJobEstimate drops a topcoat pick (matches the front-end Budget) ---
+// The front-end normalizes flake + basecoat only; a topcoat pick must fall to
+// the slot default so Job Costing and the Budget card never diverge on topcoat.
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const withTopcoatPick = computeJobEstimate({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake', topcoat_product_id: 'blackBase' }],
+    productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate: 0,
+  });
+  const topcoat = withTopcoatPick.materialLines.find((l) => l.material_type === 'Topcoat');
+  assertEq(topcoat.product_id, 'topcoat', 'topcoat pick ignored; slot default used (matches front-end)');
 }
 
 // ----------------------------------------------------------------------------

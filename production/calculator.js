@@ -121,6 +121,85 @@ export function computeMaterialPlan({
   return { lines, areaPlans };
 }
 
+/**
+ * The ONE job estimate. Both the front-end job-detail Budget card and the
+ * Job Costing tab call this so the estimated materials and estimated hours are
+ * identical (Dylan's rule: "exactly what is on the front-end job estimation is
+ * what populates into Job Costing. Nothing different at all.").
+ *
+ * Materials reproduce the Budget card exactly: each area is normalized to flake
+ * + basecoat picks ONLY (any topcoat_product_id is dropped, so a topcoat pick
+ * is never honored and the slot default fills it, matching renderBudget), and
+ * the FULL slot set (including editor_hidden body coats) is used. Labor mirrors
+ * renderBudget: revenue x system.labor_budget_pct, divided by the hourly rate
+ * for budgeted hours.
+ *
+ * @param {Object} input
+ * @param {Array} input.areas  Normalized areas: { id, name, sqft, system_type_id, flake_product_id, basecoat_product_id } (topcoat ignored)
+ * @param {Object} input.productsById
+ * @param {Object} input.recipeSlotsBySystemType  FULL slots (incl. editor_hidden), keyed by system_type_id
+ * @param {Object} input.defaultBasecoatByFlake
+ * @param {Array}  input.systemTypes  rows with { id, labor_budget_pct }
+ * @param {number} input.revenue   the FRONT-END job price (public.jobs.price)
+ * @param {number} input.laborRate default_labor_hourly_rate
+ * @returns {{ materialLines, materialsBudget, laborPct, laborBudget, budgetedHours }}
+ */
+export function computeJobEstimate({
+  areas,
+  productsById,
+  recipeSlotsBySystemType,
+  defaultBasecoatByFlake = {},
+  systemTypes = [],
+  revenue = 0,
+  laborRate = 0,
+}) {
+  // Strip everything but the estimate-relevant fields. Dropping topcoat_product_id
+  // is deliberate: the front-end Budget card never passes it, so the topcoat
+  // slot default is used in both places.
+  const planAreas = (areas || []).map((a) => {
+    const sqftNum = Number(a.sqft);
+    return {
+      id: a.id,
+      name: a.name,
+      sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+      system_type_id: a.system_type_id,
+      flake_product_id: a.flake_product_id || null,
+      basecoat_product_id: a.basecoat_product_id || null,
+    };
+  });
+
+  let materialLines = [];
+  let planError = null;
+  try {
+    materialLines = computeMaterialPlan({
+      areas: planAreas,
+      productsById,
+      recipeSlotsBySystemType,
+      defaultBasecoatByFlake,
+    }).lines;
+  } catch (err) {
+    planError = err && err.message ? err.message : String(err);
+  }
+  const materialsBudget = materialLines.reduce(
+    (s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0),
+    0
+  );
+
+  const primarySystem = planAreas[0]
+    ? (systemTypes || []).find((s) => s.id === planAreas[0].system_type_id)
+    : null;
+  const laborPct =
+    primarySystem && primarySystem.labor_budget_pct != null
+      ? Number(primarySystem.labor_budget_pct)
+      : null;
+  const rev = Number(revenue) || 0;
+  const rate = Number(laborRate) || 0;
+  const laborBudget = laborPct != null && rev > 0 ? (rev * laborPct) / 100 : null;
+  const budgetedHours = laborBudget != null && rate > 0 ? laborBudget / rate : null;
+
+  return { materialLines, materialsBudget, laborPct, laborBudget, budgetedHours, planError };
+}
+
 // Custom-blend placeholders (a required swatch slot with no catalog product)
 // are appended AFTER the merge, never routed through it: the merge keys on
 // product_id (all-null placeholders would collapse Flake and Quartz into one
