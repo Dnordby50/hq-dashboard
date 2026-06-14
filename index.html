@@ -15066,6 +15066,9 @@ async function renderUnifiedJob(jobId) {
   // ONE shared math path with the Crew Bonus tab (computeCrewBonus).
   const bonusCalc = computeCrewBonus(jobLaborBudget, bbHoursByKey, bonusMemberLookup, defaultLaborRate);
 
+  // Short date for the reconciled / finalized stamps (Phases 3-4).
+  const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
+
   const moneyInput = (label, key, table, val, hint = '') => `
     <div class="pec-field">
       <label>${esc(label)}${hint ? ` <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(hint)}</span>` : ''}</label>
@@ -15253,6 +15256,14 @@ async function renderUnifiedJob(jobId) {
         <div class="pec-row-3" style="margin-top:8px">
           <div class="pec-field"><label>Manual hours${bonusCalc.hasActuals ? ' (override)' : ''}</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(job.actual_hours ?? '')}"></div>
         </div>
+        ${job.hours_reconciled_at
+          ? `<div style="display:flex;align-items:center;gap:10px;margin-top:14px;font-size:.8rem">
+               <span style="color:var(--rd-success,#16a34a)">✓ Hours reconciled by <strong>${esc(job.hours_reconciled_by || 'Admin')}</strong> on ${esc(fmtStamp(job.hours_reconciled_at))}</span>
+               <button class="pec-btn ghost sm" id="hoursReconcileReopen">Re-open</button>
+             </div>`
+          : `<div style="margin-top:14px">
+               <button class="pec-btn sm" id="hoursReconcileBtn">Hours for this job have been reconciled and are accurate</button>
+             </div>`}
       </div>`;
 
   const html = `
@@ -15514,6 +15525,25 @@ async function renderUnifiedJob(jobId) {
       renderUnifiedJob(jobId);
     });
   }
+
+  // Hours reconciled button (Phase 3). Stamps who + when on pec_prod_jobs via
+  // saveJobField (the same write path as the other job fields). The current user
+  // is the resolved signed-in admin. Re-open clears the stamp.
+  const reconcileBtn = root.querySelector('#hoursReconcileBtn');
+  if (reconcileBtn) reconcileBtn.addEventListener('click', async () => {
+    reconcileBtn.disabled = true; reconcileBtn.textContent = 'Saving…';
+    const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
+    await saveJobField(jobId, 'hours_reconciled_by', by, reconcileBtn);
+    await saveJobField(jobId, 'hours_reconciled_at', new Date().toISOString(), reconcileBtn);
+    renderUnifiedJob(jobId);
+  });
+  const reconcileReopen = root.querySelector('#hoursReconcileReopen');
+  if (reconcileReopen) reconcileReopen.addEventListener('click', async () => {
+    if (!confirm('Re-open hours reconciliation for this job?')) return;
+    await saveJobField(jobId, 'hours_reconciled_at', null, reconcileReopen);
+    await saveJobField(jobId, 'hours_reconciled_by', null, reconcileReopen);
+    renderUnifiedJob(jobId);
+  });
 }
 
 async function renderJobCosting() {

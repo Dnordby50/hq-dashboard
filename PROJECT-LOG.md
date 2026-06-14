@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14 09:00] Costing overhaul Phase 3: Hours reconciled button + the single combined migration
+By: Claude Code
+Changed: (1) New migration supabase/migrations/2026-06-14_costing_lifecycle.sql adds ALL the new columns this task needs in ONE file: hours_reconciled_at/by and costing_finalized_at/by on pec_prod_jobs, plus hourly_wage on pec_prod_crew_members, plus a partial index on costing_finalized_at. NOT applied to prod from this session. (2) In the Bonus Payout box, a "Hours for this job have been reconciled and are accurate" button. Clicking it stamps the signed-in admin (state.adminUser name/email) and an ISO timestamp onto the job via saveJobField, then the button is replaced by "Hours reconciled by <name> on <date>" with a Re-open link that clears the stamp.
+Why: Phase 3 of the overhaul. Dylan wants an explicit, attributed "hours are accurate" gate before costing is finalized.
+Migration home decision: the reconciled/finalized stamps go on pec_prod_jobs, not pec_prod_job_costing, because renderUnifiedJob already reads job fields and writes them through saveJobField -> pec_prod_jobs.update, and a costing row may not exist for a job yet (the job row always does), so the stamps can never be orphaned and need no upsert.
+Files touched: index.html, supabase/migrations/2026-06-14_costing_lifecycle.sql
+Next steps: Phase 4 (Finalize Job Costing button + Completed Job Costing view + gate Crew Bonus on finalized).
+Handoff to Cowork: Apply 2026-06-14_costing_lifecycle.sql to the prod PEC Supabase project (full Cowork prompt will accompany the final phase). Until it is live, the reconcile/finalize buttons and the wage saves will 400.
+Handoff to Dylan: None yet.
+
+---
+
 ## [2026-06-14 08:45] Costing overhaul Phase 2: Schedule card becomes Bonus Payout box (Hours folded in)
 By: Claude Code
 Changed: In renderUnifiedJob (index.html) the old Schedule card and Hours card are gone, replaced by ONE "Bonus Payout" card. (1) renderUnifiedJob now fetches pec_prod_busybusy_time_entries for the single job (per-member hours + start/end punches), same graceful-empty handling as the Crew Bonus tab. (2) The box shows "Bonus earned: YES / NO / awaiting BusyBusy hours" at top (awaiting-state when zero entries, so missing data never reads as a denied bonus), a summary row (labor budget, actual labor incl. burden, savings, 75% crew pool), and a per-member table (crew member, time punches, total hours, total wage, wage incl. 25% burden, bonus). All bonus numbers come from the shared computeCrewBonus helper. (3) Hours folded in: Estimated Hours, Actual Hours (BusyBusy sum when entries exist, else the manual field), Over/Under, plus the manual actual_hours input kept as an override. (4) The schedule day table moved into the Job Info card as a read-only sub-section, so no schedule data disappears. (5) refreshUnifiedTotals now live-updates the effective Actual Hours + Over/Under.
