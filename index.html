@@ -14178,7 +14178,7 @@ async function loadCostingData() {
   const [costRes, membersRes, linesRes, bonusesRes, rateRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
     supabase.from('pec_prod_crew_members').select('id,crew_id,name,busybusy_member_id,active').order('name'),
-    supabase.from('pec_prod_material_lines').select('id,job_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
+    supabase.from('pec_prod_material_lines').select('id,job_id,product_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
     supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
     // Same hourly rate the front-end Budget card reads, so estimated hours match.
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
@@ -14198,6 +14198,18 @@ async function loadCostingData() {
     if (usedQty > 0 && unit > 0) used[l.job_id] = (used[l.job_id] || 0) + usedQty * unit;
     (linesByJob[l.job_id] ||= []).push(l);
   }
+  // Drop saved-line sets that are ALL zero-value placeholders (product_id null,
+  // line_cost 0, nothing ordered/used) -- junk from a half-finished "Save lines
+  // to job" that otherwise WINS over the estimate derive and leaves the
+  // Materials card showing "$0 Custom blend" instead of the real estimate. With
+  // them gone the job reads as no-saved-lines and the derive fills it in. (This
+  // is the durable version of the manual prod cleanup Cowork did on 2026-06-13.)
+  const isStubLine = (l) => l.product_id == null && !(Number(l.line_cost) > 0) && !l.ordered && !l.delivered && !(Number(l.actual_used_qty) > 0);
+  for (const jid of Object.keys(linesByJob)) {
+    if (linesByJob[jid].length && linesByJob[jid].every(isStubLine)) {
+      delete linesByJob[jid]; delete ordered[jid]; delete used[jid];
+    }
+  }
   state.materialOrderedByJob = ordered;
   state.materialUsedByJob = used;
   state.materialLinesByJob = linesByJob;
@@ -14215,6 +14227,7 @@ async function loadCostingData() {
   state.costingLaborRate = defaultLaborRate;
   const estimateByJob = {};
   state.estimateByJob = estimateByJob;
+  state.crmStatusByProdJob = {};
   try {
     if ((state.prodJobs || []).length && typeof window.computeJobEstimate === 'function') {
       // Resolve each prod job to its CRM job card. The reliable bridge is
@@ -14239,7 +14252,7 @@ async function loadCostingData() {
         supabase.from('pec_prod_products').select('*'),
         supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
         supabase.from('pec_prod_color_pairings').select('*'),
-        supabase.from('jobs').select('id,dripjobs_deal_id,price,address,customers(name)').is('archived_at', null),
+        supabase.from('jobs').select('id,dripjobs_deal_id,price,status,address,customers(name)').is('archived_at', null),
       ]), { label: 'loadCostingData:estimate' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
       const slotsBySystem = {};
@@ -14252,19 +14265,23 @@ async function loadCostingData() {
       // Deal + name|address indexes of CRM job identities (first row wins).
       const crmByDeal = {}, crmByNameAddr = {};
       for (const row of (crmIdentRes.data || [])) {
-        const ident = { id: row.id, price: Number(row.price) || 0 };
+        const ident = { id: row.id, price: Number(row.price) || 0, status: row.status };
         if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
         const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
         if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
       }
       // Resolve prod job -> CRM job (deal first, then name+address; the ONE
       // tested resolver) and collect the CRM ids whose areas we actually need.
+      // crmStatusByProdJob lets Job Costing trust the CRM job's status instead
+      // of the prod row's, which is usually stale at 'scheduled' for manual jobs.
       const resolvedByProd = {};
+      const crmStatusByProd = {};
       const neededCrmIds = new Set();
       for (const job of (state.prodJobs || [])) {
         const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
-        if (ident) { resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id); }
+        if (ident) { resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id); if (ident.status) crmStatusByProd[job.id] = ident.status; }
       }
+      state.crmStatusByProdJob = crmStatusByProd;
       // Phase 2: areas + materials for only the resolved CRM jobs.
       const crmAreasByCrmId = {};
       if (neededCrmIds.size) {
@@ -14378,6 +14395,18 @@ function bonusTotalForJob(jobId) {
   return (state.bonusesByJob?.[jobId] || []).reduce((s, b) => s + Number(b.amount || 0), 0);
 }
 
+// Effective completion for Job Costing. The prod row's own status is usually
+// stale at 'scheduled' even when the bridged CRM job is 'completed' (prod-side
+// status does not track CRM completion), which left the "Completed" costing
+// filter + the Pending Job Costing queue empty/unreliable. loadCostingData
+// resolves each prod job to its CRM job (deal id OR name+address) and records
+// the CRM status in state.crmStatusByProdJob, which we trust here; we fall back
+// to the prod status when no CRM job resolved.
+function costingIsCompleted(job) {
+  const crm = (state.crmStatusByProdJob || {})[job.id];
+  return (crm || job.status) === 'completed';
+}
+
 // ============================================================
 // Crew Bonus tab (Part C): when a completed job's actual labor comes in UNDER
 // its labor budget, pay the crew a share of the savings, split by how much
@@ -14424,7 +14453,7 @@ async function renderCrewBonus() {
     }
   } catch (err) { timeError = err && err.message ? err.message : String(err); }
 
-  const completed = (state.prodJobs || []).filter(j => j.status === 'completed' && !j.archived_at)
+  const completed = (state.prodJobs || []).filter(j => costingIsCompleted(j) && !j.archived_at)
     .sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
 
   const memberName = (key) => {
@@ -15243,7 +15272,7 @@ async function renderJobCosting() {
   const pendingCosting = (state.prodJobs || []).filter(j => {
     if (j.archived_at) return false;
     if (j.is_callback) return false;
-    return j.status === 'completed' && !costByJob[j.id];
+    return costingIsCompleted(j) && !costByJob[j.id];
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
   const pendingHtml = pendingCosting.length ? `
     <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
@@ -15266,7 +15295,8 @@ async function renderJobCosting() {
   const jobs = state.prodJobs.filter(j => {
     if (j.is_callback) return false; // touch-ups are no-charge; never costed as sold work
     if (filt === 'all') return true;
-    if (filt === 'active') return j.status !== 'completed';
+    if (filt === 'active') return !costingIsCompleted(j);
+    if (filt === 'completed') return costingIsCompleted(j);
     return j.status === filt;
   // Recent-first (loadProdCore loads prodJobs ascending for the schedule;
   // the costing list shows most-recent install date first).
