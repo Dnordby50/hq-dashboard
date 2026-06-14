@@ -5883,6 +5883,7 @@ function renderAuthUI() {
   };
   setNav('catalog', can('can_edit_catalog'));
   setNav('costing', can('can_view_job_costing'));
+  setNav('completed-costing', can('can_view_job_costing'));
   setNav('commission', can('can_view_commission'));
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
@@ -6014,7 +6015,7 @@ function switchView(v) {
     // Job Costing renders full-bleed; toggle a class on <main> so it can break
     // out of the standard CRM grid padding.
     const main = document.querySelector('#pecApp .pec-main');
-    if (main) main.classList.toggle('pec-fullbleed', v === 'costing');
+    if (main) main.classList.toggle('pec-fullbleed', v === 'costing' || v === 'completed-costing');
     // Fence the async render so a thrown / rejected render does not leave the
     // panel stuck on "Loading…". Show the error message + a Retry button that
     // re-enters switchView for the same view. Mirrors the prod-side pattern at
@@ -6031,6 +6032,7 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       costing: renderJobCosting,
+      'completed-costing': renderCompletedCosting,
       'crew-bonus': renderCrewBonus,
       team: renderTeam,
       settings: renderSettings,
@@ -14470,6 +14472,14 @@ function costingIsCompleted(job) {
   return (crm || job.status) === 'completed';
 }
 
+// A job is FINALIZED once an admin stamps costing_finalized_at on the costing
+// detail (Phase 4). Finalized jobs leave the active Job Costing list + the
+// Pending queue, appear in Completed Job Costing, and become eligible for Crew
+// Bonus payout. Pre-migration the column reads undefined, so this is just false.
+function costingIsFinalized(job) {
+  return !!(job && job.costing_finalized_at);
+}
+
 // ============================================================
 // Crew Bonus tab (Part C): when a completed job's actual labor comes in UNDER
 // its labor budget, pay the crew a share of the savings, split by how much
@@ -14551,8 +14561,10 @@ async function renderCrewBonus() {
     }
   } catch (err) { timeError = err && err.message ? err.message : String(err); }
 
-  const completed = (state.prodJobs || []).filter(j => costingIsCompleted(j) && !j.archived_at)
-    .sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+  // Gated on FINALIZED costing (Phase 4.3): a job becomes payable in Crew Bonus
+  // only after an admin finalizes its costing, not merely when it is completed.
+  const completed = (state.prodJobs || []).filter(j => costingIsFinalized(j) && !j.archived_at)
+    .sort((a, b) => String(b.costing_finalized_at || '').localeCompare(String(a.costing_finalized_at || '')));
 
   // key -> { name, wage }. 'bb:' keys are BusyBusy members not yet mapped to a
   // crew member, so they have no wage (the shared helper falls back to default).
@@ -14601,12 +14613,12 @@ async function renderCrewBonus() {
       </div>
       ${memberHtml}
     </div>`;
-  }).join('') || '<div class="pec-empty">No completed jobs yet.</div>';
+  }).join('') || '<div class="pec-empty">No finalized jobs yet. Finalize a job in Job Costing to make its crew bonus payable here.</div>';
 
   root.innerHTML = `
     <div class="pec-card">
       <h3 style="margin:0 0 4px">Crew Bonus <span style="color:var(--muted);font-size:.7rem;font-weight:400">under-budget labor savings, shared with the crew</span></h3>
-      <div style="font-size:.78rem;color:var(--muted)">Policy: the crew receives <strong>${Math.round(CREW_BONUS_FRACTION * 100)}%</strong> of the difference when a completed job's actual labor lands under its labor budget, split by each person's share of hours on that job. Over-budget jobs pay no bonus. This view is read-only; nothing is paid out automatically.</div>
+      <div style="font-size:.78rem;color:var(--muted)">Policy: the crew receives <strong>${Math.round(CREW_BONUS_FRACTION * 100)}%</strong> of the difference when a finalized job's actual labor lands under its labor budget, split by each person's share of hours on that job. Over-budget jobs pay no bonus. Jobs appear here only after their costing is finalized. This view is read-only; nothing is paid out automatically.</div>
       ${timeError ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-top:6px">Actual hours unavailable (${esc(timeError)}). Jobs show their budget and wait for BusyBusy hours.</div>` : ''}
     </div>
     ${bodyRows}
@@ -15266,6 +15278,28 @@ async function renderUnifiedJob(jobId) {
              </div>`}
       </div>`;
 
+  // Read-only crew-bonus recap (Phase 4.4): shown on a finalized job so looking
+  // up a past job later shows what the crew earned. Same per-member numbers as
+  // the Bonus Payout box (recomputed from the shared helper).
+  const bonusRecapHtml = (bonusCalc.hasActuals && bonusCalc.pool != null)
+    ? `<div style="margin-top:10px;font-size:.8rem">
+         <strong>Crew bonus pool: ${bonusCalc.pool > 0 ? fmtMoneyOrDash(bonusCalc.pool) : '$0 (no savings)'}</strong>
+         ${bonusCalc.pool > 0 ? `<div style="color:var(--muted);margin-top:2px">${bonusCalc.members.filter(m => m.bonus > 0).map(m => esc(m.name) + ': ' + fmtMoneyOrDash(m.bonus)).join(' · ')}</div>` : ''}
+       </div>`
+    : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting BusyBusy hours.</div>`;
+
+  const finalizeCardHtml = `
+      <div class="pec-card" id="sec-finalize">
+        ${job.costing_finalized_at
+          ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+               <span style="color:var(--rd-success,#16a34a);font-weight:600">✓ Job costing finalized by ${esc(job.costing_finalized_by || 'Admin')} on ${esc(fmtStamp(job.costing_finalized_at))}</span>
+               <button class="pec-btn ghost sm" id="costingUnfinalizeBtn">Re-open costing</button>
+             </div>
+             <div style="margin-top:6px"><h3 style="font-size:.85rem;margin:0 0 4px">Bonus (recorded)</h3>${bonusRecapHtml}</div>`
+          : `<button class="pec-btn primary" id="costingFinalizeBtn">Finalize Job Costing</button>
+             <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and makes its crew bonus payable in the Crew Bonus tab.</div>`}
+      </div>`;
+
   const html = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
@@ -15345,7 +15379,9 @@ async function renderUnifiedJob(jobId) {
         <h3>Notes</h3>
         <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
         <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="4" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
-      </div>`;
+      </div>
+
+      ${finalizeCardHtml}`;
 
   root.innerHTML = html;
 
@@ -15544,6 +15580,26 @@ async function renderUnifiedJob(jobId) {
     await saveJobField(jobId, 'hours_reconciled_by', null, reconcileReopen);
     renderUnifiedJob(jobId);
   });
+
+  // Finalize Job Costing (Phase 4). Stamps costing_finalized_at/by; the job then
+  // leaves the active list + Pending queue, appears in Completed Job Costing, and
+  // becomes payable in Crew Bonus. Re-open clears the stamp.
+  const finalizeBtn = root.querySelector('#costingFinalizeBtn');
+  if (finalizeBtn) finalizeBtn.addEventListener('click', async () => {
+    if (!confirm('Are you sure you want to finalize job costing for this job?')) return;
+    finalizeBtn.disabled = true; finalizeBtn.textContent = 'Finalizing…';
+    const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
+    await saveJobField(jobId, 'costing_finalized_by', by, finalizeBtn);
+    await saveJobField(jobId, 'costing_finalized_at', new Date().toISOString(), finalizeBtn);
+    renderUnifiedJob(jobId);
+  });
+  const unfinalizeBtn = root.querySelector('#costingUnfinalizeBtn');
+  if (unfinalizeBtn) unfinalizeBtn.addEventListener('click', async () => {
+    if (!confirm('Re-open costing for this job? It will leave Completed Job Costing.')) return;
+    await saveJobField(jobId, 'costing_finalized_at', null, unfinalizeBtn);
+    await saveJobField(jobId, 'costing_finalized_by', null, unfinalizeBtn);
+    renderUnifiedJob(jobId);
+  });
 }
 
 async function renderJobCosting() {
@@ -15570,6 +15626,7 @@ async function renderJobCosting() {
   const pendingCosting = (state.prodJobs || []).filter(j => {
     if (j.archived_at) return false;
     if (j.is_callback) return false;
+    if (costingIsFinalized(j)) return false; // finalized jobs live in Completed Job Costing
     return costingIsCompleted(j) && !costByJob[j.id];
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
   const pendingHtml = pendingCosting.length ? `
@@ -15592,6 +15649,7 @@ async function renderJobCosting() {
   const filt = state.costingFilter;
   const jobs = state.prodJobs.filter(j => {
     if (j.is_callback) return false; // touch-ups are no-charge; never costed as sold work
+    if (costingIsFinalized(j)) return false; // finalized jobs move to Completed Job Costing
     if (filt === 'all') return true;
     if (filt === 'active') return !costingIsCompleted(j);
     if (filt === 'completed') return costingIsCompleted(j);
@@ -15861,6 +15919,73 @@ async function renderJobCosting() {
       };
       inp.addEventListener('change', handler);
       if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
+    });
+  });
+}
+
+// Completed Job Costing (Phase 4): read-only list of jobs whose costing has been
+// finalized (costing_finalized_at set). Reuses computeCostingRow for the summary
+// numbers so they match the active list. A row opens the same unified detail.
+async function renderCompletedCosting() {
+  const root = $('pecViewRoot');
+  if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Job Costing.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
+  await loadCostingData();
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
+  const areaSystem = (job) => {
+    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+    return areas[0] ? sysById[areas[0].system_type_id] : null;
+  };
+  const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
+  // Most-recently-finalized first.
+  const jobs = (state.prodJobs || []).filter(j => costingIsFinalized(j) && !j.archived_at)
+    .slice().sort((a, b) => String(b.costing_finalized_at || '').localeCompare(String(a.costing_finalized_at || '')));
+  const rows = jobs.map(j => {
+    const sys = areaSystem(j);
+    const r = computeCostingRow(j, costByJob[j.id], sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
+    return { j, sys, r };
+  });
+  root.innerHTML = `
+    <div class="pec-card" style="border-radius:0">
+      <div class="pec-toolbar">
+        <h3 style="margin:0">Completed Job Costing</h3>
+        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} finalized job${jobs.length === 1 ? '' : 's'}</span>
+      </div>
+    </div>
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      ${jobs.length === 0 ? '<div class="pec-empty">No finalized jobs yet. Finalize a job from its Job Costing detail to move it here.</div>' : `
+      <div style="overflow-x:auto;padding-bottom:8px">
+        <table class="pec-cost-table">
+          <thead><tr>
+            <th>Job</th><th>System</th><th>Crew</th>
+            <th style="text-align:right">Revenue</th>
+            <th style="text-align:right">Total Var</th>
+            <th style="text-align:right">Gross Profit</th>
+            <th style="text-align:right">GP %</th>
+            <th>Finalized</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(({ j, sys, r }) => `
+              <tr data-completed-cost="${esc(j.id)}" style="cursor:pointer">
+                <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number || '')}</div></td>
+                <td>${sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>'}</td>
+                <td>${j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.revenue)}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.totalVar)}</td>
+                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtMoneyOrDash(r.gp)}</td>
+                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
+                <td style="font-size:.72rem">${esc(j.costing_finalized_by || 'Admin')}<div style="color:var(--muted)">${esc(fmtStamp(j.costing_finalized_at))}</div></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
+  root.querySelectorAll('[data-completed-cost]').forEach(rowEl => {
+    rowEl.addEventListener('click', () => {
+      state.openUnifiedJobId = rowEl.dataset.completedCost;
+      switchView('costing');
     });
   });
 }

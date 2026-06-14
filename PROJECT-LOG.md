@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14 09:20] Costing overhaul Phase 4: Finalize Job Costing + Completed Job Costing view + Crew Bonus gating
+By: Claude Code
+Changed: (1) "Finalize Job Costing" button at the bottom of the costing detail. It confirms ("Are you sure you want to finalize job costing for this job?"), then stamps costing_finalized_at/by via saveJobField. Once finalized the card shows "finalized by <name> on <date>", a Re-open link, and a read-only Bonus recap (crew pool + per-member amounts from the shared computeCrewBonus). (2) Finalized jobs now leave the active Job Costing list AND the Pending Job Costing queue (both filters gained a costingIsFinalized exclusion). (3) New renderCompletedCosting view: read-only summary rows (computeCostingRow) for every finalized job, most-recent first, each row opening the unified detail. Registered in the switchView router and the fullbleed toggle; nav button is added in Phase 5. (4) New costingIsFinalized(job) helper. (5) Crew Bonus tab is now gated on FINALIZED costing (was: any completed job), so a job pays a bonus only after its costing is finalized; copy + empty state updated to match.
+Why: Phase 4 of the overhaul. Dylan wanted an explicit finalize step that locks a job into a Completed view and unlocks its crew bonus, instead of every completed job showing up as payable.
+How it works (WHY note): the finalize stamps live on pec_prod_jobs (see the Phase 3 migration note), so finalize/re-open is one saveJobField write each and every list just reads job.costing_finalized_at. Nothing is frozen at finalize: the Completed view and the bonus recap recompute from the same shared functions, so re-opening and editing stays consistent.
+Files touched: index.html
+Next steps: Phase 5 (sidebar grouped headers, including the Completed Job Costing nav entry under Finance).
+Handoff to Cowork: Still pending: apply 2026-06-14_costing_lifecycle.sql (the finalize/reconcile buttons + wage saves 400 until it is live). Full Cowork prompt ships with Phase 5.
+Handoff to Dylan: None yet.
+
+---
+
 ## [2026-06-14 09:00] Costing overhaul Phase 3: Hours reconciled button + the single combined migration
 By: Claude Code
 Changed: (1) New migration supabase/migrations/2026-06-14_costing_lifecycle.sql adds ALL the new columns this task needs in ONE file: hours_reconciled_at/by and costing_finalized_at/by on pec_prod_jobs, plus hourly_wage on pec_prod_crew_members, plus a partial index on costing_finalized_at. NOT applied to prod from this session. (2) In the Bonus Payout box, a "Hours for this job have been reconciled and are accurate" button. Clicking it stamps the signed-in admin (state.adminUser name/email) and an ISO timestamp onto the job via saveJobField, then the button is replaced by "Hours reconciled by <name> on <date>" with a Re-open link that clears the stamp.
