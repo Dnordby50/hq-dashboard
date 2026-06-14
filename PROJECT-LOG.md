@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-13 13:10] Cowork: ran the BusyBusy proxy probe live; Integration Key gets 401 from graphql.busybusy.io (blocked on auth, not on root-query discovery)
+By: Cowork
+Changed: No code. Ran the proxy probe/introspection/typed snippet from a logged-in admin session on prescottepoxy.netlify.app (DevTools-equivalent via the page's own fetch + the staff session token). BUSYBUSY_API_TOKEN is set in Netlify (5 deploy contexts, value redacted); BUSYBUSY_API_URL = https://graphql.busybusy.io/. Result:
+ - PROBE: { status: 401, ok: false, data: null, raw: "" } -- a 401 FROM BusyBusy (empty body), not from our proxy. The proxy's own session gate passed (we were authenticated; it was not "Not authorized").
+ - action=introspect: { error: "BusyBusy introspection failed (401)" }.
+ - ROOT QUERIES: [] (could not be captured -- introspection is blocked by the 401).
+ - TimeEntry/Project/Member/ProjectInfo field lists: none (blocked).
+ - TYPED timeentries/projects/members: all returned errors ("...query failed (confirm root name/args via action=introspect)").
+Meaning: the dedicated Integration Key does NOT authenticate against graphql.busybusy.io using header key-authorization with a bare token (the scheme the web-app SESSION uses). So my earlier inference that the key would auth the same way as the web-app session is not holding -- the key is a different credential and BusyBusy rejects it on the GraphQL endpoint as configured. We cannot get the root query names until the key authenticates.
+Why this matters: Claude Code's typed queries and the sync are all downstream of a working probe; everything is blocked on this 401.
+Files touched: PROJECT-LOG.md only. External: read-only proxy calls (all returned 401 from BusyBusy; nothing written).
+Diagnostic ladder (most to least likely), for Dylan + Claude Code:
+ 1) KEY VALUE: the "TopCoat" key shows "Never Used" and the value pasted into BUSYBUSY_API_TOKEN was never verified end-to-end. Regenerate the key in BusyBusy (Settings -> Integration Keys -> delete TopCoat -> Add Key -> copy the full value shown once) and re-paste into Netlify; an incomplete/[]wrong paste alone would 401. Re-run the probe.
+ 2) AUTH SCHEME: if the value is correct and still 401, try the alternates via the proxy's env knobs and redeploy + re-probe: (a) BUSYBUSY_AUTH_HEADER=Authorization + BUSYBUSY_AUTH_PREFIX="Bearer "; (b) BUSYBUSY_AUTH_PREFIX="key " with header key-authorization. These are guesses (no public docs).
+ 3) ENDPOINT: if all schemes 401, the Integration Key likely targets BusyBusy's LEGACY REST/JSON:API (the @busybusy/data 2017 ember-data client), not the current GraphQL the web app uses. In that case ask BusyBusy/AlignOps support for the integration base URL + auth header for key-based API calls. This is the documented-unknown the task anticipated.
+Handoff to Cowork: once the probe returns 200 (after a correct key / scheme / endpoint), re-run the snippet and capture ROOT QUERIES + field lists for Claude Code.
+Handoff to Dylan: regenerate + re-paste the BusyBusy key (step 1) and re-probe; if still 401, contact BusyBusy support for the Integration-Key API base URL + auth header.
+
 ## [2026-06-13 MST] Claude Code: costing completion now follows the CRM job status; placeholder-stub hardening; BusyBusy proxy reworked to GraphQL
 By: Claude Code
 Changed: Acted on Cowork's 2026-06-13 handoff. Commits 95e60cb (costing) and 2bf6769 (proxy).
