@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14 08:45] Costing overhaul Phase 2: Schedule card becomes Bonus Payout box (Hours folded in)
+By: Claude Code
+Changed: In renderUnifiedJob (index.html) the old Schedule card and Hours card are gone, replaced by ONE "Bonus Payout" card. (1) renderUnifiedJob now fetches pec_prod_busybusy_time_entries for the single job (per-member hours + start/end punches), same graceful-empty handling as the Crew Bonus tab. (2) The box shows "Bonus earned: YES / NO / awaiting BusyBusy hours" at top (awaiting-state when zero entries, so missing data never reads as a denied bonus), a summary row (labor budget, actual labor incl. burden, savings, 75% crew pool), and a per-member table (crew member, time punches, total hours, total wage, wage incl. 25% burden, bonus). All bonus numbers come from the shared computeCrewBonus helper. (3) Hours folded in: Estimated Hours, Actual Hours (BusyBusy sum when entries exist, else the manual field), Over/Under, plus the manual actual_hours input kept as an override. (4) The schedule day table moved into the Job Info card as a read-only sub-section, so no schedule data disappears. (5) refreshUnifiedTotals now live-updates the effective Actual Hours + Over/Under.
+Why: Phase 2 of the overhaul. Dylan wanted the payout math visible on the job itself and the schedule box repurposed.
+How it works (WHY note): when BusyBusy entries exist for a job they are the source of truth for displayed hours; the manual actual_hours field still persists and is what the costing list + Costs card read (computeCostingRow is untouched), so it acts as an override until the BusyBusy sync goes live. Until then every job shows the "awaiting BusyBusy hours" empty state and pays nothing.
+Files touched: index.html
+Next steps: Phase 3 (Hours reconciled button + the single combined migration).
+Handoff to Cowork: None (migration ships with Phase 3).
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-14 08:25] Costing overhaul: per-member wage Settings editor + shared crew-bonus math
 By: Claude Code
 Changed: (1) New "Crew Members" card in renderSettings (index.html) listing each member with their crew, an inline-editable hourly wage input, and an active toggle, persisting on change. There was no crew-member editor in the app before; members are seeded via Cowork, so this gives Dylan a place to enter wages. renderSettings now also loads pec_prod_crew_members (via select('*'), which is safe before the hourly_wage column exists). (2) loadCostingData's crew-members read switched from an explicit column list to select('*') for the same forward-compat reason. (3) New shared computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) helper next to CREW_BONUS_FRACTION implementing the locked formula: actualLabor = sum(member hours x wage x 1.25 burden), pool = 75% of max(0, laborBudget - actualLabor), split by hours. The Crew Bonus tab (renderCrewBonus) was refactored to call it so it and the upcoming costing-detail Bonus Payout box can never disagree.

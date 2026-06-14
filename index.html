@@ -15034,6 +15034,38 @@ async function renderUnifiedJob(jobId) {
 
   let r = recomputeR();
 
+  // BusyBusy actual hours for THIS job, per crew member, for the Bonus Payout
+  // box. Same source + graceful-empty handling as renderCrewBonus: if the table
+  // is missing or the sync has not run, bbError/empty -> "awaiting BusyBusy
+  // hours" and no bonus is invented on zero actuals.
+  const bbHoursByKey = {}; const bbPunchesByKey = {}; let bbError = null;
+  try {
+    const res = await withFreshSession(() => supabase
+      .from('pec_prod_busybusy_time_entries')
+      .select('job_id,crew_member_id,busybusy_member_id,hours,started_at,ended_at,deleted_at')
+      .eq('job_id', jobId), { label: 'unifiedJobTime' });
+    if (res.error) throw res.error;
+    for (const e of (res.data || [])) {
+      if (e.deleted_at) continue;
+      const h = Number(e.hours || 0);
+      if (!(h > 0)) continue;
+      const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
+      bbHoursByKey[key] = (bbHoursByKey[key] || 0) + h;
+      (bbPunchesByKey[key] ||= []).push({ start: e.started_at, end: e.ended_at });
+    }
+  } catch (err) { bbError = err && err.message ? err.message : String(err); }
+  const memberByIdAll = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
+  const bonusMemberLookup = (key) => {
+    if (key.startsWith('bb:')) return { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null };
+    const m = memberByIdAll[key];
+    return { name: m?.name || 'Crew member', wage: m?.hourly_wage ?? null };
+  };
+  const jobEst = (state.estimateByJob || {})[jobId] || {};
+  const jobLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
+  const defaultLaborRate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
+  // ONE shared math path with the Crew Bonus tab (computeCrewBonus).
+  const bonusCalc = computeCrewBonus(jobLaborBudget, bbHoursByKey, bonusMemberLookup, defaultLaborRate);
+
   const moneyInput = (label, key, table, val, hint = '') => `
     <div class="pec-field">
       <label>${esc(label)}${hint ? ` <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">${esc(hint)}</span>` : ''}</label>
@@ -15135,6 +15167,94 @@ async function renderUnifiedJob(jobId) {
          </tbody>
        </table>`;
 
+  // --- Bonus Payout box (Phase 2): the Schedule card becomes this, with Hours
+  // folded in. Source-of-truth choice: when BusyBusy entries exist for the job,
+  // the displayed Actual Hours + Over/Under use the BusyBusy sum (preferred);
+  // with none, they use the manual actual_hours field. The manual field always
+  // persists and is what the costing list + Costs card read (computeCostingRow
+  // unchanged), so it stays an override until the BusyBusy sync is wired live.
+  const actHrsEff = bonusCalc.hasActuals ? bonusCalc.totalHours : (r.actHrs || null);
+  const overUnderEff = (actHrsEff && r.estHrs) ? (actHrsEff - r.estHrs) : null;
+  const overUnderEffPct = (actHrsEff && r.estHrs) ? ((actHrsEff - r.estHrs) / r.estHrs) : null;
+  const actHrsEffDisplay = actHrsEff == null ? '—' : fmtNum(actHrsEff) + ' hrs';
+  const overUnderEffDisplay = `${overUnderEff == null ? '—' : fmtNum(overUnderEff)} (${fmtPct(overUnderEffPct)})`;
+  const overUnderEffCls = overUnderEff == null ? '' : (overUnderEff > 0 ? 'cost-neg' : 'cost-pos');
+
+  const fmtPunch = (p) => {
+    const f = (s, withDate) => {
+      if (!s) return '?';
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return '?';
+      return d.toLocaleString([], withDate ? { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' } : { hour: 'numeric', minute: '2-digit' });
+    };
+    if (!p.start && !p.end) return '';
+    return f(p.start, true) + ' to ' + (p.end ? f(p.end, false) : 'open');
+  };
+
+  const bonusEarnedText = !bonusCalc.hasActuals
+    ? 'awaiting BusyBusy hours'
+    : (jobLaborBudget == null ? 'NO (no labor budget — set system labor % + revenue)' : (bonusCalc.pool > 0 ? 'YES' : 'NO'));
+  const bonusEarnedColor = (bonusCalc.hasActuals && bonusCalc.pool > 0) ? 'var(--rd-success,#16a34a)' : 'var(--muted)';
+
+  const bonusMembersTable = `
+    <div class="pec-table-wrap"><table class="pec-table" style="font-size:.76rem">
+      <thead><tr>
+        <th>Crew member</th><th>Time punches</th>
+        <th style="text-align:right">Total hours</th>
+        <th style="text-align:right">Total wage</th>
+        <th style="text-align:right">Wage incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden</th>
+        <th style="text-align:right">Bonus</th>
+      </tr></thead>
+      <tbody>
+        ${bonusCalc.members.map(m => {
+          const punches = bbPunchesByKey[m.key] || [];
+          const punchList = punches.map(fmtPunch).filter(Boolean);
+          return `<tr class="nohover">
+            <td><strong>${esc(m.name)}</strong>${m.usedDefault ? ' <span style="color:var(--muted);font-size:.65rem">(default rate)</span>' : ''}</td>
+            <td>${punches.length} punch${punches.length === 1 ? '' : 'es'}${punchList.length ? `<div style="color:var(--muted);font-size:.65rem">${punchList.map(esc).join('<br>')}</div>` : ''}</td>
+            <td style="text-align:right">${fmtNum(m.hours)}</td>
+            <td style="text-align:right">${fmtMoneyOrDash(m.wageTotal)}</td>
+            <td style="text-align:right">${fmtMoneyOrDash(m.wageTotalBurden)}</td>
+            <td style="text-align:right">${bonusCalc.pool > 0 ? fmtMoneyOrDash(m.bonus) : '—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot><tr class="nohover" style="font-weight:600">
+        <td>Total</td><td></td>
+        <td style="text-align:right">${fmtNum(bonusCalc.totalHours)}</td>
+        <td></td>
+        <td style="text-align:right">${fmtMoneyOrDash(bonusCalc.actualLabor)}</td>
+        <td style="text-align:right">${bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool)}</td>
+      </tr></tfoot>
+    </table></div>`;
+
+  const bonusPayoutHtml = `
+      <div class="pec-card" id="sec-bonus-payout">
+        <h3>Bonus Payout</h3>
+        <div style="font-size:.95rem;margin:0 0 10px">Bonus earned: <strong style="color:${bonusEarnedColor}">${bonusEarnedText}</strong></div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin-bottom:12px">
+          <span>Labor budget: <strong style="color:var(--text)">${jobLaborBudget == null ? '—' : fmtMoneyOrDash(jobLaborBudget)}</strong></span>
+          <span>Actual labor (incl. burden): <strong style="color:var(--text)">${bonusCalc.actualLabor == null ? '—' : fmtMoneyOrDash(bonusCalc.actualLabor)}</strong></span>
+          <span>Savings: <strong style="color:var(--text)">${bonusCalc.savings == null ? '—' : fmtMoneyOrDash(bonusCalc.savings)}</strong></span>
+          <span>Crew pool (${Math.round(CREW_BONUS_FRACTION * 100)}%): <strong style="color:var(--text)">${bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool)}</strong></span>
+        </div>
+        ${bbError
+          ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309)">Actual hours unavailable (${esc(bbError)}). This box waits for BusyBusy hours.</div>`
+          : !bonusCalc.hasActuals
+            ? `<div class="pec-empty">No BusyBusy hours for this job yet. The bonus computes once time entries sync.</div>`
+            : bonusMembersTable}
+
+        <h3 style="margin-top:18px">Hours</h3>
+        <div class="pec-row-3">
+          ${derivedField('Estimated Hours', r.estHrs ? r.estHrs.toFixed(1) + ' hrs' : '—')}
+          ${derivedField('Actual Hours' + (bonusCalc.hasActuals ? ' (BusyBusy)' : ' (manual)'), actHrsEffDisplay, '', 'actHrsEff')}
+          ${derivedField('Over / Under', overUnderEffDisplay, overUnderEffCls, 'overUnderEff')}
+        </div>
+        <div class="pec-row-3" style="margin-top:8px">
+          <div class="pec-field"><label>Manual hours${bonusCalc.hasActuals ? ' (override)' : ''}</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(job.actual_hours ?? '')}"></div>
+        </div>
+      </div>`;
+
   const html = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
@@ -15160,12 +15280,13 @@ async function renderUnifiedJob(jobId) {
             </select>
           </div>
         </div>
+        <div style="margin-top:14px">
+          <h3 style="font-size:.85rem;margin:0 0 6px">Schedule</h3>
+          ${schedHtml}
+        </div>
       </div>
 
-      <div class="pec-card" id="sec-schedule">
-        <h3>Schedule</h3>
-        ${schedHtml}
-      </div>
+      ${bonusPayoutHtml}
 
       <div class="pec-card" id="sec-materials">
         <h3>Materials <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · est. <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span></h3>
@@ -15175,14 +15296,6 @@ async function renderUnifiedJob(jobId) {
           : '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>'}
       </div>
 
-      <div class="pec-card" id="sec-hours">
-        <h3>Hours</h3>
-        <div class="pec-row-3">
-          ${derivedField('Estimated Hours', r.estHrs ? r.estHrs.toFixed(1) + ' hrs' : '—')}
-          <div class="pec-field"><label>Actual Hours</label><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(job.actual_hours ?? '')}"></div>
-          ${derivedField('Over / Under', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, r.overUnder == null ? '' : r.overUnder > 0 ? 'cost-neg' : 'cost-pos', 'overUnder')}
-        </div>
-      </div>
 
       <div class="pec-card" id="sec-bonuses">
         <h3>Crew Bonuses <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span></h3>
@@ -15253,6 +15366,15 @@ async function renderUnifiedJob(jobId) {
     set('[data-uderived="revHr"]', r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
     const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
     set('[data-uderived="overUnder"]', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, overCls);
+    // Bonus Payout box's effective Actual Hours + Over/Under. When BusyBusy hours
+    // exist they are the source of truth (static for this render); otherwise the
+    // manual actual_hours field (live via r) drives both displays.
+    const actEff = bonusCalc.hasActuals ? bonusCalc.totalHours : (r.actHrs || null);
+    set('[data-uderived="actHrsEff"]', actEff == null ? '—' : fmtNum(actEff) + ' hrs');
+    const ouEff = (actEff && r.estHrs) ? (actEff - r.estHrs) : null;
+    const ouEffPct = (actEff && r.estHrs) ? ((actEff - r.estHrs) / r.estHrs) : null;
+    const ouCls = ouEff == null ? '' : (ouEff > 0 ? 'cost-neg' : 'cost-pos');
+    set('[data-uderived="overUnderEff"]', `${ouEff == null ? '—' : fmtNum(ouEff)} (${fmtPct(ouEffPct)})`, ouCls);
     // GP / TotalVar coloring on their wrapping cells
     root.querySelectorAll('[data-uderived="gp-box"], [data-uderived="totalVar-box"]').forEach(el => {
       el.classList.remove('cost-neg', 'cost-pos');
