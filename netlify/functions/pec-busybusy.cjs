@@ -5,26 +5,30 @@
 // browser cannot call BusyBusy directly (no CORS). This runs server-side,
 // authenticates with the key, and returns JSON from the dashboard's origin.
 //
-// API SHAPE (researched 2026-06-13 from the @busybusy/data npm client): the
-// BusyBusy API is a VERSIONED JSON/REST API (PHP backend, JSON-API style:
-// /<version>/<dasherized-resource>, `filter` query params), NOT GraphQL. There
-// are no public docs, so this proxy hardcodes NOTHING about paths, auth, or
-// schema. Everything comes from env, and `action=probe` is a generic
-// authenticated passthrough so we can discover the real resource names + shape
-// once the key is configured, THEN wire action=timeentries / action=projects.
+// API SHAPE (captured live from app.busybusy.io by Cowork 2026-06-13): the
+// CURRENT BusyBusy product uses a GraphQL API (the @busybusy/data npm client
+// that implied REST /v1 is the legacy 2017 ember-data layer). Confirmed:
+//   endpoint: https://graphql.busybusy.io/  (HTTPS POST, GraphQL)
+//   auth header: key-authorization  (value = BARE token, no Bearer/key prefix)
+//   TimeEntry: id, memberId, projectId, costCodeId, equipmentId, startTime,
+//     endTime, breaks[], actionType, description, createdOn, updatedOn,
+//     deletedOn, submittedOn  (NO hours field: duration = endTime - startTime
+//     minus breaks; updatedOn = edit marker; deletedOn = soft delete; a running
+//     entry has endTime null).
+//   Project: id, title, parentProjectId, projectInfo{ customer, number, ... }.
+//   Member: id, firstName, lastName, username, memberNumber, email, deletedOn.
+// The ROOT query names + args are anonymous in the web app, so they are still
+// UNVERIFIED here: action=introspect (below) is the source of truth for them.
+// The typed queries use the captured field selections (known-correct) with a
+// best-guess root; if a root name/arg is wrong the GraphQL error surfaces and
+// it is a one-line fix.
 //
-// Env (set in Netlify; Dylan handoff):
-//   BUSYBUSY_API_TOKEN   the Integration Key value (required)
-//   BUSYBUSY_API_URL     API base, e.g. https://api.busybusy.io  (required)
-//   BUSYBUSY_AUTH_HEADER header that carries the key (default: Key-Authorization)
-//   BUSYBUSY_AUTH_PREFIX optional value prefix, e.g. "Bearer " (default: none)
-// Plus the shared SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY used to verify the
-// caller's Supabase session.
+// Env (Netlify): BUSYBUSY_API_TOKEN (the Integration Key), BUSYBUSY_API_URL
+// (defaults to the confirmed endpoint), BUSYBUSY_AUTH_HEADER (default
+// key-authorization), BUSYBUSY_AUTH_PREFIX (default none). Plus the shared
+// SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY for the session gate.
 // .cjs extension is deliberate (package.json has "type":"module").
 
-// Verify the caller's Supabase session (same gate as pec-companycam.cjs): the
-// dashboard sends the signed-in user's access token as Authorization: Bearer;
-// GoTrue's /auth/v1/user validates it in one cheap GET.
 async function callerIsStaff(event) {
   const supabaseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -42,6 +46,14 @@ async function callerIsStaff(event) {
   }
 }
 
+// Field selections captured live (known-correct). Root query names/args are
+// confirmed via action=introspect, then adjust ROOTS below if needed.
+const TIME_ENTRY_FIELDS = 'id memberId projectId costCodeId equipmentId startTime endTime actionType description createdOn updatedOn deletedOn submittedOn breaks { id startTime endTime }';
+const PROJECT_FIELDS = 'id title parentProjectId projectInfo { customer number }';
+const MEMBER_FIELDS = 'id firstName lastName username memberNumber email deletedOn';
+
+const INTROSPECTION_QUERY = 'query Introspection { __schema { queryType { name } types { name kind fields { name args { name } } } } }';
+
 exports.handler = async (event) => {
   const cors = {
     'Access-Control-Allow-Origin': '*',
@@ -51,50 +63,74 @@ exports.handler = async (event) => {
   };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
 
-  // 200-with-{error} for every failure, like pec-companycam.cjs: the dashboard
-  // reads res.error and degrades to the manual-hours fallback instead of
-  // logging a console error on every costing open.
-  const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, entries: [], projects: [], ...extra }) });
+  const fail = (error, extra = {}) => ({ statusCode: 200, headers: cors, body: JSON.stringify({ error, entries: [], projects: [], members: [], ...extra }) });
 
   if (!(await callerIsStaff(event))) return fail('Not authorized');
 
   const token = process.env.BUSYBUSY_API_TOKEN;
   if (!token) return fail('BusyBusy is not configured. Set BUSYBUSY_API_TOKEN in the Netlify environment.');
-  const base = process.env.BUSYBUSY_API_URL;
-  if (!base) return fail('BusyBusy base URL not set. Add BUSYBUSY_API_URL (e.g. https://api.busybusy.io) once the key docs confirm it.');
-
-  // Auth header is configurable because BusyBusy publishes no docs: the key may
-  // ride on Key-Authorization (their historical scheme) or Authorization.
-  const authHeader = process.env.BUSYBUSY_AUTH_HEADER || 'Key-Authorization';
+  const apiUrl = process.env.BUSYBUSY_API_URL || 'https://graphql.busybusy.io/';
+  const authHeader = process.env.BUSYBUSY_AUTH_HEADER || 'key-authorization';
   const authPrefix = process.env.BUSYBUSY_AUTH_PREFIX || '';
-  const baseHeaders = { [authHeader]: authPrefix + token, Accept: 'application/json' };
+
+  // One GraphQL POST. Returns { ok, status, json }.
+  const gql = async (query, variables = {}) => {
+    const res = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { [authHeader]: authPrefix + token, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query, variables }),
+    });
+    let json = null; const text = await res.text();
+    try { json = JSON.parse(text); } catch { /* non-JSON */ }
+    return { ok: res.ok, status: res.status, json, text };
+  };
 
   const params = event.queryStringParameters || {};
   const action = params.action || 'probe';
 
   try {
-    // Generic authenticated GET passthrough for DISCOVERY. Give it a path (and
-    // optional raw query string) and it returns the live status + JSON, so we
-    // can find the real time-entry / project / member resources and their
-    // field names before wiring typed actions. Path is constrained to a
-    // relative path under the configured base (no host override).
+    // Confirm the endpoint + key auth in one tiny call.
     if (action === 'probe') {
-      const path = String(params.path || '').replace(/^\/+/, '');
-      const qs = params.query ? ('?' + params.query) : '';
-      const url = base.replace(/\/+$/, '') + '/' + path + qs;
-      const res = await fetch(url, { headers: baseHeaders });
-      const text = await res.text();
-      let json = null;
-      try { json = JSON.parse(text); } catch { /* return raw text below */ }
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ status: res.status, url, data: json, raw: json ? undefined : text.slice(0, 2000) }) };
+      const r = await gql('query Probe { __typename }');
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ status: r.status, ok: r.ok, data: r.json, raw: r.json ? undefined : (r.text || '').slice(0, 1000) }) };
     }
 
-    // action=timeentries / action=projects are intentionally NOT implemented
-    // against guessed resource paths or field names. Once `probe` reveals the
-    // real resource (e.g. /v1/time-entries) and its shape, map them here and
-    // add a since=<ISO> filter for incremental sync.
-    if (action === 'timeentries' || action === 'projects') {
-      return fail(`action "${action}" is not wired yet: use action=probe&path=<resource> to discover the BusyBusy resource + fields first, then implement it on the real shape.`);
+    // Discover the real root query names + args (the source of truth).
+    if (action === 'introspect') {
+      const r = await gql(INTROSPECTION_QUERY);
+      if (!r.ok) return fail(`BusyBusy introspection failed (${r.status})`, { raw: r.json || r.text });
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ schema: r.json }) };
+    }
+
+    // Generic passthrough so we can run any query while wiring this up. The
+    // dashboard POSTs { query, variables } in the body.
+    if (action === 'graphql') {
+      let payload = {};
+      try { payload = JSON.parse(event.body || '{}'); } catch { /* ignore */ }
+      if (!payload.query) return fail('graphql action requires a { query } body');
+      const r = await gql(payload.query, payload.variables || {});
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ status: r.status, ok: r.ok, data: r.json }) };
+    }
+
+    // Typed queries: known FIELDS, best-guess ROOTS (confirm via introspect).
+    // updatedOnSince drives incremental sync so edits/deletes propagate.
+    if (action === 'timeentries') {
+      const q = `query TimeEntries($updatedOnSince: String) { timeEntries(filter: { updatedOn: { greaterThanOrEqualTo: $updatedOnSince } }) { ${TIME_ENTRY_FIELDS} } }`;
+      const r = await gql(q, { updatedOnSince: params.since || null });
+      if (!r.ok || (r.json && r.json.errors)) return fail('BusyBusy time entries query failed (confirm root name/args via action=introspect)', { status: r.status, raw: r.json || r.text });
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ entries: (r.json && r.json.data && r.json.data.timeEntries) || [] }) };
+    }
+    if (action === 'projects') {
+      const q = `query Projects { projects { ${PROJECT_FIELDS} } }`;
+      const r = await gql(q);
+      if (!r.ok || (r.json && r.json.errors)) return fail('BusyBusy projects query failed (confirm root name/args via action=introspect)', { status: r.status, raw: r.json || r.text });
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ projects: (r.json && r.json.data && r.json.data.projects) || [] }) };
+    }
+    if (action === 'members') {
+      const q = `query Members { members { ${MEMBER_FIELDS} } }`;
+      const r = await gql(q);
+      if (!r.ok || (r.json && r.json.errors)) return fail('BusyBusy members query failed (confirm root name/args via action=introspect)', { status: r.status, raw: r.json || r.text });
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ members: (r.json && r.json.data && r.json.data.members) || [] }) };
     }
 
     return fail(`Unknown action "${action}"`);
