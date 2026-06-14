@@ -77,6 +77,19 @@ Handoff to Dylan: None
 
 ---
 
+## [2026-06-14] Cowork: BusyBusy still 401 after key regeneration; tested 3 auth schemes live, all fail; reverted env to default
+By: Cowork
+Changed: No repo code. Dylan regenerated the BusyBusy Integration Key and re-pasted BUSYBUSY_API_TOKEN in Netlify (Production value ends 27ae, updated ~7:23 AM by Dylan). Cowork drove the live diagnosis end to end via Chrome on prescottepoxy.netlify.app (logged-in admin session) plus the Netlify dashboard:
+ 1) Confirmed the proxy's staff gate passes (function returns HTTP 200) but BusyBusy returns 401 with an EMPTY body to action=probe AND action=introspect. Same fingerprint as the 2026-06-13 failure.
+ 2) Ruled out stale deploy: triggered redeploys at 8:05 and 8:33 and 8:37 AM (main@5454f38), so the function definitely runs the new key. Still 401.
+ 3) Ruled out wrong context: BUSYBUSY_API_TOKEN Production context holds the new value (ends 27ae); it is "5 values in 5 deploy contexts" but Production is correct.
+ 4) Tested alternate auth schemes by adding/editing Netlify env knobs (BUSYBUSY_AUTH_HEADER / BUSYBUSY_AUTH_PREFIX) and redeploying between each: (a) Authorization + "Bearer " prefix -> 401; (b) key-authorization + "key " prefix -> 401. Combined with the original key-authorization + bare token -> 401, ALL THREE documented schemes fail with the same empty-body 401.
+ 5) Reverted to baseline: deleted BUSYBUSY_AUTH_PREFIX; left BUSYBUSY_AUTH_HEADER=key-authorization (equals the code default). So the proxy is back to BusyBusy's standard scheme (key-authorization header, bare token) for when the real fix lands. No redeploy of the revert was needed (the next deploy picks up the clean config).
+Conclusion: this is NOT a header-scheme problem and NOT a stale-deploy/wrong-context problem. The Integration Key is being rejected at the BusyBusy edge regardless of scheme, which points to either (a) the key value/type itself (it shows "Never Used"; verify the FULL secret was pasted with no leading/trailing whitespace, and that it is the key VALUE not the key id/name), or (b) the Integration Key targets a different endpoint/auth than the web-app session uses (the session uses key-authorization with a JWT; the key is a different credential). There are no public docs for the Integration Key auth (checked 2026-06-13).
+Why: Dylan asked Cowork to fix the BusyBusy roadblock after regenerating the key.
+Files touched: PROJECT-LOG.md only. External: Netlify env (added then deleted BUSYBUSY_AUTH_PREFIX; BUSYBUSY_AUTH_HEADER left = key-authorization), multiple production redeploys (no code change), read-only BusyBusy probes (all 401).
+Handoff to Dylan: (1) double-check the pasted BUSYBUSY_API_TOKEN is the complete Integration Key secret with no whitespace; (2) contact BusyBusy/AlignOps support for the Integration Key's correct base URL and auth header, since guessing is exhausted. Until the probe returns 200, the bonus box reads its graceful empty state and pays nothing on zero actuals.
+
 ## [2026-06-14] Cowork: applied the costing-lifecycle migration to PROD and verified the columns
 By: Cowork
 Changed: No repo code. Ran supabase/migrations/2026-06-14_costing_lifecycle.sql (written by Claude Code) against the PROD Supabase project (zdfpzmmrgotynrwkeakd, "HQ Dashboard", role postgres) via the SQL editor in a new query tab so no saved snippet was clobbered. Result: "Success. No rows returned." Verified with an information_schema.columns query that all five columns now exist: pec_prod_jobs.hours_reconciled_at (timestamptz), pec_prod_jobs.hours_reconciled_by (text), pec_prod_jobs.costing_finalized_at (timestamptz), pec_prod_jobs.costing_finalized_by (text), and pec_prod_crew_members.hourly_wage (numeric). The partial index idx_pec_prod_jobs_costing_finalized was created in the same run. The migration is idempotent (add column if not exists), so a re-run is safe.
