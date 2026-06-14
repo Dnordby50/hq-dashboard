@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14 08:10] Costing overhaul Phase 1: detail layout (header meta moved, Revenue read-only, Actual Used always editable)
+By: Claude Code
+Changed: Reworked the top of renderUnifiedJob (index.html). (1) The job meta (address, install date, system, crew) that used to ride on the toolbar line now renders as a read-only sub-line at the top of the Job Info card; the toolbar keeps only Back plus the customer/proposal/status badge. (2) Revenue is no longer an editable input. It is a read-only derived display sourced from job.revenue, with a code comment marking the exact spot to re-point at the job line-items SUM once that table ships. It has no data-cost attribute, so the generic [data-cost] save wiring can never write job.revenue from this page anymore. (3) The Materials "Actual Used" column is now an editable number input on EVERY line, including derived ones. Editing a derived line first persists the whole derived set to pec_prod_material_lines (new persistDerivedLines helper: delete-first then insert, same shape as the prod module's lineInsertPayload, with the typed actual_used_qty baked in), then re-renders so the lines come back with real ids; later edits take the normal saveLineActualUsedQty path. A per-input persisting guard stops the change+blur pair from double-persisting.
+Why: First of five phases in the Job Costing detail overhaul (deliverable claude-code-prompt-job-costing-overhaul.md). Dylan wanted the meta inside the card, revenue locked to its source, and used-quantity capture to work even on jobs whose material lines are still display-only derives.
+How it works (WHY note): derived lines (ids like derived-<jid>-<i>) are computeJobEstimate output built in loadCostingData and have no DB row, so saving a per-line qty needs the row to exist first; delete-first makes a retry after a half-failed insert idempotent, and if the insert fails the next load just re-derives, so nothing is lost beyond the just-typed number.
+Files touched: index.html
+Next steps: Phase 2 (Schedule card becomes Bonus Payout box, fold in Hours, per-member BusyBusy table, move the schedule day table under Job Info).
+Handoff to Cowork: None
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-14] Cowork: locked the open decisions and finalized the Claude Code prompt (no code change)
 By: Cowork
 Changed: No code. Got Dylan's decisions on the three roadblocks raised in the prior entry and rewrote claude-code-prompt-job-costing-overhaul.md to remove all assumptions. Locked: (1) BONUS = 75% of labor savings, the existing CREW_BONUS_FRACTION model; NO new per-system-type bonus field; the per-system-type "rule" is labor_budget_pct which already drives the labor budget. (2) PER-MEMBER WAGE added to pec_prod_crew_members (new hourly_wage column) and editable in a new Settings > Crew Members section, since no crew-member editor exists today (members are seeded via Cowork). Total wage = member hours x member wage, fallback to default_labor_hourly_rate when blank. (3) BURDEN = 25%. (4) BusyBusy: Dylan will regenerate the TopCoat Integration Key and re-paste in Netlify (the most likely 401 fix per the 2026-06-13 diagnostic ladder); the prompt builds the bonus box to read pec_prod_busybusy_time_entries with a graceful empty state until the probe returns 200. Consolidated all four new columns (hours_reconciled_at/by, costing_finalized_at/by) plus hourly_wage into ONE migration that Claude Code writes but does NOT apply to prod.

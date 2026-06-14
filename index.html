@@ -14802,6 +14802,39 @@ function saveLineActualUsedQty(lineId, qty) {
   ).catch(err => ({ error: err }));
 }
 
+// Persist a job's DERIVED material lines (ids like derived-<jid>-<i>, _derived
+// true) as real rows so per-line Actual Used edits survive a reload. Derived
+// lines are display-only output of computeJobEstimate (built in loadCostingData)
+// and have no DB row. We delete-first then insert (same shape + delete-first
+// pattern as the prod module's saveCalculatedLines) so a retry after a half-
+// failed insert is idempotent; the in-memory actual_used_qty is baked into the
+// payload so the value the user just typed is what gets persisted. On any error
+// the caller surfaces it; on reload with no saved lines loadCostingData simply
+// re-derives, so nothing is lost beyond the just-typed qty.
+async function persistDerivedLines(jobId) {
+  const lines = (state.materialLinesByJob[jobId] || []);
+  const payload = lines.map(l => ({
+    job_id: jobId, area_id: null,
+    material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
+    supplier: l.supplier, color: l.color, spread_rate: l.spread_rate, kit_size: l.kit_size,
+    qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
+    use_backstock: false, ordered: false, delivered: false,
+    unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
+    cure_speed: l.cure_speed || null,
+    actual_used_qty: Number(l.actual_used_qty) > 0 ? Number(l.actual_used_qty) : null,
+  }));
+  try {
+    const del = await withFreshWrite(() => supabase.from('pec_prod_material_lines').delete().eq('job_id', jobId), { label: 'costing-derived-del' });
+    if (del.error) throw del.error;
+    if (payload.length) {
+      const ins = await withFreshWrite(() => supabase.from('pec_prod_material_lines').insert(payload), { label: 'costing-derived-ins' });
+      if (ins.error) throw ins.error;
+    }
+    window.pecCostingStale = true; // renderUnifiedJob reloads the real-id lines
+    return { error: null };
+  } catch (err) { return { error: err }; }
+}
+
 // Bonus rows: per-job, per-crew-member. crew_member_name is a snapshot so the
 // display survives a member deletion. amount + hours_actual are editable; the
 // BusyBusy integration (later commit) will overwrite hours_actual.
@@ -14954,7 +14987,7 @@ async function renderUnifiedJob(jobId) {
   const linesDerived = lines.some(l => l._derived);
   const linesHtml = lines.length === 0
     ? `<div class="pec-empty">No material lines yet. They populate from the Production module's New Job flow once areas + systems are saved.</div>`
-    : `${linesDerived ? '<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Materials derived from the saved system + colors (same as the work order). Not yet persisted through the New Job sync, so per-line Actual Used is read-only here.</div>' : ''}<div class="pec-table-wrap">
+    : `${linesDerived ? '<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Materials derived from the saved system + colors (same as the work order). Entering Actual Used on any line persists this set so the quantities stick.</div>' : ''}<div class="pec-table-wrap">
          <table class="pec-table">
            <thead><tr>
              <th>Material</th><th>Product</th><th>Color</th><th>Cure</th>
@@ -14975,7 +15008,7 @@ async function renderUnifiedJob(jobId) {
                  <td>${l.line_cost == null ? '—' : '$' + Number(l.line_cost).toLocaleString()}</td>
                  <td>${l.ordered ? 'Yes' : 'No'}</td>
                  <td>${l.delivered ? 'Yes' : 'No'}</td>
-                 <td>${l._derived ? '<span style="color:var(--muted)">—</span>' : `<input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px">`}</td>
+                 <td><input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px"></td>
                  <td class="cost-derived" data-line-used-cost="${esc(l.id)}">${lineUsedCost(l) == null ? '—' : '$' + Math.round(lineUsedCost(l)).toLocaleString()}</td>
                </tr>`).join('')}
            </tbody>
@@ -15011,14 +15044,20 @@ async function renderUnifiedJob(jobId) {
   const html = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
-      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customer_name || '—')} · #${esc(job.proposal_number || '')} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span>${headerMeta ? ` · ${headerMeta}` : ''}</span>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customer_name || '—')} · #${esc(job.proposal_number || '')} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span></span>
     </div>
 
       <div class="pec-card" id="sec-header">
         <h3>Job Info</h3>
+        ${headerMeta ? `<div style="color:var(--muted);font-size:.8rem;margin:-2px 0 12px">${headerMeta}</div>` : ''}
         <div class="pec-row-3">
           <div class="pec-field"><label>Sales Team</label>${salesTeamSelectHtml(job.sales_team, 'class="cost-text" data-cost="sales_team" data-table="job"')}</div>
-          <div class="pec-field"><label>Revenue</label><input class="cost-money" type="number" min="0" step="0.01" data-cost="revenue" data-table="job" value="${esc(job.revenue ?? '')}"></div>
+          <div class="pec-field"><label>Revenue</label>
+            <!-- Read-only on the costing page: nothing here writes job.revenue (no data-cost attr,
+                 so it is skipped by the [data-cost] save wiring below). Source is job.revenue today;
+                 re-point to the job line-items SUM once that table ships (swap the value expression). -->
+            <div class="cost-derived" style="padding:6px 8px;background:var(--bg-soft);border-radius:6px;font-variant-numeric:tabular-nums">${job.revenue == null || job.revenue === '' ? '—' : '$' + Number(job.revenue).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+          </div>
           <div class="pec-field"><label>Callback</label>
             <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
               <option value=""     ${job.callback == null   ? 'selected' : ''}>—</option>
@@ -15038,7 +15077,7 @@ async function renderUnifiedJob(jobId) {
         <h3>Materials <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · est. <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span></h3>
         ${linesHtml}
         ${lines.length === 0 ? '' : linesDerived
-          ? '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">These lines are calculated for display only. Use Ordering (Save lines to job) or Recalculate on the job detail to persist them; Actual Used becomes editable then.</div>'
+          ? '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">These lines are calculated from the system + colors. Editing <strong>Actual Used</strong> persists them as real lines (qty / supplier / ordered+delivered are still edited in Ordering).</div>'
           : '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>'}
       </div>
 
@@ -15160,7 +15199,9 @@ async function renderUnifiedJob(jobId) {
 
   // Material line actual_used_qty inputs
   root.querySelectorAll('input[data-line-used]').forEach(inp => {
+    let persisting = false; // change + blur share this closure; guards the one-time derived persist
     const handler = async () => {
+      if (persisting) return;
       const lineId = inp.dataset.lineId;
       const qty = inp.value === '' ? null : Number(inp.value);
       const line = (state.materialLinesByJob[jobId] || []).find(l => l.id === lineId);
@@ -15181,6 +15222,17 @@ async function renderUnifiedJob(jobId) {
           ? '$' + Math.round(Number(line.actual_used_qty) * Number(line.unit_cost_snapshot)).toLocaleString()
           : '—';
         cell.innerHTML = display;
+      }
+      // Derived lines have no DB row yet: persist the whole set ONCE (qty baked
+      // in), then re-render so the lines come back with real ids and every later
+      // edit takes the normal per-line update path below.
+      if (line && line._derived) {
+        persisting = true;
+        inp.disabled = true;
+        const { error } = await persistDerivedLines(jobId);
+        if (error) { costingSaveFailed(error, inp, 'material used qty'); inp.disabled = false; persisting = false; return; }
+        costingSaveOk(inp);
+        return renderUnifiedJob(jobId);
       }
       const { error } = await saveLineActualUsedQty(lineId, qty);
       if (error) costingSaveFailed(error, inp, 'material used qty'); else costingSaveOk(inp);
