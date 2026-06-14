@@ -77,6 +77,14 @@ Handoff to Dylan: None
 
 ---
 
+## [2026-06-14] Cowork: applied the costing-lifecycle migration to PROD and verified the columns
+By: Cowork
+Changed: No repo code. Ran supabase/migrations/2026-06-14_costing_lifecycle.sql (written by Claude Code) against the PROD Supabase project (zdfpzmmrgotynrwkeakd, "HQ Dashboard", role postgres) via the SQL editor in a new query tab so no saved snippet was clobbered. Result: "Success. No rows returned." Verified with an information_schema.columns query that all five columns now exist: pec_prod_jobs.hours_reconciled_at (timestamptz), pec_prod_jobs.hours_reconciled_by (text), pec_prod_jobs.costing_finalized_at (timestamptz), pec_prod_jobs.costing_finalized_by (text), and pec_prod_crew_members.hourly_wage (numeric). The partial index idx_pec_prod_jobs_costing_finalized was created in the same run. The migration is idempotent (add column if not exists), so a re-run is safe.
+Why: Dylan said run the migration. The columns back Phases 3 and 4 of the costing overhaul (hours-reconciled stamp, finalize-costing stamp) and the per-member wage for the bonus math.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase schema (5 columns + 1 index added; additive, non-breaking).
+Next step: Claude Code can now build the UI against these live columns (the prompt no longer needs to wait on a migration handoff). BusyBusy key regeneration by Dylan is still outstanding before the bonus box shows real hours.
+Handoff to Dylan: none for the migration (done). Still pending: regenerate the BusyBusy key and redeploy, then tell Cowork to re-probe.
+
 ## [2026-06-14] Cowork: locked the open decisions and finalized the Claude Code prompt (no code change)
 By: Cowork
 Changed: No code. Got Dylan's decisions on the three roadblocks raised in the prior entry and rewrote claude-code-prompt-job-costing-overhaul.md to remove all assumptions. Locked: (1) BONUS = 75% of labor savings, the existing CREW_BONUS_FRACTION model; NO new per-system-type bonus field; the per-system-type "rule" is labor_budget_pct which already drives the labor budget. (2) PER-MEMBER WAGE added to pec_prod_crew_members (new hourly_wage column) and editable in a new Settings > Crew Members section, since no crew-member editor exists today (members are seeded via Cowork). Total wage = member hours x member wage, fallback to default_labor_hourly_rate when blank. (3) BURDEN = 25%. (4) BusyBusy: Dylan will regenerate the TopCoat Integration Key and re-paste in Netlify (the most likely 401 fix per the 2026-06-13 diagnostic ladder); the prompt builds the bonus box to read pec_prod_busybusy_time_entries with a graceful empty state until the probe returns 200. Consolidated all four new columns (hours_reconciled_at/by, costing_finalized_at/by) plus hourly_wage into ONE migration that Claude Code writes but does NOT apply to prod.
