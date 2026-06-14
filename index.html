@@ -835,6 +835,8 @@ body { padding: 18px; min-height: 100vh; }
 #rdSidebarNav .tab-btn.active .rd-ico,
 #rdSidebarEmpNav .tab-btn.active .rd-ico { opacity: 1; }
 #rdSidebarNav .rd-crm-divider { height: 1px; background: var(--rd-line); margin: 8px 12px; }
+#rdSidebarNav .rd-crm-group { padding: 14px 12px 4px; font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--rd-muted); }
+#rdSidebarNav .rd-crm-group:first-child { padding-top: 4px; }
 
 /* Sidebar promo card */
 .rd-promo {
@@ -1882,20 +1884,24 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
     <div id="pecApp" class="pec-app-grid" style="display:none">
       <aside class="pec-side">
         <nav class="pec-subnav" id="pecSubnav" style="display:none">
+          <div class="pec-subnav-group">Overview</div>
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
-          <div class="pec-subnav-divider"></div>
+          <div class="pec-subnav-group">Sales</div>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
+          <button data-pec-view="pipeline">Jobs pipeline</button>
+          <div class="pec-subnav-group">Production</div>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="nextday">Next Day Schedule</button>
-          <button data-pec-view="pipeline">Jobs pipeline</button>
-          <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
-          <button data-pec-view="crew-bonus" class="pec-role-admin">Crew Bonus</button>
+          <div class="pec-subnav-group">Finance</div>
           <button data-pec-view="invoicing">Invoicing</button>
+          <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
+          <button data-pec-view="completed-costing" class="pec-role-admin">Completed Job Costing</button>
+          <button data-pec-view="crew-bonus" class="pec-role-admin">Crew Bonus</button>
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
-          <div class="pec-subnav-divider"></div>
+          <div class="pec-subnav-group">Admin</div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="team" class="pec-role-admin">Team</button>
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
@@ -4492,7 +4498,7 @@ if (document.readyState === 'loading') {
     const crmNav = document.getElementById('pecSubnav');
     const crmButtons = [];
     if (crmNav) {
-      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider')).forEach(srcBtn => {
+      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
         // #pecSubnav is the hidden source of truth; the sidebar is a clone. Carry
         // the section dividers across in document order so they render here too.
         if (srcBtn.classList.contains('pec-subnav-divider')) {
@@ -4501,11 +4507,22 @@ if (document.readyState === 'loading') {
           navHost.appendChild(div);
           return;
         }
+        // Section header labels (Overview / Sales / Production / Finance / Admin).
+        if (srcBtn.classList.contains('pec-subnav-group')) {
+          const lbl = document.createElement('div');
+          lbl.className = 'rd-crm-group';
+          lbl.textContent = srcBtn.textContent.trim();
+          navHost.appendChild(lbl);
+          return;
+        }
         const sidebarBtn = document.createElement('button');
         sidebarBtn.className = 'tab-btn rd-crm-btn';
         sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;
         if (srcBtn.classList.contains('pec-role-admin')) sidebarBtn.classList.add('pec-role-admin');
         if (srcBtn.classList.contains('active')) sidebarBtn.classList.add('active');
+        // Mirror the source's role/capability visibility (renderAuthUI sets
+        // style.display on the source buttons); the observer below keeps it live.
+        sidebarBtn.style.display = srcBtn.style.display;
         sidebarBtn.innerHTML = '<span>' + srcBtn.textContent.trim() + '</span>';
         sidebarBtn.addEventListener('click', () => {
           // Make sure the CRM tab-content is active so the view actually shows.
@@ -4527,13 +4544,17 @@ if (document.readyState === 'loading') {
       const crmObs = new MutationObserver(() => {
         crmButtons.forEach(({ src, mirror }) => {
           mirror.classList.toggle('active', src.classList.contains('active'));
+          // Keep role/capability visibility in sync: renderAuthUI/setNav toggle
+          // style.display on the source buttons (e.g. Job Costing hidden for a
+          // non-admin), so mirror it onto the cloned sidebar button.
+          mirror.style.display = src.style.display;
         });
         // Also refresh the page title since the active CRM view may have
         // changed without the parent .tab-content's class changing (which is
         // what the other MutationObserver watches).
         try { refreshTitle(); } catch {}
       });
-      crmObs.observe(crmNav, { subtree: true, attributes: true, attributeFilter: ['class'] });
+      crmObs.observe(crmNav, { subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
     }
     // Legacy ownerButtons array kept for empObs visibility logic below; with
     // Phase 3, nothing routes through ownerButtons in normal usage. The
