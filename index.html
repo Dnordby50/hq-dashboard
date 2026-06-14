@@ -11355,16 +11355,20 @@ async function renderSettings() {
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
-  const [{ data: settingsRows }, crewsRes, leadRes, salesRes] = await withFreshSession(() => Promise.all([
+  const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_lead_sources').select('*').order('name'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
+    // select('*') (not an explicit column list) so this keeps working before the
+    // hourly_wage migration lands; the column simply reads undefined until then.
+    supabase.from('pec_prod_crew_members').select('*').order('name'),
   ]), { label: 'renderSettings' });
   const map = Object.fromEntries((settingsRows||[]).map(s => [s.key, s.value]));
   state.crews = crewsRes.data || [];
   state.leadSources = leadRes.data || [];
   state.salesTeam = salesRes.data || [];
+  state.crewMembers = crewMembersRes.data || [];
 
   // Per-user permissions grid data (admins only; RLS lets an admin read all).
   // Missing row = treat every capability as on (matches the in-memory default).
@@ -11513,6 +11517,30 @@ async function renderSettings() {
       </table>
     </div>
 
+    ${(() => {
+      const crewById = Object.fromEntries((state.crews || []).map(c => [c.id, c]));
+      const members = state.crewMembers || [];
+      return `
+      <div class="pec-card">
+        <div style="margin-bottom:8px">
+          <h3 style="margin:0">Crew Members</h3>
+          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Per-member hourly wage drives the Crew Bonus math (actual labor = hours x wage x 1.25 burden). A blank wage falls back to the default labor rate. Members are seeded via Cowork (BusyBusy sync); set wage and active here.</div>
+        </div>
+        <table class="pec-table">
+          <thead><tr><th>Name</th><th>Crew</th><th style="width:150px">Hourly wage ($)</th><th style="width:80px">Active</th></tr></thead>
+          <tbody>
+            ${members.map(m => `
+              <tr data-member-id="${esc(m.id)}">
+                <td><strong>${esc(m.name || '')}</strong>${m.busybusy_member_id ? '' : ' <span style="color:var(--muted);font-size:.65rem">(no BusyBusy link)</span>'}</td>
+                <td>${m.crew_id && crewById[m.crew_id] ? esc(crewById[m.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
+                <td><input class="prod-num" type="number" min="0" step="0.01" data-member-wage value="${esc(m.hourly_wage ?? '')}" placeholder="default rate" style="width:130px"></td>
+                <td><input type="checkbox" data-member-active ${m.active !== false ? 'checked' : ''} style="width:auto"></td>
+              </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No crew members yet. They are seeded via Cowork (BusyBusy member sync).</td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+    })()}
+
     <div class="pec-card">
       <h3>Settings</h3>
       <form id="pecSettingsForm">
@@ -11534,6 +11562,39 @@ async function renderSettings() {
   });
   $('pecCrewAddBtn').addEventListener('click', () => openCrewModal(null));
   root.querySelectorAll('[data-edit-crew]').forEach(b => b.addEventListener('click', () => openCrewModal(b.dataset.editCrew)));
+  // Crew Members inline edits (hourly wage + active). Idempotent updates, so
+  // withFreshWriteRetry is safe. Pre-migration, the hourly_wage write 400s; we
+  // surface that with a hint to run the costing-lifecycle migration first.
+  root.querySelectorAll('input[data-member-wage]').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const id = inp.closest('tr[data-member-id]')?.dataset.memberId; if (!id) return;
+      const wage = inp.value === '' ? null : Number(inp.value);
+      try {
+        const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_crew_members').update({ hourly_wage: wage }).eq('id', id), { label: 'crew-member-wage' });
+        if (error) throw error;
+        const m = (state.crewMembers || []).find(x => x.id === id); if (m) m.hourly_wage = wage;
+        inp.classList.remove('cost-save-failed'); inp.removeAttribute('title');
+      } catch (err) {
+        inp.classList.add('cost-save-failed'); inp.title = 'NOT SAVED: ' + (err.message || err);
+        const hint = /hourly_wage/.test(err.message || '') ? ' (Run the 2026-06-14_costing_lifecycle.sql migration first.)' : '';
+        showToast('Could not save wage: ' + (err.message || err) + hint, { ttl: 6000 });
+      }
+    });
+  });
+  root.querySelectorAll('input[data-member-active]').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const id = inp.closest('tr[data-member-id]')?.dataset.memberId; if (!id) return;
+      const active = inp.checked;
+      try {
+        const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_crew_members').update({ active }).eq('id', id), { label: 'crew-member-active' });
+        if (error) throw error;
+        const m = (state.crewMembers || []).find(x => x.id === id); if (m) m.active = active;
+      } catch (err) {
+        inp.checked = !active;
+        showToast('Could not save active state: ' + (err.message || err), { ttl: 6000 });
+      }
+    });
+  });
   $('pecLeadAddBtn').addEventListener('click', () => openLeadSourceModal(null));
   root.querySelectorAll('[data-edit-lead]').forEach(b => b.addEventListener('click', () => openLeadSourceModal(b.dataset.editLead)));
   const leadsToggle = root.querySelector('[data-leadsources-toggle]');
@@ -14177,7 +14238,9 @@ async function loadCostingData() {
   await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
   const [costRes, membersRes, linesRes, bonusesRes, rateRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
-    supabase.from('pec_prod_crew_members').select('id,crew_id,name,busybusy_member_id,active').order('name'),
+    // select('*') (not an explicit list) so hourly_wage is included once the
+    // migration lands, without 400ing before it does. Needed for the bonus math.
+    supabase.from('pec_prod_crew_members').select('*').order('name'),
     supabase.from('pec_prod_material_lines').select('id,job_id,product_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
     supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
     // Same hourly rate the front-end Budget card reads, so estimated hours match.
@@ -14423,6 +14486,41 @@ function costingIsCompleted(job) {
 // actuals). This tab is read-only: it computes and displays, it does not write
 // to the pec_prod_job_bonuses ledger until the payout path is greenlit.
 const CREW_BONUS_FRACTION = 0.75;
+const CREW_BONUS_BURDEN = 0.25; // labor burden on wages (Dylan, locked 2026-06-14)
+
+// Crew bonus math, shared by the Crew Bonus tab and the costing detail's Bonus
+// Payout box so the two can never disagree. Locked by Dylan 2026-06-14:
+//   actualLabor = sum over members of (member hours x wage x (1 + burden))
+//   pool        = max(0, laborBudget - actualLabor) x CREW_BONUS_FRACTION
+//   per member  = pool x (member hours / total hours)
+//   bonus earned = pool > 0
+// Per-member wage is pec_prod_crew_members.hourly_wage; a blank wage falls back
+// to the flat default rate and the member is flagged usedDefault. hoursByKey
+// maps crew_member_id (or 'bb:<id>' for an unmapped BusyBusy member) -> hours.
+// memberLookup(key) -> { name, wage } resolves the snapshot name + wage. With no
+// hours the job "awaits BusyBusy hours" and pays nothing (never a bonus on zero).
+function computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) {
+  const keys = Object.keys(hoursByKey || {});
+  let totalHours = 0, actualLabor = 0;
+  const members = keys.map(key => {
+    const hours = Number(hoursByKey[key] || 0);
+    totalHours += hours;
+    const info = memberLookup(key) || {};
+    const usedDefault = !(Number(info.wage) > 0);
+    const wage = usedDefault ? Number(defaultRate) || 0 : Number(info.wage);
+    const wageTotal = hours * wage;
+    const wageTotalBurden = wageTotal * (1 + CREW_BONUS_BURDEN);
+    actualLabor += wageTotalBurden;
+    return { key, name: info.name || 'Crew member', hours, wage, usedDefault, wageTotal, wageTotalBurden };
+  }).sort((a, b) => b.hours - a.hours);
+  const hasActuals = totalHours > 0;
+  const lb = laborBudget == null ? null : Number(laborBudget);
+  const savings = (lb != null && hasActuals) ? lb - actualLabor : null;
+  const pool = savings != null ? Math.max(0, savings) * CREW_BONUS_FRACTION : null;
+  for (const m of members) m.bonus = (pool != null && totalHours > 0) ? pool * (m.hours / totalHours) : 0;
+  return { members, totalHours, actualLabor: hasActuals ? actualLabor : null, laborBudget: lb, savings, pool, hasActuals };
+}
+
 async function renderCrewBonus() {
   const root = $('pecViewRoot');
   if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Crew Bonus.</div>'; return; }
@@ -14456,26 +14554,22 @@ async function renderCrewBonus() {
   const completed = (state.prodJobs || []).filter(j => costingIsCompleted(j) && !j.archived_at)
     .sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
 
-  const memberName = (key) => {
-    if (key.startsWith('bb:')) return 'BusyBusy member ' + key.slice(3) + ' (unmapped)';
-    return memberById[key]?.name || 'Crew member';
+  // key -> { name, wage }. 'bb:' keys are BusyBusy members not yet mapped to a
+  // crew member, so they have no wage (the shared helper falls back to default).
+  const memberLookup = (key) => {
+    if (key.startsWith('bb:')) return { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null };
+    const m = memberById[key];
+    return { name: m?.name || 'Crew member', wage: m?.hourly_wage ?? null };
   };
 
   const rows = completed.map(j => {
     const est = (state.estimateByJob || {})[j.id] || {};
     const laborBudget = est.laborBudget == null ? null : Number(est.laborBudget);
-    const totalHours = hoursByJob[j.id] || 0;
-    const actualLabor = totalHours > 0 ? totalHours * rate : null;
-    const hasActuals = totalHours > 0;
-    const savings = (laborBudget != null && actualLabor != null) ? laborBudget - actualLabor : null;
-    const pool = savings != null ? Math.max(0, savings) * CREW_BONUS_FRACTION : null;
-    const members = hasActuals
-      ? Object.entries(hoursByJobMember[j.id] || {}).map(([key, h]) => ({
-          name: memberName(key), hours: h, share: totalHours > 0 ? h / totalHours : 0,
-          bonus: pool != null ? pool * (h / totalHours) : 0,
-        })).sort((a, b) => b.hours - a.hours)
-      : [];
-    return { j, laborBudget, totalHours, actualLabor, savings, pool, hasActuals, members };
+    // ONE shared math path with the costing detail's Bonus Payout box: per-member
+    // wage x hours x (1 + 25% burden), pool = 75% of savings, split by hours.
+    const b = computeCrewBonus(laborBudget, hoursByJobMember[j.id] || {}, memberLookup, rate);
+    const members = b.members.map(m => ({ name: m.name, hours: m.hours, share: b.totalHours > 0 ? m.hours / b.totalHours : 0, bonus: m.bonus, usedDefault: m.usedDefault }));
+    return { j, laborBudget, totalHours: b.totalHours, actualLabor: b.actualLabor, savings: b.savings, pool: b.pool, hasActuals: b.hasActuals, members };
   });
 
   const fmtH = (n) => (Math.round(n * 10) / 10).toLocaleString();
@@ -14501,7 +14595,7 @@ async function renderCrewBonus() {
         </div>
         <div style="text-align:right;font-size:.8rem">
           <div>Labor budget: <strong>${r.laborBudget == null ? '—' : invUSD0(r.laborBudget)}</strong></div>
-          <div>Actual labor: <strong>${r.actualLabor == null ? '—' : invUSD0(r.actualLabor)}</strong>${r.hasActuals ? ` <span style="color:var(--muted)">(${fmtH(r.totalHours)} hrs × $${rate}/hr)</span>` : ''}</div>
+          <div>Actual labor: <strong>${r.actualLabor == null ? '—' : invUSD0(r.actualLabor)}</strong>${r.hasActuals ? ` <span style="color:var(--muted)">(${fmtH(r.totalHours)} hrs, per-member wage incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden)</span>` : ''}</div>
           <div style="margin-top:2px">${status}</div>
         </div>
       </div>

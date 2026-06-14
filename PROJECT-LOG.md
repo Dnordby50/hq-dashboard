@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14 08:25] Costing overhaul: per-member wage Settings editor + shared crew-bonus math
+By: Claude Code
+Changed: (1) New "Crew Members" card in renderSettings (index.html) listing each member with their crew, an inline-editable hourly wage input, and an active toggle, persisting on change. There was no crew-member editor in the app before; members are seeded via Cowork, so this gives Dylan a place to enter wages. renderSettings now also loads pec_prod_crew_members (via select('*'), which is safe before the hourly_wage column exists). (2) loadCostingData's crew-members read switched from an explicit column list to select('*') for the same forward-compat reason. (3) New shared computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) helper next to CREW_BONUS_FRACTION implementing the locked formula: actualLabor = sum(member hours x wage x 1.25 burden), pool = 75% of max(0, laborBudget - actualLabor), split by hours. The Crew Bonus tab (renderCrewBonus) was refactored to call it so it and the upcoming costing-detail Bonus Payout box can never disagree.
+Why: Phase 2 onward needs per-member wages and one bonus formula. Dylan locked per-member wage in Settings, burden 25%, and the 75% savings share (CREW_BONUS_FRACTION, unchanged).
+Heads-up for Dylan: the Crew Bonus tab now includes the 25% labor burden in "Actual labor" (it previously used a flat rate with no burden), so those numbers will read slightly higher. This matches the locked spec; the tab is still read-only and pays out nothing automatically.
+How it works (WHY note): wage falls back to settings.default_labor_hourly_rate when a member's hourly_wage is blank, and the member row is flagged usedDefault so the UI can label it. Until the migration runs, hourly_wage reads undefined everywhere, so every member uses the default rate and wage saves surface a "run the migration first" hint.
+Files touched: index.html
+Next steps: Phase 2 Bonus Payout box consumes computeCrewBonus. Migration that adds hourly_wage ships in Phase 3.
+Handoff to Cowork: None (migration handoff comes with Phase 3).
+Handoff to Dylan: After the Phase 3 migration is live, fill in each crew member's hourly wage in Settings > Crew Members.
+
+---
+
 ## [2026-06-14 08:10] Costing overhaul Phase 1: detail layout (header meta moved, Revenue read-only, Actual Used always editable)
 By: Claude Code
 Changed: Reworked the top of renderUnifiedJob (index.html). (1) The job meta (address, install date, system, crew) that used to ride on the toolbar line now renders as a read-only sub-line at the top of the Job Info card; the toolbar keeps only Back plus the customer/proposal/status badge. (2) Revenue is no longer an editable input. It is a read-only derived display sourced from job.revenue, with a code comment marking the exact spot to re-point at the job line-items SUM once that table ships. It has no data-cost attribute, so the generic [data-cost] save wiring can never write job.revenue from this page anymore. (3) The Materials "Actual Used" column is now an editable number input on EVERY line, including derived ones. Editing a derived line first persists the whole derived set to pec_prod_material_lines (new persistDerivedLines helper: delete-first then insert, same shape as the prod module's lineInsertPayload, with the typed actual_used_qty baked in), then re-renders so the lines come back with real ids; later edits take the normal saveLineActualUsedQty path. A per-input persisting guard stops the change+blur pair from double-persisting.
