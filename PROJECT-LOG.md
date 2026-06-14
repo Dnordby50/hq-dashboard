@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-14] Cowork: investigated the costing detail + sidebar, wrote a phased Claude Code prompt (no code change)
+By: Cowork
+Changed: No code in the repo. Investigated index.html for Dylan's requested Job Costing overhaul and produced a self-contained, phased Claude Code prompt saved to the HQ folder (claude-code-prompt-job-costing-overhaul.md). Key findings that shaped the prompt: (1) System types have NO dedicated bonus field, only labor_budget_pct + materials_budget_pct (openSystemTypeModal, index.html:18307 to 18313), so "bonus rules under system types" maps to the existing Crew Bonus model (75% of labor savings, CREW_BONUS_FRACTION at 14425). Stated this as an assumption for Dylan to confirm. (2) Crew members have no per-member wage field (only flat settings.default_labor_hourly_rate -> state.costingLaborRate, default 35), so "total wage" falls back to the flat rate; flagged adding a per-member wage as a Dylan decision. (3) BusyBusy time-entry sync is still 401-blocked (2026-06-13 entry), so every bonus/punch UI must degrade to an empty "awaiting hours" state. (4) Revenue is currently an editable input (15021); the prompt makes it read-only pulling job.revenue now, re-point to line items later. (5) Actual Used is read-only on derived lines (14978) because derived lines are not persisted; prompt persists them on first edit via lineInsertPayload/saveCalculatedLines pattern (17039, 17055). The prompt is 5 phases: detail layout, schedule-box-to-bonus-payout (combined with Hours), hours-reconciled button, finalize-costing + Completed Job Costing view + Crew Bonus gating, sidebar grouped headers. Phases 3 and 4 require a Supabase migration (hours_reconciled_at/by, costing_finalized_at/by) which Claude Code writes but does NOT apply to prod.
+Why: Dylan asked Cowork to investigate and write a new Claude Code prompt for the costing detail rework and sidebar reorg.
+Files touched: PROJECT-LOG.md only. New deliverable saved outside the repo: /Users/dylannordby/Desktop/HQ/claude-code-prompt-job-costing-overhaul.md.
+Next step: Dylan reviews the prompt, confirms the bonus-model assumption, and runs it in Claude Code (ideally phase by phase).
+Handoff to Dylan: confirm the bonus model = 75%-of-labor-savings driven by system-type labor_budget_pct, and decide on a per-member wage field. Then run the prompt.
+
+---
+
 ## [2026-06-13 13:10] Cowork: ran the BusyBusy proxy probe live; Integration Key gets 401 from graphql.busybusy.io (blocked on auth, not on root-query discovery)
 By: Cowork
 Changed: No code. Ran the proxy probe/introspection/typed snippet from a logged-in admin session on prescottepoxy.netlify.app (DevTools-equivalent via the page's own fetch + the staff session token). BUSYBUSY_API_TOKEN is set in Netlify (5 deploy contexts, value redacted); BUSYBUSY_API_URL = https://graphql.busybusy.io/. Result:
