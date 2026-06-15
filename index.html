@@ -7570,6 +7570,18 @@ async function renderJobInvoice(jobId) {
         sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
         try {
           await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, job_id: row.id, customer_id: row.customer_id });
+          // First-send wins: stamp jobs.invoice_first_sent_at only if still null,
+          // for the AR-timing metric (invoice sent before completion day). The
+          // `.is(..., null)` filter makes it safe across clients (never overwrites
+          // an earlier send). Fire-and-forget: the email already went out, so a
+          // stamp failure must not block the success toast. Skipped on "copy
+          // public link" and the Settings test-send (not real invoice sends).
+          if (!row.invoice_first_sent_at) {
+            const nowIso = new Date().toISOString();
+            withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+              .then(res => { if (!(res && res.error)) row.invoice_first_sent_at = nowIso; })
+              .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
+          }
           closeModal();
           showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
           renderInvoicing();
@@ -8027,10 +8039,15 @@ function invBarChart(values, weeks, drillIds, fmt) {
 
 async function renderMetrics() {
   const root = $('pecViewRoot');
+  // invoice_first_sent_at is appended to this base list for the AR-timing metric.
+  // Before its migration lands the column is absent from pec_job_ar, so a 400
+  // mentioning it falls back to the base list (below) and Metrics never blanks
+  // out in the deploy-before-migration window.
+  const arColsBase = 'id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,deposit_waived,deposit_amount,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id';
   let res;
   try {
     res = await withFreshSession(() => Promise.all([
-      supabase.from('pec_job_ar').select('id,customer_name,price,signed_date,completed_date,salesperson,deposit_collected,deposit_waived,deposit_amount,balance_remaining,paid_to_date,last_payment_date,status,customer_company,dripjobs_deal_id').eq('customer_company', 'prescott-epoxy'),
+      supabase.from('pec_job_ar').select(arColsBase + ',invoice_first_sent_at').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
       supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback'),
       supabase.from('reviews').select('created_at,rating,job_id'),
@@ -8043,7 +8060,13 @@ async function renderMetrics() {
       supabase.from('pec_prod_job_bonuses').select('job_id,amount'),
     ]), { label: 'renderMetrics' });
   } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}]; }
-  const [jobsRes, payRes, prodRes, revRes, costRes, lineRes, bonusRes] = res;
+  const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes] = res;
+  let jobsRes = jobsRes0;
+  // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
+  // the view does not have it yet, so the rest of Metrics renders normally.
+  if (jobsRes.error && /invoice_first_sent_at/.test(jobsRes.error.message || '')) {
+    jobsRes = await withFreshSession(() => supabase.from('pec_job_ar').select(arColsBase).eq('customer_company', 'prescott-epoxy'), { label: 'renderMetrics:arFallback' }).catch(e => ({ error: e }));
+  }
   if (jobsRes.error) {
     const hint = /pec_job_ar/.test(jobsRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(jobsRes.error.message)}${hint}</div>`; return;
@@ -8175,6 +8198,22 @@ async function renderMetrics() {
   const compInWin = jobs.filter(j => jobOk(j) && inWin(j.completed_date));
   const paidOnDay = compInWin.filter(j => j.balance <= 0.005 && j.last_payment_date === j.completed_date);
   const pctPaidOnDay = compInWin.length ? paidOnDay.length / compInWin.length : null;
+
+  // Invoiced-before-completion: of in-window completed jobs that have an
+  // invoice-send on record (invoice_first_sent_at not null), the share whose
+  // invoice went out on an EARLIER calendar day than completion, so the customer
+  // could pay on completion day. Invoice-send day is taken in America/Phoenix
+  // (mstDay) to match completed_date, which is a tz-less calendar date.
+  // Denominator = completed jobs WITH a send on record; jobs completed with no
+  // send recorded are a data-quality gap (invNoSendCount), not a pass or fail,
+  // so they are excluded here and surfaced as a footnote. NOTE: "before" means
+  // any earlier calendar day; for strictly one day before, change the numerator
+  // condition to `invDaysBetween(invSentDay(j), j.completed_date) === 1`.
+  const invSentDay = j => mstDay(j.invoice_first_sent_at);
+  const invTimingJobs = compInWin.filter(j => invSentDay(j));
+  const invAhead = invTimingJobs.filter(j => invSentDay(j) < j.completed_date);
+  const pctInvAhead = invTimingJobs.length ? invAhead.length / invTimingJobs.length : null;
+  const invNoSendCount = compInWin.length - invTimingJobs.length;
 
   let arAged30 = 0;
   for (const j of jobs) {
@@ -8393,6 +8432,23 @@ async function renderMetrics() {
     callbackPct: regDrill(callbacksDrill('Callback jobs (all time)', callbackJobs, {
       summary: `${totalCallbacks} callback${totalCallbacks === 1 ? '' : 's'} / ${totalProdCompleted} completed production job${totalProdCompleted === 1 ? '' : 's'} (all time) = ${invPct(callbackPct)}`,
     })),
+    invAhead: regDrill(() => ({
+      title: 'Invoice timing: completed jobs with an invoice on record (in window)',
+      summary: pctInvAhead == null ? null : `${invAhead.length} of ${invTimingJobs.length} invoiced before completion day = ${invPct(pctInvAhead)}. Days early = completion date minus invoice-sent date.`,
+      columns: ['Customer', 'Completed', 'Invoice sent', 'Days early', 'Salesperson'],
+      // Worst-first: smallest (most negative) days-early at the top.
+      rows: invTimingJobs.slice().map(j => ({ j, de: invDaysBetween(invSentDay(j), j.completed_date) }))
+        .sort((a, b) => (a.de == null ? 0 : a.de) - (b.de == null ? 0 : b.de))
+        .map(({ j, de }) => ({ openjob: j.id, cells: [
+          j.customer_name || '—',
+          invFmtDate(j.completed_date),
+          invFmtDate(invSentDay(j)),
+          de == null ? '—' : (de > 0 ? de + 'd early' : de === 0 ? 'same day (miss)' : Math.abs(de) + 'd after (miss)'),
+          j.salesperson || '—',
+        ] })),
+      total: [countOf(invTimingJobs.length, 'job'), '', '', `${invAhead.length} before completion`, ''],
+      footnote: invNoSendCount > 0 ? `${invNoSendCount} completed job${invNoSendCount === 1 ? '' : 's'} in this window have no invoice-send on record and are excluded (data gap, not a miss). Only invoices sent after 2026-06-15 are tracked.` : 'Only invoices sent after 2026-06-15 are tracked.',
+    })),
   };
   // DripJobs-style KPI card: icon chip + uppercase label, one-line muted
   // definition, large value, delta line, "View details" pill. The whole card
@@ -8404,6 +8460,7 @@ async function renderMetrics() {
     trend: '<svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 7-7"/><path d="M14 8h6v6"/></svg>',
     check: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>',
     redo: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>',
+    clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   };
   const kpiCard = (drillId, icon, label, desc, val, delta) => `<button type="button" class="pec-m-kpi" data-drill="${esc(drillId)}" title="Click for the underlying records">
     <div class="pec-m-kpi-top"><span class="pec-m-kpi-chip">${ico[icon]}</span><span class="pec-m-kpi-label">${label}</span></div>
@@ -8486,6 +8543,7 @@ async function renderMetrics() {
     <div class="pec-m-kpis" style="margin-bottom:16px">
       ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted))}
       ${kpiCard(kpiIds.callbackPct, 'redo', 'Callback rate', `Callbacks over completed production jobs, all time${allSp}.`, invPct(callbackPct), '')}
+      ${kpiCard(kpiIds.invAhead, 'clock', 'Invoiced before completion', 'Completed jobs (with an invoice on record) whose invoice went out before completion day.', invPct(pctInvAhead), invNoSendCount > 0 ? `<div class="pec-m-kpi-delta flat" style="text-transform:none;letter-spacing:0">${invNoSendCount} completed w/o invoice on record</div>` : '')}
     </div>
     <div class="pec-m-rank-grid">
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
