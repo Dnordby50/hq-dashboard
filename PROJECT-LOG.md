@@ -77,6 +77,13 @@ Handoff to Dylan: None
 
 ---
 
+## [2026-06-14] Cowork: confirmed Actual Used IS already live (cached bundle), wrote AR-timing-metric + print-button + cache-fix prompt
+By: Cowork
+Changed: No repo code. Two things. (1) Dylan reported (3rd time) that Job Costing "Actual Used" is still not editable, with a screenshot showing the old read-only "—" and the text "per-line Actual Used is read-only here." Investigated: that text and the read-only derived branch were REMOVED in commit 0bc4012 (Phase 1), and the always-editable input shipped; index.html is byte-identical between the deployed 5454f38 and HEAD. Fetched the LIVE server fresh (cache:no-store) and confirmed the served bundle has NO read-only text and DOES contain the always-editable input. So the fix is live; Dylan was viewing a CACHED old bundle and needs a hard refresh (Cmd+Shift+R). This cached-bundle trap is the root of the repeated "it is not fixed" reports. (2) Wrote a new Claude Code prompt (saved to HQ: claude-code-prompt-ar-metric-printbtn-cache.md) for the two features Dylan asked for plus a durable cache fix: Part 1 = a Metrics KPI for "% of completed jobs whose invoice was emailed before completion day" (adds jobs.invoice_first_sent_at, set on the compose-send success at ~7572, surfaced via the pec_job_ar view, metric + drill in renderMetrics ~8028); Part 2 = a Print run-sheet button on Next Day Schedule (renderNextDay ~12783); Part 3 = netlify.toml Cache-Control must-revalidate on / and /index.html so future deploys stop serving stale bundles.
+Why: Dylan asked for the AR-timing metric and the crew print button, and was blocked/frustrated by the (already-fixed) Actual Used issue which was really browser caching.
+Files touched: PROJECT-LOG.md only. Deliverable saved outside the repo: /Users/dylannordby/Desktop/HQ/claude-code-prompt-ar-metric-printbtn-cache.md.
+Handoff to Dylan: hard-refresh the dashboard (Cmd+Shift+R) and Actual Used is editable now. Then run the new prompt (the cache fix in Part 3 prevents this recurring). Migration apply (jobs.invoice_first_sent_at + view) will be a Cowork handoff once Claude Code writes it.
+
 ## [2026-06-14] Cowork: BusyBusy still 401 after key regeneration; tested 3 auth schemes live, all fail; reverted env to default
 By: Cowork
 Changed: No repo code. Dylan regenerated the BusyBusy Integration Key and re-pasted BUSYBUSY_API_TOKEN in Netlify (Production value ends 27ae, updated ~7:23 AM by Dylan). Cowork drove the live diagnosis end to end via Chrome on prescottepoxy.netlify.app (logged-in admin session) plus the Netlify dashboard:
