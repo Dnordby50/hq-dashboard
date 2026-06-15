@@ -12883,6 +12883,56 @@ async function renderNextDay() {
 
   const niceDate = parseISO(target).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
 
+  // Print-friendly run sheet for the CURRENT day: one block per active crew with
+  // its First / Second / Third jobs (same fields as the on-screen cards), plus
+  // the "No slot yet" list. Display-only; no app chrome. Opened in a new window
+  // from a user gesture (the click), so popup blockers do not interfere.
+  const nextDayPrintHtml = () => {
+    const slotLabel = { AM: 'First', PM: 'Second', EXTRA: 'Third' };
+    const jobLine = (d) => {
+      const j = jobById[d.job_id] || {};
+      return `<div class="job">
+        <div class="cust">${esc(j.customer_name || '(no name)')}</div>
+        <div class="addr">${esc(j.address || 'No address')}</div>
+        <div class="meta">${esc(invUSD(Number(j.revenue) || 0))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
+      </div>`;
+    };
+    const crewBlocks = crews.length ? crews.map(c => {
+      const slotsHtml = ['AM', 'PM', 'EXTRA'].map(slot => {
+        const rows = dayRows.filter(d => d.crew_id === c.id && d.time_slot === slot);
+        return `<div class="slot"><div class="slot-h">${slotLabel[slot]}</div>${rows.length ? rows.map(jobLine).join('') : '<div class="empty">—</div>'}</div>`;
+      }).join('');
+      return `<div class="crew"><h2>${esc(c.name)}</h2><div class="slots">${slotsHtml}</div></div>`;
+    }).join('') : '<p>No active crews.</p>';
+    const unslottedHtml = unslotted.length
+      ? `<div class="crew unslotted"><h2>No slot yet (${unslotted.length})</h2><div class="uslist">${unslotted.map(jobLine).join('')}</div></div>`
+      : '';
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Run sheet ${esc(niceDate)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #0f1420; margin: 24px; }
+  header { border-bottom: 2px solid #0f1420; padding-bottom: 10px; margin-bottom: 18px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header .date { font-size: 14px; color: #444; margin-top: 4px; }
+  .crew { page-break-inside: avoid; border: 1px solid #c8ccd2; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+  .crew h2 { margin: 0 0 10px; font-size: 17px; }
+  .slots { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .slot-h { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #666; border-bottom: 1px solid #e0e0e0; padding-bottom: 3px; margin-bottom: 6px; }
+  .job { margin-bottom: 8px; }
+  .job .cust { font-weight: 700; font-size: 14px; }
+  .job .addr { font-size: 12.5px; color: #333; }
+  .job .meta { font-size: 12.5px; color: #555; }
+  .empty { color: #aaa; font-size: 13px; }
+  .unslotted .uslist { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media print { body { margin: 0.4in; } .crew { border-color: #999; } }
+</style></head>
+<body>
+  <header><h1>Next Day Run Sheet</h1><div class="date">${esc(niceDate)} · Total revenue ${esc(invUSD(dayRevenue))}</div></header>
+  ${crewBlocks}
+  ${unslottedHtml}
+</body></html>`;
+  };
+
   root.innerHTML = `
     <div style="padding:4px 2px 0">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0 14px">
@@ -12890,6 +12940,7 @@ async function renderNextDay() {
         <input type="date" id="nextDayDate" value="${esc(target)}" style="max-width:170px">
         <button type="button" class="pec-btn ghost sm" id="nextDayNext">Next ›</button>
         <span style="color:var(--muted);font-size:.85rem">${esc(niceDate)} · Total revenue: ${invUSD(dayRevenue)}</span>
+        <button type="button" class="pec-btn sm" id="nextDayPrint" style="margin-left:auto">Print run sheet</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 240px;gap:16px;align-items:start">
         <div>
@@ -12908,6 +12959,15 @@ async function renderNextDay() {
   $('nextDayPrev').addEventListener('click', () => go(isoDate(addDays(parseISO(target), -1))));
   $('nextDayNext').addEventListener('click', () => go(isoDate(addDays(parseISO(target), 1))));
   $('nextDayDate').addEventListener('change', e => { if (e.target.value) go(e.target.value); });
+  $('nextDayPrint').addEventListener('click', () => {
+    const w = window.open('', '_blank');
+    if (!w) { showToast('Allow popups to print the run sheet.', { ttl: 5000 }); return; }
+    w.document.write(nextDayPrintHtml());
+    w.document.close();
+    w.focus();
+    // Let the written document lay out before invoking the print dialog.
+    setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
+  });
 
   // Drag and drop. Dropping a card into a cell sets that schedule-day row's
   // crew_id + time_slot (empty cell = clear). Also mirrors crew onto the prod

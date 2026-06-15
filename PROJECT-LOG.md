@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 08:45] Next Day Schedule: "Print run sheet" button (Part 2)
+By: Claude Code
+Changed: Added a "Print run sheet" button to the renderNextDay toolbar. On click it opens a new window with a self-contained, app-chrome-free HTML run sheet for the CURRENT day (state.nextDayAnchor) and calls print(). Layout: a date + total-revenue header, one bordered block per active crew with its First / Second / Third (AM/PM/EXTRA) jobs showing customer name, address, revenue, and estimated hours (the same fields as the on-screen cards), plus a "No slot yet" block at the bottom. Big legible type, page-break-inside avoid per crew. Display-only: no change to the drag-and-drop or any data.
+Why: Part 2. Crews need a paper run sheet they can carry.
+How it works (WHY note): the print doc is built from the same dayRows / jobById / crews already loaded for the board, so it always matches what is on screen. window.open is called inside the click handler (a user gesture), so popup blockers do not interfere; a short timeout lets the written document lay out before print() fires. If the popup is blocked, a toast tells the user to allow popups.
+Files touched: index.html
+Next steps: Part 3 (cache-control headers).
+Handoff to Cowork: None
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-15 08:30] Metrics: "Invoiced before completion" AR-timing KPI (Part 1)
 By: Claude Code
 Changed: (1) New migration supabase/migrations/2026-06-15_invoice_first_sent.sql adds jobs.invoice_first_sent_at (timestamptz) and recreates the pec_job_ar view with the column appended last. NOT applied to prod from this session. (2) In renderJobInvoice's compose-send success handler, after a successful pecSendEmail the client stamps jobs.invoice_first_sent_at = now() but ONLY if still null (the update carries a .is('invoice_first_sent_at', null) filter so it is first-send-wins and safe across clients). Fire-and-forget so a stamp failure never blocks the sent toast. Not set on copy-public-link or the Settings test-send. (3) renderMetrics gained an "Invoiced before completion" KPI card (new clock icon) in the Production & quality group, plus its drill. Denominator = in-window completed jobs that have an invoice-send on record; numerator = those whose invoice-sent calendar day (America/Phoenix, mstDay) is strictly before completed_date. Jobs completed with no invoice on record are excluded as a data gap and shown as a count under the card + in the drill footnote. The metrics AR select adds invoice_first_sent_at with a pre-migration fallback (re-fetch without it on a 400) so Metrics never blanks before the migration lands.
