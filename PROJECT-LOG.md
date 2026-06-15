@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 08:55] netlify.toml: revalidate the HTML so deploys stop serving stale bundles (Part 3)
+By: Claude Code
+Changed: Added two [[headers]] blocks to netlify.toml setting Cache-Control = "public, max-age=0, must-revalidate" for "/" and "/index.html". Confirmed no existing Cache-Control rule covered those paths before adding (only /vendor/* had one, which is left as immutable). Verified the whole file still parses as valid TOML (3 header blocks, 11 redirects intact, SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES untouched).
+Why: Part 3. The app is one big index.html; when the browser/CDN cached it, Dylan kept seeing old behavior after a fix was already deployed, causing repeated false "it's not fixed" reports.
+How it works (WHY note): must-revalidate with max-age=0 means the browser may keep a cached copy but must check with the server (a fast 304 if unchanged) before using it, so every deploy is picked up on the next load. Versioned assets under /vendor/* stay cached hard because their filename changes when they change. This does NOT bust the copy already on Dylan's machine, so he hard-refreshes once after this deploy; every deploy after that revalidates automatically.
+Files touched: netlify.toml
+Next steps: None; all three parts done.
+Handoff to Cowork: Apply the Part 1 migration (2026-06-15_invoice_first_sent.sql) to prod Supabase and report the column + view live.
+Handoff to Dylan: After this deploys, hard-refresh once (Cmd+Shift+R); from then on stale bundles stop. Also: confirm the AR-timing rule (any day before completion vs strictly one day before).
+
+---
+
 ## [2026-06-15 08:45] Next Day Schedule: "Print run sheet" button (Part 2)
 By: Claude Code
 Changed: Added a "Print run sheet" button to the renderNextDay toolbar. On click it opens a new window with a self-contained, app-chrome-free HTML run sheet for the CURRENT day (state.nextDayAnchor) and calls print(). Layout: a date + total-revenue header, one bordered block per active crew with its First / Second / Third (AM/PM/EXTRA) jobs showing customer name, address, revenue, and estimated hours (the same fields as the on-screen cards), plus a "No slot yet" block at the bottom. Big legible type, page-break-inside avoid per crew. Display-only: no change to the drag-and-drop or any data.
