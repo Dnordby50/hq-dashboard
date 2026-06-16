@@ -4,6 +4,14 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15] Cowork: applied exclude_from_commission migration to PROD; confirmed all other migrations already live
+By: Cowork
+Changed: No repo code. Dylan asked to run 2 migrations; only ONE was actually new/unapplied. Ran supabase/migrations/2026-06-15_exclude_from_commission.sql (Claude Code commit f5de115) against PROD (zdfpzmmrgotynrwkeakd, role postgres): adds pec_sales_team_members.exclude_from_commission boolean not null default false. Result: "Success. No rows returned." Verified the column exists (1). Also verified the rest of the recent migrations are already live (each found=1): jobs.invoice_first_sent_at, pec_prod_job_manual_labor, pec_bonus_payouts, pec_prod_jobs.costing_finalized_at. Nothing else pending. The "2nd migration" Dylan had in mind was likely Part 5 (customer Jobs count excludes archived, commit 7ca8bf3) which is CODE-ONLY.
+Why: Dylan said run 2 migrations after the polish-fixes prompt shipped.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase schema (1 column added; additive).
+Next step: Dylan pushes the polish-fixes commits to deploy, then ticks "Exclude from commission" on his own Sales Team record. (Claude Code shipped Part 2 back-button redirect in netlify.toml separately, see entry below.)
+Handoff to Dylan: push to deploy; set your exclude-from-commission flag.
+
 ## [2026-06-15 21:20] Back button: 301 the old netlify.app host to the current one (Part 2)
 By: Claude Code
 Changed: Added a host-scoped 301 redirect to netlify.toml: https://hq-prescott.netlify.app/* -> https://prescottepoxy.netlify.app/:splat (force = true, path + query preserved). It is the first [[redirects]] block; being host-scoped to hq-prescott it never matches normal prescottepoxy traffic or the existing function/MCP redirects. Confirmed the file still parses (12 redirects).
