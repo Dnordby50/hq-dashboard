@@ -1899,7 +1899,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="completed-costing" class="pec-role-admin">Completed Job Costing</button>
-          <button data-pec-view="crew-bonus" class="pec-role-admin">Crew Bonus</button>
+          <button data-pec-view="crew-bonus" class="pec-role-admin">Bonus Report</button>
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
           <div class="pec-subnav-group">Admin</div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
@@ -6054,7 +6054,7 @@ function switchView(v) {
       pipeline: renderPipeline,
       costing: renderJobCosting,
       'completed-costing': renderCompletedCosting,
-      'crew-bonus': renderCrewBonus,
+      'crew-bonus': renderBonusReport,
       team: renderTeam,
       settings: renderSettings,
     })[v] || renderDashboard;
@@ -11412,6 +11412,258 @@ async function renderCommission() {
 }
 
 // ============================================================
+// Bonus Report: paid/pending tracking for crew bonuses, filed like the
+// Commission report. Source rows are pec_prod_job_bonuses (written on finalize,
+// Part 2, plus any crew-lead / ad-hoc bonus rows) joined to pec_bonus_payouts
+// for paid status. Mirrors renderCommission: date range + crew filter, Payouts
+// and Payroll report tabs, per-row Mark Paid (paid_on + payroll Friday) / Undo.
+// ============================================================
+function bonusDefaultRange() { const today = invToday(); return { start: today.slice(0, 8) + '01', end: today }; }
+
+async function renderBonusReport() {
+  const root = $('pecViewRoot');
+  if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to the Bonus Report.</div>'; return; }
+  if (!state.bonusReportRange) state.bonusReportRange = bonusDefaultRange();
+  if (!state.bonusReportCrew) state.bonusReportCrew = 'all';
+  if (!state.bonusReportTab) state.bonusReportTab = 'payouts';
+  const { start, end } = state.bonusReportRange;
+  const isAdm = isAdmin();
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
+      supabase.from('pec_bonus_payouts').select('bonus_id,amount,paid_on,payroll_date'),
+      supabase.from('pec_prod_jobs').select('id,customer_name'),
+    ]), { label: 'renderBonusReport' });
+  } catch (e) { res = [{ error: e }, {}, {}]; }
+  const [bonRes, poRes, jobRes] = res;
+  if (bonRes.error) {
+    const hint = /pec_prod_job_bonuses/.test(bonRes.error.message || '') ? ' (Apply the job-costing migrations first.)' : '';
+    root.innerHTML = `<div class="pec-empty">${esc(bonRes.error.message)}${hint}</div>`; return;
+  }
+  const payoutMissing = poRes && poRes.error && /pec_bonus_payouts/.test(poRes.error.message || '');
+  const custByJob = Object.fromEntries((jobRes.data || []).map(j => [j.id, j.customer_name]));
+  const payoutByBid = Object.fromEntries(((poRes && poRes.data) || []).map(r => [r.bonus_id, r]));
+  const round2 = n => Math.round(n * 100) / 100;
+
+  // One line per payable bonus row, attributed to its crew member (snapshot name).
+  const crewSet = new Set();
+  const lines = (bonRes.data || []).map(b => {
+    const name = b.crew_member_name || 'Crew member';
+    crewSet.add(name);
+    const payout = payoutByBid[b.id] || null;
+    return {
+      id: b.id, job_id: b.job_id, customer: custByJob[b.job_id] || '—',
+      member: name, hours: Number(b.hours_actual || 0), note: b.note || '',
+      amount: round2(Number(b.amount || 0)),
+      paid: !!payout, paidOn: payout ? payout.paid_on : null,
+      paidAmount: payout ? Number(payout.amount || 0) : null,
+      payrollDate: payout ? (payout.payroll_date || null) : null,
+    };
+  }).filter(l => l.amount > 0);
+
+  const filt = state.bonusReportCrew;
+  const inFilter = l => filt === 'all' || String(l.member).toLowerCase() === String(filt).toLowerCase();
+  const scoped = lines.filter(inFilter);
+
+  const pending = scoped.filter(l => !l.paid).sort((a, b) => String(a.member).localeCompare(String(b.member)) || b.amount - a.amount);
+  const pendingTotal = pending.reduce((s, l) => s + l.amount, 0);
+  const paidInPeriod = scoped.filter(l => l.paid && l.paidOn >= start && l.paidOn <= end).sort((a, b) => String(b.paidOn).localeCompare(String(a.paidOn)));
+  const periodTotal = paidInPeriod.reduce((s, l) => s + l.paidAmount, 0);
+
+  const byCrew = {};
+  for (const l of paidInPeriod) { (byCrew[l.member] ||= { name: l.member, amount: 0, n: 0 }); byCrew[l.member].amount += l.paidAmount; byCrew[l.member].n++; }
+  const breakdown = Object.values(byCrew).sort((a, b) => b.amount - a.amount);
+
+  // Payroll report: paid bonuses grouped by the Friday check date (payroll_date).
+  const NO_CHECK = '__none__';
+  const reportGroups = {};
+  for (const l of scoped) {
+    if (!l.paid) continue;
+    const key = l.payrollDate || NO_CHECK;
+    if (key !== NO_CHECK && !(l.payrollDate >= start && l.payrollDate <= end)) continue;
+    const g = (reportGroups[key] ||= { date: l.payrollDate, total: 0, byCrew: {} });
+    g.total += l.paidAmount;
+    const c = (g.byCrew[l.member] ||= { name: l.member, total: 0, rows: [] });
+    c.total += l.paidAmount; c.rows.push(l);
+  }
+  const reportList = Object.entries(reportGroups)
+    .sort((a, b) => a[0] === NO_CHECK ? 1 : b[0] === NO_CHECK ? -1 : String(b[1].date).localeCompare(String(a[1].date)))
+    .map(([k, g]) => ({ key: k, isNone: k === NO_CHECK, ...g }));
+  const reportTotal = reportList.reduce((s, g) => s + g.total, 0);
+
+  const today = invToday();
+  const y = +today.slice(0, 4), m = +today.slice(5, 7);
+  const lmY = m === 1 ? y - 1 : y, lmM = m === 1 ? 12 : m - 1;
+  const lmStart = `${lmY}-${String(lmM).padStart(2, '0')}-01`;
+  const lmEnd = `${lmStart.slice(0, 7)}-${String(new Date(y, m - 1, 0).getDate()).padStart(2, '0')}`;
+
+  const crewOpts = ['all', ...Array.from(crewSet).filter(Boolean).sort((a, b) => String(a).localeCompare(String(b)))];
+  const isPayouts = state.bonusReportTab === 'payouts';
+  // Bonus job_id is a pec_prod_jobs id, so the link opens the unified costing job.
+  const jobLink = (jobId, label) => jobId ? `<span class="bon-joblink" data-job-id="${esc(jobId)}" style="cursor:pointer;color:var(--accent)">${esc(label)}</span>` : esc(label);
+
+  const reportHTML = `
+    <div class="pec-card">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><div style="color:var(--muted);font-size:.72rem">Bonus paid on check dates ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(reportTotal)}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Check dates</div><div style="font-size:1.5rem;font-weight:700">${reportList.filter(g => !g.isNone).length}</div></div>
+      </div>
+    </div>
+    ${reportList.map(g => `
+      <div class="pec-card">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0">${g.isNone ? 'No check date assigned' : 'Payday ' + invFmtDate(g.date) + ' <span style="color:var(--muted);font-size:.78rem;font-weight:400">(pay period ' + invFmtDate(commissionPeriod(g.date).start) + ' – ' + invFmtDate(commissionPeriod(g.date).end) + ')</span>'}</h3>
+          <div style="font-size:1.2rem;font-weight:700">${invUSD(g.total)}</div>
+        </div>
+        <table class="pec-table" style="margin-top:8px">
+          <thead><tr><th>Crew member</th><th>Customer</th><th style="text-align:right">Hours</th><th style="text-align:right">Bonus paid</th></tr></thead>
+          <tbody>
+            ${Object.values(g.byCrew).sort((a, b) => b.total - a.total).map(c => {
+              const rows = c.rows.sort((a, b) => b.paidAmount - a.paidAmount);
+              return rows.map((l, i) => `<tr class="nohover">
+                <td>${i === 0 ? `<strong>${esc(c.name)}</strong>` : ''}</td>
+                <td>${jobLink(l.job_id, l.customer)}</td>
+                <td style="text-align:right">${fmtNum(l.hours)}</td>
+                <td style="text-align:right">${invUSD(l.paidAmount)}</td>
+              </tr>`).join('') + `<tr class="nohover" style="color:var(--muted)"><td></td><td style="text-align:right;font-size:.75rem">${esc(c.name)} subtotal</td><td></td><td style="text-align:right"><strong>${invUSD(c.total)}</strong></td></tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`).join('') || '<div class="pec-card"><div class="pec-empty">No bonus paid out for the selected check dates. Widen the date range or mark a pay period paid first.</div></div>'}
+  `;
+
+  root.innerHTML = `
+    <div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
+      <strong style="margin-right:6px">Bonus Report</strong>
+      <button class="pec-btn ${isPayouts ? 'primary' : 'ghost'} sm" data-bon-tab="payouts">Payouts</button>
+      <button class="pec-btn ${!isPayouts ? 'primary' : 'ghost'} sm" data-bon-tab="report">Payroll report</button>
+      ${!isPayouts ? '<button class="pec-btn sm" id="bonPrint" style="margin-left:auto">Print</button>' : ''}
+    </div>
+    <div class="pec-toolbar" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div class="pec-field" style="margin:0"><label>Pay period from</label><input type="date" id="bonFrom" value="${esc(start)}"></div>
+      <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="bonTo" value="${esc(end)}"></div>
+      <button class="pec-btn sm" data-bon-preset="month">This month</button>
+      <button class="pec-btn sm" data-bon-preset="lastmonth">Last month</button>
+      <button class="pec-btn sm" data-bon-preset="ytd">Year to date</button>
+      <div class="pec-field" style="margin:0"><label>Crew member</label><select id="bonCrew">${crewOpts.map(s => `<option value="${esc(s)}"${s === filt ? ' selected' : ''}>${s === 'all' ? 'All crew members' : esc(s)}</option>`).join('')}</select></div>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">Period filters by PAID-OUT date. Bonuses land here when a job's costing is finalized.</span>
+    </div>
+    ${payoutMissing ? '<div class="pec-card" style="border-color:var(--warn)"><strong>Payout tracking not enabled yet.</strong> Apply the 2026-06-15_crew_bonus_manual_and_payouts.sql migration to record paid-out bonuses. Until then, everything shows as Pending.</div>' : ''}
+
+    ${isPayouts ? `
+    <div class="pec-card">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><div style="color:var(--muted);font-size:.72rem">Paid out ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(periodTotal)}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Bonuses paid out</div><div style="font-size:1.5rem;font-weight:700">${paidInPeriod.length}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Pending payout (carrying forward)</div><div style="font-size:1.5rem;font-weight:700;color:var(--warn)">${invUSD(pendingTotal)}</div></div>
+      </div>
+      ${breakdown.length ? `<table class="pec-table" style="margin-top:12px"><thead><tr><th>Crew member</th><th style="text-align:right">Paid this period</th><th style="text-align:right">Bonuses</th></tr></thead><tbody>
+        ${breakdown.map(b => `<tr class="nohover"><td><strong>${esc(b.name)}</strong></td><td style="text-align:right"><strong>${invUSD(b.amount)}</strong></td><td style="text-align:right">${b.n}</td></tr>`).join('')}
+      </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem;margin-top:10px">No bonus paid out in this pay period yet.</div>'}
+    </div>
+
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <h3 style="margin:0">Pending payout</h3>
+        <span style="color:var(--muted);font-size:.72rem">Earned (finalized) but not yet paid out. Carries forward until paid.</span>
+        ${isAdm && pending.length ? `<div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
+          <div class="pec-field" style="margin:0"><label>Pay out on</label><input type="date" id="bonPayDate" value="${esc(today)}"></div>
+          <div class="pec-field" style="margin:0"><label>Payday <span style="color:var(--muted);font-weight:400">(optional)</span></label><input type="date" id="bonPayrollDate" value="" title="Leave blank to use the Friday on or after the pay-out date. Set a date to force all selected onto that Friday."></div>
+          <button class="pec-btn sm primary" id="bonMarkPaid">Mark selected paid</button>
+        </div>` : ''}
+      </div>
+      <table class="pec-table">
+        <thead><tr>${isAdm ? '<th style="width:28px"><input type="checkbox" id="bonPendAll"></th>' : ''}<th>Crew member</th><th>Customer</th><th>Type</th><th style="text-align:right">Hours</th><th style="text-align:right">Bonus</th></tr></thead>
+        <tbody>
+          ${pending.map(l => `<tr class="nohover">
+            ${isAdm ? `<td><input type="checkbox" class="bon-pend" data-bid="${esc(l.id)}"></td>` : ''}
+            <td><strong>${esc(l.member)}</strong></td>
+            <td>${jobLink(l.job_id, l.customer)}</td>
+            <td style="color:var(--muted);font-size:.72rem">${esc(l.note || '—')}</td>
+            <td style="text-align:right">${fmtNum(l.hours)}</td>
+            <td style="text-align:right">${isAdm ? `<input type="number" step="0.01" min="0" class="bon-amt" data-bid="${esc(l.id)}" value="${l.amount.toFixed(2)}" style="width:90px;text-align:right">` : `<strong>${invUSD(l.amount)}</strong>`}</td>
+          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 6 : 5}" class="pec-empty">Nothing pending. Finalize a job's costing to suggest a bonus, or all bonuses have been paid.</td></tr>`}
+        </tbody>
+        ${pending.length ? `<tfoot><tr class="li-total"><td colspan="${isAdm ? 5 : 4}"><strong>Total pending</strong></td><td style="text-align:right"><strong>${invUSD(pendingTotal)}</strong></td></tr></tfoot>` : ''}
+      </table>
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Paid this period</h3>
+      <table class="pec-table">
+        <thead><tr><th>Paid on</th><th>Crew member</th><th>Customer</th><th style="text-align:right">Bonus</th>${isAdm ? '<th></th>' : ''}</tr></thead>
+        <tbody>
+          ${paidInPeriod.map(l => `<tr class="nohover">
+            <td>${invFmtDate(l.paidOn)}</td>
+            <td><strong>${esc(l.member)}</strong></td>
+            <td>${jobLink(l.job_id, l.customer)}</td>
+            <td style="text-align:right"><strong>${invUSD(l.paidAmount)}</strong></td>
+            ${isAdm ? `<td style="text-align:right"><button class="pec-btn sm" data-bon-undo="${esc(l.id)}">Undo</button></td>` : ''}
+          </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 5 : 4}" class="pec-empty">No bonus paid out in this pay period.</td></tr>`}
+        </tbody>
+        ${paidInPeriod.length ? `<tfoot><tr class="li-total"><td colspan="3"><strong>Total paid this period</strong></td><td style="text-align:right"><strong>${invUSD(periodTotal)}</strong></td>${isAdm ? '<td></td>' : ''}</tr></tfoot>` : ''}
+      </table>
+    </div>
+    ` : reportHTML}
+  `;
+
+  // --- Wire toolbar ---
+  $('bonFrom').addEventListener('change', e => { state.bonusReportRange = { start: e.target.value, end }; renderBonusReport(); });
+  $('bonTo').addEventListener('change', e => { state.bonusReportRange = { start, end: e.target.value }; renderBonusReport(); });
+  $('bonCrew').addEventListener('change', e => { state.bonusReportCrew = e.target.value; renderBonusReport(); });
+  root.querySelectorAll('[data-bon-tab]').forEach(b => b.addEventListener('click', () => { state.bonusReportTab = b.dataset.bonTab; renderBonusReport(); }));
+  if ($('bonPrint')) $('bonPrint').addEventListener('click', () => window.print());
+  root.querySelectorAll('[data-bon-preset]').forEach(b => b.addEventListener('click', () => {
+    const p = b.dataset.bonPreset;
+    if (p === 'month') state.bonusReportRange = { start: today.slice(0, 8) + '01', end: today };
+    else if (p === 'lastmonth') state.bonusReportRange = { start: lmStart, end: lmEnd };
+    else if (p === 'ytd') state.bonusReportRange = { start: today.slice(0, 4) + '-01-01', end: today };
+    renderBonusReport();
+  }));
+
+  // Job links open the unified costing job (job_id is a pec_prod_jobs id).
+  root.querySelectorAll('.bon-joblink').forEach(el => el.addEventListener('click', () => {
+    const jobId = el.dataset.jobId; if (!jobId) return;
+    state.openUnifiedJobId = jobId; switchView('costing');
+  }));
+
+  if (!isAdm) return;   // non-admins can view but not mark payouts
+
+  const allBox = $('bonPendAll');
+  if (allBox) allBox.addEventListener('change', e => { root.querySelectorAll('.bon-pend').forEach(c => { c.checked = e.target.checked; }); });
+
+  // Mark selected paid: one pec_bonus_payouts row per bonus (idempotent by
+  // bonus_id). Default payday is the Friday on/after the pay-out date; the
+  // optional override forces every selected row onto one Friday.
+  const markBtn = $('bonMarkPaid');
+  if (markBtn) markBtn.addEventListener('click', async () => {
+    const payDate = ($('bonPayDate') && $('bonPayDate').value) || today;
+    const overridePayroll = ($('bonPayrollDate') && $('bonPayrollDate').value) || null;
+    const rows = Array.from(root.querySelectorAll('.bon-pend')).filter(c => c.checked).map(c => {
+      const bid = c.dataset.bid;
+      const amtEl = root.querySelector(`.bon-amt[data-bid="${bid}"]`);
+      return { bonus_id: bid, amount: round2(invNum(amtEl ? amtEl.value : 0)), paid_on: payDate, payroll_date: overridePayroll || commissionFriday(payDate), paid_by: state.adminUser?.name || null };
+    });
+    if (!rows.length) { alert('Select at least one bonus to mark paid.'); return; }
+    markBtn.disabled = true; markBtn.textContent = 'Saving...';
+    const up = await withFreshWriteRetry(() => supabase.from('pec_bonus_payouts').upsert(rows, { onConflict: 'bonus_id' }), { label: 'bonus-payout' });
+    if (up.error) { markBtn.disabled = false; markBtn.textContent = 'Mark selected paid'; alert('Could not save payout: ' + up.error.message); return; }
+    renderBonusReport();
+  });
+
+  // Undo a payout: delete the row, returning the bonus to Pending.
+  root.querySelectorAll('[data-bon-undo]').forEach(b => b.addEventListener('click', async () => {
+    const bid = b.dataset.bonUndo;
+    b.disabled = true;
+    const del = await withFreshWriteRetry(() => supabase.from('pec_bonus_payouts').delete().eq('bonus_id', bid), { label: 'bonus-unpay' });
+    if (del.error) { b.disabled = false; alert('Could not undo: ' + del.error.message); return; }
+    renderBonusReport();
+  }));
+}
+
+// ============================================================
 // Settings (admin role only)
 // ============================================================
 // Settings tab shell. General = the existing config sections; Email = the
@@ -14678,6 +14930,8 @@ function computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) {
   return { members, totalHours, actualLabor: hasActuals ? actualLabor : null, laborBudget: lb, savings, pool, hasActuals };
 }
 
+// SUPERSEDED by renderBonusReport (the crew-bonus nav route now points there).
+// Kept as a read-only live computation in case it is re-linked; not in the router.
 async function renderCrewBonus() {
   const root = $('pecViewRoot');
   if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Crew Bonus.</div>'; return; }
@@ -15498,7 +15752,7 @@ async function renderUnifiedJob(jobId) {
              </div>
              <div style="margin-top:6px"><h3 style="font-size:.85rem;margin:0 0 4px">Bonus (recorded)</h3>${bonusRecapHtml}</div>`
           : `<button class="pec-btn primary" id="costingFinalizeBtn">Finalize Job Costing</button>
-             <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and makes its crew bonus payable in the Crew Bonus tab.</div>`}
+             <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and records the crew bonus into the Bonus Report (pending payout).</div>`}
       </div>`;
 
   const html = `
