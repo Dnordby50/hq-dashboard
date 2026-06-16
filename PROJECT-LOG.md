@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 20:50] Commission: exclude owner-sold jobs via a per-seller flag (Part 4)
+By: Claude Code
+Changed: (1) New migration supabase/migrations/2026-06-15_exclude_from_commission.sql adds pec_sales_team_members.exclude_from_commission (boolean, default false). NOT applied to prod from this session. (2) Settings > Sales Team modal (openSalesTeamModal) gained an "Exclude from commission" checkbox, persisted in the save payload; if the column does not exist yet the save retries without the flag and toasts a "run the migration" note, so other sales-team edits keep working pre-migration. (3) renderCommission now reads the team with select('*') and builds an excludedNames set from members flagged exclude_from_commission, then filters those sellers OUT of the payment lines, the soldJobs list, and the salesperson dropdown (salesSet/salesOpts). Done by the flag, not a hardcoded name, so it generalizes.
+Why: Part 4. When the owner (Dylan) sells a job it should not appear in Commission at all (no payout line, no sold-jobs row).
+How it works (WHY note): excluded sellers are removed everywhere the report attributes money to a salesperson, so their jobs simply do not show; rates and payout tracking for everyone else are unchanged. Dylan ticks the box on his own sales-team record once the migration is live.
+Files touched: index.html, supabase/migrations/2026-06-15_exclude_from_commission.sql
+Next steps: Part 5 (customer job count excludes archived). Part 2 (Back button) awaits Dylan's URLs.
+Handoff to Cowork: Apply 2026-06-15_exclude_from_commission.sql to prod (adds pec_sales_team_members.exclude_from_commission); report confirmed live.
+Handoff to Dylan: After the migration is live, open Settings > Sales Team, edit your own record, and tick "Exclude from commission".
+
+---
+
 ## [2026-06-15 20:35] Polish: browser tab favicon = PEC logo (Part 3)
 By: Claude Code
 Changed: Added <link rel="icon" type="image/png" href="assets/pec-logo.png"> and <link rel="apple-touch-icon" href="assets/pec-logo.png"> in <head> next to the <title>. assets/pec-logo.png already ships with the deploy (it is referenced at index.html:1508). The code landed in commit dcb85d5 alongside Part 1 (both were small head/display edits to index.html staged together); committing the log note here.

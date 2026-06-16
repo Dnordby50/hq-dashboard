@@ -11095,7 +11095,7 @@ async function renderCommission() {
       // All payments (no date gate): pending commission carries forward from any date.
       supabase.from('pec_payments').select('id,job_id,amount,received_date,method'),
       supabase.from('pec_job_ar').select('id,customer_name,salesperson,status,price,deposit_collected,deposit_waived,signed_date,paid_to_date'),
-      supabase.from('pec_sales_team_members').select('id,name,active,commission_pct').order('name'),
+      supabase.from('pec_sales_team_members').select('*').order('name'),
       supabase.from('pec_commission_payouts').select('payment_id,amount,paid_on,payroll_date'),
     ]), { label: 'renderCommission' });
   } catch (e) { res = [{ error: e }, {}, {}, {}]; }
@@ -11111,16 +11111,21 @@ async function renderCommission() {
   // commission_pct by lowercased salesperson name (the canonical rate source)
   const pctByName = {};
   for (const m of (teamRes.data || [])) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
+  // Sellers flagged exclude_from_commission (e.g. the owner) never appear in this
+  // report: filtered out of the payment lines, the sold-jobs list, and the
+  // salesperson dropdown. By the flag, not a hardcoded name, so Dylan sets it.
+  const excludedNames = new Set((teamRes.data || []).filter(m => m.exclude_from_commission).map(m => String(m.name || '').toLowerCase()));
+  const isExcluded = name => excludedNames.has(String(name || '').toLowerCase());
   // payment_id -> payout row ({ amount, paid_on }); empty if the table is missing.
   const payoutByPid = Object.fromEntries(((poRes && poRes.data) || []).map(r => [r.payment_id, r]));
 
   // Normalize every payment into a commission line; attribute to its salesperson.
   const round2 = n => Math.round(n * 100) / 100;
-  const salesSet = new Set(Object.keys(pctByName).length ? (teamRes.data || []).map(m => m.name) : []);
+  const salesSet = new Set(Object.keys(pctByName).length ? (teamRes.data || []).filter(m => !m.exclude_from_commission).map(m => m.name) : []);
   const lines = (payRes.data || []).map(p => {
     const ar = arById[p.job_id];
     const sp = (ar && ar.salesperson) ? ar.salesperson : 'Unassigned';
-    salesSet.add(sp);
+    if (!isExcluded(sp)) salesSet.add(sp);
     const pct = (sp.toLowerCase() in pctByName) ? pctByName[sp.toLowerCase()] : null;
     const amount = invNum(p.amount);
     const payout = payoutByPid[p.id] || null;
@@ -11137,7 +11142,7 @@ async function renderCommission() {
       paidAmount: payout ? invNum(payout.amount) : null,
       payrollDate: payout ? (payout.payroll_date || null) : null,
     };
-  });
+  }).filter(l => !isExcluded(l.sp));   // owner / non-commission sellers never show
 
   // Salesperson filter (case-insensitive on the free-text name).
   const filt = state.commissionSales;
@@ -11175,6 +11180,7 @@ async function renderCommission() {
   const SIGNED_STATUSES = new Set(['signed', 'scheduled', 'in_progress', 'completed']);
   const soldJobs = (arRes.data || [])
     .filter(j => j.salesperson && SIGNED_STATUSES.has(j.status))
+    .filter(j => !isExcluded(j.salesperson))
     .filter(j => filt === 'all' || String(j.salesperson).toLowerCase() === String(filt).toLowerCase())
     .map(j => {
       const agg = jobAgg[j.id] || { collected: 0, earned: 0, paid: 0 };
@@ -12529,6 +12535,10 @@ function openSalesTeamModal(salesId) {
         <input id="salesCommission" type="number" min="0" max="100" step="0.5" value="${esc(s.commission_pct ?? 0)}">
       </div>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;margin:2px 0 10px">
+      <input type="checkbox" id="salesExcludeComm" ${s.exclude_from_commission ? 'checked' : ''} style="width:auto">
+      Exclude from commission <span style="color:var(--muted);font-size:.72rem">(owner / non-commission seller: their jobs never appear in the Commission report)</span>
+    </label>
     <div class="pec-field"><label>Notes</label><input id="salesNotes" value="${esc(s.notes || '')}"></div>
     <div class="pec-modal-actions">
       ${existing ? '<button class="pec-btn danger" id="salesDelete">Delete</button>' : ''}
@@ -12554,14 +12564,22 @@ function openSalesTeamModal(salesId) {
           name: modal.querySelector('#salesName').value.trim(),
           active: modal.querySelector('#salesActive').value === 'true',
           commission_pct: Number.isFinite(commVal) && commVal >= 0 ? commVal : 0,
+          exclude_from_commission: modal.querySelector('#salesExcludeComm').checked,
           notes: modal.querySelector('#salesNotes').value || null,
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
         try {
-          const op = existing
-            ? supabase.from('pec_sales_team_members').update(payload).eq('id', existing.id)
-            : supabase.from('pec_sales_team_members').insert(payload);
-          const { error } = await op;
+          const saveOnce = (pl) => existing
+            ? supabase.from('pec_sales_team_members').update(pl).eq('id', existing.id)
+            : supabase.from('pec_sales_team_members').insert(pl);
+          let { error } = await saveOnce(payload);
+          // Pre-migration fallback: if exclude_from_commission does not exist yet,
+          // save without it so every other sales-team edit still works.
+          if (error && /exclude_from_commission/.test(error.message || '')) {
+            const { exclude_from_commission, ...rest } = payload;
+            ({ error } = await saveOnce(rest));
+            if (!error) showToast('Saved. "Exclude from commission" needs the 2026-06-15_exclude_from_commission.sql migration applied first.', { ttl: 6000 });
+          }
           if (error) return showSupabaseError(errEl, error);
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
