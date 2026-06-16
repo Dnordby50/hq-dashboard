@@ -15833,6 +15833,26 @@ async function renderUnifiedJob(jobId) {
     const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
     await saveJobField(jobId, 'costing_finalized_by', by, finalizeBtn);
     await saveJobField(jobId, 'costing_finalized_at', new Date().toISOString(), finalizeBtn);
+    // Part 2: commit the computed per-member bonus into the pec_prod_job_bonuses
+    // ledger (the same ledger the Bonus Report reads) ONLY on finalize, so the
+    // office reviews the suggested bonus first. Delete-then-insert this job's
+    // labor-savings rows so re-finalizing never duplicates; the partial unique
+    // index is the DB backstop. Unmapped BusyBusy members (bb: keys, no crew_id)
+    // are skipped: they cannot be paid. Uses the same bonusCalc that drove the box.
+    try {
+      const NOTE = 'Labor-savings bonus';
+      const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').delete().eq('job_id', jobId).eq('note', NOTE), { label: 'bonus-ledger-del' });
+      if (del.error) throw del.error;
+      const ledgerRows = bonusCalc.members
+        .filter(m => m.bonus > 0 && m.key && !m.key.startsWith('bb:'))
+        .map(m => ({ job_id: jobId, crew_member_id: m.key, crew_member_name: m.name, hours_actual: m.hours, amount: Math.round(m.bonus * 100) / 100, note: NOTE }));
+      if (ledgerRows.length) {
+        const ins = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(ledgerRows), { label: 'bonus-ledger-ins' });
+        if (ins.error) throw ins.error;
+      }
+    } catch (err) {
+      showToast('Costing finalized, but recording the crew bonus to the ledger failed: ' + (err && err.message ? err.message : err), { ttl: 7000 });
+    }
     renderUnifiedJob(jobId);
   });
   const unfinalizeBtn = root.querySelector('#costingUnfinalizeBtn');

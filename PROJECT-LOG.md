@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 10:20] Crew bonus: record the computed bonus into the ledger on finalize (Part 2)
+By: Claude Code
+Changed: The Finalize Job Costing handler now commits the computed per-member bonus into the existing pec_prod_job_bonuses ledger (the same ledger the Crew Bonus tab / Bonus Report reads). For each member with bonus > 0 it writes a row with note = 'Labor-savings bonus', amount = that member's computed bonus, hours_actual = their hours, crew_member_id + crew_member_name snapshot. It delete-then-inserts this job's labor-savings rows first, so re-finalizing never duplicates (the partial unique index from the Part 1 migration is the DB backstop). Unmapped BusyBusy members (bb: keys with no crew_member_id) are skipped since they cannot be paid. Writes happen ONLY on finalize, not while editing, so the office reviews the suggested bonus first. Re-opening costing leaves the ledger rows in place; the next finalize replaces them via the same delete-then-insert.
+Why: Part 2. The suggested bonus needs to land in the ledger so it flows to the Bonus Report and pays out like commissions.
+How it works (WHY note): the ledger rows come from the same bonusCalc that drives the Bonus Payout box (manual or BusyBusy hours), so what the office reviewed is exactly what gets committed. Once written, the rows also feed the Costs card "Bonus" line (bonusTotalForJob), so the finalized bonus shows as a real job cost. If the ledger write fails after the finalize stamps land, a toast says so and a re-finalize retries it.
+Files touched: index.html
+Next steps: Part 3 (Bonus Report view + pec_bonus_payouts paid/pending tracking; migration table already written in Part 1).
+Handoff to Cowork: None new (Part 1 migration still pending; full handoff lands with Part 3).
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-15 10:10] Crew bonus: manual labor entry that drives the payout (BusyBusy still offline) (Part 1)
 By: Claude Code
 Changed: (1) New migration supabase/migrations/2026-06-15_crew_bonus_manual_and_payouts.sql adds pec_prod_job_manual_labor (per-job, per-crew-member hours, unique on job_id+crew_member_id), a partial unique index on pec_prod_job_bonuses for finalize-written 'Labor-savings bonus' rows, and pec_bonus_payouts (the Part 3 ledger). NOT applied to prod from this session. (2) loadCostingData now loads pec_prod_job_manual_labor into state.manualLaborByJob (resolves with [] before the table exists, so nothing breaks pre-migration). (3) renderUnifiedJob's Bonus Payout box builds the hoursByKey map for the EXISTING computeCrewBonus from BusyBusy when it has entries for the job, else from the manual rows (bonusSource = busybusy | manual | none). Manual rows key on crew_member_id, so wages, the default-rate fallback, and the per-member split work identically. (4) New editable "Crew labor (manual)" mini-table in the box: crew-member dropdown + hours + Add, existing rows with an editable hours field + delete, persisting to pec_prod_job_manual_labor via withFreshWriteRetry (upsert keyed on job_id+crew_member_id). (5) The box now shows the explicit formula: Budgeted labor (revenue x system labor_budget_pct, with the % and system name), Actual loaded labor (sum(hours x wage) x 1.25, burden labeled), Labor saved, Bonus to pay (75% of savings), plus the literal line "Bonus = 75% x (Budgeted $X - Actual loaded $Y) = $Z". (6) "Bonus earned" now computes from manual hours when BusyBusy is empty and only reads "awaiting hours" when BOTH sources are empty.
