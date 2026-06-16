@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-16 10:05] Consolidate user management into Settings > Users
+By: Claude Code
+Changed: Merged the two overlapping CRM-login surfaces into one place. There was a standalone Team page (left-bar nav: add staff, role, reset password, delete, sign-ins) AND a separate "User Permissions" card in Settings, both acting on the same admin_users records. New renderSettingsUsers() combines them into a single "Users" sub-tab under Settings: one Staff table with Name, Email, Role (badge), Linked Auth, the five delegable capability columns (checkboxes for non-admins, "Admin (full access)" for admins), and Actions (Edit / Reset password / Delete with the last-admin guard), plus Save permissions and the Recent sign-ins table. Added a "Users" button to settingsTabBar and a dispatch branch in renderSettings. Removed: the left-bar Team nav button + its router entry + the whole renderTeam function; the old User Permissions card and its toggle/save wiring from Settings > General. openTeamForm and openResetPasswordForm are reused unchanged (openTeamForm now re-renders via renderSettings). Crews and Crew Members are untouched (field workers, a different data model, deliberately left separate per Dylan).
+Why: Dylan: user/permissions management was split across Team (left bar) and Settings, and he wanted it condensed into one place under Settings.
+How it works (WHY note): both screens always read/wrote the same admin_users + user_permissions tables, so merging is pure UI consolidation, no DB change. Settings is already admin-only (role check + pec-role-admin nav class), which preserves the prior "Team + Settings management stay admin-only" rule. The cloned left sidebar drops the Team item automatically because it mirrors #pecSubnav.
+Files touched: index.html (no migration; same tables: admin_users, user_permissions, sign_in_log).
+Next steps: None.
+Handoff to Cowork: None
+Handoff to Dylan: Staff, roles, and permissions now live under Settings > Users (the left-bar Team tab is gone). Crews and Crew Members stay where they are in Settings.
+
+---
+
 ## [2026-06-16 09:10] Sidebar: make the left nav its own scroll region
 By: Claude Code
 Changed: #rdSidebar (the left rail) was position:sticky with min-height:calc(100vh - 36px) but no max-height or overflow, so when the nav was taller than the viewport the bottom items were only reachable by scrolling the WHOLE page to the bottom. Added max-height:calc(100vh - 36px) + overflow-y:auto so the bar pins to the viewport and scrolls internally. Also reset it at the <=980px breakpoint (max-height:none; overflow:visible) so the stacked mobile sidebar is natural height, not a small scroll box.
