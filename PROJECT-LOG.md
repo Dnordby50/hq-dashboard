@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 21:00] Customers: job count excludes archived jobs so it matches the expand (Part 5)
+By: Claude Code
+Changed: The customers list count used jobs(count), which counted ALL jobs including archived, while the per-customer expand filters archived_at is null. So a customer with one active + one archived job read "2" but expanded to "1" (confirmed on prod: Samuel AE Reprographics). Added an embedded-resource filter .is('jobs.archived_at', null) to the customers query in renderCustomers (index.html ~6405) so the jobs(count) aggregate counts only non-archived jobs. It is NOT an inner join, so a customer whose only job is archived still appears with a count of 0.
+Why: Part 5. The count and the expanded list must agree.
+How it works (WHY note): in PostgREST, a filter on an embedded resource (jobs.archived_at) narrows the embedded rows the count aggregates over, without dropping parent customers that then have zero matching jobs. The customer's own archived_at filter is a separate top-level filter and is unchanged.
+Files touched: index.html
+Next steps: All actionable parts (1, 3, 4, 5) done. Part 2 (Back button) still needs Dylan's OLD_URL / NEW_URL.
+Handoff to Cowork: Quick verify on prod that Samuel AE Reprographics now reads a job count of 1 in the Customers list (it was 2).
+Handoff to Dylan: Provide OLD_URL (where Back currently lands) and NEW_URL (the correct address) for Part 2 (the Back-button fix), and say whether you want in-app history handling if Back is exiting the SPA.
+
+---
+
 ## [2026-06-15 20:50] Commission: exclude owner-sold jobs via a per-seller flag (Part 4)
 By: Claude Code
 Changed: (1) New migration supabase/migrations/2026-06-15_exclude_from_commission.sql adds pec_sales_team_members.exclude_from_commission (boolean, default false). NOT applied to prod from this session. (2) Settings > Sales Team modal (openSalesTeamModal) gained an "Exclude from commission" checkbox, persisted in the save payload; if the column does not exist yet the save retries without the flag and toasts a "run the migration" note, so other sales-team edits keep working pre-migration. (3) renderCommission now reads the team with select('*') and builds an excludedNames set from members flagged exclude_from_commission, then filters those sellers OUT of the payment lines, the soldJobs list, and the salesperson dropdown (salesSet/salesOpts). Done by the flag, not a hardcoded name, so it generalizes.

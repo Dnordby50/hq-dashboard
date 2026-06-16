@@ -6403,6 +6403,12 @@ async function renderCustomers() {
   let q = supabase.from('customers')
     .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip,jobs(count)', { count: 'exact' })
     .is('archived_at', null)
+    // Count only NON-archived jobs so the list count matches the expand (which
+    // already filters archived_at is null). This is an embedded-resource filter
+    // on the jobs(count) aggregate, NOT an inner join, so a customer whose only
+    // job is archived still appears with a count of 0. (Samuel AE Reprographics
+    // read 2 because an archived signed job was being counted.)
+    .is('jobs.archived_at', null)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.customersSearch) q = q.or(`name.ilike.%${state.customersSearch}%,email.ilike.%${state.customersSearch}%,phone.ilike.%${state.customersSearch}%`);
