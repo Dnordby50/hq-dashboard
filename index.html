@@ -14377,7 +14377,7 @@ function openTaskModal(task) {
 // ============================================================
 async function loadCostingData() {
   await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
-  const [costRes, membersRes, linesRes, bonusesRes, rateRes] = await withFreshSession(() => Promise.all([
+  const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
     // select('*') (not an explicit list) so hourly_wage is included once the
     // migration lands, without 400ing before it does. Needed for the bonus math.
@@ -14386,9 +14386,17 @@ async function loadCostingData() {
     supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
     // Same hourly rate the front-end Budget card reads, so estimated hours match.
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
+    // Manual per-member hours that drive the bonus while BusyBusy is offline. A
+    // supabase query RESOLVES with { error } on a missing table (never rejects),
+    // so this is safe to include before the migration lands; we default to [].
+    supabase.from('pec_prod_job_manual_labor').select('id,job_id,crew_member_id,hours'),
   ]), { label: 'loadCostingData' });
   state.costing = costRes.data || [];
   state.crewMembers = membersRes.data || [];
+  // Manual labor grouped per job (empty if the table is not live yet).
+  const manualLaborByJob = {};
+  for (const m of (manualLaborRes && manualLaborRes.data) || []) (manualLaborByJob[m.job_id] ||= []).push(m);
+  state.manualLaborByJob = manualLaborByJob;
   // Aggregate material_lines per job. ordered = sum of line_cost (cost to
   // order); used = sum of actual_used_qty * unit_cost_snapshot (cost actually
   // consumed; the PM fills in actual_used_qty on the unified job page).
@@ -15213,9 +15221,23 @@ async function renderUnifiedJob(jobId) {
   };
   const jobEst = (state.estimateByJob || {})[jobId] || {};
   const jobLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
+  const jobLaborPct = jobEst.laborPct != null ? Number(jobEst.laborPct) : (sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null);
   const defaultLaborRate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
-  // ONE shared math path with the Crew Bonus tab (computeCrewBonus).
-  const bonusCalc = computeCrewBonus(jobLaborBudget, bbHoursByKey, bonusMemberLookup, defaultLaborRate);
+  // Manual per-member hours for this job (entered in the editor below). They drive
+  // the bonus WHEN BusyBusy has no entries for the job; BusyBusy wins when it has
+  // data, so nothing changes once the 401 sync goes live. Manual rows key on
+  // crew_member_id, so wages + the per-member split work identically to BusyBusy.
+  const manualRows = (state.manualLaborByJob?.[jobId] || []).filter(m => m.crew_member_id);
+  const manualHoursByKey = {};
+  for (const m of manualRows) manualHoursByKey[m.crew_member_id] = (manualHoursByKey[m.crew_member_id] || 0) + Number(m.hours || 0);
+  const hasBB = Object.keys(bbHoursByKey).length > 0;
+  const hasManual = Object.values(manualHoursByKey).some(h => h > 0);
+  const bonusSource = hasBB ? 'busybusy' : (hasManual ? 'manual' : 'none');
+  const effHoursByKey = hasBB ? bbHoursByKey : manualHoursByKey;
+  // ONE shared math path with the Crew Bonus tab (computeCrewBonus). The 25%
+  // burden is applied exactly once INSIDE computeCrewBonus (CREW_BONUS_BURDEN);
+  // do not re-apply it here.
+  const bonusCalc = computeCrewBonus(jobLaborBudget, effHoursByKey, bonusMemberLookup, defaultLaborRate);
 
   // Short date for the reconciled / finalized stamps (Phases 3-4).
   const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
@@ -15346,9 +15368,10 @@ async function renderUnifiedJob(jobId) {
   };
 
   const bonusEarnedText = !bonusCalc.hasActuals
-    ? 'awaiting BusyBusy hours'
+    ? 'awaiting hours (enter crew labor below)'
     : (jobLaborBudget == null ? 'NO (no labor budget — set system labor % + revenue)' : (bonusCalc.pool > 0 ? 'YES' : 'NO'));
   const bonusEarnedColor = (bonusCalc.hasActuals && bonusCalc.pool > 0) ? 'var(--rd-success,#16a34a)' : 'var(--muted)';
+  const bonusSourceNote = bonusSource === 'busybusy' ? 'from BusyBusy hours' : bonusSource === 'manual' ? 'from manual hours' : '';
 
   const bonusMembersTable = `
     <div class="pec-table-wrap"><table class="pec-table" style="font-size:.76rem">
@@ -15365,7 +15388,7 @@ async function renderUnifiedJob(jobId) {
           const punchList = punches.map(fmtPunch).filter(Boolean);
           return `<tr class="nohover">
             <td><strong>${esc(m.name)}</strong>${m.usedDefault ? ' <span style="color:var(--muted);font-size:.65rem">(default rate)</span>' : ''}</td>
-            <td>${punches.length} punch${punches.length === 1 ? '' : 'es'}${punchList.length ? `<div style="color:var(--muted);font-size:.65rem">${punchList.map(esc).join('<br>')}</div>` : ''}</td>
+            <td>${bonusSource === 'manual' ? '<span style="color:var(--muted)">manual entry</span>' : `${punches.length} punch${punches.length === 1 ? '' : 'es'}${punchList.length ? `<div style="color:var(--muted);font-size:.65rem">${punchList.map(esc).join('<br>')}</div>` : ''}`}</td>
             <td style="text-align:right">${fmtNum(m.hours)}</td>
             <td style="text-align:right">${fmtMoneyOrDash(m.wageTotal)}</td>
             <td style="text-align:right">${fmtMoneyOrDash(m.wageTotalBurden)}</td>
@@ -15382,21 +15405,60 @@ async function renderUnifiedJob(jobId) {
       </tr></tfoot>
     </table></div>`;
 
+  // Explicit formula block (Cory Poole is the test): every number the bonus is
+  // built from, in order, plus the literal formula line.
+  const fmtPctNum = (n) => n == null ? '—' : (Math.round(n * 10) / 10) + '%';
+  const budgetedLaborStr = jobLaborBudget == null ? '—' : fmtMoneyOrDash(jobLaborBudget);
+  const actualLoadedStr = bonusCalc.actualLabor == null ? '—' : fmtMoneyOrDash(bonusCalc.actualLabor);
+  const savedStr = bonusCalc.savings == null ? '—' : fmtMoneyOrDash(bonusCalc.savings);
+  const poolStr = bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool);
+  const formulaHtml = `
+        <div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:.82rem">
+          <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:baseline">
+            <span style="color:var(--muted)">Budgeted labor</span><span><strong>${budgetedLaborStr}</strong>${jobLaborPct != null ? ` <span style="color:var(--muted)">(${sys ? esc(sys.name) + ' ' : ''}${fmtPctNum(jobLaborPct)} of revenue)</span>` : ''}</span>
+            <span style="color:var(--muted)">Actual loaded labor</span><span><strong>${actualLoadedStr}</strong> <span style="color:var(--muted)">(sum of hours x wage x ${(1 + CREW_BONUS_BURDEN).toFixed(2)}, incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden)</span></span>
+            <span style="color:var(--muted)">Labor saved</span><span><strong>${savedStr}</strong> <span style="color:var(--muted)">(budgeted minus actual loaded)</span></span>
+            <span style="color:var(--muted)">Bonus to pay (crew pool)</span><span><strong style="color:${bonusCalc.pool > 0 ? 'var(--rd-success,#16a34a)' : 'var(--text)'}">${poolStr}</strong> <span style="color:var(--muted)">(${Math.round(CREW_BONUS_FRACTION * 100)}% of savings)</span></span>
+          </div>
+          <div style="margin-top:9px;padding-top:8px;border-top:1px solid var(--border);color:var(--muted)">Bonus = ${Math.round(CREW_BONUS_FRACTION * 100)}% x (Budgeted ${budgetedLaborStr} - Actual loaded ${actualLoadedStr}) = <strong style="color:var(--text)">${poolStr}</strong></div>
+        </div>`;
+
+  // Editable manual crew-labor table (drives the bonus when BusyBusy is empty).
+  const activeMembers = (state.crewMembers || []).filter(m => m.active !== false);
+  const manualMemberOpts = activeMembers.length
+    ? activeMembers.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')
+    : '<option value="">No crew members yet (seed via Cowork)</option>';
+  const manualLaborEditorHtml = `
+        <div style="margin-top:14px">
+          <h3 style="font-size:.85rem;margin:0 0 6px">Crew labor (manual)${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
+          ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
+            <thead><tr><th>Crew member</th><th style="width:130px">Hours</th><th style="width:40px"></th></tr></thead>
+            <tbody>
+              ${manualRows.map(m => `<tr class="nohover" data-manual-id="${esc(m.id)}">
+                <td>${esc(memberByIdAll[m.crew_member_id]?.name || 'Crew member')}</td>
+                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-hours value="${esc(m.hours ?? '')}" style="width:110px"></td>
+                <td><button class="pec-btn ghost sm" data-manual-delete title="Remove">✕</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>` : '<div class="pec-empty" style="font-size:.75rem">No manual hours yet. Add a crew member and their hours to compute the bonus.</div>'}
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <select id="manualLaborSelect" style="max-width:220px">${manualMemberOpts}</select>
+            <input id="manualLaborHours" class="prod-num" type="number" min="0" step="0.25" placeholder="hours" style="width:90px">
+            <button class="pec-btn sm" id="manualLaborAdd"${activeMembers.length === 0 ? ' disabled' : ''}>+ Add hours</button>
+          </div>
+        </div>`;
+
   const bonusPayoutHtml = `
       <div class="pec-card" id="sec-bonus-payout">
         <h3>Bonus Payout</h3>
-        <div style="font-size:.95rem;margin:0 0 10px">Bonus earned: <strong style="color:${bonusEarnedColor}">${bonusEarnedText}</strong></div>
-        <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin-bottom:12px">
-          <span>Labor budget: <strong style="color:var(--text)">${jobLaborBudget == null ? '—' : fmtMoneyOrDash(jobLaborBudget)}</strong></span>
-          <span>Actual labor (incl. burden): <strong style="color:var(--text)">${bonusCalc.actualLabor == null ? '—' : fmtMoneyOrDash(bonusCalc.actualLabor)}</strong></span>
-          <span>Savings: <strong style="color:var(--text)">${bonusCalc.savings == null ? '—' : fmtMoneyOrDash(bonusCalc.savings)}</strong></span>
-          <span>Crew pool (${Math.round(CREW_BONUS_FRACTION * 100)}%): <strong style="color:var(--text)">${bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool)}</strong></span>
-        </div>
-        ${bbError
-          ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309)">Actual hours unavailable (${esc(bbError)}). This box waits for BusyBusy hours.</div>`
+        <div style="font-size:.95rem;margin:0 0 10px">Bonus earned: <strong style="color:${bonusEarnedColor}">${bonusEarnedText}</strong>${bonusSourceNote ? ` <span style="color:var(--muted);font-size:.72rem;font-weight:400">${bonusSourceNote}</span>` : ''}</div>
+        ${formulaHtml}
+        ${bbError && !hasManual
+          ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-bottom:8px">BusyBusy hours unavailable (${esc(bbError)}). Enter crew labor manually below to compute the bonus.</div>`
           : !bonusCalc.hasActuals
-            ? `<div class="pec-empty">No BusyBusy hours for this job yet. The bonus computes once time entries sync.</div>`
+            ? `<div class="pec-empty">No hours yet. Enter crew labor below to compute the bonus.</div>`
             : bonusMembersTable}
+        ${manualLaborEditorHtml}
 
         <h3 style="margin-top:18px">Hours</h3>
         <div class="pec-row-3">
@@ -15425,7 +15487,7 @@ async function renderUnifiedJob(jobId) {
          <strong>Crew bonus pool: ${bonusCalc.pool > 0 ? fmtMoneyOrDash(bonusCalc.pool) : '$0 (no savings)'}</strong>
          ${bonusCalc.pool > 0 ? `<div style="color:var(--muted);margin-top:2px">${bonusCalc.members.filter(m => m.bonus > 0).map(m => esc(m.name) + ': ' + fmtMoneyOrDash(m.bonus)).join(' · ')}</div>` : ''}
        </div>`
-    : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting BusyBusy hours.</div>`;
+    : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
 
   const finalizeCardHtml = `
       <div class="pec-card" id="sec-finalize">
@@ -15700,6 +15762,47 @@ async function renderUnifiedJob(jobId) {
       renderUnifiedJob(jobId);
     });
   }
+
+  // Manual crew-labor editor: add / edit hours / delete a per-member row that
+  // drives the bonus while BusyBusy is offline. Upsert keyed on (job_id,
+  // crew_member_id) so adding the same member twice updates instead of dupes.
+  const manualAddBtn = root.querySelector('#manualLaborAdd');
+  if (manualAddBtn) manualAddBtn.addEventListener('click', async () => {
+    const sel = root.querySelector('#manualLaborSelect');
+    const hrsEl = root.querySelector('#manualLaborHours');
+    const cmId = sel && sel.value;
+    const hours = hrsEl && hrsEl.value !== '' ? Number(hrsEl.value) : null;
+    if (!cmId) { showToast('Pick a crew member.', { ttl: 3000 }); return; }
+    if (hours == null || !(hours >= 0)) { showToast('Enter hours (0 or more).', { ttl: 3000 }); return; }
+    manualAddBtn.disabled = true;
+    const { data, error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').upsert({ job_id: jobId, crew_member_id: cmId, hours }, { onConflict: 'job_id,crew_member_id' }).select().single(), { label: 'manual-labor-add' });
+    if (error) { manualAddBtn.disabled = false; const hint = /pec_prod_job_manual_labor/.test(error.message || '') ? ' (Run the 2026-06-15_crew_bonus_manual_and_payouts.sql migration first.)' : ''; showToast('Could not save hours: ' + (error.message || error) + hint, { ttl: 6000 }); return; }
+    (state.manualLaborByJob ||= {});
+    const arr = (state.manualLaborByJob[jobId] ||= []);
+    const existing = arr.find(m => m.crew_member_id === cmId);
+    if (existing) existing.hours = data.hours; else arr.push(data);
+    renderUnifiedJob(jobId);
+  });
+  root.querySelectorAll('input[data-manual-hours]').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const id = inp.closest('tr[data-manual-id]')?.dataset.manualId; if (!id) return;
+      const hours = inp.value === '' ? 0 : Number(inp.value);
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours }).eq('id', id), { label: 'manual-labor-edit' });
+      if (error) { showToast('Could not save hours: ' + (error.message || error), { ttl: 6000 }); return; }
+      const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id); if (row) row.hours = hours;
+      renderUnifiedJob(jobId);
+    });
+  });
+  root.querySelectorAll('button[data-manual-delete]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.closest('tr[data-manual-id]')?.dataset.manualId; if (!id) return;
+      btn.disabled = true;
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').delete().eq('id', id), { label: 'manual-labor-del' });
+      if (error) { btn.disabled = false; showToast('Could not remove: ' + (error.message || error), { ttl: 6000 }); return; }
+      if (state.manualLaborByJob?.[jobId]) state.manualLaborByJob[jobId] = state.manualLaborByJob[jobId].filter(m => m.id !== id);
+      renderUnifiedJob(jobId);
+    });
+  });
 
   // Hours reconciled button (Phase 3). Stamps who + when on pec_prod_jobs via
   // saveJobField (the same write path as the other job fields). The current user

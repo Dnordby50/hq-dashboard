@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 10:10] Crew bonus: manual labor entry that drives the payout (BusyBusy still offline) (Part 1)
+By: Claude Code
+Changed: (1) New migration supabase/migrations/2026-06-15_crew_bonus_manual_and_payouts.sql adds pec_prod_job_manual_labor (per-job, per-crew-member hours, unique on job_id+crew_member_id), a partial unique index on pec_prod_job_bonuses for finalize-written 'Labor-savings bonus' rows, and pec_bonus_payouts (the Part 3 ledger). NOT applied to prod from this session. (2) loadCostingData now loads pec_prod_job_manual_labor into state.manualLaborByJob (resolves with [] before the table exists, so nothing breaks pre-migration). (3) renderUnifiedJob's Bonus Payout box builds the hoursByKey map for the EXISTING computeCrewBonus from BusyBusy when it has entries for the job, else from the manual rows (bonusSource = busybusy | manual | none). Manual rows key on crew_member_id, so wages, the default-rate fallback, and the per-member split work identically. (4) New editable "Crew labor (manual)" mini-table in the box: crew-member dropdown + hours + Add, existing rows with an editable hours field + delete, persisting to pec_prod_job_manual_labor via withFreshWriteRetry (upsert keyed on job_id+crew_member_id). (5) The box now shows the explicit formula: Budgeted labor (revenue x system labor_budget_pct, with the % and system name), Actual loaded labor (sum(hours x wage) x 1.25, burden labeled), Labor saved, Bonus to pay (75% of savings), plus the literal line "Bonus = 75% x (Budgeted $X - Actual loaded $Y) = $Z". (6) "Bonus earned" now computes from manual hours when BusyBusy is empty and only reads "awaiting hours" when BOTH sources are empty.
+Why: actual hours only come from BusyBusy, which is 401-blocked and empty, so the box could never compute a payout. Dylan needs to calculate and finalize bonuses by hand now. Cory Poole is the test job.
+How it works (WHY note): the 25% burden is applied exactly ONCE, inside computeCrewBonus (CREW_BONUS_BURDEN); the manual path only supplies hours, it does not touch the math. BusyBusy wins whenever it has data, so when the 401 is fixed the manual entries are simply ignored and nothing else changes.
+OPEN QUESTION for Dylan (not guessed): the bonus RATE is the flat 75% (CREW_BONUS_FRACTION) for every system. "Flake systems are X percent" refers to the labor BUDGET percent (labor_budget_pct), which is already per-system. If Dylan wants the 75% itself to vary per system type, that is a new bonus_pct field on the system type; NOT added, awaiting his call.
+Files touched: index.html, supabase/migrations/2026-06-15_crew_bonus_manual_and_payouts.sql
+Next steps: Part 2 (record the bonus into pec_prod_job_bonuses on finalize), Part 3 (Bonus Report).
+Handoff to Cowork: Apply 2026-06-15_crew_bonus_manual_and_payouts.sql to prod (full handoff lands with Part 3). Until then manual-hours saves 400 with a "run the migration" hint.
+Handoff to Dylan: Enter Cory Poole's crew hours in the new "Crew labor (manual)" table (in the Bonus Payout box) to see the suggested bonus once the migration is live; and confirm whether the 75% rate should vary per system type.
+
+---
+
 ## [2026-06-15 08:55] netlify.toml: revalidate the HTML so deploys stop serving stale bundles (Part 3)
 By: Claude Code
 Changed: Added two [[headers]] blocks to netlify.toml setting Cache-Control = "public, max-age=0, must-revalidate" for "/" and "/index.html". Confirmed no existing Cache-Control rule covered those paths before adding (only /vendor/* had one, which is left as immutable). Verified the whole file still parses as valid TOML (3 header blocks, 11 redirects intact, SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES untouched).
@@ -112,6 +125,13 @@ Handoff to Cowork: None
 Handoff to Dylan: None
 
 ---
+
+## [2026-06-15] Cowork: wrote prompt for manual crew-bonus calc + bonus report (BusyBusy not live)
+By: Cowork
+Changed: No repo code. Dylan ran job costing on Cory Poole (materials correct) and wants to finalize the crew bonus, but the Bonus Payout box only sources actual hours from BusyBusy (pec_prod_busybusy_time_entries), which is 401-blocked/empty, so it shows "awaiting BusyBusy hours" and never computes. Investigated: the bonus math is already correct and centralized in computeCrewBonus (index.html:14651); burden IS auto-applied (CREW_BONUS_BURDEN=0.25, actualLabor = hours x wage x 1.25, line 14661); budgeted labor uses the system type's labor_budget_pct (the per-system "architect formula"); pool = 75% of savings (CREW_BONUS_FRACTION). The gap is purely the hours SOURCE: the "Manual hours" field (~15408) only changes a display number, it does not feed the bonus. Wrote a Claude Code prompt (saved to HQ: claude-code-prompt-manual-bonus-and-report.md) with 3 parts: (1) a manual per-crew-member hours table (new pec_prod_job_manual_labor) that feeds the existing computeCrewBonus when BusyBusy has none (BusyBusy wins when live), plus surfacing the full formula in the box (budgeted labor, actual loaded labor incl 25% burden, savings, 75% bonus, per-member split); (2) on finalize, write per-member bonus into the pec_prod_job_bonuses ledger; (3) a Bonus Report view modeled on renderCommission/pec_commission_payouts (pending/paid tabs, payroll date, mark-paid), backed by a new pec_bonus_payouts table. Flagged the open question: "flake systems are X percentage" = the labor BUDGET % (already per-system), not the bonus rate; ask Dylan before making the 75% itself per-system.
+Why: Dylan needs to calculate and finalize crew bonuses manually until BusyBusy is live, and have them filed like commissions.
+Files touched: PROJECT-LOG.md only. Deliverable: /Users/dylannordby/Desktop/HQ/claude-code-prompt-manual-bonus-and-report.md.
+Handoff to Dylan: run the prompt; then enter Cory Poole's crew hours to see the suggested bonus. Migration apply will be a Cowork handoff once Claude Code writes it.
 
 ## [2026-06-15] Cowork: applied the invoice_first_sent migration to PROD and verified
 By: Cowork
