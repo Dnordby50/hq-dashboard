@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-16 09:10] Sidebar: make the left nav its own scroll region
+By: Claude Code
+Changed: #rdSidebar (the left rail) was position:sticky with min-height:calc(100vh - 36px) but no max-height or overflow, so when the nav was taller than the viewport the bottom items were only reachable by scrolling the WHOLE page to the bottom. Added max-height:calc(100vh - 36px) + overflow-y:auto so the bar pins to the viewport and scrolls internally. Also reset it at the <=980px breakpoint (max-height:none; overflow:visible) so the stacked mobile sidebar is natural height, not a small scroll box.
+Why: Dylan reported the left bar does not scroll until you reach the bottom of the page.
+How it works (WHY note): capping the sidebar height to the viewport and giving it its own overflow decouples its scroll from the document scroll; the sticky top:18px keeps it in place while the main content scrolls independently.
+Files touched: index.html (CSS only)
+Next steps: None.
+Handoff to Cowork: None
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-15] Cowork: applied exclude_from_commission migration to PROD; confirmed all other migrations already live
 By: Cowork
 Changed: No repo code. Dylan asked to run 2 migrations; only ONE was actually new/unapplied. Ran supabase/migrations/2026-06-15_exclude_from_commission.sql (Claude Code commit f5de115) against PROD (zdfpzmmrgotynrwkeakd, role postgres): adds pec_sales_team_members.exclude_from_commission boolean not null default false. Result: "Success. No rows returned." Verified the column exists (1). Also verified the rest of the recent migrations are already live (each found=1): jobs.invoice_first_sent_at, pec_prod_job_manual_labor, pec_bonus_payouts, pec_prod_jobs.costing_finalized_at. Nothing else pending. The "2nd migration" Dylan had in mind was likely Part 5 (customer Jobs count excludes archived, commit 7ca8bf3) which is CODE-ONLY.
