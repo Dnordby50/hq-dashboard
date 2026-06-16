@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 20:35] Polish: browser tab favicon = PEC logo (Part 3)
+By: Claude Code
+Changed: Added <link rel="icon" type="image/png" href="assets/pec-logo.png"> and <link rel="apple-touch-icon" href="assets/pec-logo.png"> in <head> next to the <title>. assets/pec-logo.png already ships with the deploy (it is referenced at index.html:1508). The code landed in commit dcb85d5 alongside Part 1 (both were small head/display edits to index.html staged together); committing the log note here.
+Why: Part 3. The tab showed a default circle (no favicon link existed).
+Files touched: index.html (in dcb85d5)
+Next steps: Parts 4 (commission exclude), 5 (customer job count).
+Handoff to Cowork: None
+Handoff to Dylan: Confirm whether you want a dedicated square/transparent favicon icon; the full logo is shipped now so the default circle is gone, but a square icon may render cleaner at 16x16.
+
+---
+
 ## [2026-06-15 20:30] Polish: capitalize standalone payment-method values (Part 1)
 By: Claude Code
 Changed: Added a titleCaseValue helper next to the invoice formatters ("check" -> "Check", "credit_card" -> "Credit Card") and applied it to the two spots that render a payment method raw and lowercase: the invoice payment-history table (index.html ~7447) and the Metrics > Revenue collected payments drill (index.html ~8140). The edit-payment modal already uses proper labels (Check / Cash / Zelle / Credit card / Stripe), so it was left alone.
