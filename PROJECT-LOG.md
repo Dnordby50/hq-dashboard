@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 20:30] Polish: capitalize standalone payment-method values (Part 1)
+By: Claude Code
+Changed: Added a titleCaseValue helper next to the invoice formatters ("check" -> "Check", "credit_card" -> "Credit Card") and applied it to the two spots that render a payment method raw and lowercase: the invoice payment-history table (index.html ~7447) and the Metrics > Revenue collected payments drill (index.html ~8140). The edit-payment modal already uses proper labels (Check / Cash / Zelle / Credit card / Stripe), so it was left alone.
+Why: Part 1 of the polish-fixes batch. Site convention is that a value shown on its own (a cell/badge/chip, not inside a sentence) is capitalized; the payment type was rendering lowercase.
+How it works (WHY note): the helper only touches standalone system/enum values, never user-typed free text (notes, addresses), so the user's own casing is preserved. Audit focus was the reported payment-method case; other standalone values (status, sales team, lead source) are already badged or stored in proper case.
+Files touched: index.html
+Next steps: Parts 3 (favicon), 4 (commission exclude), 5 (customer job count). Part 2 (Back button) needs Dylan's OLD_URL / NEW_URL.
+Handoff to Cowork: None
+Handoff to Dylan: None
+
+---
+
 ## [2026-06-15 10:35] Bonus Report: paid/pending bonus tracking, filed like Commission (Part 3)
 By: Claude Code
 Changed: New renderBonusReport view modeled on renderCommission. It reads pec_prod_job_bonuses (the ledger Part 2 writes on finalize, plus crew-lead / ad-hoc bonus rows) joined to the new pec_bonus_payouts table for paid status. Features: a date-range filter with This month / Last month / YTD presets, a crew-member filter (parallel to commission's salesperson), Payouts and Payroll report tabs, per-row Mark Paid (records paid_on + a payroll Friday via the shared commissionFriday/commissionPeriod helpers, with an optional override) and Undo, a paid-this-period summary with a per-crew breakdown, a carrying-forward Pending total, and a payroll report grouped by Friday check date. Reuses pec_bonus_payouts from the Part 1 migration (the table + RLS were already written there). NAV DECISION: I repurposed the existing "crew-bonus" route rather than adding a new one. The nav button label is now "Bonus Report" and the crew-bonus route points at renderBonusReport, since the old read-only Crew Bonus tab is now redundant (the report shows the same bonuses plus paid/pending tracking). The data-pec-view value ('crew-bonus') and its pec-role-admin gating are unchanged, so routing + permissions + setNav need no edits. renderCrewBonus is left defined but unreferenced (marked superseded) in case it is ever re-linked. The finalize card copy now says the bonus is recorded into the Bonus Report.

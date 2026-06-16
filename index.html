@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TopCoat · PEC CRM</title>
+<link rel="icon" type="image/png" href="assets/pec-logo.png">
+<link rel="apple-touch-icon" href="assets/pec-logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600;700&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -7239,6 +7241,10 @@ function invAddDays(d, n) { const x = invParse(d); x.setUTCDate(x.getUTCDate() +
 function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
 const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
 const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
+// Title-case a STANDALONE system/enum value for display (a cell, badge, or chip,
+// never free text). "check" -> "Check", "credit_card" -> "Credit Card". Do not use
+// on user-typed fields (notes, addresses); those keep the user's casing.
+const titleCaseValue = s => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 const invInWeek = (d, wk) => d && d >= wk.start && d <= wk.end;
 function invBuildWeeks(key) {
   const todayWeek = invWeekStart(invToday());
@@ -7442,7 +7448,7 @@ async function renderJobInvoice(jobId) {
     : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
   const payRows = payments.length ? payments.map(p => `<tr class="nohover">
       <td>${invFmtDate(p.received_date)}</td>
-      <td>${esc(String(p.method || '').replace('_', ' '))}</td>
+      <td>${esc(titleCaseValue(p.method) || '—')}</td>
       <td>${esc(p.reference || '—')}</td>
       <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
       <td>${esc(p.recorded_by || '—')}</td>
@@ -8135,7 +8141,7 @@ async function renderMetrics() {
     summary: opts.summary || null,
     columns: ['Customer', 'Date', 'Method', 'Amount'],
     rows: list.slice().sort((a, b) => (a.received_date || '').localeCompare(b.received_date || ''))
-      .map(p => ({ openjob: p.job_id, cells: [jobById[p.job_id]?.customer_name || '—', invFmtDate(p.received_date), p.method || '—', invUSD(p.amount)] })),
+      .map(p => ({ openjob: p.job_id, cells: [jobById[p.job_id]?.customer_name || '—', invFmtDate(p.received_date), titleCaseValue(p.method) || '—', invUSD(p.amount)] })),
     total: [countOf(list.length, 'payment'), '', '', invUSD(list.reduce((s, p) => s + p.amount, 0))],
     footnote: opts.footnote || null,
   });
