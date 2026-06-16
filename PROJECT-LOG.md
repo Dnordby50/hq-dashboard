@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-15 21:20] Back button: 301 the old netlify.app host to the current one (Part 2)
+By: Claude Code
+Changed: Added a host-scoped 301 redirect to netlify.toml: https://hq-prescott.netlify.app/* -> https://prescottepoxy.netlify.app/:splat (force = true, path + query preserved). It is the first [[redirects]] block; being host-scoped to hq-prescott it never matches normal prescottepoxy traffic or the existing function/MCP redirects. Confirmed the file still parses (12 redirects).
+Why: Part 2. Dylan reported the browser Back button lands on the OLD web address (hq-prescott.netlify.app) and stays there. He provided OLD_URL = https://hq-prescott.netlify.app/. NEW_URL was taken as the documented deploy https://prescottepoxy.netlify.app/ (CLAUDE.md / netlify.toml both reference the hq-prescott -> prescottepoxy rename); if the real target is a custom domain, change the `to` host.
+How it works (WHY note): this works ONLY if hq-prescott.netlify.app routes to THIS Netlify site (the renamed-site case, which the "domain rename" note in netlify.toml implies). If hq-prescott is a SEPARATE old Netlify site, this repo cannot redirect it; that site must be unpublished or given its own 301 to prescottepoxy. Did NOT add SPA history (pushState/popstate) handling, since the report is about the old address, not Back exiting the app; that is a bigger change to confirm separately if Back still leaves the app after this.
+Files touched: netlify.toml
+Next steps: All five parts addressed (Part 2 pending Dylan's confirmation that the redirect fires).
+Handoff to Cowork: After deploy, hit https://hq-prescott.netlify.app/ and confirm it 301s to https://prescottepoxy.netlify.app/. If it does NOT (still serves an old copy), hq-prescott is a separate Netlify site: unpublish it or set a redirect on it (Dylan/Cowork action in the Netlify dashboard); this repo cannot control a different site.
+Handoff to Dylan: Confirm NEW_URL is prescottepoxy.netlify.app (not a custom domain). If after deploy Back still exits the app entirely (rather than landing on the old host), say so and I will add in-app history handling.
+
+---
+
 ## [2026-06-15 21:00] Customers: job count excludes archived jobs so it matches the expand (Part 5)
 By: Claude Code
 Changed: The customers list count used jobs(count), which counted ALL jobs including archived, while the per-customer expand filters archived_at is null. So a customer with one active + one archived job read "2" but expanded to "1" (confirmed on prod: Samuel AE Reprographics). Added an embedded-resource filter .is('jobs.archived_at', null) to the customers query in renderCustomers (index.html ~6405) so the jobs(count) aggregate counts only non-archived jobs. It is NOT an inner join, so a customer whose only job is archived still appears with a count of 0.

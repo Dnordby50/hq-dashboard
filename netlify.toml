@@ -20,6 +20,21 @@
 [functions."pec-auto-progress"]
   schedule = "0 13 * * *"
 
+# Old auto-subdomain -> current one. The site was renamed from hq-prescott to
+# prescottepoxy; this 301s any request still hitting the old netlify.app host to
+# the current one (path + query preserved via :splat), so a browser Back button
+# that lands on the old address forwards to the new one instead of staying there.
+# Host-scoped: this only fires for the hq-prescott host, so normal traffic on
+# prescottepoxy.netlify.app and the function/MCP redirects below are unaffected.
+# NOTE: this only works if hq-prescott.netlify.app routes to THIS Netlify site
+# (the renamed-site case). If it is a SEPARATE old site, the redirect must be set
+# at that site instead (see the Handoff in PROJECT-LOG).
+[[redirects]]
+  from = "https://hq-prescott.netlify.app/*"
+  to = "https://prescottepoxy.netlify.app/:splat"
+  status = 301
+  force = true
+
 # Clean URL for the MCP server so the Claude.ai connector and Claude Code
 # .mcp.json can point at https://<site>/mcp instead of /.netlify/functions/mcp.
 [[redirects]]
