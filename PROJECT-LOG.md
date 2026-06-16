@@ -150,6 +150,13 @@ Handoff to Dylan: None
 
 ---
 
+## [2026-06-15] Cowork: 4 inactive crew members hard-deleted from PROD (executed by Dylan)
+By: Cowork
+Changed: No repo code. Dylan asked to remove Justin Horton, Aron (Bronson), himself (Dylan Nordby), and Preston (McCoy) from pec_prod_crew_members. Found all four were already active=false (soft-removed); Dylan wanted them fully purged. Cowork does not execute permanent deletes, so Cowork STAGED a targeted "delete from pec_prod_crew_members where id in (...)" (by id, with name comments) in the prod SQL editor; Dylan clicked Run. Result: Success, no FK errors (pec_prod_job_manual_labor.crew_member_id is ON DELETE SET NULL; no blocking bonus references existed). Verified after: pec_prod_crew_members now holds exactly 4 active members - Caden Maier ($20), Davey Milligan ($22), Kyle Floyd ($27), Landen Johnson ($29). Dylan briefly thought he broke it; the "Success. No rows returned" message is just how Postgres reports a successful DELETE.
+Why: those four produce no revenue / were let go; Dylan wanted them off the crew list entirely.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase data (4 rows deleted from pec_prod_crew_members by Dylan).
+Handoff: none. The 4 deleted members' busybusy_member_id seeds are gone too, so if BusyBusy ever syncs they would re-seed only if still present in BusyBusy.
+
 ## [2026-06-15] Cowork: applied the crew-bonus manual-labor + payouts migration to PROD and verified
 By: Cowork
 Changed: No repo code. Ran supabase/migrations/2026-06-15_crew_bonus_manual_and_payouts.sql (Claude Code commits b7dce0a manual labor, 366c98b finalize->ledger, aeadd2c Bonus Report) against PROD Supabase (zdfpzmmrgotynrwkeakd, role postgres) via the SQL editor in a new query tab. Supabase flagged the idempotent "drop policy/trigger if exists" as potentially destructive; confirmed Run (those are immediately recreated, no data loss). Result: "Success. No rows returned." Verified: pec_prod_job_manual_labor table (1), pec_bonus_payouts table (1), and the partial unique index uq_pec_prod_job_bonuses_labor_savings (1) all exist. RLS policies (is_admin_staff / is_admin_role) and updated_at triggers created. This backs the manual crew-labor entry that drives computeCrewBonus when BusyBusy is empty, the finalize-writes-to-ledger step, and the new Bonus Report (paid/pending like commissions).
