@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-16 11:05] Job Costing: System column falls back to the CRM job card for bridged jobs (Wayne Rhodes "—")
+By: Claude Code
+Changed: The System column in Completed Job Costing (and the active Job Costing list) read only pec_prod_areas via areaSystem(). For DripJobs-bridged jobs that table is often an empty stub, so the column showed "—" even though the job is tagged with a system on the sales side. Fix: loadCostingData now records state.systemIdByJob[jobId] = the primary system from the SAME resolution it already runs for the estimate (CRM job card by deal-id-or-name+address via resolveCrmForProdJob/crmPlanAreas, else pec_prod_areas, else schedule stub). Both costing-list areaSystem() helpers (renderJobCosting and renderCompletedCosting) now fall back to that resolved system when pec_prod_areas is empty. Revenue/cost/GP are untouched.
+Why: Wayne Rhodes (bridged, deal 2851134) has 0 pec_prod_areas rows, so Completed Job Costing showed System "—" while the Jobs view showed "Standard Flake" (his sales jobs.system_type_id / job_areas are correct). He was the only one of 8 finalized jobs missing prod areas. Diagnosis confirmed against live data.
+How it works (WHY note): jobs that DO have pec_prod_areas are byte-identical to before (the helper returns early on areas[0]); only the empty-stub case consults systemIdByJob, so the other 7 finalized jobs are unchanged. The fallback reuses the existing CRM resolver, so the System column can never disagree with the Jobs tag regardless of how a job was created. If resolution finds nothing, it still shows "—" (no regression). This is the durable fix; no data patch to pec_prod_areas was applied.
+Files touched: index.html
+Next steps: None. (Optional: the one-off data patch to insert Wayne's pec_prod_areas row is no longer needed, but harmless if Cowork ever wants prod areas populated for him.)
+Handoff to Cowork: None
+Handoff to Dylan: After deploy, confirm Wayne Rhodes shows "Standard Flake" in Completed Job Costing and the other finalized jobs are unchanged.
+
+---
+
 ## [2026-06-16 10:05] Consolidate user management into Settings > Users
 By: Claude Code
 Changed: Merged the two overlapping CRM-login surfaces into one place. There was a standalone Team page (left-bar nav: add staff, role, reset password, delete, sign-ins) AND a separate "User Permissions" card in Settings, both acting on the same admin_users records. New renderSettingsUsers() combines them into a single "Users" sub-tab under Settings: one Staff table with Name, Email, Role (badge), Linked Auth, the five delegable capability columns (checkboxes for non-admins, "Admin (full access)" for admins), and Actions (Edit / Reset password / Delete with the last-admin guard), plus Save permissions and the Recent sign-ins table. Added a "Users" button to settingsTabBar and a dispatch branch in renderSettings. Removed: the left-bar Team nav button + its router entry + the whole renderTeam function; the old User Permissions card and its toggle/save wiring from Settings > General. openTeamForm and openResetPasswordForm are reused unchanged (openTeamForm now re-renders via renderSettings). Crews and Crew Members are untouched (field workers, a different data model, deliberately left separate per Dylan).

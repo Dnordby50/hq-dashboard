@@ -14704,6 +14704,12 @@ async function loadCostingData() {
   state.costingLaborRate = defaultLaborRate;
   const estimateByJob = {};
   state.estimateByJob = estimateByJob;
+  // Primary system per prod job, resolved the SAME way as the estimate (CRM job
+  // card by deal-or-name+address, else pec_prod_areas, else schedule stub). The
+  // costing System columns fall back to this when pec_prod_areas is an empty stub
+  // (DripJobs-bridged jobs), so System never disagrees with the Jobs tag.
+  const systemIdByJob = {};
+  state.systemIdByJob = systemIdByJob;
   state.crmStatusByProdJob = {};
   try {
     if ((state.prodJobs || []).length && typeof window.computeJobEstimate === 'function') {
@@ -14791,6 +14797,7 @@ async function loadCostingData() {
         const revenue = resolved ? resolved.price : (Number(job.revenue) || 0);
         const est = window.computeJobEstimate({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake, systemTypes: state.systemTypes, revenue, laborRate: defaultLaborRate });
         estimateByJob[jid] = est;
+        systemIdByJob[jid] = planAreas[0] ? planAreas[0].system_type_id : null;
         if (needSet.has(jid) && est.materialLines.length) {
           linesByJob[jid] = est.materialLines.map((l, i) => ({ ...l, id: `derived-${jid}-${i}`, _derived: true }));
           ordered[jid] = est.materialsBudget;
@@ -16142,7 +16149,11 @@ async function renderJobCosting() {
   const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
   const areaSystem = (job) => {
     const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
-    return areas[0] ? sysById[areas[0].system_type_id] : null;
+    if (areas[0]) return sysById[areas[0].system_type_id];
+    // Same CRM-card fallback as Completed Job Costing for bridged jobs with an
+    // empty pec_prod_areas stub, so the System column never shows a false "—".
+    const fid = (state.systemIdByJob || {})[job.id];
+    return fid ? sysById[fid] : null;
   };
 
   // Pending Job Costing: completed-but-not-costed jobs. Per Dylan (2026-06-12), a
@@ -16465,7 +16476,12 @@ async function renderCompletedCosting() {
   const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
   const areaSystem = (job) => {
     const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-    return areas[0] ? sysById[areas[0].system_type_id] : null;
+    if (areas[0]) return sysById[areas[0].system_type_id];
+    // Fallback for DripJobs-bridged jobs whose pec_prod_areas is an empty stub
+    // (e.g. Wayne Rhodes, deal 2851134): use the system resolved from the CRM job
+    // card so the System column matches the Jobs tag instead of showing "—".
+    const fid = (state.systemIdByJob || {})[job.id];
+    return fid ? sysById[fid] : null;
   };
   const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
   // Most-recently-finalized first.
