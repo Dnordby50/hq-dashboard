@@ -14654,7 +14654,9 @@ async function loadCostingData() {
     // Manual per-member hours that drive the bonus while BusyBusy is offline. A
     // supabase query RESOLVES with { error } on a missing table (never rejects),
     // so this is safe to include before the migration lands; we default to [].
-    supabase.from('pec_prod_job_manual_labor').select('id,job_id,crew_member_id,hours'),
+    // select('*') (not an explicit list) so ot_hours is picked up once the
+    // 2026-06-19_ot_hours migration lands, without 400ing before it does.
+    supabase.from('pec_prod_job_manual_labor').select('*'),
   ]), { label: 'loadCostingData' });
   state.costing = costRes.data || [];
   state.crewMembers = membersRes.data || [];
@@ -14916,38 +14918,59 @@ function costingIsFinalized(job) {
 // to the pec_prod_job_bonuses ledger until the payout path is greenlit.
 const CREW_BONUS_FRACTION = 0.75;
 const CREW_BONUS_BURDEN = 0.25; // labor burden on wages (Dylan, locked 2026-06-14)
+const OT_MULTIPLIER = 1.5; // overtime paid at 1.5x base wage (assumption — confirm with Dylan)
 
 // Crew bonus math, shared by the Crew Bonus tab and the costing detail's Bonus
-// Payout box so the two can never disagree. Locked by Dylan 2026-06-14:
-//   actualLabor = sum over members of (member hours x wage x (1 + burden))
+// Payout box so the two can never disagree. Locked by Dylan 2026-06-14, made
+// OT-aware 2026-06-19:
+//   per member  reg = totalHours - otHours
+//               wageTotal   = (reg x wage) + (ot x wage x OT_MULTIPLIER)
+//               loaded      = wageTotal x (1 + burden)   <- burden stacks ON the OT premium
+//   actualLabor = sum over members of loaded
 //   pool        = max(0, laborBudget - actualLabor) x CREW_BONUS_FRACTION
-//   per member  = pool x (member hours / total hours)
+//   per member  = pool x (member TOTAL hours / total hours)   <- split unchanged
 //   bonus earned = pool > 0
+// WHY OT matters: overtime costs 1.5x, so a job that burned OT has a higher
+// actualLabor and therefore a smaller (or zero) savings pool than the old flat
+// hours x wage math showed. The split still uses total hours so a person's
+// SHARE of the pool is unchanged; only the pool SIZE shrinks.
+//
 // Per-member wage is pec_prod_crew_members.hourly_wage; a blank wage falls back
 // to the flat default rate and the member is flagged usedDefault. hoursByKey
-// maps crew_member_id (or 'bb:<id>' for an unmapped BusyBusy member) -> hours.
+// maps crew_member_id (or 'bb:<id>' for an unmapped BusyBusy member) to EITHER a
+// plain number (total hours, no OT) OR { total, ot } so callers that have no OT
+// data (e.g. the legacy renderCrewBonus) keep working unchanged.
 // memberLookup(key) -> { name, wage } resolves the snapshot name + wage. With no
 // hours the job "awaits BusyBusy hours" and pays nothing (never a bonus on zero).
 function computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) {
   const keys = Object.keys(hoursByKey || {});
   let totalHours = 0, actualLabor = 0;
   const members = keys.map(key => {
-    const hours = Number(hoursByKey[key] || 0);
-    totalHours += hours;
+    // Value is a plain number (total, no OT) or { total, ot }.
+    const raw = hoursByKey[key];
+    const isObj = raw && typeof raw === 'object';
+    const total = Number(isObj ? raw.total : raw) || 0;
+    let ot = Number(isObj ? raw.ot : 0) || 0;
+    if (ot < 0) ot = 0;
+    if (ot > total) ot = total; // OT is a SLICE of total; it can never exceed it
+    const reg = total - ot;
+    totalHours += total;
     const info = memberLookup(key) || {};
     const usedDefault = !(Number(info.wage) > 0);
     const wage = usedDefault ? Number(defaultRate) || 0 : Number(info.wage);
-    const wageTotal = hours * wage;
+    const otPremium = ot * wage * (OT_MULTIPLIER - 1); // the extra over base for OT hours
+    const wageTotal = (total * wage) + otPremium;       // base on all hours + OT premium
     const wageTotalBurden = wageTotal * (1 + CREW_BONUS_BURDEN);
     actualLabor += wageTotalBurden;
-    return { key, name: info.name || 'Crew member', hours, wage, usedDefault, wageTotal, wageTotalBurden };
+    return { key, name: info.name || 'Crew member', hours: total, otHours: ot, regHours: reg, wage, usedDefault, otPremium, wageTotal, wageTotalBurden };
   }).sort((a, b) => b.hours - a.hours);
   const hasActuals = totalHours > 0;
+  const totalOtHours = members.reduce((s, m) => s + m.otHours, 0);
   const lb = laborBudget == null ? null : Number(laborBudget);
   const savings = (lb != null && hasActuals) ? lb - actualLabor : null;
   const pool = savings != null ? Math.max(0, savings) * CREW_BONUS_FRACTION : null;
   for (const m of members) m.bonus = (pool != null && totalHours > 0) ? pool * (m.hours / totalHours) : 0;
-  return { members, totalHours, actualLabor: hasActuals ? actualLabor : null, laborBudget: lb, savings, pool, hasActuals };
+  return { members, totalHours, totalOtHours, actualLabor: hasActuals ? actualLabor : null, laborBudget: lb, savings, pool, hasActuals };
 }
 
 // SUPERSEDED by renderBonusReport (the crew-bonus nav route now points there).
@@ -15471,19 +15494,24 @@ async function renderUnifiedJob(jobId) {
   // box. Same source + graceful-empty handling as renderCrewBonus: if the table
   // is missing or the sync has not run, bbError/empty -> "awaiting BusyBusy
   // hours" and no bonus is invented on zero actuals.
+  // bbHoursByKey: key -> { total, ot } so OT flows into the OT-aware bonus math.
+  // select('*') so ot_hours is read once the 2026-06-19 migration lands without
+  // 400ing before it does (the table exists; an explicit ot_hours would 400).
   const bbHoursByKey = {}; const bbPunchesByKey = {}; let bbError = null;
   try {
     const res = await withFreshSession(() => supabase
       .from('pec_prod_busybusy_time_entries')
-      .select('job_id,crew_member_id,busybusy_member_id,hours,started_at,ended_at,deleted_at')
+      .select('*')
       .eq('job_id', jobId), { label: 'unifiedJobTime' });
     if (res.error) throw res.error;
     for (const e of (res.data || [])) {
       if (e.deleted_at) continue;
       const h = Number(e.hours || 0);
       if (!(h > 0)) continue;
+      const ot = Number(e.ot_hours || 0) || 0;
       const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
-      bbHoursByKey[key] = (bbHoursByKey[key] || 0) + h;
+      const cur = (bbHoursByKey[key] ||= { total: 0, ot: 0 });
+      cur.total += h; cur.ot += ot;
       (bbPunchesByKey[key] ||= []).push({ start: e.started_at, end: e.ended_at });
     }
   } catch (err) { bbError = err && err.message ? err.message : String(err); }
@@ -15502,10 +15530,13 @@ async function renderUnifiedJob(jobId) {
   // data, so nothing changes once the 401 sync goes live. Manual rows key on
   // crew_member_id, so wages + the per-member split work identically to BusyBusy.
   const manualRows = (state.manualLaborByJob?.[jobId] || []).filter(m => m.crew_member_id);
-  const manualHoursByKey = {};
-  for (const m of manualRows) manualHoursByKey[m.crew_member_id] = (manualHoursByKey[m.crew_member_id] || 0) + Number(m.hours || 0);
+  const manualHoursByKey = {}; // key -> { total, ot } for the OT-aware bonus math
+  for (const m of manualRows) {
+    const cur = (manualHoursByKey[m.crew_member_id] ||= { total: 0, ot: 0 });
+    cur.total += Number(m.hours || 0); cur.ot += Number(m.ot_hours || 0);
+  }
   const hasBB = Object.keys(bbHoursByKey).length > 0;
-  const hasManual = Object.values(manualHoursByKey).some(h => h > 0);
+  const hasManual = Object.values(manualHoursByKey).some(h => h.total > 0);
   const bonusSource = hasBB ? 'busybusy' : (hasManual ? 'manual' : 'none');
   const effHoursByKey = hasBB ? bbHoursByKey : manualHoursByKey;
   // ONE shared math path with the Crew Bonus tab (computeCrewBonus). The 25%
@@ -15652,6 +15683,7 @@ async function renderUnifiedJob(jobId) {
       <thead><tr>
         <th>Crew member</th><th>Time punches</th>
         <th style="text-align:right">Total hours</th>
+        <th style="text-align:right">OT hrs</th>
         <th style="text-align:right">Total wage</th>
         <th style="text-align:right">Wage incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden</th>
         <th style="text-align:right">Bonus</th>
@@ -15660,10 +15692,16 @@ async function renderUnifiedJob(jobId) {
         ${bonusCalc.members.map(m => {
           const punches = bbPunchesByKey[m.key] || [];
           const punchList = punches.map(fmtPunch).filter(Boolean);
+          // OT cell shows the OT slice and (muted) the extra premium dollars it
+          // added at OT_MULTIPLIER x wage, so the higher cost is visible.
+          const otCell = m.otHours > 0
+            ? `${fmtNum(m.otHours)}<div style="color:var(--muted);font-size:.65rem">+${fmtMoneyOrDash(m.otPremium)} premium</div>`
+            : '<span style="color:var(--muted)">—</span>';
           return `<tr class="nohover">
             <td><strong>${esc(m.name)}</strong>${m.usedDefault ? ' <span style="color:var(--muted);font-size:.65rem">(default rate)</span>' : ''}</td>
             <td>${bonusSource === 'manual' ? '<span style="color:var(--muted)">manual entry</span>' : `${punches.length} punch${punches.length === 1 ? '' : 'es'}${punchList.length ? `<div style="color:var(--muted);font-size:.65rem">${punchList.map(esc).join('<br>')}</div>` : ''}`}</td>
             <td style="text-align:right">${fmtNum(m.hours)}</td>
+            <td style="text-align:right">${otCell}</td>
             <td style="text-align:right">${fmtMoneyOrDash(m.wageTotal)}</td>
             <td style="text-align:right">${fmtMoneyOrDash(m.wageTotalBurden)}</td>
             <td style="text-align:right">${bonusCalc.pool > 0 ? fmtMoneyOrDash(m.bonus) : '—'}</td>
@@ -15673,6 +15711,7 @@ async function renderUnifiedJob(jobId) {
       <tfoot><tr class="nohover" style="font-weight:600">
         <td>Total</td><td></td>
         <td style="text-align:right">${fmtNum(bonusCalc.totalHours)}</td>
+        <td style="text-align:right">${bonusCalc.totalOtHours > 0 ? fmtNum(bonusCalc.totalOtHours) : '—'}</td>
         <td></td>
         <td style="text-align:right">${fmtMoneyOrDash(bonusCalc.actualLabor)}</td>
         <td style="text-align:right">${bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool)}</td>
@@ -15686,11 +15725,17 @@ async function renderUnifiedJob(jobId) {
   const actualLoadedStr = bonusCalc.actualLabor == null ? '—' : fmtMoneyOrDash(bonusCalc.actualLabor);
   const savedStr = bonusCalc.savings == null ? '—' : fmtMoneyOrDash(bonusCalc.savings);
   const poolStr = bonusCalc.pool == null ? '—' : fmtMoneyOrDash(bonusCalc.pool);
+  const otPremiumTotal = bonusCalc.members.reduce((s, m) => s + (m.otPremium || 0), 0);
+  // Only surface the OT line when there is OT, so a no-OT job reads exactly as before.
+  const otLineHtml = bonusCalc.totalOtHours > 0
+    ? `<span style="color:var(--muted)">of which overtime</span><span><strong>${fmtNum(bonusCalc.totalOtHours)} hrs</strong> <span style="color:var(--muted)">at ${OT_MULTIPLIER}x = +${fmtMoneyOrDash(otPremiumTotal)} premium (before burden), which shrinks the pool below the flat-rate number</span></span>`
+    : '';
   const formulaHtml = `
         <div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:.82rem">
           <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:baseline">
             <span style="color:var(--muted)">Budgeted labor</span><span><strong>${budgetedLaborStr}</strong>${jobLaborPct != null ? ` <span style="color:var(--muted)">(${sys ? esc(sys.name) + ' ' : ''}${fmtPctNum(jobLaborPct)} of revenue)</span>` : ''}</span>
-            <span style="color:var(--muted)">Actual loaded labor</span><span><strong>${actualLoadedStr}</strong> <span style="color:var(--muted)">(sum of hours x wage x ${(1 + CREW_BONUS_BURDEN).toFixed(2)}, incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden)</span></span>
+            <span style="color:var(--muted)">Actual loaded labor</span><span><strong>${actualLoadedStr}</strong> <span style="color:var(--muted)">(sum of (reg x wage + OT x wage x ${OT_MULTIPLIER}) x ${(1 + CREW_BONUS_BURDEN).toFixed(2)}, incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden)</span></span>
+            ${otLineHtml}
             <span style="color:var(--muted)">Labor saved</span><span><strong>${savedStr}</strong> <span style="color:var(--muted)">(budgeted minus actual loaded)</span></span>
             <span style="color:var(--muted)">Bonus to pay (crew pool)</span><span><strong style="color:${bonusCalc.pool > 0 ? 'var(--rd-success,#16a34a)' : 'var(--text)'}">${poolStr}</strong> <span style="color:var(--muted)">(${Math.round(CREW_BONUS_FRACTION * 100)}% of savings)</span></span>
           </div>
@@ -15705,12 +15750,14 @@ async function renderUnifiedJob(jobId) {
   const manualLaborEditorHtml = `
         <div style="margin-top:14px">
           <h3 style="font-size:.85rem;margin:0 0 6px">Crew labor (manual)${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
+          <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Hours = TOTAL hours worked. OT hrs = the overtime slice of that total (paid at ${OT_MULTIPLIER}x, Arizona = federal >40/week); regular = Hours - OT. OT must be ≤ Hours.</div>
           ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
-            <thead><tr><th>Crew member</th><th style="width:130px">Hours</th><th style="width:40px"></th></tr></thead>
+            <thead><tr><th>Crew member</th><th style="width:120px">Hours</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
             <tbody>
               ${manualRows.map(m => `<tr class="nohover" data-manual-id="${esc(m.id)}">
                 <td>${esc(memberByIdAll[m.crew_member_id]?.name || 'Crew member')}</td>
-                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-hours value="${esc(m.hours ?? '')}" style="width:110px"></td>
+                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-hours value="${esc(m.hours ?? '')}" style="width:100px"></td>
+                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-ot value="${esc(m.ot_hours ?? '')}" style="width:100px"></td>
                 <td><button class="pec-btn ghost sm" data-manual-delete title="Remove">✕</button></td>
               </tr>`).join('')}
             </tbody>
@@ -15718,6 +15765,7 @@ async function renderUnifiedJob(jobId) {
           <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
             <select id="manualLaborSelect" style="max-width:220px">${manualMemberOpts}</select>
             <input id="manualLaborHours" class="prod-num" type="number" min="0" step="0.25" placeholder="hours" style="width:90px">
+            <input id="manualLaborOtHours" class="prod-num" type="number" min="0" step="0.25" placeholder="OT hrs" style="width:80px">
             <button class="pec-btn sm" id="manualLaborAdd"${activeMembers.length === 0 ? ' disabled' : ''}>+ Add hours</button>
           </div>
         </div>`;
@@ -16044,26 +16092,49 @@ async function renderUnifiedJob(jobId) {
   if (manualAddBtn) manualAddBtn.addEventListener('click', async () => {
     const sel = root.querySelector('#manualLaborSelect');
     const hrsEl = root.querySelector('#manualLaborHours');
+    const otEl = root.querySelector('#manualLaborOtHours');
     const cmId = sel && sel.value;
     const hours = hrsEl && hrsEl.value !== '' ? Number(hrsEl.value) : null;
+    const otHours = otEl && otEl.value !== '' ? Number(otEl.value) : 0;
     if (!cmId) { showToast('Pick a crew member.', { ttl: 3000 }); return; }
     if (hours == null || !(hours >= 0)) { showToast('Enter hours (0 or more).', { ttl: 3000 }); return; }
+    if (!(otHours >= 0) || otHours > hours) { showToast('OT hours must be between 0 and total hours.', { ttl: 4000 }); return; }
     manualAddBtn.disabled = true;
-    const { data, error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').upsert({ job_id: jobId, crew_member_id: cmId, hours }, { onConflict: 'job_id,crew_member_id' }).select().single(), { label: 'manual-labor-add' });
-    if (error) { manualAddBtn.disabled = false; const hint = /pec_prod_job_manual_labor/.test(error.message || '') ? ' (Run the 2026-06-15_crew_bonus_manual_and_payouts.sql migration first.)' : ''; showToast('Could not save hours: ' + (error.message || error) + hint, { ttl: 6000 }); return; }
+    // ot_hours is a separate field so a missing-column 400 (pre-migration) is
+    // distinguishable; the hint below names the migration to run.
+    const { data, error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').upsert({ job_id: jobId, crew_member_id: cmId, hours, ot_hours: otHours }, { onConflict: 'job_id,crew_member_id' }).select().single(), { label: 'manual-labor-add' });
+    if (error) { manualAddBtn.disabled = false; const hint = /ot_hours/.test(error.message || '') ? ' (Run the 2026-06-19_ot_hours.sql migration first.)' : (/pec_prod_job_manual_labor/.test(error.message || '') ? ' (Run the 2026-06-15_crew_bonus_manual_and_payouts.sql migration first.)' : ''); showToast('Could not save hours: ' + (error.message || error) + hint, { ttl: 6000 }); return; }
     (state.manualLaborByJob ||= {});
     const arr = (state.manualLaborByJob[jobId] ||= []);
     const existing = arr.find(m => m.crew_member_id === cmId);
-    if (existing) existing.hours = data.hours; else arr.push(data);
+    if (existing) { existing.hours = data.hours; existing.ot_hours = data.ot_hours; } else arr.push(data);
     renderUnifiedJob(jobId);
   });
+  // Total-hours edit. If the new total drops below the row's OT, clamp OT down to
+  // it in the same write so OT can never exceed total.
   root.querySelectorAll('input[data-manual-hours]').forEach(inp => {
     inp.addEventListener('change', async () => {
-      const id = inp.closest('tr[data-manual-id]')?.dataset.manualId; if (!id) return;
+      const tr = inp.closest('tr[data-manual-id]'); const id = tr?.dataset.manualId; if (!id) return;
       const hours = inp.value === '' ? 0 : Number(inp.value);
-      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours }).eq('id', id), { label: 'manual-labor-edit' });
+      const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id);
+      const newOt = Math.min(Number(row?.ot_hours || 0), hours);
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours, ot_hours: newOt }).eq('id', id), { label: 'manual-labor-edit' });
       if (error) { showToast('Could not save hours: ' + (error.message || error), { ttl: 6000 }); return; }
-      const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id); if (row) row.hours = hours;
+      if (row) { row.hours = hours; row.ot_hours = newOt; }
+      renderUnifiedJob(jobId);
+    });
+  });
+  // OT-hours edit. Reject OT above the row's total hours.
+  root.querySelectorAll('input[data-manual-ot]').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const id = inp.closest('tr[data-manual-id]')?.dataset.manualId; if (!id) return;
+      const ot = inp.value === '' ? 0 : Number(inp.value);
+      const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id);
+      const total = Number(row?.hours || 0);
+      if (!(ot >= 0) || ot > total) { showToast('OT hours must be between 0 and total hours (' + fmtNum(total) + ').', { ttl: 4000 }); renderUnifiedJob(jobId); return; }
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ ot_hours: ot }).eq('id', id), { label: 'manual-labor-ot-edit' });
+      if (error) { const hint = /ot_hours/.test(error.message || '') ? ' (Run the 2026-06-19_ot_hours.sql migration first.)' : ''; showToast('Could not save OT hours: ' + (error.message || error) + hint, { ttl: 6000 }); return; }
+      if (row) row.ot_hours = ot;
       renderUnifiedJob(jobId);
     });
   });
