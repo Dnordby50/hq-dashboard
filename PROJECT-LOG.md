@@ -22,6 +22,17 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-19 16:28] Cowork: applied 2026-06-19_ot_hours.sql to PROD (ot_hours columns live)
+By: Cowork
+Changed: No repo code. Dylan said "run latest migration." Applied supabase/migrations/2026-06-19_ot_hours.sql (Claude Code's OT-aware costing migration) to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main, role postgres) via the Supabase SQL editor. Ran the two additive ALTERs: add column if not exists ot_hours on public.pec_prod_job_manual_labor and on public.pec_prod_busybusy_time_entries, both not null default 0. Result: "Success. No rows returned." Verified via information_schema.columns: 2 rows, ot_hours present on both tables, data_type numeric, default 0.
+Deviation (minor, intentional): typed both columns as plain `numeric` instead of the file's `numeric(10,4)` for the busybusy column, to avoid editor paren-autocomplete risk. Functionally identical (the OT slice stores the same values), and the file's `add column if not exists` re-run stays a no-op since it only checks existence, not type. If exact precision is ever wanted, alter the busybusy column type later; not needed for the costing math.
+Why: Dylan asked to run the latest migration. It unblocks the OT-aware job costing build (Claude Code's computeCrewBonus OT split + the manual OT input) so Dylan can OT-cost jobs by hand today, independent of the still-open BusyBusy 401.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase schema (2 columns added; additive, no backfill).
+Next step: Dylan pushes/deploys the Claude Code OT-aware costing code (if not already live), then enters OT hours per member in the manual "Crew labor" table. Still separately blocked: the BusyBusy 401 (no real time data flows until the key authenticates).
+Handoff to Dylan: ot_hours columns are live in prod. Real BusyBusy OT still needs the 401 resolved; the OT-attribution rule (section 5 of claude-code-prompt-busybusy-overtime-costing.md) still needs your decision before any OT bonus pays out.
+
+---
+
 ## [2026-06-19 14:30] Investigation: "no OT hours showing" is the BusyBusy 401, not a code bug; wrote a Claude Code prompt for OT-aware costing
 By: Cowork
 Changed: No app code. Dylan asked Cowork to investigate why overtime hours still do not show and to write a prompt for Claude Code, and to report BusyBusy status. Findings: (1) the word "overtime" appears nowhere in index.html; the hours model is only Estimated / Actual / Over-Under. (2) Dylan clarified he means OT hours FROM BusyBusy, and that OT "changes the way we job cost" (OT is paid at a premium, so loaded labor cost is higher and the labor-savings crew bonus should shrink). (3) ROOT CAUSE of "no hours showing": the BusyBusy integration is still dead at the 401 auth gate from 2026-06-13 (commit df4113f). pec-busybusy.cjs is a read-only GraphQL proxy; a probe returns 401 FROM BusyBusy (our session gate + proxy work, the Integration Key is rejected). Because of the 401, introspection is blocked, the typed query root names are still best-guess, and NO sync function exists, so pec_prod_busybusy_time_entries is empty and every job reads "awaiting BusyBusy hours." (4) Even once the 401 is fixed, the captured BusyBusy TimeEntry has NO hours field and NO OT flag (OT is a pay-period report concept), so OT must be pulled from a BusyBusy OT/aggregate query (unknown, blocked by 401) or computed by us from raw punches (Arizona = federal >40hr/week only).
