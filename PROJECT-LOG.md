@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-19 16:45] Job Costing: live search bar on Completed (and active) costing lists
+By: Claude Code
+Changed: Added a text search to Completed Job Costing (renderCompletedCosting ~16540) and mirrored it onto the active Job Costing list (renderJobCosting ~16212). An `<input type="search">` sits in each `.pec-toolbar`. Search fields covered, case-insensitive: customer_name, address, proposal_number, the resolved system name (sys.name), and the crew name (crewById[j.crew_id].name). Each row carries a `data-search` attribute = the lowercased, whitespace-collapsed concatenation of those fields; on `input` the handler toggles each row's `hidden` flag in place (no re-render, no Supabase query), so the input keeps focus while typing. The count updates to "<m> of <n>" while searching and restores to the plain count when cleared; a hidden "No matching jobs" row shows when a non-empty query matches nothing. The original "No finalized jobs yet" / "No jobs in this filter" empty states are untouched and still show when there are zero rows.
+Why: Dylan wanted to quickly find a completed, costed-out job instead of scrolling the whole finalized list.
+How it works (WHY note): re-rendering per keystroke (the pattern costFilter uses) would drop input focus, so the search deliberately does NOT re-render: it only flips row visibility on the already-built DOM. The active list still re-renders on filter/rollup changes (which recreates the box), but the search itself never triggers a re-render, so typing is smooth on both. dataset.search is decoded by the browser, so matching runs on the real text even though the attribute is HTML-escaped. The active list's `tr[data-job-id]` selector matches only the main table rows (the pending section uses data-pending-cost on divs, the rollup uses data-rollup-toggle), so nothing else is toggled. No costing math touched (costingIsFinalized / computeCostingRow / loadCostingData unchanged); row click-through still opens the unified job.
+Mirror decision: I DID mirror it onto the active Job Costing list because it is the identical in-place pattern and low-risk; the rollup/summary section sits above the table and is unaffected by row hiding.
+Files touched: index.html
+Next steps: None.
+Handoff to Cowork: None
+Handoff to Dylan: None (front-end only; just hard-refresh to see the search box in Completed Job Costing and the active Job Costing list).
+
+---
+
 ## [2026-06-19 16:10] OT-aware job costing: shippable now (manual OT path), BusyBusy OT sync still 401-gated
 By: Claude Code
 Changed: Made crew-bonus job costing overtime-aware end to end, the part that does NOT depend on the BusyBusy 401 (per claude-code-prompt-busybusy-overtime-costing.md sections 3 + 4).
