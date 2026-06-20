@@ -47,6 +47,22 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-20 07:35] Cowork: MCP (Topcoat connector) verification, tasks 1-7; staged for Dylan's secrets
+By: Cowork
+Changed: No code. Verified the live MCP server + staged the Topcoat connector per a Claude Code handoff (direct bearer-key path, not OAuth). Results:
+- Task 1 DEPLOY: main@6120fba ("mcp: remove temporary OAuth diagnostics") is the latest Production deploy and is Published (deployed today ~7:21 AM). Live.
+- Task 2 DISCOVERY: all four well-known endpoints on https://prescottepoxy.netlify.app return HTTP 200 + application/json: /.well-known/oauth-protected-resource/mcp, /.well-known/oauth-authorization-server/mcp, /mcp/.well-known/oauth-protected-resource, /mcp/.well-known/oauth-authorization-server. (protected-resource advertises bearer_methods_supported:["header"].)
+- Task 3 AUTH REJECT: unauthenticated POST /mcp returns 401. Pass.
+- Task 4 REDIRECT: FAIL. https://hq-prescott.netlify.app/ AND /mcp return a Netlify platform 404 ("Not Found - Request ID:...", server: Netlify) for ALL paths, NOT a 301. The renamed old subdomain no longer routes to this site, so the host-scoped 301 in netlify.toml never executes (it can only fire for requests that reach this site). NOT a connector blocker (the connector uses the new domain); only matters if something still references hq-prescott, which would 404 rather than redirect. If a real redirect is wanted, the old name needs its own site/redirect, which this repo cannot control.
+- Task 5 DIAGNOSTICS: gone. Generated traffic, then in Functions -> mcp -> Logs the recent lines are only invocation summaries (request id + duration + memory); filtering the log for "mcp-" returns "No results found", so none of [mcp-req], [mcp-register], [mcp-register-resp], [mcp-authorize] remain.
+- Task 6 ENV VARS (values NOT read/changed): MCP_BEARER_TOKEN exists, all scopes, same value in all deploy contexts (Production included). MCP_OAUTH_CLIENT_SECRET exists (secret, scoped Builds/Functions/Runtime), 1 value in 1 deploy context = Production (updated by Dylan 15 days ago). MCP_OAUTH_CLIENT_ID also exists (all contexts). So Dylan only has to overwrite the two existing Production values.
+- Task 7 CONNECTOR UI: COULD NOT inspect from within the session. The Cowork/Claude desktop window is hidden while computer-use is active, so its own Settings -> Connectors UI is not visible or drivable by the agent (Cmd+, opened nothing visible). Could not set the server URL or visually confirm a custom-header field. To Cowork's knowledge the Claude desktop custom-connector dialog exposes Name + Remote MCP server URL + (Advanced) OAuth Client ID / Secret, and NO free-form request-header field, which would mean the bearer key must be passed via the URL variant https://prescottepoxy.netlify.app/mcp?token=<key> rather than an Authorization header. Dylan to confirm in the connector dialog.
+- Task 8: NOT run yet (waits for Dylan to paste the token and say "connected").
+Files touched: PROJECT-LOG.md only. External (read-only): Netlify dashboard (deploys, env vars, function logs), live curl checks against prescottepoxy.netlify.app + hq-prescott.netlify.app.
+Next steps / Handoff to Dylan: (1) Generate two secrets locally and paste into Netlify Production, overwriting the existing values: openssl rand -hex 32 -> MCP_BEARER_TOKEN; openssl rand -hex 24 -> MCP_OAUTH_CLIENT_SECRET. Save + trigger a redeploy. (2) In Settings -> Connectors, open Topcoat, set server URL = https://prescottepoxy.netlify.app/mcp, leave OAuth Client ID/Secret blank. If there is a custom-header field, set "Authorization: Bearer <key>"; if there is only a URL field (expected), use https://prescottepoxy.netlify.app/mcp?token=<key>. (3) Tell Cowork "connected" and it runs the task-8 get_schedule(limit 3) live test. NOTE the task-4 redirect finding: the old hq-prescott host 404s rather than 301-redirecting.
+
+---
+
 ## [2026-06-19 17:55] Cowork: Zapier audit complete; missing jobs are silent NON-FIRES, not failures
 By: Cowork
 Changed: No code (audit only). Dylan logged into Zapier; Cowork ran the read-only task-history audit (no test zaps fired, no zaps modified). Inventory: two CRM zaps, both ON and owned by Dylan: "PEC Proposal Accepted" (zap 353945579, DripJobs trigger -> +2 actions -> Webhooks POST to the proposal-accepted Netlify function = JOB CREATION) and "PEC Deal Scheduled -> Set Install Date in CRM" (zap 364602082, DripJobs "Deal Stage Changed" -> Filter -> Webhooks POST = install-date update only).
