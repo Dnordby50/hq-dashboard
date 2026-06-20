@@ -3,7 +3,9 @@
 // POST /.netlify/functions/pec-webhook-proposal-accepted
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>
 
-const { sb, epoxyStages, paintStages, badSecret, json, randomToken } = require('./_pec-supabase.cjs');
+const { sb, epoxyStages, paintStages, badSecret, json, randomToken, logIngest } = require('./_pec-supabase.cjs');
+
+const ENDPOINT = 'proposal-accepted';
 
 // DripJobs sends scope/notes wrapped in HTML (<p>...</p>, <br>, entities).
 // Stored raw, those tags show up as literal text in the CRM. Convert to plain
@@ -41,7 +43,10 @@ exports.handler = async (event) => {
     price, monthly_payment, dripjobs_url, warranty, salesperson,
   } = body;
 
-  if (!customer_name) return json(400, { success: false, error: 'customer_name is required' });
+  if (!customer_name) {
+    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name: null, company, outcome: 'rejected', status_code: 400, message: 'customer_name is required', payload: body });
+    return json(400, { success: false, error: 'customer_name is required' });
+  }
 
   const cleanScope = stripHtml(scope);
   // The proposal-accepted event fires the day the proposal is signed, so
@@ -158,9 +163,14 @@ exports.handler = async (event) => {
         }
       } catch (bridgeErr) {
         console.error('pec-webhook-proposal-accepted: prod auto-bridge failed (non-fatal):', bridgeErr);
+        // The public.jobs row DID succeed (job.id) but the pec_prod_jobs bridge
+        // threw, so this job lands on the Jobs page but never on the Schedule --
+        // the silent partial-ingestion class the Sync Health view exists to catch.
+        await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company: companyKey, outcome: 'bridge_failed', status_code: 200, message: bridgeErr && bridgeErr.message ? bridgeErr.message : String(bridgeErr), payload: body, public_job_id: job.id });
       }
     }
 
+    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company: customer.company || company, outcome: 'ok', status_code: 200, message: jobIsNew ? 'job created' : 'existing job reused (re-fire)', payload: body, public_job_id: job.id, prod_job_id: prodJobId });
     return json(200, {
       success: true,
       data: {
@@ -173,6 +183,7 @@ exports.handler = async (event) => {
     });
   } catch (err) {
     console.error('pec-webhook-proposal-accepted error:', err);
+    await logIngest({ endpoint: ENDPOINT, deal_id, customer_name, company, outcome: 'error', status_code: 500, message: err && err.message ? err.message : String(err), payload: body });
     return json(500, { success: false, error: err.message });
   }
 };

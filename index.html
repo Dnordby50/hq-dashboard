@@ -1911,6 +1911,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
           <div class="pec-subnav-group">Admin</div>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
+          <button data-pec-view="dripjobs-sync-health" class="pec-role-admin">DripJobs Sync Health</button>
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
           <button data-pec-view="docs">Help</button>
         </nav>
@@ -6062,6 +6063,7 @@ function switchView(v) {
       costing: renderJobCosting,
       'completed-costing': renderCompletedCosting,
       'crew-bonus': renderBonusReport,
+      'dripjobs-sync-health': renderDripJobsSyncHealth,
       settings: renderSettings,
     })[v] || renderDashboard;
     try {
@@ -16657,6 +16659,170 @@ async function renderCompletedCosting() {
       if (countEl) countEl.textContent = q ? `${shown} of ${total} finalized job${plural(total)}` : `${total} finalized job${plural(total)}`;
     });
   }
+}
+
+// ============================================================
+// DripJobs Sync Health (admin-only, read-only)
+// ============================================================
+// Surfaces the ingestion failures that used to be invisible (logged to the
+// Netlify console only). Three sections:
+//   A. CRM jobs (public.jobs, dripjobs-sourced) with NO pec_prod_jobs bridge row
+//      for the same dripjobs_deal_id -- the silent partial-ingestion class. Works
+//      off existing data, independent of the ingest log.
+//   B. Recent ingestion errors from pec_webhook_ingest_log (rejected/error/
+//      bridge_failed) + an inbound-volume header so a drop-off is visible.
+//   C. Manual pec_prod_jobs entries (dripjobs_deal_id null) whose normalized
+//      name+address matches a bridged job -- possible duplicates to reconcile.
+// CEILING: cannot detect a deal that never reached the webhook (Zap errored/
+// filtered/never-fired); that needs a Zapier audit / DripJobs API pull.
+async function renderDripJobsSyncHealth() {
+  const root = $('pecViewRoot');
+  if (!isAdmin()) { root.innerHTML = '<div class="pec-empty">You do not have access to DripJobs Sync Health.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
+
+  const fmtDateTime = (iso) => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const fmtDay = (iso) => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  // Core data: dripjobs-sourced CRM jobs + all live prod jobs. Section A and C
+  // are computed from these; both work even before the ingest-log migration.
+  let crmJobs = [], prodJobs = [];
+  try {
+    const [jobsRes, prodRes] = await withFreshSession(() => Promise.all([
+      supabase.from('jobs').select('id,address,signed_date,created_at,dripjobs_deal_id,dripjobs_url,source,archived_at,customers(name,company)').eq('source', 'dripjobs').not('dripjobs_deal_id', 'is', null).is('archived_at', null),
+      supabase.from('pec_prod_jobs').select('id,customer_name,address,proposal_number,dripjobs_deal_id,created_at,archived_at').is('archived_at', null),
+    ]), { label: 'dripjobsSyncHealth' });
+    if (jobsRes.error) throw jobsRes.error;
+    if (prodRes.error) throw prodRes.error;
+    crmJobs = jobsRes.data || [];
+    prodJobs = prodRes.data || [];
+  } catch (err) {
+    root.innerHTML = `<div class="pec-empty">Could not load sync data: ${esc(err && err.message ? err.message : String(err))}</div>`;
+    return;
+  }
+
+  // Ingest log (section B). Tolerant of the table not existing yet (pre-migration):
+  // any error degrades to a "not applied" note instead of breaking the view.
+  let logRows = null, logErr = null, okCount24 = 0, okCount7 = 0, lastOk = null;
+  try {
+    const since24 = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const since7 = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    const [errRes, ok24Res, ok7Res, lastOkRes] = await withFreshSession(() => Promise.all([
+      supabase.from('pec_webhook_ingest_log').select('created_at,endpoint,outcome,customer_name,deal_id,message').in('outcome', ['rejected', 'error', 'bridge_failed']).order('created_at', { ascending: false }).limit(50),
+      supabase.from('pec_webhook_ingest_log').select('id', { count: 'exact', head: true }).eq('outcome', 'ok').gte('created_at', since24),
+      supabase.from('pec_webhook_ingest_log').select('id', { count: 'exact', head: true }).eq('outcome', 'ok').gte('created_at', since7),
+      supabase.from('pec_webhook_ingest_log').select('created_at').eq('outcome', 'ok').order('created_at', { ascending: false }).limit(1),
+    ]), { label: 'dripjobsIngestLog' });
+    if (errRes.error) throw errRes.error;
+    logRows = errRes.data || [];
+    okCount24 = ok24Res.count || 0;
+    okCount7 = ok7Res.count || 0;
+    lastOk = (lastOkRes.data && lastOkRes.data[0]) ? lastOkRes.data[0].created_at : null;
+  } catch (err) {
+    logErr = err && err.message ? err.message : String(err);
+  }
+
+  // --- Section A: dripjobs-sourced PEC jobs missing their prod bridge row ---
+  const prodDealSet = new Set(prodJobs.map(p => p.dripjobs_deal_id).filter(Boolean).map(String));
+  const sectionA = crmJobs
+    .filter(j => ((j.customers && j.customers.company) || 'prescott-epoxy') === 'prescott-epoxy' && !prodDealSet.has(String(j.dripjobs_deal_id)))
+    .sort((a, b) => String(b.signed_date || b.created_at || '').localeCompare(String(a.signed_date || a.created_at || '')));
+
+  // --- Section C: manual prod entries that may duplicate a real deal ---
+  const manualJobs = prodJobs.filter(p => !p.dripjobs_deal_id);
+  const bridgedJobs = prodJobs.filter(p => p.dripjobs_deal_id);
+  const sectionC = [];
+  for (const m of manualJobs) {
+    const mn = norm(m.customer_name); const ma = norm(m.address);
+    if (!mn) continue;
+    // Match on normalized name; require address to match too when BOTH have one
+    // (an empty address on either side is treated as "not contradicting").
+    const matches = bridgedJobs.filter(b => norm(b.customer_name) === mn && (!ma || !norm(b.address) || norm(b.address) === ma));
+    if (matches.length) sectionC.push({ manual: m, matches });
+  }
+
+  const outcomeBadge = (o) => {
+    const color = o === 'bridge_failed' ? 'var(--rd-warn,#b45309)' : o === 'rejected' ? 'var(--muted)' : 'var(--rd-danger,#dc2626)';
+    return `<span style="color:${color};font-weight:600">${esc(o)}</span>`;
+  };
+
+  // Section A table
+  const sectionAHtml = sectionA.length === 0
+    ? '<div class="pec-empty" style="font-size:.8rem">None. Every dripjobs-sourced PEC job has a matching Job Schedule row.</div>'
+    : `<div style="overflow-x:auto"><table class="pec-table" style="font-size:.8rem">
+        <thead><tr><th>Customer</th><th>Address</th><th>Deal</th><th>Signed</th><th></th></tr></thead>
+        <tbody>${sectionA.map(j => `<tr class="nohover">
+          <td><strong>${esc((j.customers && j.customers.name) || '—')}</strong></td>
+          <td>${esc(j.address || '—')}</td>
+          <td>${esc(j.dripjobs_deal_id || '—')}</td>
+          <td>${esc(fmtDay(j.signed_date || j.created_at))}</td>
+          <td style="white-space:nowrap"><button class="pec-btn ghost sm" data-sync-openjob="${esc(j.id)}">Open job</button>${j.dripjobs_url ? ` <a class="pec-btn ghost sm" href="${esc(j.dripjobs_url)}" target="_blank" rel="noopener">DripJobs ↗</a>` : ''}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+
+  // Section B header + table
+  const sectionBHeader = logErr
+    ? `<div style="font-size:.75rem;color:var(--rd-warn,#b45309);margin-bottom:8px">Ingestion log not available yet (${esc(logErr)}). Apply the 2026-06-19_webhook_ingest_log.sql migration to start recording inbound webhook attempts.</div>`
+    : `<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">
+        <div><div style="color:var(--muted);font-size:.72rem">Successful ingests (24h)</div><div style="font-size:1.3rem;font-weight:700">${okCount24}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Successful ingests (7d)</div><div style="font-size:1.3rem;font-weight:700">${okCount7}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Most recent success</div><div style="font-size:.95rem;font-weight:600">${esc(fmtDateTime(lastOk))}</div></div>
+      </div>`;
+  const sectionBHtml = logErr
+    ? ''
+    : (logRows.length === 0
+      ? '<div class="pec-empty" style="font-size:.8rem">No ingestion errors recorded.</div>'
+      : `<div style="overflow-x:auto"><table class="pec-table" style="font-size:.8rem">
+          <thead><tr><th>When</th><th>Endpoint</th><th>Outcome</th><th>Customer / Deal</th><th>Message</th></tr></thead>
+          <tbody>${logRows.map(r => `<tr class="nohover">
+            <td style="white-space:nowrap">${esc(fmtDateTime(r.created_at))}</td>
+            <td>${esc(r.endpoint || '—')}</td>
+            <td>${outcomeBadge(r.outcome)}</td>
+            <td>${esc(r.customer_name || '—')}${r.deal_id ? `<div style="color:var(--muted);font-size:.7rem">#${esc(r.deal_id)}</div>` : ''}</td>
+            <td style="color:var(--muted);font-size:.72rem">${esc(r.message || '')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`);
+
+  // Section C table
+  const sectionCHtml = sectionC.length === 0
+    ? '<div class="pec-empty" style="font-size:.8rem">None. No manual entries look like a DripJobs deal already in the system.</div>'
+    : `<div style="overflow-x:auto"><table class="pec-table" style="font-size:.8rem">
+        <thead><tr><th>Manual entry</th><th>Address</th><th>Possibly duplicates</th><th></th></tr></thead>
+        <tbody>${sectionC.map(({ manual, matches }) => `<tr class="nohover">
+          <td><strong>${esc(manual.customer_name || '—')}</strong>${manual.proposal_number ? `<div style="color:var(--muted);font-size:.7rem">${esc(manual.proposal_number)}</div>` : ''}</td>
+          <td>${esc(manual.address || '—')}</td>
+          <td>${matches.map(b => `<div>${esc(b.customer_name || '—')} <span style="color:var(--muted)">#${esc(b.dripjobs_deal_id)}</span></div>`).join('')}</td>
+          <td style="white-space:nowrap"><button class="pec-btn ghost sm" data-sync-opencosting="${esc(manual.id)}">Open manual</button> ${matches.map(b => `<button class="pec-btn ghost sm" data-sync-opencosting="${esc(b.id)}">Open #${esc(b.dripjobs_deal_id)}</button>`).join(' ')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+
+  root.innerHTML = `
+    <div class="pec-card">
+      <h3 style="margin:0 0 4px">DripJobs Sync Health <span style="color:var(--muted);font-size:.7rem;font-weight:400">catch missing / partial / silent-fail ingestion</span></h3>
+      <div style="font-size:.75rem;color:var(--muted)">DripJobs jobs reach the CRM only via a Zapier push. This view surfaces jobs that arrived partially, payloads that were rejected, and manual entries that may duplicate a real deal. <strong>Ceiling:</strong> it cannot detect a deal that never reached the webhook at all (a Zap that errored, was filtered, or never fired) — that needs a Zapier task-history audit or a DripJobs API pull.</div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin:0 0 2px">A. On Jobs page but not on the Schedule <span style="color:var(--muted);font-size:.72rem;font-weight:400">partial ingestion — ${sectionA.length}</span></h3>
+      <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">A public.jobs row was created but the pec_prod_jobs bridge did not, so the job never reached the Job Schedule. These are the silent partial failures.</div>
+      ${sectionAHtml}
+    </div>
+    <div class="pec-card">
+      <h3 style="margin:0 0 6px">B. Recent ingestion errors <span style="color:var(--muted);font-size:.72rem;font-weight:400">${logErr ? '' : 'rejected / error / bridge_failed — ' + logRows.length}</span></h3>
+      ${sectionBHeader}
+      ${sectionBHtml}
+    </div>
+    <div class="pec-card">
+      <h3 style="margin:0 0 2px">C. Manual entries that may duplicate a real deal <span style="color:var(--muted);font-size:.72rem;font-weight:400">${sectionC.length}</span></h3>
+      <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Manually added schedule jobs (no DripJobs deal) whose name + address closely match a DripJobs-sourced job. Review and reconcile; nothing is merged automatically.</div>
+      ${sectionCHtml}
+    </div>`;
+
+  root.querySelectorAll('[data-sync-openjob]').forEach(b => b.addEventListener('click', () => {
+    state.openJobId = b.dataset.syncOpenjob; switchView('jobs');
+  }));
+  root.querySelectorAll('[data-sync-opencosting]').forEach(b => b.addEventListener('click', () => {
+    state.openUnifiedJobId = b.dataset.syncOpencosting; switchView('costing');
+  }));
 }
 
 // ============================================================

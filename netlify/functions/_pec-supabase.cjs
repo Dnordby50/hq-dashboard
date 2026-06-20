@@ -60,4 +60,31 @@ async function sb(method, path, payload, returnRow) {
   return ct.includes('application/json') ? res.json() : res.text();
 }
 
-module.exports = { sb, json, badSecret, randomToken, epoxyStages, paintStages };
+// Best-effort ingestion logger. Writes one row to pec_webhook_ingest_log per
+// inbound webhook attempt so partial/rejected/errored deliveries are queryable
+// (the "DripJobs Sync Health" view reads this). CRITICAL: this must NEVER throw
+// or change the handler's response -- a logging failure (table missing before
+// the migration lands, network blip, bad field) is swallowed entirely. Uses the
+// service-role sb() client, which bypasses RLS. Fire-and-forget but awaited so
+// the lambda does not freeze before the write lands.
+async function logIngest(fields) {
+  try {
+    await sb('POST', '/pec_webhook_ingest_log', {
+      endpoint: fields.endpoint || null,
+      deal_id: fields.deal_id != null ? String(fields.deal_id) : null,
+      customer_name: fields.customer_name || null,
+      company: fields.company || null,
+      outcome: fields.outcome,            // 'ok' | 'rejected' | 'error' | 'bridge_failed'
+      status_code: fields.status_code != null ? fields.status_code : null,
+      message: fields.message != null ? String(fields.message).slice(0, 2000) : null,
+      payload: fields.payload != null ? fields.payload : null,
+      public_job_id: fields.public_job_id || null,
+      prod_job_id: fields.prod_job_id || null,
+    });
+  } catch (logErr) {
+    // Intentionally swallowed: the log is observability, never a gate on ingest.
+    console.error('logIngest failed (non-fatal):', logErr && logErr.message ? logErr.message : logErr);
+  }
+}
+
+module.exports = { sb, json, badSecret, randomToken, epoxyStages, paintStages, logIngest };

@@ -13,7 +13,9 @@
 // the proposal-accepted bridge has not fired yet), we return 200 with
 // matched:false so DripJobs does not retry forever.
 
-const { sb, badSecret, json } = require('./_pec-supabase.cjs');
+const { sb, badSecret, json, logIngest } = require('./_pec-supabase.cjs');
+
+const ENDPOINT = 'appointment-set';
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });
@@ -25,8 +27,14 @@ exports.handler = async (event) => {
 
   const { deal_id, install_date, appointment_date } = body;
   const rawDate = install_date || appointment_date;
-  if (!deal_id) return json(400, { success: false, error: 'deal_id is required' });
-  if (!rawDate) return json(400, { success: false, error: 'install_date (or appointment_date) is required' });
+  if (!deal_id) {
+    await logIngest({ endpoint: ENDPOINT, deal_id: null, outcome: 'rejected', status_code: 400, message: 'deal_id is required', payload: body });
+    return json(400, { success: false, error: 'deal_id is required' });
+  }
+  if (!rawDate) {
+    await logIngest({ endpoint: ENDPOINT, deal_id, outcome: 'rejected', status_code: 400, message: 'install_date (or appointment_date) is required', payload: body });
+    return json(400, { success: false, error: 'install_date (or appointment_date) is required' });
+  }
 
   // Accept YYYY-MM-DD, ISO 8601 (slice first 10), or US-style M/D/YYYY (the
   // shape DripJobs sends via Zapier's Lead Job Start Date field).
@@ -38,6 +46,7 @@ exports.handler = async (event) => {
     const [m, d, y] = raw.split('/');
     iso = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
   } else {
+    await logIngest({ endpoint: ENDPOINT, deal_id, outcome: 'rejected', status_code: 400, message: 'install_date must be YYYY-MM-DD, ISO 8601 timestamp, or M/D/YYYY', payload: body });
     return json(400, { success: false, error: 'install_date must be YYYY-MM-DD, ISO 8601 timestamp, or M/D/YYYY' });
   }
 
@@ -47,10 +56,14 @@ exports.handler = async (event) => {
       `/pec_prod_jobs?dripjobs_deal_id=eq.${encodeURIComponent(deal_id)}&select=id,install_date&limit=1`
     );
     if (!existing.length) {
+      // matched:false is a normal outcome (FTP job or bridge not fired yet), not
+      // an error -- log as ok so it does not show as a failure in Sync Health.
+      await logIngest({ endpoint: ENDPOINT, deal_id, outcome: 'ok', status_code: 200, message: 'no matching prod job (matched:false)', payload: body });
       return json(200, { success: true, data: { matched: false, deal_id } });
     }
     const job = existing[0];
     await sb('PATCH', `/pec_prod_jobs?id=eq.${job.id}`, { install_date: iso });
+    await logIngest({ endpoint: ENDPOINT, deal_id, outcome: 'ok', status_code: 200, message: 'install_date set to ' + iso, payload: body, prod_job_id: job.id });
     return json(200, {
       success: true,
       data: {
@@ -62,6 +75,7 @@ exports.handler = async (event) => {
     });
   } catch (err) {
     console.error('pec-webhook-appointment-set error:', err);
+    await logIngest({ endpoint: ENDPOINT, deal_id, outcome: 'error', status_code: 500, message: err && err.message ? err.message : String(err), payload: body });
     return json(500, { success: false, error: err.message });
   }
 };
