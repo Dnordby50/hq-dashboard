@@ -22,6 +22,16 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-19 16:55] Cowork: wrote Claude Code prompt for a Job Costing search bar
+By: Cowork
+Changed: No app code. Dylan asked for a search bar inside Job Costing to find jobs that are completed and costed out. Wrote claude-code-prompt-job-costing-search.md (repo root) directing Claude Code to add a client-side search input to the Completed Job Costing view (renderCompletedCosting, index.html ~16540) that filters finalized-job rows by customer name, address, proposal number, system, and crew. Specified an in-place data-search row-toggle approach (no full re-render) so the input keeps focus while typing, which is why it does NOT copy the costFilter select pattern at ~16444 (that re-renders and would drop focus). Marked mirroring it onto the active renderJobCosting list as optional. Display-only, no migration, no DB query.
+Why: completed/costed jobs live in Completed Job Costing and there is currently no way to filter that table; it is a long scroll once many jobs are finalized.
+Files touched: claude-code-prompt-job-costing-search.md (new), PROJECT-LOG.md.
+Next steps: Dylan pastes the prompt into Claude Code to build it.
+Handoff to Dylan: paste the prompt into Claude Code. No Cowork DB action needed.
+
+---
+
 ## [2026-06-19 16:28] Cowork: applied 2026-06-19_ot_hours.sql to PROD (ot_hours columns live)
 By: Cowork
 Changed: No repo code. Dylan said "run latest migration." Applied supabase/migrations/2026-06-19_ot_hours.sql (Claude Code's OT-aware costing migration) to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main, role postgres) via the Supabase SQL editor. Ran the two additive ALTERs: add column if not exists ot_hours on public.pec_prod_job_manual_labor and on public.pec_prod_busybusy_time_entries, both not null default 0. Result: "Success. No rows returned." Verified via information_schema.columns: 2 rows, ot_hours present on both tables, data_type numeric, default 0.

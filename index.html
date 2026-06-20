@@ -16348,7 +16348,8 @@ async function renderJobCosting() {
           <option value="delivered" ${filt==='delivered'?'selected':''}>Delivered</option>
           <option value="completed" ${filt==='completed'?'selected':''}>Completed</option>
         </select>
-        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
+        ${jobs.length ? '<input type="search" id="costSearch" placeholder="Search jobs (name, address, proposal #)">' : ''}
+        <span id="costCount" style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
         <button class="pec-btn sm" id="costPrint">Print</button>
       </div>
     </div>
@@ -16388,7 +16389,10 @@ async function renderJobCosting() {
               const laborActual = Number(cost?.salary_wages_cost || 0);
               const laborVar = (laborBudget != null && laborBudget > 0) ? ((laborActual - laborBudget) / laborBudget) : null;
               const laborVarCls = laborVar == null ? '' : (laborVar > 0 ? 'cost-neg' : 'cost-pos');
-              return `<tr data-job-id="${esc(j.id)}">
+              // Same in-place search haystack as Completed Job Costing.
+              const searchStr = [j.customer_name, j.address, j.proposal_number, sys ? sys.name : '', j.crew_id && crewById[j.crew_id] ? crewById[j.crew_id].name : '']
+                .filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ');
+              return `<tr data-job-id="${esc(j.id)}" data-search="${esc(searchStr)}">
                 <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number)}</div></td>
                 <td><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></td>
                 <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
@@ -16435,6 +16439,7 @@ async function renderJobCosting() {
                 <td><input class="cost-text" data-cost="notes" data-table="cost" value="${esc(cost?.notes || '')}"></td>
               </tr>`;
             }).join('') || '<tr class="nohover"><td colspan="36" class="pec-empty">No jobs in this filter.</td></tr>'}
+            <tr id="costNoMatch" class="nohover" hidden><td colspan="36" class="pec-empty">No matching jobs</td></tr>
           </tbody>
         </table>
       </div>
@@ -16443,6 +16448,26 @@ async function renderJobCosting() {
 
   $('costFilter').addEventListener('change', e => { state.costingFilter = e.target.value; renderJobCosting(); });
   $('costPrint').addEventListener('click', () => window.print());
+  // In-place search (same approach as Completed Job Costing): toggle row hidden
+  // flags so focus is kept; no re-render, no DB query. Filters within the
+  // currently selected costFilter.
+  const costSearchEl = $('costSearch');
+  if (costSearchEl) {
+    const costCountEl = $('costCount');
+    const costNoMatchEl = $('costNoMatch');
+    const total = jobs.length;
+    costSearchEl.addEventListener('input', () => {
+      const q = costSearchEl.value.trim().replace(/\s+/g, ' ').toLowerCase();
+      let shown = 0;
+      root.querySelectorAll('tr[data-job-id]').forEach(tr => {
+        const match = !q || (tr.dataset.search || '').includes(q);
+        tr.hidden = !match;
+        if (match) shown++;
+      });
+      if (costNoMatchEl) costNoMatchEl.hidden = !(q && shown === 0);
+      if (costCountEl) costCountEl.textContent = q ? `${shown} of ${total} job${total === 1 ? '' : 's'}` : `${total} job${total === 1 ? '' : 's'}`;
+    });
+  }
   const rollupToggle = root.querySelector('[data-rollup-toggle]');
   if (rollupToggle) rollupToggle.addEventListener('click', () => {
     state.costingRollupOpen = !(state.costingRollupOpen !== false);
@@ -16567,7 +16592,8 @@ async function renderCompletedCosting() {
     <div class="pec-card" style="border-radius:0">
       <div class="pec-toolbar">
         <h3 style="margin:0">Completed Job Costing</h3>
-        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} finalized job${jobs.length === 1 ? '' : 's'}</span>
+        ${jobs.length ? '<input type="search" id="completedCostSearch" placeholder="Search completed jobs (name, address, proposal #)" style="margin-left:16px">' : ''}
+        <span id="completedCostCount" style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} finalized job${jobs.length === 1 ? '' : 's'}</span>
       </div>
     </div>
     <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
@@ -16583,8 +16609,14 @@ async function renderCompletedCosting() {
             <th>Finalized</th>
           </tr></thead>
           <tbody>
-            ${rows.map(({ j, sys, r }) => `
-              <tr data-completed-cost="${esc(j.id)}" style="cursor:pointer">
+            ${rows.map(({ j, sys, r }) => {
+              // Lowercased, whitespace-collapsed haystack for the in-place search:
+              // the fields Dylan would type to find a job. Decoded back by the
+              // browser from dataset.search, so matching runs on the real text.
+              const searchStr = [j.customer_name, j.address, j.proposal_number, sys ? sys.name : '', j.crew_id && crewById[j.crew_id] ? crewById[j.crew_id].name : '']
+                .filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ');
+              return `
+              <tr data-completed-cost="${esc(j.id)}" data-search="${esc(searchStr)}" style="cursor:pointer">
                 <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number || '')}</div></td>
                 <td>${sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>'}</td>
                 <td>${j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
@@ -16593,7 +16625,8 @@ async function renderCompletedCosting() {
                 <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtMoneyOrDash(r.gp)}</td>
                 <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
                 <td style="font-size:.72rem">${esc(j.costing_finalized_by || 'Admin')}<div style="color:var(--muted)">${esc(fmtStamp(j.costing_finalized_at))}</div></td>
-              </tr>`).join('')}
+              </tr>`; }).join('')}
+            <tr id="completedCostNoMatch" class="nohover" hidden><td colspan="8" class="pec-empty">No matching jobs</td></tr>
           </tbody>
         </table>
       </div>`}
@@ -16604,6 +16637,26 @@ async function renderCompletedCosting() {
       switchView('costing');
     });
   });
+  // In-place search: toggle each row's hidden flag so the input keeps focus
+  // while typing (a full re-render per keystroke would drop it). No DB query.
+  const searchEl = $('completedCostSearch');
+  if (searchEl) {
+    const countEl = $('completedCostCount');
+    const noMatchEl = $('completedCostNoMatch');
+    const total = jobs.length;
+    const plural = (n) => n === 1 ? '' : 's';
+    searchEl.addEventListener('input', () => {
+      const q = searchEl.value.trim().replace(/\s+/g, ' ').toLowerCase();
+      let shown = 0;
+      root.querySelectorAll('tr[data-completed-cost]').forEach(tr => {
+        const match = !q || (tr.dataset.search || '').includes(q);
+        tr.hidden = !match;
+        if (match) shown++;
+      });
+      if (noMatchEl) noMatchEl.hidden = !(q && shown === 0);
+      if (countEl) countEl.textContent = q ? `${shown} of ${total} finalized job${plural(total)}` : `${total} finalized job${plural(total)}`;
+    });
+  }
 }
 
 // ============================================================
