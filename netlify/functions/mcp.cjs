@@ -298,19 +298,6 @@ function protectedResourceMetadata(origin) {
 }
 
 exports.handler = async (event) => {
-  // Temporary diagnostic: log every request that reaches the function so we
-  // can see exactly what Anthropic's MCP client probes during connector add.
-  // Remove after the OAuth flow is stable. Logs land in Netlify Function logs.
-  try {
-    console.log('[mcp-req]', JSON.stringify({
-      m: event.httpMethod,
-      p: event.path,
-      auth: !!(event.headers.authorization || event.headers.Authorization),
-      ua: (event.headers['user-agent'] || '').slice(0, 80),
-      ct: event.headers['content-type'] || event.headers['Content-Type'] || '',
-    }));
-  } catch {}
-
   const cors = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version',
@@ -382,20 +369,6 @@ exports.handler = async (event) => {
     try { req = JSON.parse(event.body || '{}'); } catch {}
     const redirectUris = Array.isArray(req.redirect_uris) ? req.redirect_uris : [];
 
-    // Secret-safe diagnostic: the DCR REQUEST body carries no credentials (just
-    // client metadata), so logging it is safe and tells us exactly what
-    // Anthropic's connector asks for. Remove with the rest of the diagnostics.
-    try {
-      console.log('[mcp-register]', JSON.stringify({
-        name: req.client_name || '',
-        ru: redirectUris,
-        gt: req.grant_types || null,
-        rt: req.response_types || null,
-        am: req.token_endpoint_auth_method || null,
-        scope: req.scope || null,
-      }));
-    } catch {}
-
     // Honor the client's requested auth method. Anthropic's connector registers
     // as a PUBLIC client (token_endpoint_auth_method "none", PKCE-only) and has
     // nowhere safe to store a secret; if we force a confidential registration
@@ -427,14 +400,6 @@ exports.handler = async (event) => {
       reg.client_secret = expectedSecret;
       reg.client_secret_expires_at = 0; // never
     }
-    // Secret-safe diagnostic of the RESPONSE shape: log every field we return
-    // EXCEPT the secret value (replaced by a presence flag). Lets us confirm the
-    // exact registration body the client receives without leaking the secret.
-    try {
-      const safe = { ...reg };
-      if ('client_secret' in safe) safe.client_secret = `<present:${String(reg.client_secret).length}ch>`;
-      console.log('[mcp-register-resp]', JSON.stringify(safe));
-    } catch {}
     return {
       statusCode: 201,
       headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -458,19 +423,6 @@ exports.handler = async (event) => {
     const codeChallenge = q.code_challenge || '';
     const codeChallengeMethod = q.code_challenge_method || '';
     const state = q.state || '';
-    // Secret-safe diagnostic: authorize query carries no credentials (the
-    // code_challenge is a one-way hash, not the verifier). Confirms whether the
-    // browser step is reached at all and with what params. Remove later.
-    try {
-      console.log('[mcp-authorize]', JSON.stringify({
-        rt: responseType,
-        ci: clientId,
-        ru: redirectUri,
-        ccm: codeChallengeMethod,
-        hasChallenge: !!codeChallenge,
-        scope: q.scope || null,
-      }));
-    } catch {}
     if (responseType !== 'code') {
       return { statusCode: 400, headers: { ...cors, 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'unsupported_response_type' }) };
     }
