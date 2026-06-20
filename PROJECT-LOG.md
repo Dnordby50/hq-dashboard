@@ -35,6 +35,18 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-19 17:20] Cowork: diagnosed missing-zaps issue; wrote DripJobs Sync Health prompt; Zapier audit blocked on login
+By: Cowork
+Changed: No app code. Dylan: some DripJobs jobs are not arriving in the CRM and the office re-enters them by hand; asked to refine the DripJobs pull or add a verification action. Investigated the ingestion path (pec-webhook-proposal-accepted.cjs + the grep history). Findings: ingestion is 100% Zapier push (DripJobs -> Zap -> webhook -> public.jobs + bridged pec_prod_jobs); DripJobs has no native webhook UI and no API surface on Dylan's tenant (per prior 2026-05/06 investigation and the 2026-06-08 gaps analysis), so there is NO pull to refine and a verification action cannot reconcile against a source it cannot read. Three failure classes are currently invisible: (1) partial ingestion (public.jobs created but the pec_prod_jobs bridge throws; the catch at ~line 159 only console.errors, so the job shows on Jobs but not the Schedule), (2) rejected payloads (missing customer_name -> 400, dropped with no record), (3) caught 500s (console only). The hard ceiling: a deal that never reaches the webhook (Zap errored/filtered/never-fired) leaves no CRM trace and can only be found in Zapier task history or via a DripJobs API pull.
+Dylan chose two paths: audit Zapier now + build a Sync Health panel.
+Deliverable 1 (done): claude-code-prompt-dripjobs-sync-health.md (repo root). Adds pec_webhook_ingest_log (new migration, not applied), best-effort failure logging in the webhook handlers, and an admin-gated "DripJobs Sync Health" view with: A) jobs on the Jobs page with no schedule bridge (works off existing data), B) recent ingestion errors + inbound-volume drop-off, C) manual entries that may duplicate a real deal. Prompt states the never-arrived-zap ceiling explicitly.
+Deliverable 2 (BLOCKED): the Zapier task-history audit. Opened zapier.com/app/history in the browser; the Zapier session is logged out and Cowork cannot sign in (credential entry is not permitted). Needs Dylan to log into Zapier, then Cowork resumes the read-only audit (no test zaps fired).
+Files touched: claude-code-prompt-dripjobs-sync-health.md (new), PROJECT-LOG.md.
+Next steps: (1) Dylan pastes the Sync Health prompt into Claude Code. (2) Dylan logs into Zapier so Cowork can audit task history for the proposal-accepted / appointment-set zaps.
+Handoff to Dylan: log into Zapier (zapier.com) in the browser so the task-history audit can run; and paste the Sync Health prompt into Claude Code. After Claude Code builds it, Cowork applies the 2026-06-19_webhook_ingest_log.sql migration to prod.
+
+---
+
 ## [2026-06-19 16:55] Cowork: wrote Claude Code prompt for a Job Costing search bar
 By: Cowork
 Changed: No app code. Dylan asked for a search bar inside Job Costing to find jobs that are completed and costed out. Wrote claude-code-prompt-job-costing-search.md (repo root) directing Claude Code to add a client-side search input to the Completed Job Costing view (renderCompletedCosting, index.html ~16540) that filters finalized-job rows by customer name, address, proposal number, system, and crew. Specified an in-place data-search row-toggle approach (no full re-render) so the input keeps focus while typing, which is why it does NOT copy the costFilter select pattern at ~16444 (that re-renders and would drop focus). Marked mirroring it onto the active renderJobCosting list as optional. Display-only, no migration, no DB query.
