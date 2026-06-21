@@ -83,6 +83,16 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-20 10:55] Cowork: connector v0.2 deployed + all 4 new tools live-tested OK
+By: Cowork
+Changed: No code. Claude Code shipped v0.2 (commit 404e496, "mcp: v0.2 read tools (sales summary, customers, jobs, pipeline)"), confirmed Published live on Netlify (10:44 PM). Dylan refreshed the Topcoat connector so it re-fetched tools/list and the 4 new tools surfaced. Cowork live-tested each through the connector: find_customers (found Bobette Weiss + contact + job_count) OK; find_jobs (Weiss epoxy job, $5900, scheduled, install 2026-07-30, address) OK; list_pipeline (3 jobs with stage/revenue/paid/balance/days-since-signed AR detail) OK; get_sales_summary (June 2026: 34 booked, $214,930 total; PEC 17/$129,510, FTP 17/$85,420) OK. All read-only, all returning live data.
+Reliability note: get_sales_summary TIMED OUT on the first call ("connector's server isn't responding") then succeeded on retry. Cause is cold-start latency on the Netlify function plus the Apps Script sheet fetch; not a bug. If it becomes annoying, options are caching the sheet read or warming the function. The Supabase-backed tools (find_customers/find_jobs/list_pipeline) returned promptly.
+Files touched: PROJECT-LOG.md only.
+Next steps: optional cold-start mitigation for get_sales_summary if it recurs; the deferred security hardening (move connector auth off the ?token= URL to the OAuth fields, then rotate MCP_BEARER_TOKEN); v0.3 could add write/draft tools once reads are trusted.
+Handoff to Dylan: connector is the full read+metrics layer now. When ready, do the OAuth/key-rotation hardening (Cowork can walk through it).
+
+---
+
 ## [2026-06-20 10:40] Cowork: wrote Claude Code prompt for connector v0.2 read tools + metrics
 By: Cowork
 Changed: No code. Dylan wants the Topcoat connector expanded with read tools + metrics so CRM data is pulled via the connector instead of Chrome scraping (now a saved Cowork preference). Investigated mcp.cjs: v0.1 has ONE tool (get_schedule) reading the Booked Jobs sheet (booked jobs!A:G) via the Apps Script proxy; the server imports only crypto and has NO Supabase access yet. Wrote claude-code-prompt-mcp-v0.2-read-tools.md (repo root) specifying: (1) get_sales_summary metric tool aggregating the same Booked Jobs sheet (count + revenue by business/salesperson/date range); (2) wire SELECT-only Supabase service-role access (SUPABASE_URL + SERVICE_ROLE_KEY already in env, reuse _pec-supabase.cjs pattern); (3) Supabase read tools find_customers, find_jobs, list_pipeline built against the live schema (public.customers, public.jobs, pec_job_ar; respect the two-parallel-job-tables gotcha). Read-only, no writes; bump SERVER_INFO to 0.2.0; keep all tools/list schemas valid (a malformed inputSchema was a live connection-failure mode).
