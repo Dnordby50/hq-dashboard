@@ -64,6 +64,15 @@ Handoff to Dylan: Five modeling questions must be answered before any OT bonus a
 
 ---
 
+## [2026-06-20 10:20] Cowork: Topcoat MCP connector CONNECTED + task-8 live test passed
+By: Cowork
+Changed: No code. Finished connecting the Topcoat MCP connector (continuation of the 07:35 entry below). Root cause of the earlier "Your account was authorized, but Topcoat returned an error when connecting" (ref ofid_81355a1f82f2f3c5): the bearer token presented to /mcp did not match MCP_BEARER_TOKEN, so the endpoint 401'd and Anthropic's connector fell back to OAuth, which then errored. The mismatch was a paste/newline drift between the value in Netlify and the value Dylan was testing with. Fix: regenerated the token piping through `tr -d '\n'` into BOTH a temp file and the clipboard (single source), pasted the clipboard into Netlify MCP_BEARER_TOKEN (Production), redeployed, and confirmed a direct `curl` initialize returned HTTP 200. Then built the connector URL as https://prescottepoxy.netlify.app/mcp?token=<token> via `echo ".../mcp?token=$(cat /tmp/tok.txt)"` so the URL token matched exactly; the connector authenticated on the first call (query-param auth, no OAuth) and connected.
+TASK 8 RESULT (live, via the connector): get_schedule(limit 3) returned 3 rows out of 1549 total matched from the Booked Jobs sheet: (1) Bobette Weiss, FTP, $965 (Doug Gray); (2) Peggy Sargent, FTP, $1848 (Doug Gray); (3) Bobette Weiss, PEC, $5900 (Aron Bronson). End-to-end MCP read path is working.
+Files touched: PROJECT-LOG.md only. External: Netlify env (MCP_BEARER_TOKEN Production value re-set by Dylan) + redeploy; Claude desktop Topcoat connector added by Dylan.
+Next steps / Handoff to Dylan: the bearer key currently rides in the connector URL (?token=), which lands in Netlify access logs. When ready, move to the OAuth fields (MCP_OAUTH_CLIENT_ID + MCP_OAUTH_CLIENT_SECRET) so the secret leaves the URL, then rotate MCP_BEARER_TOKEN. Cowork can walk through the OAuth swap. v0.2 server tools (jobs/customers/proposals reads, draft writes) are the next build per mcp.cjs notes.
+
+---
+
 ## [2026-06-20 07:35] Cowork: MCP (Topcoat connector) verification, tasks 1-7; staged for Dylan's secrets
 By: Cowork
 Changed: No code. Verified the live MCP server + staged the Topcoat connector per a Claude Code handoff (direct bearer-key path, not OAuth). Results:
