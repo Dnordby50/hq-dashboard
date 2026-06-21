@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-20 13:30] MCP: v0.2 read tools (sales summary, customers, jobs, pipeline)
+By: Claude Code
+Changed: Expanded netlify/functions/mcp.cjs from one tool to five, all READ-ONLY, so CRM data is pulled through the connector instead of browser scraping. SERVER_INFO bumped to 0.2.0. New tools and their data source:
+  1) get_sales_summary (Google Sheets, Booked Jobs) -- aggregates the SAME sheet get_schedule reads into total booked-job count + total revenue for a filtered date range, with an optional per-group breakdown (group_by none|business|salesperson). Args: business (all|pec|ftp), start_date, end_date, group_by. Answers "how much did we book this month / by whom."
+  2) find_customers (Supabase public.customers) -- case-insensitive search by name/email/phone (PostgREST or= + ilike). Returns id, name, email, phone, company, and a cheap embedded job_count (jobs(count)).
+  3) find_jobs (Supabase public.jobs + public.customers) -- filter by any of customer, address, status, business. Returns id, customer, company, address, status, type, revenue (price), signed_date, created_at, and a best-effort scheduled_date.
+  4) list_pipeline (Supabase pec_job_ar view) -- jobs by AR/pipeline stage, newest first. Returns customer, stage (status), revenue, paid_to_date, balance_remaining, and the AR timestamps (signed/completed/last payment, days_outstanding, days_since_signed).
+Supabase access: added a SELECT-only helper sbSelect that issues PostgREST GET only (no insert/update/delete path exists in this file) using the existing SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY env. Service role bypasses RLS (safe server-side); the connector stays strictly read-only. If the env is missing or a query fails, the tool throws a clean Error that the existing tools/call wrapper turns into an isError content result, never a 500.
+Refactor: the Booked Jobs A:G column mapping is now a single shared parseBookedJobsRows() + rowInRange() so get_schedule and get_sales_summary cannot drift. get_schedule output is byte-for-byte unchanged (same field order, same scheduled_date/date_booked "|| null", same sort + limit).
+Why: make the connector the primary, faster, more accurate data path; the high-value reads (customers, jobs, pipeline) live in Supabase, which v0.1 could not reach. Per the Cowork prompt (claude-code-prompt-mcp-v0.2-read-tools.md) and the now-saved preference to pull CRM data via the connector instead of Chrome scraping.
+How it works (WHY note): each Supabase tool builds a hand-rolled PostgREST query string. User text is sanitized for the or=()/filter grammar (strip ( ) , * then encodeURIComponent, which keeps the '*' wildcard and encodes spaces) so input can't break out of the value position. business maps to customers.company (pec->prescott-epoxy, ftp->finishing-touch). find_jobs uses customers!inner so customer/business filters become an inner join (the FK is NOT NULL, so no legitimate row is dropped). Scheduled dates are NOT on public.jobs (they live on pec_prod_jobs.install_date per the two-parallel-job-tables gotcha), so find_jobs enriches them best-effort via the dripjobs_deal_id bridge; a failure there leaves scheduled_date null rather than failing the tool. status/stage are free strings (not enums) so a valid value the schema constraint allows -- including 'signed', which the pipeline uses -- is never rejected client-side.
+Guardrails honored: no write tools, no mutations, service-role client issues SELECT/GET only; no secrets logged; the removed [mcp-*] diagnostics were not reintroduced; auth, OAuth endpoints, and the JSON-RPC envelope are untouched.
+Testing: node --check passes. A mocked-handler harness confirmed initialize returns serverInfo.version 0.2.0; tools/list returns all five tools with valid object inputSchemas; and the Supabase tools return HTTP 200 + isError (clean message) rather than a 500 when SUPABASE_URL/SERVICE_ROLE_KEY are absent or a required arg (find_customers query) is missing. Live data-shape verification happens after deploy + connector refresh.
+Files touched: netlify/functions/mcp.cjs, PROJECT-LOG.md
+Next steps: deploy, then refresh/reconnect the connector to pick up the new tools (see Handoff to Dylan).
+Handoff to Dylan: No new env vars (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are already set for the site; confirm they are in scope for the mcp function -- if find_customers/find_jobs/list_pipeline return "Supabase not configured", add them to the function's env). After deploy, the connector caches its tool list, so refresh/reconnect Topcoat in Settings -> Connectors to pick up get_sales_summary, find_customers, find_jobs, and list_pipeline. Then Cowork can test each one live.
+
+---
+
 ## [2026-06-20 12:15] DripJobs Sync Health: make missing / partial / silent-fail ingestion visible
 By: Claude Code
 Changed: Added observability for DripJobs->Zapier->webhook ingestion, which previously failed silently (console.error only, nothing persisted). Three failure classes are now logged and surfaced:
@@ -61,6 +80,16 @@ Files touched: index.html, supabase/migrations/2026-06-19_ot_hours.sql (new), PR
 Next steps: After Cowork applies the migration, Dylan can enter OT per member on any job's Bonus Payout box and see the higher cost / smaller pool. The real BusyBusy OT sync (upsert entries + compute OT from raw punches + populate ot_hours) stays UNBUILT until the BusyBusy 401 is resolved and introspection reveals the real query roots — do not build it blind against a 401 endpoint.
 Handoff to Cowork: Apply supabase/migrations/2026-06-19_ot_hours.sql on the PEC PROD Supabase project (adds ot_hours to pec_prod_job_manual_labor and pec_prod_busybusy_time_entries). It is idempotent. After running, confirm both columns exist (the verify queries are at the bottom of the file) and report them live. Until it is applied, entering OT hours in the UI shows a toast naming this migration.
 Handoff to Dylan: Five modeling questions must be answered before any OT bonus actually pays out (see section 5 of claude-code-prompt-busybusy-overtime-costing.md). The big one: OT is per-PERSON-per-WEEK but costing is per-JOB, so when someone crosses 40 hrs across multiple jobs in a week, which job eats the OT (chronological / pro-rata / last-job-of-week)? Also confirm: OT multiplier = 1.5x (I assumed this); burden stacks on the OT premium (hours x wage x 1.5 x 1.25 — I built it this way); OT threshold = federal weekly >40 only (Arizona); per-member split stays on total hours (I kept this). SEPARATE and still blocking real BusyBusy hours of ANY kind: the BusyBusy 401 (your/support action, not code).
+
+---
+
+## [2026-06-20 10:40] Cowork: wrote Claude Code prompt for connector v0.2 read tools + metrics
+By: Cowork
+Changed: No code. Dylan wants the Topcoat connector expanded with read tools + metrics so CRM data is pulled via the connector instead of Chrome scraping (now a saved Cowork preference). Investigated mcp.cjs: v0.1 has ONE tool (get_schedule) reading the Booked Jobs sheet (booked jobs!A:G) via the Apps Script proxy; the server imports only crypto and has NO Supabase access yet. Wrote claude-code-prompt-mcp-v0.2-read-tools.md (repo root) specifying: (1) get_sales_summary metric tool aggregating the same Booked Jobs sheet (count + revenue by business/salesperson/date range); (2) wire SELECT-only Supabase service-role access (SUPABASE_URL + SERVICE_ROLE_KEY already in env, reuse _pec-supabase.cjs pattern); (3) Supabase read tools find_customers, find_jobs, list_pipeline built against the live schema (public.customers, public.jobs, pec_job_ar; respect the two-parallel-job-tables gotcha). Read-only, no writes; bump SERVER_INFO to 0.2.0; keep all tools/list schemas valid (a malformed inputSchema was a live connection-failure mode).
+Why: make the connector the primary, faster, more-accurate data path; the high-value reads (customers, jobs, pipeline) live in Supabase, which the connector cannot reach today.
+Files touched: claude-code-prompt-mcp-v0.2-read-tools.md (new), PROJECT-LOG.md.
+Next steps: Dylan pastes the prompt into Claude Code to build it, deploys, then refreshes/reconnects the Topcoat connector (it caches tools/list) so the new tools appear; Cowork then tests each live.
+Handoff to Dylan: paste the prompt into Claude Code. No new env vars needed.
 
 ---
 

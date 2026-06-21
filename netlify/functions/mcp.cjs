@@ -1,20 +1,24 @@
-// HQ Dashboard MCP server (v0.1, spike).
+// HQ Dashboard MCP server (v0.2, read-only).
 // Streamable-HTTP transport, stateless: one POST = one JSON-RPC response.
 // Auth: Authorization: Bearer ${MCP_BEARER_TOKEN}
 //
 // Connect from Claude.ai or Claude Code with URL = https://<site>/mcp
 // (or /.netlify/functions/mcp), header Authorization: Bearer <token>.
 //
-// v0.1 surface: one tool, get_schedule, reading the Booked Jobs sheet via the
-// same Apps Script proxy the dashboard uses. Read tools for jobs/customers/
-// proposals and the draft-write tools land in v0.2 once this round-trip is
-// confirmed against the live Claude.ai connector.
+// v0.2 surface (all READ-ONLY, no mutations):
+//   - get_schedule       Booked Jobs sheet rows (Google Sheets via Apps Script proxy)
+//   - get_sales_summary  aggregated booked counts/revenue from the same sheet
+//   - find_customers     search public.customers (Supabase service-role SELECT)
+//   - find_jobs          search public.jobs joined to public.customers (Supabase)
+//   - list_pipeline      pec_job_ar view by AR/pipeline stage (Supabase)
+// The Supabase tools issue PostgREST GET only; there is no write path here.
+// Draft-write tools are a later round, kept out of this read-only connector.
 
 const SHEETS_PROXY = 'https://script.google.com/macros/s/AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA/exec';
 const BOOKED_JOBS_ID = '1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4';
 
 const PROTOCOL_VERSION = '2025-06-18';
-const SERVER_INFO = { name: 'hq-dashboard-mcp', version: '0.1.0' };
+const SERVER_INFO = { name: 'hq-dashboard-mcp', version: '0.2.0' };
 
 const TOOLS = [
   {
@@ -46,6 +50,113 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'get_sales_summary',
+    description: 'Aggregate the Booked Jobs Google Sheet into booked-job counts and total revenue for a filtered date range. Same data and date rule as get_schedule (matches scheduled date when present, otherwise date booked). Use this to answer "how much did we book this month / quarter" and "who booked it" - it returns totals plus an optional per-group breakdown. For the raw job rows use get_schedule instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        business: {
+          type: 'string',
+          enum: ['all', 'pec', 'ftp'],
+          description: "Which business to include. Default 'all'.",
+        },
+        start_date: {
+          type: 'string',
+          description: 'Inclusive ISO date (YYYY-MM-DD). Rows with no parseable date are excluded when any date filter is set.',
+        },
+        end_date: {
+          type: 'string',
+          description: 'Inclusive ISO date (YYYY-MM-DD).',
+        },
+        group_by: {
+          type: 'string',
+          enum: ['none', 'business', 'salesperson'],
+          description: "Break the totals down by this dimension. Default 'none' (grand total only).",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'find_customers',
+    description: 'Search the live CRM (Supabase public.customers) by name, email, or phone (case-insensitive, partial match). Returns id, name, email, phone, business/company, and the number of jobs each customer has. Use this to look up a customer record or get their customer id to feed into find_jobs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Text to match against customer name, email, or phone.',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum customers to return. Default 20, max 200.',
+          minimum: 1,
+          maximum: 200,
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'find_jobs',
+    description: 'Search the live CRM jobs (Supabase public.jobs joined to public.customers). Filter by customer name, address, status, and/or business; any subset of filters can be supplied. Returns job id, customer, address, status, type (epoxy/paint), revenue, signed date, and the scheduled install date when reachable. Use this for the detailed per-job records the dashboard shows on the Jobs page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customer: {
+          type: 'string',
+          description: 'Partial, case-insensitive match on the customer name.',
+        },
+        address: {
+          type: 'string',
+          description: 'Partial, case-insensitive match on the job address.',
+        },
+        status: {
+          type: 'string',
+          description: "Exact job status. Common values: 'confirmed', 'scheduled', 'in_progress', 'completed' (some jobs use 'signed').",
+        },
+        business: {
+          type: 'string',
+          enum: ['all', 'pec', 'ftp'],
+          description: "Which business to include (pec = Prescott Epoxy, ftp = Finishing Touch). Default 'all'.",
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum jobs to return, newest first. Default 20, max 200.',
+          minimum: 1,
+          maximum: 200,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_pipeline',
+    description: 'List jobs by AR / pipeline stage from the Supabase pec_job_ar view, newest first. Returns customer, stage (status), revenue, amount paid, balance remaining, and the AR timestamps (signed, completed, last payment, days outstanding, days since signed). Use this to see where jobs sit from accepted to complete and which ones still owe money.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stage: {
+          type: 'string',
+          description: "Exact pipeline stage to filter by. Common values: 'signed', 'scheduled', 'in_progress', 'completed'. Omit for all stages.",
+        },
+        business: {
+          type: 'string',
+          enum: ['all', 'pec', 'ftp'],
+          description: "Which business to include. Default 'all'.",
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum jobs to return, newest first. Default 50, max 200.',
+          minimum: 1,
+          maximum: 200,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 function parseDate(s) {
@@ -69,6 +180,40 @@ async function fetchSheet(id, range) {
   return res.json();
 }
 
+// Shared parse of the Booked Jobs sheet (columns A:G) into typed rows. Factored
+// out so get_schedule and get_sales_summary read the SAME column mapping and
+// can't drift. Returns raw strings (empty string for blanks); callers decide
+// how to present nulls. Skips the header row and any row missing the first 5
+// columns (matches get_schedule's original < 5 guard).
+function parseBookedJobsRows(rows) {
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.length < 5) continue;
+    out.push({
+      job_name: r[0] || '',
+      business: r[1] || '',
+      customer: r[2] || '',
+      scheduled_date: r[3] || '',
+      revenue: parseFloat(String(r[4] || '0').replace(/[$,]/g, '')) || 0,
+      sold_by: r[5] || '',
+      date_booked: r[6] || '',
+    });
+  }
+  return out;
+}
+
+// Inclusive-date-range predicate shared by the two sheet tools. Mirrors the
+// original get_schedule rule: match on scheduled date when present else date
+// booked; rows with no parseable date are excluded when any date filter is set.
+function rowInRange(row, start, end) {
+  const d = parseDate(row.scheduled_date) || parseDate(row.date_booked);
+  if ((start || end) && !d) return false;
+  if (start && d < start) return false;
+  if (end && d > end) return false;
+  return true;
+}
+
 async function tool_get_schedule(args) {
   const business = args.business || 'all';
   const start = args.start_date ? parseDate(args.start_date) : null;
@@ -76,33 +221,19 @@ async function tool_get_schedule(args) {
   if (end) end.setHours(23, 59, 59, 999);
   const limit = Math.min(Math.max(parseInt(args.limit, 10) || 100, 1), 500);
 
-  const rows = await fetchSheet(BOOKED_JOBS_ID, 'booked jobs!A:G');
+  const parsed = parseBookedJobsRows(await fetchSheet(BOOKED_JOBS_ID, 'booked jobs!A:G'));
   const out = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r || r.length < 5) continue;
-    const jobName = r[0] || '';
-    const biz = r[1] || '';
-    const customer = r[2] || '';
-    const scheduledDate = r[3] || '';
-    const revenue = parseFloat(String(r[4] || '0').replace(/[$,]/g, '')) || 0;
-    const soldBy = r[5] || '';
-    const dateBooked = r[6] || '';
-    const d = parseDate(scheduledDate) || parseDate(dateBooked);
-
-    if (!bizMatch(biz, business)) continue;
-    if ((start || end) && !d) continue;
-    if (start && d < start) continue;
-    if (end && d > end) continue;
-
+  for (const row of parsed) {
+    if (!bizMatch(row.business, business)) continue;
+    if (!rowInRange(row, start, end)) continue;
     out.push({
-      job_name: jobName,
-      business: biz,
-      customer,
-      scheduled_date: scheduledDate || null,
-      date_booked: dateBooked || null,
-      revenue,
-      sold_by: soldBy,
+      job_name: row.job_name,
+      business: row.business,
+      customer: row.customer,
+      scheduled_date: row.scheduled_date || null,
+      date_booked: row.date_booked || null,
+      revenue: row.revenue,
+      sold_by: row.sold_by,
     });
   }
   out.sort((a, b) => {
@@ -113,7 +244,209 @@ async function tool_get_schedule(args) {
   return { count: Math.min(out.length, limit), total_matched: out.length, rows: out.slice(0, limit) };
 }
 
-const HANDLERS = { get_schedule: tool_get_schedule };
+// Round to cents so floating-point revenue sums report cleanly.
+function money(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+async function tool_get_sales_summary(args) {
+  const business = args.business || 'all';
+  const start = args.start_date ? parseDate(args.start_date) : null;
+  const end = args.end_date ? parseDate(args.end_date) : null;
+  if (end) end.setHours(23, 59, 59, 999);
+  const groupBy = ['none', 'business', 'salesperson'].includes(args.group_by) ? args.group_by : 'none';
+
+  const parsed = parseBookedJobsRows(await fetchSheet(BOOKED_JOBS_ID, 'booked jobs!A:G'));
+  let totalCount = 0;
+  let totalRevenue = 0;
+  const groups = {};
+  for (const row of parsed) {
+    if (!bizMatch(row.business, business)) continue;
+    if (!rowInRange(row, start, end)) continue;
+    totalCount++;
+    totalRevenue += row.revenue;
+    if (groupBy !== 'none') {
+      const key = (groupBy === 'business' ? row.business : row.sold_by) || '(unknown)';
+      const g = groups[key] || (groups[key] = { count: 0, revenue: 0 });
+      g.count++;
+      g.revenue += row.revenue;
+    }
+  }
+
+  const result = {
+    business,
+    date_range: { start: args.start_date || null, end: args.end_date || null },
+    group_by: groupBy,
+    total_count: totalCount,
+    total_revenue: money(totalRevenue),
+  };
+  if (groupBy !== 'none') {
+    result.groups = Object.entries(groups)
+      .map(([group, v]) => ({ group, count: v.count, revenue: money(v.revenue) }))
+      .sort((a, b) => b.revenue - a.revenue);
+  }
+  return result;
+}
+
+// ---- Supabase READ-ONLY access ----------------------------------------------
+// Service-role key bypasses RLS, which is fine server-side, but this connector
+// is strictly read-only: sbSelect only ever issues a PostgREST GET (SELECT).
+// There is deliberately NO insert/update/delete path here. SUPABASE_URL and
+// SUPABASE_SERVICE_ROLE_KEY are already set in the site env; if a tool can't
+// reach them it throws a clean Error that the tools/call wrapper turns into an
+// isError result rather than a 500.
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+async function sbSelect(resource, query) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing for the mcp function)');
+  }
+  const url = `${SUPABASE_URL}/rest/v1/${resource}${query ? `?${query}` : ''}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Supabase ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+// Map the business enum to the customers.company value the schema uses.
+function companyFor(biz) {
+  if (biz === 'pec') return 'prescott-epoxy';
+  if (biz === 'ftp') return 'finishing-touch';
+  return null; // 'all' or unset -> no filter
+}
+
+// Build an ilike pattern, stripping characters that have meaning in PostgREST's
+// or=()/filter grammar so user input can't break out of the value position.
+// encodeURIComponent leaves '*' (the wildcard) intact and encodes spaces, so the
+// result is safe to drop straight into a query string.
+function ilikePattern(q) {
+  const cleaned = String(q || '').replace(/[(),*]/g, ' ').trim();
+  return cleaned ? encodeURIComponent(`*${cleaned}*`) : '';
+}
+
+function clampLimit(v, def, max) {
+  return Math.min(Math.max(parseInt(v, 10) || def, 1), max);
+}
+
+async function tool_find_customers(args) {
+  const pat = ilikePattern(args.query);
+  if (!pat) throw new Error('query is required');
+  const limit = clampLimit(args.limit, 20, 200);
+  const q = [
+    'select=id,name,email,phone,company,jobs(count)',
+    `or=(name.ilike.${pat},email.ilike.${pat},phone.ilike.${pat})`,
+    `limit=${limit}`,
+    'order=created_at.desc',
+  ].join('&');
+  const data = await sbSelect('customers', q);
+  const customers = data.map(c => ({
+    id: c.id,
+    name: c.name || null,
+    email: c.email || null,
+    phone: c.phone || null,
+    company: c.company || null,
+    job_count: Array.isArray(c.jobs) && c.jobs[0] ? c.jobs[0].count : 0,
+  }));
+  return { count: customers.length, customers };
+}
+
+async function tool_find_jobs(args) {
+  const limit = clampLimit(args.limit, 20, 200);
+  // customers!inner so customer-scoped filters (name, company) become an inner
+  // join; the FK is NOT NULL so this never drops legitimate jobs.
+  const params = ['select=id,address,status,type,price,signed_date,created_at,dripjobs_deal_id,customers!inner(name,company,email,phone)'];
+  if (args.customer) {
+    const pat = ilikePattern(args.customer);
+    if (pat) params.push(`customers.name=ilike.${pat}`);
+  }
+  if (args.address) {
+    const pat = ilikePattern(args.address);
+    if (pat) params.push(`address=ilike.${pat}`);
+  }
+  if (args.status) params.push(`status=eq.${encodeURIComponent(String(args.status))}`);
+  const company = companyFor(args.business);
+  if (company) params.push(`customers.company=eq.${company}`);
+  params.push(`limit=${limit}`, 'order=created_at.desc');
+
+  const data = await sbSelect('jobs', params.join('&'));
+  let jobs = data.map(j => ({
+    id: j.id,
+    customer: j.customers ? j.customers.name : null,
+    company: j.customers ? j.customers.company : null,
+    address: j.address || null,
+    status: j.status || null,
+    type: j.type || null,
+    revenue: j.price != null ? Number(j.price) : null,
+    signed_date: j.signed_date || null,
+    created_at: j.created_at || null,
+    scheduled_date: null,
+    dripjobs_deal_id: j.dripjobs_deal_id || null,
+  }));
+
+  // Best-effort scheduled-date enrichment: public.jobs has no install date (that
+  // lives on pec_prod_jobs, bridged by dripjobs_deal_id per the two-parallel-job-
+  // tables gotcha). A failure here leaves scheduled_date null rather than failing
+  // the whole tool.
+  try {
+    const dealIds = [...new Set(jobs.map(j => j.dripjobs_deal_id).filter(Boolean))]
+      .map(d => String(d).replace(/[^a-zA-Z0-9_-]/g, ''))
+      .filter(Boolean);
+    if (dealIds.length) {
+      const prod = await sbSelect('pec_prod_jobs', `select=dripjobs_deal_id,install_date&dripjobs_deal_id=in.(${dealIds.join(',')})`);
+      const byDeal = {};
+      for (const p of prod) if (p.dripjobs_deal_id && p.install_date) byDeal[p.dripjobs_deal_id] = p.install_date;
+      jobs = jobs.map(j => ({ ...j, scheduled_date: j.dripjobs_deal_id ? (byDeal[j.dripjobs_deal_id] || null) : null }));
+    }
+  } catch { /* enrichment is best-effort; scheduled_date stays null */ }
+
+  return { count: jobs.length, jobs };
+}
+
+async function tool_list_pipeline(args) {
+  const limit = clampLimit(args.limit, 50, 200);
+  const params = ['select=id,customer_name,customer_company,status,price,paid_to_date,balance_remaining,signed_date,completed_date,last_payment_date,days_outstanding,days_since_signed,created_at'];
+  if (args.stage) params.push(`status=eq.${encodeURIComponent(String(args.stage))}`);
+  const company = companyFor(args.business);
+  if (company) params.push(`customer_company=eq.${company}`);
+  params.push(`limit=${limit}`, 'order=created_at.desc');
+
+  const data = await sbSelect('pec_job_ar', params.join('&'));
+  const jobs = data.map(r => ({
+    id: r.id,
+    customer: r.customer_name || null,
+    company: r.customer_company || null,
+    stage: r.status || null,
+    revenue: r.price != null ? Number(r.price) : null,
+    paid_to_date: r.paid_to_date != null ? Number(r.paid_to_date) : null,
+    balance_remaining: r.balance_remaining != null ? Number(r.balance_remaining) : null,
+    signed_date: r.signed_date || null,
+    completed_date: r.completed_date || null,
+    last_payment_date: r.last_payment_date || null,
+    days_outstanding: r.days_outstanding != null ? r.days_outstanding : null,
+    days_since_signed: r.days_since_signed != null ? r.days_since_signed : null,
+    created_at: r.created_at || null,
+  }));
+  return { count: jobs.length, stage: args.stage || 'all', business: args.business || 'all', jobs };
+}
+
+const HANDLERS = {
+  get_schedule: tool_get_schedule,
+  get_sales_summary: tool_get_sales_summary,
+  find_customers: tool_find_customers,
+  find_jobs: tool_find_jobs,
+  list_pipeline: tool_list_pipeline,
+};
 
 function rpcResult(id, result) {
   return { jsonrpc: '2.0', id, result };
