@@ -15809,13 +15809,13 @@ async function renderUnifiedJob(jobId) {
   const manualLaborEditorHtml = `
         <div style="margin-top:14px">
           <h3 style="font-size:.85rem;margin:0 0 6px">Crew labor (manual)${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
-          <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Hours = TOTAL hours worked. OT hrs = the overtime slice of that total (paid at ${OT_MULTIPLIER}x, Arizona = federal >40/week); regular = Hours - OT. OT must be ≤ Hours.</div>
+          <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Enter Regular hrs and OT hrs separately. OT is paid at ${OT_MULTIPLIER}x (Arizona = federal >40/week). Total = Regular + OT.</div>
           ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
-            <thead><tr><th>Crew member</th><th style="width:120px">Hours</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
+            <thead><tr><th>Crew member</th><th style="width:120px">Regular hrs</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
             <tbody>
               ${manualRows.map(m => `<tr class="nohover" data-manual-id="${esc(m.id)}">
                 <td>${esc(memberByIdAll[m.crew_member_id]?.name || 'Crew member')}</td>
-                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-hours value="${esc(m.hours ?? '')}" style="width:100px"></td>
+                <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-reg value="${esc(Math.max(0, Number(m.hours || 0) - Number(m.ot_hours || 0)))}" style="width:100px"></td>
                 <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-ot value="${esc(m.ot_hours ?? '')}" style="width:100px"></td>
                 <td><button class="pec-btn ghost sm" data-manual-delete title="Remove">✕</button></td>
               </tr>`).join('')}
@@ -15823,7 +15823,7 @@ async function renderUnifiedJob(jobId) {
           </table>` : '<div class="pec-empty" style="font-size:.75rem">No manual hours yet. Add a crew member and their hours to compute the bonus.</div>'}
           <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
             <select id="manualLaborSelect" style="max-width:220px">${manualMemberOpts}</select>
-            <input id="manualLaborHours" class="prod-num" type="number" min="0" step="0.25" placeholder="hours" style="width:90px">
+            <input id="manualLaborRegHours" class="prod-num" type="number" min="0" step="0.25" placeholder="regular hrs" style="width:90px">
             <input id="manualLaborOtHours" class="prod-num" type="number" min="0" step="0.25" placeholder="OT hrs" style="width:80px">
             <button class="pec-btn sm" id="manualLaborAdd"${activeMembers.length === 0 ? ' disabled' : ''}>+ Add hours</button>
           </div>
@@ -16150,14 +16150,18 @@ async function renderUnifiedJob(jobId) {
   const manualAddBtn = root.querySelector('#manualLaborAdd');
   if (manualAddBtn) manualAddBtn.addEventListener('click', async () => {
     const sel = root.querySelector('#manualLaborSelect');
-    const hrsEl = root.querySelector('#manualLaborHours');
+    const regEl = root.querySelector('#manualLaborRegHours');
     const otEl = root.querySelector('#manualLaborOtHours');
     const cmId = sel && sel.value;
-    const hours = hrsEl && hrsEl.value !== '' ? Number(hrsEl.value) : null;
+    const regHours = regEl && regEl.value !== '' ? Number(regEl.value) : null;
     const otHours = otEl && otEl.value !== '' ? Number(otEl.value) : 0;
     if (!cmId) { showToast('Pick a crew member.', { ttl: 3000 }); return; }
-    if (hours == null || !(hours >= 0)) { showToast('Enter hours (0 or more).', { ttl: 3000 }); return; }
-    if (!(otHours >= 0) || otHours > hours) { showToast('OT hours must be between 0 and total hours.', { ttl: 4000 }); return; }
+    if (regHours == null || !(regHours >= 0)) { showToast('Enter regular hours (0 or more).', { ttl: 3000 }); return; }
+    if (!(otHours >= 0)) { showToast('OT hours must be 0 or more.', { ttl: 4000 }); return; }
+    // DB stores hours = TOTAL (regular + OT) and ot_hours = the OT slice, so the
+    // bonus math (regular = hours - ot_hours) is unchanged; the UI just lets the
+    // user enter the two parts separately instead of computing the total.
+    const hours = regHours + otHours;
     manualAddBtn.disabled = true;
     // ot_hours is a separate field so a missing-column 400 (pre-migration) is
     // distinguishable; the hint below names the migration to run.
@@ -16169,31 +16173,34 @@ async function renderUnifiedJob(jobId) {
     if (existing) { existing.hours = data.hours; existing.ot_hours = data.ot_hours; } else arr.push(data);
     renderUnifiedJob(jobId);
   });
-  // Total-hours edit. If the new total drops below the row's OT, clamp OT down to
-  // it in the same write so OT can never exceed total.
-  root.querySelectorAll('input[data-manual-hours]').forEach(inp => {
+  // Regular-hours edit. Regular and OT are independent inputs now, so editing
+  // regular keeps the row's OT slice and rewrites the stored total = reg + OT.
+  root.querySelectorAll('input[data-manual-reg]').forEach(inp => {
     inp.addEventListener('change', async () => {
       const tr = inp.closest('tr[data-manual-id]'); const id = tr?.dataset.manualId; if (!id) return;
-      const hours = inp.value === '' ? 0 : Number(inp.value);
+      const reg = inp.value === '' ? 0 : Number(inp.value);
+      if (!(reg >= 0)) { showToast('Regular hours must be 0 or more.', { ttl: 4000 }); renderUnifiedJob(jobId); return; }
       const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id);
-      const newOt = Math.min(Number(row?.ot_hours || 0), hours);
-      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours, ot_hours: newOt }).eq('id', id), { label: 'manual-labor-edit' });
+      const ot = Number(row?.ot_hours || 0);
+      const hours = reg + ot; // stored total = regular + OT
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours, ot_hours: ot }).eq('id', id), { label: 'manual-labor-edit' });
       if (error) { showToast('Could not save hours: ' + (error.message || error), { ttl: 6000 }); return; }
-      if (row) { row.hours = hours; row.ot_hours = newOt; }
+      if (row) { row.hours = hours; row.ot_hours = ot; }
       renderUnifiedJob(jobId);
     });
   });
-  // OT-hours edit. Reject OT above the row's total hours.
+  // OT-hours edit. Keeps the row's regular hours and rewrites total = reg + OT.
   root.querySelectorAll('input[data-manual-ot]').forEach(inp => {
     inp.addEventListener('change', async () => {
       const id = inp.closest('tr[data-manual-id]')?.dataset.manualId; if (!id) return;
       const ot = inp.value === '' ? 0 : Number(inp.value);
+      if (!(ot >= 0)) { showToast('OT hours must be 0 or more.', { ttl: 4000 }); renderUnifiedJob(jobId); return; }
       const row = (state.manualLaborByJob?.[jobId] || []).find(m => m.id === id);
-      const total = Number(row?.hours || 0);
-      if (!(ot >= 0) || ot > total) { showToast('OT hours must be between 0 and total hours (' + fmtNum(total) + ').', { ttl: 4000 }); renderUnifiedJob(jobId); return; }
-      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ ot_hours: ot }).eq('id', id), { label: 'manual-labor-ot-edit' });
+      const reg = Math.max(0, Number(row?.hours || 0) - Number(row?.ot_hours || 0)); // current regular slice
+      const hours = reg + ot; // stored total = regular + OT
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_manual_labor').update({ hours, ot_hours: ot }).eq('id', id), { label: 'manual-labor-ot-edit' });
       if (error) { const hint = /ot_hours/.test(error.message || '') ? ' (Run the 2026-06-19_ot_hours.sql migration first.)' : ''; showToast('Could not save OT hours: ' + (error.message || error) + hint, { ttl: 6000 }); return; }
-      if (row) row.ot_hours = ot;
+      if (row) { row.hours = hours; row.ot_hours = ot; }
       renderUnifiedJob(jobId);
     });
   });
