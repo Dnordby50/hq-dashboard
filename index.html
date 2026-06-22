@@ -1897,9 +1897,10 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="metrics">Metrics</button>
           <div class="pec-subnav-group">Sales</div>
           <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
-               switchView view). Hidden by default; wireEstimatorNav() shows it
-               only when the signed-in user is admin AND settings.estimator_enabled
-               is true, so the beta stays dark until Dylan flips the flag. -->
+               switchView view). Hidden by default; wireEstimatorNav() reveals it
+               only for emails in settings.estimator_allowed_emails (defaults to
+               the owner only), so the beta stays visible to just Dylan until he
+               adds others to that one setting. -->
           <button id="pecEstimatorNav" style="display:none">Estimator (Beta)</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
@@ -5926,10 +5927,16 @@ function renderAuthUI() {
   refreshBell();
 }
 
-// Show + wire the Estimator (Beta) launch button. Admin-only AND gated on the
-// public.settings.estimator_enabled flag, so the beta stays hidden from the team
-// until Dylan turns it on. The button is a full-page navigation to the estimator
-// PWA (a separate Vite app served at /estimator/), not an in-page switchView view.
+// Show + wire the Estimator (Beta) launch button. Visibility is controlled by a
+// single allowlist setting, public.settings.estimator_allowed_emails:
+//   - missing/empty -> only the owner (ESTIMATOR_OWNER_EMAIL) sees it
+//   - 'all' / '*' / 'everyone' -> every signed-in staffer sees it
+//   - otherwise -> a comma/space/semicolon-separated list of emails
+// So it ships hidden-to-everyone-but-Dylan with zero setup, and "turn it on for
+// others later" is just editing that one setting in Settings. The data itself is
+// admin-only via RLS regardless. The button full-page-navigates to the estimator
+// PWA at /estimator/ (not an in-page switchView view).
+const ESTIMATOR_OWNER_EMAIL = 'dnordby50@gmail.com';
 let _estimatorNavWired = false;
 async function wireEstimatorNav() {
   const btn = document.getElementById('pecEstimatorNav');
@@ -5938,14 +5945,22 @@ async function wireEstimatorNav() {
     btn.addEventListener('click', () => { window.location.assign('/estimator/'); });
     _estimatorNavWired = true;
   }
-  let enabled = false;
+  let show = false;
   try {
-    if (state.adminUser && state.adminUser.role === 'admin') {
-      const { data } = await supabase.from('settings').select('value').eq('key', 'estimator_enabled').maybeSingle();
-      enabled = !!data && String(data.value).toLowerCase() === 'true';
+    const email = String((state.adminUser && state.adminUser.email) || '').trim().toLowerCase();
+    if (email) {
+      let allow = '';
+      try {
+        const { data } = await supabase.from('settings').select('value').eq('key', 'estimator_allowed_emails').maybeSingle();
+        allow = data && data.value != null ? String(data.value).trim() : '';
+      } catch (_) { /* setting missing -> fall through to owner default */ }
+      if (!allow) allow = ESTIMATOR_OWNER_EMAIL;          // default: owner only
+      const lower = allow.toLowerCase();
+      if (lower === 'all' || lower === '*' || lower === 'everyone') show = true;
+      else show = lower.split(/[\s,;]+/).filter(Boolean).includes(email);
     }
-  } catch (_) { enabled = false; }   // flag/row missing or query failed -> stay hidden
-  btn.style.display = enabled ? '' : 'none';
+  } catch (_) { show = false; }
+  btn.style.display = show ? '' : 'none';
 }
 
 // ---- Whole-app auth gate ----------------------------------------------------

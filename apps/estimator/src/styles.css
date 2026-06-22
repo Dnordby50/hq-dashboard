@@ -102,11 +102,21 @@ select, input {
   color: var(--ink);
 }
 
+.left { display: flex; flex-direction: column; gap: 1rem; }
 .areas-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--muted); font-weight: 600; margin-bottom: 0.5rem; }
 .link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.85rem; padding: 0; }
-.area-row { display: grid; grid-template-columns: 1fr 5rem 1fr auto; gap: 0.4rem; margin-bottom: 0.5rem; align-items: center; }
+.area { border: 1px solid var(--line); border-radius: 0.6rem; padding: 0.7rem; margin-bottom: 0.7rem; }
+.area-top { display: grid; grid-template-columns: 1fr 5.5rem auto; gap: 0.4rem; align-items: center; }
 .area-sqft { text-align: right; }
 .x { background: none; border: none; color: var(--bad); font-size: 1.2rem; cursor: pointer; line-height: 1; }
+.slots { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.6rem; }
+.slots .field { margin-bottom: 0; }
+.wo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-bottom: 0.6rem; }
+.wo-grid .field { margin-bottom: 0; }
+.check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+.check input { width: 1.1rem; height: 1.1rem; }
+textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 0.5rem; resize: vertical; font-family: inherit; }
+@media (max-width: 520px) { .slots, .wo-grid { grid-template-columns: 1fr; } }
 
 .result { display: flex; flex-direction: column; gap: 0.75rem; min-height: 9rem; justify-content: center; }
 .hint { color: var(--muted); }

@@ -50,6 +50,7 @@ export type RecipeSlot = {
   label?: string | null;
   default_product_id?: string | null;
   required?: boolean;
+  editor_hidden?: boolean | null;
   options?: unknown;
 };
 

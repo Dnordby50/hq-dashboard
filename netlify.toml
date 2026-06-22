@@ -5,9 +5,11 @@
   # only to build the estimator PWA into repo-root /estimator (Vite base
   # '/estimator/'), which `publish = "."` then serves as static files. The root
   # app is untouched.
-  command = "npm --prefix apps/estimator install && npm --prefix apps/estimator run build"
+  command = "npm --prefix apps/estimator ci && npm --prefix apps/estimator run build"
 
 [build.environment]
+  # Pin Node so the estimator build is reproducible on Netlify (Vite 5 needs 18+).
+  NODE_VERSION = "20"
   # Tell Netlify's secret scanner that this Google Sheets API key value is intentional.
   # The key is restricted in Google Cloud Console to (a) Google Sheets API only and
   # (b) HTTP referrer prescottepoxy.netlify.app/*, so exposing it in the client bundle is safe by design.

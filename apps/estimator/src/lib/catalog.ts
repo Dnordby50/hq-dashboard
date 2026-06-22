@@ -41,7 +41,7 @@ export async function loadCatalog(): Promise<Catalog> {
       .eq('active', true),
     supabase
       .from('pec_prod_recipe_slots')
-      .select('id,system_type_id,order_index,material_type,slot_kind,label,default_product_id,required,options')
+      .select('id,system_type_id,order_index,material_type,slot_kind,label,default_product_id,required,editor_hidden,options')
       .order('order_index', { ascending: true }),
     supabase
       .from('pec_sales_team_members')
