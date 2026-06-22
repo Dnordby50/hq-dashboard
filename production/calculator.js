@@ -27,7 +27,41 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-06-21';
+export const CALC_VERSION = '2026-06-21.2';
+
+/**
+ * Round a raw cost-plus price to a clean, sell-able number.
+ *
+ * Two rules, both configurable from Settings:
+ *   1. Round to the nearest `increment` (default $5).
+ *   2. Charm-down near a big round number: if the price lands at or just above
+ *      a multiple of `charmThreshold` (within `charmBand` above it), drop to
+ *      that multiple minus one increment. So with threshold 1000 / band 250,
+ *      a $5,150 price becomes $4,995 (Dylan's rule). This intentionally gives
+ *      up a little margin for a more competitive, attractive price near a
+ *      psychological threshold, so the realized GP can dip slightly below
+ *      target when it fires (the displayed GP reflects the actual price).
+ *
+ * @param {number} priceRaw
+ * @param {Object} [opts]
+ * @param {number} [opts.increment=5]
+ * @param {number} [opts.charmThreshold=0]  0 disables charm-pricing
+ * @param {number} [opts.charmBand=0]       0 disables charm-pricing
+ * @returns {number}
+ */
+export function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charmBand = 0 } = {}) {
+  const inc = Number(increment) > 0 ? Number(increment) : 1;
+  let price = Math.round(Number(priceRaw) / inc) * inc;  // nearest increment, round half up
+  const T = Number(charmThreshold) || 0;
+  const band = Number(charmBand) || 0;
+  if (T > 0 && band > 0) {
+    const lower = Math.floor(price / T) * T;  // nearest multiple of T at or below the price
+    if (lower > 0 && price - lower <= band) {
+      price = lower - inc;                    // charm price just under the threshold (e.g. 4995)
+    }
+  }
+  return price;
+}
 
 // Cure speed lives on the area, not the line, but the per-line cure_speed
 // snapshot has to know *which* area column to read. Two product families need
@@ -254,7 +288,9 @@ export function computeEstimatePricing({
   commissionPct = 0,
   targetGpPct = 50,
   fixedAddons = 0,
-  priceIncrement = 25,
+  priceIncrement = 5,
+  charmThreshold = 1000,
+  charmBand = 250,
 }) {
   // Pass 1: materials cost M is independent of revenue, so price at revenue:0.
   const base = computeJobEstimate({
@@ -272,12 +308,15 @@ export function computeEstimatePricing({
   const M = Number(base.materialsBudget) || 0;
   const F = Number(fixedAddons) || 0;
 
-  // Per-system overrides win over the passed global. All three are percents.
+  // Target GP can be overridden per system; commission is NOT per system, it is
+  // the assigned salesperson's rate (pec_sales_team_members.commission_pct),
+  // which the caller resolves and passes in as commissionPct. So commission
+  // comes straight from the input, never from the system row.
   const primary = (areas && areas[0])
     ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id)
     : null;
   const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
-  const commPct = primary && primary.commission_pct != null ? Number(primary.commission_pct) : Number(commissionPct);
+  const commPct = Number(commissionPct) || 0;
 
   const laborFrac = Number(base.laborPct) / 100;
   const commFrac = commPct / 100;
@@ -289,8 +328,7 @@ export function computeEstimatePricing({
   }
 
   const priceRaw = (M + F) / divisor;
-  const increment = Number(priceIncrement) > 0 ? Number(priceIncrement) : 1;
-  const price = Math.ceil(priceRaw / increment) * increment;
+  const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
 
   // Pass 2: feed the rounded price back for labor budget + budgeted hours.
   const atPrice = computeJobEstimate({

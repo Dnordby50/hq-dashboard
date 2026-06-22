@@ -17527,25 +17527,38 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
 // PERCENTS. Rounds price UP to priceIncrement so realized GP never drops below
 // target. Guard: divisor <= 0 returns an error, never divides. CALC_VERSION must
 // match the canonical file (a test asserts it).
-const CALC_VERSION = '2026-06-21';
-function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], laborRate = 0, commissionPct = 0, targetGpPct = 50, fixedAddons = 0, priceIncrement = 25 }) {
+const CALC_VERSION = '2026-06-21.2';
+function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charmBand = 0 } = {}) {
+  const inc = Number(increment) > 0 ? Number(increment) : 1;
+  let price = Math.round(Number(priceRaw) / inc) * inc;
+  const T = Number(charmThreshold) || 0;
+  const band = Number(charmBand) || 0;
+  if (T > 0 && band > 0) {
+    const lower = Math.floor(price / T) * T;
+    if (lower > 0 && price - lower <= band) price = lower - inc;
+  }
+  return price;
+}
+function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], laborRate = 0, commissionPct = 0, targetGpPct = 50, fixedAddons = 0, priceIncrement = 5, charmThreshold = 1000, charmBand = 250 }) {
   const _r2 = (n) => Math.round(n * 100) / 100;
   const base = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate });
   if (base.planError) return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   if (base.laborPct == null) return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const M = Number(base.materialsBudget) || 0;
   const F = Number(fixedAddons) || 0;
+  // Target GP can be overridden per system; commission is the assigned
+  // salesperson's rate (pec_sales_team_members.commission_pct), resolved by the
+  // caller and passed in as commissionPct, never read off the system row.
   const primary = (areas && areas[0]) ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id) : null;
   const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
-  const commPct = primary && primary.commission_pct != null ? Number(primary.commission_pct) : Number(commissionPct);
+  const commPct = Number(commissionPct) || 0;
   const laborFrac = Number(base.laborPct) / 100;
   const commFrac = commPct / 100;
   const gpFrac = targetGp / 100;
   const divisor = 1 - laborFrac - commFrac - gpFrac;
   if (!(divisor > 0)) return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const priceRaw = (M + F) / divisor;
-  const increment = Number(priceIncrement) > 0 ? Number(priceIncrement) : 1;
-  const price = Math.ceil(priceRaw / increment) * increment;
+  const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
   const atPrice = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: price, laborRate });
   const commissionDollars = _r2(commFrac * price);
   const laborDollars = _r2(laborFrac * price);
@@ -17581,6 +17594,7 @@ window.cureSpeedSpec = cureSpeedSpec;
 window.computeMaterialPlan = computeMaterialPlan;
 window.computeJobEstimate = computeJobEstimate;
 window.computeEstimatePricing = computeEstimatePricing;
+window.roundEstimatePrice = roundEstimatePrice;
 window.CALC_VERSION = CALC_VERSION;
 window.jobNameAddrKey = jobNameAddrKey;
 window.resolveCrmForProdJob = resolveCrmForProdJob;

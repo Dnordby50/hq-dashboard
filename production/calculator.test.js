@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
 
 let passed = 0;
 let failed = 0;
@@ -585,28 +585,44 @@ assertThrows(() => {
   assertEq(mCT, mPlain, 'choice/text slots do not change materials cost M');
 }
 
+// --- roundEstimatePrice: nearest $5, with charm-down near big round numbers --
+// Dylan's rule: round to the nearest $5, but if the price lands at or just
+// above a major round number (within the band), drop to that number minus $5
+// (e.g. 5150 -> 4995). threshold 1000 / band 250 are the defaults.
+{
+  const o = { increment: 5, charmThreshold: 1000, charmBand: 250 };
+  assertEq(roundEstimatePrice(7409.09, o), 7410, 'round: 7409.09 -> nearest $5 = 7410 (no charm, 410 above 7000)');
+  assertEq(roundEstimatePrice(5150, o),    4995, 'round: 5150 -> charm-down to 4995 (150 above 5000)');
+  assertEq(roundEstimatePrice(4998, o),    4995, 'round: 4998 -> $5 rounds to 5000 then charm-down to 4995');
+  assertEq(roundEstimatePrice(5400, o),    5400, 'round: 5400 -> no charm (400 above 5000 > band)');
+  assertEq(roundEstimatePrice(5252, o),    4995, 'round: 5252 -> nearest $5 5250 (250 above, edge of band) -> charm 4995');
+  assertEq(roundEstimatePrice(5253, o),    5255, 'round: 5253 -> 5255 (255 above 5000 > band) -> no charm');
+  assertEq(roundEstimatePrice(980,  o),     980, 'round: 980 -> no charm below the first threshold');
+  assertEq(roundEstimatePrice(7412, { increment: 5 }), 7410, 'round: charm disabled -> pure nearest $5 (round down)');
+}
+
 // --- computeEstimatePricing: closed-form cost-plus to target margin ----------
 // Standard Flake 600 sqft fixture -> M = basecoat 2*240 + flake 2*95 + topcoat
-// 3*320 = 480 + 190 + 960 = 1630. With laborPct 20, commission 8%, targetGP 50,
-// increment 25: divisor = 1 - .20 - .08 - .50 = .22; priceRaw = 1630/.22 =
-// 7409.09 -> ceil to 7425. At 7425: labor 1485, comm 594, gp = 7425 - (1630 +
-// 1485 + 594) = 3716 -> gpPct 0.5005 (>= target, because we round UP).
+// 3*320 = 480 + 190 + 960 = 1630. With laborPct 20, commission 8%, targetGP 50:
+// divisor = 1 - .20 - .08 - .50 = .22; priceRaw = 1630/.22 = 7409.09 -> nearest
+// $5 = 7410 (no charm, 410 above 7000). At 7410: labor 1482, comm 592.8,
+// gp = 7410 - (1630 + 1482 + 592.8) = 3705.2 -> gpPct ~0.5000.
 {
   const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
   const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
   const r = computeEstimatePricing({
     areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
-    systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50, priceIncrement: 25,
+    systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50,
   });
   assertEq(r.error, null, 'pricing: no error on a valid plan');
   assertEq(r.materialsCost, 1630, 'pricing: M = sum of material line costs (1630)');
-  assertEq(r.price, 7425, 'pricing: price rounds UP to the increment (7425)');
-  assertEq(r.commissionDollars, 594, 'pricing: commission = 8% of rounded price');
-  assertEq(r.laborDollars, 1485, 'pricing: labor = 20% of rounded price');
-  assertEq(r.gpDollars, 3716, 'pricing: GP$ = price - (M + labor + commission)');
-  assertEq(r.gpPct >= 0.50, true, 'pricing: realized GP% >= target (rounding never drops below)');
-  // budgetedHours = laborBudget(1485) / 50 = 29.7; GP/hr = 3716 / 29.7
-  assertEq(r.budgetedHours, 1485 / 50, 'pricing: budgetedHours from labor budget at rounded price');
+  assertEq(r.price, 7410, 'pricing: price = nearest $5 of the cost-plus number');
+  assertEq(r.commissionDollars, 592.8, 'pricing: commission = 8% of the final price');
+  assertEq(r.laborDollars, 1482, 'pricing: labor = 20% of the final price');
+  assertEq(r.gpDollars, 3705.2, 'pricing: GP$ = price - (M + labor + commission)');
+  assertEq(Math.abs(r.gpPct - 0.50) < 0.005, true, 'pricing: realized GP% within half a point of target');
+  // budgetedHours = laborBudget(1482) / 50; GP/hr derived from it
+  assertEq(r.budgetedHours, 1482 / 50, 'pricing: budgetedHours from labor budget at the final price');
 }
 
 // --- computeEstimatePricing: divisor guard (target mathematically impossible)
@@ -638,16 +654,28 @@ assertThrows(() => {
   assertEq(r.materialLines, est.materialLines, 'pricing materialLines == computeJobEstimate lines (one source)');
 }
 
-// --- computeEstimatePricing: per-system override beats the global ------------
+// --- computeEstimatePricing: per-system target_gp override; commission is NOT
+// per-system (it is the salesperson's rate passed in). A stray commission_pct
+// on the system row must be IGNORED.
 {
-  const systemTypes = [{ id: 'std', labor_budget_pct: 20, target_gp_pct: 55, commission_pct: 10 }];
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20, target_gp_pct: 55, commission_pct: 99 }];
   const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
-  const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50, priceIncrement: 25 });
+  const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 6, targetGpPct: 50 });
   assertEq(r.targetGpPct, 55, 'pricing: per-system target_gp_pct overrides global');
-  assertEq(r.commissionPct, 10, 'pricing: per-system commission_pct overrides global');
-  // divisor = 1 - .20 - .10 - .55 = .15; priceRaw = 1630/.15 = 10866.67 -> 10875
-  assertEq(r.price, 10875, 'pricing: override price uses the overridden rates');
+  assertEq(r.commissionPct, 6, 'pricing: commission is the passed salesperson rate, system commission_pct ignored');
+  // divisor = 1 - .20 - .06 - .55 = .19; priceRaw = 1630/.19 = 8578.95 -> nearest $5 8580
+  assertEq(r.price, 8580, 'pricing: price uses overridden target + salesperson commission');
   assertEq(r.gpPct >= 0.55, true, 'pricing: realized GP% >= overridden target');
+}
+
+// --- computeEstimatePricing: zero-commission salesperson (Dylan = 0%) ---------
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 0, targetGpPct: 50 });
+  assertEq(r.commissionDollars, 0, 'pricing: 0% commission salesperson -> no commission in the price');
+  // divisor = 1 - .20 - 0 - .50 = .30; priceRaw = 1630/.30 = 5433.33 -> nearest $5 5435 (435 above 5000 > band)
+  assertEq(r.price, 5435, 'pricing: zero-commission price');
 }
 
 // --- computeEstimatePricing: planError passes through, no price ---------------
