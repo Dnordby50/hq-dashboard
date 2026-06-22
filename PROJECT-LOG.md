@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 17:55] Claude Code: estimator beta — Migration set #1 (core tables), Cowork handoff
+By: Claude Code
+Changed: Wrote supabase/migrations/2026-06-21_estimator_core.sql (idempotent, NOT applied from this session). Adds the estimator/CRM data layer: leads, lead_events, estimates, estimate_areas, estimate_area_materials, plus per-system pricing override columns (target_gp_pct, commission_pct) on pec_prod_system_types, plus eight config seeds in the existing public.settings store.
+Key decisions captured: (1) estimate_areas / estimate_area_materials deliberately mirror the existing job_areas / job_area_materials shapes so the SAME calculator (computeJobEstimate / computeEstimatePricing) consumes an estimate's areas with no translation. (2) leads + estimates + children are offline-writable, so each carries a client-mintable uuid PK + updated_at (last-write-wins key) + client_updated_at (device clock) + rev + deleted_at (soft-delete tombstone); reconcile is an idempotent insert-on-conflict-do-update so replaying the sync outbox can never duplicate a row. Child rows are parent-owned replace-sets, so they stay lean (no own sync columns). (3) Config reuses public.settings (same staff-gated key/value store as default_labor_hourly_rate) instead of new pec_pricing_config / pec_app_settings tables (reuse over fork); the confidential target-GP and commission values are safe there because settings RLS is is_admin_staff() read / is_admin_role() write, never anon. estimator_default_commission_pct is seeded BLANK on purpose so pricing stays visibly unconfigured until Dylan provides the real rate. estimator_enabled defaults false (the admin nav button stays dark) and estimator_hide_material_qty defaults true (rep-facing quantities hidden during beta).
+Why: this is the next deliverable after the pricing engine; it gives the upcoming PWA a place to read/write leads and estimates, and it is the artifact Cowork applies to prod.
+How it works (WHY note): all five tables get the standard staff RLS (`for all using/with check is_admin_staff()`), reuse the existing pec_prod_touch_updated_at() BEFORE-UPDATE trigger (leads + estimates only; children sync atomically with the parent), and follow the project's idempotent style (create table if not exists, drop+create policy, add column if not exists, on conflict do nothing seeds) so a re-run is a no-op and never clobbers a value Dylan set.
+Testing: no executable tests for SQL; structurally verified (1 begin/commit, 5 tables, 5 policies, balanced). Real verification is the post-apply query block at the bottom of the migration.
+Files touched: supabase/migrations/2026-06-21_estimator_core.sql (new), PROJECT-LOG.md.
+Next steps: scaffold the React+Vite PWA at /apps/estimator (build wiring + admin nav button gated on the estimator_enabled flag + shared Supabase client), then the offline estimate-capture spike (which needs this migration applied first).
+Handoff to Cowork: apply this migration to PROD (see the prompt printed in chat and the verify block at the bottom of the file).
+
+---
+
 ## [2026-06-21 17:30] Claude Code: estimator beta foundation — pricing engine, slot_kind fix, unit tests
 By: Claude Code
 Changed: First build slice of the estimator/CRM beta (plan approved this session; on branch `estimator-foundation`). Two pieces of pure, fully tested math, no UI yet.
