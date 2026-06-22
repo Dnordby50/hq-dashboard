@@ -4512,7 +4512,11 @@ if (document.readyState === 'loading') {
     const crmNav = document.getElementById('pecSubnav');
     const crmButtons = [];
     if (crmNav) {
-      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
+      // #pecEstimatorNav is included even though it has no data-pec-view: it is a
+      // full-page link (to /estimator/), not a switchView view, but it must still
+      // be mirrored into the visible sidebar and ride the same display-sync
+      // observer below so wireEstimatorNav()'s async reveal reaches the real rail.
+      Array.from(crmNav.querySelectorAll('button[data-pec-view], #pecEstimatorNav, .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
         // #pecSubnav is the hidden source of truth; the sidebar is a clone. Carry
         // the section dividers across in document order so they render here too.
         if (srcBtn.classList.contains('pec-subnav-divider')) {
@@ -4531,7 +4535,7 @@ if (document.readyState === 'loading') {
         }
         const sidebarBtn = document.createElement('button');
         sidebarBtn.className = 'tab-btn rd-crm-btn';
-        sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;
+        if (srcBtn.dataset.pecView) sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;
         if (srcBtn.classList.contains('pec-role-admin')) sidebarBtn.classList.add('pec-role-admin');
         if (srcBtn.classList.contains('active')) sidebarBtn.classList.add('active');
         // Mirror the source's role/capability visibility (renderAuthUI sets
