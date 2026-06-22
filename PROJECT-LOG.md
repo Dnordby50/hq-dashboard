@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 18:45] Cowork: applied estimator_pricing_followup migration to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the latest Claude Code handoff (2026-06-21 18:35): applied supabase/migrations/2026-06-21_estimator_pricing_followup.sql to PROD (zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). The "Potential issue detected / destructive operations" warning fired (expected: the intentional drop of the speculative, never-populated pec_prod_system_types.commission_pct column) and I confirmed Run. Result: "Success. No rows returned."
+Verified: pec_prod_system_types.commission_pct remaining = 0 (dropped); public.settings estimator_price_increment = 5 (was the 25 placeholder), estimator_charm_threshold = 1000 (new), estimator_charm_band = 250 (new). This corrects the speculative per-system commission_pct added in the 2026-06-21 17:55 core migration; commission is per-salesperson and remains on pec_sales_team_members.commission_pct (Aron 6, Dylan 0), untouched.
+Why: Dylan said "run migration." This is the follow-up that aligns the schema with the confirmed pricing rules (per-salesperson commission, nearest-$5 charm-down rounding).
+Files touched: PROJECT-LOG.md only. External: PROD Supabase schema (1 column dropped, 1 setting updated, 2 settings seeded; otherwise additive).
+Next steps: estimator pricing schema is now correct end to end. Claude Code can proceed with the PWA scaffold + salesperson picker + offline spike. Both estimator migrations (core + pricing follow-up) are applied and verified on PROD.
+Handoff to Dylan: none required for pricing now (commission lives in pec_sales_team_members; target GP global 50% is set and per-system overridable via pec_prod_system_types.target_gp_pct). Charm knobs (threshold $1000, band $250) are tunable in Settings.
+Handoff to Cowork: none (handoff closed).
+
+---
+
 ## [2026-06-21 18:35] Claude Code: estimator pricing — per-salesperson commission + nearest-$5 charm rounding
 By: Claude Code
 Changed: Corrected the pricing engine after Dylan confirmed the real rules. (1) Commission is PER SALESPERSON, not per system: it already lives on public.pec_sales_team_members.commission_pct (Aron 6%, Dylan 0%). The engine now takes the assigned salesperson's rate as its commissionPct input and never reads a per-system commission; a stray system-row commission_pct is ignored (locked by a test). Target GP stays per-system overridable (default 50% global, in public.settings.estimator_target_gp_pct). (2) New rounding rule `roundEstimatePrice`: nearest $5, but charm-down near a big round number, so a $5,150 cost-plus price prices at $4,995 (within $250 above a $1,000 multiple -> drop to multiple-minus-$5). All three knobs (increment, charm threshold, charm band) are editable from Settings. Bumped CALC_VERSION to 2026-06-21.2 in both the canonical and the index.html mirror; exposed roundEstimatePrice on window. Wrote follow-up migration supabase/migrations/2026-06-21_estimator_pricing_followup.sql (drops the speculative pec_prod_system_types.commission_pct, sets estimator_price_increment 25->5, seeds estimator_charm_threshold=1000 + estimator_charm_band=250).
