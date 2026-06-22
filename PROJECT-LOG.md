@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 21:10] Cowork: applied estimator_visibility migration to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the latest Claude Code handoff (2026-06-21 21:00): applied supabase/migrations/2026-06-21_estimator_visibility.sql to PROD (zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). Single additive statement (insert ... on conflict do nothing), no destructive-ops warning. Result: "Success. No rows returned." Verified: public.settings.estimator_allowed_emails = dnordby50@gmail.com.
+Effect: the "Estimator (Beta)" button in the dashboard is now backed by an editable setting in Settings. The dashboard already defaults this to the owner email in code when the row is absent, so visibility was correct before this; the seed just makes it discoverable/editable. To add a teammate to the beta, set estimator_allowed_emails to a comma-separated email list (or 'all'); the estimator's data stays admin-only via RLS regardless of this UI gate.
+Why: Dylan said "run migration."
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 settings row seeded).
+Next steps: none for this migration. Per the 21:00 entry, the estimator now ships on main/production behind the owner-only button; next build slices are presentation + e-sign/deposit, then leads + pipeline.
+Handoff to Dylan: the Estimator (Beta) button is owner-only on the live site; add staff later via Settings -> estimator_allowed_emails. All four estimator migrations to date (core, pricing follow-up, visibility) are applied and verified on PROD.
+Handoff to Cowork: none (handoff closed).
+
+---
+
 ## [2026-06-21 21:00] Claude Code: estimator question flow + email-allowlist visibility; merged to main for production
 By: Claude Code
 Changed: Two things. (1) Full on-site question flow: the estimator now captures the work-order intake fields (gate code, moisture 1-5, MOHS 1-10, grinder grit, additional non-slip, coat-past-garage, stem walls, special notes) at the job level, and renders each system's recipe slots per area, generated from pec_prod_recipe_slots (choice slots -> dropdowns from the options jsonb, text slots -> free text, product/swatch slots -> product pickers by material_type), with editor_hidden body coats omitted. Saving now writes real child rows: public.estimate_areas (one per area, with the derived flake/basecoat/topcoat picks + a raw answers jsonb) and public.estimate_area_materials (one per answered slot: product_id | choice_value | text_value), instead of stashing areas in the parent intake. The offline outbox was hardened so a multi-row save uploads parent-before-children: opIds are now chronological (ISO time + monotonic counter), so the FIFO queue uploads estimates -> estimate_areas -> estimate_area_materials and the foreign keys are always satisfied; every id is still client-minted so sync stays idempotent. (2) Simplified visibility: the dashboard's "Estimator (Beta)" button is now gated by ONE setting, public.settings.estimator_allowed_emails, which DEFAULTS in code to the owner email (dnordby50@gmail.com) when the row is absent. So it ships visible to Dylan only with zero setup; setting it to a comma-separated list adds others, and 'all' opens it to everyone. Dropped the dependency on the estimator_enabled flag for visibility (Dylan: the two-flag + two-branch setup was too complicated). Seeded estimator_allowed_emails in a migration so it is editable in Settings. netlify.toml now pins NODE_VERSION 20 and uses npm ci for a reproducible estimator build on the production deploy.
