@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 21:55] Cowork: applied estimator_owner_email_fix to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the latest Claude Code handoff: applied supabase/migrations/2026-06-21_estimator_owner_email_fix.sql (commit f33ab34 on main) to PROD (zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor. The file is a guarded UPDATE (sets estimator_allowed_emails to dylan@prescottepoxy.com only where it still equals the wrong seed dnordby50@gmail.com) plus an idempotent INSERT ... on conflict do nothing safety net. No destructive-ops warning. Result: "Success. No rows returned." Verified: select value from public.settings where key='estimator_allowed_emails' returns dylan@prescottepoxy.com. No other settings row touched; value set to exactly dylan@prescottepoxy.com (no extra emails added).
+Why: the allowlist was seeded with dnordby50@gmail.com but Dylan's CRM LOGIN email is dylan@prescottepoxy.com, so the gate never matched and the "Estimator (Beta)" button stayed hidden. This data fix matches the code fix in f33ab34.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 settings row corrected).
+Next steps: once the Netlify deploy of commit f33ab34 is live, Dylan hard-refreshes (Cmd+Shift+R) and the Estimator (Beta) button appears in the Sales menu for his login only.
+Handoff to Dylan: hard-refresh the dashboard after the f33ab34 deploy publishes; the Estimator (Beta) button should now show under Sales for dylan@prescottepoxy.com. Add teammates later via Settings -> estimator_allowed_emails.
+Handoff to Cowork: none (handoff closed).
+
+---
+
 ## [2026-06-21 21:45] Claude Code: correct estimator allowlist to Dylan's CRM login email
 By: Claude Code
 Changed: Dylan's CRM LOGIN email is dylan@prescottepoxy.com, but the allowlist (and the code's owner default) had been set to dnordby50@gmail.com (his other email), so the gate never matched. Updated ESTIMATOR_OWNER_EMAIL in index.html to dylan@prescottepoxy.com and wrote migration 2026-06-21_estimator_owner_email_fix.sql to overwrite the wrong seeded value of public.settings.estimator_allowed_emails with dylan@prescottepoxy.com (guarded so it only replaces the known-wrong auto-seed).
