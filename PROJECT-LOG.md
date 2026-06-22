@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 18:30] Cowork: applied estimator_core Migration set #1 to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the latest Claude Code handoff (the 2026-06-21 17:55 entry): applied supabase/migrations/2026-06-21_estimator_core.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", branch main PRODUCTION, role postgres) via the Supabase SQL editor. Loaded the executable block (begin;...commit;) directly into the editor's Monaco model to avoid paren-autocomplete drift, then Run. Supabase's "Potential issue detected / destructive operations" warning fired (expected: the idempotent `drop constraint/policy/trigger if exists` lines that immediately recreate them; nothing data-destructive) and I confirmed Run. Result: "Success. No rows returned."
+Verified (one combined query): public.leads 0, public.estimates 0, public.lead_events 0, public.estimate_areas 0, public.estimate_area_materials 0; pec_prod_system_types new override columns target_gp_pct + commission_pct = 2; config seeds in public.settings matching estimator_%/drip_% = 8; RLS policies across the 5 new tables = 5 (one per table). Then read the 8 seed values: estimator_enabled=false, estimator_hide_material_qty=true, estimator_target_gp_pct=50, estimator_default_commission_pct=(blank, by design - Dylan must set the real rate before pricing is live), estimator_price_increment=25, drip_autosend_email=false, drip_autosend_sms=false, drip_kill_switch=false.
+Why: Dylan said "RUN LATEST HANDOFF." The migration is the data layer the upcoming estimator PWA reads/writes, and the offline estimate-capture spike needs it applied first.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase schema (5 new tables + 2 columns + 8 settings seeds + 5 RLS policies; all additive, no data changed).
+Next steps: Claude Code can proceed with the PWA scaffold + offline estimate-capture spike (unblocked). When wiring offline sync, confirm Data API exposure for the new tables (this existing project auto-exposes public tables to PostgREST today; Supabase enforces opt-in exposure on 2026-10-30, so before then an authenticated GET /rest/v1/estimates?limit=1 should return 200, not 404).
+Handoff to Dylan: provide estimator_default_commission_pct (commission % of revenue); until set, pricing stays visibly unconfigured. Confirm the global estimator_target_gp_pct of 50 is correct, or give per-system overrides (target_gp_pct / commission_pct columns now exist on pec_prod_system_types).
+Handoff to Cowork: none (this handoff is closed).
+
+---
+
 ## [2026-06-21 17:55] Claude Code: estimator beta — Migration set #1 (core tables), Cowork handoff
 By: Claude Code
 Changed: Wrote supabase/migrations/2026-06-21_estimator_core.sql (idempotent, NOT applied from this session). Adds the estimator/CRM data layer: leads, lead_events, estimates, estimate_areas, estimate_area_materials, plus per-system pricing override columns (target_gp_pct, commission_pct) on pec_prod_system_types, plus eight config seeds in the existing public.settings store.
