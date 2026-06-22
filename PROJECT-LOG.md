@@ -4,6 +4,16 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 21:45] Claude Code: correct estimator allowlist to Dylan's CRM login email
+By: Claude Code
+Changed: Dylan's CRM LOGIN email is dylan@prescottepoxy.com, but the allowlist (and the code's owner default) had been set to dnordby50@gmail.com (his other email), so the gate never matched. Updated ESTIMATOR_OWNER_EMAIL in index.html to dylan@prescottepoxy.com and wrote migration 2026-06-21_estimator_owner_email_fix.sql to overwrite the wrong seeded value of public.settings.estimator_allowed_emails with dylan@prescottepoxy.com (guarded so it only replaces the known-wrong auto-seed).
+Why: combined with the 21:30 session-email fix, the button compares Dylan's actual login email against the allowlist; both must say dylan@prescottepoxy.com.
+Files touched: index.html, supabase/migrations/2026-06-21_estimator_owner_email_fix.sql (new), PROJECT-LOG.md.
+Handoff to Dylan: FASTEST path (no waiting): in the dashboard Settings, change the estimator_allowed_emails value to dylan@prescottepoxy.com, then hard-refresh. OR wait for Cowork to run the migration below.
+Handoff to Cowork: apply supabase/migrations/2026-06-21_estimator_owner_email_fix.sql to PROD (one-line UPDATE; verify settings.estimator_allowed_emails = dylan@prescottepoxy.com).
+
+---
+
 ## [2026-06-21 21:30] Claude Code: fix estimator button visibility (use login email, not profile email)
 By: Claude Code
 Changed: The "Estimator (Beta)" button did not appear for Dylan on the live deploy even though the code shipped (verified: prod index.html has the button + wireEstimatorNav, /estimator/ returns 200, and Cowork confirmed settings.estimator_allowed_emails = dnordby50@gmail.com). Root cause: wireEstimatorNav matched the allowlist against state.adminUser.email (the admin_users PROFILE email), which can differ from the actual login email. Fixed to read the authenticated session email (supabase.auth.getSession().user.email) first, falling back to the profile email only if the session has none. Added a console.info('[estimator] nav gate', {email, allow, show}) diagnostic so a still-hidden button is debuggable from DevTools without code access.
