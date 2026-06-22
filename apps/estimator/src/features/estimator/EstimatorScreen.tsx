@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Catalog, SalesPerson } from '../../lib/catalog';
 import { computeEstimatePricing, type Area, type PricingResult } from '../../lib/calculator';
+import { useOnline } from '../../lib/useOnline';
+import { saveEstimateOffline } from '../../offline/estimates';
+import { listOps } from '../../offline/outbox';
+import { drainOutbox } from '../../offline/sync';
 
 type AreaForm = { name: string; sqft: string; flakeProductId: string };
 
@@ -18,12 +22,39 @@ const ERROR_COPY: Record<string, string> = {
   NO_LABOR_PCT: 'This system has no labor budget percent set. Set it in the Catalog before pricing.',
 };
 
-export default function EstimatorScreen({ catalog }: { catalog: Catalog }) {
+export default function EstimatorScreen({
+  catalog,
+  createdBy,
+  catalogFromCache,
+}: {
+  catalog: Catalog;
+  createdBy: string | null;
+  catalogFromCache: boolean;
+}) {
   const { systemTypes, productsById, recipeSlotsBySystemType, salespeople, config } = catalog;
+  const online = useOnline();
 
   const [salespersonId, setSalespersonId] = useState<string>(salespeople[0]?.id ?? '');
   const [systemTypeId, setSystemTypeId] = useState<string>(systemTypes[0]?.id ?? '');
   const [areas, setAreas] = useState<AreaForm[]>([{ name: 'Main', sqft: '', flakeProductId: '' }]);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [pending, setPending] = useState(0);
+
+  const refreshPending = useCallback(async () => {
+    try {
+      setPending((await listOps()).length);
+    } catch {
+      /* IndexedDB unavailable: leave at 0 */
+    }
+  }, []);
+
+  // Show the queue depth, and whenever we come back online try to flush it.
+  useEffect(() => {
+    refreshPending();
+  }, [refreshPending]);
+  useEffect(() => {
+    if (online) drainOutbox().then(refreshPending).catch(() => {});
+  }, [online, refreshPending]);
 
   const salesperson: SalesPerson | undefined = salespeople.find((s) => s.id === salespersonId);
 
@@ -37,18 +68,22 @@ export default function EstimatorScreen({ catalog }: { catalog: Catalog }) {
       .sort((a, b) => (a.color ?? a.name).localeCompare(b.color ?? b.name));
   }, [systemTypeId, recipeSlotsBySystemType, productsById]);
 
+  const engineAreas: Area[] = useMemo(
+    () =>
+      areas
+        .map((a, i) => ({
+          id: `a${i}`,
+          name: a.name || `Area ${i + 1}`,
+          sqft: Number(a.sqft) || 0,
+          system_type_id: systemTypeId,
+          flake_product_id: a.flakeProductId || null,
+        }))
+        .filter((a) => a.sqft > 0),
+    [areas, systemTypeId],
+  );
+
   const pricing: PricingResult | null = useMemo(() => {
-    if (!systemTypeId || !salesperson) return null;
-    const engineAreas: Area[] = areas
-      .map((a, i) => ({
-        id: `a${i}`,
-        name: a.name || `Area ${i + 1}`,
-        sqft: Number(a.sqft) || 0,
-        system_type_id: systemTypeId,
-        flake_product_id: a.flakeProductId || null,
-      }))
-      .filter((a) => a.sqft > 0);
-    if (!engineAreas.length) return null;
+    if (!systemTypeId || !salesperson || !engineAreas.length) return null;
     return computeEstimatePricing({
       areas: engineAreas,
       productsById,
@@ -61,7 +96,7 @@ export default function EstimatorScreen({ catalog }: { catalog: Catalog }) {
       charmThreshold: config.charmThreshold,
       charmBand: config.charmBand,
     });
-  }, [areas, systemTypeId, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config]);
+  }, [engineAreas, systemTypeId, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -70,13 +105,46 @@ export default function EstimatorScreen({ catalog }: { catalog: Catalog }) {
   const removeArea = (i: number) => setAreas((prev) => prev.filter((_, idx) => idx !== i));
 
   const err = pricing?.error ?? null;
-  const hasPrice = pricing && !err && pricing.price != null;
+  const hasPrice = !!pricing && !err && pricing.price != null;
+  const canSave = !!salesperson && hasPrice && saveState !== 'saving';
+
+  // Reset the "Saved" confirmation as soon as the estimate changes again.
+  useEffect(() => {
+    setSaveState('idle');
+  }, [engineAreas, systemTypeId, salespersonId]);
+
+  const onSave = useCallback(async () => {
+    if (!salesperson || !pricing || !hasPrice) return;
+    setSaveState('saving');
+    try {
+      await saveEstimateOffline({
+        systemTypeId,
+        salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
+        areas: engineAreas.map((a) => ({ name: a.name ?? '', sqft: a.sqft, flake_product_id: a.flake_product_id ?? null })),
+        pricing,
+        createdBy,
+      });
+      if (navigator.onLine) await drainOutbox().catch(() => {});
+      await refreshPending();
+      setSaveState('saved');
+    } catch {
+      setSaveState('error');
+    }
+  }, [salesperson, pricing, hasPrice, systemTypeId, engineAreas, createdBy, refreshPending]);
 
   return (
     <div className="screen">
       <header className="topbar">
         <div className="brand">PEC Estimator <span className="beta">beta</span></div>
-        <a className="back" href="/">Back to dashboard</a>
+        <div className="status">
+          <span className={online ? 'dot online' : 'dot offline'} title={online ? 'Online' : 'Offline'} />
+          <span className="status-text">
+            {online ? 'Online' : 'Offline'}
+            {pending > 0 && ` · ${pending} to sync`}
+            {catalogFromCache && ' · cached catalog'}
+          </span>
+          <a className="back" href="/">Dashboard</a>
+        </div>
       </header>
 
       <main className="cols">
@@ -159,6 +227,17 @@ export default function EstimatorScreen({ catalog }: { catalog: Catalog }) {
                 )}
               </dl>
               <p className="calcver">engine {pricing.calcVersion}</p>
+              <div className="save-row">
+                <button type="button" className="save" disabled={!canSave} onClick={onSave}>
+                  {saveState === 'saving' ? 'Saving…' : 'Save estimate'}
+                </button>
+                {saveState === 'saved' && (
+                  <span className="save-note ok">
+                    {online ? 'Saved & synced' : 'Saved offline · will sync when online'}
+                  </span>
+                )}
+                {saveState === 'error' && <span className="save-note bad">Save failed</span>}
+              </div>
             </>
           )}
         </section>

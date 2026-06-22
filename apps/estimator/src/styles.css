@@ -48,6 +48,27 @@ body { background: #f1f5f9; color: var(--ink); }
 }
 .topbar .back { color: #cbd5e1; text-decoration: none; font-size: 0.85rem; }
 .topbar .back:hover { color: #fff; }
+.status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #cbd5e1; }
+.status-text { white-space: nowrap; }
+.dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; display: inline-block; }
+.dot.online { background: #22c55e; }
+.dot.offline { background: #f59e0b; }
+
+.save-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.25rem; }
+.save {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.7rem 1.1rem;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.save:disabled { opacity: 0.5; cursor: not-allowed; }
+.save-note { font-size: 0.85rem; }
+.save-note.ok { color: var(--good); }
+.save-note.bad { color: var(--bad); }
 
 .cols {
   flex: 1;

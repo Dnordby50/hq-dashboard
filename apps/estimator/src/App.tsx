@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
-import { loadCatalog, type Catalog } from './lib/catalog';
+import { getCachedCatalog, loadCatalog, type Catalog } from './lib/catalog';
+import { drainOutbox } from './offline/sync';
 import EstimatorScreen from './features/estimator/EstimatorScreen';
 
 type State =
   | { phase: 'loading' }
   | { phase: 'signed-out' }
   | { phase: 'error'; message: string }
-  | { phase: 'ready'; catalog: Catalog };
+  | { phase: 'ready'; catalog: Catalog; createdBy: string | null; fromCache: boolean };
 
 export default function App() {
   const [state, setState] = useState<State>({ phase: 'loading' });
@@ -15,22 +16,38 @@ export default function App() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      // SSO: the session is shared with the dashboard (same origin + storageKey).
       const { data: sess } = await supabase.auth.getSession();
       if (!alive) return;
       if (!sess.session) {
         setState({ phase: 'signed-out' });
         return;
       }
+      const createdBy = sess.session.user?.id ?? null;
+
+      let catalog: Catalog | undefined;
+      let fromCache = false;
       try {
-        const catalog = await loadCatalog();
-        if (!alive) return;
-        setState({ phase: 'ready', catalog });
+        // Online path also refreshes the offline cache.
+        catalog = await loadCatalog();
       } catch (e) {
-        if (!alive) return;
-        const message = e instanceof Error ? e.message : String(e);
-        setState({ phase: 'error', message });
+        // Offline or query failed: fall back to the last cached catalog so the
+        // estimator still works at a job site with no signal.
+        const cached = await getCachedCatalog();
+        if (cached) {
+          catalog = cached;
+          fromCache = true;
+        } else {
+          if (!alive) return;
+          const message = e instanceof Error ? e.message : String(e);
+          setState({ phase: 'error', message });
+          return;
+        }
       }
+      if (!alive || !catalog) return;
+      setState({ phase: 'ready', catalog, createdBy, fromCache });
+
+      // Best-effort: push anything queued from a previous offline session.
+      if (navigator.onLine) drainOutbox().catch(() => {});
     })();
     return () => {
       alive = false;
@@ -42,18 +59,22 @@ export default function App() {
     return (
       <Centered>
         <p>Please sign in on the dashboard first, then reopen the estimator.</p>
-        <p><a href="/">Go to dashboard</a></p>
+        <p>
+          <a href="/">Go to dashboard</a>
+        </p>
       </Centered>
     );
   if (state.phase === 'error')
     return (
       <Centered>
-        <p>Could not load the catalog.</p>
+        <p>Could not load the catalog. Open it once online to enable offline use.</p>
         <p className="muted">{state.message}</p>
-        <p><a href="/">Back to dashboard</a></p>
+        <p>
+          <a href="/">Back to dashboard</a>
+        </p>
       </Centered>
     );
-  return <EstimatorScreen catalog={state.catalog} />;
+  return <EstimatorScreen catalog={state.catalog} createdBy={state.createdBy} catalogFromCache={state.fromCache} />;
 }
 
 function Centered({ children }: { children: React.ReactNode }) {

@@ -1,5 +1,8 @@
 import { supabase } from './supabase';
 import type { Product, RecipeSlot, SystemType } from './calculator';
+import { idbGet, idbPut } from '../offline/idb';
+
+const CATALOG_CACHE_KEY = 'catalog';
 
 export type SalesPerson = { id: string; name: string; commission_pct: number; active: boolean };
 
@@ -91,11 +94,31 @@ export async function loadCatalog(): Promise<Catalog> {
       settings['estimator_default_commission_pct'] !== '',
   };
 
-  return {
+  const catalog: Catalog = {
     systemTypes: (systemsRes.data ?? []) as SystemType[],
     productsById,
     recipeSlotsBySystemType,
     salespeople: (salesRes.data ?? []) as SalesPerson[],
     config,
   };
+
+  // Cache for offline use (best-effort; never fail the online load on a cache
+  // write error, e.g. IndexedDB unavailable in private mode).
+  try {
+    await idbPut('catalog', { ...catalog, cachedAt: new Date().toISOString() }, CATALOG_CACHE_KEY);
+  } catch {
+    /* ignore */
+  }
+
+  return catalog;
+}
+
+// The last catalog cached by a successful online load. Used when the device is
+// offline so the estimator's question flow + pricing still work at a job site.
+export async function getCachedCatalog(): Promise<(Catalog & { cachedAt?: string }) | undefined> {
+  try {
+    return await idbGet<Catalog & { cachedAt?: string }>('catalog', CATALOG_CACHE_KEY);
+  } catch {
+    return undefined;
+  }
 }
