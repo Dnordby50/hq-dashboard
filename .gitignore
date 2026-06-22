@@ -7,3 +7,7 @@ dist/
 build/
 .vscode/
 .idea/
+
+# Estimator PWA build output (Vite builds apps/estimator into repo-root
+# /estimator; Netlify rebuilds it on deploy, so it is never committed).
+/estimator/

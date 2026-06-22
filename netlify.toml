@@ -1,6 +1,11 @@
 [build]
   functions = "netlify/functions"
   publish = "."
+  # The dashboard (index.html) is static and needs no build. This command exists
+  # only to build the estimator PWA into repo-root /estimator (Vite base
+  # '/estimator/'), which `publish = "."` then serves as static files. The root
+  # app is untouched.
+  command = "npm --prefix apps/estimator install && npm --prefix apps/estimator run build"
 
 [build.environment]
   # Tell Netlify's secret scanner that this Google Sheets API key value is intentional.
@@ -34,6 +39,15 @@
   to = "https://prescottepoxy.netlify.app/:splat"
   status = 301
   force = true
+
+# SPA fallback for the estimator PWA (built into /estimator). Netlify serves
+# existing files first, so hashed JS/CSS assets resolve normally; only unknown
+# client-side routes under /estimator/ fall back to the app's index.html. The
+# root dashboard at "/" is unaffected (this only matches the /estimator/ prefix).
+[[redirects]]
+  from = "/estimator/*"
+  to = "/estimator/index.html"
+  status = 200
 
 # Clean URL for the MCP server so the Claude.ai connector and Claude Code
 # .mcp.json can point at https://<site>/mcp instead of /.netlify/functions/mcp.

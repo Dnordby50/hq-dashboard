@@ -1896,6 +1896,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
           <div class="pec-subnav-group">Sales</div>
+          <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
+               switchView view). Hidden by default; wireEstimatorNav() shows it
+               only when the signed-in user is admin AND settings.estimator_enabled
+               is true, so the beta stays dark until Dylan flips the flag. -->
+          <button id="pecEstimatorNav" style="display:none">Estimator (Beta)</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
@@ -5914,10 +5919,33 @@ function renderAuthUI() {
   setNav('costing', can('can_view_job_costing'));
   setNav('completed-costing', can('can_view_job_costing'));
   setNav('commission', can('can_view_commission'));
+  wireEstimatorNav();
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
   refreshBell();
+}
+
+// Show + wire the Estimator (Beta) launch button. Admin-only AND gated on the
+// public.settings.estimator_enabled flag, so the beta stays hidden from the team
+// until Dylan turns it on. The button is a full-page navigation to the estimator
+// PWA (a separate Vite app served at /estimator/), not an in-page switchView view.
+let _estimatorNavWired = false;
+async function wireEstimatorNav() {
+  const btn = document.getElementById('pecEstimatorNav');
+  if (!btn) return;
+  if (!_estimatorNavWired) {
+    btn.addEventListener('click', () => { window.location.assign('/estimator/'); });
+    _estimatorNavWired = true;
+  }
+  let enabled = false;
+  try {
+    if (state.adminUser && state.adminUser.role === 'admin') {
+      const { data } = await supabase.from('settings').select('value').eq('key', 'estimator_enabled').maybeSingle();
+      enabled = !!data && String(data.value).toLowerCase() === 'true';
+    }
+  } catch (_) { enabled = false; }   // flag/row missing or query failed -> stay hidden
+  btn.style.display = enabled ? '' : 'none';
 }
 
 // ---- Whole-app auth gate ----------------------------------------------------
