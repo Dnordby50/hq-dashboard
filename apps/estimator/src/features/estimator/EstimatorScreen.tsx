@@ -149,7 +149,10 @@ export default function EstimatorScreen({
       recipeSlotsBySystemType,
       systemTypes,
       laborRate: config.laborRate,
-      commissionPct: salesperson.commission_pct ?? 0,
+      // PRICING uses the standard house rate; the rep's actual rate only affects
+      // payout + GP variance, so the quote never changes with the salesperson.
+      commissionPct: config.standardCommissionPct,
+      actualCommissionPct: salesperson.commission_pct ?? 0,
       targetGpPct: config.targetGpPct,
       priceIncrement: config.priceIncrement,
       charmThreshold: config.charmThreshold,
@@ -357,12 +360,22 @@ export default function EstimatorScreen({
             <>
               <div className="price">{money(pricing.price)}</div>
               <dl className="metrics">
-                <div><dt>Gross profit</dt><dd>{money(pricing.gpDollars)} ({pct(pricing.gpPct)})</dd></div>
+                <div><dt>Gross profit (budgeted)</dt><dd>{money(pricing.gpDollars)} ({pct(pricing.gpPct)})</dd></div>
                 <div><dt>GP / hour</dt><dd>{money2(pricing.gpPerHour)}</dd></div>
-                <div><dt>Commission</dt><dd>{money2(pricing.commissionDollars)} ({pricing.commissionPct}%)</dd></div>
+                <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(pricing.commissionDollars)}</dd></div>
+                {pricing.actualCommissionPct !== pricing.standardCommissionPct && (
+                  <>
+                    <div><dt>Rep payout ({pricing.actualCommissionPct}%)</dt><dd>{money2(pricing.commissionPayout)}</dd></div>
+                    <div><dt>GP variance vs standard</dt><dd>{money2(pricing.gpVariance)}</dd></div>
+                    <div><dt>Realized GP</dt><dd>{money(pricing.realizedGp)} ({pct(pricing.realizedGpPct)})</dd></div>
+                  </>
+                )}
                 <div><dt>Budgeted hours</dt><dd>{pricing.budgetedHours?.toFixed(1) ?? '--'}</dd></div>
                 {!config.hideMaterialQty && <div><dt>Materials</dt><dd>{money2(pricing.materialsCost)}</dd></div>}
               </dl>
+              {pricing.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
+                <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
+              )}
               <p className="calcver">engine {pricing.calcVersion}</p>
               <div className="save-row">
                 <button type="button" className="save" disabled={!canSave} onClick={onSave}>

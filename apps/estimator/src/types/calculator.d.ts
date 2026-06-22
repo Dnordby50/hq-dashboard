@@ -25,14 +25,21 @@ declare module '*/production/calculator.js' {
     laborPct?: number;
     laborBudget?: number | null;
     laborDollars?: number;
-    commissionPct?: number;
-    commissionDollars?: number;
+    commissionPct?: number; // standard rate, echoed
+    standardCommissionPct?: number;
+    actualCommissionPct?: number;
+    commissionDollars?: number; // budgeted (standard) commission $
+    commissionPayout?: number; // actual rep payout $
+    gpVariance?: number; // (standard - actual)% * price
     targetGpPct?: number;
-    gpDollars?: number;
+    gpDollars?: number; // budgeted GP at standard
     gpPct?: number | null;
+    realizedGp?: number; // budgeted GP + variance
+    realizedGpPct?: number | null;
     gpPerHour?: number | null;
     budgetedHours?: number | null;
-    materialLines?: unknown[];
+    materialLines?: { unit_cost_snapshot: number | null; product_name: string }[] | unknown[];
+    materialsMissingCost?: string[];
     divisor?: number;
     calcVersion: string;
     error: string | null;

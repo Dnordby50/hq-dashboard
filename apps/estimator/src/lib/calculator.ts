@@ -61,7 +61,8 @@ export type PricingInput = {
   defaultBasecoatByFlake?: Record<string, string>;
   systemTypes: SystemType[];
   laborRate: number;
-  commissionPct: number; // PERCENT of revenue (the assigned salesperson's rate)
+  commissionPct: number; // STANDARD house commission PERCENT, baked into the price
+  actualCommissionPct?: number | null; // assigned rep's actual PERCENT (payout + variance only)
   targetGpPct: number; // PERCENT
   fixedAddons?: number;
   priceIncrement?: number;

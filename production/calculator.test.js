@@ -603,9 +603,9 @@ assertThrows(() => {
 
 // --- computeEstimatePricing: closed-form cost-plus to target margin ----------
 // Standard Flake 600 sqft fixture -> M = basecoat 2*240 + flake 2*95 + topcoat
-// 3*320 = 480 + 190 + 960 = 1630. With laborPct 20, commission 8%, targetGP 50:
-// divisor = 1 - .20 - .08 - .50 = .22; priceRaw = 1630/.22 = 7409.09 -> nearest
-// $5 = 7410 (no charm, 410 above 7000). At 7410: labor 1482, comm 592.8,
+// 3*320 = 480 + 190 + 960 = 1630. With laborPct 20, STANDARD commission 8%,
+// targetGP 50: divisor = 1 - .20 - .08 - .50 = .22; priceRaw = 1630/.22 =
+// 7409.09 -> nearest $5 = 7410. At 7410: labor 1482, std comm 592.8,
 // gp = 7410 - (1630 + 1482 + 592.8) = 3705.2 -> gpPct ~0.5000.
 {
   const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
@@ -617,12 +617,61 @@ assertThrows(() => {
   assertEq(r.error, null, 'pricing: no error on a valid plan');
   assertEq(r.materialsCost, 1630, 'pricing: M = sum of material line costs (1630)');
   assertEq(r.price, 7410, 'pricing: price = nearest $5 of the cost-plus number');
-  assertEq(r.commissionDollars, 592.8, 'pricing: commission = 8% of the final price');
+  assertEq(r.commissionDollars, 592.8, 'pricing: budgeted commission = standard 8% of the final price');
   assertEq(r.laborDollars, 1482, 'pricing: labor = 20% of the final price');
-  assertEq(r.gpDollars, 3705.2, 'pricing: GP$ = price - (M + labor + commission)');
-  assertEq(Math.abs(r.gpPct - 0.50) < 0.005, true, 'pricing: realized GP% within half a point of target');
-  // budgetedHours = laborBudget(1482) / 50; GP/hr derived from it
+  assertEq(r.gpDollars, 3705.2, 'pricing: budgeted GP$ = price - (M + labor + std commission)');
+  assertEq(Math.abs(r.gpPct - 0.50) < 0.005, true, 'pricing: budgeted GP% within half a point of target');
+  // No actualCommissionPct given -> rep is at the standard rate: payout = budgeted, no variance.
+  assertEq(r.standardCommissionPct, 8, 'pricing: standardCommissionPct echoes the standard');
+  assertEq(r.actualCommissionPct, 8, 'pricing: actual defaults to the standard when not given');
+  assertEq(r.commissionPayout, 592.8, 'pricing: payout = actual rate (defaulted to standard) * price');
+  assertEq(r.gpVariance, 0, 'pricing: no variance when the rep is at the standard rate');
+  assertEq(r.realizedGp, r.gpDollars, 'pricing: realized GP = budgeted GP when variance is 0');
   assertEq(r.budgetedHours, 1482 / 50, 'pricing: budgetedHours from labor budget at the final price');
+}
+
+// --- computeEstimatePricing: STANDARD-rate commission, rep-independent price --
+// Decision (2026-06-21): commission is a budgeted house expense in the price at
+// the STANDARD rate, so the quote is identical no matter which rep is assigned.
+// The rep's ACTUAL rate only drives payout + GP variance. Standard 6%, M=1630,
+// labor 20, target 50 -> divisor .24 -> 1630/.24 = 6791.67 -> nearest $5 6790.
+// budgeted: labor 1358, std comm 407.4, gp = 6790-(1630+1358+407.4) = 3394.6.
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const base = { areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 6, targetGpPct: 50 };
+  const owner = computeEstimatePricing({ ...base, actualCommissionPct: 0 }); // Dylan 0%
+  const aron = computeEstimatePricing({ ...base, actualCommissionPct: 6 });  // Aron 6%
+  assertEq(owner.price, 6790, 'pricing: standard-rate price (6790)');
+  assertEq(owner.price, aron.price, 'pricing: price identical for actual 0% vs 6% (rep-independent quote)');
+  assertEq(owner.commissionDollars, 407.4, 'pricing: budgeted commission = standard 6% of price (both reps)');
+  assertEq(owner.gpDollars, 3394.6, 'pricing: budgeted GP is the standard-rate GP (both reps)');
+  // Owner at 0%: pays no commission, so the budgeted 6% becomes extra realized GP.
+  assertEq(owner.commissionPayout, 0, 'pricing: 0% rep payout is 0');
+  assertEq(owner.gpVariance, 407.4, 'pricing: gpVariance = (6-0)% * price for the owner');
+  assertEq(owner.realizedGp, 3802, 'pricing: realized GP = budgeted + variance (3394.6 + 407.4)');
+  // Aron at the standard rate: full payout, no variance.
+  assertEq(aron.commissionPayout, 407.4, 'pricing: 6% rep payout = 6% * price');
+  assertEq(aron.gpVariance, 0, 'pricing: standard-rate rep has no variance');
+  assertEq(aron.realizedGp, aron.gpDollars, 'pricing: realized GP = budgeted for the standard-rate rep');
+}
+
+// --- computeEstimatePricing: missing-cost materials are flagged ---------------
+// A selected product with no unit_cost is NOT counted in M (understated price),
+// so the engine surfaces it for a UI warning instead of silently underpricing.
+{
+  const productsNullCost = {
+    ...productsById,
+    flakeNoCost: { id: 'flakeNoCost', name: 'Domino (uncosted)', material_type: 'Flake', supplier: 'Simiron', color: 'Domino', spread_rate: 350, kit_size: 1, unit_cost: null },
+  };
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const r = computeEstimatePricing({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flakeNoCost' }],
+    productsById: productsNullCost, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes, laborRate: 50, commissionPct: 6, targetGpPct: 50,
+  });
+  assertEq(r.materialsMissingCost.includes('Domino (uncosted)'), true, 'pricing: flags a selected material that has no unit_cost');
+  assertEq(r.error, null, 'pricing: still prices (on partial cost) but flags the gap');
 }
 
 // --- computeEstimatePricing: divisor guard (target mathematically impossible)
@@ -662,20 +711,20 @@ assertThrows(() => {
   const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
   const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 6, targetGpPct: 50 });
   assertEq(r.targetGpPct, 55, 'pricing: per-system target_gp_pct overrides global');
-  assertEq(r.commissionPct, 6, 'pricing: commission is the passed salesperson rate, system commission_pct ignored');
+  assertEq(r.commissionPct, 6, 'pricing: commission output is the standard rate; system commission_pct ignored');
   // divisor = 1 - .20 - .06 - .55 = .19; priceRaw = 1630/.19 = 8578.95 -> nearest $5 8580
-  assertEq(r.price, 8580, 'pricing: price uses overridden target + salesperson commission');
-  assertEq(r.gpPct >= 0.55, true, 'pricing: realized GP% >= overridden target');
+  assertEq(r.price, 8580, 'pricing: price uses overridden target + standard commission');
+  assertEq(r.gpPct >= 0.55, true, 'pricing: budgeted GP% >= overridden target');
 }
 
-// --- computeEstimatePricing: zero-commission salesperson (Dylan = 0%) ---------
+// --- computeEstimatePricing: standard 0% commission (no commission budgeted) --
 {
   const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
   const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
   const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 0, targetGpPct: 50 });
-  assertEq(r.commissionDollars, 0, 'pricing: 0% commission salesperson -> no commission in the price');
+  assertEq(r.commissionDollars, 0, 'pricing: standard 0% -> no commission budgeted in the price');
   // divisor = 1 - .20 - 0 - .50 = .30; priceRaw = 1630/.30 = 5433.33 -> nearest $5 5435 (435 above 5000 > band)
-  assertEq(r.price, 5435, 'pricing: zero-commission price');
+  assertEq(r.price, 5435, 'pricing: standard-0% price');
 }
 
 // --- computeEstimatePricing: planError passes through, no price ---------------

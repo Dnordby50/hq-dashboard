@@ -27,7 +27,7 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-06-21.2';
+export const CALC_VERSION = '2026-06-21.3';
 
 /**
  * Round a raw cost-plus price to a clean, sell-able number.
@@ -267,16 +267,30 @@ export function computeJobEstimate({
  *      recompute the money buckets at the rounded price so the displayed GP$,
  *      GP%, commission$ all agree with the shown price.
  *
+ * Commission is a STANDARD budgeted house expense baked into the price, so the
+ * customer's quote is identical no matter which salesperson is assigned. The
+ * assigned rep's ACTUAL rate only changes what the rep is paid and the GP
+ * variance vs the budget; it never moves the price. So:
+ *   commissionDollars (budgeted) = standardComm% * price   (in the price)
+ *   commissionPayout (actual)    = actualComm%   * price   (what the rep gets)
+ *   gpVariance                   = (standardComm - actualComm)% * price
+ *   realizedGp                   = gpDollars + gpVariance
+ * A 0% rep (the owner) yields gpVariance = standardComm% * price of extra GP; a
+ * rep at the standard rate yields zero variance.
+ *
  * @param {Object} input  Same area-set inputs as computeJobEstimate, plus:
- * @param {number} input.commissionPct  commission as a PERCENT of revenue (e.g. 8)
- * @param {number} input.targetGpPct    target gross-profit PERCENT (e.g. 50)
- * @param {number} input.fixedAddons    F: direct add-ons not proportional to revenue (default 0)
- * @param {number} input.priceIncrement round price up to this increment (default 25)
+ * @param {number} input.commissionPct        STANDARD house commission PERCENT baked into the price (e.g. 6)
+ * @param {number} input.actualCommissionPct  the assigned rep's actual PERCENT (payout + variance only; defaults to the standard)
+ * @param {number} input.targetGpPct          target gross-profit PERCENT (e.g. 50)
+ * @param {number} input.fixedAddons          F: direct add-ons not proportional to revenue (default 0)
+ * @param {number} input.priceIncrement       rounding increment (default 5)
  * @returns {Object} { price, priceRaw, materialsCost, fixedAddons, laborPct,
- *   laborBudget, laborDollars, commissionPct, commissionDollars, targetGpPct,
- *   gpDollars, gpPct, gpPerHour, budgetedHours, materialLines, divisor,
- *   calcVersion, error } - on failure, { error, ... , calcVersion } with error
- *   one of the planError string, 'NO_LABOR_PCT', or 'TARGET_UNREACHABLE'.
+ *   laborBudget, laborDollars, commissionPct (=standard), standardCommissionPct,
+ *   actualCommissionPct, commissionDollars (budgeted), commissionPayout,
+ *   gpVariance, targetGpPct, gpDollars, gpPct (budgeted at standard), realizedGp,
+ *   realizedGpPct, gpPerHour, budgetedHours, materialLines, materialsMissingCost,
+ *   divisor, calcVersion, error } - on failure, { error, ..., calcVersion } with
+ *   error one of the planError string, 'NO_LABOR_PCT', or 'TARGET_UNREACHABLE'.
  */
 export function computeEstimatePricing({
   areas,
@@ -286,6 +300,7 @@ export function computeEstimatePricing({
   systemTypes = [],
   laborRate = 0,
   commissionPct = 0,
+  actualCommissionPct = null,
   targetGpPct = 50,
   fixedAddons = 0,
   priceIncrement = 5,
@@ -308,18 +323,17 @@ export function computeEstimatePricing({
   const M = Number(base.materialsBudget) || 0;
   const F = Number(fixedAddons) || 0;
 
-  // Target GP can be overridden per system; commission is NOT per system, it is
-  // the assigned salesperson's rate (pec_sales_team_members.commission_pct),
-  // which the caller resolves and passes in as commissionPct. So commission
-  // comes straight from the input, never from the system row.
+  // Target GP can be overridden per system. Commission used for PRICING is the
+  // STANDARD house rate (commissionPct), NOT the assigned rep's rate, so the
+  // customer quote is identical regardless of who is assigned.
   const primary = (areas && areas[0])
     ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id)
     : null;
   const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
-  const commPct = Number(commissionPct) || 0;
+  const standardComm = Number(commissionPct) || 0;
 
   const laborFrac = Number(base.laborPct) / 100;
-  const commFrac = commPct / 100;
+  const commFrac = standardComm / 100;
   const gpFrac = targetGp / 100;
   const divisor = 1 - laborFrac - commFrac - gpFrac;
   if (!(divisor > 0)) {
@@ -338,13 +352,29 @@ export function computeEstimatePricing({
 
   // Recompute money buckets at the ROUNDED price so display is internally
   // consistent (same bucket set as computeCostingRow: materials, labor,
-  // commission, plus fixed add-ons; other buckets are 0 at estimate time).
+  // commission, plus fixed add-ons; other buckets are 0 at estimate time). The
+  // commission bucket here is the STANDARD (budgeted) commission, so gpDollars is
+  // the BUDGETED gross profit the quote is built to hit.
   const commissionDollars = round2(commFrac * price);
   const laborDollars = round2(laborFrac * price);
   const gpDollars = round2(price - (M + laborDollars + commissionDollars + F));
   const gpPct = price > 0 ? gpDollars / price : null;
   const budgetedHours = atPrice.budgetedHours;
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
+
+  // The assigned rep's ACTUAL rate drives payout + GP variance only (never price).
+  const actualComm = actualCommissionPct == null ? standardComm : (Number(actualCommissionPct) || 0);
+  const commissionPayout = round2((actualComm / 100) * price);
+  const gpVariance = round2(((standardComm - actualComm) / 100) * price);
+  const realizedGp = round2(gpDollars + gpVariance);
+  const realizedGpPct = price > 0 ? realizedGp / price : null;
+
+  // Data-hygiene flag: products with no unit_cost are NOT counted in M, so the
+  // price is built on partial material cost. Surface the offending product names
+  // so the UI can warn instead of silently underpricing.
+  const materialsMissingCost = (base.materialLines || [])
+    .filter((l) => l.unit_cost_snapshot == null)
+    .map((l) => l.product_name);
 
   return {
     price,
@@ -354,14 +384,21 @@ export function computeEstimatePricing({
     laborPct: Number(base.laborPct),
     laborBudget: atPrice.laborBudget,
     laborDollars,
-    commissionPct: commPct,
+    commissionPct: standardComm,
+    standardCommissionPct: standardComm,
+    actualCommissionPct: actualComm,
     commissionDollars,
+    commissionPayout,
+    gpVariance,
     targetGpPct: targetGp,
     gpDollars,
     gpPct,
+    realizedGp,
+    realizedGpPct,
     gpPerHour,
     budgetedHours,
     materialLines: base.materialLines,
+    materialsMissingCost,
     divisor,
     calcVersion: CALC_VERSION,
     error: null,

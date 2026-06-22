@@ -8,6 +8,7 @@ export type SalesPerson = { id: string; name: string; commission_pct: number; ac
 
 export type PricingConfig = {
   laborRate: number;
+  standardCommissionPct: number; // estimator_default_commission_pct: the house rate baked into every quote
   targetGpPct: number;
   priceIncrement: number;
   charmThreshold: number;
@@ -84,6 +85,7 @@ export async function loadCatalog(): Promise<Catalog> {
 
   const config: PricingConfig = {
     laborRate: num('default_labor_hourly_rate', 0),
+    standardCommissionPct: num('estimator_default_commission_pct', 0),
     targetGpPct: num('estimator_target_gp_pct', 50),
     priceIncrement: num('estimator_price_increment', 5),
     charmThreshold: num('estimator_charm_threshold', 1000),
