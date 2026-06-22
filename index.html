@@ -5946,10 +5946,18 @@ async function wireEstimatorNav() {
     _estimatorNavWired = true;
   }
   let show = false;
+  let email = '';
+  let allow = '';
   try {
-    const email = String((state.adminUser && state.adminUser.email) || '').trim().toLowerCase();
+    // The authenticated LOGIN email is authoritative (admin_users.email can be a
+    // different address). Fall back to the profile email only if the session has
+    // none.
+    try {
+      const { data } = await supabase.auth.getSession();
+      email = String((data && data.session && data.session.user && data.session.user.email) || '').trim().toLowerCase();
+    } catch (_) { /* fall through */ }
+    if (!email) email = String((state.adminUser && state.adminUser.email) || '').trim().toLowerCase();
     if (email) {
-      let allow = '';
       try {
         const { data } = await supabase.from('settings').select('value').eq('key', 'estimator_allowed_emails').maybeSingle();
         allow = data && data.value != null ? String(data.value).trim() : '';
@@ -5960,6 +5968,8 @@ async function wireEstimatorNav() {
       else show = lower.split(/[\s,;]+/).filter(Boolean).includes(email);
     }
   } catch (_) { show = false; }
+  // Diagnostic so a hidden button is debuggable from the console without code access.
+  try { console.info('[estimator] nav gate', { email, allow, show }); } catch (_) {}
   btn.style.display = show ? '' : 'none';
 }
 

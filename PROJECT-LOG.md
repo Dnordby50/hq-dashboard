@@ -4,6 +4,15 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-21 21:30] Claude Code: fix estimator button visibility (use login email, not profile email)
+By: Claude Code
+Changed: The "Estimator (Beta)" button did not appear for Dylan on the live deploy even though the code shipped (verified: prod index.html has the button + wireEstimatorNav, /estimator/ returns 200, and Cowork confirmed settings.estimator_allowed_emails = dnordby50@gmail.com). Root cause: wireEstimatorNav matched the allowlist against state.adminUser.email (the admin_users PROFILE email), which can differ from the actual login email. Fixed to read the authenticated session email (supabase.auth.getSession().user.email) first, falling back to the profile email only if the session has none. Added a console.info('[estimator] nav gate', {email, allow, show}) diagnostic so a still-hidden button is debuggable from DevTools without code access.
+Why: the gate must compare against the email the user actually logs in with (authoritative identity); the profile email is a separate, sometimes-different field, and Cowork's verification proved the allowlist value itself was correct, isolating the bug to the email source.
+Files touched: index.html, PROJECT-LOG.md.
+Handoff to Dylan: hard-refresh the dashboard after this deploys; the button should appear. If not, open DevTools console, find the "[estimator] nav gate" line, and tell me the email + allow values it shows.
+
+---
+
 ## [2026-06-21 21:10] Cowork: applied estimator_visibility migration to PROD (verified)
 By: Cowork
 Changed: No repo code. Ran the latest Claude Code handoff (2026-06-21 21:00): applied supabase/migrations/2026-06-21_estimator_visibility.sql to PROD (zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). Single additive statement (insert ... on conflict do nothing), no destructive-ops warning. Result: "Success. No rows returned." Verified: public.settings.estimator_allowed_emails = dnordby50@gmail.com.
