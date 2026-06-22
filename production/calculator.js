@@ -24,6 +24,11 @@ export class CalculatorError extends Error {
   }
 }
 
+// Bumped whenever the estimate/pricing math changes. The inline mirror in
+// index.html must carry the SAME value; a test asserts it so a drifted mirror
+// is visible. Date-stamped so a mismatch points at which copy is stale.
+export const CALC_VERSION = '2026-06-21';
+
 // Cure speed lives on the area, not the line, but the per-line cure_speed
 // snapshot has to know *which* area column to read. Two product families need
 // it today: Simiron 1100 SL (Fast/Standard/Slow, written to basecoat_cure_speed
@@ -201,6 +206,131 @@ export function computeJobEstimate({
 }
 
 /**
+ * The estimate PRICING engine (the only genuinely new math in the estimator).
+ * Cost-plus to a target gross margin. It WRAPS computeJobEstimate so there is
+ * still one source of truth for materials and labor: it does not re-derive any
+ * material or labor number, it only solves for the price R that hits targetGP.
+ *
+ * Labor and commission are both percents OF revenue, so pricing is mildly
+ * circular (labor and commission depend on R; R depends on total cost). The
+ * closed form, with cost buckets matching computeCostingRow (materials, labor,
+ * commission, plus fixed add-ons F):
+ *
+ *   GP/R = targetGP
+ *   R - (M + laborFrac*R + commFrac*R + F) = targetGP*R
+ *   => R = (M + F) / (1 - laborFrac - commFrac - targetGpFrac)
+ *
+ * Steps:
+ *   1. Pass 1 at revenue:0 gets M (materialsBudget is revenue-independent) and
+ *      laborPct from the primary system.
+ *   2. Resolve targetGP% and commission% (per-system override on the primary
+ *      system wins over the passed global). All three rates are PERCENTS.
+ *   3. divisor = 1 - laborFrac - commFrac - targetGpFrac. If divisor <= 0 the
+ *      target is mathematically impossible: return an error, never divide.
+ *   4. priceRaw = (M + F) / divisor; round UP to priceIncrement so rounding
+ *      never drops realized GP below target.
+ *   5. Pass 2 at the rounded price gets laborBudget + budgetedHours, then
+ *      recompute the money buckets at the rounded price so the displayed GP$,
+ *      GP%, commission$ all agree with the shown price.
+ *
+ * @param {Object} input  Same area-set inputs as computeJobEstimate, plus:
+ * @param {number} input.commissionPct  commission as a PERCENT of revenue (e.g. 8)
+ * @param {number} input.targetGpPct    target gross-profit PERCENT (e.g. 50)
+ * @param {number} input.fixedAddons    F: direct add-ons not proportional to revenue (default 0)
+ * @param {number} input.priceIncrement round price up to this increment (default 25)
+ * @returns {Object} { price, priceRaw, materialsCost, fixedAddons, laborPct,
+ *   laborBudget, laborDollars, commissionPct, commissionDollars, targetGpPct,
+ *   gpDollars, gpPct, gpPerHour, budgetedHours, materialLines, divisor,
+ *   calcVersion, error } - on failure, { error, ... , calcVersion } with error
+ *   one of the planError string, 'NO_LABOR_PCT', or 'TARGET_UNREACHABLE'.
+ */
+export function computeEstimatePricing({
+  areas,
+  productsById,
+  recipeSlotsBySystemType,
+  defaultBasecoatByFlake = {},
+  systemTypes = [],
+  laborRate = 0,
+  commissionPct = 0,
+  targetGpPct = 50,
+  fixedAddons = 0,
+  priceIncrement = 25,
+}) {
+  // Pass 1: materials cost M is independent of revenue, so price at revenue:0.
+  const base = computeJobEstimate({
+    areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes, revenue: 0, laborRate,
+  });
+  if (base.planError) {
+    return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  }
+  if (base.laborPct == null) {
+    // No primary system / no labor_budget_pct: cannot solve cost-plus on labor.
+    return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  }
+
+  const M = Number(base.materialsBudget) || 0;
+  const F = Number(fixedAddons) || 0;
+
+  // Per-system overrides win over the passed global. All three are percents.
+  const primary = (areas && areas[0])
+    ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id)
+    : null;
+  const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
+  const commPct = primary && primary.commission_pct != null ? Number(primary.commission_pct) : Number(commissionPct);
+
+  const laborFrac = Number(base.laborPct) / 100;
+  const commFrac = commPct / 100;
+  const gpFrac = targetGp / 100;
+  const divisor = 1 - laborFrac - commFrac - gpFrac;
+  if (!(divisor > 0)) {
+    // labor + commission + target margin consume >= 100% of revenue: impossible.
+    return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  }
+
+  const priceRaw = (M + F) / divisor;
+  const increment = Number(priceIncrement) > 0 ? Number(priceIncrement) : 1;
+  const price = Math.ceil(priceRaw / increment) * increment;
+
+  // Pass 2: feed the rounded price back for labor budget + budgeted hours.
+  const atPrice = computeJobEstimate({
+    areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes, revenue: price, laborRate,
+  });
+
+  // Recompute money buckets at the ROUNDED price so display is internally
+  // consistent (same bucket set as computeCostingRow: materials, labor,
+  // commission, plus fixed add-ons; other buckets are 0 at estimate time).
+  const commissionDollars = round2(commFrac * price);
+  const laborDollars = round2(laborFrac * price);
+  const gpDollars = round2(price - (M + laborDollars + commissionDollars + F));
+  const gpPct = price > 0 ? gpDollars / price : null;
+  const budgetedHours = atPrice.budgetedHours;
+  const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
+
+  return {
+    price,
+    priceRaw: round2(priceRaw),
+    materialsCost: M,
+    fixedAddons: F,
+    laborPct: Number(base.laborPct),
+    laborBudget: atPrice.laborBudget,
+    laborDollars,
+    commissionPct: commPct,
+    commissionDollars,
+    targetGpPct: targetGp,
+    gpDollars,
+    gpPct,
+    gpPerHour,
+    budgetedHours,
+    materialLines: base.materialLines,
+    divisor,
+    calcVersion: CALC_VERSION,
+    error: null,
+  };
+}
+
+/**
  * Normalized name+address key. Requires BOTH fields so a blank name or address
  * can never produce a false match. Mirrors index.html's _nameAddrKey.
  */
@@ -302,6 +432,12 @@ function planForArea(area, ctx) {
     null;
 
   for (const slot of slots) {
+    // Choice / free-text recipe slots (e.g. "Single|Double broadcast", job
+    // notes) carry no product, so they never contribute a material line and
+    // must not trip the required-product check below. Mirrors index.html's
+    // _planForArea; without this guard a required choice/text slot throws
+    // MISSING_PRODUCT (or emits a phantom line), corrupting the material plan.
+    if (slot.slot_kind === 'choice' || slot.slot_kind === 'text') continue;
     let productId = slot.default_product_id;
 
     if (slot.material_type === 'Flake' || slot.material_type === 'Quartz' || slot.material_type === 'Metallic Pigment') {

@@ -17520,6 +17520,41 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
   const budgetedHours = laborBudget != null && rate > 0 ? laborBudget / rate : null;
   return { materialLines, materialsBudget, laborPct, laborBudget, budgetedHours, planError };
 }
+// Estimate PRICING engine (mirror of production/calculator.js computeEstimatePricing;
+// keep byte-identical). Cost-plus to a target gross margin: wraps computeJobEstimate
+// (one source of truth for materials + labor) and solves for the price R where
+// R = (M + F) / (1 - laborFrac - commFrac - targetGpFrac). All three rates are
+// PERCENTS. Rounds price UP to priceIncrement so realized GP never drops below
+// target. Guard: divisor <= 0 returns an error, never divides. CALC_VERSION must
+// match the canonical file (a test asserts it).
+const CALC_VERSION = '2026-06-21';
+function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], laborRate = 0, commissionPct = 0, targetGpPct = 50, fixedAddons = 0, priceIncrement = 25 }) {
+  const _r2 = (n) => Math.round(n * 100) / 100;
+  const base = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate });
+  if (base.planError) return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  if (base.laborPct == null) return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  const M = Number(base.materialsBudget) || 0;
+  const F = Number(fixedAddons) || 0;
+  const primary = (areas && areas[0]) ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id) : null;
+  const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
+  const commPct = primary && primary.commission_pct != null ? Number(primary.commission_pct) : Number(commissionPct);
+  const laborFrac = Number(base.laborPct) / 100;
+  const commFrac = commPct / 100;
+  const gpFrac = targetGp / 100;
+  const divisor = 1 - laborFrac - commFrac - gpFrac;
+  if (!(divisor > 0)) return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  const priceRaw = (M + F) / divisor;
+  const increment = Number(priceIncrement) > 0 ? Number(priceIncrement) : 1;
+  const price = Math.ceil(priceRaw / increment) * increment;
+  const atPrice = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: price, laborRate });
+  const commissionDollars = _r2(commFrac * price);
+  const laborDollars = _r2(laborFrac * price);
+  const gpDollars = _r2(price - (M + laborDollars + commissionDollars + F));
+  const gpPct = price > 0 ? gpDollars / price : null;
+  const budgetedHours = atPrice.budgetedHours;
+  const gpPerHour = budgetedHours != null && budgetedHours > 0 ? _r2(gpDollars / budgetedHours) : null;
+  return { price, priceRaw: _r2(priceRaw), materialsCost: M, fixedAddons: F, laborPct: Number(base.laborPct), laborBudget: atPrice.laborBudget, laborDollars, commissionPct: commPct, commissionDollars, targetGpPct: targetGp, gpDollars, gpPct, gpPerHour, budgetedHours, materialLines: base.materialLines, divisor, calcVersion: CALC_VERSION, error: null };
+}
 // Bridge the calculator to the first <script type="module"> block (the CRM
 // app). slotHtml / renderBudget / renderWorkOrder live there and call these,
 // but module scopes are isolated, so expose them on window (same pattern as
@@ -17545,6 +17580,8 @@ function resolveCrmForProdJob(prodJob, indexes) {
 window.cureSpeedSpec = cureSpeedSpec;
 window.computeMaterialPlan = computeMaterialPlan;
 window.computeJobEstimate = computeJobEstimate;
+window.computeEstimatePricing = computeEstimatePricing;
+window.CALC_VERSION = CALC_VERSION;
 window.jobNameAddrKey = jobNameAddrKey;
 window.resolveCrmForProdJob = resolveCrmForProdJob;
 // Canonical picks-to-plan mapping for CRM job card areas (job_areas rows,

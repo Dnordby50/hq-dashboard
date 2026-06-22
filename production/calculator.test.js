@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
 
 let passed = 0;
 let failed = 0;
@@ -544,6 +544,128 @@ assertThrows(() => {
     null, 'blank address never matches');
   assertEq(jobNameAddrKey('Name', ''), '', 'jobNameAddrKey requires both fields');
 }
+
+// --- slot_kind regression: choice/text slots never affect the material plan --
+// The estimator's question flow leans on choice + free-text recipe slots. A
+// required choice/text slot carries no product, so it must be skipped: without
+// the guard in planForArea it throws MISSING_PRODUCT (or emits a phantom line)
+// and corrupts M (and therefore every price). This pins same-plan-as-without.
+{
+  const recipesWithChoiceText = {
+    flakeCT: [
+      { id: 'c1', order_index: 1, material_type: 'Basecoat', default_product_id: 'basecoat', required: true },
+      { id: 'c2', order_index: 2, slot_kind: 'choice', material_type: 'Broadcast', label: 'Broadcast', required: true, default_product_id: null },
+      { id: 'c3', order_index: 3, material_type: 'Flake',    default_product_id: null,        required: true },
+      { id: 'c4', order_index: 4, slot_kind: 'text',   material_type: 'Notes', label: 'Notes', required: true, default_product_id: null },
+      { id: 'c5', order_index: 5, material_type: 'Topcoat',  default_product_id: 'topcoat',   required: true },
+    ],
+    flakePlain: [
+      { id: 'p1', order_index: 1, material_type: 'Basecoat', default_product_id: 'basecoat', required: true },
+      { id: 'p3', order_index: 3, material_type: 'Flake',    default_product_id: null,        required: true },
+      { id: 'p5', order_index: 5, material_type: 'Topcoat',  default_product_id: 'topcoat',   required: true },
+    ],
+  };
+  const areaCT = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'flakeCT', flake_product_id: 'flake' }];
+  let planCT;
+  try {
+    planCT = computeMaterialPlan({ areas: areaCT, productsById, recipeSlotsBySystemType: recipesWithChoiceText, defaultBasecoatByFlake });
+    passed++; console.log('  ok   choice/text slots do not throw');
+  } catch (err) {
+    failed++; console.error(`  FAIL choice/text slots do not throw (got ${err.name}: ${err.message})`);
+    planCT = { lines: [] };
+  }
+  // Same job through the slot set with the choice/text slots removed: the only
+  // difference is their presence, so the material lines must come out identical.
+  const planPlain = computeMaterialPlan({ areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'flakePlain', flake_product_id: 'flake' }], productsById, recipeSlotsBySystemType: recipesWithChoiceText, defaultBasecoatByFlake });
+  assertEq(planCT.lines.map(l => [l.material_type, l.qty_needed, l.line_cost]),
+           planPlain.lines.map(l => [l.material_type, l.qty_needed, l.line_cost]),
+           'choice/text slots yield the same material lines as without them');
+  const mCT = planCT.lines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0);
+  const mPlain = planPlain.lines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0);
+  assertEq(mCT, mPlain, 'choice/text slots do not change materials cost M');
+}
+
+// --- computeEstimatePricing: closed-form cost-plus to target margin ----------
+// Standard Flake 600 sqft fixture -> M = basecoat 2*240 + flake 2*95 + topcoat
+// 3*320 = 480 + 190 + 960 = 1630. With laborPct 20, commission 8%, targetGP 50,
+// increment 25: divisor = 1 - .20 - .08 - .50 = .22; priceRaw = 1630/.22 =
+// 7409.09 -> ceil to 7425. At 7425: labor 1485, comm 594, gp = 7425 - (1630 +
+// 1485 + 594) = 3716 -> gpPct 0.5005 (>= target, because we round UP).
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const r = computeEstimatePricing({
+    areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50, priceIncrement: 25,
+  });
+  assertEq(r.error, null, 'pricing: no error on a valid plan');
+  assertEq(r.materialsCost, 1630, 'pricing: M = sum of material line costs (1630)');
+  assertEq(r.price, 7425, 'pricing: price rounds UP to the increment (7425)');
+  assertEq(r.commissionDollars, 594, 'pricing: commission = 8% of rounded price');
+  assertEq(r.laborDollars, 1485, 'pricing: labor = 20% of rounded price');
+  assertEq(r.gpDollars, 3716, 'pricing: GP$ = price - (M + labor + commission)');
+  assertEq(r.gpPct >= 0.50, true, 'pricing: realized GP% >= target (rounding never drops below)');
+  // budgetedHours = laborBudget(1485) / 50 = 29.7; GP/hr = 3716 / 29.7
+  assertEq(r.budgetedHours, 1485 / 50, 'pricing: budgetedHours from labor budget at rounded price');
+}
+
+// --- computeEstimatePricing: divisor guard (target mathematically impossible)
+{
+  const systemTypes = [{ id: 'hi', labor_budget_pct: 30 }];
+  const recipes = { hi: [
+    { id: 'h1', order_index: 1, material_type: 'Basecoat', default_product_id: 'basecoat', required: true },
+    { id: 'h2', order_index: 2, material_type: 'Flake',    default_product_id: null,        required: true },
+    { id: 'h3', order_index: 3, material_type: 'Topcoat',  default_product_id: 'topcoat',   required: true },
+  ] };
+  const r = computeEstimatePricing({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'hi', flake_product_id: 'flake' }],
+    productsById, recipeSlotsBySystemType: recipes, defaultBasecoatByFlake,
+    systemTypes, laborRate: 50, commissionPct: 25, targetGpPct: 50, priceIncrement: 25,
+  });
+  // 1 - .30 - .25 - .50 = -0.05 -> impossible.
+  assertEq(r.error, 'TARGET_UNREACHABLE', 'pricing: divisor <= 0 returns TARGET_UNREACHABLE');
+  assertEq(r.price, undefined, 'pricing: no price emitted when target unreachable');
+  assertEq(Number.isFinite(r.divisor), true, 'pricing: divisor is a finite number, never NaN/Infinity');
+}
+
+// --- computeEstimatePricing: materialLines deep-equal computeJobEstimate -----
+// Wrap integrity: pricing must reuse the exact material plan, not a second copy.
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50 });
+  const est = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate: 50 });
+  assertEq(r.materialLines, est.materialLines, 'pricing materialLines == computeJobEstimate lines (one source)');
+}
+
+// --- computeEstimatePricing: per-system override beats the global ------------
+{
+  const systemTypes = [{ id: 'std', labor_budget_pct: 20, target_gp_pct: 55, commission_pct: 10 }];
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }];
+  const r = computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, laborRate: 50, commissionPct: 8, targetGpPct: 50, priceIncrement: 25 });
+  assertEq(r.targetGpPct, 55, 'pricing: per-system target_gp_pct overrides global');
+  assertEq(r.commissionPct, 10, 'pricing: per-system commission_pct overrides global');
+  // divisor = 1 - .20 - .10 - .55 = .15; priceRaw = 1630/.15 = 10866.67 -> 10875
+  assertEq(r.price, 10875, 'pricing: override price uses the overridden rates');
+  assertEq(r.gpPct >= 0.55, true, 'pricing: realized GP% >= overridden target');
+}
+
+// --- computeEstimatePricing: planError passes through, no price ---------------
+{
+  const r = computeEstimatePricing({
+    areas: [{ id: 'a1', name: 'Bad', sqft: 100, system_type_id: 'badSystem' }],
+    productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    systemTypes: [{ id: 'badSystem', labor_budget_pct: 20 }], laborRate: 50, commissionPct: 8, targetGpPct: 50,
+  });
+  assertEq(typeof r.error === 'string' && /spread_rate/i.test(r.error), true, 'pricing: planError (bad spread_rate) surfaced as error');
+  assertEq(r.price, undefined, 'pricing: no price when the material plan is broken');
+}
+
+// --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
+// The inline copy in index.html must carry the SAME CALC_VERSION. This asserts
+// the canonical value exists and is a non-empty string so the mirror check has
+// something to compare against.
+assertEq(typeof CALC_VERSION === 'string' && CALC_VERSION.length > 0, true, 'CALC_VERSION is a non-empty string');
 
 // ----------------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failed} failed`);
