@@ -4,6 +4,42 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-23 11:00] Claude Code: schedule revenue proration fix + holidays + crew days off + job schedule history
+By: Claude Code
+Changed: Four schedule changes, all in index.html plus one new migration.
+
+PART 1 (bug) - calendar bar revenue now reconciles and never double-counts across weeks.
+  Root cause confirmed in code: the sidebar week total (`weekRevenue`, index.html ~13560) already prorated correctly (`rev * daysInWeek / totalDays`), but the per-bar label came from `eventFor -> revLabel` (~13535) using the job's FULL `revenue`, ignoring how many of the job's days fell in the week. So a $13k 2-day job printed $13k on its bar even though both the sidebar and a 2-week split treated it differently, and a job spanning two weeks printed its full revenue label in BOTH weeks. The week run sheet (~13705) had the same issue with `revFull`.
+  Fix: `eventFor` now exposes `revPerDay = revenue / totalScheduledDays` (denominator = count of pec_prod_job_schedule_days rows for the job, precomputed once as `totalDaysByJob`). `barHtml` prints `revPerDay * bar.spanCols` (a bar's span equals the number of contiguous scheduled days it covers), so summing every bar in a week equals the sidebar `weekRevenue` by construction. The run sheet (one card per scheduled day) shows one day's slice (`revPerDay`) with an "of $X total" note for multi-day jobs. Tooltips now show "... · Contract $12,809 · this week $X,XXX" so the prorated bar and the tooltip do not look contradictory. Compact format ($12.5k / $850) kept.
+  Reconciliation: this session has no PROD auth (the pec_prod_* tables are RLS-gated to authenticated admin staff via is_admin_staff(), and the browser anon key returns nothing unauthenticated), so I could not pull the literal week-of-Jul-13 rows to reprint the $45,734. Instead the acceptance invariant is proven algebraically and by a run simulation that replicates the exact bar run-splitting + weekRevenue math (including a 2-week job and a NON-CONTIGUOUS job that renders as two bars in one week, the case that would double-count if prorated per-week instead of per-bar-span): sum of bar labels == sidebar weekRevenue EXACTLY (callbacks contribute $0). Because the sidebar $45,734 was already correct (it used the prorated math), the fixed bar labels now sum to that same $45,734 within compact-format rounding. The sidebar math itself was NOT wrong, so `weekRevenue` was left unchanged. If Dylan wants the literal per-job pull printed, that is a quick Cowork verification (listed below, optional).
+
+PART 2 (feature) - company holidays (hard block).
+  New "+ Holiday" button on the schedule toolbar (both Week and 3-week views) opens a modal to add a holiday date or range (+ optional name) and delete existing ones. Holidays render as a distinct RED full-day block in both the 3-week grid (tints the whole day column) and the week run sheet. Hard stop: any job write onto a holiday date is blocked BEFORE the write in both the Add Job flow (`openAddJobModal` save) and the scheduler (`openScheduleModal` save), with the message "<date> is a company holiday (<name>), pick another day." A single `holidayOn(iso)` helper is the source of truth for both the render and the block.
+
+PART 3 (feature) - individual crew-member days off (informational).
+  New "+ Day Off" button + modal to mark a specific active crew MEMBER off for a day/range (+ optional reason) and delete entries. Renders as a distinct AMBER per-day marker (member name) in both views. ASSUMPTION FLAGGED FOR DYLAN: jobs are scheduled to CREWS, not individual members, so a day off is informational/visual only and does NOT block or warn on scheduling. If you want days off to warn or block, that is a follow-up.
+
+PART 4 (feature) - job schedule history.
+  The unified job page (renderUnifiedJob) already had a "Schedule" section; it now reads "Scheduled days", lists EVERY scheduled day sorted ascending including past dates (no filter), and gained a Slot column (time_slot via slotLabel) alongside crew/lead/notes. Read-only.
+
+  Both new overlay tables load with the core schedule data (`loadProdCore`) and degrade to empty (graceful, like pec_prod_tasks) until the migration runs in PROD. New schedule modals use the existing `openModal` (#pecModalRoot), the same root every other schedule modal uses, so the two-modal-root gotcha needed no extra lifecycle code.
+Why: Dylan reported the week total and the bar labels disagreeing (and a 2-week job's revenue printing twice), and wanted holidays, crew days off, and a historical record of when a job was scheduled.
+Testing: extracted the CRM `<script type="module">` and `node --check` passed. Ran a standalone reconciliation simulation (sum of prorated bars == sidebar weekRevenue, exact). Behavioral checks (buttons open modals on both views, holiday hard-block fires on Add Job + scheduler, job detail lists all days) are a post-deploy manual pass once the migration is applied.
+Files touched: index.html, supabase/migrations/2026-06-23_holidays_and_crew_days_off.sql (new), PROJECT-LOG.md.
+Commits: 5150ad6 (Part 1 proration), b618c0f (migration), 588881c (Parts 2-4 code).
+Next steps: apply the migration to PROD (Cowork), then Dylan pushes to deploy.
+
+## Handoff to Cowork
+Apply ONE migration to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor:
+- supabase/migrations/2026-06-23_holidays_and_crew_days_off.sql (creates pec_prod_holidays + pec_prod_crew_member_days_off, both with staff-only RLS mirroring pec_prod_crews). Idempotent; safe to re-run.
+Acceptance: after running, `select count(*) from public.pec_prod_holidays;` and `select count(*) from public.pec_prod_crew_member_days_off;` both return 0, and `select tablename, policyname from pg_policies where tablename in ('pec_prod_holidays','pec_prod_crew_member_days_off');` returns 2 rows. Until it is applied, the "+ Holiday"/"+ Day Off" buttons load (the schedule degrades to zero overlays) but saving shows a "Run the 2026-06-23 migration first" hint.
+Optional verification (only if Dylan asks for the literal numbers): for the week of 2026-07-13, pull `select j.customer_name, j.revenue, count(*) as days_in_week, (select count(*) from pec_prod_job_schedule_days d2 where d2.job_id=j.id) as total_days from pec_prod_jobs j join pec_prod_job_schedule_days d on d.job_id=j.id where d.scheduled_date between '2026-07-13' and '2026-07-19' and not coalesce(j.is_callback,false) group by j.id;` then confirm `sum(revenue * days_in_week / total_days)` equals the on-screen sidebar total (reported $45,734).
+
+## Handoff to Dylan
+After Cowork applies the migration, push to deploy. Then on the Job Schedule: confirm "+ Holiday" and "+ Day Off" open modals on both Week and 3-week views, add a holiday and confirm a job can't be scheduled on it (Add Job + the bar scheduler both refuse with a clear message), and confirm the bar revenue labels in a week now sum to the sidebar total. Tell me if you want crew days off to also WARN or BLOCK scheduling (currently informational only, per the flagged assumption above).
+
+---
+
 ## [2026-06-22 16:35] Cowork: applied 2026-06-22_customer_stripe_id.sql to PROD (verified)
 By: Cowork
 Changed: No repo code. Ran the Claude Code handoff for commit 19e4e1a (named-Stripe-Customer feature, already on origin/main and deployed): applied supabase/migrations/2026-06-22_customer_stripe_id.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor. Statement: alter table public.customers add column if not exists stripe_customer_id text. Result "Success. No rows returned." Verified: information_schema.columns shows stripe_customer_id (text) on public.customers (1 row).
