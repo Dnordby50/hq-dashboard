@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-22 14:20] Cowork: applied 2026-06-22_log_payment_deleted.sql to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the Claude Code handoff from the 14:05 entry: applied supabase/migrations/2026-06-22_log_payment_deleted.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). Single idempotent statement set: create or replace function public.log_payment_deleted(p_job_id uuid, p_amount numeric) returns void, SECURITY DEFINER, set search_path = public, plus grant execute to authenticated, wrapped in begin/commit. Result: "Success. No rows returned." Verified: select proname, prosecdef from pg_proc where proname='log_payment_deleted' returns 1 row with prosecdef=true (function exists and is SECURITY DEFINER as intended).
+Effect: deleting a payment now also drops a pec_notifications row and lights the header bell (mirrors log_payment_edited). The delete + audit_log feature already worked without this RPC (the client calls it best-effort in try/catch), so this only adds the bell notification.
+Why: Dylan said "run migration."
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 RPC created/replaced).
+Next steps: Dylan pushes commit 27bdfd7 (the delete-payments + robust-deposit code) to deploy, then verifies on a throwaway job per the 14:05 Handoff to Dylan.
+Handoff to Cowork: none (handoff closed).
+Handoff to Dylan: the RPC is live. Push to deploy the delete-payments UI, then hard-refresh.
+
+---
+
 ## [2026-06-22 14:05] Claude Code: invoicing — delete payments (audited, cascade-guarded) + robust deposit reflection
 By: Claude Code
 Changed: Implemented the Cowork handoff (entry below). All in index.html plus one Cowork migration.
