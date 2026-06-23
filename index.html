@@ -5749,6 +5749,10 @@ const state = {
   openJobId: null, openCustomerId: null,
   // Job Schedule + Job Costing (PEC production)
   crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {}, salesTeam: [],
+  // Schedule overlays: company holidays (hard block) + per-crew-member days off
+  // (informational). Loaded alongside the core schedule data; degrade to []
+  // until their 2026-06-23 migration runs in PROD.
+  holidays: [], crewDaysOff: [],
   scheduleAnchor: null, scheduleEdit: null,
   costing: [], costingFilter: 'all',
   // Costing-only slots (populated by loadCostingData, NOT loadScheduleData).
@@ -12825,7 +12829,7 @@ function sameDay(a, b) {
 // two views could leave a shared slot wrong-shaped. Each view sorts prodJobs as
 // it needs (renderSchedule filters pending; renderJobCosting sorts recent-first).
 async function loadProdCore() {
-  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes, tasksRes] = await withFreshSession(() => Promise.all([
+  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes, tasksRes, holidaysRes, daysOffRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
     cachedSystemTypes(),
@@ -12833,6 +12837,8 @@ async function loadProdCore() {
     supabase.from('pec_prod_areas').select('id,job_id,system_type_id,sqft,order_index'),
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_prod_tasks').select('*').order('task_date'),
+    supabase.from('pec_prod_holidays').select('*').order('holiday_date'),
+    supabase.from('pec_prod_crew_member_days_off').select('*').order('off_date'),
   ]), { label: 'loadProdCore' });
   // Drop archived jobs (archived from the CRM job-detail Delete box) from every
   // production surface (Schedule, Pending, Costing) that reads state.prodJobs.
@@ -12848,6 +12854,13 @@ async function loadProdCore() {
   // never rejects), so the schedule still renders, just with zero task chips.
   state.prodTasks = tasksRes.error ? [] : (tasksRes.data || []);
   if (tasksRes.error) console.warn('[pec] pec_prod_tasks not available yet:', tasksRes.error.message);
+  // Holidays + crew days off degrade gracefully until the 2026-06-23 migration
+  // runs in PROD (a missing table is an error INSIDE the result object, never a
+  // throw), so the schedule still renders with zero overlays.
+  state.holidays = holidaysRes.error ? [] : (holidaysRes.data || []);
+  if (holidaysRes.error) console.warn('[pec] pec_prod_holidays not available yet:', holidaysRes.error.message);
+  state.crewDaysOff = daysOffRes.error ? [] : (daysOffRes.data || []);
+  if (daysOffRes.error) console.warn('[pec] pec_prod_crew_member_days_off not available yet:', daysOffRes.error.message);
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
@@ -13451,6 +13464,8 @@ async function renderSchedule() {
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'primary' : 'ghost'}" id="pecSchedModeWeek" style="border:none;border-radius:0">Week</button>
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'ghost' : 'primary'}" id="pecSchedMode3" style="border:none;border-radius:0">3 weeks</button>
           </div>
+          <button class="pec-btn" id="pecSchedHoliday" style="margin-right:8px">+ Holiday</button>
+          <button class="pec-btn" id="pecSchedDayOff" style="margin-right:8px">+ Day Off</button>
           <button class="pec-btn" id="pecSchedAddTask" style="margin-right:8px">+ Add Task</button>
           <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
         </div>
@@ -13461,6 +13476,8 @@ async function renderSchedule() {
 
   $('pecSchedAddJob').addEventListener('click', () => openAddJobModal());
   $('pecSchedAddTask').addEventListener('click', () => openTaskModal(null));
+  $('pecSchedHoliday').addEventListener('click', () => openHolidayModal());
+  $('pecSchedDayOff').addEventListener('click', () => openDayOffModal());
   $('pecSchedToday').addEventListener('click', () => { state.scheduleAnchor = isoDate(new Date()); renderSchedule(); });
   $('pecSchedPrev').addEventListener('click', () => {
     state.scheduleAnchor = isoDate(addDays(parseISO(state.scheduleAnchor), -7));
@@ -13539,6 +13556,21 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       const t = (state.prodTasks || []).find(x => x.id === el.dataset.taskId);
       if (t) openTaskModal(t);
     }));
+
+  // Schedule overlays keyed by ISO date. holidaysByDate -> the holiday row;
+  // daysOffByDate -> array of {member name, reason}. Both compare only opaque
+  // YYYY-MM-DD strings (never new Date(iso)), matching the tasks convention.
+  const holidaysByDate = {};
+  for (const h of state.holidays || []) holidaysByDate[h.holiday_date] = h;
+  const crewMemberName = (id) => { const m = (state.crewMembers || []).find(x => x.id === id); return m ? m.name : 'Crew member'; };
+  const daysOffByDate = {};
+  for (const o of state.crewDaysOff || []) (daysOffByDate[o.off_date] ||= []).push({ name: crewMemberName(o.crew_member_id), reason: o.reason || '' });
+  for (const k in daysOffByDate) daysOffByDate[k].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Holiday full-day block (calendar background). Distinct red wash, clearly
+  // different from job bars (system colors) and day-off markers (amber).
+  const holidayCellHtml = (h) => `<div class="pec-cal-holiday" title="${esc('Company holiday' + (h.name ? ': ' + h.name : ''))}">🛑 ${esc(h.name || 'Holiday')}</div>`;
+  // Day-off marker chip (amber pill, member name). Informational only.
+  const dayOffChipHtml = (o) => `<div class="pec-cal-dayoff" title="${esc(o.name + ' off' + (o.reason ? ' · ' + o.reason : ''))}">${esc(o.name)}${o.reason ? ` <span style="opacity:.7">(${esc(o.reason)})</span>` : ''}</div>`;
 
   // Helper: build event metadata for a job. Full meta (customer, crew,
   // revenue) shows on the day the job starts; continuation days show just
@@ -13681,19 +13713,25 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const { bars, laneCount } = buildWeek(weekDays);
     const lanesShown = Math.max(1, laneCount || 1);
     const dayCellsHtml = weekDays.map((d, i) => {
-      return `<div class="day-c ${sameDay(d, today)?'today':''}" style="grid-column:${i+1};grid-row:1 / -1">
+      const iso = isoDate(d);
+      const hol = holidaysByDate[iso];
+      return `<div class="day-c ${sameDay(d, today)?'today':''} ${hol?'is-holiday':''}" style="grid-column:${i+1};grid-row:1 / -1">
         <div class="day-num">${d.getDate()}</div>
+        ${hol ? holidayCellHtml(hol) : ''}
       </div>`;
     }).join('');
     // Bars start at row 2 (row 1 is the day-num row).
     const barsHtml = bars.map(b => barHtml(b, 2 + b.lane)).join('');
-    // Task chips live in the trailing 1fr filler row, BELOW the job-bar lanes,
-    // so they never collide with the lane assignment math above. The 1fr track
-    // auto-grows to fit its content.
+    // Task chips + day-off markers live in the trailing 1fr filler row, BELOW
+    // the job-bar lanes, so they never collide with the lane assignment math
+    // above. The 1fr track auto-grows to fit its content. Day-off markers render
+    // first (amber pills) then tasks, so a day's off-crew reads at a glance.
     const tasksRowHtml = weekDays.map((d, i) => {
-      const list = tasksByDate[isoDate(d)] || [];
-      if (!list.length) return '';
-      return `<div class="pec-cal-task-strip" style="grid-column:${i + 1};grid-row:${2 + lanesShown}">${list.map(taskChipHtml).join('')}</div>`;
+      const iso = isoDate(d);
+      const tlist = tasksByDate[iso] || [];
+      const olist = daysOffByDate[iso] || [];
+      if (!tlist.length && !olist.length) return '';
+      return `<div class="pec-cal-task-strip" style="grid-column:${i + 1};grid-row:${2 + lanesShown}">${olist.map(dayOffChipHtml).join('')}${tlist.map(taskChipHtml).join('')}</div>`;
     }).join('');
     // Header row just holds the day number; lanes are tall enough for each job
     // bar to wrap to two lines (customer/rev on top, system/crew below).
@@ -13763,10 +13801,16 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
         }).join('');
       const dayTasks = tasksByDate[iso] || [];
       const tasksHtml = dayTasks.length ? `<div class="pec-runsheet-tasks">${dayTasks.map(taskChipHtml).join('')}</div>` : '';
-      return `<div style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:560px">
+      const hol = holidaysByDate[iso];
+      const holHtml = hol ? holidayCellHtml(hol) : '';
+      const dayOff = daysOffByDate[iso] || [];
+      const dayOffHtml = dayOff.length ? `<div style="margin-bottom:6px">${dayOff.map(dayOffChipHtml).join('')}</div>` : '';
+      return `<div class="${hol ? 'is-holiday' : ''}" style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:560px">
         <div class="${sameDay(d, today) ? 'today' : ''}" style="font-weight:700;font-size:.78rem;margin-bottom:8px;${sameDay(d, today) ? 'color:var(--rd-accent,#D8531C)' : ''}">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>
+        ${holHtml}
+        ${dayOffHtml}
         ${tasksHtml}
-        ${crewSections || '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>'}
+        ${crewSections || (hol ? '' : '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>')}
       </div>`;
     }).join('');
     host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start">${dayCols}</div>`;
@@ -13803,6 +13847,214 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
 
   host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
   wireTaskClicks(host);
+}
+
+// ============================================================
+// Schedule overlays: company holidays + crew-member days off
+// ============================================================
+
+// Inclusive list of YYYY-MM-DD strings from startIso..endIso. Capped at 366 to
+// stop a fat-fingered decade range from inserting thousands of rows. Bad input
+// (end before start, unparseable) returns just [startIso].
+function enumerateDateRange(startIso, endIso) {
+  if (!startIso) return [];
+  if (!endIso || endIso < startIso) return [startIso];
+  const out = [];
+  let cur = parseISO(startIso);
+  const end = parseISO(endIso);
+  for (let i = 0; i < 366 && cur <= end; i++) { out.push(isoDate(cur)); cur = addDays(cur, 1); }
+  return out;
+}
+
+// The company holiday on a given ISO date, or null. Used by the calendar render
+// AND by the schedule-write hard block, so a single source of truth decides
+// whether a date is a holiday.
+function holidayOn(iso) {
+  return (state.holidays || []).find(h => h.holiday_date === iso) || null;
+}
+
+// Pretty date for the overlay lists/messages, parsed LOCAL (never new Date(iso)
+// which would shift a Phoenix date a day early).
+function overlayDateLabel(iso) {
+  const d = parseISO(iso);
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// "+ Holiday" modal: add a company-wide block-out day (or range) and delete
+// existing ones. Holidays hard-block scheduling (see the Add Job / scheduler
+// save paths). Uses openModal (#pecModalRoot), same root every schedule modal
+// uses, so no second-modal-root lifecycle code is needed.
+function openHolidayModal() {
+  const todayIso = isoDate(new Date());
+  const refresh = (modal) => {
+    const list = (state.holidays || []).slice().sort((a, b) => String(a.holiday_date).localeCompare(String(b.holiday_date)));
+    const listEl = modal.querySelector('#holidayList');
+    listEl.innerHTML = list.length === 0
+      ? '<div class="pec-empty" style="font-size:.75rem;padding:8px 4px">No holidays yet.</div>'
+      : list.map(h => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--rd-line,var(--border));border-radius:6px;margin-bottom:6px">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.8rem">${esc(overlayDateLabel(h.holiday_date))}</div>
+            ${h.name ? `<div style="font-size:.72rem;color:var(--muted)">${esc(h.name)}</div>` : ''}
+          </div>
+          <button type="button" class="pec-btn ghost sm" data-del-holiday="${esc(h.id)}">Delete</button>
+        </div>`).join('');
+    listEl.querySelectorAll('[data-del-holiday]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.dataset.delHoliday;
+      if (!confirm('Delete this holiday? Scheduling on that day will be allowed again.')) return;
+      b.disabled = true;
+      try {
+        const del = await supabase.from('pec_prod_holidays').delete().eq('id', id);
+        if (del.error) throw del.error;
+        await renderSchedule();
+        refresh(modal);
+      } catch (err) {
+        b.disabled = false;
+        showToast('Could not delete holiday: ' + (err?.message || err), { ttl: 5000 });
+      }
+    }));
+  };
+  openModal(`
+    <h3 style="margin:0 0 4px">Company holidays</h3>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Block-out days. Jobs can never be scheduled on a holiday.</div>
+    <div class="pec-field"><label>From</label><input type="date" id="holidayStart" value="${esc(todayIso)}"></div>
+    <div class="pec-field"><label>To <span style="color:var(--muted);font-weight:400">(optional, for a range)</span></label><input type="date" id="holidayEnd"></div>
+    <div class="pec-field"><label>Name <span style="color:var(--muted);font-weight:400">(optional)</span></label><input id="holidayName" placeholder="e.g. Independence Day" autocomplete="off"></div>
+    <div id="holidayError" style="color:var(--danger,#c0392b);font-size:.78rem;min-height:1em;margin-bottom:6px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+      <button type="button" class="pec-btn primary" id="holidaySave">Add holiday</button>
+    </div>
+    <div style="margin-top:16px;border-top:1px solid var(--rd-line,var(--border));padding-top:12px">
+      <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:8px">Existing holidays</div>
+      <div id="holidayList"></div>
+    </div>
+  `, { onMount: (modal) => {
+    refresh(modal);
+    const errEl = modal.querySelector('#holidayError');
+    const saveBtn = modal.querySelector('#holidaySave');
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const start = modal.querySelector('#holidayStart').value;
+      const end = modal.querySelector('#holidayEnd').value;
+      const name = modal.querySelector('#holidayName').value.trim() || null;
+      if (!start) { errEl.textContent = 'Pick a date.'; return; }
+      const dates = enumerateDateRange(start, end);
+      if (!dates.length) { errEl.textContent = 'Pick a valid date range.'; return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        const rows = dates.map(d => ({ holiday_date: d, name }));
+        // ignoreDuplicates so re-adding an existing holiday date is a no-op, not
+        // a unique-violation error (holiday_date is UNIQUE).
+        const ins = await supabase.from('pec_prod_holidays').upsert(rows, { onConflict: 'holiday_date', ignoreDuplicates: true });
+        if (ins.error) throw ins.error;
+        modal.querySelector('#holidayName').value = '';
+        modal.querySelector('#holidayEnd').value = '';
+        await renderSchedule();
+        refresh(modal);
+        showToast(`Added ${dates.length} holiday${dates.length === 1 ? '' : 's'}.`, { ttl: 2500 });
+      } catch (err) {
+        const hint = /pec_prod_holidays/.test(err?.message || '') ? ' (Run the 2026-06-23 holidays migration first.)' : '';
+        errEl.textContent = 'Could not save: ' + (err?.message || err) + hint;
+      } finally {
+        saveBtn.disabled = false; saveBtn.textContent = 'Add holiday';
+      }
+    });
+  }});
+}
+
+// "+ Day Off" modal: mark a specific crew MEMBER off for a day or range. Days
+// off are informational only (jobs schedule to crews, not members), so they do
+// NOT block scheduling -- they just render a marker on the calendar.
+function openDayOffModal() {
+  const todayIso = isoDate(new Date());
+  const members = (state.crewMembers || []).filter(m => m.active !== false)
+    .slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const memberName = (id) => { const m = (state.crewMembers || []).find(x => x.id === id); return m ? m.name : 'Unknown member'; };
+  const refresh = (modal) => {
+    const list = (state.crewDaysOff || []).slice().sort((a, b) =>
+      String(a.off_date).localeCompare(String(b.off_date)) || String(memberName(a.crew_member_id)).localeCompare(String(memberName(b.crew_member_id))));
+    const listEl = modal.querySelector('#dayOffList');
+    listEl.innerHTML = list.length === 0
+      ? '<div class="pec-empty" style="font-size:.75rem;padding:8px 4px">No days off yet.</div>'
+      : list.map(o => `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--rd-line,var(--border));border-radius:6px;margin-bottom:6px">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:.8rem">${esc(memberName(o.crew_member_id))} · ${esc(overlayDateLabel(o.off_date))}</div>
+            ${o.reason ? `<div style="font-size:.72rem;color:var(--muted)">${esc(o.reason)}</div>` : ''}
+          </div>
+          <button type="button" class="pec-btn ghost sm" data-del-dayoff="${esc(o.id)}">Delete</button>
+        </div>`).join('');
+    listEl.querySelectorAll('[data-del-dayoff]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.dataset.delDayoff;
+      if (!confirm('Delete this day off?')) return;
+      b.disabled = true;
+      try {
+        const del = await supabase.from('pec_prod_crew_member_days_off').delete().eq('id', id);
+        if (del.error) throw del.error;
+        await renderSchedule();
+        refresh(modal);
+      } catch (err) {
+        b.disabled = false;
+        showToast('Could not delete day off: ' + (err?.message || err), { ttl: 5000 });
+      }
+    }));
+  };
+  const memberOptions = members.length
+    ? members.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')
+    : '';
+  openModal(`
+    <h3 style="margin:0 0 4px">Crew member days off</h3>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Informational only. This does not block scheduling (jobs are assigned to crews, not individuals).</div>
+    <div class="pec-field"><label>Crew member</label>
+      <select id="dayOffMember">${members.length ? memberOptions : '<option value="">No active crew members</option>'}</select>
+    </div>
+    <div class="pec-field"><label>From</label><input type="date" id="dayOffStart" value="${esc(todayIso)}"></div>
+    <div class="pec-field"><label>To <span style="color:var(--muted);font-weight:400">(optional, for a range)</span></label><input type="date" id="dayOffEnd"></div>
+    <div class="pec-field"><label>Reason <span style="color:var(--muted);font-weight:400">(optional)</span></label><input id="dayOffReason" placeholder="e.g. Vacation, sick" autocomplete="off"></div>
+    <div id="dayOffError" style="color:var(--danger,#c0392b);font-size:.78rem;min-height:1em;margin-bottom:6px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+      <button type="button" class="pec-btn primary" id="dayOffSave" ${members.length ? '' : 'disabled'}>Add day off</button>
+    </div>
+    <div style="margin-top:16px;border-top:1px solid var(--rd-line,var(--border));padding-top:12px">
+      <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:8px">Existing days off</div>
+      <div id="dayOffList"></div>
+    </div>
+  `, { onMount: (modal) => {
+    refresh(modal);
+    const errEl = modal.querySelector('#dayOffError');
+    const saveBtn = modal.querySelector('#dayOffSave');
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const memberId = modal.querySelector('#dayOffMember').value;
+      const start = modal.querySelector('#dayOffStart').value;
+      const end = modal.querySelector('#dayOffEnd').value;
+      const reason = modal.querySelector('#dayOffReason').value.trim() || null;
+      if (!memberId) { errEl.textContent = 'Pick a crew member.'; return; }
+      if (!start) { errEl.textContent = 'Pick a date.'; return; }
+      const dates = enumerateDateRange(start, end);
+      if (!dates.length) { errEl.textContent = 'Pick a valid date range.'; return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        const rows = dates.map(d => ({ crew_member_id: memberId, off_date: d, reason }));
+        // ignoreDuplicates so a member already off that day is a no-op, not a
+        // unique-violation on (crew_member_id, off_date).
+        const ins = await supabase.from('pec_prod_crew_member_days_off').upsert(rows, { onConflict: 'crew_member_id,off_date', ignoreDuplicates: true });
+        if (ins.error) throw ins.error;
+        modal.querySelector('#dayOffReason').value = '';
+        modal.querySelector('#dayOffEnd').value = '';
+        await renderSchedule();
+        refresh(modal);
+        showToast(`Added ${dates.length} day${dates.length === 1 ? '' : 's'} off.`, { ttl: 2500 });
+      } catch (err) {
+        const hint = /pec_prod_crew_member_days_off/.test(err?.message || '') ? ' (Run the 2026-06-23 days-off migration first.)' : '';
+        errEl.textContent = 'Could not save: ' + (err?.message || err) + hint;
+      } finally {
+        saveBtn.disabled = false; saveBtn.textContent = 'Add day off';
+      }
+    });
+  }});
 }
 
 // Create a no-charge touch-up / warranty callback linked to an original job, then
@@ -14009,6 +14261,10 @@ function openScheduleModal(jobId) {
       modal.querySelector('#schedSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+        // Hard block: a job can never land on a company holiday. Checked here,
+        // before any write, against state.holidays (loaded with the schedule).
+        const schedHolidayHit = draft.selectedDates.map(iso => ({ iso, h: holidayOn(iso) })).find(x => x.h);
+        if (schedHolidayHit) return errEl.textContent = `${overlayDateLabel(schedHolidayHit.iso)} is a company holiday${schedHolidayHit.h.name ? ' (' + schedHolidayHit.h.name + ')' : ''}, pick another day.`;
         // Revenue gate BEFORE any write: pec_prod_jobs_scheduled_needs_revenue
         // rejects status 'scheduled' with no revenue, and the old flow only
         // discovered that AFTER the schedule days were already inserted,
@@ -14589,6 +14845,10 @@ function openAddJobModal() {
         if (!draft.customer_id) return errEl.textContent = 'Pick an existing customer first.';
         if (!draft.crew_id) return errEl.textContent = 'Pick a crew.';
         if (!draft.selectedDates.length) return errEl.textContent = 'Pick at least one install day.';
+        // Hard block: a job can never land on a company holiday. Checked before
+        // any write, against state.holidays (loaded with the schedule data).
+        const addJobHolidayHit = draft.selectedDates.map(iso => ({ iso, h: holidayOn(iso) })).find(x => x.h);
+        if (addJobHolidayHit) return errEl.textContent = `${overlayDateLabel(addJobHolidayHit.iso)} is a company holiday${addJobHolidayHit.h.name ? ' (' + addJobHolidayHit.h.name + ')' : ''}, pick another day.`;
         if (!isReschedule) {
           if (!address) return errEl.textContent = 'Service address is required.';
           if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Add at least one line item with a price.';
@@ -15736,15 +15996,19 @@ async function renderUnifiedJob(jobId) {
     crewName ? `${crewName} crew` : '',
   ].filter(Boolean).map(esc).join(' · ');
 
+  // Full historical record: EVERY scheduled day for this job, sorted ascending,
+  // including past dates, so the PM can look back at when it was scheduled.
   const schedHtml = sched.length === 0
     ? `<div class="pec-empty">Not scheduled yet. Add days in the Job Schedule tab. In-page editing will land in a follow-up commit.</div>`
-    : `<table class="pec-table" style="font-size:.78rem">
-         <thead><tr><th>Day</th><th>Date</th><th>Crew</th><th>Crew Lead</th><th>Notes</th></tr></thead>
+    : `<div style="font-size:.72rem;color:var(--muted);margin-bottom:6px">Every day this job was scheduled, including past dates.</div>
+       <table class="pec-table" style="font-size:.78rem">
+         <thead><tr><th>Day</th><th>Date</th><th>Slot</th><th>Crew</th><th>Crew Lead</th><th>Notes</th></tr></thead>
          <tbody>
            ${sched.map(s => `
              <tr class="nohover">
                <td>Day ${esc((s.day_index ?? 0) + 1)}</td>
                <td>${s.scheduled_date ? esc(fmtDate(s.scheduled_date)) : '—'}</td>
+               <td>${s.time_slot ? esc(slotLabel(s.time_slot)) : '<span style="color:var(--muted)">—</span>'}</td>
                <td>${s.crew_id && crewById[s.crew_id] ? esc(crewById[s.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
                <td>${esc(s.crew_lead || '')}</td>
                <td>${esc(s.notes || '')}</td>
@@ -16016,7 +16280,7 @@ async function renderUnifiedJob(jobId) {
           </div>
         </div>
         <div style="margin-top:14px">
-          <h3 style="font-size:.85rem;margin:0 0 6px">Schedule</h3>
+          <h3 style="font-size:.85rem;margin:0 0 6px">Scheduled days</h3>
           ${schedHtml}
         </div>
       </div>
@@ -17545,6 +17809,13 @@ if (portalToken) {
   .pec-runsheet-tasks { margin-bottom:10px }
   .pec-runsheet-tasks .pec-cal-task { padding:5px 8px }
   .pec-runsheet-tasks .pec-cal-task .task-desc { white-space:normal }
+  /* Company holiday: a solid red full-day wash, clearly different from job bars
+     (system colors) and day-off markers (amber). Tints the whole day column. */
+  .pec-cal-week-grid .day-c.is-holiday { background: color-mix(in srgb, #dc2626 14%, var(--rd-card, var(--s1))); box-shadow: inset 0 0 0 1px color-mix(in srgb, #dc2626 35%, transparent) }
+  .is-holiday > .pec-cal-holiday, .day-c.is-holiday .pec-cal-holiday { position:relative; z-index:3 }
+  .pec-cal-holiday { margin:1px 6px 4px; padding:3px 8px; font-size:.66rem; font-weight:700; line-height:1.25; border-radius:5px; background:#dc2626; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  /* Crew-member day off: amber pill, distinct from red holidays + job bars. */
+  .pec-cal-dayoff { position:relative; z-index:2; margin:1px 3px; padding:2px 7px; font-size:.66rem; line-height:1.3; border-radius:999px; background: color-mix(in srgb, #f59e0b 24%, transparent); border:1px solid color-mix(in srgb, #f59e0b 55%, transparent); color:var(--rd-ink, var(--text)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   /* Toast notifications */
   .pec-toast-host { position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:10000; pointer-events:none }
   .pec-toast { background:var(--rd-card, #1f2937); color:var(--fg, #f8fafc); border:1px solid var(--rd-line, var(--border)); border-left:3px solid var(--rd-accent, var(--accent)); border-radius:6px; box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:.78rem; display:flex; align-items:center; gap:10px; min-width:260px; max-width:420px; pointer-events:auto; animation:pec-toast-in .18s ease-out }
