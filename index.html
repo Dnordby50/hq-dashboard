@@ -7521,7 +7521,7 @@ async function renderJobInvoice(jobId) {
       <td>${esc(p.reference || '—')}</td>
       <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
       <td>${esc(p.recorded_by || '—')}</td>
-      <td><button class="pec-btn sm ghost" data-edit-pay="${esc(p.id)}">Edit</button></td></tr>`).join('')
+      <td><button class="pec-btn sm ghost" data-edit-pay="${esc(p.id)}">Edit</button> <button class="pec-btn sm ghost" data-delete-pay="${esc(p.id)}" style="color:#dc2626">Delete</button></td></tr>`).join('')
     : '<tr class="nohover"><td colspan="6" class="pec-empty">No payments recorded yet.</td></tr>';
   const canComplete = ['scheduled', 'in_progress'].includes(row.status);
   root.innerHTML = `
@@ -7571,6 +7571,10 @@ async function renderJobInvoice(jobId) {
   root.querySelectorAll('[data-edit-pay]').forEach(b => b.addEventListener('click', () => {
     const p = payments.find(x => x.id === b.dataset.editPay);
     if (p) openEditPaymentModal(p, jobId);
+  }));
+  root.querySelectorAll('[data-delete-pay]').forEach(b => b.addEventListener('click', () => {
+    const p = payments.find(x => x.id === b.dataset.deletePay);
+    if (p) deletePayment(p, jobId, row);
   }));
   $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
@@ -7888,6 +7892,48 @@ function openEditPaymentModal(payment, jobId) {
   } });
 }
 
+// Delete a recorded payment. The pec_job_ar balance is derived from
+// sum(pec_payments.amount), so the delete adjusts paid_to_date/balance with no
+// extra write. HARD GUARD: pec_commission_payouts.payment_id references
+// pec_payments ON DELETE CASCADE, so deleting a payment that has a recorded
+// commission payout would silently erase that payout. We refuse outright and
+// tell the user to remove the payout first. deposit_collected is a manual flag
+// and is intentionally left untouched even if the deleted payment marked it.
+async function deletePayment(p, jobId, row) {
+  if (!p) return;
+  try {
+    const { data: payout, error: poErr } = await supabase
+      .from('pec_commission_payouts').select('amount,paid_on').eq('payment_id', p.id).maybeSingle();
+    if (poErr) throw poErr;
+    if (payout) {
+      window.alert(`This payment has a recorded commission payout of ${invUSD(invNum(payout.amount))} paid on ${invFmtDate(payout.paid_on)}.\n\nRemove that commission payout in the Commission tab first. Deleting the payment here would also erase the recorded payout.`);
+      return;
+    }
+  } catch (err) {
+    window.alert('Could not verify the commission status of this payment, so it was NOT deleted: ' + (err.message || err));
+    return;
+  }
+  if (!window.confirm(`Delete this ${invUSD(invNum(p.amount))} payment from ${invFmtDate(p.received_date)}? This will adjust the balance.`)) return;
+  try {
+    // delete().eq(id) is idempotent, so withFreshWriteRetry can safely recover a
+    // wedged client and retry once.
+    const del = await withFreshWriteRetry(() => supabase.from('pec_payments').delete().eq('id', p.id), { label: 'payment-delete' });
+    if (del.error) throw del.error;
+  } catch (err) {
+    console.error('[pec] payment delete failed', err);
+    window.alert(isSessionTimeout(err)
+      ? 'The server did not respond, so the payment may NOT have been deleted (your session may have gone stale while idle). Hard-reload (Cmd+Shift+R) and check before retrying.'
+      : 'Could not delete: ' + (err.message || err));
+    return;
+  }
+  // Best-effort audit (audit_log activity feed) + bell notification; never block
+  // the delete on these. log_payment_deleted is a no-op until its migration lands.
+  try { await logJobActivity(jobId, 'payment_deleted', { amount: invNum(p.amount), method: p.method, received_date: p.received_date, reference: p.reference || null, recorded_by: p.recorded_by || null }, null); } catch (_) {}
+  try { await supabase.rpc('log_payment_deleted', { p_job_id: jobId, p_amount: invNum(p.amount) }); } catch (_) {}
+  showToast(`Deleted ${invUSD(invNum(p.amount))} payment.`);
+  renderJobInvoice(jobId);
+}
+
 function openPaymentModal(row, { deposit }) {
   if (!row) return;
   const bal = invNum(row.balance);
@@ -7971,14 +8017,41 @@ function openPaymentModal(row, { deposit }) {
           }
         }
         if (ins.error) throw ins.error;
-        // Flip deposit_collected when the user marked this payment as the deposit
-        // (the modal checkbox), regardless of which button opened the modal. This
-        // is what lets a deposit be recorded from the invoice-detail view too, not
-        // just the AR "Mark Deposit Paid" button.
-        const markDeposit = !row.deposit_collected && !!fd.get('is_deposit');
+        // Mark the deposit collected when the user checked the box OR when this
+        // payment brings paid-to-date up to (>=) the deposit owed, so a deposit is
+        // reflected no matter how it is recorded. Never auto-mark a waived or
+        // already-collected deposit. depositOwed/EPS are inlined here because they
+        // live in renderInvoicing's scope, not this one.
+        const owed = row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5);
+        const newPaid = invNum(row.paid_to_date || 0) + amount;
+        const coversDeposit = !row.deposit_waived && (newPaid + 0.005 >= owed);
+        const markDeposit = !row.deposit_collected && (!!fd.get('is_deposit') || coversDeposit);
         if (markDeposit) {
-          const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
-          if (upd.error) throw upd.error;
+          try {
+            const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag' });
+            if (upd.error) throw upd.error;
+          } catch (depErr) {
+            // The PAYMENT is already committed. Do NOT route this into the shared
+            // catch (its message implies nothing saved, which risks a double
+            // re-entry). Show a specific, retryable state; never re-insert.
+            console.error('[pec] deposit-flag write failed (payment already saved)', depErr);
+            btn.style.display = 'none';
+            errEl.innerHTML = `Payment of <strong>${invUSD(amount)}</strong> was <strong>saved</strong>, but marking the deposit collected failed (your session may have stalled). The payment is recorded; only the deposit flag needs retrying. <button type="button" class="pec-btn sm" id="pecDepRetry">Retry deposit flag</button>`;
+            modal.querySelector('#pecDepRetry').addEventListener('click', async () => {
+              const rb = modal.querySelector('#pecDepRetry'); rb.disabled = true; rb.textContent = 'Retrying…';
+              try {
+                const upd2 = await withFreshWriteRetry(() => supabase.from('jobs').update({ deposit_collected: true }).eq('id', row.id), { label: 'deposit-flag-retry' });
+                if (upd2.error) throw upd2.error;
+                closeModal();
+                showToast(`Recorded ${invUSD(amount)} and marked the deposit collected.`, { ttl: 4000 });
+                renderInvoicing();
+              } catch (e2) {
+                rb.disabled = false; rb.textContent = 'Retry deposit flag';
+                errEl.innerHTML += `<br><span style="color:#dc2626">Still failed: ${esc(e2.message || String(e2))}. The payment is saved; you can mark the deposit collected from the invoice screen later.</span>`;
+              }
+            });
+            return;
+          }
         }
         closeModal();
         showToast(`Recorded ${invUSD(amount)} for <strong>${esc(row.customer_name || 'job')}</strong>`, { ttl: 4000 });
