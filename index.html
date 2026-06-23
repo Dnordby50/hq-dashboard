@@ -13506,6 +13506,24 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   for (const d of state.scheduleDays) (daysByJob[d.job_id] ||= []).push(d);
   for (const k in daysByJob) daysByJob[k].sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
 
+  // totalScheduledDays per job = the count of pec_prod_job_schedule_days rows for
+  // that job. This is the proration DENOMINATOR for both the sidebar week total
+  // (weekRevenue) AND the per-bar revenue labels (eventFor / barHtml), so a bar's
+  // dollars and the sidebar reconcile by construction. Computed ONCE per call.
+  // Holidays are excluded automatically (no job is scheduled on a holiday, so no
+  // schedule row exists there); crew days off are NOT counted (they are about crew
+  // availability, not a job's producing days).
+  const totalDaysByJob = {};
+  for (const d of state.scheduleDays) totalDaysByJob[d.job_id] = (totalDaysByJob[d.job_id] || 0) + 1;
+
+  // Compact money for calendar bars/cards ($12.5k, $10k, $850). Empty for <= 0.
+  const compactRev = (n) => n > 0
+    ? (n >= 10000 ? '$' + Math.round(n / 1000) + 'k'
+       : n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+       : '$' + Math.round(n).toLocaleString())
+    : '';
+  const fullRev = (n) => n > 0 ? '$' + Math.round(n).toLocaleString() : '';
+
   // Crew tasks, grouped by day. task_date is an opaque YYYY-MM-DD string and
   // is only ever compared to isoDate(d) strings (never parsed via new Date(),
   // which would shift across timezones). Tasks are standalone reminders: they
@@ -13530,21 +13548,23 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const sys = areaSystem(job);
     const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
     const revNum = Number(job.revenue || 0);
-    // Compact format ($12.5k, $10k, $850) so the bar can fit revenue even on
-    // narrow 1-day cells. Full amount stays in the tooltip below.
-    const revLabel = revNum > 0
-      ? (revNum >= 10000 ? '$' + Math.round(revNum / 1000) + 'k'
-         : revNum >= 1000 ? '$' + (revNum / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
-         : '$' + Math.round(revNum).toLocaleString())
-      : '';
-    const revFull = revNum > 0 ? '$' + Math.round(revNum).toLocaleString() : '';
+    // Per-DAY revenue is the proration unit: a bar/card showing N of this job's
+    // days prints revNum * (N / totalScheduledDays). A 1-day job shows full
+    // revenue; a multi-week job's dollars split across the weeks it touches, so
+    // the same dollars are never printed twice. The bar label is built in barHtml
+    // (which knows the bar's day-span); the run sheet shows one day's slice.
+    const totalDays = totalDaysByJob[jobId] || 1;
+    const revPerDay = revNum > 0 ? revNum / totalDays : 0;
+    const revFull = fullRev(revNum); // FULL contract revenue (tooltips only)
     const isCallback = !!job.is_callback;
-    const tooltip = [
+    // Base tooltip carries the non-money context; callers append the revenue
+    // line (contract + prorated slice) so the bar/card and tooltip never look
+    // like they contradict each other.
+    const tooltipBase = [
       isCallback ? 'TOUCH-UP CALLBACK' : '',
       job.customer_name || '',
       sys ? sys.name : '',
       crew ? crew + ' crew' : '',
-      revFull,
       job.proposal_number ? '#' + job.proposal_number : '',
     ].filter(Boolean).join(' · ');
     return {
@@ -13552,20 +13572,18 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       // Callbacks get a distinct color so they read as a touch-up, not sold work.
       color: isCallback ? '#0ea5e9' : ((sys && sys.color) || '#6366f1'),
       customer: isCallback ? 'Touch-up: ' + (job.customer_name || '') : (job.customer_name || ''),
-      crew, revLabel,
+      crew, revNum, revPerDay, revFull,
       label: `${isCallback ? 'Touch-up · ' : (sys ? sys.name + ' · ' : '')}${job.customer_name}`,
-      tooltip,
+      tooltipBase,
     };
   };
 
   // Per-week revenue, pro-rated by scheduled days. A 4-day Fri->Mon job
   // with $10k revenue and 4 total scheduled_days contributes $5k to each
   // touched week (2 days × $2,500/day). Jobs with no scheduled_days
-  // contribute 0 (fallback prevents divide-by-zero).
-  // Pre-compute totalDays per job ONCE per call so the inner loops are
-  // O(jobs in week) rather than O(scheduleDays × jobs).
-  const totalDaysByJob = {};
-  for (const d of state.scheduleDays) totalDaysByJob[d.job_id] = (totalDaysByJob[d.job_id] || 0) + 1;
+  // contribute 0 (fallback prevents divide-by-zero). Uses the same
+  // totalDaysByJob denominator the per-bar labels use, so the bars in a week
+  // sum to this sidebar total (within rounding).
   const weekRevenue = (weekDays) => {
     const weekIsos = new Set(weekDays.map(isoDate));
     const daysInWeekByJob = {};
@@ -13636,14 +13654,23 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     // is AM/PM/EXTRA; slotLabel maps it to the human label.
     if (bar.slot) parts.push(`<span class="bar-slot">${esc(slotLabel(bar.slot))}</span>`);
     parts.push(`<span class="bar-customer">${esc(bar.ev.customer || '(no name)')}</span>`);
-    // Revenue first after customer so it survives the progressive collapse
-    // (sys + crew drop out on narrow bars before rev does).
-    if (bar.ev.revLabel) parts.push(`<span class="bar-rev">${esc(bar.ev.revLabel)}</span>`);
+    // PRORATED revenue: this bar covers bar.spanCols of the job's days (runs are
+    // contiguous, so spanCols == the number of scheduled days in this bar), so
+    // the label is revPerDay × spanCols. Summing every bar in a week therefore
+    // equals the sidebar weekRevenue total. Revenue is placed right after the
+    // customer so it survives the progressive collapse (sys + crew drop first).
+    const barRev = bar.ev.revPerDay * bar.spanCols;
+    const revLabel = compactRev(barRev);
+    if (revLabel) parts.push(`<span class="bar-rev">${esc(revLabel)}</span>`);
     if (bar.ev.sys && bar.ev.sys.name) parts.push(`<span class="bar-system">${esc(bar.ev.sys.name)}</span>`);
     if (bar.ev.crew) parts.push(`<span class="bar-crew">${esc(bar.ev.crew)}</span>`);
+    // Tooltip shows the FULL contract plus this week's prorated slice so the
+    // prorated bar and the tooltip do not look like a contradiction.
+    const tip = bar.ev.tooltipBase
+      + (bar.ev.revFull ? ` · Contract ${bar.ev.revFull}` + (barRev > 0 ? ` · this week ${fullRev(barRev)}` : '') : '');
     return `<div class="pec-cal-event-bar"
       data-event-job="${esc(bar.jobId)}"
-      title="${esc(bar.ev.tooltip)}"
+      title="${esc(tip)}"
       style="grid-column:${bar.startCol} / span ${bar.spanCols};grid-row:${gridRow};--ev-color:${esc(bar.ev.color)}">${parts.join('')}</div>`;
   };
 
@@ -13702,19 +13729,27 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
           const jobsHtml = list.map(sd => {
             const ev = eventFor(sd.job_id); if (!ev) return '';
             const job = ev.job;
-            const revFull = Number(job.revenue || 0) > 0 ? '$' + Math.round(Number(job.revenue)).toLocaleString() : '';
+            // PRORATED: a run-sheet card is ONE scheduled day, so it shows this
+            // day's slice (revPerDay). A 1-day job shows full revenue; a 4-day
+            // job shows 1/4 on each day, so the week's cards never sum to more
+            // than the job's contract. The FULL contract is in the tooltip and,
+            // for multi-day jobs, a muted "of $X total" line below the slice.
+            const totalDays = totalDaysByJob[sd.job_id] || 1;
+            const dayRevLabel = fullRev(ev.revPerDay);
             // Run sheet: stacked card per job (slot + customer, then price, system,
             // address, crew lead, job #). Everything on its own line so nothing
             // trails off to the side. Job notes intentionally omitted (Dylan,
             // 2026-06-10: too much info on the schedule). Columns are tall, so
             // nothing is truncated.
             const muted = 'font-size:.7rem;color:var(--rd-muted,var(--muted));margin-top:3px;line-height:1.35';
-            return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(ev.tooltip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:8px 10px;margin-bottom:8px">
+            const tip = ev.tooltipBase
+              + (ev.revFull ? ` · Contract ${ev.revFull}` + (ev.revPerDay > 0 ? ` · this day ${fullRev(ev.revPerDay)}` : '') : '');
+            return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(tip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:8px 10px;margin-bottom:8px">
               <div style="display:flex;gap:6px;align-items:center">
                 ${sd.time_slot ? `<span class="bar-slot" style="font-size:.62rem;font-weight:700;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px">${esc(slotLabel(sd.time_slot))}</span>` : ''}
                 <strong style="font-size:.86rem;line-height:1.2;flex:1">${esc(ev.customer || '(no name)')}</strong>
               </div>
-              ${revFull ? `<div style="font-size:.8rem;font-weight:700;color:var(--rd-ink,var(--text));margin-top:3px">${esc(revFull)}</div>` : ''}
+              ${dayRevLabel ? `<div style="font-size:.8rem;font-weight:700;color:var(--rd-ink,var(--text));margin-top:3px">${esc(dayRevLabel)}${totalDays > 1 ? `<span style="font-weight:500;color:var(--rd-muted,var(--muted))"> · of ${esc(ev.revFull)} total</span>` : ''}</div>` : ''}
               <div style="${muted}">${ev.sys && ev.sys.name ? `<span class="pec-color-dot" style="background:${esc(ev.sys.color || '#888')}"></span>${esc(ev.sys.name)}` : 'No system yet'}</div>
               ${job.address ? `<div style="${muted}">${esc(job.address)}</div>` : ''}
               ${job.crew_lead ? `<div style="${muted}">Lead: ${esc(job.crew_lead)}</div>` : ''}
