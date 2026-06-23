@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-22 16:35] Cowork: applied 2026-06-22_customer_stripe_id.sql to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the Claude Code handoff for commit 19e4e1a (named-Stripe-Customer feature, already on origin/main and deployed): applied supabase/migrations/2026-06-22_customer_stripe_id.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor. Statement: alter table public.customers add column if not exists stripe_customer_id text. Result "Success. No rows returned." Verified: information_schema.columns shows stripe_customer_id (text) on public.customers (1 row).
+Effect: the checkout function (pec-stripe-checkout.cjs) can now pre-create/reuse a named Stripe Customer (name + email) and cache its id on public.customers, so Stripe shows the customer NAME in the Customer column (not just email) and reuses one Customer record across a customer's payments. The column is nullable and populated on the first card payment per customer. Payment recording into Topcoat is unchanged (webhook still records by job_id).
+Why: Dylan said "run migration" after Claude Code shipped the named-Customer follow-up (he wanted the name on the Stripe transaction, fuller version).
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 column added; additive/idempotent).
+Next steps: none for the migration. The code is live; the next real card payment will create the named Stripe Customer and backfill stripe_customer_id.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: nothing required. Optional: do one more $1 test charge and confirm the customer NAME now shows in Stripe > Payments. All four 2026-06-22 Stripe migrations (idempotency, log_payment_deleted earlier, customer_stripe_id) are applied.
+
+---
+
 ## [2026-06-22 16:25] Claude Code: Stripe — attach payments to a real Stripe Customer (named-Customer follow-up)
 By: Claude Code
 Changed: Built the optional follow-up logged at 16:05. Now a card payment fills Stripe's dedicated Customer column (not just the Description) and reuses one Stripe Customer per public.customers row across payments.
