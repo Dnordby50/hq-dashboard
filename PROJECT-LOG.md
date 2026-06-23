@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-23 12:10] Cowork: applied 2026-06-23_holidays_and_crew_days_off.sql to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the Claude Code handoff from the 11:00 entry: applied supabase/migrations/2026-06-23_holidays_and_crew_days_off.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). The statements create two scheduling-overlay tables (public.pec_prod_holidays with a unique holiday_date + idx; public.pec_prod_crew_member_days_off with crew_member_id FK to pec_prod_crew_members ON DELETE CASCADE, unique (crew_member_id, off_date), plus two indexes), enable RLS on both, and create the staff-only policies pec_prod_holidays_staff and pec_prod_crew_member_days_off_staff (for all using/with check public.is_admin_staff(), mirroring pec_prod_crews). Supabase flagged the drop policy if exists lines as destructive; confirmed via "Run query" since they only clear policies for idempotent recreation and touch no data. Result "Success. No rows returned."
+Verified (single select): holidays_count 0, days_off_count 0, policy_count 2, tables_present 2. Acceptance criteria from the 11:00 handoff all met.
+Effect: the "+ Holiday" and "+ Day Off" buttons on the Job Schedule can now persist rows (previously the schedule degraded to zero overlays and saving showed a "run the migration first" hint). Holidays hard-block scheduling onto those dates (Add Job + the bar scheduler); crew days off are informational/visual only.
+Why: Dylan said "run migration."
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (2 tables + 2 indexes-per-table + RLS + 2 policies; all idempotent/additive).
+Next steps: Dylan pushes to deploy the schedule code (commits 5150ad6, b618c0f, 588881c, 9748ed3), then runs the 11:00 "Handoff to Dylan" checks (buttons open on both views, holiday hard-block fires, bar revenue labels now sum to the sidebar week total).
+Handoff to Cowork: none (closed).
+Handoff to Dylan: push to deploy, then verify on the live Job Schedule. Decide whether crew days off should also WARN or BLOCK scheduling (currently informational only, per Claude Code's flagged assumption).
+
+---
+
 ## [2026-06-23 11:00] Claude Code: schedule revenue proration fix + holidays + crew days off + job schedule history
 By: Claude Code
 Changed: Four schedule changes, all in index.html plus one new migration.
