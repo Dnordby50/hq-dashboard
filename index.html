@@ -12829,7 +12829,7 @@ function sameDay(a, b) {
 // two views could leave a shared slot wrong-shaped. Each view sorts prodJobs as
 // it needs (renderSchedule filters pending; renderJobCosting sorts recent-first).
 async function loadProdCore() {
-  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes, tasksRes, holidaysRes, daysOffRes] = await withFreshSession(() => Promise.all([
+  const [jobsRes, daysRes, sysRes, crewsRes, areasRes, salesRes, tasksRes, holidaysRes, daysOffRes, crewMembersRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_jobs').select('*').order('install_date', { ascending: true, nullsFirst: true }),
     supabase.from('pec_prod_job_schedule_days').select('*').order('day_index'),
     cachedSystemTypes(),
@@ -12839,6 +12839,7 @@ async function loadProdCore() {
     supabase.from('pec_prod_tasks').select('*').order('task_date'),
     supabase.from('pec_prod_holidays').select('*').order('holiday_date'),
     supabase.from('pec_prod_crew_member_days_off').select('*').order('off_date'),
+    supabase.from('pec_prod_crew_members').select('*').order('name'),
   ]), { label: 'loadProdCore' });
   // Drop archived jobs (archived from the CRM job-detail Delete box) from every
   // production surface (Schedule, Pending, Costing) that reads state.prodJobs.
@@ -12861,6 +12862,10 @@ async function loadProdCore() {
   if (holidaysRes.error) console.warn('[pec] pec_prod_holidays not available yet:', holidaysRes.error.message);
   state.crewDaysOff = daysOffRes.error ? [] : (daysOffRes.data || []);
   if (daysOffRes.error) console.warn('[pec] pec_prod_crew_member_days_off not available yet:', daysOffRes.error.message);
+  // Crew members are needed by the "+ Day Off" picker on the schedule view (the
+  // costing/settings loads also set this; loading here makes it available even
+  // when the user lands straight on the schedule).
+  state.crewMembers = crewMembersRes.error ? (state.crewMembers || []) : (crewMembersRes.data || []);
   const byJob = {};
   for (const a of areasRes.data || []) (byJob[a.job_id] ||= []).push(a);
   state.productAreasByJob = byJob;
