@@ -74,6 +74,41 @@ exports.handler = async (event) => {
   // the Stripe Payments list and on the receipt.
   const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;
 
+  // Fetch-or-create a Stripe Customer so the payment fills Stripe's Customer
+  // column with the real name (and one Customer is reused across this customer's
+  // payments). Best-effort: any failure falls back to customer_email below so a
+  // payment is never blocked over this nicety. The cached id lives on
+  // public.customers.stripe_customer_id (2026-06-22_customer_stripe_id.sql).
+  let stripeCustomerId = null;
+  if (row.customer_id) {
+    try {
+      const crows = await sb('GET', `/customers?id=eq.${encodeURIComponent(row.customer_id)}&select=stripe_customer_id&limit=1`);
+      const existing = Array.isArray(crows) && crows[0] ? crows[0].stripe_customer_id : null;
+      if (existing) {
+        stripeCustomerId = existing;
+      } else {
+        // Idempotency-Key on the customer id makes concurrent first-time creates
+        // return the SAME Stripe Customer instead of duplicating it.
+        const cres = await fetch('https://api.stripe.com/v1/customers', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Idempotency-Key': 'cust_' + row.customer_id },
+          body: formEncode({ name: row.customer_name || '', email: row.customer_email || '', 'metadata[customer_id]': row.customer_id }),
+        });
+        const cdata = await cres.json().catch(() => ({}));
+        if (cres.ok && cdata.id) {
+          stripeCustomerId = cdata.id;
+          // Cache for reuse (best-effort; a failure here just means we re-create
+          // next time, deduped by the Idempotency-Key within 24h).
+          try { await sb('PATCH', `/customers?id=eq.${encodeURIComponent(row.customer_id)}`, { stripe_customer_id: cdata.id }); } catch (_) {}
+        } else {
+          console.error('stripe-checkout: customer create failed', cres.status, cdata && cdata.error && cdata.error.message);
+        }
+      }
+    } catch (err) {
+      console.error('stripe-checkout: customer fetch/create failed (falling back to email)', err.message);
+    }
+  }
+
   const params = {
     mode: 'payment',
     'line_items[0][quantity]': 1,
@@ -92,8 +127,11 @@ exports.handler = async (event) => {
     success_url: `${SITE_URL}/pay/${token}?paid=1`,
     cancel_url: `${SITE_URL}/pay/${token}`,
   };
-  // Receipt email if the view exposes it; Stripe Checkout also collects it.
-  if (row.customer_email) params['customer_email'] = row.customer_email;
+  // Attach to the Stripe Customer when we have one (fills the Customer column and
+  // uses its email for the receipt). Stripe Checkout rejects `customer` +
+  // `customer_email` together, so only one is set; fall back to customer_email.
+  if (stripeCustomerId) params['customer'] = stripeCustomerId;
+  else if (row.customer_email) params['customer_email'] = row.customer_email;
 
   // Idempotency-Key dedupes a double-click within Stripe's 24h window.
   const idemKey = 'co_' + crypto.createHash('sha256').update(`${token}|${kind}|${Math.round(amount * 100)}`).digest('hex').slice(0, 48);

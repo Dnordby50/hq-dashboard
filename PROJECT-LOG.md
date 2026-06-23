@@ -4,7 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
-## [2026-06-22 16:05] Claude Code: Stripe — add customer name to the checkout description + metadata
+## [2026-06-22 16:25] Claude Code: Stripe — attach payments to a real Stripe Customer (named-Customer follow-up)
+By: Claude Code
+Changed: Built the optional follow-up logged at 16:05. Now a card payment fills Stripe's dedicated Customer column (not just the Description) and reuses one Stripe Customer per public.customers row across payments.
+  - Migration supabase/migrations/2026-06-22_customer_stripe_id.sql (NEW, Cowork-applied): `alter table public.customers add column if not exists stripe_customer_id text;` (nullable cache, set after a customer's first card payment).
+  - netlify/functions/pec-stripe-checkout.cjs: before building the Checkout params, if row.customer_id is present (pec_job_ar exposes customer_id + customer_email), look up customers.stripe_customer_id; if set, reuse it; else POST /v1/customers (name + email + metadata.customer_id) with Idempotency-Key 'cust_<customer_id>' (so concurrent first-time creates return the SAME Customer, never a duplicate) and cache the new id back onto public.customers via PATCH (service role). Then pass `customer: <id>` to the session and OMIT customer_email (Stripe Checkout rejects both together); if we have no Stripe customer, fall back to customer_email exactly as before.
+  - Entirely best-effort: any failure (lookup, create, or cache write) logs and falls back to customer_email, so a payment is NEVER blocked over this. Idempotency-Key dedupes the create; the cached id means subsequent payments skip creation.
+Recording UNCHANGED: pec-stripe-webhook.cjs untouched; payments still record as one pec_payments row by job_id metadata (method 'stripe', dedup by PaymentIntent id), balance still drops. Amount logic unchanged. The payDesc description + customer_name metadata from 16:05 are kept.
+Why: Dylan asked for the named-Customer follow-up so Stripe groups payments under a real Customer record (name in the Customer column, reusable for future charges/portal).
+Testing: node --check passes. Live check: a new card payment should now show the customer under Stripe > Customers (name + email) and the charge attached to it; a second payment for the same customer should attach to the SAME Customer (one record, not a duplicate).
+Files touched: netlify/functions/pec-stripe-checkout.cjs, supabase/migrations/2026-06-22_customer_stripe_id.sql (new), PROJECT-LOG.md.
+Handoff to Cowork: apply supabase/migrations/2026-06-22_customer_stripe_id.sql to PROD (adds customers.stripe_customer_id). NOTE: until it is applied, the function's customers.stripe_customer_id SELECT will error, but it is wrapped in try/catch and falls back to customer_email, so checkout keeps working; apply it so the Customer attach + caching actually take effect.
+Handoff to Dylan: push to deploy (the column should be applied by Cowork around the same time).
 By: Claude Code
 Changed: netlify/functions/pec-stripe-checkout.cjs only. Stripe transactions previously showed just the customer email. Added the customer name (already on row.customer_name from the pec_job_ar select *):
   - New `const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;` right after productName.
