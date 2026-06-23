@@ -3,7 +3,9 @@
 // a bearer token in the URL). Server-rendered HTML, no client JS needed to view.
 // On a miss it returns a generic 404 page (never leaks the token or DB detail),
 // and every response is noindex/nofollow so shared links are not crawled.
-// No payment processor: payment is instructions + reply only.
+// Online card payment is via Stripe Checkout: the "Pay by card" buttons link to
+// /api/stripe/checkout (pec-stripe-checkout.cjs), and the payment is recorded by
+// the signature-verified pec-stripe-webhook.cjs (never by this page).
 
 const { sb } = require('./_pec-supabase.cjs');
 
@@ -80,26 +82,30 @@ function statusPill(row) {
   return { bg: '#334155', text: 'Balance due' };
 }
 
-// Informational pay options (NO online processor). Card surcharge is computed
-// live from the brand rate so the customer sees the real card total. Phone and
-// Zelle come from the brand row (with code defaults as fallback).
-function payButtons(b, due) {
-  if (due <= 0.005) return '';
-  const pct = Number(b.card_surcharge_pct != null ? b.card_surcharge_pct : 3) || 0;
-  const surcharge = round2(due * pct / 100);
-  const phone = b.phone || '(928) 800-8154';
+// Online card payment via Stripe Checkout (PEC absorbs the processing fee, so the
+// customer is charged the exact amount -- no surcharge). The "Pay by card" button
+// links to /api/stripe/checkout; a "Pay deposit" button also shows when a deposit
+// is still due and is smaller than the balance. Check + Zelle stay as secondary
+// options. `token` is the invoice public_token used to build the checkout link.
+function payButtons(b, row, token) {
+  const due = round2(row.balance_remaining);
+  if (due <= 0.005 || !token) return '';
+  const primary = esc(b.primary_color);
+  const accent = esc(b.accent_color);
+  const btn = (href, label, bg) => `<a href="${esc(href)}" style="display:inline-block;background:${bg};color:#fff;font-weight:700;font-size:15px;border-radius:8px;padding:13px 22px;text-decoration:none">${label}</a>`;
+  const depositDue = !row.deposit_collected && !row.deposit_waived;
+  const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
+  const showDeposit = depositDue && owed >= 0.5 && owed < due - 0.005;
   const zelle = b.zelle_email || 'dylan@prescottepoxy.com';
-  const opt = (title, sub) => `<div style="flex:1;min-width:200px;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px">
-      <div style="display:inline-block;background:${esc(b.accent_color)};color:#fff;font-weight:700;font-size:14px;border-radius:6px;padding:8px 14px;margin-bottom:8px">${title}</div>
-      <div style="font-size:13px;color:#334155;line-height:1.5">${sub}</div>
-    </div>`;
+  const phone = b.phone || '(928) 800-8154';
+  const tok = encodeURIComponent(token);
   return `<div class="card" style="margin-top:16px;padding:20px 22px">
-    <h3 style="margin:0 0 12px;color:${esc(b.primary_color)};font-size:16px">How to pay</h3>
-    <div style="display:flex;flex-wrap:wrap;gap:12px">
-      ${opt(`Credit Card + ${usd(surcharge)}`, `A ${pct}% card surcharge (${usd(surcharge)}) applies. Call ${esc(name(b))} at <strong>${esc(phone)}</strong> to pay by card.`)}
-      ${opt('Pay with Check', 'Give a check to the crew when they finish the job.')}
-      ${opt('Zelle', `Send to <strong>${esc(zelle)}</strong>.`)}
+    <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay online</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+      ${btn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} by card`, accent)}
+      ${showDeposit ? btn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
     </div>
+    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Secure card payment by Stripe (we cover the processing fee). Prefer another way? Pay by check (give it to the crew) or Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(name(b))} at <strong>${esc(phone)}</strong>.</div>
   </div>`;
 }
 function name(b) { return b.business_name || 'Prescott Epoxy Company'; }
@@ -127,7 +133,8 @@ function paymentsSection(payments, b) {
   </div>`;
 }
 
-function invoicePage(row, brand, payments) {
+function invoicePage(row, brand, payments, opts) {
+  const o = opts || {};
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const biz = name(b);
   const logoUrl = b.logo_url || LOGO_URL;
@@ -162,6 +169,7 @@ function invoicePage(row, brand, payments) {
 </style></head>
 <body>
   <div class="wrap">
+    ${o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received — thank you! It will appear in the Payments section below within a moment.</div>` : ''}
     <div style="text-align:center;margin-bottom:18px"><img src="${esc(logoUrl)}" alt="${esc(biz)}" style="max-height:64px;max-width:280px"></div>
     <div class="card">
       <div class="band">
@@ -198,7 +206,7 @@ function invoicePage(row, brand, payments) {
 
     ${paymentsSection(payments, b)}
 
-    ${payButtons(b, due)}
+    ${payButtons(b, row, o.token)}
 
     ${b.payment_instructions_html ? `<div class="card" style="margin-top:16px;padding:20px 22px">
       <h3 style="margin:0 0 8px;color:${esc(b.primary_color)};font-size:16px">More on payment</h3>
@@ -260,7 +268,8 @@ exports.handler = async (event) => {
       const pr = await sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount,method,reference,received_date&order=received_date.asc`);
       if (Array.isArray(pr)) payments = pr;
     } catch (_) { /* show page without the ledger */ }
-    return invoicePage(row, brand, payments);
+    const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true' });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);

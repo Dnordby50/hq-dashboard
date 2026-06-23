@@ -130,6 +130,21 @@
   status = 200
   force = true
 
+# Stripe: clean paths for the Checkout-session creator (linked from the invoice
+# page) and the webhook (the only place a card payment is recorded). The webhook
+# URL goes into the Stripe Dashboard endpoint config.
+[[redirects]]
+  from = "/api/stripe/checkout"
+  to = "/.netlify/functions/pec-stripe-checkout"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/stripe/webhook"
+  to = "/.netlify/functions/pec-stripe-webhook"
+  status = 200
+  force = true
+
 # Vendored, version-pinned libraries (e.g. self-hosted supabase-js). The
 # filename carries the version, so a new version means a new filename -- cache
 # hard. Served as a normal static file (no redirect intercepts /vendor/*).
