@@ -70,6 +70,9 @@ exports.handler = async (event) => {
 
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
   const productName = (kind === 'deposit' ? 'Deposit — Invoice ' : 'Invoice ') + invNo;
+  // PaymentIntent description so the customer name (not just the email) shows in
+  // the Stripe Payments list and on the receipt.
+  const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;
 
   const params = {
     mode: 'payment',
@@ -84,6 +87,8 @@ exports.handler = async (event) => {
     'metadata[kind]': kind,
     'payment_intent_data[metadata][job_id]': row.id,
     'payment_intent_data[metadata][kind]': kind,
+    'payment_intent_data[description]': payDesc,
+    'payment_intent_data[metadata][customer_name]': row.customer_name || '',
     success_url: `${SITE_URL}/pay/${token}?paid=1`,
     cancel_url: `${SITE_URL}/pay/${token}`,
   };

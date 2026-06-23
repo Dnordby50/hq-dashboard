@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-22 16:05] Claude Code: Stripe — add customer name to the checkout description + metadata
+By: Claude Code
+Changed: netlify/functions/pec-stripe-checkout.cjs only. Stripe transactions previously showed just the customer email. Added the customer name (already on row.customer_name from the pec_job_ar select *):
+  - New `const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;` right after productName.
+  - Two new keys in the form-encoded Checkout `params`: `'payment_intent_data[description]': payDesc` and `'payment_intent_data[metadata][customer_name]': row.customer_name || ''` (the existing customer_email line is kept so the receipt still sends). The empty-string metadata value is harmless: formEncode drops empty values, so a nameless job simply omits the metadata key and the description falls back to just "Invoice <#>".
+Recording UNCHANGED: pec-stripe-webhook.cjs was not touched. The payment still records as one pec_payments row keyed on job_id metadata (method 'stripe', dedup by PaymentIntent id), and the balance still drops. No amount logic changed.
+Did NOT add customer_creation:'always' (it would spawn a new Stripe Customer per payment). The name now appears in the PaymentIntent Description + metadata, not Stripe's Customer column.
+Why: so the Stripe Payments list and the customer receipt show "<Customer Name> — Invoice <#>" instead of just an email.
+Testing: node --check passes. Live check is a $1 test/live payment showing the named description in Stripe > Payments (per the task acceptance).
+Files touched: netlify/functions/pec-stripe-checkout.cjs, PROJECT-LOG.md.
+Optional follow-up (NOT built; only if Dylan asks): to populate Stripe's dedicated Customer column (and reuse a customer across payments), pre-create-or-look-up a Stripe Customer (name+email) and store stripe_customer_id on public.customers, then pass `customer` to the Checkout Session instead of customer_email. Deferred to avoid creating a duplicate Stripe Customer on every payment.
+Handoff to Dylan: push to deploy; the next card payment will show the customer name in Stripe.
+
+---
+
 ## [2026-06-22 15:50] Cowork: Stripe online card payments LIVE (migration + env vars + webhooks + test/live verified)
 By: Cowork
 Changed: No repo code. Ran the Claude Code Stripe-setup handoff end to end for the code in commit d3fd119 (already on origin/main and deployed).
