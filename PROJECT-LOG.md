@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-22 15:50] Cowork: Stripe online card payments LIVE (migration + env vars + webhooks + test/live verified)
+By: Cowork
+Changed: No repo code. Ran the Claude Code Stripe-setup handoff end to end for the code in commit d3fd119 (already on origin/main and deployed).
+  1) Migration: applied supabase/migrations/2026-06-22_stripe_payment_idempotency.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres) via the Supabase SQL editor. Creates partial unique index pec_payments_stripe_ref_uniq on pec_payments(reference) where method='stripe' and reference is not null. Result "Success. No rows returned." Verified: select indexname from pg_indexes where indexname='pec_payments_stripe_ref_uniq' returns 1 row.
+  2) Env vars + webhooks (Dylan entered all secret values himself in Netlify/Stripe; Cowork never handled key values): STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set in Netlify (prescottepoxy) for TEST first, then updated to LIVE. Stripe webhook endpoints created (test + live) at https://prescottepoxy.netlify.app/api/stripe/webhook subscribed to checkout.session.completed. Redeployed after each.
+  TEST verification (throwaway $1 invoice, test card 4242...): pay page showed the Pay-by-card button; payment recorded as a pec_payments row method='stripe', recorded_by 'Stripe', reference=PaymentIntent id; paid_to_date 1, balance_remaining 0. Idempotency: resending the checkout.session.completed event produced NO second row (still exactly 1, same reference) -> the unique index works.
+  LIVE verification (throwaway $1 invoice, Dylan's real card): recorded identically (method='stripe', live PaymentIntent, balance 0). Dylan refunds the $1 in Stripe.
+Cleanup: both throwaway customers/jobs/payments (test id a502740d..., earlier test 84921b0d...) were deleted; gone from pec_job_ar. No real customer ledger was touched.
+Note/correction: an earlier uncommitted Cowork PROJECT-LOG entry (the "per-payment commission table" Claude Code handoff, ~14:45) was lost when d3fd119 updated the working tree before it could be committed (the commit was blocked by a stale .git/index.lock). The commission-table handoff PROMPT itself was delivered to Dylan in chat; if that table is still wanted, re-request it.
+Why: Dylan pasted the Stripe-setup handoff to enable online invoice payments.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 index), Netlify env vars (test->live), Stripe webhooks (test+live).
+Next steps: online card payments are LIVE; customers can pay any invoice from its /pay/<token> link. Dylan: refund the $1 live test charge in Stripe.
+Handoff to Dylan: refund the $1 live charge (Stripe > Payments > Refund). Also clear the stale git lock if commits still fail: cd ~/claude-code/hq-dashboard && rm -f .git/index.lock.
+
+---
+
 ## [2026-06-22 15:30] Claude Code: Stripe — customers pay invoices online from the /pay link
 By: Claude Code
 Changed: Added online card payment to the public invoice page via Stripe Checkout (hosted; keeps PEC out of PCI scope). Decisions locked with Dylan: first cut = pay from the invoice link; PEC ABSORBS the processing fee (charge the exact balance, no surcharge); customer can pay the full balance, or the deposit if one is due (no custom amount). Three pieces, no npm deps (Stripe REST + node:crypto, matching every other function):
