@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-23 14:30] Claude Code: office "Charge card" on the internal invoice (Stripe hosted, auto-refresh)
+By: Claude Code
+Changed: Staff can now take a card payment straight from the internal Invoicing detail without opening the customer portal, while staying OUT of PCI scope (no card form, no client-side Stripe key). All by reusing the existing Stripe Checkout flow.
+  1) New "Charge card" button on the internal invoice toolbar (index.html, next to #pecInvPay "Record payment"). It opens openChargeCardModal(row): pick Balance (default, = current balance), Deposit (shown ONLY when a deposit is still due, mirroring the Record-deposit logic: !deposit_collected && !deposit_waived and the owed amount clamped to the balance is >= $0.50), or Custom amount (number input, client-validated to [$0.50, balance]). On confirm it opens Stripe's HOSTED Checkout page in a NEW TAB via the invoice public_token (the same token "Copy public invoice link" uses): /api/stripe/checkout?token=<public_token>&kind=balance|deposit|custom (custom adds &amt=<cents>). window.open is called in the click tick so the popup blocker does not kill it; if blocked, it tells staff to allow popups / use the copy-link button.
+  2) Extended netlify/functions/pec-stripe-checkout.cjs to accept kind=custom with ?amt=<cents>. The amount is validated + clamped SERVER-SIDE to [50 cents, current balance] (never trusted from the client); balance and deposit kinds are unchanged. Kept the existing Idempotency-Key (already includes kind + amount so a custom amount keys distinctly), the $0.50 minimum guard, the named-Stripe-Customer fetch/create, and the success redirect. productName for custom is "Payment — Invoice <#>".
+  3) Auto-refresh on return. Opening the charge tab sets state._invAwaitingPayment = true. renderJobInvoice attaches a focus + visibilitychange listener (detached-then-reattached each render so it never stacks) that, when the dashboard regains focus AND state.view==='invoicing' AND this invoice is still open AND awaiting, clears the flag and re-pulls pec_job_ar + pec_payments and re-renders ONCE (no polling loop). The listener is removed on navigation away (Back / Open job card) via detachInvoiceRefocus(); the view-guard also stops a stray listener from ever redrawing over another view. So when staff come back from the Stripe tab, Paid to date / Balance / Payments reflect the webhook-recorded payment with no manual reload.
+Guardrails honored: pec-stripe-webhook.cjs recording logic UNTOUCHED (a custom kind behaves like balance there: it only auto-marks the deposit when the payment covers the owed deposit). No client-side Stripe key or card form added. Manual "Record payment" (#pecInvPay) and "Record deposit" (#pecInvDeposit) unchanged.
+Why: Dylan wanted the office to charge a card directly from the internal invoice (e.g. card-over-the-phone) instead of sending the customer the public link, with the invoice updating itself when the charge lands.
+Testing: node --check passes on pec-stripe-checkout.cjs and on the extracted CRM module. Behavioral pass (pick balance/deposit/custom -> Stripe tab opens for that amount -> return to dashboard shows the new payment + reduced balance) is a post-deploy manual check; the Stripe env (keys + webhook) is already live from the 2026-06-22 setup.
+Files touched: index.html, netlify/functions/pec-stripe-checkout.cjs, PROJECT-LOG.md.
+Commit: 1747af9.
+Next steps: Dylan pushes to deploy. NO migration needed (no schema change; reuses pec_payments + pec_job_ar + the existing Stripe functions).
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then on a throwaway invoice run a $1 custom charge end to end (Charge card -> Custom -> Stripe test/live -> return to the dashboard and confirm the payment + balance updated on their own). Refund the test charge in Stripe.
+
+---
+
 ## [2026-06-23 13:30] Claude Code: one Inter font app-wide + editable invoice text + offline-pay option with office notify
 By: Claude Code
 Changed: Three changes, committed separately.
