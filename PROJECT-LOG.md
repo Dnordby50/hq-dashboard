@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-23 21:30] Cowork: applied 2026-06-23_invoice_text_fields.sql to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the Claude Code handoff from the editable-invoice-text feature: applied supabase/migrations/2026-06-23_invoice_text_fields.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", branch main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). The four statements add nullable text columns to public.pec_brand_identity: invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text (additive, idempotent, no RLS change; they inherit the existing pec_brand_identity policies). No destructive-confirm dialog appeared (ADD COLUMN IF NOT EXISTS is non-destructive). Result returned cleanly.
+Verified (single select on information_schema.columns): all four columns present on public.pec_brand_identity (4 rows: invoice_footer_text, invoice_intro_text, invoice_terms_text, offline_payment_details_text). Acceptance criteria from the handoff met.
+Effect: Settings > Brand can now save the four new invoice-text boxes (intro, check/cash/Zelle details, thank-you footer, terms), and the public invoice (pec-public-invoice.cjs) can render them. The offline_payment_details_text also feeds the equal-weight "Pay by check, cash, or Zelle" option.
+Why: Dylan said "run migration."
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (4 columns added; additive/idempotent).
+Next steps: Dylan pushes to deploy the invoice-text + offline-pay code, then fills the four boxes in Settings > Brand and confirms they show on a public invoice. Separately, set SLACK_OFFICE_WEBHOOK in Netlify and confirm the office email recipient so the "Let our office know" offline-pay notify works (per the same Claude Code handoff).
+Handoff to Cowork: none (this migration handoff is closed). Still open from the same feature: confirm SLACK_OFFICE_WEBHOOK + office email env are set in Netlify.
+Handoff to Dylan: push to deploy, then verify the four text boxes save and render.
+
+---
+
 ## [2026-06-23 14:30] Claude Code: office "Charge card" on the internal invoice (Stripe hosted, auto-refresh)
 By: Claude Code
 Changed: Staff can now take a card payment straight from the internal Invoicing detail without opening the customer portal, while staying OUT of PCI scope (no card form, no client-side Stripe key). All by reusing the existing Stripe Checkout flow.
