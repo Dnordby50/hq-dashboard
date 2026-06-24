@@ -7479,6 +7479,82 @@ async function renderInvoicing() {
   root.querySelectorAll('[data-invoice]').forEach(b => b.addEventListener('click', () => { state.openInvoiceJobId = b.dataset.invoice; renderInvoicing(); }));
 }
 
+// Remove the invoice "return-focus auto-refresh" listener (if any). Called on
+// every renderJobInvoice (before re-attaching) and on navigation away, so the
+// focus/visibilitychange handler never outlives the open invoice or stacks up.
+function detachInvoiceRefocus() {
+  const h = state._invoiceRefocusHandler;
+  if (h) {
+    window.removeEventListener('focus', h);
+    document.removeEventListener('visibilitychange', h);
+    state._invoiceRefocusHandler = null;
+  }
+}
+
+// Office "Charge card" flow: take a card payment for an open invoice WITHOUT
+// leaving the dashboard or touching a card form (we stay out of PCI scope by
+// using Stripe's hosted Checkout page, opened in a new tab via the invoice's
+// public_token -- the same token the public invoice + "Copy public link" use).
+// The amount is computed/validated SERVER-SIDE in pec-stripe-checkout.cjs; the
+// signature-verified webhook records the payment. Here we only pick balance /
+// deposit / custom and open the hosted page, then arm the return-focus refresh.
+function openChargeCardModal(row) {
+  if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+  const bal = invNum(row.balance ?? row.balance_remaining);
+  if (!(bal > 0.005)) { showToast('Nothing to charge — this invoice is paid in full.', { ttl: 3500 }); return; }
+  // Mirror the existing deposit-due logic (same as the Record deposit button).
+  const depDue = !row.deposit_collected && !row.deposit_waived;
+  const owed = row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5);
+  const depAmt = Math.min(owed, bal);
+  const showDeposit = depDue && depAmt >= 0.5;
+  const radioRow = (val, label, sub) => `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;font-weight:400;text-transform:none">
+    <input type="radio" name="chargeKind" value="${val}" style="width:auto"${val === 'balance' ? ' checked' : ''}> <span><strong>${esc(label)}</strong>${sub ? ` <span style="color:var(--muted)">${esc(sub)}</span>` : ''}</span></label>`;
+  openModal(`
+    <h3>Charge card</h3>
+    <div style="font-size:.8rem;color:var(--muted);margin-bottom:12px">Opens Stripe's secure hosted page in a new tab. The payment records automatically when it completes, and this invoice refreshes when you come back.</div>
+    ${radioRow('balance', 'Balance', invUSD(bal))}
+    ${showDeposit ? radioRow('deposit', 'Deposit', invUSD(depAmt)) : ''}
+    ${radioRow('custom', 'Custom amount', '')}
+    <div class="pec-field" id="chargeCustomWrap" style="display:none;margin-top:8px">
+      <label>Amount</label>
+      <input id="chargeCustomAmt" type="number" min="0.50" step="0.01" max="${bal}" placeholder="0.00">
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Max ${invUSD(bal)} (the current balance). Minimum $0.50.</div>
+    </div>
+    <div id="chargeErr" style="color:#dc2626;font-size:.8rem;min-height:1em;margin:4px 0"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="chargeGo">Open Stripe checkout</button>
+    </div>
+  `, { onMount: (modal) => {
+    const wrap = modal.querySelector('#chargeCustomWrap');
+    const amtEl = modal.querySelector('#chargeCustomAmt');
+    const errEl = modal.querySelector('#chargeErr');
+    modal.querySelectorAll('input[name="chargeKind"]').forEach(r => r.addEventListener('change', () => {
+      const isCustom = modal.querySelector('input[name="chargeKind"]:checked').value === 'custom';
+      wrap.style.display = isCustom ? 'block' : 'none';
+      if (isCustom) amtEl.focus();
+    }));
+    modal.querySelector('#chargeGo').addEventListener('click', () => {
+      errEl.textContent = '';
+      const kind = modal.querySelector('input[name="chargeKind"]:checked').value;
+      let url = `${location.origin}/api/stripe/checkout?token=${encodeURIComponent(row.public_token)}&kind=${kind}`;
+      if (kind === 'custom') {
+        const amt = Number(amtEl.value);
+        if (!Number.isFinite(amt) || amt < 0.5) { errEl.textContent = 'Enter an amount of at least $0.50.'; return; }
+        if (amt > bal + 0.005) { errEl.textContent = `Amount cannot exceed the balance (${invUSD(bal)}).`; return; }
+        url += `&amt=${Math.round(amt * 100)}`; // cents; server clamps to [50, balance]
+      }
+      // Must open in the user-gesture tick (no awaits before this) or the popup
+      // blocker kills it. Arm the return-focus refresh only once the tab opened.
+      const win = window.open(url, '_blank');
+      if (!win) { errEl.textContent = 'Allow popups to open the Stripe page, or use Copy public invoice link.'; return; }
+      state._invAwaitingPayment = true;
+      closeModal();
+      showToast('Opened Stripe checkout in a new tab. This invoice will refresh when you return.', { ttl: 4500 });
+    });
+  }});
+}
+
 // Per-job invoice view. Reached from the Invoicing list ("View Invoice"), the
 // job card ("View Invoice"), via state.openInvoiceJobId + the renderInvoicing
 // short-circuit. Read-only summary of one job's invoice: totals, line items,
@@ -7486,6 +7562,23 @@ async function renderInvoicing() {
 // renderInvoicing() and land back here while openInvoiceJobId is set.
 async function renderJobInvoice(jobId) {
   const root = $('pecViewRoot');
+  // Auto-refresh after an office "Charge card" tab completes. When staff return
+  // focus to the dashboard and this invoice is awaiting a Stripe charge, re-pull
+  // + re-render ONCE so Paid to date / Balance / Payments reflect the payment the
+  // webhook recorded in the background. Re-attached fresh each render (detach
+  // first so re-renders never stack listeners); removed on navigation away.
+  detachInvoiceRefocus();
+  const onInvoiceRefocus = () => {
+    if (document.visibilityState !== 'visible') return;
+    // Only act while THIS invoice is still the open one on the invoicing view and
+    // a charge is pending, so a stray listener can never redraw over another view.
+    if (state.view !== 'invoicing' || state.openInvoiceJobId !== jobId || !state._invAwaitingPayment) return;
+    state._invAwaitingPayment = false; // one refetch per charge -- no polling loop
+    renderJobInvoice(jobId);
+  };
+  state._invoiceRefocusHandler = onInvoiceRefocus;
+  window.addEventListener('focus', onInvoiceRefocus);
+  document.addEventListener('visibilitychange', onInvoiceRefocus);
   let res;
   try {
     res = await withFreshSession(() => Promise.all([
@@ -7543,6 +7636,7 @@ async function renderJobInvoice(jobId) {
         <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
         <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
+        <button class="pec-btn sm" id="pecInvCharge">Charge card</button>
         <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
       </div>
     </div>
@@ -7582,8 +7676,9 @@ async function renderJobInvoice(jobId) {
     const p = payments.find(x => x.id === b.dataset.deletePay);
     if (p) deletePayment(p, jobId, row);
   }));
-  $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); });
-  $('pecInvOpenJob').addEventListener('click', () => { state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+  $('pecInvBack').addEventListener('click', () => { detachInvoiceRefocus(); state.openInvoiceJobId = null; renderInvoicing(); });
+  $('pecInvOpenJob').addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+  const chargeB = $('pecInvCharge'); if (chargeB) chargeB.addEventListener('click', () => openChargeCardModal(row));
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
   // Email invoice: opens a small modal (pre-filled with the customer's email),

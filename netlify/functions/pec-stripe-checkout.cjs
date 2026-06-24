@@ -39,7 +39,7 @@ exports.handler = async (event) => {
 
   const q = event.queryStringParameters || {};
   const token = String(q.token || '').trim();
-  const kind = q.kind === 'deposit' ? 'deposit' : 'balance';
+  const kind = q.kind === 'deposit' ? 'deposit' : (q.kind === 'custom' ? 'custom' : 'balance');
   if (!UUID_RE.test(token)) return page(404, 'Invoice not found', 'This payment link is invalid or has expired.');
 
   if (!STRIPE_SECRET_KEY) {
@@ -62,6 +62,13 @@ exports.handler = async (event) => {
     if (row.deposit_collected || row.deposit_waived) return redirect(`${SITE_URL}/pay/${token}`);
     const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
     amount = round2(Math.min(owed, balance));
+  } else if (kind === 'custom') {
+    // Office-entered amount arrives in CENTS (?amt=). Validate + clamp SERVER-SIDE
+    // to [50 cents, current balance] so the client can never charge more than is
+    // owed or below the Stripe minimum.
+    const cents = Math.round(Number(q.amt));
+    if (!Number.isFinite(cents) || cents <= 0) return redirect(`${SITE_URL}/pay/${token}`);
+    amount = round2(Math.min(Math.max(cents / 100, 0.5), balance));
   } else {
     amount = balance;
   }
@@ -69,7 +76,7 @@ exports.handler = async (event) => {
   if (!(amount >= 0.5)) return redirect(`${SITE_URL}/pay/${token}`);
 
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
-  const productName = (kind === 'deposit' ? 'Deposit — Invoice ' : 'Invoice ') + invNo;
+  const productName = (kind === 'deposit' ? 'Deposit — Invoice ' : (kind === 'custom' ? 'Payment — Invoice ' : 'Invoice ')) + invNo;
   // PaymentIntent description so the customer name (not just the email) shows in
   // the Stripe Payments list and on the receipt.
   const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;
