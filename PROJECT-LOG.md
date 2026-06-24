@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-23 22:30] Claude Code: alphabetize Basecoats + relabel image field + fix false product duplicate-key error
+By: Claude Code
+Changed: Three small catalog changes, all in index.html, NO migration (Cowork already verified the DB constraint and that the name does not exist).
+
+CHANGE 1 (alphabetize Basecoats). In renderProducts (index.html ~19815) the product sections are grouped by material_type, each sorted by (color || name) then name. For the 'Basecoat' group ONLY it now sorts strictly by product NAME A-Z (case-insensitive localeCompare with sensitivity:'base'); every other section keeps its color-then-name sort. Because this is a render-time sort, basecoats added later always land in alphabetical position automatically.
+
+CHANGE 2 (relabel image field). In the New/Edit product modal (~19960) the field label changed from "Chip image URL" to "Product image URL"; the "(paste a URL; uploads coming later)" helper note is unchanged.
+
+CHANGE 3 (fix false "duplicate key" on add). Root cause (verified live by Cowork against PROD): pec_prod_products_name_uq is a plain UNIQUE index on (name); there was no existing 'Clear 1100 SL Epoxy' row and a single insert succeeds. The error was a CLIENT-side non-idempotent retry: pmSave (~19986) raced the insert against a 20s timeout (Promise.race) and, on timeout, re-enabled the button for a blind retry while the original insert could still land server-side; the manual retry then collided with the now-existing row (the exact trap CLAUDE.md flags for payments). Fix in pmSave:
+  - Recover-verify instead of blind retry. On a timeout OR any ambiguous (non-duplicate) failure of an INSERT, before re-enabling, it re-queries pec_prod_products by the exact trimmed name (bounded by its own 10s race so a hung verify can't freeze the modal). If the row landed, it treats the save as SUCCEEDED: close the modal and run the existing loadCatalog()+render() refresh, no error shown. Only if no row exists does it re-enable; the timeout message now says "may not have gone through, so check the list before trying again" rather than inviting a blind retry. The UPDATE path (existing product) stays as-is (idempotent).
+  - Friendly genuine-duplicate handling. When a name truly collides (Postgres 23505 / constraint pec_prod_products_name_uq, on insert OR a rename-update), the inline error now reads 'A product named "<name>" already exists.' next to an "Open existing product" button that finds the row in state.products by case-insensitive trimmed name (state.products includes inactive rows) and opens it via openProductModal(id); if it is somehow not in state.products it runs loadCatalog() first, then opens.
+  - Kept the button-disable-on-click guard and the post-close loadCatalog()+render() chain (refactored into a shared refreshAfterSave() used by the success and recovered-insert paths).
+Why: Dylan wanted basecoats always alphabetized, the field labeled for products generally (not just chips), and the spurious duplicate-key error gone so a new product saves on one click without ever creating a second row.
+Testing: extracted the production <script type="module"> (index.html 17990-20587, which contains all three edits) and node --check passed. Behavioral pass (one-click add of a new name; a slow-but-landed insert closes cleanly with no duplicate error and no second row; a truly-existing name shows the friendly message + working "Open existing product") is a post-deploy manual check.
+Files touched: index.html, PROJECT-LOG.md.
+Commit: ae717fd.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then try adding 'Clear 1100 SL Epoxy' again (should save on one click) and confirm the Basecoats list is A-Z.
+
+---
+
 ## [2026-06-23 21:30] Cowork: applied 2026-06-23_invoice_text_fields.sql to PROD (verified)
 By: Cowork
 Changed: No repo code. Ran the Claude Code handoff from the editable-invoice-text feature: applied supabase/migrations/2026-06-23_invoice_text_fields.sql to PROD (project zdfpzmmrgotynrwkeakd "HQ Dashboard", branch main PRODUCTION, role postgres) via the Supabase SQL editor (Monaco setValue, then Run). The four statements add nullable text columns to public.pec_brand_identity: invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text (additive, idempotent, no RLS change; they inherit the existing pec_brand_identity policies). No destructive-confirm dialog appeared (ADD COLUMN IF NOT EXISTS is non-destructive). Result returned cleanly.
