@@ -19820,7 +19820,7 @@ function _mergeAcrossAreas(areaPlans) {
     const sectionOrder = ['Flake', 'Quartz', 'Metallic Pigment', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Tint Pack', 'Extra'];
     const sectionLabel = {
       Flake: 'Flake Materials', Quartz: 'Quartz Colors',
-      'Metallic Pigment': 'Metallic Pigments', Basecoat: 'Basecoats',
+      'Metallic Pigment': 'Metallic Pigments', Basecoat: 'Epoxy Products',
       Topcoat: 'Topcoats', Stain: 'Stains', Sealer: 'Sealers',
       'Tint Pack': 'Tint Packs', Extra: 'Extras',
     };
@@ -19934,7 +19934,7 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Material type</label>
-              <select id="pmType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t}</option>`).join('')}</select>
+              <select id="pmType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t === 'Basecoat' ? 'Epoxy Products' : t}</option>`).join('')}</select>
             </div>
             <div class="pec-field"><label>Manufacturer</label>
               <input id="pmManufacturer" list="pmManufacturerList" value="${esc(p.manufacturer || '')}" placeholder="Pick or add a new one">
