@@ -19824,12 +19824,19 @@ function _mergeAcrossAreas(areaPlans) {
       Topcoat: 'Topcoats', Stain: 'Stains', Sealer: 'Sealers',
       'Tint Pack': 'Tint Packs', Extra: 'Extras',
     };
+    // Basecoats sort strictly by product NAME A-Z (Dylan wants them always
+    // organized that way); every other section keeps the color-then-name sort so
+    // flake/quartz read alphabetically by their visible color label. Render-time
+    // sort, so new products land in the right spot automatically.
+    const sortRows = (t) => (a, b) => t === 'Basecoat'
+      ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      : (a.color || a.name).localeCompare(b.color || b.name) || a.name.localeCompare(b.name);
     const grouped = sectionOrder.map(t => ({
       type: t,
       label: sectionLabel[t],
       rows: state.products
         .filter(p => p.material_type === t)
-        .sort((a, b) => (a.color || a.name).localeCompare(b.color || b.name) || a.name.localeCompare(b.name)),
+        .sort(sortRows(t)),
     })).filter(g => g.rows.length);
     const uncategorized = state.products.filter(p => !sectionOrder.includes(p.material_type));
     if (uncategorized.length) grouped.push({ type: 'Other', label: 'Other', rows: uncategorized });
@@ -19950,7 +19957,7 @@ function _mergeAcrossAreas(areaPlans) {
             </div>
           </div>
           <div class="pec-field">
-            <label>Chip image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a URL; uploads coming later)</span></label>
+            <label>Product image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a URL; uploads coming later)</span></label>
             <div style="display:flex;gap:10px;align-items:center">
               <input id="pmImage" value="${esc(p.image_url || '')}" placeholder="https://..." style="flex:1">
               <div id="pmImagePreview">${p.image_url ? `<img class="prod-chip-thumb" src="${esc(p.image_url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`}</div>
@@ -20002,41 +20009,73 @@ function _mergeAcrossAreas(areaPlans) {
       if (!payload.name)             { reenable(); return errEl.textContent = 'Name is required.'; }
       if (!(payload.spread_rate > 0)){ reenable(); return errEl.textContent = 'Spread rate must be > 0.'; }
       if (!(payload.kit_size > 0))   { reenable(); return errEl.textContent = 'Kit size must be > 0.'; }
+      const isInsert = !existing;
+      const trimmedName = payload.name; // already trimmed above
+      // Post-close refresh chain, wrapped so a downstream throw (loadCatalog
+      // blip, render() rebuild error) cannot surface as an unhandledrejection
+      // that fires clearAllModalRoots. The modal is already gone here.
+      const refreshAfterSave = async () => {
+        try { await loadCatalog(); render(); }
+        catch (err) { console.error('[prod] pmSave: post-close refresh failed:', err); try { render(); } catch (_) {} }
+      };
+      // Recover-verify: did an INSERT actually land server-side? Used on the
+      // timeout/ambiguous path so a blind retry can't double-insert (the same
+      // non-idempotent-retry trap the payment path guards against). Bounded so a
+      // hung verify resolves to null instead of freezing the modal forever.
+      const findExistingByName = async () => {
+        try {
+          const q = supabase.from('pec_prod_products').select('id,name').eq('name', trimmedName).limit(1);
+          const to = new Promise((res) => setTimeout(() => res({ data: null }), 10000));
+          const { data } = await Promise.race([q, to]);
+          return Array.isArray(data) && data[0] ? data[0] : null;
+        } catch (_) { return null; }
+      };
+      // Friendly "name already exists" message + a button to jump to that row.
+      const showDuplicate = () => {
+        errEl.innerHTML = `A product named "${esc(trimmedName)}" already exists. <button type="button" class="pec-btn sm" id="pmOpenExisting" style="margin-left:8px">Open existing product</button>`;
+        const openBtn = $('pmOpenExisting');
+        if (openBtn) openBtn.addEventListener('click', async () => {
+          const key = trimmedName.toLowerCase();
+          const findIt = () => state.products.find(p => (p.name || '').trim().toLowerCase() === key);
+          let match = findIt();
+          if (!match) { try { await loadCatalog(); } catch (_) {} match = findIt(); }
+          if (match) openProductModal(match.id);
+          else errEl.textContent = 'Could not locate the existing product. Refresh and try again.';
+        });
+      };
+      const isDuplicateErr = (e) => !!e && (e.code === '23505' || /duplicate key|pec_prod_products_name_uq/i.test(e.message || ''));
       try {
         console.log('[prod] pmSave: dispatching supabase op');
         const op = existing
           ? supabase.from('pec_prod_products').update(payload).eq('id', existing.id)
           : supabase.from('pec_prod_products').insert(payload);
         // 20s timeout so a hung connection can't freeze the modal forever.
-        // Promise.race rejects if supabase doesn't return in time; the catch
-        // below shows the error inline and re-enables the button so the user
-        // can retry rather than hard-refresh.
-        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Save timed out after 20s. The Supabase request never returned. Check Network tab for a pending request.')), 20000));
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 20000));
         const { error } = await Promise.race([op, timeout]);
         console.log('[prod] pmSave: supabase resolved, error=', error);
-        if (error) { reenable(); return errEl.textContent = error.message; }
+        if (error) {
+          // A genuine name collision (23505 on insert, or a rename-update onto an
+          // existing name). Show the friendly message + open-existing action.
+          if (isDuplicateErr(error)) { reenable(); showDuplicate(); return; }
+          // Any other error on an INSERT may still have LANDED before failing, so
+          // verify by name before letting the user retry (avoids a second row).
+          if (isInsert && await findExistingByName()) { closer(); await refreshAfterSave(); return; }
+          reenable(); return errEl.textContent = error.message;
+        }
       } catch (err) {
         console.error('[prod] pmSave caught:', err);
+        // Timeout or network throw. For an INSERT the row may have landed despite
+        // the client-side failure; confirm before inviting a retry.
+        if (isInsert && await findExistingByName()) { closer(); await refreshAfterSave(); return; }
         reenable();
-        return errEl.textContent = 'Save failed: ' + err.message;
+        return errEl.textContent = err.message === 'TIMEOUT'
+          ? 'Save timed out. The request may not have gone through, so check the list before trying again.'
+          : 'Save failed: ' + err.message;
       }
       console.log('[prod] pmSave: supabase ok, calling closer()');
       closer();
-      // Wrap the post-close refresh chain in try/catch so a downstream throw
-      // (loadCatalog network blip, render() rebuild error) cannot surface as
-      // an unhandledrejection that fires clearAllModalRoots and confuses the
-      // user. The modal is already gone at this point; we just need to log
-      // and recover.
-      try {
-        await loadCatalog();
-        render();
-        console.log('[prod] pmSave: post-close refresh complete');
-      } catch (err) {
-        console.error('[prod] pmSave: post-close refresh failed:', err);
-        // Force re-render of the catalog body even if loadCatalog threw, so
-        // the user can keep working with whatever state.products had before.
-        try { render(); } catch (_) {}
-      }
+      await refreshAfterSave();
+      console.log('[prod] pmSave: post-close refresh complete');
     });
     if (existing) $('pmDelete').addEventListener('click', async () => {
       console.log('[prod] pmDelete click');
