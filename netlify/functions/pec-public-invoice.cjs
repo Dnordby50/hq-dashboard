@@ -29,6 +29,10 @@ const BRAND_DEFAULTS = {
   business_name: 'Prescott Epoxy Company', address_line: '', phone: '',
   license_number: '', website: '', footer_disclaimer: '', payment_instructions_html: '',
   zelle_email: 'dylan@prescottepoxy.com', card_surcharge_pct: 3,
+  // Editable customer-facing invoice text (Settings > Brand). Stored plain;
+  // rendered through paymentInstructionsHtml. Empty string = section hidden.
+  invoice_intro_text: '', offline_payment_details_text: '',
+  invoice_footer_text: '', invoice_terms_text: '',
 };
 
 // Hosted logo (navy "PRESCOTT" + orange "EPOXY COMPANY" on transparent). Shown
@@ -186,6 +190,7 @@ function invoicePage(row, brand, payments, opts) {
         </div>
       </div>
       <div style="padding:22px">
+        ${b.invoice_intro_text ? `<div style="font-size:14px;color:#334155;line-height:1.55;margin-bottom:18px">${paymentInstructionsHtml(b.invoice_intro_text)}</div>` : ''}
         ${due > 0.005 ? `<div style="background:${esc(b.accent_color)}1a;border:1px solid ${esc(b.accent_color)};border-radius:8px;padding:12px 16px;margin-bottom:18px;font-weight:600;color:${esc(b.primary_color)}">A payment of ${usd(due)} is due. See payment options below.</div>` : ''}
         <div style="display:flex;flex-wrap:wrap;gap:18px;margin-bottom:18px;font-size:14px">
           <div style="flex:1;min-width:180px"><div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:1px">Bill to</div><div style="font-weight:600">${esc(row.customer_name || '')}</div><div style="color:#475569">${esc(billTo)}</div></div>
@@ -212,6 +217,12 @@ function invoicePage(row, brand, payments, opts) {
       <h3 style="margin:0 0 8px;color:${esc(b.primary_color)};font-size:16px">More on payment</h3>
       <div style="font-size:14px;color:#334155;line-height:1.5">${paymentInstructionsHtml(b.payment_instructions_html)}</div>
     </div>` : ''}
+
+    ${b.invoice_footer_text ? `<div class="card" style="margin-top:16px;padding:20px 22px">
+      <div style="font-size:14px;color:#334155;line-height:1.5">${paymentInstructionsHtml(b.invoice_footer_text)}</div>
+    </div>` : ''}
+
+    ${b.invoice_terms_text ? `<div style="margin-top:16px;font-size:12px;color:#94a3b8;line-height:1.5">${paymentInstructionsHtml(b.invoice_terms_text)}</div>` : ''}
 
     <div class="noprint" style="text-align:center;margin-top:22px">
       <button class="printbtn" onclick="window.print()">Print / Save as PDF</button>

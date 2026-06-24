@@ -12331,6 +12331,13 @@ async function renderSettingsBrand() {
       <div class="pec-field"><label>Footer disclaimer</label><textarea id="biDisclaimer" rows="2">${esc(b.footer_disclaimer || '')}</textarea></div>
       <div class="pec-field"><label>Payment instructions (shown on the public invoice page)</label><textarea id="biPayInstr" rows="6">${esc(paymentInstructionsToText(b.payment_instructions_html))}</textarea>
         <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Just type normally — leave a blank line between paragraphs. We handle the formatting; no HTML needed.</div></div>
+      <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 4px">Customer-facing invoice text</div>
+      <div class="pec-field"><label>Invoice intro / welcome message (top of the invoice)</label><textarea id="biInvoiceIntro" rows="3">${esc(paymentInstructionsToText(b.invoice_intro_text))}</textarea>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Shown at the top of the public invoice. Plain text; blank line = new paragraph.</div></div>
+      <div class="pec-field"><label>Check / cash / Zelle details (payable-to, Zelle handle, cash-to-crew)</label><textarea id="biOfflinePay" rows="4">${esc(paymentInstructionsToText(b.offline_payment_details_text))}</textarea>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Shown when a customer opens "Pay by check, cash, or Zelle" on the invoice.</div></div>
+      <div class="pec-field"><label>Thank-you / footer note (bottom of the invoice)</label><textarea id="biInvoiceFooter" rows="3">${esc(paymentInstructionsToText(b.invoice_footer_text))}</textarea></div>
+      <div class="pec-field"><label>Terms / fine print (bottom of the invoice)</label><textarea id="biInvoiceTerms" rows="3">${esc(paymentInstructionsToText(b.invoice_terms_text))}</textarea></div>
       <button class="pec-btn primary sm" id="biSave">Save brand identity</button>
       <span id="biMsg" style="margin-left:10px;font-size:.8rem"></span>
     </div>
@@ -12362,14 +12369,31 @@ async function renderSettingsBrand() {
       website: $('biWebsite').value.trim() || null,
       footer_disclaimer: $('biDisclaimer').value.trim() || null,
       payment_instructions_html: $('biPayInstr').value || null,
+      // Customer-facing invoice text (stored plain; the public invoice converts
+      // to HTML on render, same as payment instructions).
+      invoice_intro_text: $('biInvoiceIntro').value.trim() || null,
+      offline_payment_details_text: $('biOfflinePay').value.trim() || null,
+      invoice_footer_text: $('biInvoiceFooter').value.trim() || null,
+      invoice_terms_text: $('biInvoiceTerms').value.trim() || null,
       updated_at: new Date().toISOString(),
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
+      let upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(patch).eq('brand', 'prescott-epoxy'), { label: 'brand-identity' });
+      // Pre-migration fallback: if the four new invoice-text columns do not
+      // exist yet, save the rest so the other brand fields still persist, and
+      // tell the user the invoice text needs the migration applied.
+      let invoiceTextDeferred = false;
+      if (upd.error && /invoice_intro_text|offline_payment_details_text|invoice_footer_text|invoice_terms_text|column .* does not exist/i.test(upd.error.message || '')) {
+        const { invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text, ...base } = patch;
+        upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(base).eq('brand', 'prescott-epoxy'), { label: 'brand-identity-base' });
+        invoiceTextDeferred = !upd.error;
+      }
       if (upd.error) throw upd.error;
       state.brandIdentity = { ...b, ...patch };
-      showToast('Brand identity saved', { ttl: 2500 });
+      showToast(invoiceTextDeferred
+        ? 'Saved. The invoice text fields need the 2026-06-23 migration applied to PROD before they save.'
+        : 'Brand identity saved', { ttl: invoiceTextDeferred ? 5000 : 2500 });
     } catch (err) {
       btn.disabled = false; btn.textContent = 'Save brand identity';
       msg.style.color = '#dc2626'; msg.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
