@@ -7499,9 +7499,9 @@ function detachInvoiceRefocus() {
 // signature-verified webhook records the payment. Here we only pick balance /
 // deposit / custom and open the hosted page, then arm the return-focus refresh.
 function openChargeCardModal(row) {
-  if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+  if (!row.public_token) { showToast('Public link not ready yet. Run the brand/public-invoice migration.', { ttl: 4500 }); return; }
   const bal = invNum(row.balance ?? row.balance_remaining);
-  if (!(bal > 0.005)) { showToast('Nothing to charge — this invoice is paid in full.', { ttl: 3500 }); return; }
+  if (!(bal > 0.005)) { showToast('Nothing to charge; this invoice is paid in full.', { ttl: 3500 }); return; }
   // Mirror the existing deposit-due logic (same as the Record deposit button).
   const depDue = !row.deposit_collected && !row.deposit_waived;
   const owed = row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5);
