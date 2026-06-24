@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-24 09:00] Claude Code: rename catalog "Basecoat" category to "Epoxy Products" (display only)
+By: Claude Code
+Changed: Cosmetic relabel in index.html, NO migration, NO data change. The user-facing "Basecoat" product category now reads "Epoxy Products"; the stored material_type value stays 'Basecoat' so every recipe slot, CHECK constraint, and material_type filter that keys on 'Basecoat' keeps working unchanged (this matters now that Cowork reclassified the clear/metallic epoxies into 'Basecoat' in the 2026-06-24 00:15 entry). Two spots:
+  1. renderProducts sectionLabel map (index.html ~19823): Basecoat's label changed from 'Basecoats' to 'Epoxy Products'. Its position in sectionOrder and the alphabetical-by-name sort for that group are unchanged, so the section still lists the basecoat/epoxy products (including Simiron 1100 SL - Clear) A-Z.
+  2. New/Edit product material-type dropdown (index.html ~19937): the 'Basecoat' <option> now DISPLAYS "Epoxy Products" while its value stays "Basecoat" (inline `t === 'Basecoat' ? 'Epoxy Products' : t`). No other option changed.
+Did NOT touch: recipe-slot labels (e.g. "Basecoat color", "Quartz body coat"), the tint-pack "Attach to" selector (index.html ~19300, value/label "Basecoat" in a coat-layer context), or any material_type values anywhere.
+Why: Dylan wanted the category to read "Epoxy Products" for staff, since the clear/metallic epoxies now live under it, without disturbing the 'Basecoat' value the recipe engine depends on.
+Testing: extracted the production <script type="module"> (index.html 17990-20587, which contains both edits) and node --check passed. Behavioral pass (section header reads "Epoxy Products" and lists the epoxies A-Z; the Add/Edit type dropdown shows "Epoxy Products" but still saves material_type 'Basecoat') is a post-deploy manual check.
+Files touched: index.html, PROJECT-LOG.md.
+Commit: c0c3199.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then confirm the catalog section reads "Epoxy Products" and adding/editing an epoxy still saves correctly (type stays Basecoat under the hood).
+
+---
+
 ## [2026-06-24 00:15] Cowork: reclassified the 2 clear/metallic epoxies into Basecoat + repointed the Quartz/Metallic body-coat slots (PROD data, verified)
 By: Cowork
 Changed: No repo code. PROD Supabase data only (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres), via the SQL editor. This resolves Dylan's report that "Simiron 1100 SL - Clear" did not appear in the Products materials list under Basecoats nor in the basecoat picker on the job detail page.
