@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-24 00:15] Cowork: reclassified the 2 clear/metallic epoxies into Basecoat + repointed the Quartz/Metallic body-coat slots (PROD data, verified)
+By: Cowork
+Changed: No repo code. PROD Supabase data only (project zdfpzmmrgotynrwkeakd "HQ Dashboard", main PRODUCTION, role postgres), via the SQL editor. This resolves Dylan's report that "Simiron 1100 SL - Clear" did not appear in the Products materials list under Basecoats nor in the basecoat picker on the job detail page.
+Diagnosis (live): pec_prod_products_name_uq is a plain UNIQUE on (name). No new "Clear 1100 SL Epoxy" was ever created. The only clear-1100 product is the pre-existing "Simiron 1100 SL - Clear", which was typed material_type='Extra' (not 'Basecoat'), because it is the default product for the 'Quartz body coat' recipe slot (an Extra-type slot). Each slot dropdown filters to its own material_type and the catalog groups by material_type, so an Extra product can never show in the basecoat picker or the Basecoats section. 'Extra' is a genuine grab-bag (13 products: diamond pads, crack fillers, self-leveling concrete, joint filler, thickening fibers, etc.) with only two real epoxies mis-filed in it.
+Applied (2 updates, both within the existing material_type CHECK set, so NO migration):
+  1. update pec_prod_products set material_type='Basecoat' where id in ('8636f9b8-...-f701f7d057ef' Simiron 1100 SL - Clear, 'cf3e80c5-...-18f7281949cf' Simiron Metallic Epoxy).
+  2. update pec_prod_recipe_slots set material_type='Basecoat' for the 'Quartz body coat' (system Quartz) and 'Metallic epoxy body coat' (system Metallic) slots, so those body-coat slots draw from the same epoxy/basecoat pool and the clear/metallic stay selectable there (per Dylan's "repoint slot" choice). default_product_id on both slots is unchanged, so existing auto-fill still works.
+Verified: all four rows now read material_type='Basecoat' (products Simiron 1100 SL - Clear + Simiron Metallic Epoxy; slots Quartz body coat + Metallic epoxy body coat). The other Extra slots (Broadcast, Polish grit, Custom build notes) have no epoxy default and were left as Extra.
+Effect: after a reload, "Simiron 1100 SL - Clear" appears in the basecoat picker and under the Basecoats catalog section; the Quartz/Metallic body-coat dropdowns now offer the full epoxy/basecoat list.
+FLAG for Dylan to spot-check: both Quartz and Metallic systems now have TWO Basecoat-type product slots ('Basecoat color' at order_index 1, the repointed body coat at order_index 2). The flake-pairing autofill (autofillBasecoat, index.html ~9938) uses the FIRST Basecoat slot by order, which is still the real 'Basecoat color', so this should be safe, but confirm on a Quartz or Metallic job that the basecoat autofill and both basecoat lines compute correctly.
+Why: Dylan said the clear should belong in the basecoat category and asked to repoint the body-coat slot.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (2 product rows + 2 recipe-slot rows; additive/reversible, no schema change).
+Next steps: Claude Code does the cosmetic rename (catalog section label "Basecoats" -> "Epoxy Products" and the matching New-product material-type dropdown option, keeping the stored value 'Basecoat'); prompt delivered to Dylan in chat.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: reload and confirm the clear shows in the basecoat picker; spot-check a Quartz/Metallic job per the FLAG above; run the Claude Code rename prompt when ready.
+
+---
+
 ## [2026-06-23 22:30] Claude Code: alphabetize Basecoats + relabel image field + fix false product duplicate-key error
 By: Claude Code
 Changed: Three small catalog changes, all in index.html, NO migration (Cowork already verified the DB constraint and that the name does not exist).
