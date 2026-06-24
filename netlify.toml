@@ -145,6 +145,15 @@
   status = 200
   force = true
 
+# Public, token-gated "Let our office know" action from the hosted invoice page
+# (customer chose to pay by check / cash / Zelle). Notifies the office by email +
+# Slack. Auth is the invoice public_token in the POST body; no secrets exposed.
+[[redirects]]
+  from = "/api/invoice/intent"
+  to = "/.netlify/functions/pec-invoice-intent"
+  status = 200
+  force = true
+
 # Vendored, version-pinned libraries (e.g. self-hosted supabase-js). The
 # filename carries the version, so a new version means a new filename -- cache
 # hard. Served as a normal static file (no redirect intercepts /vendor/*).

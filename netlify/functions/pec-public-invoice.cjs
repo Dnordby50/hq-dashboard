@@ -96,20 +96,60 @@ function payButtons(b, row, token) {
   if (due <= 0.005 || !token) return '';
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
-  const btn = (href, label, bg) => `<a href="${esc(href)}" style="display:inline-block;background:${bg};color:#fff;font-weight:700;font-size:15px;border-radius:8px;padding:13px 22px;text-decoration:none">${label}</a>`;
+  const fillStyle = (bg) => `display:inline-block;background:${bg};color:#fff;font-weight:700;font-size:15px;border-radius:8px;padding:13px 22px;text-decoration:none;border:0;cursor:pointer;font-family:inherit`;
+  const linkBtn = (href, label, bg) => `<a href="${esc(href)}" style="${fillStyle(bg)}">${label}</a>`;
   const depositDue = !row.deposit_collected && !row.deposit_waived;
   const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
   const showDeposit = depositDue && owed >= 0.5 && owed < due - 0.005;
   const zelle = b.zelle_email || 'dylan@prescottepoxy.com';
   const phone = b.phone || '(928) 800-8154';
   const tok = encodeURIComponent(token);
+  // Offline details: the editable brand text if set, else a sensible default.
+  const offlineDetails = b.offline_payment_details_text
+    ? paymentInstructionsHtml(b.offline_payment_details_text)
+    : `<p style="margin:0 0 10px">Pay by check (give it to the crew or mail it) or send Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(name(b))} at <strong>${esc(phone)}</strong>.</p>`;
+  const notifyBtn = (m, label) => `<button type="button" data-intent-method="${m}" style="background:#fff;border:1.5px solid ${primary};color:${primary};font-weight:600;font-size:13px;border-radius:7px;padding:9px 14px;cursor:pointer;font-family:inherit">${label}</button>`;
+  // Card AND offline are presented with equal weight (two filled buttons of the
+  // same size). The offline button expands an in-page panel; no navigation.
   return `<div class="card" style="margin-top:16px;padding:20px 22px">
-    <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay online</h3>
+    <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay your balance</h3>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      ${btn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} by card`, accent)}
-      ${showDeposit ? btn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
+      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} by card`, accent)}
+      ${showDeposit ? linkBtn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
+      <button type="button" id="offlineToggle" style="${fillStyle(primary)}">Pay by check, cash, or Zelle</button>
     </div>
-    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Secure card payment by Stripe (we cover the processing fee). Prefer another way? Pay by check (give it to the crew) or Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(name(b))} at <strong>${esc(phone)}</strong>.</div>
+    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Card payments are secured by Stripe (we cover the processing fee).</div>
+    <div id="offlinePanel" style="display:none;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:16px">
+      <div style="font-size:14px;color:#334155;line-height:1.5">${offlineDetails}</div>
+      <div style="margin-top:14px;font-size:13px;color:#64748b">Let our office know how you'll pay so we can watch for it:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
+        ${notifyBtn('check', 'Paying by check')}${notifyBtn('cash', 'Paying cash')}${notifyBtn('zelle', 'Sending Zelle')}
+      </div>
+      <div id="intentStatus" style="margin-top:10px;font-size:13px;font-weight:600"></div>
+    </div>
+    <script>
+      (function(){
+        var t=${JSON.stringify(token)}, ph=${JSON.stringify(phone)};
+        var tog=document.getElementById('offlineToggle'), panel=document.getElementById('offlinePanel');
+        if(tog&&panel){tog.addEventListener('click',function(){panel.style.display=panel.style.display==='none'?'block':'none';});}
+        var status=document.getElementById('intentStatus');
+        Array.prototype.forEach.call(document.querySelectorAll('[data-intent-method]'),function(btn){
+          btn.addEventListener('click',function(){
+            var m=btn.getAttribute('data-intent-method');
+            Array.prototype.forEach.call(document.querySelectorAll('[data-intent-method]'),function(x){x.disabled=true;});
+            if(status){status.style.color='#64748b';status.textContent='Letting the office know…';}
+            fetch('/api/invoice/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,method:m})})
+              .then(function(r){return r.json();}).then(function(d){
+                if(d&&d.ok){if(status){status.style.color='#16a34a';status.textContent='Thanks! Our office has been notified and will be in touch.';}}
+                else{throw new Error('failed');}
+              }).catch(function(){
+                if(status){status.style.color='#dc2626';status.textContent='Could not reach the office automatically. Please call '+ph+'.';}
+                Array.prototype.forEach.call(document.querySelectorAll('[data-intent-method]'),function(x){x.disabled=false;});
+              });
+          });
+        });
+      })();
+    </script>
   </div>`;
 }
 function name(b) { return b.business_name || 'Prescott Epoxy Company'; }
