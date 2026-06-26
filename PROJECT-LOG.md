@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-25 09:00] Claude Code: Ordering page Custom range timeframe
+By: Claude Code
+Changed: Added a "Custom range" option to the Ordering page "Material scope" selector so staff can order for any arbitrary From/To window, not just the All / 7 / 14 / 30 day presets. All in index.html, NO migration, NO data change. Mirrors the Pull Material modal's prodPullStart/prodPullEnd + state._pull pattern.
+  1. state (index.html ~18369): added `orderCustom: { start: null, end: null }` next to orderScope, and updated the orderScope comment to include 'custom'.
+  2. Scope select (~18617): added `<option value="custom">Custom range</option>` after the 30-day option.
+  3. Toolbar inputs (~18620): when state.orderScope === 'custom', two date inputs render right after the select, "From" (id prodOrderStart) and "To" (id prodOrderEnd), styled like the Pull modal inputs, valued from state.orderCustom. A lazy-init block just before r.innerHTML seeds state.orderCustom to isoDay(0)/isoDay(14) when the scope is custom and a bound is null, so the inputs and orderScopeRange() always agree.
+  4. Wiring (~18683): the prodOrderScope change handler now seeds today..+14 when first switching to custom; new guarded change handlers on prodOrderStart/prodOrderEnd set state.orderCustom.start/.end and re-render (guarded with if(el) since the inputs are absent on non-custom scopes).
+  5. orderScopeRange() (~18940): for 'custom' it returns { start: state.orderCustom.start || '', end: state.orderCustom.end || '' }. The '' (not null) for a missing bound makes jobInScope match NOTHING until both dates are set, because jobInScope treats null/null as "all open jobs" but any empty/missing bound as "match nothing" (verified at index.html ~18762: `if (startISO === null && endISO === null) return true; if (!startISO || !endISO) return false;`). 'all' and the numeric presets are unchanged.
+  The schedule-matching degrade note (only shown when state.orderScope !== 'all' and the schedule fetch failed) keeps showing for custom, since custom is not 'all'; no change needed there.
+Why: Dylan wanted to order materials for an exact arbitrary date window, not only the fixed presets.
+Testing: extracted the production <script type="module"> (index.html 17989-20616, which contains every edit) and node --check passed. Behavioral pass (pick Custom range -> From/To default to today..+14 -> the in-scope jobs + products-to-order list recompute for that exact window on each date change; All/7/14/30 still behave as before) is a post-deploy manual check.
+Files touched: index.html, PROJECT-LOG.md.
+Commit: 6d7d790.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then on the Ordering page pick "Custom range" and confirm the From/To pickers drive the in-scope jobs and the order list.
+
+---
+
 ## [2026-06-24 09:00] Claude Code: rename catalog "Basecoat" category to "Epoxy Products" (display only)
 By: Claude Code
 Changed: Cosmetic relabel in index.html, NO migration, NO data change. The user-facing "Basecoat" product category now reads "Epoxy Products"; the stored material_type value stays 'Basecoat' so every recipe slot, CHECK constraint, and material_type filter that keys on 'Basecoat' keeps working unchanged (this matters now that Cowork reclassified the clear/metallic epoxies into 'Basecoat' in the 2026-06-24 00:15 entry). Two spots:
