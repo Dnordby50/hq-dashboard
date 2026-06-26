@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-25 12:00] Claude Code: browser Back/Forward now walks CRM views (History API integration)
+By: Claude Code
+Changed: Fixed the browser Back button leaving the CRM to the old website URL. index.html only, NO migration.
+Root cause: the SPA never recorded browser history on view changes. switchView() only mutated state.view and re-rendered; it never called history.pushState. So the back stack still held only the page that loaded the app (often the old hq-prescott domain that 301s to prescottepoxy), and Back exited the CRM entirely instead of stepping to the previous in-app view.
+Fix (all in the first CRM <script type="module">, near switchView):
+  - New history helpers: pecNavTuple() (view + openJobId + openInvoiceJobId + openCustomerId + openUnifiedJobId), pecNavKey(), and pecSyncHistory(). pecSyncHistory records the current tuple in browser history: the FIRST call uses history.replaceState (establishes a base CRM entry over the loader-page entry), and later calls history.pushState ONLY when the tuple key actually changed (so a plain re-render -- filter / pagination / save -- never stacks a duplicate). It no-ops during a popstate restore and when body.pec-portal-mode is set.
+  - switchView(v): calls pecSyncHistory() right after `state.view = v` (open-ids are set by the caller before switchView), so every view-level navigation is recorded, including the ordering/catalog handoff.
+  - The four detail-capable list renders (renderCustomers, renderJobs, renderInvoicing, renderJobCosting) call pecSyncHistory() at their top, BEFORE their early-return delegation to the detail render. This captures in-view detail open/back that re-render directly (e.g. invoice back `state.openInvoiceJobId=null; renderInvoicing()`, costing row open `state.openUnifiedJobId=id; renderJobCosting()`) and bypass switchView. The dedup key makes the overlap with switchView's call a no-op.
+  - A single window 'popstate' handler reads e.state, restores state.view + the open-ids (clears any not present, or falls back to the default 'dashboard' view when e.state is null so Back never silently leaves the app), sets pecLastNavKey to the restored key, and routes via switchView WITHOUT re-pushing. Guarded by a module-level pecIsPopstate flag (which pecSyncHistory checks) PLUS the dedup key, so there is no push-on-render loop.
+  - The customer portal (body.pec-portal-mode, which keeps its existing location.hash + hashchange routing ~17730) is explicitly skipped in both pecSyncHistory and the popstate handler, so portal navigation is untouched.
+Behavior: dashboard -> jobs -> a job -> job costing -> a costing detail now pushes 5 history entries; browser Back walks back through those CRM views one at a time (Forward too); deep states (open job / invoice / costing detail) restore correctly. The app only leaves to the external/hq-prescott URL after Back has stepped through every CRM entry down to the base (expected SPA behavior; the base is a replaceState entry so there is always at least one CRM step).
+Why: Dylan reported Back jumping out of the CRM to the old hq-prescott URL instead of the previous in-app view.
+Testing: extracted the first CRM <script type="module"> (index.html 4754-17868, which contains switchView + the four render functions + the new helpers) and node --check passed. Behavioral pass (the dashboard->jobs->job->costing->detail Back/Forward walk; no infinite re-render loop; portal hash routing unaffected) is a post-deploy manual check.
+Files touched: index.html, PROJECT-LOG.md.
+Commit: bf525cd.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then verify Back/Forward walks CRM views (dashboard -> jobs -> a job -> Job Costing -> a costing detail, then Back repeatedly) and never jumps straight to the old hq-prescott URL until you have backed through all the views.
+
+---
+
 ## [2026-06-25 10:00] Claude Code: Job Costing rework (one view + Active/Completed tabs, compact list, working search, ad-hoc materials, editable revenue)
 By: Claude Code
 Changed: Reworked the Job Costing area per Dylan's decisions. All in index.html, NO migration, NO data change. Two commits: cbcc4c8 (list/tab/search/rollup restructure + editable revenue), 0e5ae8b (ad-hoc materials on the detail).
