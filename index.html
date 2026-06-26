@@ -16996,30 +16996,13 @@ async function renderJobCosting() {
       </div>
     </div>` : '';
 
+  // costFilter selection is kept for the toolbar dropdown; the Active tab no
+  // longer renders a full job list (the search + Pending cards are the entry
+  // points into a job's costing detail), so there is no active row set to build.
   const filt = state.costingFilter;
-  const jobs = state.prodJobs.filter(j => {
-    if (j.is_callback) return false; // touch-ups are no-charge; never costed as sold work
-    if (costingIsFinalized(j)) return false; // finalized jobs move to Completed Job Costing
-    if (filt === 'all') return true;
-    if (filt === 'active') return !costingIsCompleted(j);
-    if (filt === 'completed') return costingIsCompleted(j);
-    return j.status === filt;
-  // Recent-first (loadProdCore loads prodJobs ascending for the schedule;
-  // the costing list shows most-recent install date first).
-  }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
-
-  // ACTIVE list rows (current costFilter, finalized jobs already excluded above).
-  // Pre-computed once so the list shares the same numbers as computeCostingRow.
-  const computedRows = jobs.map(j => {
-    const sys = areaSystem(j);
-    const cost = costByJob[j.id];
-    const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
-    return { job: j, sys, cost, r };
-  });
 
   // COMPLETED (finalized) rows: the Completed tab list + its rollups. Folded in
-  // from the old renderCompletedCosting (same predicate + sort). Separate from
-  // computedRows, which deliberately excludes finalized jobs.
+  // from the old renderCompletedCosting (same predicate + sort).
   const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
   const finalizedRows = (state.prodJobs || [])
     .filter(j => costingIsFinalized(j) && !j.archived_at)
@@ -17069,12 +17052,12 @@ async function renderJobCosting() {
         <span style="color:var(--muted);font-size:.7rem">grand totals plus sales team / system type / crew breakouts</span>
       </div>
       ${rollupOpen ? `
-        <div style="overflow-x:auto;margin-top:10px">
-        <table class="pec-table pec-cost-table" style="font-size:.78rem">
+        <div style="margin-top:10px">
+        <table class="pec-rollup-table">
           <thead><tr>
-            <th>Group</th><th style="text-align:right"># Jobs</th><th style="text-align:right">Revenue</th><th style="text-align:right">Hours</th>
-            <th style="text-align:right">Total Var</th><th style="text-align:right">Gross Profit</th><th style="text-align:right">GP %</th>
-            <th style="text-align:right">GP / HR</th><th style="text-align:right">REV / HR</th>
+            <th>Group</th><th>Jobs</th><th>Rev</th><th>Hrs</th>
+            <th>Var</th><th>GP $</th><th>GP %</th>
+            <th>GP/hr</th><th>Rev/hr</th>
           </tr></thead>
           <tbody>
             ${rollupRow('GRAND TOTAL (finalized)', grandTotal, true)}
@@ -17100,30 +17083,6 @@ async function renderJobCosting() {
   const crewName = (j) => j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>';
   const sysName = (sys) => sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>';
   const custCell = (j) => `<td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address && j.proposal_number ? ' · ' : ''}${j.proposal_number ? '#' + esc(j.proposal_number) : ''}</div></td>`;
-
-  // ACTIVE list: compact, read-only, clickable. Tight columns so many fit; ALL
-  // editing happens on the per-job detail (row click opens it). No inline edits.
-  const activeListHtml = `
-    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
-      <div class="pec-table-wrap">
-        <table class="pec-table" style="font-size:.82rem">
-          <thead><tr><th>Customer</th><th>Status</th><th>System</th><th>Crew</th>
-            <th style="text-align:right">Revenue</th><th style="text-align:right">GP %</th><th style="text-align:right">Total Var</th></tr></thead>
-          <tbody>
-            ${computedRows.map(({ job: j, sys, r }) => `
-              <tr data-job-id="${esc(j.id)}" style="cursor:pointer">
-                ${custCell(j)}
-                <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
-                <td>${sysName(sys)}</td>
-                <td>${crewName(j)}</td>
-                <td style="text-align:right">${fmtMoneyOrDash(r.revenue)}</td>
-                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
-                <td style="text-align:right">${fmtMoneyOrDash(r.totalVar)}</td>
-              </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs in this filter.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
 
   // COMPLETED list: folded in from the old renderCompletedCosting (read-only,
   // clickable). Same columns it had, summarized by the finalized rollups above.
@@ -17154,7 +17113,7 @@ async function renderJobCosting() {
 
   const countLabel = tab === 'completed'
     ? `${finalizedRows.length} finalized job${finalizedRows.length === 1 ? '' : 's'}`
-    : `${computedRows.length} job${computedRows.length === 1 ? '' : 's'}`;
+    : `${pendingCosting.length} pending job${pendingCosting.length === 1 ? '' : 's'}`;
 
   root.innerHTML = `
     <div class="pec-card" style="border-radius:0">
@@ -17182,7 +17141,7 @@ async function renderJobCosting() {
     </div>
     ${tab === 'active' ? pendingHtml : ''}
     ${tab === 'completed' ? rollupHtml : ''}
-    ${tab === 'active' ? activeListHtml : completedListHtml}
+    ${tab === 'completed' ? completedListHtml : ''}
   `;
 
   $('costTabActive').addEventListener('click', () => { state.costingTab = 'active'; renderJobCosting(); });
@@ -17990,6 +17949,18 @@ if (portalToken) {
   .pec-cost-table tr.cost-rollup-section td { font-size:.7rem; padding:8px 8px 4px }
   .pec-cost-table tr.cost-rollup-row td { font-size:.74rem }
   .pec-cost-table tr[data-job-id]:hover { background:var(--rd-soft, var(--s2)) }
+  /* Compact Rollups table: fits all 9 columns inside the card (no horizontal
+     scroll). table-layout:fixed shares the width; the Group column is wider and
+     wraps, the 8 numeric columns are tight + right-aligned. */
+  .pec-rollup-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:.7rem; font-variant-numeric:tabular-nums }
+  .pec-rollup-table th, .pec-rollup-table td { padding:3px 5px; border-bottom:1px solid var(--rd-line, var(--border)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .pec-rollup-table th { font-size:.6rem; text-transform:uppercase; letter-spacing:.3px; color:var(--muted); font-weight:600; text-align:right }
+  .pec-rollup-table th:first-child, .pec-rollup-table td:first-child { text-align:left; width:24%; white-space:normal }
+  .pec-rollup-table td { text-align:right }
+  .pec-rollup-table tr.cost-rollup-grand td { font-weight:700; background:var(--rd-soft, var(--s2)) }
+  .pec-rollup-table tr.cost-rollup-section td { font-size:.66rem; padding:6px 5px 3px; text-align:left }
+  .pec-rollup-table .cost-neg { color:var(--danger) }
+  .pec-rollup-table .cost-pos { color:var(--success) }
   .pec-color-dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle; border:1px solid rgba(0,0,0,.15) }
   @media print {
     .pec-toolbar, .pec-btn, .pec-modal-actions { display:none !important }
