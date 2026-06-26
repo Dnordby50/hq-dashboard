@@ -1914,7 +1914,6 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <div class="pec-subnav-group">Finance</div>
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
-          <button data-pec-view="completed-costing" class="pec-role-admin">Completed Job Costing</button>
           <button data-pec-view="crew-bonus" class="pec-role-admin">Bonus Report</button>
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
           <div class="pec-subnav-group">Admin</div>
@@ -5756,7 +5755,7 @@ const state = {
   // until their 2026-06-23 migration runs in PROD.
   holidays: [], crewDaysOff: [],
   scheduleAnchor: null, scheduleEdit: null,
-  costing: [], costingFilter: 'all',
+  costing: [], costingFilter: 'all', costingTab: 'active',
   // Costing-only slots (populated by loadCostingData, NOT loadScheduleData).
   // Pre-initialized so the Unified Job page can't crash on a half-loaded state
   // when opened from the schedule. costingLoaded is the "fully hydrated" flag.
@@ -5928,7 +5927,6 @@ function renderAuthUI() {
   };
   setNav('catalog', can('can_edit_catalog'));
   setNav('costing', can('can_view_job_costing'));
-  setNav('completed-costing', can('can_view_job_costing'));
   setNav('commission', can('can_view_commission'));
   wireEstimatorNav();
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
@@ -6124,7 +6122,10 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       costing: renderJobCosting,
-      'completed-costing': renderCompletedCosting,
+      // Job Costing + Completed Job Costing merged into one view with an
+      // Active/Completed toggle. The old completed-costing route is kept as an
+      // alias (persisted state.view / bookmarks) that opens the Completed tab.
+      'completed-costing': () => { state.costingTab = 'completed'; return renderJobCosting(); },
       'crew-bonus': renderBonusReport,
       'dripjobs-sync-health': renderDripJobsSyncHealth,
       settings: renderSettings,
@@ -16391,12 +16392,11 @@ async function renderUnifiedJob(jobId) {
         ${headerMeta ? `<div style="color:var(--muted);font-size:.8rem;margin:-2px 0 12px">${headerMeta}</div>` : ''}
         <div class="pec-row-3">
           <div class="pec-field"><label>Sales Team</label>${salesTeamSelectHtml(job.sales_team, 'class="cost-text" data-cost="sales_team" data-table="job"')}</div>
-          <div class="pec-field"><label>Revenue</label>
-            <!-- Read-only on the costing page: nothing here writes job.revenue (no data-cost attr,
-                 so it is skipped by the [data-cost] save wiring below). Source is job.revenue today;
-                 re-point to the job line-items SUM once that table ships (swap the value expression). -->
-            <div class="cost-derived" style="padding:6px 8px;background:var(--bg-soft);border-radius:6px;font-variant-numeric:tabular-nums">${job.revenue == null || job.revenue === '' ? '—' : '$' + Number(job.revenue).toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
-          </div>
+          <!-- Editable here: the wide costing grid (which used to be the only
+               place to edit revenue) was removed, so the detail must expose it.
+               data-table='job' routes to saveJobField -> pec_prod_jobs.revenue,
+               then refreshUnifiedTotals recomputes GP / Total Var live. -->
+          ${moneyInput('Revenue', 'revenue', 'job', job.revenue)}
           <div class="pec-field"><label>Callback</label>
             <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
               <option value=""     ${job.callback == null   ? 'selected' : ''}>—</option>
@@ -16833,18 +16833,34 @@ async function renderJobCosting() {
   // the costing list shows most-recent install date first).
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
 
-  // Pre-compute every visible row once so the rollups and the per-job table
-  // share the same underlying numbers and can never drift.
+  // ACTIVE list rows (current costFilter, finalized jobs already excluded above).
+  // Pre-computed once so the list shares the same numbers as computeCostingRow.
   const computedRows = jobs.map(j => {
     const sys = areaSystem(j);
     const cost = costByJob[j.id];
     const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
     return { job: j, sys, cost, r };
   });
-  const grandTotal = aggregateCostingRows(computedRows);
-  const bySalesTeam = groupCostingBy(computedRows, x => x.job.sales_team);
-  const bySystem    = groupCostingBy(computedRows, x => x.sys ? x.sys.name : null);
-  const byCrew      = groupCostingBy(computedRows, x => x.job.crew_id ? (crewById[x.job.crew_id] || {}).name : null);
+
+  // COMPLETED (finalized) rows: the Completed tab list + its rollups. Folded in
+  // from the old renderCompletedCosting (same predicate + sort). Separate from
+  // computedRows, which deliberately excludes finalized jobs.
+  const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
+  const finalizedRows = (state.prodJobs || [])
+    .filter(j => costingIsFinalized(j) && !j.archived_at)
+    .slice().sort((a, b) => String(b.costing_finalized_at || '').localeCompare(String(a.costing_finalized_at || '')))
+    .map(j => {
+      const sys = areaSystem(j);
+      const r = computeCostingRow(j, costByJob[j.id], sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
+      return { job: j, sys, r };
+    });
+
+  const tab = state.costingTab === 'completed' ? 'completed' : 'active';
+  // Rollups summarize the FINALIZED set (Completed tab only).
+  const grandTotal = aggregateCostingRows(finalizedRows);
+  const bySalesTeam = groupCostingBy(finalizedRows, x => x.job.sales_team);
+  const bySystem    = groupCostingBy(finalizedRows, x => x.sys ? x.sys.name : null);
+  const byCrew      = groupCostingBy(finalizedRows, x => x.job.crew_id ? (crewById[x.job.crew_id] || {}).name : null);
 
   // Rollup table emits Group / # Jobs / Revenue / Hours / Total Var / GP /
   // GP% / GP per hour / Rev per hour. Section headers separate the four
@@ -16886,7 +16902,7 @@ async function renderJobCosting() {
             <th style="text-align:right">GP / HR</th><th style="text-align:right">REV / HR</th>
           </tr></thead>
           <tbody>
-            ${rollupRow('GRAND TOTAL (current filter)', grandTotal, true)}
+            ${rollupRow('GRAND TOTAL (finalized)', grandTotal, true)}
             ${sectionHeader('By Sales Team')}
             ${bySalesTeam.size ? groupRows(bySalesTeam) : '<tr class="nohover"><td colspan="9" class="pec-empty">No jobs.</td></tr>'}
             ${sectionHeader('By System Type')}
@@ -16900,328 +16916,152 @@ async function renderJobCosting() {
     </div>
   `;
 
+  // Shared bits for the compact lists + the type-ahead search.
+  const searchHaystack = (j) => {
+    const sys = areaSystem(j);
+    return [j.customer_name, j.address, j.proposal_number, sys ? sys.name : '', j.crew_id && crewById[j.crew_id] ? crewById[j.crew_id].name : '']
+      .filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ');
+  };
+  const crewName = (j) => j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>';
+  const sysName = (sys) => sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>';
+  const custCell = (j) => `<td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address && j.proposal_number ? ' · ' : ''}${j.proposal_number ? '#' + esc(j.proposal_number) : ''}</div></td>`;
+
+  // ACTIVE list: compact, read-only, clickable. Tight columns so many fit; ALL
+  // editing happens on the per-job detail (row click opens it). No inline edits.
+  const activeListHtml = `
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      <div class="pec-table-wrap">
+        <table class="pec-table" style="font-size:.82rem">
+          <thead><tr><th>Customer</th><th>Status</th><th>System</th><th>Crew</th>
+            <th style="text-align:right">Revenue</th><th style="text-align:right">GP %</th><th style="text-align:right">Total Var</th></tr></thead>
+          <tbody>
+            ${computedRows.map(({ job: j, sys, r }) => `
+              <tr data-job-id="${esc(j.id)}" style="cursor:pointer">
+                ${custCell(j)}
+                <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
+                <td>${sysName(sys)}</td>
+                <td>${crewName(j)}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.revenue)}</td>
+                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.totalVar)}</td>
+              </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs in this filter.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // COMPLETED list: folded in from the old renderCompletedCosting (read-only,
+  // clickable). Same columns it had, summarized by the finalized rollups above.
+  const completedListHtml = `
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      ${finalizedRows.length === 0 ? '<div class="pec-empty">No finalized jobs yet. Finalize a job from its Job Costing detail to move it here.</div>' : `
+      <div class="pec-table-wrap">
+        <table class="pec-table" style="font-size:.82rem">
+          <thead><tr><th>Job</th><th>System</th><th>Crew</th>
+            <th style="text-align:right">Revenue</th><th style="text-align:right">Total Var</th>
+            <th style="text-align:right">Gross Profit</th><th style="text-align:right">GP %</th><th>Finalized</th></tr></thead>
+          <tbody>
+            ${finalizedRows.map(({ job: j, sys, r }) => `
+              <tr data-job-id="${esc(j.id)}" style="cursor:pointer">
+                ${custCell(j)}
+                <td>${sysName(sys)}</td>
+                <td>${crewName(j)}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.revenue)}</td>
+                <td style="text-align:right">${fmtMoneyOrDash(r.totalVar)}</td>
+                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtMoneyOrDash(r.gp)}</td>
+                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
+                <td style="font-size:.72rem">${esc(j.costing_finalized_by || 'Admin')}<div style="color:var(--muted)">${esc(fmtStamp(j.costing_finalized_at))}</div></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
+
+  const countLabel = tab === 'completed'
+    ? `${finalizedRows.length} finalized job${finalizedRows.length === 1 ? '' : 's'}`
+    : `${computedRows.length} job${computedRows.length === 1 ? '' : 's'}`;
+
   root.innerHTML = `
     <div class="pec-card" style="border-radius:0">
       <div class="pec-toolbar">
         <h3 style="margin:0">Job Costing</h3>
-        <select id="costFilter">
+        <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden">
+          <button class="pec-btn sm ${tab === 'active' ? 'primary' : 'ghost'}" id="costTabActive" style="border:none;border-radius:0">Active</button>
+          <button class="pec-btn sm ${tab === 'completed' ? 'primary' : 'ghost'}" id="costTabCompleted" style="border:none;border-radius:0">Completed</button>
+        </div>
+        ${tab === 'active' ? `<select id="costFilter">
           <option value="all" ${filt==='all'?'selected':''}>All jobs</option>
           <option value="active" ${filt==='active'?'selected':''}>Active (not completed)</option>
           <option value="scheduled" ${filt==='scheduled'?'selected':''}>Scheduled</option>
           <option value="ordered" ${filt==='ordered'?'selected':''}>Ordered</option>
           <option value="delivered" ${filt==='delivered'?'selected':''}>Delivered</option>
           <option value="completed" ${filt==='completed'?'selected':''}>Completed</option>
-        </select>
-        ${jobs.length ? '<input type="search" id="costSearch" placeholder="Search jobs (name, address, proposal #)">' : ''}
-        <span id="costCount" style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} job${jobs.length===1?'':'s'}</span>
+        </select>` : ''}
+        <div style="position:relative">
+          <input type="search" id="costSearch" placeholder="Search all jobs (name, address, proposal #)" autocomplete="off" style="min-width:240px">
+          <div id="costSearchResults" style="display:none;position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);background:var(--rd-card,var(--s1));border:1px solid var(--rd-line,var(--border));border-radius:8px;max-height:340px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.18)"></div>
+        </div>
+        <span id="costCount" style="margin-left:auto;color:var(--muted);font-size:.72rem">${countLabel}</span>
         <button class="pec-btn sm" id="costPrint">Print</button>
       </div>
     </div>
-    ${pendingHtml}
-    ${rollupHtml}
-    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
-      <div style="overflow-x:auto;padding-bottom:8px">
-        <table class="pec-cost-table">
-          <thead><tr>
-            <th>Job Address / ID</th><th>Misc</th><th>Status</th><th>Sales Team</th><th>System Type</th><th>Crew</th>
-            <th>Revenue Stream</th><th>Revenue</th>
-            <th>Est. Hrs</th><th>Hours</th><th>Over/Under</th><th>Hrs Var %</th>
-            <th>Equip Rental</th><th>%</th>
-            <th>Mat. (est.)</th><th>%</th>
-            <th>Mat. Used</th><th>%</th>
-            <th>Salary &amp; Wages</th><th>%</th>
-            <th>Labor Budget</th><th>Labor Var %</th>
-            <th>Subcontractor</th><th>%</th>
-            <th>Bonus</th><th>%</th>
-            <th>Commission</th><th>%</th>
-            <th>Misc Exp</th><th>%</th>
-            <th>Total Var Exp</th><th>%</th>
-            <th>Gross Profit</th><th>GP %</th>
-            <th>GP / HR</th><th>Rev / HR</th>
-            <th>Callback</th><th>Notes</th>
-          </tr></thead>
-          <tbody>
-            ${jobs.map(j => {
-              const sys = areaSystem(j);
-              const cost = costByJob[j.id];
-              const r = computeCostingRow(j, cost, sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
-              const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
-              // Labor budget is the front-end ESTIMATE (revenue x system labor %)
-              // from the shared computeJobEstimate, NOT the editable revenue cell;
-              // variance compares actual Salary & Wages to that budget.
-              const laborBudget = r.estLaborBudget;
-              const laborActual = Number(cost?.salary_wages_cost || 0);
-              const laborVar = (laborBudget != null && laborBudget > 0) ? ((laborActual - laborBudget) / laborBudget) : null;
-              const laborVarCls = laborVar == null ? '' : (laborVar > 0 ? 'cost-neg' : 'cost-pos');
-              // Same in-place search haystack as Completed Job Costing.
-              const searchStr = [j.customer_name, j.address, j.proposal_number, sys ? sys.name : '', j.crew_id && crewById[j.crew_id] ? crewById[j.crew_id].name : '']
-                .filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ');
-              return `<tr data-job-id="${esc(j.id)}" data-search="${esc(searchStr)}">
-                <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number)}</div></td>
-                <td><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></td>
-                <td><span class="pec-badge ${esc(j.status)}">${esc(j.status)}</span></td>
-                <td>${salesTeamSelectHtml(j.sales_team, 'class="cost-text" data-cost="sales_team" data-table="job"')}</td>
-                <td>${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color||'#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">—</span>'}</td>
-                <td>${j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
-                <td>${sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>'}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="revenue" data-table="job" value="${esc(j.revenue ?? '')}"></td>
-                <td class="cost-derived" data-derived="estHrs" title="Computed: revenue x system labor % / hourly rate. Same as the front-end Budget card.">${r.estHrs ? r.estHrs.toFixed(1) : '—'}</td>
-                <td><input class="prod-num" type="number" min="0" step="0.5" data-cost="actual_hours" data-table="job" value="${esc(j.actual_hours ?? '')}"></td>
-                <td class="cost-derived ${overCls}" data-derived="overUnder">${r.overUnder == null ? '—' : fmtNum(r.overUnder)}</td>
-                <td class="cost-pct ${overCls}" data-derived="hoursVarPct">${fmtPct(r.hoursVarPct)}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="equipment_rental_cost" data-table="cost" value="${esc(cost?.equipment_rental_cost ?? 0)}"></td>
-                <td class="cost-pct" data-derived="pct-equip">${fmtPct(r.pct(r.buckets.equipment_rental_cost))}</td>
-                <td class="cost-derived" data-derived="matOrdered" title="Sum of pec_prod_material_lines.line_cost for this job. Read-only; edit material_lines to change.">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</td>
-                <td class="cost-pct" data-derived="pct-matord">${fmtPct(r.pct(r.buckets.materials_ordered_cost))}</td>
-                <td class="cost-derived" data-derived="matUsed" title="Sum of actual_used_qty × unit_cost_snapshot across material lines. Edit per-line on the unified job page.">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</td>
-                <td class="cost-pct" data-derived="pct-matused">${fmtPct(r.pct(r.buckets.materials_used_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="salary_wages_cost" data-table="cost" value="${esc(cost?.salary_wages_cost ?? 0)}"></td>
-                <td class="cost-pct" data-derived="pct-salary">${fmtPct(r.pct(r.buckets.salary_wages_cost))}</td>
-                <td class="cost-derived" data-derived="laborBudget" title="Revenue × system.labor_budget_pct. Set the % on the system in the Material Catalog.">${laborBudget == null ? '—' : fmtMoneyOrDash(laborBudget)}</td>
-                <td class="cost-pct ${laborVarCls}" data-derived="laborVarPct" title="(Salary & Wages − Labor Budget) ÷ Labor Budget. Positive = over budget.">${fmtPct(laborVar)}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="subcontractor_cost" data-table="cost" value="${esc(cost?.subcontractor_cost ?? 0)}"></td>
-                <td class="cost-pct" data-derived="pct-sub">${fmtPct(r.pct(r.buckets.subcontractor_cost))}</td>
-                <td class="cost-derived" data-derived="bonus" title="Sum of pec_prod_job_bonuses.amount across crew members. Edit on the unified job page.">${fmtMoneyOrDash(r.buckets.bonus_cost)}</td>
-                <td class="cost-pct" data-derived="pct-bonus">${fmtPct(r.pct(r.buckets.bonus_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="commission_cost" data-table="cost" value="${esc(cost?.commission_cost ?? 0)}"></td>
-                <td class="cost-pct" data-derived="pct-comm">${fmtPct(r.pct(r.buckets.commission_cost))}</td>
-                <td><input class="cost-money" type="number" min="0" step="0.01" data-cost="misc_cost" data-table="cost" value="${esc(cost?.misc_cost ?? 0)}"></td>
-                <td class="cost-pct" data-derived="pct-misc">${fmtPct(r.pct(r.buckets.misc_cost))}</td>
-                <td class="cost-derived" data-derived="totalVar">${fmtMoneyOrDash(r.totalVar)}</td>
-                <td class="cost-pct" data-derived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</td>
-                <td class="cost-derived ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-derived="gp">${fmtMoneyOrDash(r.gp)}</td>
-                <td class="cost-pct ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-derived="gpPct">${fmtPct(r.gpPct)}</td>
-                <td class="cost-derived" data-derived="gpHr">${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)}</td>
-                <td class="cost-derived" data-derived="revHr">${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}</td>
-                <td>
-                  <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
-                    <option value=""     ${j.callback == null ? 'selected' : ''}>—</option>
-                    <option value="true" ${j.callback === true ? 'selected' : ''}>Yes</option>
-                    <option value="false" ${j.callback === false ? 'selected' : ''}>No</option>
-                  </select>
-                </td>
-                <td><input class="cost-text" data-cost="notes" data-table="cost" value="${esc(cost?.notes || '')}"></td>
-              </tr>`;
-            }).join('') || '<tr class="nohover"><td colspan="36" class="pec-empty">No jobs in this filter.</td></tr>'}
-            <tr id="costNoMatch" class="nohover" hidden><td colspan="36" class="pec-empty">No matching jobs</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+    ${tab === 'active' ? pendingHtml : ''}
+    ${tab === 'completed' ? rollupHtml : ''}
+    ${tab === 'active' ? activeListHtml : completedListHtml}
   `;
 
-  $('costFilter').addEventListener('change', e => { state.costingFilter = e.target.value; renderJobCosting(); });
+  $('costTabActive').addEventListener('click', () => { state.costingTab = 'active'; renderJobCosting(); });
+  $('costTabCompleted').addEventListener('click', () => { state.costingTab = 'completed'; renderJobCosting(); });
+  const costFilterEl = $('costFilter');
+  if (costFilterEl) costFilterEl.addEventListener('change', e => { state.costingFilter = e.target.value; renderJobCosting(); });
   $('costPrint').addEventListener('click', () => window.print());
-  // In-place search (same approach as Completed Job Costing): toggle row hidden
-  // flags so focus is kept; no re-render, no DB query. Filters within the
-  // currently selected costFilter.
-  const costSearchEl = $('costSearch');
-  if (costSearchEl) {
-    const costCountEl = $('costCount');
-    const costNoMatchEl = $('costNoMatch');
-    const total = jobs.length;
-    costSearchEl.addEventListener('input', () => {
-      const q = costSearchEl.value.trim().replace(/\s+/g, ' ').toLowerCase();
-      let shown = 0;
-      root.querySelectorAll('tr[data-job-id]').forEach(tr => {
-        const match = !q || (tr.dataset.search || '').includes(q);
-        tr.hidden = !match;
-        if (match) shown++;
-      });
-      if (costNoMatchEl) costNoMatchEl.hidden = !(q && shown === 0);
-      if (costCountEl) costCountEl.textContent = q ? `${shown} of ${total} job${total === 1 ? '' : 's'}` : `${total} job${total === 1 ? '' : 's'}`;
-    });
-  }
   const rollupToggle = root.querySelector('[data-rollup-toggle]');
   if (rollupToggle) rollupToggle.addEventListener('click', () => {
     state.costingRollupOpen = !(state.costingRollupOpen !== false);
     renderJobCosting();
   });
-
-  // In-place derived-cell updater so input focus isn't lost while typing.
-  function refreshDerived(tr, jobId) {
-    const job = state.prodJobs.find(j => j.id === jobId);
-    const cost = state.costing.find(c => c.job_id === jobId);
-    const sys = areaSystem(job);
-    const r = computeCostingRow(job, cost, sys ? sys.name : '', state.materialOrderedByJob?.[jobId], state.materialUsedByJob?.[jobId], bonusTotalForJob(jobId));
-    const set = (sel, html, cls) => {
-      const el = tr.querySelector(sel);
-      if (!el) return;
-      el.innerHTML = html;
-      if (cls !== undefined) {
-        el.classList.remove('cost-neg', 'cost-pos');
-        if (cls) el.classList.add(cls);
-      }
-    };
-    const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
-    set('[data-derived="overUnder"]', r.overUnder == null ? '—' : fmtNum(r.overUnder), overCls);
-    set('[data-derived="hoursVarPct"]', fmtPct(r.hoursVarPct), overCls);
-    set('[data-derived="pct-equip"]',  fmtPct(r.pct(r.buckets.equipment_rental_cost)));
-    set('[data-derived="pct-matord"]', fmtPct(r.pct(r.buckets.materials_ordered_cost)));
-    set('[data-derived="matUsed"]',    fmtMoneyOrDash(r.buckets.materials_used_cost));
-    set('[data-derived="pct-matused"]',fmtPct(r.pct(r.buckets.materials_used_cost)));
-    set('[data-derived="bonus"]',      fmtMoneyOrDash(r.buckets.bonus_cost));
-    set('[data-derived="pct-salary"]', fmtPct(r.pct(r.buckets.salary_wages_cost)));
-    // Labor Budget + Variance: live-update so the row reflects revenue or
-    // salary_wages_cost edits without re-rendering the whole table.
-    // Labor budget is the front-end estimate (constant per job); only the actual
-    // Salary & Wages side moves, so variance live-updates against that budget.
-    const _laborBudget = r.estLaborBudget;
-    const _laborActual = Number(cost?.salary_wages_cost || 0);
-    const _laborVar = (_laborBudget != null && _laborBudget > 0) ? ((_laborActual - _laborBudget) / _laborBudget) : null;
-    set('[data-derived="laborBudget"]', _laborBudget == null ? '—' : fmtMoneyOrDash(_laborBudget));
-    set('[data-derived="laborVarPct"]', fmtPct(_laborVar), _laborVar == null ? '' : (_laborVar > 0 ? 'cost-neg' : 'cost-pos'));
-    set('[data-derived="pct-sub"]',    fmtPct(r.pct(r.buckets.subcontractor_cost)));
-    set('[data-derived="pct-bonus"]',  fmtPct(r.pct(r.buckets.bonus_cost)));
-    set('[data-derived="pct-comm"]',   fmtPct(r.pct(r.buckets.commission_cost)));
-    set('[data-derived="pct-misc"]',   fmtPct(r.pct(r.buckets.misc_cost)));
-    set('[data-derived="totalVar"]',   fmtMoneyOrDash(r.totalVar));
-    set('[data-derived="totalVarPct"]', fmtPct(r.pct(r.totalVar)));
-    set('[data-derived="gp"]',         fmtMoneyOrDash(r.gp), r.gp < 0 ? 'cost-neg' : 'cost-pos');
-    set('[data-derived="gpPct"]',      fmtPct(r.gpPct), r.gp < 0 ? 'cost-neg' : 'cost-pos');
-    set('[data-derived="gpHr"]',       r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr));
-    set('[data-derived="revHr"]',      r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
-  }
-
+  // Row click opens that job's costing detail: the early return at the top of
+  // renderJobCosting renders renderUnifiedJob. Pending cards + list rows alike.
   root.querySelectorAll('[data-pending-cost]').forEach(el => el.addEventListener('click', () => {
     state.openUnifiedJobId = el.dataset.pendingCost;
     renderJobCosting();
   }));
-  root.querySelectorAll('tr[data-job-id]').forEach(tr => {
-    const jobId = tr.dataset.jobId;
-    tr.style.cursor = 'pointer';
-    // Open the per-job detail modal on row click. Skip if the click landed on
-    // an interactive control so inline editing keeps working unchanged.
-    tr.addEventListener('click', (e) => {
-      if (e.target.closest('input, select, button, textarea, label')) return;
-      state.openUnifiedJobId = jobId;
-      renderJobCosting();
-    });
-    tr.querySelectorAll('[data-cost]').forEach(inp => {
-      const handler = async () => {
-        const field = inp.dataset.cost;
-        const tbl = inp.dataset.table;
-        let val;
-        if (inp.type === 'checkbox') val = inp.checked;
-        else if (inp.type === 'number') val = inp.value === '' ? null : Number(inp.value);
-        else if (inp.dataset.bool === 'true') val = inp.value === '' ? null : inp.value === 'true';
-        else val = inp.value;
-        if (tbl === 'job') {
-          const j = state.prodJobs.find(j => j.id === jobId); if (j) j[field] = val;
-          await saveJobField(jobId, field, val, inp);
-        } else {
-          let c = state.costing.find(c => c.job_id === jobId);
-          if (!c) { c = { job_id: jobId }; state.costing.push(c); }
-          c[field] = val;
-          saveCostingField(jobId, field, val, inp);
-        }
-        refreshDerived(tr, jobId);
-      };
-      inp.addEventListener('change', handler);
-      if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
-    });
-  });
-}
+  root.querySelectorAll('tr[data-job-id]').forEach(tr => tr.addEventListener('click', () => {
+    state.openUnifiedJobId = tr.dataset.jobId;
+    renderJobCosting();
+  }));
 
-// Completed Job Costing (Phase 4): read-only list of jobs whose costing has been
-// finalized (costing_finalized_at set). Reuses computeCostingRow for the summary
-// numbers so they match the active list. A row opens the same unified detail.
-async function renderCompletedCosting() {
-  const root = $('pecViewRoot');
-  if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Job Costing.</div>'; return; }
-  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
-  await loadCostingData();
-  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
-  const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
-  const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
-  const areaSystem = (job) => {
-    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-    if (areas[0]) return sysById[areas[0].system_type_id];
-    // Fallback for DripJobs-bridged jobs whose pec_prod_areas is an empty stub
-    // (e.g. Wayne Rhodes, deal 2851134): use the system resolved from the CRM job
-    // card so the System column matches the Jobs tag instead of showing "—".
-    const fid = (state.systemIdByJob || {})[job.id];
-    return fid ? sysById[fid] : null;
-  };
-  const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
-  // Most-recently-finalized first.
-  const jobs = (state.prodJobs || []).filter(j => costingIsFinalized(j) && !j.archived_at)
-    .slice().sort((a, b) => String(b.costing_finalized_at || '').localeCompare(String(a.costing_finalized_at || '')));
-  const rows = jobs.map(j => {
-    const sys = areaSystem(j);
-    const r = computeCostingRow(j, costByJob[j.id], sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
-    return { j, sys, r };
-  });
-  root.innerHTML = `
-    <div class="pec-card" style="border-radius:0">
-      <div class="pec-toolbar">
-        <h3 style="margin:0">Completed Job Costing</h3>
-        ${jobs.length ? '<input type="search" id="completedCostSearch" placeholder="Search completed jobs (name, address, proposal #)" style="margin-left:16px">' : ''}
-        <span id="completedCostCount" style="margin-left:auto;color:var(--muted);font-size:.72rem">${jobs.length} finalized job${jobs.length === 1 ? '' : 's'}</span>
-      </div>
-    </div>
-    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
-      ${jobs.length === 0 ? '<div class="pec-empty">No finalized jobs yet. Finalize a job from its Job Costing detail to move it here.</div>' : `
-      <div style="overflow-x:auto;padding-bottom:8px">
-        <table class="pec-cost-table">
-          <thead><tr>
-            <th>Job</th><th>System</th><th>Crew</th>
-            <th style="text-align:right">Revenue</th>
-            <th style="text-align:right">Total Var</th>
-            <th style="text-align:right">Gross Profit</th>
-            <th style="text-align:right">GP %</th>
-            <th>Finalized</th>
-          </tr></thead>
-          <tbody>
-            ${rows.map(({ j, sys, r }) => {
-              // Lowercased, whitespace-collapsed haystack for the in-place search:
-              // the fields Dylan would type to find a job. Decoded back by the
-              // browser from dataset.search, so matching runs on the real text.
-              const searchStr = [j.customer_name, j.address, j.proposal_number, sys ? sys.name : '', j.crew_id && crewById[j.crew_id] ? crewById[j.crew_id].name : '']
-                .filter(Boolean).join(' ').toLowerCase().replace(/\s+/g, ' ');
-              return `
-              <tr data-completed-cost="${esc(j.id)}" data-search="${esc(searchStr)}" style="cursor:pointer">
-                <td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address ? ' · ' : ''}#${esc(j.proposal_number || '')}</div></td>
-                <td>${sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>'}</td>
-                <td>${j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
-                <td style="text-align:right">${fmtMoneyOrDash(r.revenue)}</td>
-                <td style="text-align:right">${fmtMoneyOrDash(r.totalVar)}</td>
-                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtMoneyOrDash(r.gp)}</td>
-                <td style="text-align:right" class="${r.gp < 0 ? 'cost-neg' : 'cost-pos'}">${fmtPct(r.gpPct)}</td>
-                <td style="font-size:.72rem">${esc(j.costing_finalized_by || 'Admin')}<div style="color:var(--muted)">${esc(fmtStamp(j.costing_finalized_at))}</div></td>
-              </tr>`; }).join('')}
-            <tr id="completedCostNoMatch" class="nohover" hidden><td colspan="8" class="pec-empty">No matching jobs</td></tr>
-          </tbody>
-        </table>
-      </div>`}
-    </div>`;
-  root.querySelectorAll('[data-completed-cost]').forEach(rowEl => {
-    rowEl.addEventListener('click', () => {
-      state.openUnifiedJobId = rowEl.dataset.completedCost;
-      switchView('costing');
-    });
-  });
-  // In-place search: toggle each row's hidden flag so the input keeps focus
-  // while typing (a full re-render per keystroke would drop it). No DB query.
-  const searchEl = $('completedCostSearch');
-  if (searchEl) {
-    const countEl = $('completedCostCount');
-    const noMatchEl = $('completedCostNoMatch');
-    const total = jobs.length;
-    const plural = (n) => n === 1 ? '' : 's';
-    searchEl.addEventListener('input', () => {
+  // Type-ahead over ALL production jobs (not just the current tab/filter), so a
+  // job that is filtered out (e.g. a finalized job while on Active) is still
+  // findable. Mirrors the global top-search: debounced, results dropdown, click
+  // opens the costing detail. Substring match on name + address + proposal #.
+  const searchEl = $('costSearch');
+  const resultsEl = $('costSearchResults');
+  if (searchEl && resultsEl) {
+    const pool = (state.prodJobs || []).filter(j => !j.archived_at);
+    const runSearch = () => {
       const q = searchEl.value.trim().replace(/\s+/g, ' ').toLowerCase();
-      let shown = 0;
-      root.querySelectorAll('tr[data-completed-cost]').forEach(tr => {
-        const match = !q || (tr.dataset.search || '').includes(q);
-        tr.hidden = !match;
-        if (match) shown++;
-      });
-      if (noMatchEl) noMatchEl.hidden = !(q && shown === 0);
-      if (countEl) countEl.textContent = q ? `${shown} of ${total} finalized job${plural(total)}` : `${total} finalized job${plural(total)}`;
-    });
+      if (!q) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+      const matches = pool.filter(j => searchHaystack(j).includes(q)).slice(0, 20);
+      resultsEl.innerHTML = matches.length
+        ? matches.map(j => `<button type="button" data-search-job="${esc(j.id)}" style="display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--rd-line,var(--border));background:none;color:inherit;padding:8px 12px;cursor:pointer">
+            <div style="font-weight:600;font-size:.82rem">${esc(j.customer_name || '(no name)')}</div>
+            <div style="color:var(--muted);font-size:.7rem">${esc(j.address || '')}${j.address && j.proposal_number ? ' · ' : ''}${j.proposal_number ? '#' + esc(j.proposal_number) : ''}</div>
+          </button>`).join('')
+        : '<div style="padding:10px 12px;color:var(--muted);font-size:.78rem">No matching jobs</div>';
+      resultsEl.style.display = 'block';
+      // mousedown (not click) so it fires BEFORE the input blur hides the list.
+      resultsEl.querySelectorAll('[data-search-job]').forEach(b => b.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        state.openUnifiedJobId = b.dataset.searchJob;
+        renderJobCosting();
+      }));
+    };
+    searchEl.addEventListener('input', debounce(runSearch, 250));
+    searchEl.addEventListener('blur', () => setTimeout(() => { if (resultsEl) resultsEl.style.display = 'none'; }, 150));
   }
 }
+
 
 // ============================================================
 // DripJobs Sync Health (admin-only, read-only)
