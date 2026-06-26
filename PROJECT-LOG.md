@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-26 09:00] Claude Code: Download PDF button on the invoice + estimate pages
+By: Claude Code
+Changed: Added a "Download PDF" button to the internal invoice page and the job estimate page, all in index.html, NO migration. Decisions confirmed with Dylan: the estimate page = the CRM job-detail Estimate section (not the standalone Estimator PWA); the method = print-to-PDF (open a clean printable doc + browser print dialog / Save as PDF), matching the existing Work Order and public invoice rather than adding a PDF library.
+  - New shared helpers (near renderJobInvoice): `pecPrintBrand()` reads brand identity (state.brandIdentity, falling back to EMAIL_BRAND_DEFAULTS). `pecOpenPrintDoc(title, brand, headHtml, bodyHtml)` builds a self-contained, brand-styled document (logo + business name / address / phone / license header, letter @page, a "Print / Save as PDF" toolbar button, auto-print on load) and opens it in a new window via window.open + document.write (same as renderWorkOrder). IMPORTANT: the document's inner </script> is written as `<\/script>` in source so the HTML parser does not terminate index.html's own module early.
+  - `pecDownloadInvoicePdf(row, payments)` renders the invoice from the data the page already loaded: Bill-to, line items (with change-order/add-on tags + scope), Invoice total / Paid to date / Balance due, and a Payments received table.
+  - `pecDownloadEstimatePdf(job, areas, total, sysNameFor)` renders one line per estimate area (name, system, sq ft, scope, price) with the area-price-sum total. The total is recomputed via areaPriceSum() AT CLICK time so unsaved price edits are reflected. Change orders are an invoice concept (added from the invoice, not part of the estimate), so they are intentionally excluded from the estimate doc; the listed lines therefore sum to the shown total.
+  - Buttons + wiring: invoice toolbar gets `#pecInvDownloadPdf` (wired to pecDownloadInvoicePdf(row, payments)); the Estimate header card gets `#estDownloadPdf`, bound by a local wireEstPdfBtn() that runs in BOTH the finalized and editable estimate branches (renderAreas re-renders on edits, so it re-binds each time).
+  - Brand details: pec_brand_identity is warmed non-blocking (fetchBrandIdentity().catch(()=>{})) at the top of renderJobInvoice and renderJobDetailInner, so by the time the user clicks Download PDF (which must open the print window synchronously to avoid pop-up blocking, hence cannot await) state.brandIdentity is populated. If it has not loaded yet, the doc falls back to the company name + hosted logo (address/phone/license blank) and still prints fine.
+Why: Dylan wanted a way to download invoice and estimate PDFs from their respective pages.
+Testing: extracted the first CRM <script type="module"> (index.html 4754-17972, which contains all the new helpers + both render functions) and node --check passed. Confirmed the inner script tag is escaped (no unescaped </script> introduced). The actual print/Save-as-PDF output is a post-deploy manual check (open an invoice -> Download PDF -> the print dialog shows a branded invoice; same from a job's Estimate section).
+Files touched: index.html, PROJECT-LOG.md.
+Commit: e9ff79d.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then on an invoice click Download PDF (a branded invoice opens in a new tab with the print dialog) and on a job's Estimate section click Download PDF (a branded estimate). If pop-ups are blocked the button shows a toast asking to allow them. (Note: the public /pay invoice page already had its own Print / Save as PDF; this adds the same capability to the internal pages.)
+
+---
+
 ## [2026-06-25 13:30] Claude Code: Job Costing cleanups (Active tab = Pending + search only; narrow Rollups table)
 By: Claude Code
 Changed: Two small cleanups in renderJobCosting (index.html), NO migration.
