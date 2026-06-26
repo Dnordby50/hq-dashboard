@@ -7623,6 +7623,128 @@ function openChargeCardModal(row) {
   }});
 }
 
+// ============================================================
+// Printable PDF documents (invoice + estimate)
+// ============================================================
+// Print-to-PDF, matching the Work Order pattern: build a self-contained, branded
+// HTML doc, open it in a new window, and fire the browser print dialog (the
+// user's "Save as PDF"). No PDF library, no server round-trip.
+function pecPrintBrand() {
+  const b = { ...EMAIL_BRAND_DEFAULTS, ...(state.brandIdentity || {}) };
+  return {
+    name: b.business_name || 'Prescott Epoxy Company',
+    address: b.address_line || '',
+    phone: b.phone || '',
+    license: b.license_number || '',
+    website: b.website || '',
+    logo: b.logo_url || `${location.origin}/assets/pec-logo.png`,
+    primary: b.primary_color || '#14181C',
+    accent: b.accent_color || '#D8531C',
+  };
+}
+// Open a print-ready window. headHtml is the right-hand title block; bodyHtml is
+// the document body. Auto-fires the print dialog on load; a visible "Print /
+// Save as PDF" button (hidden when printing) is the fallback if it is blocked.
+function pecOpenPrintDoc(docTitle, brand, headHtml, bodyHtml) {
+  const subLines = [brand.address, brand.phone, brand.license ? 'License ' + brand.license : '', brand.website].filter(Boolean).map(esc).join('<br>');
+  // NOTE: the inner </script> MUST be written as <\/script> so index.html's own
+  // module script is not terminated early by the HTML parser.
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(docTitle)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --ink:#0f1420; --muted:#6b7280; --line:#e6e8ec; --soft:#f5f6f8; --accent:${esc(brand.accent)}; --primary:${esc(brand.primary)}; }
+  @page { size: letter; margin: 0.5in; }
+  * { box-sizing: border-box; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:var(--ink); font-size:12px; margin:0; background:#fff; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .doc-toolbar { text-align:center; padding:10px; background:var(--soft); border-bottom:1px solid var(--line); }
+  .doc-toolbar button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 22px; font:600 13px 'Inter',sans-serif; cursor:pointer; }
+  .doc-wrap { max-width:760px; margin:0 auto; padding:26px 24px; }
+  .doc-head { display:flex; justify-content:space-between; align-items:flex-start; gap:20px; border-bottom:2px solid var(--accent); padding-bottom:14px; margin-bottom:18px; }
+  .doc-logo { max-height:54px; max-width:240px; display:block; }
+  .doc-biz { font-size:18px; font-weight:800; color:var(--primary); }
+  .doc-biz-sub { font-size:11px; color:var(--muted); line-height:1.5; margin-top:4px; }
+  .doc-title { text-align:right; }
+  .doc-title h1 { margin:0; font-size:24px; letter-spacing:1px; text-transform:uppercase; color:var(--accent); }
+  .doc-title .meta { font-size:11px; color:var(--muted); margin-top:4px; line-height:1.5; }
+  .doc-billto { margin-bottom:16px }
+  .doc-billto .lbl { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:2px; }
+  .doc-billto .name { font-weight:600; font-size:13px; }
+  table.doc-tbl { width:100%; border-collapse:collapse; margin:4px 0 16px; font-size:12px; }
+  table.doc-tbl th { background:var(--primary); color:#fff; text-align:left; padding:8px 10px; font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
+  table.doc-tbl th.r, table.doc-tbl td.r { text-align:right; white-space:nowrap; }
+  table.doc-tbl td { border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }
+  table.doc-tot { width:300px; margin-left:auto; border-collapse:collapse; font-size:13px; margin-bottom:16px; }
+  table.doc-tot td { padding:5px 10px; }
+  table.doc-tot td.r { text-align:right; }
+  table.doc-tot tr.tot td { border-top:2px solid var(--primary); font-weight:700; font-size:15px; color:var(--primary); }
+  h3.doc-h3 { font-size:13px; color:var(--primary); margin:18px 0 6px; }
+  .doc-note { color:var(--muted); font-size:11px; }
+  .doc-foot { margin-top:26px; padding-top:12px; border-top:1px solid var(--line); text-align:center; color:var(--muted); font-size:10px; }
+  @media print { .doc-toolbar { display:none !important; } .doc-wrap { padding:0; } }
+</style></head><body>
+  <div class="doc-toolbar"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <div class="doc-wrap">
+    <div class="doc-head">
+      <div>
+        ${brand.logo ? `<img class="doc-logo" src="${esc(brand.logo)}" alt="${esc(brand.name)}">` : `<div class="doc-biz">${esc(brand.name)}</div>`}
+        <div class="doc-biz-sub">${subLines}</div>
+      </div>
+      ${headHtml}
+    </div>
+    ${bodyHtml}
+    <div class="doc-foot">Generated ${esc(new Date().toLocaleString())} &middot; ${esc(brand.name)}</div>
+  </div>
+  <script>window.addEventListener('load', function () { setTimeout(function () { try { window.print(); } catch (e) {} }, 350); });<\/script>
+</body></html>`;
+  const win = window.open('', '_blank');
+  if (!win) { try { showToast('Allow pop-ups to download the PDF.', { ttl: 5000 }); } catch (_) { alert('Allow pop-ups to download the PDF.'); } return; }
+  win.document.open(); win.document.write(html); win.document.close();
+}
+// Invoice PDF from the loaded invoice row + payments (same data the page shows).
+function pecDownloadInvoicePdf(row, payments) {
+  const brand = pecPrintBrand();
+  const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
+  const items = Array.isArray(row.line_items) ? row.line_items : [];
+  const linePrice = (it) => { const v = it.price ?? it.total ?? it.unit_price; return v == null ? 0 : invNum(v); };
+  const total = invNum(row.price);
+  const paid = invNum(row.paid_to_date);
+  const balance = invNum(row.balance_remaining != null ? row.balance_remaining : row.balance);
+  const itemsHtml = items.length
+    ? items.map(it => `<tr><td>${esc(it.name || '—')}${it.is_change_order ? ' <span class="doc-note">(change order)</span>' : ''}${it.description ? `<div class="doc-note" style="white-space:pre-wrap;margin-top:3px">${esc(it.description)}</div>` : ''}</td><td class="r">${invUSD(linePrice(it))}</td></tr>`).join('')
+    : '<tr><td colspan="2" class="doc-note">No line items entered. The total reflects the job price.</td></tr>';
+  const payHtml = (payments && payments.length)
+    ? `<h3 class="doc-h3">Payments received</h3><table class="doc-tbl"><thead><tr><th>Date</th><th>Method</th><th>Reference</th><th class="r">Amount</th></tr></thead><tbody>${payments.map(p => `<tr><td>${invFmtDate(p.received_date)}</td><td>${esc(titleCaseValue(p.method) || '—')}</td><td>${esc(p.reference || '—')}</td><td class="r">${invUSD(invNum(p.amount))}</td></tr>`).join('')}</tbody></table>`
+    : '';
+  const head = `<div class="doc-title"><h1>Invoice</h1><div class="meta">#${esc(invNo)}<br>${esc(new Date().toLocaleDateString())}</div></div>`;
+  const body = `
+    <div class="doc-billto"><div class="lbl">Bill to</div><div class="name">${esc(row.customer_name || '')}</div><div class="doc-note">${esc(row.address || '')}</div></div>
+    <table class="doc-tbl"><thead><tr><th>Description</th><th class="r">Amount</th></tr></thead><tbody>${itemsHtml}</tbody></table>
+    <table class="doc-tot">
+      <tr><td>Invoice total</td><td class="r">${invUSD(total)}</td></tr>
+      <tr><td>Paid to date</td><td class="r">-${invUSD(paid)}</td></tr>
+      <tr class="tot"><td>Balance due</td><td class="r">${invUSD(balance)}</td></tr>
+    </table>
+    ${payHtml}`;
+  pecOpenPrintDoc(`Invoice ${invNo} - ${row.customer_name || ''}`, brand, head, body);
+}
+// Estimate PDF from the job's estimate areas (one line per area). Total is the
+// area-price sum, matching the on-page Estimate total. Change orders are an
+// invoice concept and are not part of the estimate document.
+function pecDownloadEstimatePdf(job, areas, total, sysNameFor) {
+  const brand = pecPrintBrand();
+  const custName = (job.customers && job.customers.name) || job.customer_name || '';
+  const rowsHtml = (areas && areas.length)
+    ? areas.map((a, idx) => `<tr><td><strong>${esc(a.name || (idx === 0 ? 'Main Area' : 'Area ' + (idx + 1)))}</strong><div class="doc-note">${esc(sysNameFor(a.system_type_id))}${a.sqft != null && a.sqft !== '' ? ' &middot; ' + esc(a.sqft) + ' sq ft' : ''}</div>${a.description ? `<div class="doc-note" style="white-space:pre-wrap;margin-top:3px">${esc(a.description)}</div>` : ''}</td><td class="r">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')
+    : '<tr><td colspan="2" class="doc-note">No estimate lines yet.</td></tr>';
+  const head = `<div class="doc-title"><h1>Estimate</h1><div class="meta">${job.dripjobs_deal_id ? '#' + esc(job.dripjobs_deal_id) + '<br>' : ''}${esc(new Date().toLocaleDateString())}</div></div>`;
+  const body = `
+    <div class="doc-billto"><div class="lbl">Prepared for</div><div class="name">${esc(custName)}</div><div class="doc-note">${esc(job.address || '')}</div></div>
+    <table class="doc-tbl"><thead><tr><th>Scope of work</th><th class="r">Price</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+    <table class="doc-tot"><tr class="tot"><td>Estimate total</td><td class="r">${invUSD(total)}</td></tr></table>`;
+  pecOpenPrintDoc(`Estimate - ${custName}`, brand, head, body);
+}
+
 // Per-job invoice view. Reached from the Invoicing list ("View Invoice"), the
 // job card ("View Invoice"), via state.openInvoiceJobId + the renderInvoicing
 // short-circuit. Read-only summary of one job's invoice: totals, line items,
@@ -7630,6 +7752,10 @@ function openChargeCardModal(row) {
 // renderInvoicing() and land back here while openInvoiceJobId is set.
 async function renderJobInvoice(jobId) {
   const root = $('pecViewRoot');
+  // Warm the brand identity (name / address / phone / license / logo) so the
+  // Download PDF doc has full company details by the time the user clicks it
+  // (the click must open the print window synchronously, so it can't await).
+  fetchBrandIdentity().catch(() => {});
   // Auto-refresh after an office "Charge card" tab completes. When staff return
   // focus to the dashboard and this invoice is awaiting a Stripe charge, re-pull
   // + re-render ONCE so Paid to date / Balance / Payments reflect the payment the
@@ -7702,6 +7828,7 @@ async function renderJobInvoice(jobId) {
         <button class="pec-btn sm" id="pecInvEditLines">Edit line items</button>
         <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
         <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
+        <button class="pec-btn sm" id="pecInvDownloadPdf">Download PDF</button>
         <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
         <button class="pec-btn sm" id="pecInvCharge">Charge card</button>
@@ -7747,6 +7874,7 @@ async function renderJobInvoice(jobId) {
   $('pecInvBack').addEventListener('click', () => { detachInvoiceRefocus(); state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
   const chargeB = $('pecInvCharge'); if (chargeB) chargeB.addEventListener('click', () => openChargeCardModal(row));
+  const invPdfB = $('pecInvDownloadPdf'); if (invPdfB) invPdfB.addEventListener('click', () => pecDownloadInvoicePdf(row, payments));
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
   const depB = $('pecInvDeposit'); if (depB) depB.addEventListener('click', () => openPaymentModal(row, { deposit: true }));
   // Email invoice: opens a small modal (pre-filled with the customer's email),
@@ -9513,6 +9641,9 @@ async function renderJobDetail(id) {
 }
 async function renderJobDetailInner(id) {
   const root = $('pecViewRoot');
+  // Warm the brand identity so the Estimate "Download PDF" doc has full company
+  // details by click time (the click opens the print window synchronously).
+  fetchBrandIdentity().catch(() => {});
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
@@ -10386,12 +10517,23 @@ async function renderJobDetailInner(id) {
       <div class="pec-card">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
-          <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(total)}</strong></div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(total)}</strong></div>
+            <button type="button" class="pec-btn ghost sm" id="estDownloadPdf">Download PDF</button>
+          </div>
         </div>
         ${finalized
           ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked — add a change order from the invoice to adjust the total. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
           : `<div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Each line is one area: system + colors + square footage + price. The line prices sum to the job price, and the invoice + work order build from these lines. Use "Same as line 1" to copy the first line's system and colors.</div>`}
       </div>`;
+
+    // Bind the "Download PDF" button (in headerCard) in both the finalized and
+    // editable paths. Total is recomputed at click time so unsaved price edits
+    // are reflected. sysNameFor is in this scope; areaPriceSum is the live sum.
+    const wireEstPdfBtn = () => {
+      const b = host.querySelector('#estDownloadPdf');
+      if (b) b.addEventListener('click', () => pecDownloadEstimatePdf(job, areas, areaPriceSum(), sysNameFor));
+    };
 
     if (finalized) {
       // Read-only summary (line · system · sqft · detail · price) + the
@@ -10415,6 +10557,7 @@ async function renderJobDetailInner(id) {
             </tbody>
           </table></div>
         </div>`;
+      wireEstPdfBtn();
       renderBudget();
       wireEstimateControls();
       return;
@@ -10453,6 +10596,8 @@ async function renderJobDetailInner(id) {
         <span style="flex:1"></span>
         <button type="button" class="pec-btn primary sm" id="jobFinalize">Finalize estimate</button>
       </div>`;
+
+    wireEstPdfBtn();
 
     const parse = (v) => { const p = v.split('|'); return { a: areas[+p[0]], rest: p.slice(1) }; };
 
