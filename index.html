@@ -18365,7 +18365,8 @@ function _mergeAcrossAreas(areaPlans) {
     jobFilter: { status: '' },
     activeJob: null,
     newJob: blankNewJob(),
-    orderScope: 'all',     // material sections on the Ordering page: 'all' | '7' | '14' | '30'
+    orderScope: 'all',     // material sections on the Ordering page: 'all' | '7' | '14' | '30' | 'custom'
+    orderCustom: { start: null, end: null }, // From/To window for orderScope 'custom' (lazily set to today..+14 on first pick)
     daysByJob: {},         // pec_prod_job_schedule_days: job_id -> sorted ISO dates
     daysError: false,      // schedule-days fetch failed; degrade to install_date matching
     crmAreasByProdJob: {}, // prod job id -> CRM job_areas rows (with materials) for bridged jobs; refreshed by loadJobs
@@ -18598,6 +18599,13 @@ function _mergeAcrossAreas(areaPlans) {
             ${c.kind === 'calculated' ? `<div style="margin-top:8px"><button class="pec-btn sm" data-save-job="${esc(c.job_id)}">Save lines to job</button></div>` : ''}`}
       </div>`).join('');
 
+    // Custom-range scope: seed a valid today..+14 window the moment it is picked,
+    // so the From/To inputs and orderScopeRange() agree (mirrors the Pull modal).
+    if (state.orderScope === 'custom') {
+      if (!state.orderCustom.start) state.orderCustom.start = isoDay(0);
+      if (!state.orderCustom.end) state.orderCustom.end = isoDay(14);
+    }
+
     r.innerHTML = `
       <div class="pec-toolbar">
         <label style="font-size:.7rem;color:var(--muted)">Material scope
@@ -18606,8 +18614,12 @@ function _mergeAcrossAreas(areaPlans) {
             <option value="7"   ${state.orderScope==='7'?'selected':''}>Next 7 days</option>
             <option value="14"  ${state.orderScope==='14'?'selected':''}>Next 14 days</option>
             <option value="30"  ${state.orderScope==='30'?'selected':''}>Next 30 days</option>
+            <option value="custom" ${state.orderScope==='custom'?'selected':''}>Custom range</option>
           </select>
         </label>
+        ${state.orderScope === 'custom' ? `
+        <label style="font-size:.7rem;color:var(--muted)">From <input id="prodOrderStart" type="date" value="${esc(state.orderCustom.start || '')}" style="margin-left:6px"></label>
+        <label style="font-size:.7rem;color:var(--muted)">To <input id="prodOrderEnd" type="date" value="${esc(state.orderCustom.end || '')}" style="margin-left:6px"></label>` : ''}
         <button class="pec-btn primary" id="prodNewJobBtn">+ New Job</button>
         <button class="pec-btn" id="prodPullMaterialBtn">Pull Material</button>
         <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${matSummary.inWindow} open job${matSummary.inWindow===1?'':'s'} in scope · ${rows.length} product${rows.length===1?'':'s'} to order</span>
@@ -18667,7 +18679,20 @@ function _mergeAcrossAreas(areaPlans) {
         </table>
       </div>
     `;
-    $('prodOrderScope').addEventListener('change', (e) => { state.orderScope = e.target.value; render(); });
+    $('prodOrderScope').addEventListener('change', (e) => {
+      state.orderScope = e.target.value;
+      // Seed a valid window when first switching to Custom range so the in-scope
+      // pull is immediately meaningful (today..+14, like the Pull modal preset).
+      if (state.orderScope === 'custom' && (!state.orderCustom.start || !state.orderCustom.end)) {
+        state.orderCustom = { start: state.orderCustom.start || isoDay(0), end: state.orderCustom.end || isoDay(14) };
+      }
+      render();
+    });
+    // Custom From/To inputs are only present for the 'custom' scope, so guard.
+    const ordStartEl = $('prodOrderStart');
+    if (ordStartEl) ordStartEl.addEventListener('change', (e) => { state.orderCustom.start = e.target.value; render(); });
+    const ordEndEl = $('prodOrderEnd');
+    if (ordEndEl) ordEndEl.addEventListener('change', (e) => { state.orderCustom.end = e.target.value; render(); });
     $('prodJobStatus').addEventListener('change', (e) => { state.jobFilter.status = e.target.value; render(); });
     $('prodNewJobBtn').addEventListener('click', () => { console.log('[prod] prodNewJobBtn click'); state.newJob = blankNewJob(); setProdView('new-job'); });
     $('prodPullMaterialBtn').addEventListener('click', () => openMaterialPull());
@@ -18914,6 +18939,9 @@ function _mergeAcrossAreas(areaPlans) {
   function orderScopeRange() {
     const s = state.orderScope;
     if (s === 'all') return { start: null, end: null }; // strict null = all open (see jobInScope)
+    // Custom: use '' (not null) for a missing bound so jobInScope matches NOTHING
+    // until BOTH dates are set (null/null is reserved for "all open jobs").
+    if (s === 'custom') return { start: state.orderCustom.start || '', end: state.orderCustom.end || '' };
     return { start: isoDay(0), end: isoDay(Number(s)) };
   }
 
