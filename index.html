@@ -16148,23 +16148,28 @@ async function renderUnifiedJob(jobId) {
     const u = Number(l.unit_cost_snapshot || 0);
     return q > 0 && u > 0 ? q * u : null;
   };
+  // Ad-hoc lines (added here, not from the estimate/Ordering) are marked by a
+  // high order_index sentinel so they sort last and can be tagged + deleted
+  // without a schema column. Estimate/Ordering lines use small indices.
+  const ADHOC_ORDER_BASE = 9000;
+  const isAdHocLine = (l) => Number(l.order_index || 0) >= ADHOC_ORDER_BASE;
 
   const linesDerived = lines.some(l => l._derived);
   const linesHtml = lines.length === 0
-    ? `<div class="pec-empty">No material lines yet. They populate from the Production module's New Job flow once areas + systems are saved.</div>`
+    ? `<div class="pec-empty">No material lines yet. They populate from the Production module's New Job flow once areas + systems are saved. Use "+ Add material" below to record a product used on the job but not in the estimate.</div>`
     : `${linesDerived ? '<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Materials derived from the saved system + colors (same as the work order). Entering Actual Used on any line persists this set so the quantities stick.</div>' : ''}<div class="pec-table-wrap">
          <table class="pec-table">
            <thead><tr>
              <th>Material</th><th>Product</th><th>Color</th><th>Cure</th>
              <th>Qty</th><th>Order Qty</th><th>Unit $</th><th>Line $</th>
              <th>Ordered</th><th>Delivered</th>
-             <th>Actual Used</th><th>Used $</th>
+             <th>Actual Used</th><th>Used $</th><th></th>
            </tr></thead>
            <tbody>
              ${lines.map(l => `
                <tr class="nohover" data-line-id="${esc(l.id)}">
                  <td>${esc(l.material_type || '')}</td>
-                 <td>${esc(l.product_name || '')}</td>
+                 <td>${esc(l.product_name || '')}${isAdHocLine(l) ? ' <span class="pec-badge" style="--pec-badge-bg:#0ea5e9;font-size:.6rem">added</span>' : ''}</td>
                  <td>${esc(l.color || '')}</td>
                  <td>${esc(l.cure_speed || '')}</td>
                  <td>${esc(l.qty_needed ?? '')}</td>
@@ -16175,6 +16180,7 @@ async function renderUnifiedJob(jobId) {
                  <td>${l.delivered ? 'Yes' : 'No'}</td>
                  <td><input class="prod-num" type="number" min="0" step="0.01" data-line-used data-line-id="${esc(l.id)}" value="${esc(l.actual_used_qty ?? '')}" style="width:90px"></td>
                  <td class="cost-derived" data-line-used-cost="${esc(l.id)}">${lineUsedCost(l) == null ? '—' : '$' + Math.round(lineUsedCost(l)).toLocaleString()}</td>
+                 <td>${isAdHocLine(l) ? `<button class="pec-btn ghost sm" data-del-adhoc="${esc(l.id)}" style="color:#dc2626">Delete</button>` : ''}</td>
                </tr>`).join('')}
            </tbody>
          </table>
@@ -16419,6 +16425,8 @@ async function renderUnifiedJob(jobId) {
         ${lines.length === 0 ? '' : linesDerived
           ? '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">These lines are calculated from the system + colors. Editing <strong>Actual Used</strong> persists them as real lines (qty / supplier / ordered+delivered are still edited in Ordering).</div>'
           : '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>'}
+        <div style="margin-top:10px"><button class="pec-btn sm" id="addMaterialBtn">+ Add material</button>
+          <span style="color:var(--muted);font-size:.7rem;margin-left:8px">Record a product used on the job but not in the estimate. It counts as Materials Used.</span></div>
       </div>
 
 
@@ -16584,6 +16592,27 @@ async function renderUnifiedJob(jobId) {
     inp.addEventListener('change', handler);
     inp.addEventListener('blur', handler);
   });
+
+  // "+ Add material": record a catalog product used on the job but never in the
+  // estimate, so it lands in job costing (counts toward Materials Used).
+  const addMatBtn = root.querySelector('#addMaterialBtn');
+  if (addMatBtn) addMatBtn.addEventListener('click', () => openAddMaterialModal(jobId));
+  // Delete an ad-hoc line (order_index >= 9000 only; estimate lines have no
+  // Delete button). delete-by-id is idempotent, so withFreshWriteRetry is safe.
+  root.querySelectorAll('[data-del-adhoc]').forEach(btn => btn.addEventListener('click', async () => {
+    const lineId = btn.dataset.delAdhoc;
+    if (!confirm('Delete this added material line?')) return;
+    btn.disabled = true;
+    try {
+      const del = await withFreshWriteRetry(() => supabase.from('pec_prod_material_lines').delete().eq('id', lineId), { label: 'costing-adhoc-del' });
+      if (del.error) throw del.error;
+      window.pecCostingStale = true;
+      renderUnifiedJob(jobId);
+    } catch (err) {
+      btn.disabled = false;
+      showToast('Could not delete: ' + (err?.message || err), { ttl: 5000 });
+    }
+  }));
 
   // Bonus row inputs (hours_actual, amount, note)
   const wireBonusInputs = () => {
@@ -16771,6 +16800,84 @@ async function renderUnifiedJob(jobId) {
     await saveJobField(jobId, 'costing_finalized_by', null, unfinalizeBtn);
     renderUnifiedJob(jobId);
   });
+}
+
+// "+ Add material" modal (Job Costing detail). Records ONE catalog product used
+// on a job but absent from the estimate, as a pec_prod_material_lines row that
+// counts toward Materials Used. Uses openModal (#pecModalRoot), same as the
+// other first-module modals.
+function openAddMaterialModal(jobId) {
+  const products = (state.products || []).filter(p => p.active !== false)
+    .slice().sort((a, b) => String(a.material_type || '').localeCompare(String(b.material_type || '')) || String(a.name || '').localeCompare(String(b.name || '')));
+  if (!products.length) { showToast('No catalog products available to add.', { ttl: 4000 }); return; }
+  const optHtml = products.map(p => `<option value="${esc(p.id)}" data-unit="${esc(p.unit_cost ?? '')}">${esc(p.material_type || '')} · ${esc(p.name)}${p.color ? ' (' + esc(p.color) + ')' : ''}</option>`).join('');
+  openModal(`
+    <h3 style="margin:0 0 4px">Add material</h3>
+    <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Pick a catalog product and the quantity used. It is added as a job costing material line and counts toward Materials Used.</div>
+    <div class="pec-field"><label>Product</label><select id="addMatProduct">${optHtml}</select></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Quantity</label><input id="addMatQty" type="number" min="0" step="0.01" value="1"></div>
+      <div class="pec-field"><label>Unit $</label><input id="addMatUnit" type="number" min="0" step="0.01" value=""></div>
+    </div>
+    <div id="addMatErr" style="color:#dc2626;font-size:.8rem;min-height:1em;margin-bottom:6px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="addMatSave">Add material</button>
+    </div>
+  `, { onMount: (modal) => {
+    const sel = modal.querySelector('#addMatProduct');
+    const qtyEl = modal.querySelector('#addMatQty');
+    const unitEl = modal.querySelector('#addMatUnit');
+    const errEl = modal.querySelector('#addMatErr');
+    const syncUnit = () => { const opt = sel.options[sel.selectedIndex]; unitEl.value = opt ? (opt.dataset.unit || '') : ''; };
+    syncUnit();
+    sel.addEventListener('change', syncUnit);
+    modal.querySelector('#addMatSave').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const product = products.find(p => p.id === sel.value);
+      const qty = Number(qtyEl.value);
+      const unitCost = unitEl.value === '' ? null : Number(unitEl.value);
+      if (!product) { errEl.textContent = 'Pick a product.'; return; }
+      if (!Number.isFinite(qty) || qty <= 0) { errEl.textContent = 'Enter a quantity greater than 0.'; return; }
+      if (unitCost == null || !Number.isFinite(unitCost) || unitCost < 0) { errEl.textContent = 'Enter a unit cost (0 or more).'; return; }
+      const saveBtn = modal.querySelector('#addMatSave');
+      saveBtn.disabled = true; saveBtn.textContent = 'Adding…';
+      try {
+        // If the job's lines are still DERIVED (no DB rows), materialize them
+        // FIRST. Otherwise inserting one real line makes loadCostingData see
+        // "saved lines exist" and stop re-deriving, hiding the estimate lines.
+        const cur = state.materialLinesByJob[jobId] || [];
+        if (cur.some(l => l._derived)) {
+          const { error } = await persistDerivedLines(jobId);
+          if (error) throw error;
+        }
+        // High order_index sentinel (sorts last + marks the line as added).
+        const next = 9000 + (state.materialLinesByJob[jobId] || []).filter(l => Number(l.order_index || 0) >= 9000).length;
+        const lineCost = Math.round(unitCost * qty * 100) / 100;
+        const payload = {
+          job_id: jobId, area_id: null,
+          material_type: product.material_type, product_id: product.id, product_name: product.name,
+          supplier: product.supplier || null, color: product.color || null,
+          spread_rate: product.spread_rate ?? null, kit_size: product.kit_size ?? null,
+          qty_needed: qty, backstock_qty: 0, order_qty: qty,
+          use_backstock: false, ordered: false, delivered: false,
+          unit_cost_snapshot: unitCost, line_cost: lineCost, order_index: next,
+          cure_speed: null, actual_used_qty: qty,
+        };
+        // Non-idempotent insert: withFreshWrite (no auto-retry). The button is
+        // disabled above to block a double-submit.
+        const ins = await withFreshWrite(() => supabase.from('pec_prod_material_lines').insert(payload), { label: 'costing-adhoc-add' });
+        if (ins.error) throw ins.error;
+        window.pecCostingStale = true; // REQUIRED so renderUnifiedJob reloads (real-lines branch skipped persistDerivedLines)
+        closeModal();
+        showToast(`Added ${product.name}.`, { ttl: 2500 });
+        renderUnifiedJob(jobId);
+      } catch (err) {
+        saveBtn.disabled = false; saveBtn.textContent = 'Add material';
+        errEl.textContent = 'Could not add: ' + (err?.message || err);
+      }
+    });
+  }});
 }
 
 async function renderJobCosting() {
