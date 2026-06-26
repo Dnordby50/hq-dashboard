@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-25 13:30] Claude Code: Job Costing cleanups (Active tab = Pending + search only; narrow Rollups table)
+By: Claude Code
+Changed: Two small cleanups in renderJobCosting (index.html), NO migration.
+CHANGE 1 - removed the full active-jobs list from the Active tab. The Active tab now renders ONLY the toolbar (Active/Completed toggle, status filter, search) and the Pending Job Costing block; the compact job-list table renders on the Completed tab only (`${tab === 'completed' ? completedListHtml : ''}`). Deleted the unused `activeListHtml` block and the `jobs` + `computedRows` arrays it depended on (the costFilter `filt` is kept for the toolbar dropdown's selected-state). The active count label now reports the Pending count instead of the removed active-row count. The search (costSearch, finds ANY job and opens its detail) and the Pending cards remain the entry points into a job's costing detail; the `tr[data-job-id]` row-click binding still applies to the Completed list + search results, so no handler references a removed row.
+CHANGE 2 - narrowed the Completed Rollups table so it fits without horizontal scrolling. It used `pec-table pec-cost-table`, whose `.pec-cost-table` rule forces `min-width:2400px` (right for the old wide grid, far too wide here). Added a dedicated `.pec-rollup-table` class (table-layout:fixed + width:100% so the 9 columns share the card; .7rem font; tight 3px/5px padding; the Group column at 24% and allowed to wrap; the 8 numeric columns right-aligned) and switched the table to it, dropping the overflow-x wrapper. Shortened the headers to Group / Jobs / Rev / Hrs / Var / GP $ / GP % / GP/hr / Rev/hr. The grand-total (cost-rollup-grand) and section-header (cost-rollup-section) styling is reproduced on the new class so it is preserved.
+Why: Dylan wanted the Active tab to be just the pending queue + search (the full active list was redundant), and the Rollups table to fit on screen.
+Testing: extracted the first CRM <script type="module"> (index.html 4754-17828, which contains renderJobCosting + the new CSS) and node --check passed. Confirmed no leftover references to activeListHtml / computedRows / jobs, and that searchHaystack / custCell / sysName / crewName are still used by the Completed list + search. Visual fit is a post-deploy manual check.
+Files touched: index.html, PROJECT-LOG.md.
+Commit: e5b0eec.
+Next steps: Dylan pushes to deploy. NO migration needed.
+Handoff to Cowork: none.
+Handoff to Dylan: push to deploy, then confirm the Active tab shows only Pending + search (no big table) and the Completed Rollups table fits with no horizontal scroll.
+
+---
+
 ## [2026-06-25 12:00] Claude Code: browser Back/Forward now walks CRM views (History API integration)
 By: Claude Code
 Changed: Fixed the browser Back button leaving the CRM to the old website URL. index.html only, NO migration.
