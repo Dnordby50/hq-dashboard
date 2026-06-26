@@ -6044,6 +6044,67 @@ try {
 } catch (e) { /* defensive; should never trip */ }
 
 // ============================================================
+// Browser history integration (admin CRM views only)
+// ============================================================
+// The SPA used to mutate state.view + re-render without touching the History
+// API, so the browser back stack still held only the page that loaded the app
+// (often the old hq-prescott domain that 301s). Back exited the CRM entirely.
+// Now each real in-app navigation pushes a history entry, and a popstate handler
+// restores the matching view, so Back/Forward walk the CRM views. The customer
+// portal (body.pec-portal-mode) keeps its own location.hash routing untouched.
+let pecIsPopstate = false;     // true while restoring from popstate; suppresses re-push
+let pecLastNavKey = null;      // dedup key of the last pushed/replaced entry; null = no base yet
+function pecNavTuple() {
+  return {
+    view: state.view,
+    openJobId: state.openJobId || null,
+    openInvoiceJobId: state.openInvoiceJobId || null,
+    openCustomerId: state.openCustomerId || null,
+    openUnifiedJobId: state.openUnifiedJobId || null,
+  };
+}
+function pecNavKey(t) {
+  return [t.view, t.openJobId, t.openInvoiceJobId, t.openCustomerId, t.openUnifiedJobId].join('|');
+}
+// Record the current (view + open-ids) tuple in browser history. First call is a
+// replaceState (establishes a base CRM entry over the loader page); later calls
+// pushState only when the tuple actually changed (so a plain re-render -- filter,
+// pagination, save -- never stacks a duplicate). No-op during popstate restore.
+function pecSyncHistory() {
+  if (pecIsPopstate) return;
+  if (document.body.classList.contains('pec-portal-mode')) return; // portal owns its routing
+  const t = pecNavTuple();
+  const key = pecNavKey(t);
+  try {
+    if (pecLastNavKey === null) { pecLastNavKey = key; history.replaceState(t, '', location.href); return; }
+    if (key === pecLastNavKey) return;
+    pecLastNavKey = key;
+    history.pushState(t, '', location.href);
+  } catch (_) { /* history API unavailable; navigation still works, just no back-stack */ }
+}
+// Back/Forward: restore the saved tuple and route to it WITHOUT pushing again.
+// Setting pecLastNavKey to the restored key (and the pecIsPopstate guard) keeps
+// the subsequent switchView + render-entry pecSyncHistory calls from re-pushing.
+window.addEventListener('popstate', (e) => {
+  if (document.body.classList.contains('pec-portal-mode')) return; // portal uses hashchange
+  pecIsPopstate = true;
+  try {
+    const s = (e.state && e.state.view) ? e.state
+      : { view: state.view || 'dashboard', openJobId: null, openInvoiceJobId: null, openCustomerId: null, openUnifiedJobId: null };
+    state.openJobId = s.openJobId || null;
+    state.openInvoiceJobId = s.openInvoiceJobId || null;
+    state.openCustomerId = s.openCustomerId || null;
+    state.openUnifiedJobId = s.openUnifiedJobId || null;
+    pecLastNavKey = pecNavKey({ view: s.view, openJobId: s.openJobId || null, openInvoiceJobId: s.openInvoiceJobId || null, openCustomerId: s.openCustomerId || null, openUnifiedJobId: s.openUnifiedJobId || null });
+    switchView(s.view || 'dashboard');
+  } catch (err) {
+    console.error('[crm] popstate restore failed:', err);
+  } finally {
+    pecIsPopstate = false;
+  }
+});
+
+// ============================================================
 // View switching
 // ============================================================
 function switchView(v) {
@@ -6066,6 +6127,9 @@ function switchView(v) {
   // line + a user-visible toast.
   try {
     state.view = v;
+    // Record this navigation in browser history (open-ids were set by the caller
+    // before switchView). Dedups + first-call replaceState; no-op during popstate.
+    pecSyncHistory();
     document.querySelectorAll('#pecSubnav button').forEach(b => {
       b.classList.toggle('active', b.dataset.pecView === v);
     });
@@ -6467,6 +6531,7 @@ async function renderDashboard() {
 // Customers
 // ============================================================
 async function renderCustomers() {
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openCustomerId) return renderCustomerDetail(state.openCustomerId);
   const root = $('pecViewRoot');
   const from = (state.customersPage - 1) * PAGE;
@@ -7127,6 +7192,7 @@ async function openCustomerImportModal() {
 // Jobs — list + detail (detail rendered inline, replaces list)
 // ============================================================
 async function renderJobs() {
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openJobId) return renderJobDetail(state.openJobId);
   const root = $('pecViewRoot');
   const from = (state.jobsPage - 1) * PAGE;
@@ -7347,6 +7413,7 @@ function invAgeSigned(days) {
 const invFindRow = id => (state.arRows || []).find(r => r.id === id);
 
 async function renderInvoicing() {
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openInvoiceJobId) return renderJobInvoice(state.openInvoiceJobId);
   const root = $('pecViewRoot');
   let res;
@@ -16883,6 +16950,7 @@ function openAddMaterialModal(jobId) {
 async function renderJobCosting() {
   const root = $('pecViewRoot');
   if (!can('can_view_job_costing')) { root.innerHTML = '<div class="pec-empty">You do not have access to Job Costing.</div>'; return; }
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openUnifiedJobId) return renderUnifiedJob(state.openUnifiedJobId);
   root.innerHTML = '<div class="pec-empty">Loading job costing…</div>';
   await loadCostingData();
