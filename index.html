@@ -16613,16 +16613,42 @@ async function renderUnifiedJob(jobId) {
        </div>`
     : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
 
+  // Submit-for-review approval step. Lifecycle is read off the two stamps (no
+  // enum): draft -> submitted (awaiting review) -> finalized. Finalize is
+  // admin-only; a non-admin submits and waits. costSubmitted excludes finalized
+  // jobs so a finalized job is never also shown as "submitted".
+  const costAdmin     = isAdmin();
+  const costFinalized = !!job.costing_finalized_at;
+  const costSubmitted = !!job.costing_submitted_at && !costFinalized;
+  const submittedLine = `Submitted for review${job.costing_submitted_by ? ' by ' + esc(job.costing_submitted_by) : ''} on ${esc(fmtStamp(job.costing_submitted_at))}`;
   const finalizeCardHtml = `
       <div class="pec-card" id="sec-finalize">
-        ${job.costing_finalized_at
+        ${costFinalized
           ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                <span style="color:var(--rd-success,#16a34a);font-weight:600">✓ Job costing finalized by ${esc(job.costing_finalized_by || 'Admin')} on ${esc(fmtStamp(job.costing_finalized_at))}</span>
-               <button class="pec-btn ghost sm" id="costingUnfinalizeBtn">Re-open costing</button>
+               ${costAdmin ? '<button class="pec-btn ghost sm" id="costingUnfinalizeBtn">Re-open costing</button>' : ''}
              </div>
              <div style="margin-top:6px"><h3 style="font-size:.85rem;margin:0 0 4px">Bonus (recorded)</h3>${bonusRecapHtml}</div>`
-          : `<button class="pec-btn primary" id="costingFinalizeBtn">Finalize Job Costing</button>
-             <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and records the crew bonus into the Bonus Report (pending payout).</div>`}
+          : costSubmitted
+            ? (costAdmin
+              ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+                   <span style="color:var(--rd-accent,#d8531c);font-weight:600">⏳ ${submittedLine}</span>
+                 </div>
+                 <div style="display:flex;gap:8px;flex-wrap:wrap">
+                   <button class="pec-btn primary" id="costingFinalizeBtn">Finalize Job Costing</button>
+                   <button class="pec-btn ghost" id="costingSendBackBtn">Send back</button>
+                 </div>
+                 <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing records the crew bonus into the Bonus Report (pending payout). Send back returns it to the submitter for edits.</div>`
+              : `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+                   <span style="color:var(--rd-accent,#d8531c);font-weight:600">⏳ ${submittedLine}. Awaiting Dylan.</span>
+                 </div>
+                 <button class="pec-btn ghost" id="costingWithdrawBtn">Withdraw</button>
+                 <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Your numbers are locked while this job is under review. Withdraw to edit again.</div>`)
+            : (costAdmin
+              ? `<button class="pec-btn primary" id="costingFinalizeBtn">Finalize Job Costing</button>
+                 <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and records the crew bonus into the Bonus Report (pending payout).</div>`
+              : `<button class="pec-btn primary" id="costingSubmitBtn">Submit for review</button>
+                 <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Submitting locks your numbers and sends this job to Dylan to review and finalize.</div>`)}
       </div>`;
 
   const html = `
@@ -16710,6 +16736,21 @@ async function renderUnifiedJob(jobId) {
       ${finalizeCardHtml}`;
 
   root.innerHTML = html;
+
+  // Lock editing for a non-admin once the job is submitted for review (submitted
+  // stamp set, not yet finalized). Disables every input/select/textarea/button in
+  // the Costs, Materials (incl. Actual Used), Crew Bonuses, and Notes cards so the
+  // submitter cannot change numbers while Dylan reviews. Withdraw clears the
+  // submitted stamp and re-renders unlocked. Admins are never locked; already
+  // finalized jobs render their stamp read-only without these editors. (Job Info /
+  // revenue is intentionally left editable, matching the card list in the spec.)
+  const costLocked = costSubmitted && !costAdmin;
+  if (costLocked) {
+    ['sec-costs', 'sec-materials', 'sec-bonuses', 'sec-notes'].forEach(id => {
+      const card = root.querySelector('#' + id);
+      if (card) card.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
+    });
+  }
 
   // In-place refresh of every derived display on the page (Costs card, Materials
   // header sums, GP/Hr, etc.) without re-rendering the whole HTML so input focus
@@ -17002,8 +17043,42 @@ async function renderUnifiedJob(jobId) {
   // Finalize Job Costing (Phase 4). Stamps costing_finalized_at/by; the job then
   // leaves the active list + Pending queue, appears in Completed Job Costing, and
   // becomes payable in Crew Bonus. Re-open clears the stamp.
+  // Submit for review (non-admin path): stamps costing_submitted_at/by, locks the
+  // editors, and notifies admins via the bell. Does NOT write the bonus ledger --
+  // that still happens only on finalize.
+  const submitBtn = root.querySelector('#costingSubmitBtn');
+  if (submitBtn) submitBtn.addEventListener('click', async () => {
+    if (!confirm('Submit this job costing for review? Your numbers will be locked until an admin finalizes or sends it back.')) return;
+    submitBtn.disabled = true; submitBtn.textContent = 'Submitting…';
+    const by = state.adminUser?.name || state.adminUser?.email || 'Staff';
+    await saveJobField(jobId, 'costing_submitted_by', by, submitBtn);
+    await saveJobField(jobId, 'costing_submitted_at', new Date().toISOString(), submitBtn);
+    // Best-effort bell notification to admins. job_id is omitted on purpose:
+    // pec_notifications.job_id FKs public.jobs, but this is a pec_prod_jobs id, so
+    // the body names the customer instead. RPC may not be live pre-migration.
+    try { await supabase.rpc('log_costing_submitted', { p_customer: job.customer_name || '' }); } catch (_) { /* RPC may not be live yet */ }
+    renderUnifiedJob(jobId);
+  });
+  // Send back (admin): clears the submitted stamps so the submitter can edit again.
+  const sendBackBtn = root.querySelector('#costingSendBackBtn');
+  if (sendBackBtn) sendBackBtn.addEventListener('click', async () => {
+    if (!isAdmin()) { showToast('Only an admin can send costing back.', { ttl: 4000 }); return; }
+    if (!confirm('Send this job costing back to the submitter for edits?')) return;
+    await saveJobField(jobId, 'costing_submitted_at', null, sendBackBtn);
+    await saveJobField(jobId, 'costing_submitted_by', null, sendBackBtn);
+    renderUnifiedJob(jobId);
+  });
+  // Withdraw (submitter): clears the submitted stamps and unlocks the editors.
+  const withdrawBtn = root.querySelector('#costingWithdrawBtn');
+  if (withdrawBtn) withdrawBtn.addEventListener('click', async () => {
+    if (!confirm('Withdraw this job costing from review? You can edit and resubmit.')) return;
+    await saveJobField(jobId, 'costing_submitted_at', null, withdrawBtn);
+    await saveJobField(jobId, 'costing_submitted_by', null, withdrawBtn);
+    renderUnifiedJob(jobId);
+  });
   const finalizeBtn = root.querySelector('#costingFinalizeBtn');
   if (finalizeBtn) finalizeBtn.addEventListener('click', async () => {
+    if (!isAdmin()) { showToast('Only an admin can finalize job costing.', { ttl: 4000 }); return; }
     if (!confirm('Are you sure you want to finalize job costing for this job?')) return;
     finalizeBtn.disabled = true; finalizeBtn.textContent = 'Finalizing…';
     const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
@@ -17029,10 +17104,15 @@ async function renderUnifiedJob(jobId) {
     } catch (err) {
       showToast('Costing finalized, but recording the crew bonus to the ledger failed: ' + (err && err.message ? err.message : err), { ttl: 7000 });
     }
+    // Clear the submitted stamps so a finalized job is not also flagged "submitted"
+    // (it would otherwise linger in the Submitted-for-review queue).
+    await saveJobField(jobId, 'costing_submitted_at', null);
+    await saveJobField(jobId, 'costing_submitted_by', null);
     renderUnifiedJob(jobId);
   });
   const unfinalizeBtn = root.querySelector('#costingUnfinalizeBtn');
   if (unfinalizeBtn) unfinalizeBtn.addEventListener('click', async () => {
+    if (!isAdmin()) { showToast('Only an admin can re-open job costing.', { ttl: 4000 }); return; }
     if (!confirm('Re-open costing for this job? It will leave Completed Job Costing.')) return;
     await saveJobField(jobId, 'costing_finalized_at', null, unfinalizeBtn);
     await saveJobField(jobId, 'costing_finalized_by', null, unfinalizeBtn);
@@ -17148,6 +17228,7 @@ async function renderJobCosting() {
     if (j.archived_at) return false;
     if (j.is_callback) return false;
     if (costingIsFinalized(j)) return false; // finalized jobs live in Completed Job Costing
+    if (j.costing_submitted_at) return false; // submitted jobs live in the review queue below
     return costingIsCompleted(j) && !costByJob[j.id];
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
   const pendingHtml = pendingCosting.length ? `
@@ -17183,6 +17264,30 @@ async function renderJobCosting() {
       const r = computeCostingRow(j, costByJob[j.id], sys ? sys.name : '', state.materialOrderedByJob?.[j.id], state.materialUsedByJob?.[j.id], bonusTotalForJob(j.id));
       return { job: j, sys, r };
     });
+
+  // SUBMITTED FOR REVIEW: jobs a non-admin submitted (costing_submitted_at set)
+  // that an admin has not finalized yet. This is the admin's review inbox; shown
+  // to non-admins too so the submitter sees their own in-flight items. Newest
+  // submitted first. Rows reuse the data-pending-cost click to open the detail.
+  const submittedReview = (state.prodJobs || [])
+    .filter(j => !j.archived_at && !!j.costing_submitted_at && !costingIsFinalized(j))
+    .slice().sort((a, b) => String(b.costing_submitted_at || '').localeCompare(String(a.costing_submitted_at || '')));
+  const submittedReviewHtml = submittedReview.length ? `
+    <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
+      <h3 style="margin:0 0 8px">Submitted for review <span style="color:var(--muted);font-size:.72rem;font-weight:400">${submittedReview.length} awaiting finalize</span></h3>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${submittedReview.map(j => {
+          const sys = areaSystem(j);
+          return `<div data-pending-cost="${esc(j.id)}" style="display:flex;gap:10px;align-items:center;cursor:pointer;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text))">
+            <span style="flex:1;font-weight:600">${esc(j.customer_name || '(no name)')}</span>
+            <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
+            ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
+            <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.costing_submitted_by ? 'by ' + esc(j.costing_submitted_by) + ' · ' : ''}${esc(fmtStamp(j.costing_submitted_at))}</span>
+            <span class="pec-badge" style="--pec-badge-bg:#d8531c">Awaiting review</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
 
   const tab = state.costingTab === 'completed' ? 'completed' : 'active';
   // Rollups summarize the FINALIZED set (Completed tab only).
@@ -17284,7 +17389,7 @@ async function renderJobCosting() {
 
   const countLabel = tab === 'completed'
     ? `${finalizedRows.length} finalized job${finalizedRows.length === 1 ? '' : 's'}`
-    : `${pendingCosting.length} pending job${pendingCosting.length === 1 ? '' : 's'}`;
+    : `${pendingCosting.length} pending job${pendingCosting.length === 1 ? '' : 's'}${submittedReview.length ? ' · ' + submittedReview.length + ' in review' : ''}`;
 
   root.innerHTML = `
     <div class="pec-card" style="border-radius:0">
@@ -17310,6 +17415,7 @@ async function renderJobCosting() {
         <button class="pec-btn sm" id="costPrint">Print</button>
       </div>
     </div>
+    ${tab === 'active' ? submittedReviewHtml : ''}
     ${tab === 'active' ? pendingHtml : ''}
     ${tab === 'completed' ? rollupHtml : ''}
     ${tab === 'completed' ? completedListHtml : ''}
