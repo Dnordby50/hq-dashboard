@@ -7673,8 +7673,8 @@ function pecPrintBrand() {
 // Save as PDF" button (hidden when printing) is the fallback if it is blocked.
 function pecOpenPrintDoc(docTitle, brand, headHtml, bodyHtml) {
   const subLines = [brand.address, brand.phone, brand.license ? 'License ' + brand.license : '', brand.website].filter(Boolean).map(esc).join('<br>');
-  // NOTE: the inner </script> MUST be written as <\/script> so index.html's own
-  // module script is not terminated early by the HTML parser.
+  // NOTE: the inner closing script tag MUST be written as <\/script> so
+  // index.html's own module script is not terminated early by the HTML parser.
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(docTitle)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">

@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-27 MST] Cowork: fixed prod boot hang ("checking session") - unescaped </script> in a comment truncated the main module
+By: Cowork
+Symptom: after deploy, the CRM was stuck on the "Checking session…" boot gate (#authGate-checking) and never reached sign-in or the app.
+Root cause: index.html line 7676 was a JS comment that literally contained an unescaped closing script tag (the comment text warning that the inner tag must be escaped, ironically was not). The browser HTML parser ends a <script> block at the FIRST literal closing-script sequence it sees, even inside a JS comment or string. So the main CRM module (opens at line 4767) was terminated early at 7676, and everything after it (the auth boot, renderGlobalAuthGate, setAuthGateState, every render function) never loaded. With renderGlobalAuthGate undefined, the gate never advanced past "checking", so boot hung for every user. node --check passed for Claude Code because extracting the module by the same naive close-tag scan also truncated it at 7676, hiding the downstream code; the bug only manifests in a real browser parse.
+Origin: introduced in commit e9ff79d (2026-06-26, Download PDF feature), latent until this deploy. NOT caused by the submit-for-review work (6a40c26) or the migration; those changes live inside render functions that run only after boot.
+Fix: reworded the comment so it no longer contains a literal closing-script sequence (replaced the literal tag with the words "closing script tag"; the intended <\/script> example stays escaped). One-line, zero behavior change.
+Verified: scanned index.html the way the browser parses (split on the first literal close-tag after each module open) and node --check'd each block. After the fix the main module spans its full 4767-18104 and parses OK; modules at 3910-4363 and 18252-20879 also OK. (A reported failure at 4709-4757 is a scanner false positive: line 4709 contains the tag text inside a comment, which the browser does not treat as a tag.)
+Files touched: index.html, PROJECT-LOG.md.
+Commit: see below.
+Next steps: Dylan must deploy this fix (push to Netlify) to restore prod. Recommend grepping for any other unescaped closing-script sequences inside the modules as a follow-up hardening (Claude Code).
+Handoff to Cowork: None.
+Handoff to Dylan: push/deploy immediately to restore the CRM. After deploy, hard-refresh (cache may hold the broken bundle) and confirm the app loads past "Checking session". Then resume the submit-for-review role checks.
+
+---
+
 ## [2026-06-27 MST] Cowork: applied costing submit-for-review migration to prod
 By: Cowork
 Changed: Applied supabase/migrations/2026-06-27_costing_submit_review.sql to the live PEC Supabase project (ref zdfpzmmrgotynrwkeakd, "HQ Dashboard | Dnordby50's Org") via the Supabase MCP connector (apply_migration), fulfilling the Handoff to Cowork in the 2026-06-27 Claude Code entry below. No code change.
