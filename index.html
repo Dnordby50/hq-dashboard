@@ -775,13 +775,15 @@ body { padding: 18px; min-height: 100vh; }
   display: flex;
   flex-direction: column;
   gap: 22px;
-  /* Pin to the viewport and scroll the nav INSIDE the bar. Before this the bar
-     was sticky but full document height with no overflow, so a tall nav could
-     only be reached by scrolling the whole page to the bottom. Capping the
-     height and adding overflow-y makes the sidebar its own scroll region. */
+  /* Pin to the viewport. The bar is a flex column at viewport height with three
+     bands: the logo (fixed, top), the .rd-nav-scroll region (flex, scrolls), and
+     the .rd-promo Daily flow card (fixed, bottom). Only the middle band scrolls,
+     so the promo card stays fully visible no matter how long the nav list grows.
+     (Earlier this scrolled the WHOLE sidebar with the promo pinned by margin-top,
+     which pushed the card below the fold on a long nav, so it read as cut off.) */
   min-height: calc(100vh - 36px);
   max-height: calc(100vh - 36px);
-  overflow-y: auto;
+  overflow: hidden;
   box-shadow: var(--rd-shadow-sm);
   position: sticky;
   top: 18px;
@@ -797,7 +799,20 @@ body { padding: 18px; min-height: 100vh; }
 }
 
 /* Logo */
-.rd-logo { display: flex; align-items: center; gap: 10px; padding: 4px 10px 0; }
+.rd-logo { display: flex; align-items: center; gap: 10px; padding: 4px 10px 0; flex-shrink: 0; }
+
+/* Scrollable nav band: takes the space between the pinned logo and the pinned
+   promo card and scrolls internally when the view list is taller than the gap.
+   min-height:0 is required so a flex child is allowed to shrink below its content
+   height (otherwise it would push the promo card off-screen, the original bug). */
+.rd-nav-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
 .rd-logo-mark {
   width: 34px; height: 34px; border-radius: 10px;
   background: var(--rd-accent); color: #fff;
@@ -851,6 +866,7 @@ body { padding: 18px; min-height: 100vh; }
 /* Sidebar promo card */
 .rd-promo {
   margin-top: auto;
+  flex-shrink: 0;
   background: linear-gradient(160deg, var(--rd-accent-hero), var(--rd-accent-hero-2));
   color: #fff;
   border-radius: 18px;
@@ -1195,6 +1211,7 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
 @media (max-width: 980px) {
   #rdShell { grid-template-columns: 1fr; }
   #rdSidebar { position: static; min-height: 0; max-height: none; overflow: visible; }
+  .rd-nav-scroll { overflow: visible; flex: none; }
   .rd-promo { display: none; }
 }
 @media (max-width: 720px) {
@@ -4421,13 +4438,15 @@ if (document.readyState === 'loading') {
           <div class="rd-logo-sub">PEC CRM</div>
         </div>
       </div>
-      <div>
-        <div class="rd-nav-label">Menu</div>
-        <div class="rd-nav" id="rdSidebarNav"></div>
-      </div>
-      <div id="rdSidebarEmp" style="display:none">
-        <div class="rd-nav-label">Employee</div>
-        <div class="rd-nav" id="rdSidebarEmpNav"></div>
+      <div class="rd-nav-scroll">
+        <div>
+          <div class="rd-nav-label">Menu</div>
+          <div class="rd-nav" id="rdSidebarNav"></div>
+        </div>
+        <div id="rdSidebarEmp" style="display:none">
+          <div class="rd-nav-label">Employee</div>
+          <div class="rd-nav" id="rdSidebarEmpNav"></div>
+        </div>
       </div>
       <div class="rd-promo">
         <div class="rd-promo-eyebrow">Daily flow</div>
@@ -4727,7 +4746,13 @@ if (document.readyState === 'loading') {
       // fall back to Dashboard, by clicking the matching hidden tab-btn.
       const last = (() => { try { return localStorage.getItem('cockpit_last_child'); } catch { return null; } })();
       const targetKey = ['command', 'execution', 'jarvis'].includes(last) ? last : 'command';
-      const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey);
+      // Prefer the collected reference, but fall back to a direct DOM lookup of
+      // the hidden tab-btn so this can never silently no-op if cockpitChildButtons
+      // is ever empty (e.g. the source nav markup changes). Clicking the hidden
+      // tab-btn fires the global handler at index.html:3812, which activates the
+      // matching #tab-<key> Cockpit section.
+      const targetBtn = cockpitChildButtons.find(b => b.dataset.tab === targetKey)
+        || document.querySelector(`.tab-nav:not(.employee-nav) .tab-btn[data-tab="${targetKey}"]`);
       if (targetBtn) targetBtn.click();
     });
     // Top-right SOPs button: forward to the hidden sops-owner tab-btn so the
