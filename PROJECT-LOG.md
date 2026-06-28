@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-27 MST] Cowork: applied costing submit-for-review migration to prod
+By: Cowork
+Changed: Applied supabase/migrations/2026-06-27_costing_submit_review.sql to the live PEC Supabase project (ref zdfpzmmrgotynrwkeakd, "HQ Dashboard | Dnordby50's Org") via the Supabase MCP connector (apply_migration), fulfilling the Handoff to Cowork in the 2026-06-27 Claude Code entry below. No code change.
+Why: The submit-for-review approval workflow Claude Code shipped reads two new columns and a notification RPC that did not exist in prod. The columns had to exist before the deploy reads them.
+Pre-check: ran a read-only column query first to confirm I was on the right database (pec_prod_jobs exists with costing_finalized_at) and that costing_submitted_at/by did not already exist.
+Applied: added `costing_submitted_at timestamptz` + `costing_submitted_by text` to public.pec_prod_jobs, and created the SECURITY DEFINER function `public.log_costing_submitted(p_customer text)` with execute granted to authenticated. Idempotent (add column if not exists / create or replace). No other tables, data, or RLS touched.
+Verified: `select column_name from information_schema.columns where table_name='pec_prod_jobs' and column_name in ('costing_submitted_at','costing_submitted_by')` returned both columns, and `select proname from pg_proc where proname='log_costing_submitted'` returned 1 row.
+Files touched: PROJECT-LOG.md only (the migration .sql was authored by Claude Code; I applied it to prod, no file edit).
+Next steps: Dylan deploys the index.html change (Claude Code says "code finished"); migration-first order is satisfied so it is safe to push now.
+Handoff to Cowork: None.
+Handoff to Dylan: push/deploy the frontend, then run the role checks listed in the Claude Code entry below (submit as a non-admin, finalize as admin, confirm the review queue + bell notification).
+
+---
+
 ## [2026-06-27 MST] Claude Code: Job Costing submit-for-review approval step (finalize is now admin-only)
 By: Claude Code
 Changed: Added an approval workflow to Job Costing so a non-admin (Anne) fills in costing and SUBMITS for review, and only an admin (Dylan) FINALIZES. All in index.html plus one new migration. Lifecycle is encoded with two stamps, no enum: Draft (costing_submitted_at null AND costing_finalized_at null) -> Submitted/awaiting review (costing_submitted_at set, costing_finalized_at null) -> Finalized (costing_finalized_at set, unchanged from before). Stamps live on pec_prod_jobs, same home as the existing finalize stamps, written through saveJobField.
