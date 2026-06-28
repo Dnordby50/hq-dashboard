@@ -913,6 +913,14 @@ body { padding: 18px; min-height: 100vh; }
   color: var(--rd-ink-2); transition: all .15s;
 }
 .rd-icon-btn:hover { border-color: var(--rd-accent); color: var(--rd-accent); }
+/* Notification bell dropdown buttons. The bell lives in the owner shell where the
+   base palette tokens (--s1/--s2/--text/--border) are still the DARK dashboard
+   values (the light values apply only in .pec-portal-mode). The panel now paints
+   itself with the light --rd-* tokens, so "Mark all read" (a .pec-btn.ghost whose
+   global color is the light --text) would be invisible on it. Pin its color to the
+   dark ink token. Scoped to #pecBellPanel so nothing else is restyled. */
+#pecBellPanel .pec-btn { color: var(--rd-ink, #0f1420); border-color: var(--rd-line, #e6e8ec); background: transparent; }
+#pecBellPanel .pec-btn:hover { background: var(--rd-soft, #f5f6f8); border-color: var(--rd-line, #e6e8ec); }
 .rd-user { display: flex; align-items: center; gap: 10px; padding-left: 8px; border-left: 1px solid var(--rd-line); margin-left: 4px; }
 .rd-avatar {
   width: 40px; height: 40px; border-radius: 50%;
@@ -4446,7 +4454,7 @@ if (document.readyState === 'loading') {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
             <span id="pecBellBadge" style="display:none;position:absolute;top:-5px;right:-5px;background:#dc2626;color:#fff;font-size:.6rem;line-height:1;min-width:15px;height:15px;border-radius:8px;align-items:center;justify-content:center;padding:0 3px;font-weight:700">0</span>
           </button>
-          <div id="pecBellPanel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;width:340px;max-height:440px;overflow:auto;background:var(--s1, #fff);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.2);z-index:10001;text-align:left"></div>
+          <div id="pecBellPanel" style="display:none;position:absolute;top:calc(100% + 8px);right:0;width:340px;max-height:440px;overflow:auto;background:var(--rd-card, #fff);color:var(--rd-ink, #0f1420);border:1px solid var(--rd-line, var(--border));border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.2);z-index:10001;text-align:left"></div>
         </div>
         <div class="rd-user">
           <!-- SOPs hub button removed for now; the SOPs section + code stay in
@@ -5368,11 +5376,11 @@ function renderBellPanel(rows) {
   if (!rows.length) { panel.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:.82rem">No notifications yet.</div>'; return; }
   const hasUnread = rows.some(n => !n.read_at);
   panel.innerHTML =
-    `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--border)">
+    `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--rd-line, var(--border))">
        <strong style="font-size:.85rem">Notifications</strong>
        ${hasUnread ? '<button class="pec-btn ghost sm" id="pecBellReadAll">Mark all read</button>' : ''}
      </div>` +
-    rows.map(n => `<div data-notif="${esc(n.id)}" ${n.job_id ? `data-job="${esc(n.job_id)}"` : ''} style="padding:10px 12px;border-bottom:1px solid var(--border);${n.job_id ? 'cursor:pointer;' : ''}background:${n.read_at ? 'transparent' : 'var(--rd-soft, rgba(216,83,28,.07))'}">
+    rows.map(n => `<div data-notif="${esc(n.id)}" ${n.job_id ? `data-job="${esc(n.job_id)}"` : ''} style="padding:10px 12px;border-bottom:1px solid var(--rd-line, var(--border));${n.job_id ? 'cursor:pointer;' : ''}background:${n.read_at ? 'transparent' : 'var(--rd-soft, rgba(216,83,28,.07))'}">
         <div style="font-size:.8rem;line-height:1.4">${n.priority === 'high' ? '<span style="color:#dc2626;font-weight:700">! </span>' : ''}${esc(n.body || n.type)}</div>
         <div style="font-size:.68rem;color:var(--muted);margin-top:3px">${esc(fmtNotifTime(n.created_at))}</div>
       </div>`).join('');
@@ -15711,6 +15719,11 @@ function costingIsFinalized(job) {
 const CREW_BONUS_FRACTION = 0.75;
 const CREW_BONUS_BURDEN = 0.25; // labor burden on wages (Dylan, locked 2026-06-14)
 const OT_MULTIPLIER = 1.5; // overtime paid at 1.5x base wage (assumption — confirm with Dylan)
+// Fallback labor-budget % of revenue when a job has no computed estimate AND its
+// system type has no labor_budget_pct. Dylan's chosen default (2026-06-27). Only a
+// last resort: the real estimate, then the system %, then this. Bonus formula itself
+// is unchanged (still 75% of (labor budget - actual loaded labor)).
+const DEFAULT_LABOR_BUDGET_PCT = 20;
 
 // Crew bonus math, shared by the Crew Bonus tab and the costing detail's Bonus
 // Payout box so the two can never disagree. Locked by Dylan 2026-06-14, made
@@ -16314,7 +16327,25 @@ async function renderUnifiedJob(jobId) {
     return { name: m?.name || 'Crew member', wage: m?.hourly_wage ?? null };
   };
   const jobEst = (state.estimateByJob || {})[jobId] || {};
-  const jobLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
+  const realLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
+  // Labor-budget fallback. A job without a computed estimate has laborBudget null, so
+  // the pool used to read "no labor budget" and the bonus never auto-calculated. Fall
+  // back to (a) the system type's labor_budget_pct of revenue, else (b) the 20%
+  // default, so a budget is always available once revenue is set. laborBudgetEstimated
+  // drives a muted "estimated" note next to the figure so it is not mistaken for the
+  // real estimate. The bonus math downstream is identical; only the budget source changes.
+  let jobLaborBudget = realLaborBudget;
+  let laborBudgetEstimated = false;
+  let laborBudgetEstPct = null;
+  if (jobLaborBudget == null) {
+    const jobRevenueForBudget = Number(job.revenue || 0);
+    if (jobRevenueForBudget > 0) {
+      const sysPct = (sys && sys.labor_budget_pct != null) ? Number(sys.labor_budget_pct) : null;
+      laborBudgetEstPct = (sysPct != null && sysPct > 0) ? sysPct : DEFAULT_LABOR_BUDGET_PCT;
+      jobLaborBudget = jobRevenueForBudget * (laborBudgetEstPct / 100);
+      laborBudgetEstimated = true;
+    }
+  }
   const jobLaborPct = jobEst.laborPct != null ? Number(jobEst.laborPct) : (sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null);
   const defaultLaborRate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
   // Manual per-member hours for this job (entered in the editor below). They drive
@@ -16457,6 +16488,12 @@ async function renderUnifiedJob(jobId) {
   // persists and is what the costing list + Costs card read (computeCostingRow
   // unchanged), so it stays an override until the BusyBusy sync is wired live.
   const actHrsEff = bonusCalc.hasActuals ? bonusCalc.totalHours : (r.actHrs || null);
+  // GP/hr and Rev/hr divide by the EFFECTIVE crew hours (summed per-member: manual
+  // now, BusyBusy later), not job.actual_hours which is essentially never filled.
+  // So entering crew hours once populates the bonus AND these two fields. They are
+  // recomputed the same way inside refreshUnifiedTotals when costs/revenue change.
+  const gpHrEff  = (actHrsEff && actHrsEff > 0) ? r.gp / actHrsEff : null;
+  const revHrEff = (actHrsEff && actHrsEff > 0) ? r.revenue / actHrsEff : null;
   const overUnderEff = (actHrsEff && r.estHrs) ? (actHrsEff - r.estHrs) : null;
   const overUnderEffPct = (actHrsEff && r.estHrs) ? ((actHrsEff - r.estHrs) / r.estHrs) : null;
   const actHrsEffDisplay = actHrsEff == null ? '—' : fmtNum(actHrsEff) + ' hrs';
@@ -16535,7 +16572,7 @@ async function renderUnifiedJob(jobId) {
   const formulaHtml = `
         <div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:.82rem">
           <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:baseline">
-            <span style="color:var(--muted)">Budgeted labor</span><span><strong>${budgetedLaborStr}</strong>${jobLaborPct != null ? ` <span style="color:var(--muted)">(${sys ? esc(sys.name) + ' ' : ''}${fmtPctNum(jobLaborPct)} of revenue)</span>` : ''}</span>
+            <span style="color:var(--muted)">Budgeted labor</span><span><strong>${budgetedLaborStr}</strong>${jobLaborPct != null ? ` <span style="color:var(--muted)">(${sys ? esc(sys.name) + ' ' : ''}${fmtPctNum(jobLaborPct)} of revenue)</span>` : ''}${laborBudgetEstimated ? ` <span style="color:var(--rd-warn,#b45309);font-size:.7rem">labor budget estimated at ${fmtPctNum(laborBudgetEstPct)} of revenue (system has no estimate)</span>` : ''}</span>
             <span style="color:var(--muted)">Actual loaded labor</span><span><strong>${actualLoadedStr}</strong> <span style="color:var(--muted)">(sum of (reg x wage + OT x wage x ${OT_MULTIPLIER}) x ${(1 + CREW_BONUS_BURDEN).toFixed(2)}, incl. ${Math.round(CREW_BONUS_BURDEN * 100)}% burden)</span></span>
             ${otLineHtml}
             <span style="color:var(--muted)">Labor saved</span><span><strong>${savedStr}</strong> <span style="color:var(--muted)">(budgeted minus actual loaded)</span></span>
@@ -16551,7 +16588,8 @@ async function renderUnifiedJob(jobId) {
     : '<option value="">No crew members yet (seed via Cowork)</option>';
   const manualLaborEditorHtml = `
         <div style="margin-top:14px">
-          <h3 style="font-size:.85rem;margin:0 0 6px">Crew labor (manual)${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
+          <h3 style="font-size:.85rem;margin:0 0 6px">Crew hours${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
+          <div style="font-size:.72rem;color:var(--rd-ink-2,var(--text));margin:0 0 4px">Enter hours per crew member to calculate the bonus and GP/hr. BusyBusy will fill this automatically once connected.</div>
           <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Enter Regular hrs and OT hrs separately. OT is paid at ${OT_MULTIPLIER}x (Arizona = federal >40/week). Total = Regular + OT.</div>
           ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
             <thead><tr><th>Crew member</th><th style="width:120px">Regular hrs</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
@@ -16723,7 +16761,7 @@ async function renderUnifiedJob(jobId) {
         <div class="pec-row-3" style="margin-top:10px">
           ${derivedField('Total Var Expense', `<span data-uderived="totalVar">${fmtMoneyOrDash(r.totalVar)}</span> (<span data-uderived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</span>)`, '', 'totalVar-box')}
           ${derivedField('Gross Profit',      `<span data-uderived="gp">${fmtMoneyOrDash(r.gp)}</span> (<span data-uderived="gpPct">${fmtPct(r.gpPct)}</span>)`, r.gp < 0 ? 'cost-neg' : 'cost-pos', 'gp-box')}
-          ${derivedField('GP / HR · REV / HR', `<span data-uderived="gpHr">${r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr)}</span> · <span data-uderived="revHr">${r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr)}</span>`)}
+          ${derivedField('GP / HR · REV / HR', `<span data-uderived="gpHr">${gpHrEff == null ? '—' : fmtMoneyOrDash(gpHrEff)}</span> · <span data-uderived="revHr">${revHrEff == null ? '—' : fmtMoneyOrDash(revHrEff)}</span>`)}
         </div>
       </div>
 
@@ -16776,8 +16814,13 @@ async function renderUnifiedJob(jobId) {
     set('[data-uderived="totalVarPct"]', fmtPct(r.pct(r.totalVar)));
     set('[data-uderived="gp"]', fmtMoneyOrDash(r.gp));
     set('[data-uderived="gpPct"]', fmtPct(r.gpPct));
-    set('[data-uderived="gpHr"]', r.gpHr == null ? '—' : fmtMoneyOrDash(r.gpHr));
-    set('[data-uderived="revHr"]', r.revHr == null ? '—' : fmtMoneyOrDash(r.revHr));
+    // GP/hr + Rev/hr off the effective crew hours (same source as the render-time
+    // gpHrEff/revHrEff), so editing costs/revenue keeps them in step. bonusCalc is
+    // the render-time closure; crew-hours edits re-render the whole detail, so it is
+    // fresh here whenever hours changed.
+    const actEffHr = bonusCalc.hasActuals ? bonusCalc.totalHours : (r.actHrs || null);
+    set('[data-uderived="gpHr"]', (actEffHr && actEffHr > 0) ? fmtMoneyOrDash(r.gp / actEffHr) : '—');
+    set('[data-uderived="revHr"]', (actEffHr && actEffHr > 0) ? fmtMoneyOrDash(r.revenue / actEffHr) : '—');
     const overCls = r.overUnder == null ? '' : (r.overUnder > 0 ? 'cost-neg' : 'cost-pos');
     set('[data-uderived="overUnder"]', `${r.overUnder == null ? '—' : fmtNum(r.overUnder)} (${fmtPct(r.hoursVarPct)})`, overCls);
     // Bonus Payout box's effective Actual Hours + Over/Under. When BusyBusy hours
