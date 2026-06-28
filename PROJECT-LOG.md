@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Cowork: scoped two new build requests into Claude Code prompts (nav reorg + Daily flow fix; Help button AI widget)
+By: Cowork
+Changed: No repo code touched except this log. Dylan brought two requests: (1) the "Daily flow / Cockpit" card at the bottom of the left sidebar is cut off and its "Open Cockpit" button does nothing, plus the left nav is getting crowded and needs organizing the way complex software does it (he floated a right-side second-tier panel and/or a dropdown under an item); (2) a Help button in the bottom-right of the CRM with an AI Claude integration so he and staff can ask how to do tasks and how things work.
+Investigation (read-only, in index.html): confirmed the Daily flow card is the `.rd-promo` block in the LEFT sidebar `#rdSidebar` (built in the renderRoot shell around index.html:4432), not the right panel, and its button is `#rdPromoBtn` ("Open Cockpit"). The sidebar has no scroll/overflow strategy, so a growing `#rdSidebarNav` list pushes the promo card off-screen, which explains both the "cut off" and "crowded" symptoms as one root problem. A Phase 3 comment near index.html:4725 says Cockpit no longer has its own sidebar button and the promo card is the intended entry into the Cockpit view (`#rdCockpitSubnav`, around index.html:4482), so "Open Cockpit" is supposed to work and currently does not. Also noted an existing AI chat backend (`netlify/functions/sop-chat.js`, Anthropic key) and SOP knowledge source that the Help widget can reuse.
+Requirements gathered from Dylan (11 multiple-choice questions across 4 rounds; 3 answers in one round came back as stray characters and were re-asked):
+  - Daily flow bug: card is cut off AND Open Cockpit does nothing (both).
+  - Nav pattern: Claude Code should research and recommend the pattern (not pre-decided).
+  - Scope: plan/mockup first for the nav reorg (Dylan approves before it is built); fix the Daily flow bug now.
+  - Split: two separate prompts; nav + Daily flow runs first.
+  - Help UI: slide-in chat panel anchored bottom-right.
+  - Help knowledge: all of CRM how-to + existing SOPs + live page context + general Claude fallback.
+  - Help backend: Claude Code decides whether to reuse/extend sop-chat or add a dedicated endpoint.
+  - Help audience: everyone (all signed-in roles).
+  - Help content doc: Claude Code drafts the CRM help doc by reading index.html (Dylan corrects later).
+  - Help scope: answers-only for v1, but architected so deep-links (phase 2) and actions (phase 3) can be added later without a rewrite.
+  - Devices: desktop-first, do not break mobile.
+Produced: two self-contained Claude Code prompts saved to the HQ workspace folder (NOT in the repo): claude-code-prompt-1-nav-and-daily-flow.md and claude-code-prompt-2-help-button.md. Prompt 1 = fix the Daily flow card in-session (per the Bug Diagnosis Workflow) + deliver a nav-reorg plan and mockup and STOP for approval. Prompt 2 = build the bottom-right Help widget per the decisions above.
+Why: Per this project's rules, Cowork digs into Dylan's requests with multiple-choice questions and packages them as ready-to-run Claude Code prompts; the actual code work belongs to Claude Code in the HQ-Dashboard repo.
+Files touched: PROJECT-LOG.md only (the two prompt .md files live in the HQ workspace folder, outside the repo).
+Next steps: Dylan pastes Prompt 1 into Claude Code, reviews the nav-reorg plan, approves a pattern, then runs Prompt 2. No migration, no deploy, no external action from this Cowork task.
+Handoff to Cowork: none.
+Handoff to Dylan: run claude-code-prompt-1 first (it fixes the Daily flow card and returns a nav plan to approve), then claude-code-prompt-2 for the Help button.
+
+---
+
 ## [2026-06-27 MST] Claude Code: GP/hr from crew hours, labor-budget fallback, bell read-all black-bubble fix
 By: Claude Code
 Changed: Three Job Costing + bell fixes in index.html. NO migration (Dylan verified pec_prod_job_manual_labor + ot_hours, busybusy ot_hours, pec_prod_system_types.labor_budget_pct (all 9 set, 15-40%), and pec_prod_crew_members.hourly_wage (all 4 set) already exist in prod).
