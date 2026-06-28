@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Claude Code: nav-reorg mockup refined per Dylan review (Overview pinned, single-open accordion)
+By: Claude Code
+Changed: mockup.html only (still uncommitted Part B artifact, still plan-only, no app code). Dylan clicked through the first mockup and reported two things: Overview/Dashboard should not collapse, and expanding several groups cut views off at the bottom of the rail. Fixes: (1) Overview (Dashboard + Metrics) is now a PINNED band, always visible, no toggle. (2) The lower groups (Sales, Production, Finance, Admin) are now a SINGLE-OPEN accordion (opening one closes the others), so the visible list can never exceed the rail height and clip; added scrollIntoView on the selected item as a belt-and-suspenders. The recommended pattern in the plan is updated to match (collapsible groups, single-open, Overview pinned). Still STOPPED pending approval.
+Why: Direct UI feedback from Dylan during the Part B review. The cut-off was multiple groups open at once overflowing the fixed-height sidebar; single-open removes the overflow entirely.
+Files touched: mockup.html (uncommitted), PROJECT-LOG.md.
+Next steps: Dylan re-opens mockup.html, confirms nothing clips, and approves the pattern (or asks for multi-open instead of single-open).
+Handoff to Cowork: None.
+Handoff to Dylan: re-open mockup.html and click through Sales / Production / Finance / Admin; confirm Overview stays put and no view is cut off. Approve "collapsible groups" to have it wired into index.html.
+
+---
+
 ## [2026-06-28 MST] Claude Code: fixed Daily flow card visibility + verified/hardened Open Cockpit (Part A); nav-reorg plan + mockup (Part B, awaiting approval)
 By: Claude Code
 Changed: index.html (Part A, committed 60141fa) and a new throwaway mockup.html (Part B, NOT committed, design artifact only). Two reported bugs on the left sidebar `#rdSidebar`, plus a plan for the growing nav.
