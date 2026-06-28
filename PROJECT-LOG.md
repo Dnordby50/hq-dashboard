@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-27 MST] Cowork: confirmed pec_notifications table is LIVE in prod (bell backing store)
+By: Cowork
+Verifying the handoff from the 2026-06-27 Claude Code entry (commit e5f6827, which moved the notification bell into the live topbar). The bell reads `public.pec_notifications`, and the base migration that creates it (supabase/migrations/2026-06-06_notifications.sql) had never been logged as explicitly applied to prod.
+Checked: ran `select to_regclass('public.pec_notifications');` in the Supabase Studio SQL editor on the live PEC/TopCoat project (ref zdfpzmmrgotynrwkeakd, "HQ Dashboard | Dnordby50's Org"). Result: `pec_notifications` (non-null), so the table EXISTS in prod.
+Action taken: none. Because the result was non-null, the 2026-06-06 migration did NOT need to be applied. No SQL was run other than the read-only to_regclass check; no tables or data were touched.
+Result: the bell's backing store is live. Once e5f6827 is deployed, the bell will populate from real rows (and continues to degrade gracefully if a read ever fails).
+Files touched: PROJECT-LOG.md only (no code change, no migration).
+Handoff to Dylan: nothing required for the table. Push e5f6827 to deploy if not already, then confirm the bell shows in the topbar.
+Handoff to Cowork: none.
+
+---
+
 ## [2026-06-27 MST] Claude Code: notification bell into live topbar + topbar Refresh re-renders current CRM view
 By: Claude Code
 Changed: Two fixes in index.html, NO migration.
