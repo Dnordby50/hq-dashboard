@@ -860,8 +860,12 @@ body { padding: 18px; min-height: 100vh; }
 #rdSidebarNav .tab-btn.active .rd-ico,
 #rdSidebarEmpNav .tab-btn.active .rd-ico { opacity: 1; }
 #rdSidebarNav .rd-crm-divider { height: 1px; background: var(--rd-line); margin: 8px 12px; }
-#rdSidebarNav .rd-crm-group { padding: 14px 12px 4px; font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--rd-muted); }
-#rdSidebarNav .rd-crm-group:first-child { padding-top: 4px; }
+/* Category headers double as the divider between groups: a rule line plus extra
+   space above each group makes the Overview / Sales / Production / Finance / Admin
+   sections read as distinct blocks in the flat (scrolling) nav. The first group
+   has no line/space above it. */
+#rdSidebarNav .rd-crm-group { margin-top: 16px; padding: 16px 12px 6px; border-top: 1px solid var(--rd-line); font-size: 10.5px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: var(--rd-ink-2); }
+#rdSidebarNav .rd-crm-group:first-child { margin-top: 0; padding-top: 4px; border-top: none; }
 
 /* Sidebar promo card */
 .rd-promo {
@@ -2016,15 +2020,15 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
           <div class="pec-subnav-group">Sales</div>
+          <button data-pec-view="jobs">Jobs</button>
+          <button data-pec-view="customers">Customers</button>
+          <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
                switchView view). Hidden by default; wireEstimatorNav() reveals it
                only for emails in settings.estimator_allowed_emails (defaults to
                the owner only), so the beta stays visible to just Dylan until he
                adds others to that one setting. -->
           <button id="pecEstimatorNav" style="display:none">Estimator (Beta)</button>
-          <button data-pec-view="customers">Customers</button>
-          <button data-pec-view="jobs">Jobs</button>
-          <button data-pec-view="pipeline">Jobs pipeline</button>
           <div class="pec-subnav-group">Production</div>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
@@ -2125,7 +2129,7 @@ const CONFIG = {
     FTP_MONTHLY: 91667,
     COMBINED_MONTHLY: 243000
   },
-  COACH_MODEL: 'claude-sonnet-4-20250514',
+  COACH_MODEL: 'claude-sonnet-4-6',
   ELEVENLABS_API_KEY: 'sk_f3f6812161da21d3ac0f4772bc790227ccf55b1ae2dbc335',
   ELEVENLABS_VOICE_ID: 'JBFqnCBsd6RMkjVDRZzb',
   COACH_LOG_SCRIPT: 'YOUR_APPS_SCRIPT_URL',
