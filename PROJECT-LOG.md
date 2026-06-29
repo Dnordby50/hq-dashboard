@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Cowork: diagnosed "missing" Submitted-for-review section (empty by design) and scoped a Claude Code prompt to always-show it
+By: Cowork
+Reported: Dylan does not see the "Submitted for review" section on Job Costing.
+Diagnosis (read-only): NOT a bug. The section at index.html:17445 is gated on `submittedReview.length` (`const submittedReviewHtml = submittedReview.length ? ... : ''`), so it renders to an empty string and disappears whenever the queue is empty. A job only enters that queue when a NON-admin clicks "Submit for review" (`#costingSubmitBtn`, which only renders for non-admins on a draft job); admins finalize directly, so Dylan's account can never populate it.
+Verified against PROD via Supabase MCP (read-only, project zdfpzmmrgotynrwkeakd): `select count(*) ... from public.pec_prod_jobs` returned total_jobs 75, ever_submitted 0, submitted_open_in_queue 0, finalized 19. So no job has ever been submitted for review, which is exactly why the section has never appeared. (Caveat noted to Dylan: if the submit-for-review frontend commit was never deployed, that would also yield ever_submitted 0, so the prompt includes a flow audit + a live test handoff.)
+Decisions from Dylan (focused questions, not the full 10, because this is a one-conditional UI tweak not a build phase): always show the section with an empty state reading "No jobs awaiting review"; visible to everyone (admin and non-admin) always; and have Claude Code verify the real submit-for-review flow end to end, not just the empty state.
+Produced: claude-code-prompt-3-submitted-for-review-always-show.md in the HQ workspace folder (outside the repo). It removes the length gate so the card always renders (empty state when 0), keeps it on the Active tab in its current spot and styling, leaves the "· N in review" summary suffix conditional, and adds a submit-path code audit plus a Handoff to Dylan to test the live flow as Anne (non-admin submits -> row appears).
+Why: Dylan wants the section discoverable even when empty, and assurance the underlying submit flow actually works.
+Files touched: PROJECT-LOG.md only (the prompt .md lives in the HQ workspace folder). No app code, no migration, no PROD data changed (only a read-only count query).
+Next steps: Dylan runs claude-code-prompt-3 in Claude Code, then does the Anne-submits live test from that prompt's handoff to populate the queue once and confirm end to end.
+Handoff to Cowork: none.
+Handoff to Dylan: run claude-code-prompt-3; after it ships, sign in as Anne and submit one completed job's costing to confirm the section fills and Finalize / Send back work.
+
+---
+
 ## [2026-06-28 MST] Claude Code: fixed Help/SOP/JARVIS AI chat (retired model) + sidebar category separation, reordered Sales
 By: Claude Code
 Changed: index.html + netlify/functions/sop-chat.js. NO migration, NO new secret. Commit 6829249.
