@@ -12080,7 +12080,10 @@ async function renderBonusReport() {
       <div class="pec-card">
         <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
           <h3 style="margin:0">${g.isNone ? 'No check date assigned' : 'Payday ' + invFmtDate(g.date) + ' <span style="color:var(--muted);font-size:.78rem;font-weight:400">(pay period ' + invFmtDate(commissionPeriod(g.date).start) + ' – ' + invFmtDate(commissionPeriod(g.date).end) + ')</span>'}</h3>
-          <div style="font-size:1.2rem;font-weight:700">${invUSD(g.total)}</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            ${isAdm && !g.isNone && g.date ? `<button class="pec-btn sm" data-handout-payroll="${esc(g.date)}">Print handouts</button>` : ''}
+            <div style="font-size:1.2rem;font-weight:700">${invUSD(g.total)}</div>
+          </div>
         </div>
         <table class="pec-table" style="margin-top:8px">
           <thead><tr><th>Crew member</th><th>Customer</th><th style="text-align:right">Hours</th><th style="text-align:right">Bonus paid</th></tr></thead>
@@ -12118,6 +12121,14 @@ async function renderBonusReport() {
     ${payoutMissing ? '<div class="pec-card" style="border-color:var(--warn)"><strong>Payout tracking not enabled yet.</strong> Apply the 2026-06-15_crew_bonus_manual_and_payouts.sql migration to record paid-out bonuses. Until then, everything shows as Pending.</div>' : ''}
 
     ${isPayouts ? `
+    ${isAdm && state.lastBonusBatch && state.lastBonusBatch.bonusIds && state.lastBonusBatch.bonusIds.length ? `
+    <div class="pec-card" style="border-left:4px solid var(--accent);display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><strong>Bonuses paid.</strong> <span style="color:var(--muted);font-size:.82rem">Print a handout sheet for each crew member in the batch you just paid${state.lastBonusBatch.payrollDate ? ' (payday ' + invFmtDate(state.lastBonusBatch.payrollDate) + ')' : ''}.</span></div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="pec-btn sm primary" id="bonPrintHandouts">Print handouts</button>
+        <button class="pec-btn sm" id="bonPrintHandoutsDismiss">Dismiss</button>
+      </div>
+    </div>` : ''}
     <div class="pec-card">
       <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
         <div><div style="color:var(--muted);font-size:.72rem">Paid out ${invFmtDate(start)} to ${invFmtDate(end)}</div><div style="font-size:1.5rem;font-weight:700">${invUSD(periodTotal)}</div></div>
@@ -12215,8 +12226,30 @@ async function renderBonusReport() {
     markBtn.disabled = true; markBtn.textContent = 'Saving...';
     const up = await withFreshWriteRetry(() => supabase.from('pec_bonus_payouts').upsert(rows, { onConflict: 'bonus_id' }), { label: 'bonus-payout' });
     if (up.error) { markBtn.disabled = false; markBtn.textContent = 'Mark selected paid'; alert('Could not save payout: ' + up.error.message); return; }
+    // Remember exactly the batch just paid so the Payouts tab can offer a
+    // "Print handouts" action for it (openBonusHandouts filters to labor-savings
+    // rows, so passing every paid id here is fine).
+    state.lastBonusBatch = { bonusIds: rows.map(r => String(r.bonus_id)), paidOn: payDate, payrollDate: overridePayroll || commissionFriday(payDate) };
     renderBonusReport();
   });
+
+  // Print handouts for the batch just paid (admin only).
+  if ($('bonPrintHandouts')) $('bonPrintHandouts').addEventListener('click', () => {
+    const b = state.lastBonusBatch;
+    if (b && b.bonusIds && b.bonusIds.length) openBonusHandouts(b.bonusIds, { paidOn: b.paidOn, payrollDate: b.payrollDate });
+  });
+  if ($('bonPrintHandoutsDismiss')) $('bonPrintHandoutsDismiss').addEventListener('click', () => { state.lastBonusBatch = null; renderBonusReport(); });
+
+  // Reprint handouts for a past payday (Payroll report tab). Gathers that
+  // payday's bonus ids from the already-grouped reportList; openBonusHandouts
+  // filters them to labor-savings rows, so crew-lead/ad-hoc ids are ignored.
+  root.querySelectorAll('[data-handout-payroll]').forEach(btn => btn.addEventListener('click', () => {
+    const date = btn.dataset.handoutPayroll;
+    const g = reportList.find(x => !x.isNone && x.date === date);
+    if (!g) return;
+    const ids = Object.values(g.byCrew).flatMap(c => c.rows.map(r => String(r.id)));
+    if (ids.length) openBonusHandouts(ids, { paidOn: date, payrollDate: date });
+  }));
 
   // Undo a payout: delete the row, returning the bonus to Pending.
   root.querySelectorAll('[data-bon-undo]').forEach(b => b.addEventListener('click', async () => {
@@ -12226,6 +12259,187 @@ async function renderBonusReport() {
     if (del.error) { b.disabled = false; alert('Could not undo: ' + del.error.message); return; }
     renderBonusReport();
   }));
+}
+
+// ============================================================
+// Crew bonus payout handout sheets (print/PDF)
+// ============================================================
+// One branded page per crew member that shows HOW their labor-savings bonus was
+// earned: each job's labor budget vs actual, the savings, the 75% crew pool, the
+// full crew split, and the person's hours/share/bonus. Reuses the invoice/work
+// order print pattern (pecOpenPrintDoc / pecPrintBrand). Phase 1 = print only;
+// buildBonusHandoutMemberPage renders ONE member so Phase 2 (email/text to an
+// individual) can reuse it without a rewrite.
+//
+// Flag A (data accuracy): the ledger stores each member's paid amount + hours,
+// but NOT the job-level budget/actual context. We RECOMPUTE at print time (no
+// migration). Dollars are ALWAYS taken from the ledger amount (source of truth,
+// matches the check); the crew pool is the sum of the ledger amounts on the job,
+// savings = pool / 0.75, and labor budget is derived as actualLabor + savings
+// (actualLabor recomputed from the same manual hours + wages finalize used).
+// This keeps the dollar figures exact and the four lines internally consistent;
+// only the budget/actual CONTEXT can drift if a job was edited after finalize.
+// Flag B: the sheet total is labeled "Labor-savings bonus" and a note says
+// crew-lead / one-off bonuses are paid separately, so it is never mistaken for
+// the whole check. Flag C: within the batch's job set we show jobs the person
+// worked at $0 too (from manual labor), not just paying jobs.
+
+// Render ONE crew member's handout page. `person` carries precomputed totals and
+// the job ids to show; `jobCtx` is the shared per-job context map. breakBefore
+// starts the section on a new printed page (every member after the first).
+function buildBonusHandoutMemberPage(person, jobCtx, payInfo, breakBefore) {
+  const pct = Math.round(CREW_BONUS_FRACTION * 100);
+  const usd = (n) => (Number(n) > 0 ? invUSD(n) : '$0');
+  const jobsHtml = person.jobsForMe.map(jid => {
+    const c = jobCtx[jid];
+    const job = c.job || {};
+    const mine = c.split.find(s => s.cmId === person.cmId) || { hours: 0, share: 0, amount: 0 };
+    const splitRows = c.split.map(s => `<tr${s.cmId === person.cmId ? ' style="background:var(--soft);font-weight:700"' : ''}>
+        <td>${esc(s.name)}${s.cmId === person.cmId ? ' (you)' : ''}</td>
+        <td class="r">${fmtNum(s.hours)}</td>
+        <td class="r">${Math.round((s.share || 0) * 100)}%</td>
+        <td class="r">${usd(s.amount)}</td>
+      </tr>`).join('');
+    return `<div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+        <div style="font-weight:700;font-size:13px">${esc(job.customer_name || '(no customer)')}</div>
+        <div class="doc-note">${c.sys ? esc(c.sys.name) : ''}</div>
+      </div>
+      <table class="doc-tot" style="width:100%;margin:6px 0 8px">
+        <tr><td>Labor budget</td><td class="r">${c.laborBudget != null ? invUSD(c.laborBudget) : 'n/a'}</td></tr>
+        <tr><td>Actual labor</td><td class="r">${c.actualLabor != null ? invUSD(c.actualLabor) : 'n/a'}</td></tr>
+        <tr><td>Labor saved</td><td class="r">${usd(c.savings)}</td></tr>
+        <tr><td>Crew pool (${pct}% of savings)</td><td class="r">${usd(c.poolPaid)}</td></tr>
+      </table>
+      <table class="doc-tbl">
+        <thead><tr><th>Crew member</th><th class="r">Hours</th><th class="r">Share</th><th class="r">Bonus</th></tr></thead>
+        <tbody>${splitRows}</tbody>
+      </table>
+    </div>`;
+  }).join('') || `<div class="doc-note" style="margin-bottom:10px">No labor-savings jobs in this payout.</div>`;
+
+  return `<section style="${breakBefore ? 'break-before:page;page-break-before:always;' : ''}padding-top:${breakBefore ? '6px' : '0'}">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:10px">
+      <div style="font-size:18px;font-weight:800;color:var(--primary)">${esc(person.name)}</div>
+      <div class="doc-note">Crew bonus payout${payInfo && payInfo.payrollDate ? ' &middot; payday ' + esc(invFmtDate(payInfo.payrollDate)) : (payInfo && payInfo.paidOn ? ' &middot; ' + esc(invFmtDate(payInfo.paidOn)) : '')}</div>
+    </div>
+    <div style="background:var(--soft);border-left:4px solid var(--accent);padding:10px 12px;border-radius:6px;margin-bottom:10px">
+      <div style="font-weight:700;color:var(--primary)">Nice work. This bonus is the labor you saved.</div>
+      <div class="doc-note" style="margin-top:3px">Every job you finish efficiently under budget puts money back in your pocket. This sheet shows exactly which jobs paid you and how the math worked.</div>
+    </div>
+    <div class="doc-note" style="margin-bottom:12px">How it works: you earn ${pct}% of the labor you save versus the budget on each job, split between the crew by the hours each person worked.</div>
+    ${jobsHtml}
+    <table class="doc-tot" style="width:360px">
+      <tr><td>Labor-savings bonus (this payout)</td><td class="r">${usd(person.thisPayout)}</td></tr>
+      <tr><td>Your hours (this payout)</td><td class="r">${fmtNum(person.myHoursTotal)}</td></tr>
+      <tr><td>Total labor you saved (this payout)</td><td class="r">${usd(person.totalSavings)}</td></tr>
+      <tr><td>Bonus paid year to date</td><td class="r">${usd(person.ytdPaid)}</td></tr>
+      <tr class="tot"><td>Bonus paid all time</td><td class="r">${usd(person.allPaid)}</td></tr>
+    </table>
+    <div class="doc-note" style="margin-top:8px">This sheet shows your labor-savings bonus only. Crew-lead pay and any one-off bonuses, if you got them, are paid separately and are not listed here, so your paycheck may be more than the total above.</div>
+  </section>`;
+}
+
+// Build and open the combined handout document for a set of paid bonus ids.
+// Admin only. Recomputes job context (Flag A) and renders one page per member.
+async function openBonusHandouts(bonusIds, payInfo) {
+  if (!isAdmin()) { try { showToast('Admin only.', { ttl: 3000 }); } catch (_) {} return; }
+  const idSet = new Set((bonusIds || []).map(String));
+  if (!idSet.size) { try { showToast('No bonuses in this batch to print.', { ttl: 3000 }); } catch (_) {} return; }
+  try { showToast('Building handouts…', { ttl: 2500 }); } catch (_) {}
+  await loadCostingData(); // crewMembers (wages), prodJobs, systemTypes/systemIdByJob, manualLaborByJob, bonusesByJob, costingLaborRate
+  let payouts = [];
+  try {
+    const r = await withFreshSession(() => supabase.from('pec_bonus_payouts').select('bonus_id,amount,paid_on,payroll_date'), { label: 'handout-payouts' });
+    payouts = (r && r.data) || [];
+  } catch (_) {}
+  const payoutByBid = Object.fromEntries(payouts.map(p => [String(p.bonus_id), p]));
+
+  const LS_NOTE = 'Labor-savings bonus';
+  const round2 = n => Math.round(n * 100) / 100;
+  const rate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
+  const memberById = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
+  const jobById = Object.fromEntries((state.prodJobs || []).map(j => [j.id, j]));
+  const sysById = Object.fromEntries((state.systemTypes || []).map(s => [s.id, s]));
+  const systemForJob = (job) => {
+    if (!job) return null;
+    const fid = (state.systemIdByJob || {})[job.id];
+    if (fid && sysById[fid]) return sysById[fid];
+    const areas = ((state.productAreasByJob || {})[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+    return areas[0] ? sysById[areas[0].system_type_id] : null;
+  };
+  const memberLookup = (key) => { const m = memberById[key]; return { name: m && m.name ? m.name : 'Crew member', wage: m ? (m.hourly_wage ?? null) : null }; };
+
+  // All labor-savings ledger rows grouped by job (the full ledger, for crew split + YTD/all-time).
+  const allLsByJob = {};
+  for (const jid of Object.keys(state.bonusesByJob || {})) {
+    const rows = (state.bonusesByJob[jid] || []).filter(b => b.note === LS_NOTE);
+    if (rows.length) allLsByJob[jid] = rows;
+  }
+  // The batch = labor-savings rows whose id was just paid.
+  const batchRows = [];
+  for (const jid of Object.keys(allLsByJob)) for (const b of allLsByJob[jid]) if (idSet.has(String(b.id))) batchRows.push(b);
+  const skipped = batchRows.filter(b => !b.crew_member_id).map(b => b.crew_member_name || '(unnamed)');
+  const payableBatch = batchRows.filter(b => b.crew_member_id);
+  if (!payableBatch.length) {
+    const msg = skipped.length
+      ? 'Every labor-savings row in this batch is missing a crew-member link, so no sheets could be generated. Fix the links and reprint.'
+      : 'This batch has no labor-savings bonuses (crew-lead and one-off bonuses are excluded from handouts).';
+    try { showToast(msg, { ttl: 7000 }); } catch (_) {}
+    return;
+  }
+
+  const batchJobIds = Array.from(new Set(payableBatch.map(b => b.job_id)));
+  // Per-job context: pool/savings from the ledger (authoritative), budget/actual recomputed, crew split incl $0 workers.
+  const jobCtx = {};
+  for (const jid of batchJobIds) {
+    const lsRows = allLsByJob[jid] || [];
+    const poolPaid = round2(lsRows.reduce((s, b) => s + Number(b.amount || 0), 0));
+    const savings = round2(poolPaid / CREW_BONUS_FRACTION);
+    const manualRows = ((state.manualLaborByJob || {})[jid] || []).filter(m => m.crew_member_id);
+    const hoursByKey = {};
+    for (const m of manualRows) { const c = (hoursByKey[m.crew_member_id] ||= { total: 0, ot: 0 }); c.total += Number(m.hours || 0); c.ot += Number(m.ot_hours || 0); }
+    let actualLabor = null;
+    try { const cb = computeCrewBonus(null, hoursByKey, memberLookup, rate); actualLabor = cb.actualLabor; } catch (_) {}
+    const laborBudget = (actualLabor != null) ? round2(actualLabor + savings) : null;
+    const split = []; const seen = new Set();
+    for (const b of lsRows) { const k = String(b.crew_member_id); seen.add(k); split.push({ cmId: k, name: b.crew_member_name || (memberById[b.crew_member_id] && memberById[b.crew_member_id].name) || 'Crew member', hours: Number(b.hours_actual || 0), amount: round2(Number(b.amount || 0)), paid: true }); }
+    for (const m of manualRows) { const k = String(m.crew_member_id); if (seen.has(k)) continue; const h = Number(m.hours || 0); if (!(h > 0)) continue; seen.add(k); split.push({ cmId: k, name: (memberById[m.crew_member_id] && memberById[m.crew_member_id].name) || 'Crew member', hours: h, amount: 0, paid: false }); }
+    const totalHours = split.reduce((s, x) => s + x.hours, 0);
+    split.forEach(x => x.share = totalHours > 0 ? x.hours / totalHours : 0);
+    split.sort((a, b) => b.hours - a.hours);
+    jobCtx[jid] = { job: jobById[jid], sys: systemForJob(jobById[jid]), poolPaid, savings, laborBudget, actualLabor, split, totalHours };
+  }
+
+  const yr = String((payInfo && payInfo.paidOn) || invToday()).slice(0, 4);
+  const peopleIds = Array.from(new Set(payableBatch.map(b => String(b.crew_member_id))));
+  const people = peopleIds.map(cmId => {
+    const myBatchRows = payableBatch.filter(b => String(b.crew_member_id) === cmId);
+    const name = (myBatchRows[0] && myBatchRows[0].crew_member_name) || (memberById[cmId] && memberById[cmId].name) || 'Crew member';
+    const paidJobIds = new Set(myBatchRows.map(b => b.job_id));
+    const jobsForMe = batchJobIds.filter(jid => paidJobIds.has(jid) || (jobCtx[jid] && jobCtx[jid].split.some(s => s.cmId === cmId)))
+      .sort((a, b) => String((jobCtx[b].job || {}).costing_finalized_at || '').localeCompare(String((jobCtx[a].job || {}).costing_finalized_at || '')));
+    const thisPayout = round2(myBatchRows.reduce((s, b) => s + Number(b.amount || 0), 0));
+    const myHoursTotal = jobsForMe.reduce((s, jid) => { const me = jobCtx[jid].split.find(x => x.cmId === cmId); return s + (me ? me.hours : 0); }, 0);
+    const totalSavings = round2(jobsForMe.reduce((s, jid) => s + (jobCtx[jid].savings || 0), 0));
+    let ytdPaid = 0, allPaid = 0;
+    for (const jid of Object.keys(allLsByJob)) for (const b of allLsByJob[jid]) {
+      if (String(b.crew_member_id) !== cmId) continue;
+      const po = payoutByBid[String(b.id)]; if (!po) continue;
+      const amt = Number(po.amount || 0); allPaid += amt;
+      if (String(po.paid_on || '').slice(0, 4) === yr) ytdPaid += amt;
+    }
+    return { cmId, name, jobsForMe, thisPayout, myHoursTotal, totalSavings, ytdPaid: round2(ytdPaid), allPaid: round2(allPaid) };
+  }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+  const pages = people.map((p, i) => buildBonusHandoutMemberPage(p, jobCtx, payInfo, i > 0));
+  const skippedHtml = skipped.length
+    ? `<section style="break-before:page;page-break-before:always"><h3 class="doc-h3">Skipped rows (not linked to a crew member)</h3><div class="doc-note">These paid labor-savings rows have no crew-member link, so no sheet was generated. Link them in the ledger, then reprint: ${skipped.map(esc).join(', ')}</div></section>`
+    : '';
+  const brand = pecPrintBrand();
+  const payLabel = (payInfo && payInfo.payrollDate) ? invFmtDate(payInfo.payrollDate) : ((payInfo && payInfo.paidOn) ? invFmtDate(payInfo.paidOn) : '');
+  const head = `<div class="doc-title"><h1>Crew Bonus</h1><div class="meta">${payLabel ? 'Payout ' + esc(payLabel) + '<br>' : ''}${people.length} crew member${people.length === 1 ? '' : 's'}</div></div>`;
+  pecOpenPrintDoc('Crew Bonus Payout', brand, head, pages.join('') + skippedHtml);
 }
 
 // ============================================================
