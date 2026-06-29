@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Cowork: investigated Quo (OpenPhone) texting integration, produced a setup runbook + phase-1 Claude Code prompt
+By: Cowork
+Request: Dylan wants to stand up Quo for sending drips, customer communication, invoices, and (future) estimates.
+Investigation: Quo is the rebrand of OpenPhone, a business phone + texting platform with a REST API (POST https://api.openphone.com/v1/messages, API-key auth, prepaid credits ~$0.01/segment) and inbound webhooks. US business texting requires A2P 10DLC carrier registration. The connected Quo MCP in this Cowork session is for ad-hoc messaging, but the CRM needs the server-side API to send automatically. Read pec-send-email.cjs (Resend): the codebase already has a clean JWT-gated, brand-sender, token-rendering, public_token /pay link, fully-logged send pattern + a delivery webhook (pec-webhook-resend.cjs), so the SMS build should mirror it. Verified live via the Quo connector: workspace has per-brand numbers PEC +19288008154 (inbox PNY8vPVPEZ) and FTP +19283561243 (inbox PNbl4NYbrM), plus Aron's personal line. Verified via read-only PROD SQL: all 78 customers have a phone; customers.phone exists, pec_prod_jobs has no phone column (jobs link to customers).
+Decisions from Dylan (12 multiple-choice questions, 3 rounds): relationship to DripJobs = complement now (invoicing), replace once front-end sales is built; drips = transactional first, build a drip engine later; two-way texting = yes, from the start; first capability = text an invoice; Quo account = ready with Owner access; A2P 10DLC = already approved; numbers = separate per brand; invoice text trigger = staff sends manually; opt-out = (advise) recommended auto-handle STOP + per-customer consent flag; texting UI home = both a per-customer thread and a unified Messages view; estimates = stub the path now (sales not built); ad-hoc Cowork texting = yes (subject to confirm-before-send per the external-comms guardrail).
+Produced two files in the HQ workspace folder (outside the repo): quo-integration-setup-runbook.md (the parts only Dylan can do: API key, credits, confirm number A2P, env vars, inbound webhook, template sign-off, plus phasing, compliance recommendation, and costs) and claude-code-prompt-5-quo-sms-phase1.md (the code build: a migration for pec_sms_senders + pec_sms_log + customers.sms_opt_out; pec-send-sms.cjs mirroring the email function with invoice/manual/estimate-stub kinds and an opt-out send guard; pec-webhook-quo.cjs for inbound + STOP; UI: Text invoice button, per-customer thread, lightweight Messages view; phasing guardrails to NOT build drips/auto-send/DripJobs replacement yet).
+Verification done this session: read-only Quo list-inboxes (confirmed connector wired + brand numbers) and two read-only PROD SQL reads (customer phone coverage, column checks). No texts sent, no app code changed, no migration applied, no PROD data mutated.
+Why: per this project's rules, Cowork investigates and hands Claude Code a scoped prompt; the multi-step nature (account setup vs code) warranted a separate human runbook alongside the build prompt.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan works the runbook checklist (API key, credits, env vars, Quo webhook) and runs claude-code-prompt-5; Cowork applies the SMS migration once Claude Code authors it.
+Handoff to Cowork: apply supabase/migrations/2026-06-28_quo_sms.sql to PROD once Claude Code writes it.
+Handoff to Dylan: complete the Quo setup checklist in quo-integration-setup-runbook.md, then run the phase-1 build prompt.
+
+---
+
 ## [2026-06-28 MST] Claude Code: crew bonus payout handout sheets (branded print/PDF, one page per crew member)
 By: Claude Code
 Changed: index.html only. NO migration, NO change to the finalize bonus-ledger write or computeCrewBonus. Commit fba0628.
