@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Cowork: investigated the bonus system and scoped a Claude Code prompt for per-person bonus payout handout sheets
+By: Cowork
+Request: Dylan wants a printable handout to give each crew member when a set of bonuses is paid, showing HOW and WHERE their bonus came from (which jobs, the labor-savings math), highlighting their effort.
+Investigation (read-only in index.html + two read-only PROD queries): the bonus machinery largely exists already. Ledger `pec_prod_job_bonuses` (one row per crew member per job: crew_member_id, crew_member_name snapshot, hours_actual, amount, note) written on finalize, plus manual $50 crew-lead and ad-hoc rows; paid status in `pec_bonus_payouts` (bonus_id, paid_on, payroll_date). `renderBonusReport` (~11988) already has a Payouts "Mark selected paid" flow and a Payroll report grouped by payday + crew member with per-job rows and a Print button. Math is locked in `computeCrewBonus` (~15877): pool = 75% of (labor budget - actual loaded labor), split by each member's hours share; burden 25%, OT 1.5x. Branded print helpers `pecOpenPrintDoc` / `pecPrintBrand` (invoice/work-order pattern) are reusable. Confirmed `pec_prod_crew_members` columns: id, crew_id, name, busybusy_member_id, active, hourly_wage, and crucially NO email or phone.
+Decisions from Dylan (20 multiple-choice questions, 5 rounds): branded print-to-PDF; ONE combined PDF, one page per person; trigger on the Payouts tab for "the set I just marked paid"; admin only; per-job show customer + system type; FULL labor-savings math per job; show the full crew split on shared jobs; hours per job + total; jobs most-recent-first; totals = this payout + YTD + all-time + total labor savings; fixed built-in motivational message; short policy explainer; labor-savings bonuses only (exclude crew-lead/ad-hoc); skip unlinked rows but warn; include $0-for-them jobs; data-accuracy approach left to Claude Code; delivery he wanted "email/text now".
+Flags raised in the prompt (rigorous-mentor pushback): (A) the ledger lacks the per-job calc context for the full breakdown, so the prompt asks Claude Code to snapshot at finalize (additive migration, Cowork-applied) AND recompute as fallback for the 19 already-finalized jobs; (B) "labor-savings only" means a sheet total can be less than the actual check, so the sheet must be labeled honestly; (C) "$0 jobs" have no ledger row, so v1 is scoped to $0-for-them jobs within the payout's finalized job set, not arbitrary over-budget jobs; (D) email/text delivery is BLOCKED now (no email/phone columns, no SMS provider in the stack), so it is deferred to Phase 2 with a Handoff to Dylan listing prerequisites, while Phase 1 (the print handout) ships and is structured so per-person delivery can be added without a rewrite.
+Produced: claude-code-prompt-4-bonus-payout-handouts.md in the HQ workspace folder (outside the repo).
+Why: per this project's rules, Cowork digs in with multiple-choice questions and hands Claude Code a ready-to-run, well-scoped prompt; the code lives in the HQ-Dashboard repo.
+Files touched: PROJECT-LOG.md only. No app code, no migration, no PROD data changed (two read-only queries only: a job-costing count and the crew_members column list).
+Next steps: Dylan runs claude-code-prompt-4 in Claude Code. If Claude Code adds the snapshot migration, Cowork applies it to PROD. Phase 2 (delivery) waits on Dylan adding crew contact info and choosing an SMS provider.
+Handoff to Cowork: likely apply a snapshot migration once Claude Code authors it (TBD by Claude Code's Flag A choice).
+Handoff to Dylan: run claude-code-prompt-4; decide Phase 2 delivery prerequisites (add email/phone to crew members, pick an SMS provider or limit to email).
+
+---
+
 ## [2026-06-28 MST] Claude Code: always-show the "Submitted for review" section (empty state) + audited the submit flow
 By: Claude Code
 Changed: index.html only. NO migration, NO logic change to submit/finalize/bonus. Commit 2e1df0f.
