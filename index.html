@@ -17442,11 +17442,14 @@ async function renderJobCosting() {
   const submittedReview = (state.prodJobs || [])
     .filter(j => !j.archived_at && !!j.costing_submitted_at && !costingIsFinalized(j))
     .slice().sort((a, b) => String(b.costing_submitted_at || '').localeCompare(String(a.costing_submitted_at || '')));
-  const submittedReviewHtml = submittedReview.length ? `
+  // Always render this card (no length gate) so the review queue is discoverable
+  // even when empty. With 0 submitted jobs it shows a muted empty-state row; the
+  // count chip is omitted at 0. Shown to all roles, always (not role-gated).
+  const submittedReviewHtml = `
     <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
-      <h3 style="margin:0 0 8px">Submitted for review <span style="color:var(--muted);font-size:.72rem;font-weight:400">${submittedReview.length} awaiting finalize</span></h3>
+      <h3 style="margin:0 0 8px">Submitted for review ${submittedReview.length ? `<span style="color:var(--muted);font-size:.72rem;font-weight:400">${submittedReview.length} awaiting finalize</span>` : ''}</h3>
       <div style="display:flex;flex-direction:column;gap:6px">
-        ${submittedReview.map(j => {
+        ${submittedReview.length ? submittedReview.map(j => {
           const sys = areaSystem(j);
           return `<div data-pending-cost="${esc(j.id)}" style="display:flex;gap:10px;align-items:center;cursor:pointer;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text))">
             <span style="flex:1;font-weight:600">${esc(j.customer_name || '(no name)')}</span>
@@ -17455,9 +17458,9 @@ async function renderJobCosting() {
             <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.costing_submitted_by ? 'by ' + esc(j.costing_submitted_by) + ' · ' : ''}${esc(fmtStamp(j.costing_submitted_at))}</span>
             <span class="pec-badge" style="--pec-badge-bg:#d8531c">Awaiting review</span>
           </div>`;
-        }).join('')}
+        }).join('') : `<div style="padding:8px 10px;color:var(--rd-muted,var(--muted));font-size:.82rem">No jobs awaiting review</div>`}
       </div>
-    </div>` : '';
+    </div>`;
 
   const tab = state.costingTab === 'completed' ? 'completed' : 'active';
   // Rollups summarize the FINALIZED set (Completed tab only).
