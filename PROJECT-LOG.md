@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-06-28 MST] Claude Code: fixed Help/SOP/JARVIS AI chat (retired model) + sidebar category separation, reordered Sales
+By: Claude Code
+Changed: index.html + netlify/functions/sop-chat.js. NO migration, NO new secret. Commit 6829249.
+BUG FIX (the Help widget error "could not reach the help service"): root cause was a RETIRED model, not an outage. CONFIG.COACH_MODEL was 'claude-sonnet-4-20250514' (index.html), which retired 2026-06-15; today is 2026-06-28, so the Anthropic API returned 404 and the widget's graceful fallback fired. That one constant also feeds the SOP chat and JARVIS, so all three AI features were broken (only the new Help widget surfaced it). Diagnosis was confirmed, not guessed: a side-effect-free probe (POST {} to the live /.netlify/functions/sop-chat) returned HTTP 400 "Missing system or messages", which proves the function is deployed AND ANTHROPIC_API_KEY is set + valid (the key check runs before body validation); so infrastructure was fine and only the model id was dead. Fix: set COACH_MODEL to 'claude-sonnet-4-6' (Dylan's choice: balanced cost/intelligence, drop-in for the old Sonnet) and updated the sop-chat.js fallback default off the retired id too. Verified end-to-end: curled the live function with model:'claude-sonnet-4-6' and got HTTP 200 with a valid completion, so the new id works with the live key before deploy. No request-shape change; the widget's degradation path is unchanged.
+NAV (reverted the accordion idea per Dylan): kept the flat, scrollable left bar (the scroll region shipped earlier via .rd-nav-scroll); did NOT build the collapsible mockup. Two changes: (1) the cloned category headers (#rdSidebarNav .rd-crm-group, index.html) now have a top rule line (border-top var(--rd-line)) + extra top margin/padding + a darker/bolder label, so Overview / Sales / Production / Finance / Admin read as visually distinct blocks; the :first-child override removes the line/space above Overview. (2) Reordered the Sales group in #pecSubnav to match the approved mockup: Jobs, Customers, Jobs pipeline, then Estimator (Beta) last. Reorder is safe: the sidebar clones #pecSubnav in document order, routing is by data-pec-view, and the active-state mirror observer is order-independent. Estimator stays owner-only/hidden by its existing wireEstimatorNav logic; only its position moved. No accordion, no JS change for the nav.
+Why: Dylan reported the Help error and asked to revert the nav to a flat scrollable bar with clearer category separation, keeping the mockup's grouping.
+Testing: node --check on sop-chat.js (PASS) and on the extracted classic CONFIG script (PASS). Confirmed the new model id is the only one present in both files, the Sales order in #pecSubnav, and no em dashes in the changed lines. Live model check returned HTTP 200. Visual nav result (separator lines, Sales order, scroll + pinned Daily flow card) is a post-deploy check.
+Files touched: index.html, netlify/functions/sop-chat.js, PROJECT-LOG.md.
+Next steps: Dylan pushes to deploy (pushed by Claude Code this session). NO env var, NO migration.
+Handoff to Cowork: None.
+Handoff to Dylan: after deploy, (a) open the Help widget and ask "how do I cost a job" -> a real answer, no "could not reach" message; confirm SOP chat and JARVIS also respond now; (b) in the sidebar confirm clear separating lines between the five category groups, that Sales reads Jobs / Customers / Jobs pipeline / Estimator, and that the list still scrolls with the Daily flow card pinned at the bottom.
+
+---
+
 ## [2026-06-28 MST] Claude Code: bottom-right Help widget (AI chat, answers-only v1) + CRM help doc
 By: Claude Code
 Changed: index.html (widget UI + logic) and a new repo doc help/crm-help.md. NO backend change, NO new secret, NO migration. Commit f8e3baf.
