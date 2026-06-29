@@ -1207,6 +1207,74 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
 .siri-orb.speaking .orb-core { animation: core-speak 0.5s ease-in-out infinite; }
 .siri-orb.speaking { filter: brightness(1.4) saturate(1.2); }
 
+/* ---------- Help widget (bottom-right slide-in AI chat) ----------
+   Fixed launcher + slide-in panel. z-index 9000 sits BELOW the modal roots and
+   lightbox (10000+) and the auth gate (10000), so a modal or the sign-in gate
+   always covers it. Visibility is driven in JS by watching #authGate, and it is
+   hard-hidden in customer portal mode. Answers-only assistant (v1). */
+#pecHelp { position: fixed; right: 22px; bottom: 22px; z-index: 9000; display: none; }
+body.pec-portal-mode #pecHelp { display: none !important; }
+
+.pec-help-fab {
+  width: 56px; height: 56px; border-radius: 50%;
+  background: var(--rd-accent, #ff6a13); color: #fff;
+  border: none; cursor: pointer;
+  box-shadow: 0 10px 26px var(--rd-accent-ring, rgba(255,106,19,.35)), 0 2px 6px rgba(0,0,0,.18);
+  display: grid; place-items: center;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.pec-help-fab:hover { transform: translateY(-2px); box-shadow: 0 14px 30px var(--rd-accent-ring, rgba(255,106,19,.45)), 0 3px 8px rgba(0,0,0,.2); }
+.pec-help-fab svg { width: 26px; height: 26px; }
+
+.pec-help-panel {
+  position: absolute; right: 0; bottom: 70px;
+  width: 380px; max-width: calc(100vw - 32px);
+  height: 560px; max-height: calc(100vh - 110px);
+  background: var(--rd-card, #fff); color: var(--rd-ink, #0f1420);
+  border: 1px solid var(--rd-line, #e7e9ef); border-radius: 18px;
+  box-shadow: 0 20px 50px rgba(20,30,60,.22);
+  display: flex; flex-direction: column; overflow: hidden;
+  transform: translateY(12px) scale(.98); opacity: 0; pointer-events: none;
+  transition: transform .18s ease, opacity .18s ease;
+}
+#pecHelp.open .pec-help-panel { transform: translateY(0) scale(1); opacity: 1; pointer-events: auto; }
+#pecHelp.open .pec-help-fab { transform: scale(.94); }
+
+.pec-help-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 14px 12px; border-bottom: 1px solid var(--rd-line, #e7e9ef);
+  background: linear-gradient(160deg, var(--rd-accent-hero, #1d2330), var(--rd-accent-hero-2, #0e1320)); color: #fff;
+}
+.pec-help-head .pec-help-title { font-weight: 700; font-size: 15px; line-height: 1.2; }
+.pec-help-head .pec-help-sub { font-size: 11px; opacity: .7; margin-top: 2px; }
+.pec-help-head .pec-help-close {
+  margin-left: auto; background: rgba(255,255,255,.12); color: #fff; border: none;
+  width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 16px; line-height: 1;
+  display: grid; place-items: center;
+}
+.pec-help-head .pec-help-close:hover { background: rgba(255,255,255,.22); }
+
+.pec-help-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; background: var(--rd-soft, #f3f4f7); }
+.pec-help-msg { max-width: 86%; padding: 9px 12px; border-radius: 14px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+.pec-help-msg.user { align-self: flex-end; background: var(--rd-accent, #ff6a13); color: #fff; border-bottom-right-radius: 5px; }
+.pec-help-msg.assistant { align-self: flex-start; background: #fff; color: var(--rd-ink, #0f1420); border: 1px solid var(--rd-line, #e7e9ef); border-bottom-left-radius: 5px; }
+.pec-help-msg.system { align-self: center; background: transparent; color: var(--rd-muted, #7a8499); font-size: 12px; font-style: italic; }
+.pec-help-typing { align-self: flex-start; color: var(--rd-muted, #7a8499); font-size: 12.5px; font-style: italic; padding: 2px 4px; }
+
+.pec-help-input { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--rd-line, #e7e9ef); background: var(--rd-card, #fff); }
+.pec-help-input textarea {
+  flex: 1; resize: none; max-height: 120px;
+  padding: 10px 12px; border: 1px solid var(--rd-line, #e7e9ef); border-radius: 12px;
+  font-size: 13.5px; font-family: inherit; color: var(--rd-ink, #0f1420); background: var(--rd-soft, #f6f7f9);
+}
+.pec-help-input textarea:focus { outline: none; border-color: var(--rd-accent, #ff6a13); background: #fff; }
+.pec-help-send {
+  flex-shrink: 0; align-self: flex-end; width: 40px; height: 40px; border-radius: 12px;
+  background: var(--rd-accent, #ff6a13); color: #fff; border: none; cursor: pointer; display: grid; place-items: center;
+}
+.pec-help-send:disabled { opacity: .5; cursor: default; }
+.pec-help-send svg { width: 18px; height: 18px; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 980px) {
   #rdShell { grid-template-columns: 1fr; }
@@ -1220,6 +1288,10 @@ html[data-orb-style="svg"] .voice-orb       { display: none !important; }
   #rdTitle h1 { font-size: 24px; }
   #rdTopbar { flex-wrap: wrap; }
   #rdSearch { order: 3; width: 100%; }
+  /* Help panel goes near full-width on phones so it does not clip off-screen,
+     and the launcher tucks into the corner. */
+  #pecHelp { right: 12px; bottom: 12px; }
+  .pec-help-panel { width: calc(100vw - 24px); height: calc(100vh - 92px); bottom: 66px; right: 0; }
 }
 </style>
 
@@ -1560,6 +1632,32 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
       <button type="button" class="btn btn-primary" style="width:100%;padding:13px" onclick="window.pecAuthSignOut && window.pecAuthSignOut()">Sign out</button>
     </div>
   </div>
+</div>
+
+<!-- HELP WIDGET (bottom-right slide-in AI chat). Global, shown to every
+     signed-in staff role. Visibility is driven in JS by watching #authGate
+     (revealed only once the gate is hidden, i.e. signed in + approved), and it
+     is hard-hidden in customer portal mode via CSS. Answers-only assistant. -->
+<div id="pecHelp">
+  <div class="pec-help-panel" role="dialog" aria-label="Help assistant">
+    <div class="pec-help-head">
+      <div>
+        <div class="pec-help-title">Help</div>
+        <div class="pec-help-sub">Ask how to do things in TopCoat</div>
+      </div>
+      <button type="button" class="pec-help-close" id="pecHelpClose" aria-label="Close help" title="Close">&times;</button>
+    </div>
+    <div class="pec-help-messages" id="pecHelpMessages"></div>
+    <div class="pec-help-input">
+      <textarea id="pecHelpInput" rows="1" placeholder="How do I... / Where is..."></textarea>
+      <button type="button" class="pec-help-send" id="pecHelpSend" aria-label="Send" title="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/></svg>
+      </button>
+    </div>
+  </div>
+  <button type="button" class="pec-help-fab" id="pecHelpBtn" aria-label="Open help" title="Help">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.5-2 2-2 3"/><path d="M12 17h.01"/></svg>
+  </button>
 </div>
 
 <!-- HEADER -->
@@ -20943,6 +21041,187 @@ function _mergeAcrossAreas(areaPlans) {
   }
 
   console.log('[prod] module booted, prodSwitchView ready');
+})();
+</script>
+
+<!-- ============================================================
+     HELP WIDGET LOGIC (bottom-right slide-in AI chat, answers-only v1)
+     A self-contained classic script. It reuses the existing generic Claude
+     proxy (CONFIG.SOP_CHAT_ENDPOINT -> netlify/functions/sop-chat.js), the SOP
+     loader (loadSOPs / getAccessibleSOPs / sopData), and window.pecState for
+     live page context. No backend change and no new secret were needed: the
+     proxy already forwards an arbitrary {system, messages} to Anthropic using
+     the existing server-side ANTHROPIC_API_KEY.
+     ============================================================ -->
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const wrap = $('pecHelp');
+  if (!wrap) return;
+  const btn = $('pecHelpBtn');
+  const closeBtn = $('pecHelpClose');
+  const msgs = $('pecHelpMessages');
+  const input = $('pecHelpInput');
+  const send = $('pecHelpSend');
+
+  let history = [];          // [{role, content}], the running conversation
+  let systemPrompt = null;   // built lazily on first open, then reused
+  let crmHelpDoc = null;     // /help/crm-help.md, fetched once
+  let greeted = false;
+
+  // ---- Visibility: show only to a signed-in, approved user (auth gate hidden)
+  // and never in customer portal mode. We watch #authGate's style (the auth
+  // controller flips it to display:none once signed in + approved) instead of
+  // touching the auth module, so this stays decoupled. The CSS portal rule is
+  // the hard guard; this just avoids flashing the button behind the gate.
+  const gate = $('authGate');
+  function syncVisible(){
+    const portal = document.body.classList.contains('pec-portal-mode');
+    const signedIn = !gate || gate.style.display === 'none';
+    wrap.style.display = (signedIn && !portal) ? 'block' : 'none';
+  }
+  if (gate) new MutationObserver(syncVisible).observe(gate, { attributes:true, attributeFilter:['style'] });
+  new MutationObserver(syncVisible).observe(document.body, { attributes:true, attributeFilter:['class'] });
+  syncVisible();
+
+  // ---- Open / close ----
+  function openPanel(){
+    wrap.classList.add('open');
+    if (!greeted){
+      greeted = true;
+      addMsg('assistant', "Hi. I can explain how TopCoat works, where to find things, and how to do common tasks (job costing, invoicing, scheduling, ordering, customers, and more). What do you need?");
+    }
+    setTimeout(() => { try { input.focus(); } catch(_){} }, 60);
+    buildSystemPrompt(); // warm the knowledge so the first answer is fast
+  }
+  function closePanel(){ wrap.classList.remove('open'); }
+  btn.addEventListener('click', () => wrap.classList.contains('open') ? closePanel() : openPanel());
+  closeBtn.addEventListener('click', closePanel);
+
+  // ---- Message rendering ----
+  function addMsg(role, text){
+    const d = document.createElement('div');
+    d.className = 'pec-help-msg ' + role;
+    d.textContent = text;
+    msgs.appendChild(d);
+    msgs.scrollTop = msgs.scrollHeight;
+    return d;
+  }
+
+  // ---- Knowledge sources ----
+  async function getCrmHelpDoc(){
+    if (crmHelpDoc !== null) return crmHelpDoc;
+    try {
+      const res = await fetch('help/crm-help.md', { cache: 'no-cache' });
+      crmHelpDoc = res.ok ? await res.text() : '';
+    } catch { crmHelpDoc = ''; }
+    return crmHelpDoc;
+  }
+  function pageContext(){
+    try {
+      const st = window.pecState || {};
+      let ctx = `The user is on the "${st.view || 'dashboard'}" view.`;
+      if (st.openJobId) ctx += ` A job is open (id ${st.openJobId}).`;
+      return ctx;
+    } catch { return 'Current view unknown.'; }
+  }
+  function sopBlob(){
+    // Reuse the already-loaded SOP library (loadSOPs caches it). Respect access:
+    // staff get their accessible SOPs, owner (currentEmployee null) gets all.
+    let list = [];
+    try { list = (typeof getAccessibleSOPs === 'function') ? getAccessibleSOPs(currentEmployee) : (sopData || []); }
+    catch { list = (typeof sopData !== 'undefined' ? sopData : []) || []; }
+    if (!list || !list.length) return '';
+    let blob = '', total = 0; const budget = 120000;
+    for (const s of list){
+      const block = `\n\n=== SOP: ${s.id} - ${s.title} (${s.company}/${s.department}) ===\n${s.content}`;
+      if (total + block.length > budget){ blob += `\n\n[More SOPs exist than fit here. Suggest the SOP Library for the rest.]`; break; }
+      blob += block; total += block.length;
+    }
+    return blob;
+  }
+  async function buildSystemPrompt(){
+    if (systemPrompt) return systemPrompt;
+    try { if (typeof loadSOPs === 'function') await loadSOPs(); } catch {}
+    const doc = await getCrmHelpDoc();
+    const sops = sopBlob();
+    systemPrompt = `You are the in-app Help assistant for TopCoat, the CRM used by Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ.
+
+YOUR JOB: help signed-in staff understand HOW to use the app and WHERE features are. You explain and orient. You do NOT perform actions, navigate the app, or change data. If asked to do something, explain the steps so the user can do it.
+
+HOW TO ANSWER:
+1. Prefer the CRM HELP DOC below for how the app works, and the SOPs for business-process questions. Ground answers in those when they apply.
+2. Use the current-page context to make answers specific to what the user is looking at.
+3. If the curated sources do not cover it, you may use general knowledge, but stay on the topic of using this CRM and getting the user's work done. Do not invent app features that are not in the help doc; if unsure a feature exists, say so and suggest checking with Dylan.
+4. Be concise and concrete. Short steps, no filler.
+
+=== CURRENT PAGE CONTEXT ===
+${pageContext()}
+
+=== CRM HELP DOC ===
+${doc || '(The CRM help doc could not be loaded. Answer from general CRM knowledge and clearly note you could not load the app-specific help.)'}
+
+=== SOPs (business processes) ===${sops || '\n(No SOPs are loaded right now.)'}`;
+    return systemPrompt;
+  }
+
+  // ---- Send a message ----
+  async function doSend(){
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = ''; input.style.height = 'auto'; send.disabled = true;
+    addMsg('user', text);
+    history.push({ role:'user', content:text });
+
+    const typing = document.createElement('div');
+    typing.className = 'pec-help-typing';
+    typing.textContent = 'Thinking...';
+    msgs.appendChild(typing); msgs.scrollTop = msgs.scrollHeight;
+
+    try {
+      const system = await buildSystemPrompt();
+      const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({ system, messages: history, model: CONFIG.COACH_MODEL, max_tokens: 1024 })
+      });
+      typing.remove();
+      const raw = await res.text();
+      let data; try { data = raw ? JSON.parse(raw) : {}; } catch { data = null; }
+      if (!data || !res.ok){
+        history.pop();
+        addMsg('system', "Sorry, I could not reach the help service just now. Please try again in a moment, or ask Dylan if it keeps happening.");
+        return;
+      }
+      const reply = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text : '(no response)';
+      history.push({ role:'assistant', content:reply });
+      renderAssistantReply(reply);
+    } catch (e){
+      typing.remove(); history.pop();
+      addMsg('system', "Network hiccup, I could not send that. Check your connection and try again.");
+    } finally {
+      send.disabled = false;
+      try { input.focus(); } catch(_){}
+    }
+  }
+
+  function renderAssistantReply(reply){
+    addMsg('assistant', reply);
+    // PHASE 2 SEAM: a later version can have the model return a structured
+    // "suggested action" (for example {action:'navigate', view:'costing'})
+    // alongside the text, and render it here as a button that calls switchView.
+    // v1 is answers-only on purpose: we render text and wire no navigation or
+    // data actions. Keeping this seam means phase 2 does not need a rewrite.
+  }
+
+  send.addEventListener('click', doSend);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); doSend(); }
+  });
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
 })();
 </script>
 
