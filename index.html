@@ -2022,6 +2022,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
           <div class="pec-subnav-group">Sales</div>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="customers">Customers</button>
+          <button data-pec-view="messages">Messages</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
                switchView view). Hidden by default; wireEstimatorNav() reveals it
@@ -6339,6 +6340,7 @@ function switchView(v) {
       dashboard: renderDashboard,
       customers: renderCustomers,
       jobs: renderJobs,
+      messages: renderMessages,
       invoicing: renderInvoicing,
       commission: renderCommission,
       metrics: renderMetrics,
@@ -6901,6 +6903,8 @@ async function renderCustomerDetail(id) {
       ` : ''}
     </div>
 
+    ${customerSmsCardHtml()}
+
     <div class="pec-card">
       <h3>Lifetime revenue</h3>
       <div class="pec-row-3" style="align-items:flex-end">
@@ -6979,6 +6983,8 @@ async function renderCustomerDetail(id) {
     state.openJobId = el.dataset.openJob;
     switchView('jobs');
   }));
+  // Two-way SMS thread for this customer (async so it never blocks the page).
+  mountCustomerSmsThread(root.querySelector('#pecCustSmsCard'), c);
 }
 
 async function openCustomerForm(c) {
@@ -7989,6 +7995,7 @@ async function renderJobInvoice(jobId) {
         <button class="pec-btn sm" id="pecInvEditLines">Edit line items</button>
         <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
         <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
+        <button class="pec-btn sm" id="pecInvText">Text invoice</button>
         <button class="pec-btn sm" id="pecInvDownloadPdf">Download PDF</button>
         <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
@@ -8051,6 +8058,38 @@ async function renderJobInvoice(jobId) {
     try { await navigator.clipboard.writeText(url); showToast('Public invoice link copied', { ttl: 2500 }); }
     catch (_) { window.prompt('Copy this link:', url); }
   });
+
+  // Text invoice: send the pay link by SMS through Quo (kind=invoice). Manual
+  // (Dylan chose manual send for phase 1), no compose box -- the server builds a
+  // short, compliant body from the AR row. Mirrors the email button's gating.
+  // The server is the authority on the opt-out guard (returns a clear 409); this
+  // also disables the button up front for opted-out customers as a courtesy.
+  const textB = $('pecInvText');
+  if (textB) {
+    const smsBrand = smsBrandFromCompany(row.customer_company);
+    // Disable up front if the customer has opted out (tolerant pre-migration).
+    if (row.customer_id) {
+      supabase.from('customers').select('sms_opt_out').eq('id', row.customer_id).maybeSingle()
+        .then(({ data }) => { if (data && data.sms_opt_out) { textB.disabled = true; textB.title = 'This customer opted out of texts (replied STOP).'; } })
+        .catch(() => { /* column may not exist yet; leave enabled, server still guards */ });
+    }
+    if (!row.customer_phone) { textB.disabled = true; textB.title = 'No phone number on file for this customer.'; }
+    textB.addEventListener('click', async () => {
+      if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+      const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
+      if (!confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`)) return;
+      textB.disabled = true; const prevText = textB.textContent; textB.textContent = 'Texting…';
+      try {
+        await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
+        showToast('Invoice texted ✓', { ttl: 3500 });
+      } catch (err) {
+        // Includes the opt-out refusal (409) and any Quo error, verbatim.
+        showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
+      } finally {
+        textB.disabled = false; textB.textContent = prevText;
+      }
+    });
+  }
 
   // Compose-before-send dialog: To / Cc / Copy Me / Subject / rich-text body,
   // all pre-filled from the invoice template with tokens resolved client-side.
@@ -12819,7 +12858,198 @@ async function pecSendEmail(payload) {
   return body;
 }
 
-const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
+// ===========================================================================
+// SMS (Quo / OpenPhone) - phase 1. Mirrors the email helpers above. The
+// QUO_API_KEY lives only in Netlify; this layer just POSTs to pec-send-sms with
+// the caller's Supabase token and renders the pec_sms_log thread.
+// ===========================================================================
+
+// Shared: POST a send to the pec-send-sms function with the caller's Supabase
+// access token. Mirrors pecSendEmail. Throws on any non-ok result (incl. the
+// 409 opt-out refusal) so callers can show a friendly error.
+async function pecSendSms(payload) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error('Not signed in.');
+  const res = await fetch('/.netlify/functions/pec-send-sms', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  let body = {};
+  try { body = await res.json(); } catch (_) {}
+  if (!res.ok || !body.ok) throw new Error(body.error || `Send failed (${res.status})`);
+  return body;
+}
+
+const smsBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
+// customers.company IS the brand key the SMS sender map uses.
+const smsBrandFromCompany = company => company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
+
+// Render a list of pec_sms_log rows as text-message bubbles (out = right/accent,
+// in = left/gray, failed = red). Chronological order is the caller's job.
+function smsThreadRowsHtml(rows) {
+  if (!rows || !rows.length) return '<div style="color:var(--muted);font-size:.85rem;padding:10px 2px">No texts yet.</div>';
+  return rows.map(r => {
+    const out = r.direction === 'out';
+    const failed = r.status === 'failed';
+    const align = out ? 'flex-end' : 'flex-start';
+    const bg = failed ? '#fee2e2' : (out ? 'var(--accent, #ea580c)' : 'var(--s3, #e2e8f0)');
+    const fg = (out && !failed) ? '#fff' : 'var(--text, #0f172a)';
+    const kindTag = (r.kind && !['system', 'manual'].includes(r.kind)) ? ' · ' + r.kind : '';
+    const meta = `${invFmtDate(r.created_at)}${failed ? ' · failed' : ''}${kindTag}`;
+    return `<div style="display:flex;justify-content:${align};margin:5px 0">
+      <div style="max-width:78%;background:${bg};color:${fg};padding:8px 12px;border-radius:14px;font-size:.86rem;line-height:1.35;white-space:pre-wrap;word-break:break-word">
+        ${esc(r.body || (failed ? '(not sent)' : ''))}
+        <div style="font-size:.62rem;opacity:.72;margin-top:4px">${esc(meta)}${failed && r.error_message ? ' · ' + esc(r.error_message) : ''}</div>
+      </div></div>`;
+  }).join('');
+}
+
+// The SMS thread card markup for a customer detail page. Populated async by
+// mountCustomerSmsThread so customer detail still loads pre-migration.
+function customerSmsCardHtml() {
+  return `
+    <div class="pec-card" id="pecCustSmsCard">
+      <h3>Texts</h3>
+      <div data-sms-banner style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:.82rem;margin-bottom:10px"></div>
+      <div data-sms-thread style="max-height:340px;overflow-y:auto;padding:4px 2px;display:flex;flex-direction:column">
+        <div class="pec-empty" style="font-size:.8rem">Loading texts…</div>
+      </div>
+      <div data-sms-compose style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
+        <textarea data-sms-input rows="2" placeholder="Text this customer…" style="flex:1;resize:vertical;min-height:42px;padding:8px 10px;border-radius:8px;border:1px solid var(--border, #cbd5e1);font-size:.86rem"></textarea>
+        <button class="pec-btn primary" data-sms-send>Send text</button>
+      </div>
+    </div>`;
+}
+
+// Load opt-out + thread, wire the compose box. Tolerant of the pre-migration
+// state (table/column missing) so it degrades to a clear note, never an error.
+async function mountCustomerSmsThread(card, c) {
+  if (!card) return;
+  const brand = smsBrandFromCompany(c.company);
+  const threadEl = card.querySelector('[data-sms-thread]');
+  const composeWrap = card.querySelector('[data-sms-compose]');
+  const bannerEl = card.querySelector('[data-sms-banner]');
+  const ta = card.querySelector('[data-sms-input]');
+  const sendBtn = card.querySelector('[data-sms-send]');
+
+  const showBanner = (text) => { bannerEl.style.display = ''; bannerEl.textContent = text; composeWrap.style.display = 'none'; };
+
+  // Opt-out state (column may not exist pre-migration -> treat as opted in).
+  let optedOut = false;
+  try {
+    const { data } = await supabase.from('customers').select('sms_opt_out').eq('id', c.id).maybeSingle();
+    optedOut = !!(data && data.sms_opt_out);
+  } catch (_) { /* pre-migration: assume opted in */ }
+
+  async function reload() {
+    try {
+      const { data, error } = await supabase.from('pec_sms_log').select('*')
+        .eq('customer_id', c.id).order('created_at', { ascending: true }).limit(200);
+      if (error) throw error;
+      threadEl.innerHTML = smsThreadRowsHtml(data || []);
+      threadEl.scrollTop = threadEl.scrollHeight;
+    } catch (e) {
+      const needsMigration = /pec_sms_log/.test(e.message || '');
+      threadEl.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-06-28_quo_sms.sql migration to enable texting.' : esc(e.message || 'Could not load texts.')}</div>`;
+    }
+  }
+
+  if (!c.phone) showBanner('No phone number on file for this customer.');
+  else if (optedOut) showBanner('This customer opted out of texts (replied STOP). Texting is disabled.');
+
+  if (sendBtn) sendBtn.addEventListener('click', async () => {
+    const body = (ta.value || '').trim();
+    if (!body) return;
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      await pecSendSms({ brand, customer_id: c.id, kind: 'manual', body });
+      ta.value = '';
+      await reload();
+      showToast('Text sent ✓', { ttl: 2500 });
+    } catch (err) {
+      // Server enforces the opt-out guard; surface its message verbatim.
+      showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 5000 });
+    } finally {
+      sendBtn.disabled = false; sendBtn.textContent = 'Send text';
+    }
+  });
+
+  reload();
+}
+
+// Unified Messages view: latest text per conversation (one row per customer or,
+// for an unmatched inbound, per number). Click a matched conversation to open
+// the customer's detail (the full thread + compose live there). Phase 1 ships
+// this as a simple list, no real-time -- the per-customer thread is the
+// complete two-way surface; this is the at-a-glance inbox on top of it.
+async function renderMessages() {
+  pecSyncHistory();
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading messages…</div>';
+  let logRes;
+  try {
+    logRes = await withFreshSession(() => supabase.from('pec_sms_log').select('*')
+      .order('created_at', { ascending: false }).limit(400), { label: 'renderMessages' });
+  } catch (e) { logRes = { error: e }; }
+  if (logRes.error) {
+    const hint = /pec_sms_log/.test(logRes.error.message || '') ? ' (Apply the 2026-06-28_quo_sms.sql migration first.)' : '';
+    root.innerHTML = `<div class="pec-empty">${esc(logRes.error.message)}${hint}</div>`;
+    return;
+  }
+  const rows = logRes.data || [];
+
+  // Collapse to one entry per conversation (newest first because rows already
+  // arrive newest-first, so the first time we see a key it is the latest).
+  const convo = new Map();
+  for (const r of rows) {
+    const other = r.direction === 'in' ? r.from_number : r.to_number;
+    const key = r.customer_id || ('num:' + (other || 'unknown'));
+    if (!convo.has(key)) convo.set(key, { customer_id: r.customer_id || null, number: other, last: r });
+  }
+  const items = Array.from(convo.values());
+
+  // Resolve customer names for matched conversations in one query.
+  const ids = items.map(i => i.customer_id).filter(Boolean);
+  const custById = {};
+  if (ids.length) {
+    try {
+      const { data } = await supabase.from('customers').select('id,name,company').in('id', ids);
+      (data || []).forEach(c => { custById[c.id] = c; });
+    } catch (_) { /* names are best-effort */ }
+  }
+
+  const listHtml = items.length ? items.map(it => {
+    const cust = it.customer_id ? custById[it.customer_id] : null;
+    const title = cust ? (cust.name || '(unnamed)') : (it.number || 'Unknown number');
+    const brand = smsBrandFromCompany(cust ? cust.company : it.last.brand);
+    const r = it.last;
+    const prefix = r.direction === 'out' ? 'You: ' : '';
+    const preview = (r.body || (r.status === 'failed' ? '(not sent)' : '')).replace(/\s+/g, ' ').slice(0, 90);
+    const failed = r.status === 'failed';
+    return `<div class="pec-cust-job" ${it.customer_id ? `data-open-cust="${esc(it.customer_id)}"` : ''} style="${it.customer_id ? 'cursor:pointer' : 'cursor:default;opacity:.85'};align-items:center">
+        <span class="pec-badge ${brand === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${smsBrandLabel(brand)}</span>
+        <span style="flex:1;min-width:0">
+          <span style="font-weight:600">${esc(title)}</span>
+          <span style="display:block;color:var(--muted);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${failed ? '<span style="color:#dc2626">⚠ </span>' : ''}${esc(prefix + preview)}</span>
+        </span>
+        <span style="color:var(--muted);font-size:.72rem;white-space:nowrap">${invFmtDate(r.created_at)}</span>
+      </div>`;
+  }).join('') : '<div class="pec-empty">No text conversations yet.</div>';
+
+  root.innerHTML = `
+    <div class="pec-toolbar"><h2 style="margin:0">Messages</h2></div>
+    <div class="pec-card">
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:10px">Latest text per customer. Click a conversation to open the customer and reply.</div>
+      <div style="display:flex;flex-direction:column;gap:6px">${listHtml}</div>
+    </div>`;
+
+  root.querySelectorAll('[data-open-cust]').forEach(el => el.addEventListener('click', () => {
+    state.openCustomerId = el.dataset.openCust;
+    switchView('customers');
+  }));
+}
 
 // Sample values so a template's {{tokens}} render to something realistic in the
 // readable-text view and the preview popup (the live send fills the real data).

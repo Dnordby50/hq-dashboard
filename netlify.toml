@@ -145,6 +145,15 @@
   status = 200
   force = true
 
+# Quo (OpenPhone) inbound SMS webhook. Quo POSTs here when a customer texts one
+# of our workspace numbers; the function powers two-way texting + STOP handling.
+# This clean URL (with the QUO_WEBHOOK_SECRET) goes into the Quo webhook config.
+[[redirects]]
+  from = "/api/quo/webhook"
+  to = "/.netlify/functions/pec-webhook-quo"
+  status = 200
+  force = true
+
 # Public, token-gated "Let our office know" action from the hosted invoice page
 # (customer chose to pay by check / cash / Zelle). Notifies the office by email +
 # Slack. Auth is the invoice public_token in the POST body; no secrets exposed.
