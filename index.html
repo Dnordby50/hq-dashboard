@@ -14183,8 +14183,16 @@ async function renderPipeline() {
 // out as a crew x {AM,PM} grid. Dragging a job card into a crew/slot cell sets
 // that schedule-day's crew_id + time_slot (and the prod job's crew_id); the
 // status-sync helper/trigger keep CRM status correct. Reuses loadProdCore data.
+//
+// Since 2026-07-01 the board also shows that day's crew TASKS (pec_prod_tasks,
+// the calendar "+ Add Task" reminders): material pickups and warranty visits
+// are real production work, so they slot per crew exactly like jobs and print
+// on the run sheet. Tasks share ONLY the grid and the drag interaction; they
+// stay fully isolated from job status logic (no deriveJobStatus, no
+// runScheduleStatusSync, no pec_prod_jobs writes on the task path).
 
 let _nextDayRowsById = {};
+let _nextDayTasksById = {};
 
 // Human label for a stored time_slot. The DB values stay AM/PM/EXTRA (CHECK
 // constraint + drag/drop key off them); only the display reads First/Second/Third.
@@ -14203,6 +14211,18 @@ async function renderNextDay() {
   const dayRows = (state.scheduleDays || []).filter(d => d.scheduled_date === target && jobById[d.job_id]);
   _nextDayRowsById = Object.fromEntries(dayRows.map(d => [d.id, d]));
   const unslotted = dayRows.filter(d => !d.time_slot);
+  // Tasks for this day. Completed ones are HIDDEN here and on the run sheet
+  // (they keep their done styling on the calendar). A task is "slotted" only
+  // when crew_id + time_slot are set AND that crew is still active (only
+  // active crews get grid rows); anything else (crew unassigned later from
+  // the calendar modal, crew deactivated, and every pre-migration row, which
+  // has neither column) falls back to the No-slot panel so a task can never
+  // be invisible on its own day. Tasks contribute $0 to day revenue: the
+  // revenue reduce below reads only job rows, untouched on purpose.
+  const activeCrewIds = new Set(crews.map(c => c.id));
+  const dayTasks = (state.prodTasks || []).filter(t => t.task_date === target && !t.completed);
+  _nextDayTasksById = Object.fromEntries(dayTasks.map(t => [t.id, t]));
+  const unslottedTasks = dayTasks.filter(t => !(t.crew_id && t.time_slot && activeCrewIds.has(t.crew_id)));
   const dayRevenue = [...new Set(dayRows.map(d => d.job_id))]
     .reduce((s, id) => s + (Number(jobById[id] && jobById[id].revenue) || 0), 0);
 
@@ -14215,9 +14235,23 @@ async function renderNextDay() {
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(Number(j.revenue) || 0)}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
     </div>`;
   };
+  // Task cards deliberately MATCH job-card styling, no badge (Dylan's explicit
+  // choice): the description sits where the customer name goes, and the muted
+  // line reads the crew name or "Crew reminder" so a card with no address and
+  // no dollars still reads as a task on second glance. data-task-id (vs
+  // data-day-id on job cards) is how the drop handler knows which table to
+  // write.
+  const taskCardHtml = (t) => `<div class="nextday-card" draggable="true" data-task-id="${esc(t.id)}"
+        style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
+      <strong style="font-size:.85rem">${esc(t.description || '(no description)')}</strong>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(t.crew_lead || 'Crew reminder')}</div>
+    </div>`;
   const cell = (crew, slot) => {
     const rows = dayRows.filter(d => d.crew_id === crew.id && d.time_slot === slot);
-    const body = rows.length ? rows.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.72rem;padding:12px 6px">Empty</div>`;
+    const cellTasks = dayTasks.filter(t => t.crew_id === crew.id && t.time_slot === slot);
+    const body = (rows.length || cellTasks.length)
+      ? rows.map(cardHtml).join('') + cellTasks.map(taskCardHtml).join('')
+      : `<div class="pec-empty" style="font-size:.72rem;padding:12px 6px">Empty</div>`;
     return `<div class="nextday-cell" data-crew="${esc(crew.id)}" data-slot="${slot}"
         style="min-height:74px;background:var(--rd-soft,#f5f6f8);border-radius:8px;padding:6px">${body}</div>`;
   };
@@ -14251,15 +14285,27 @@ async function renderNextDay() {
         <div class="meta">${esc(invUSD(Number(j.revenue) || 0))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
       </div>`;
     };
+    // Tasks print in the same block format as jobs; the meta line reading
+    // "Task" (instead of a dollar figure) is the print-side marker Dylan
+    // chose, since on-screen cards carry no badge. Completed tasks never
+    // reach here (dayTasks already excludes them).
+    const taskLine = (t) => `<div class="job">
+        <div class="cust">${esc(t.description || '(no description)')}</div>
+        <div class="addr">${esc(t.crew_lead || 'Crew reminder')}</div>
+        <div class="meta">Task</div>
+      </div>`;
     const crewBlocks = crews.length ? crews.map(c => {
       const slotsHtml = ['AM', 'PM', 'EXTRA'].map(slot => {
         const rows = dayRows.filter(d => d.crew_id === c.id && d.time_slot === slot);
-        return `<div class="slot"><div class="slot-h">${slotLabel[slot]}</div>${rows.length ? rows.map(jobLine).join('') : '<div class="empty">—</div>'}</div>`;
+        const slotTasks = dayTasks.filter(t => t.crew_id === c.id && t.time_slot === slot);
+        const body = rows.map(jobLine).join('') + slotTasks.map(taskLine).join('');
+        return `<div class="slot"><div class="slot-h">${slotLabel[slot]}</div>${body || '<div class="empty">-</div>'}</div>`;
       }).join('');
       return `<div class="crew"><h2>${esc(c.name)}</h2><div class="slots">${slotsHtml}</div></div>`;
     }).join('') : '<p>No active crews.</p>';
-    const unslottedHtml = unslotted.length
-      ? `<div class="crew unslotted"><h2>No slot yet (${unslotted.length})</h2><div class="uslist">${unslotted.map(jobLine).join('')}</div></div>`
+    const unslottedLines = unslotted.map(jobLine).concat(unslottedTasks.map(taskLine));
+    const unslottedHtml = unslottedLines.length
+      ? `<div class="crew unslotted"><h2>No slot yet (${unslottedLines.length})</h2><div class="uslist">${unslottedLines.join('')}</div></div>`
       : '';
     return `<!doctype html><html><head><meta charset="utf-8"><title>Run sheet ${esc(niceDate)}</title>
 <style>
@@ -14294,7 +14340,8 @@ async function renderNextDay() {
         <input type="date" id="nextDayDate" value="${esc(target)}" style="max-width:170px">
         <button type="button" class="pec-btn ghost sm" id="nextDayNext">Next ›</button>
         <span style="color:var(--muted);font-size:.85rem">${esc(niceDate)} · Total revenue: ${invUSD(dayRevenue)}</span>
-        <button type="button" class="pec-btn sm" id="nextDayPrint" style="margin-left:auto">Print run sheet</button>
+        <button type="button" class="pec-btn sm" id="nextDayAddTask" style="margin-left:auto">+ Add Task</button>
+        <button type="button" class="pec-btn sm" id="nextDayPrint">Print run sheet</button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 240px;gap:16px;align-items:start">
         <div>
@@ -14302,9 +14349,9 @@ async function renderNextDay() {
           ${crewRows}
         </div>
         <div class="nextday-cell" data-crew="" data-slot="" style="background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px">
-          <strong style="font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">No slot yet · ${unslotted.length}</strong>
+          <strong style="font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">No slot yet · ${unslotted.length + unslottedTasks.length}</strong>
           <div style="font-size:.7rem;color:var(--rd-muted,#6b7280);margin:4px 0 8px">Scheduled this day, slot not set. Drag into a crew slot. Drop here to clear a slot.</div>
-          ${unslotted.length ? unslotted.map(cardHtml).join('') : `<div class="pec-empty" style="font-size:.75rem">All assigned</div>`}
+          ${(unslotted.length || unslottedTasks.length) ? unslotted.map(cardHtml).join('') + unslottedTasks.map(taskCardHtml).join('') : `<div class="pec-empty" style="font-size:.75rem">All assigned</div>`}
         </div>
       </div>
     </div>`;
@@ -14313,6 +14360,10 @@ async function renderNextDay() {
   $('nextDayPrev').addEventListener('click', () => go(isoDate(addDays(parseISO(target), -1))));
   $('nextDayNext').addEventListener('click', () => go(isoDate(addDays(parseISO(target), 1))));
   $('nextDayDate').addEventListener('change', e => { if (e.target.value) go(e.target.value); });
+  // Board-side task entry: the SAME calendar modal (not a fork), date locked
+  // to this board's day, and the save repaints the board instead of the
+  // calendar. New tasks land in "No slot yet" until dragged to a crew.
+  $('nextDayAddTask').addEventListener('click', () => openTaskModal(null, { lockDate: target, onSaved: () => renderNextDay() }));
   $('nextDayPrint').addEventListener('click', () => {
     const w = window.open('', '_blank');
     if (!w) { showToast('Allow popups to print the run sheet.', { ttl: 5000 }); return; }
@@ -14323,34 +14374,139 @@ async function renderNextDay() {
     setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
   });
 
-  // Drag and drop. Dropping a card into a cell sets that schedule-day row's
-  // crew_id + time_slot (empty cell = clear). Also mirrors crew onto the prod
-  // job so the calendar bar shows it. Open to staff (this is the ops ritual).
-  let draggedId = null;
+  // Drag and drop. Job cards carry data-day-id (a pec_prod_job_schedule_days
+  // row): dropping one sets that row's crew_id + time_slot (No-slot panel =
+  // clear both) and mirrors crew onto the prod job so the calendar bar shows
+  // it. Task cards carry data-task-id (a pec_prod_tasks row): dropping one
+  // writes crew_id + time_slot + crew_lead (the crew NAME, so the calendar
+  // chip follows the board); the No-slot panel clears time_slot ONLY, the
+  // crew stays. Open to staff (this is the ops ritual).
+  //
+  // Slot exclusivity, bump-the-occupant (Dylan's explicit choice): once a
+  // task is involved a slot holds ONE card. A landing task bumps every
+  // occupant (jobs and tasks); a landing job bumps tasks only (job-on-job
+  // stacking is existing workflow, untouched). A bump clears time_slot ONLY
+  // (crew stays), so the bumped card reappears in "No slot yet" instantly and
+  // can never vanish; the named toast with one-click Undo is the safety net
+  // for a careless drop the night before an install. Bumps run ONLY from an
+  // explicit drop, never from a render or sync. Every bump/undo write is a
+  // full-value idempotent update, so withFreshWriteRetry is safe; the primary
+  // job move keeps its original raw call + pre-migration fallback.
+  let draggedDayId = null, draggedTaskId = null;
   root.querySelectorAll('.nextday-card').forEach(card => {
-    card.addEventListener('dragstart', e => { draggedId = card.dataset.dayId; e.dataTransfer.effectAllowed = 'move'; });
-    card.addEventListener('dragend', () => { draggedId = null; });
+    card.addEventListener('dragstart', e => {
+      draggedDayId = card.dataset.dayId || null;
+      draggedTaskId = card.dataset.taskId || null;
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    card.addEventListener('dragend', () => { draggedDayId = null; draggedTaskId = null; });
   });
+
+  const clip = (s, n = 40) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 3) + '...' : s; };
+
+  // Clear time_slot on every occupant of the target cell, recording previous
+  // values into the undo snapshot and returning display names for the toast.
+  const bumpOccupants = async (jobRowsToBump, tasksToBump, snapshot) => {
+    const names = [];
+    for (const d of jobRowsToBump) {
+      snapshot.push({ kind: 'job', id: d.id, jobId: d.job_id, prev: { crew_id: d.crew_id ?? null, time_slot: d.time_slot ?? null } });
+      const r = await withFreshWriteRetry(() => supabase.from('pec_prod_job_schedule_days')
+        .update({ time_slot: null }).eq('id', d.id), { label: 'nextday-bump-job' });
+      if (r.error) throw r.error;
+      names.push((jobById[d.job_id] || {}).customer_name || 'job');
+    }
+    for (const t of tasksToBump) {
+      snapshot.push({ kind: 'task', id: t.id, prev: { crew_id: t.crew_id ?? null, time_slot: t.time_slot ?? null, crew_lead: t.crew_lead ?? null } });
+      const r = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+        .update({ time_slot: null }).eq('id', t.id), { label: 'nextday-bump-task' });
+      if (r.error) throw r.error;
+      names.push(clip(t.description) || 'task');
+    }
+    return names;
+  };
+
+  // One-click Undo: restore every row this drop wrote (moved card first, then
+  // the bumped occupants) from the in-memory snapshot. Deliberately nothing
+  // heavier: single level, gone when the toast dies.
+  const undoDrop = async (snapshot) => {
+    try {
+      for (const s of snapshot) {
+        if (s.kind === 'task') {
+          const r = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+            .update(s.prev).eq('id', s.id), { label: 'nextday-undo-task' });
+          if (r.error) throw r.error;
+        } else {
+          let r = await supabase.from('pec_prod_job_schedule_days').update(s.prev).eq('id', s.id);
+          if (r.error && /time_slot/.test(r.error.message || '')) {
+            r = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: s.prev.crew_id }).eq('id', s.id);
+          }
+          if (r.error) throw r.error;
+          // Same mirror rule as the forward move: only a truthy crew is
+          // pushed onto the prod job (the forward path never nulls it either).
+          if (s.jobId && s.prev.crew_id) { try { await supabase.from('pec_prod_jobs').update({ crew_id: s.prev.crew_id }).eq('id', s.jobId); } catch (_) {} }
+        }
+      }
+      renderNextDay();
+    } catch (err) {
+      console.error('[pec] next-day undo:', err);
+      showToast('Undo failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  };
+
   root.querySelectorAll('.nextday-cell').forEach(cellEl => {
     cellEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
     cellEl.addEventListener('drop', async e => {
       e.preventDefault();
-      const id = draggedId; if (!id) return;
-      const row = _nextDayRowsById[id]; if (!row) return;
+      // Capture BEFORE the first await: dragend fires right after drop and
+      // nulls the module-ish handles while this async handler is mid-flight.
+      const dayId = draggedDayId, taskId = draggedTaskId;
+      if (!dayId && !taskId) return;
       const crewId = cellEl.dataset.crew || null;
       const slot = cellEl.dataset.slot || null;
-      if (row.crew_id === crewId && (row.time_slot || null) === slot) return; // no change
+      const isCrewCell = !!(crewId && slot);
+      // Current occupants of the target cell (dragged card excluded, so a
+      // same-cell drop can never bump anything).
+      const cellJobRows = isCrewCell ? dayRows.filter(d => d.crew_id === crewId && d.time_slot === slot && d.id !== dayId) : [];
+      const cellTasks = isCrewCell ? dayTasks.filter(t => t.crew_id === crewId && t.time_slot === slot && t.id !== taskId) : [];
+      const snapshot = []; // previous values of every row THIS drop writes, for Undo
       try {
-        let upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId, time_slot: slot }).eq('id', id);
-        if (upd.error && /time_slot/.test(upd.error.message || '')) {
-          upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId }).eq('id', id); // pre-migration fallback
+        if (taskId) {
+          const t = _nextDayTasksById[taskId]; if (!t) return;
+          const already = isCrewCell ? ((t.crew_id || null) === crewId && (t.time_slot || null) === slot) : !t.time_slot;
+          if (already) return; // no change
+          const crewName = isCrewCell ? ((crews.find(c => c.id === crewId) || {}).name || null) : null;
+          snapshot.push({ kind: 'task', id: t.id, prev: { crew_id: t.crew_id ?? null, time_slot: t.time_slot ?? null, crew_lead: t.crew_lead ?? null } });
+          // Land the dropped card first: the worst mid-sequence failure is a
+          // briefly stacked cell, never a lost card.
+          const patch = isCrewCell ? { crew_id: crewId, time_slot: slot, crew_lead: crewName } : { time_slot: null };
+          const upd = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+            .update(patch).eq('id', t.id), { label: 'nextday-task-move' });
+          if (upd.error) throw upd.error;
+          const bumped = isCrewCell ? await bumpOccupants(cellJobRows, cellTasks, snapshot) : [];
+          if (bumped.length) showToast(`Moved ${bumped.map(n => `'${esc(n)}'`).join(', ')} to No slot yet.`, { ttl: 8000, actionLabel: 'Undo', onAction: () => undoDrop(snapshot) });
+          renderNextDay();
+        } else {
+          const row = _nextDayRowsById[dayId]; if (!row) return;
+          if (row.crew_id === crewId && (row.time_slot || null) === slot) return; // no change
+          snapshot.push({ kind: 'job', id: row.id, jobId: row.job_id, prev: { crew_id: row.crew_id ?? null, time_slot: row.time_slot ?? null } });
+          let upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId, time_slot: slot }).eq('id', row.id);
+          if (upd.error && /time_slot/.test(upd.error.message || '')) {
+            upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId }).eq('id', row.id); // pre-migration fallback
+          }
+          if (upd.error) throw upd.error;
+          if (crewId) { try { await supabase.from('pec_prod_jobs').update({ crew_id: crewId }).eq('id', row.job_id); } catch (_) {} }
+          // A landing job bumps TASKS only; jobs already in the cell stay.
+          const bumped = (isCrewCell && cellTasks.length) ? await bumpOccupants([], cellTasks, snapshot) : [];
+          if (bumped.length) showToast(`Moved ${bumped.map(n => `'${esc(n)}'`).join(', ')} to No slot yet.`, { ttl: 8000, actionLabel: 'Undo', onAction: () => undoDrop(snapshot) });
+          renderNextDay();
         }
-        if (upd.error) throw upd.error;
-        if (crewId) { try { await supabase.from('pec_prod_jobs').update({ crew_id: crewId }).eq('id', row.job_id); } catch (_) {} }
-        renderNextDay();
       } catch (err) {
         console.error('[pec] next-day assign:', err);
-        showToast('Could not move job: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+        const msg = err && err.message ? err.message : String(err);
+        showToast(taskId && /crew_id|time_slot/i.test(msg)
+          ? 'Task slots are not live yet: apply the 2026-07-01 pec_prod_tasks migration first.'
+          : 'Could not move: ' + msg, { ttl: 6000 });
+        renderNextDay(); // repaint so any partially applied drop shows its true state, not stale cards
       }
     });
   });
@@ -15917,8 +16073,14 @@ function openAddJobModal() {
 // task_date is treated as an opaque YYYY-MM-DD string end to end (never
 // round-tripped through new Date(), which would shift across timezones).
 // crew_lead stores the crew NAME as text, same convention as
-// pec_prod_jobs.crew_lead, so chips render with no crew-id lookup.
-function openTaskModal(task) {
+// pec_prod_jobs.crew_lead, so chips render with no crew-id lookup. Since the
+// 2026-07-01 migration, crew_id (FK) mirrors crew_lead so the Next Day board
+// can slot tasks per crew; this modal writes both from the one crew select.
+// opts (for the board's "+ Add Task" entry point):
+//   lockDate: prefill AND disable the date input (the board's target day)
+//   onSaved:  called after a save/delete instead of the calendar re-render
+function openTaskModal(task, opts = {}) {
+  const { lockDate = null, onSaved = null } = opts;
   const isEdit = !!task;
   const crewNames = (state.crews || []).filter(c => c.active).map(c => c.name);
   // A stale lead (crew renamed or deactivated since the task was created)
@@ -15927,12 +16089,12 @@ function openTaskModal(task) {
   const selLead = isEdit ? (task.crew_lead || '') : '';
   const crewOptions = `<option value="">Unassigned</option>` + crewNames.map(n =>
     `<option value="${esc(n)}" ${n === selLead ? 'selected' : ''}>${esc(n)}</option>`).join('');
-  const defaultDate = state.scheduleAnchor || isoDate(new Date());
+  const defaultDate = lockDate || state.scheduleAnchor || isoDate(new Date());
 
   openModal(`
     <h3 style="margin-top:0">${isEdit ? 'Edit task' : 'Add task'}</h3>
     <div style="color:var(--muted);font-size:.75rem;margin-bottom:12px">A single-day crew reminder on the calendar. Not a job: it has no price, no status, and no effect on job scheduling.</div>
-    <div class="pec-field" style="margin-bottom:8px"><label>Date</label><input type="date" id="pecTaskDate" value="${esc(isEdit ? task.task_date : defaultDate)}"></div>
+    <div class="pec-field" style="margin-bottom:8px"><label>Date</label><input type="date" id="pecTaskDate" value="${esc(isEdit ? task.task_date : defaultDate)}" ${lockDate ? 'disabled' : ''}></div>
     <div class="pec-field" style="margin-bottom:8px"><label>Crew lead</label><select id="pecTaskCrew">${crewOptions}</select></div>
     <div class="pec-field" style="margin-bottom:8px"><label>Description <span style="color:var(--accent,#D8531C)">*</span></label><textarea id="pecTaskDesc" rows="2" placeholder="What the crew needs to do, e.g. pick up flake order at Torginol">${isEdit ? esc(task.description) : ''}</textarea></div>
     ${isEdit ? `<div class="pec-field" style="margin-bottom:8px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:400;text-transform:none"><input type="checkbox" id="pecTaskDone" ${task.completed ? 'checked' : ''}> Completed</label></div>` : ''}
@@ -15950,12 +16112,19 @@ function openTaskModal(task) {
 
       // After a write, make sure the saved day is on screen: if the date falls
       // outside the visible range, jump the anchor to it (mirrors Add Job).
+      // scheduleAnchor can be unset when the modal opens from the Next Day
+      // board before the calendar was ever visited; fall back to today so the
+      // range math never sees a null.
+      const anchorIso = state.scheduleAnchor || isoDate(new Date());
       const visibleDays = state.scheduleMode === 'week' ? 7 : 21;
-      const rangeStart = isoDate(startOfWeek(parseISO(state.scheduleAnchor)));
-      const rangeEnd = isoDate(addDays(startOfWeek(parseISO(state.scheduleAnchor)), visibleDays - 1));
+      const rangeStart = isoDate(startOfWeek(parseISO(anchorIso)));
+      const rangeEnd = isoDate(addDays(startOfWeek(parseISO(anchorIso)), visibleDays - 1));
       const finish = async (toast, savedDate) => {
         closeModal();
         showToast(toast);
+        // Board entry point: repaint the board the user is looking at, not
+        // the calendar (which would also clobber the board's DOM).
+        if (onSaved) { await onSaved(); return; }
         if (savedDate && (savedDate < rangeStart || savedDate > rangeEnd)) state.scheduleAnchor = savedDate;
         await renderSchedule();
       };
@@ -15969,17 +16138,34 @@ function openTaskModal(task) {
         if (!description) { errEl.textContent = 'Enter a short description.'; return; }
         saveBtn.disabled = true;
         try {
+          // crew_id mirrors crew_lead (one source of truth for the crew: the
+          // board reads it by id, the calendar chip by name). A stale name
+          // (renamed/deleted crew kept selectable above) resolves to null, so
+          // the task keeps its label but is unslottable until reassigned.
+          const crewRow = crew_lead ? (state.crews || []).find(c => c.name === crew_lead) : null;
+          const crew_id = crewRow ? crewRow.id : null;
+          // Until the 2026-07-01 migration lands, pec_prod_tasks has no
+          // crew_id column and PostgREST rejects the WHOLE write up front
+          // (PGRST204 unknown column, nothing hits the table), so retrying
+          // without crew_id is safe even for the insert and keeps the modal
+          // working pre-migration (same degrade-cleanly pattern as the
+          // schedule-day time_slot fallback).
+          const preMigration = (r) => r.error && /crew_id|time_slot/i.test(r.error.message || '');
           let res;
           if (isEdit) {
             // Full-value update: idempotent, safe to auto-retry on a wedge.
             const completed = !!modal.querySelector('#pecTaskDone')?.checked;
             res = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
+              .update({ task_date, crew_lead, crew_id, description, completed }).eq('id', task.id), { label: 'task-update' });
+            if (preMigration(res)) res = await withFreshWriteRetry(() => supabase.from('pec_prod_tasks')
               .update({ task_date, crew_lead, description, completed }).eq('id', task.id), { label: 'task-update' });
           } else {
             // Insert is non-idempotent: bounded write, NO auto-retry (a retry
             // after a stall could double-insert; worst case the user taps Save
             // again and deletes a duplicate, so no verify dance is needed).
             res = await withFreshWrite(() => supabase.from('pec_prod_tasks')
+              .insert({ task_date, crew_lead, crew_id, description }), { label: 'task-insert' });
+            if (preMigration(res)) res = await withFreshWrite(() => supabase.from('pec_prod_tasks')
               .insert({ task_date, crew_lead, description }), { label: 'task-insert' });
           }
           if (res.error) throw res.error;
