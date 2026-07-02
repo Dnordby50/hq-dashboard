@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-01 20:56 MST] Cowork: scoped a Claude Code prompt to put calendar tasks on the Next Day Schedule board
+By: Cowork
+Request: Dylan wants the Job Schedule "+ Add Task" entries (material pickups, warranty visits, other job-related work) to appear on the Next Day Schedule board and be slotted per crew (First/Second/Third) exactly like jobs, and to print on the run sheet.
+Investigation (read-only): tasks live in pec_prod_tasks (task_date, crew_lead as crew NAME text, description, completed) via openTaskModal (index.html ~15921) and render only as calendar chips (~14488). The Next Day board (renderNextDay ~14195) reads only pec_prod_job_schedule_days + pec_prod_jobs; slots are time_slot AM/PM/EXTRA displayed First/Second/Third; drag/drop writes crew_id + time_slot; print via nextDayPrintHtml (~14244). Tasks have no crew_id and no time_slot, so they cannot appear or be slotted. The build needs an additive migration (crew_id + time_slot on pec_prod_tasks, backfill crew_id from crew_lead name) plus board, drag/drop, and run sheet changes.
+Decisions from Dylan (12 multiple-choice questions, 3 rounds): tasks = the existing Add Task entries only; show on BOTH calendar and board; entry stays the existing button plus a new "+ Add Task" on the board prefilled to the board date; slotted per crew exactly like jobs; a slot holds a job OR a task, never both, and a drop onto an occupied slot BUMPS the occupant to "No slot yet" (job-on-job stacking unchanged); tasks print inside the crew slot column marked "Task"; unslotted tasks sit in the "No slot yet" panel; dragging a task updates its crew so the calendar chip stays in sync; completed tasks hidden from board and run sheet; task cards match job card styling (no badge, Dylan's explicit choice).
+Flags raised in the prompt: bump-the-occupant can silently unslot a job the night before install, so the prompt requires a named toast, the bumped card immediately visible in "No slot yet", and a cheap undo if one is easy; matching card styling leaves the missing revenue line as the only screen tell, so the muted line must read as a crew reminder.
+Produced: claude-code-prompt-6-nextday-tasks.md in the HQ workspace folder (outside the repo).
+Why: per this project's rules, Cowork digs in with multiple-choice questions and hands Claude Code a ready-to-run, well-scoped prompt.
+Files touched: PROJECT-LOG.md only. No app code, no migration, no PROD data changed.
+Next steps: Dylan runs claude-code-prompt-6 in Claude Code; Cowork applies the pec_prod_tasks migration once Claude Code authors it.
+Handoff to Cowork: apply supabase/migrations/2026-07-01_prod_tasks_nextday.sql to PROD once Claude Code writes it, run its verify queries, report the crew_id backfill count.
+Handoff to Dylan: run claude-code-prompt-6-nextday-tasks.md in Claude Code from the HQ-Dashboard repo root.
+
+---
+
 ## [2026-06-29 MST] Claude Code: Quo (OpenPhone) SMS integration, phase 1 (invoice texting + two-way + estimate stub)
 By: Claude Code
 Request: Cowork's phase-1 build prompt (claude-code-prompt-5-quo-sms-phase1.md, scoped from the 2026-06-28 Cowork investigation entry above). Goal: staff can text a customer their invoice pay link through Quo, customers can reply, and those conversations live in the dashboard. Estimate texting is stubbed for the future sales flow; the drip engine and DripJobs replacement are explicitly NOT built here.
