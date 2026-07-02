@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-02 05:10 MST] Cowork: applied the pec_prod_tasks Next Day migration to PROD, all verifies pass
+By: Cowork
+Changed: PROD database only (Supabase project zdfpzmmrgotynrwkeakd), via the Supabase MCP apply_migration. Ran the body of supabase/migrations/2026-07-01_prod_tasks_nextday.sql exactly as authored (minus the begin/commit wrapper, since apply_migration runs it transactionally). No repo code changed.
+Verification (the four queries from the migration file, run against PROD):
+1. Columns: pec_prod_tasks now has crew_id (uuid) and time_slot (text) alongside the original id, task_date, crew_lead, description, completed, created_at, updated_at.
+2. Constraint: pec_prod_tasks_time_slot_check is CHECK (time_slot IS NULL OR time_slot IN ('AM','PM','EXTRA')), as specified.
+3. Backfill count: 1 of 13 total tasks got crew_id set from a crew_lead name match (the other 12 have no crew_lead, so nothing to match).
+4. Unmatched leftovers: 0 tasks name a crew that matched no crew row. Nothing needs manual relinking.
+Why: completes the Cowork handoff from the 2026-07-01 21:13 Claude Code entry so the deployed board can persist crew/slot placement for tasks.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pushes/deploys (if not already live) and runs the five-step live test from the Claude Code entry's Handoff to Dylan.
+Handoff to Cowork: None.
+Handoff to Dylan: run the live test: add a task from the calendar, confirm it appears in "No slot yet" on the Next Day board, drag it onto an occupied First slot and confirm the bump toast, confirm the calendar chip follows the new crew, print the run sheet (task marked "Task"), then mark it completed and confirm it drops off board and run sheet but stays on the calendar.
+
+---
+
 ## [2026-07-01 21:13 MST] Claude Code: calendar tasks now slot on the Next Day Schedule board and print on the run sheet
 By: Claude Code
 Changed: index.html + new migration supabase/migrations/2026-07-01_prod_tasks_nextday.sql (NOT applied; Cowork handoff below). Commit ca1ce18. Built from Cowork's claude-code-prompt-6 (scoped 2026-07-01 20:56 entry above, 12 decisions from Dylan).
