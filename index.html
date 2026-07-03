@@ -14175,6 +14175,20 @@ async function renderPipeline() {
   }
 }
 
+// Proration denominator, the ONE source shared by the calendar and the Next
+// Day board so a job's dollars can never disagree between the two surfaces.
+// totalScheduledDays per job = the count of that job's
+// pec_prod_job_schedule_days rows across ALL dates; revenue / totalDays is
+// the per-day slice, so a 1-day job shows its full contract and a 4-day job
+// shows a quarter per day. Holidays are excluded automatically (no job is
+// scheduled on a holiday, so no schedule row exists there); crew days off are
+// NOT counted (they are about crew availability, not a job's producing days).
+function scheduleTotalDaysByJob() {
+  const m = {};
+  for (const d of state.scheduleDays || []) m[d.job_id] = (m[d.job_id] || 0) + 1;
+  return m;
+}
+
 // ============================================================
 // Next-Day finalization board (crew x AM/PM)
 // ============================================================
@@ -14223,8 +14237,24 @@ async function renderNextDay() {
   const dayTasks = (state.prodTasks || []).filter(t => t.task_date === target && !t.completed);
   _nextDayTasksById = Object.fromEntries(dayTasks.map(t => [t.id, t]));
   const unslottedTasks = dayTasks.filter(t => !(t.crew_id && t.time_slot && activeCrewIds.has(t.crew_id)));
-  const dayRevenue = [...new Set(dayRows.map(d => d.job_id))]
-    .reduce((s, id) => s + (Number(jobById[id] && jobById[id].revenue) || 0), 0);
+  // PRORATED revenue, same rule as the calendar: a card shows the day's slice
+  // (contract / total scheduled days across ALL dates, via the shared
+  // scheduleTotalDaysByJob denominator), not the full contract, so a 4-day
+  // $40k job reads $10k on the day it is actually worth $10k. The header sums
+  // the slices of THIS date's schedule-day rows (a job with two rows on the
+  // same date contributes two slices, matching how the calendar counts days)
+  // and, exactly like the calendar's weekRevenue, skips touch-up callbacks
+  // (no-charge, never in revenue). Task cards carry no revenue and are not in
+  // dayRows, so they contribute nothing here.
+  const totalDaysByJob = scheduleTotalDaysByJob();
+  const revSliceFor = (jobId) => {
+    const rev = Number((jobById[jobId] || {}).revenue) || 0;
+    return rev > 0 ? rev / (totalDaysByJob[jobId] || 1) : 0;
+  };
+  const dayRevenue = dayRows.reduce((s, d) => {
+    const j = jobById[d.job_id];
+    return (!j || j.is_callback) ? s : s + revSliceFor(d.job_id);
+  }, 0);
 
   const cardHtml = (d) => {
     const j = jobById[d.job_id] || {};
@@ -14232,7 +14262,7 @@ async function renderNextDay() {
         style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
       <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
-      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(Number(j.revenue) || 0)}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
     </div>`;
   };
   // Task cards deliberately MATCH job-card styling, no badge (Dylan's explicit
@@ -14282,7 +14312,7 @@ async function renderNextDay() {
       return `<div class="job">
         <div class="cust">${esc(j.customer_name || '(no name)')}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
-        <div class="meta">${esc(invUSD(Number(j.revenue) || 0))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
+        <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
       </div>`;
     };
     // Tasks print in the same block format as jobs; the meta line reading
@@ -14623,15 +14653,11 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   for (const d of state.scheduleDays) (daysByJob[d.job_id] ||= []).push(d);
   for (const k in daysByJob) daysByJob[k].sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
 
-  // totalScheduledDays per job = the count of pec_prod_job_schedule_days rows for
-  // that job. This is the proration DENOMINATOR for both the sidebar week total
-  // (weekRevenue) AND the per-bar revenue labels (eventFor / barHtml), so a bar's
-  // dollars and the sidebar reconcile by construction. Computed ONCE per call.
-  // Holidays are excluded automatically (no job is scheduled on a holiday, so no
-  // schedule row exists there); crew days off are NOT counted (they are about crew
-  // availability, not a job's producing days).
-  const totalDaysByJob = {};
-  for (const d of state.scheduleDays) totalDaysByJob[d.job_id] = (totalDaysByJob[d.job_id] || 0) + 1;
+  // Proration DENOMINATOR for the sidebar week total (weekRevenue), the
+  // per-bar revenue labels (eventFor / barHtml), AND the Next Day board, so
+  // every surface reconciles by construction. Semantics live on the shared
+  // helper (scheduleTotalDaysByJob). Computed ONCE per call.
+  const totalDaysByJob = scheduleTotalDaysByJob();
 
   // Compact money for calendar bars/cards ($12.5k, $10k, $850). Empty for <= 0.
   const compactRev = (n) => n > 0
@@ -15738,6 +15764,8 @@ function openAddJobModal() {
         <div id="addJobDayGrid"></div>
       </div>
 
+      <div id="addJobDupWarn" style="display:none;margin:0 0 12px;padding:12px 14px;border:1px solid color-mix(in srgb, var(--accent,#D8531C) 45%, transparent);border-radius:8px;background:color-mix(in srgb, var(--accent,#D8531C) 10%, transparent);font-size:.8rem"></div>
+
       <div class="pec-modal-actions">
         <span style="flex:1"></span>
         <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -15805,6 +15833,11 @@ function openAddJobModal() {
       const scopeEl = modal.querySelector('#addJobScope');
       const crewEl = modal.querySelector('#addJobCrew');
       const errEl = modal.querySelector('#addJobError');
+      const dupWarnEl = modal.querySelector('#addJobDupWarn');
+      // One explicit "Add anyway" arms this for the CURRENT customer pick
+      // only; changing the customer re-arms the duplicate guard below.
+      let dupOverride = false;
+      const hideDupWarn = () => { dupWarnEl.style.display = 'none'; dupWarnEl.innerHTML = ''; };
 
       // Load PEC customers once. 1000-row ceiling is well above the current
       // table size and keeps the query bounded; the client-side filter
@@ -15851,6 +15884,8 @@ function openAddJobModal() {
       const selectCustomer = (cust) => {
         draft.customer_id = cust.id;
         draft.customer_name = cust.name || '';
+        dupOverride = false;
+        hideDupWarn();
         queryEl.style.display = 'none';
         resultsEl.style.display = 'none';
         modal.querySelector('#addJobCustHint').style.display = 'none';
@@ -15879,6 +15914,8 @@ function openAddJobModal() {
         draft.customer_name = '';
         draft.customer_query = '';
         draft.existing_job_id = '';
+        dupOverride = false;
+        hideDupWarn();
         queryEl.value = '';
         queryEl.style.display = '';
         modal.querySelector('#addJobCustHint').style.display = '';
@@ -15954,6 +15991,48 @@ function openAddJobModal() {
           if (!draft.revenue || !Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'Add at least one line item with a price.';
         } else if (draft.reschedule_needs_revenue) {
           if (!Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'This job has no price yet. Enter the job total before scheduling.';
+        }
+
+        // DUPLICATE GUARD (the Steve Bruns lesson, merged by Cowork
+        // 2026-07-02): a new manual job for a customer name that already has
+        // a live pec_prod_jobs row is usually the SAME job about to split its
+        // data across two rows (hours on one, materials and the finalize on
+        // the other). Warn once, name the existing job(s), and require an
+        // explicit "Add anyway"; never hard-block, duplicate names are
+        // legitimate for repeat customers. Exact trimmed case-insensitive
+        // name match only (no fuzzy matching), non-archived jobs only
+        // (state.prodJobs is already archive-filtered; the check is kept
+        // defensively). The reschedule path is exempt by definition: it
+        // targets the existing row instead of inserting.
+        if (!isReschedule && !dupOverride) {
+          const nameKey = (draft.customer_name || '').trim().toLowerCase();
+          const dups = nameKey ? (state.prodJobs || []).filter(j =>
+            !j.archived_at && String(j.customer_name || '').trim().toLowerCase() === nameKey) : [];
+          if (dups.length) {
+            dupWarnEl.style.display = '';
+            dupWarnEl.innerHTML = `
+              <div style="font-weight:700;margin-bottom:6px">${esc(draft.customer_name)} already has ${dups.length === 1 ? 'a job' : dups.length + ' jobs'} in production</div>
+              ${dups.map(j => `<div style="margin-bottom:4px">${esc([
+                j.proposal_number ? '#' + j.proposal_number : '(no proposal #)',
+                j.status || '',
+                j.install_date ? 'install ' + j.install_date : '',
+              ].filter(Boolean).join(' · '))}</div>`).join('')}
+              <div style="color:var(--muted);margin:6px 0 10px">If this is the same job, pick it under "Link to an existing job" above instead, so hours and materials do not split across two rows.</div>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button type="button" class="pec-btn ghost sm" id="addJobDupBack">Go back</button>
+                <button type="button" class="pec-btn sm" id="addJobDupAnyway">Add anyway</button>
+              </div>`;
+            dupWarnEl.querySelector('#addJobDupBack').addEventListener('click', hideDupWarn);
+            dupWarnEl.querySelector('#addJobDupAnyway').addEventListener('click', () => {
+              dupOverride = true;
+              hideDupWarn();
+              // Re-enter the same save path; every validation re-runs and the
+              // guard is now bypassed for this customer pick only.
+              modal.querySelector('#addJobSave').click();
+            });
+            dupWarnEl.scrollIntoView({ block: 'nearest' });
+            return;
+          }
         }
 
         const saveBtn = modal.querySelector('#addJobSave');
