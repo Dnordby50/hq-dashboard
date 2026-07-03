@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-02 20:36 MST] Cowork: built the June 2026 team meeting deck prompt (Claude Design) from live CRM + PROD data
+By: Cowork
+Request: Dylan needs a slideshow for tomorrow's all-PEC meeting (including Dusty): last month's metrics analyzed, MVPs named, major wins, big jobs completed, with job costing, leaderboards, sales wins, and Davey's crew leader promotion highlighted. Deliverable is a self-contained prompt for Claude Design.
+Data pulled (read-only): Topcoat connector get_sales_summary/get_schedule/list_pipeline for June 1 to 30, plus PROD SQL (pec_prod_jobs, pec_prod_job_costing, pec_prod_material_lines, pec_prod_job_manual_labor, pec_prod_crews, pec_prod_crew_members). Verified PEC-only June: 26 jobs booked / $175,900 (Dylan 8/$99,310, Aron 18/$76,590); 26 jobs costing-finalized: $141,478.25 revenue, $25,323.33 wages, $28,415.64 materials, $87,739.28 GP (62.0%); crew hours on June-costed jobs: Davey 222.3 (44 OT)/21 jobs, Kyle 178/22, Caden 139.3/15, Landen 92.8/10. Davey's crew row created in pec_prod_crews on 2026-07-01, confirming the promotion.
+Decisions from Dylan (20 multiple-choice questions, asked individually): all-PEC audience so PEC-only numbers; 8-12 slides; dual MVPs (Aron sales, played as a joke since he is the only sales employee; Kyle production); Davey gets a growth-story + promotion spotlight; costing as headline numbers only, labeled plain "GP"; keep it positive (Steve Bruns negative-GP job excluded from callouts but inside the 62% aggregate); leaderboards = sales jobs booked + crew jobs touched, podium style; sales wins = big deals + volume + Aron's first full month self-sufficiency; stand-alone month (no target or May comparison); hype + meme tone; sports-broadcast visual style in PEC orange/charcoal; speaker notes per slide; close on Davey then a July look-ahead.
+Produced: claude-design-prompt-pec-june-2026-team-meeting.md in the HQ workspace folder (outside the repo), a 10-slide spec with every number baked in plus source notes.
+Data flags for Dylan (in the file's source notes): Patterson is $43,590 in the Booked Jobs sheet and pec_prod_jobs but $41,140 on the Jobs page table, worth reconciling; six $1 Bob Pardee FTP test rows sit in June bookings (ignored per Dylan, FTP only); Lisa Santana has material lines in the June window but no costing row.
+Files touched: PROJECT-LOG.md only in the repo. No app code, no PROD data changed (all SQL read-only).
+Next steps: Dylan pastes the prompt into Claude Design and adds photos if wanted.
+Handoff to Cowork: None.
+Handoff to Dylan: run the prompt in Claude Design; spot-check the Patterson $43,590 vs $41,140 discrepancy when convenient.
+
+---
+
 ## [2026-07-02 20:21 MST] Claude Code: Next Day board revenue is now prorated like the calendar + duplicate-customer guard on + Add Job
 By: Claude Code
 Changed: index.html only, commit 818d863. No migration, no data model change. Built from Cowork's claude-code-prompt-7 (scoped in the 05:43 entry below, 4 decisions from Dylan).
