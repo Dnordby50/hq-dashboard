@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-03 07:32 MST] Cowork: reworked slide 8 of the June meeting deck prompt to crew-lead costing numbers
+By: Cowork
+Request: Dylan wants slide 8's job costing numbers to be about crew leads, not individual workers (it previously showed per-member hours and a Production MVP podium).
+Data pulled (read-only PROD SQL): June-finalized jobs grouped by crew. System attribution covered only 18 of 26 jobs (Kyle 11, Landen 7); 8 jobs had no crew recorded, including Dan Patterson ($43,590). Dylan assigned the 8 verbally via multiple-choice: Patterson, Campos, Waxler, Seitz, Rod Kyle, Huff to Kyle; Michelle Herod shared by both crews; Rick Matthews to Davey. Dylan also chose: show both leads side by side with no ranking, celebrate both, keep Herod as a team-up callout rather than splitting it.
+Final slide 8 numbers: Kyle's crew 17 jobs / $106,433 revenue / $69,411 GP (65%); Landen's crew 7 jobs / $22,820 / $11,774 GP (52%); Herod team-up $10,975; Rick Matthews noted as Davey's first job as a lead. All 26 costed jobs accounted for.
+IMPORTANT: the crew assignments were applied only to the deck. The 8 pec_prod_jobs rows still have no crew in PROD, so the dashboard will show them unassigned until someone sets crew/crew_id on them.
+Files touched: PROJECT-LOG.md in the repo; claude-design-prompt-pec-june-2026-team-meeting.md in the HQ workspace folder (slide 8 rewritten, source note added).
+Next steps: Dylan re-pastes the updated prompt into Claude Design.
+Handoff to Cowork: None.
+Handoff to Dylan: if you want the dashboard to match the deck, set the crew on those 8 June jobs (or ask Cowork to run the update with your sign-off).
+
+---
+
 ## [2026-07-02 20:36 MST] Cowork: built the June 2026 team meeting deck prompt (Claude Design) from live CRM + PROD data
 By: Cowork
 Request: Dylan needs a slideshow for tomorrow's all-PEC meeting (including Dusty): last month's metrics analyzed, MVPs named, major wins, big jobs completed, with job costing, leaderboards, sales wins, and Davey's crew leader promotion highlighted. Deliverable is a self-contained prompt for Claude Design.
