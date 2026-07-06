@@ -12649,9 +12649,15 @@ async function renderSettings() {
                 <td>${m.crew_id && crewById[m.crew_id] ? esc(crewById[m.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
                 <td><input class="prod-num" type="number" min="0" step="0.01" data-member-wage value="${esc(m.hourly_wage ?? '')}" placeholder="default rate" style="width:130px"></td>
                 <td><input type="checkbox" data-member-active ${m.active !== false ? 'checked' : ''} style="width:auto"></td>
-              </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No crew members yet. They are seeded via Cowork (BusyBusy member sync).</td></tr>'}
+              </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No team members yet. Add one below.</td></tr>'}
           </tbody>
         </table>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">
+          <div class="pec-field" style="margin:0"><label>New team member name</label><input id="pecMemberAddName" placeholder="First Last" autocomplete="off" style="min-width:200px"></div>
+          <div class="pec-field" style="margin:0"><label>Hourly wage ($)</label><input id="pecMemberAddWage" class="prod-num" type="number" min="0" step="0.01" placeholder="default rate" style="width:130px"></div>
+          <button type="button" class="pec-btn primary sm" id="pecMemberAddBtn">+ Add team member</button>
+          <span id="pecMemberAddErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+        </div>
       </div>`;
     })()}
 
@@ -12676,6 +12682,37 @@ async function renderSettings() {
   });
   $('pecCrewAddBtn').addEventListener('click', () => openCrewModal(null));
   root.querySelectorAll('[data-edit-crew]').forEach(b => b.addEventListener('click', () => openCrewModal(b.dataset.editCrew)));
+  // Add team member (the first insert path for pec_prod_crew_members; rows were
+  // previously only ever seeded manually, which is why Allen and Matthew were
+  // missing from every hours dropdown with no way to add them in-app). Active
+  // defaults true; crew assignment stays optional (nullable). Exact duplicate
+  // names are blocked: two identical members split hours entry silently.
+  const memberAddBtn = $('pecMemberAddBtn');
+  if (memberAddBtn) memberAddBtn.addEventListener('click', async () => {
+    const nameEl = $('pecMemberAddName'), wageEl = $('pecMemberAddWage'), errEl = $('pecMemberAddErr');
+    errEl.textContent = '';
+    const name = (nameEl.value || '').trim();
+    const wage = wageEl.value === '' ? null : Number(wageEl.value);
+    if (!name) { errEl.textContent = 'Enter a name.'; return; }
+    if (wage != null && (!Number.isFinite(wage) || wage < 0)) { errEl.textContent = 'Wage must be 0 or more (or blank for the default rate).'; return; }
+    if ((state.crewMembers || []).some(m => String(m.name || '').trim().toLowerCase() === name.toLowerCase())) {
+      errEl.textContent = `${name} is already a team member.`; return;
+    }
+    // Non-idempotent insert: withFreshWrite (bounded, NO auto-retry; a retried
+    // insert could double the member) with the button disabled against a
+    // double-click. Same pattern as the bonus-row insert.
+    memberAddBtn.disabled = true; memberAddBtn.textContent = 'Adding…';
+    try {
+      const ins = await withFreshWrite(() => supabase.from('pec_prod_crew_members')
+        .insert({ name, hourly_wage: wage, active: true }), { label: 'crew-member-add' });
+      if (ins.error) throw ins.error;
+      showToast(`Added ${esc(name)}.`);
+      renderSettings();
+    } catch (err) {
+      memberAddBtn.disabled = false; memberAddBtn.textContent = '+ Add team member';
+      errEl.textContent = 'Could not add: ' + (err?.message || err);
+    }
+  });
   // Crew Members inline edits (hourly wage + active). Idempotent updates, so
   // withFreshWriteRetry is safe. Pre-migration, the hourly_wage write 400s; we
   // surface that with a hint to run the costing-lifecycle migration first.
