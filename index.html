@@ -5181,6 +5181,22 @@ function can(capability) {
   return isAdmin() || !!(state.adminUser && state.adminUser.permissions && state.adminUser.permissions[capability]);
 }
 
+// Finalize Job Costing is gated TIGHTER than the admin super-role (Dylan,
+// 2026-07-06: Anne submits, only Dylan finalizes). Anne's login is role
+// 'admin', so a plain can() check would always pass for her; instead an
+// EXPLICIT can_finalize_costing=false on the user's permissions row switches
+// finalize off even for an admin-role login, while every other admin ability
+// she uses today keeps working. Deliberately fail-OPEN for admins (a missing
+// row or a pre-migration missing column reads as allowed): the safe failure
+// mode is "Anne can still finalize until Cowork flips her row", never "Dylan
+// is locked out of finalize and the bonus pipeline stalls". Non-admins never
+// finalize regardless (they submit for review).
+function canFinalizeCosting() {
+  if (!isAdmin()) return false;
+  const p = state.adminUser && state.adminUser.permissions;
+  return !(p && p.can_finalize_costing === false);
+}
+
 // Shared manual status-override flow. Opens a confirm modal (reason optional),
 // then writes jobs.status + status_manual_at and logs the change to audit_log
 // with source 'manual_override'. status_manual_at tells the schedule auto-sync
@@ -6003,7 +6019,7 @@ async function resolveAdminUser() {
 }
 
 // The capability keys, and an all-true default used when no row exists yet.
-const PERMS_KEYS = ['can_move_pipeline','can_view_job_costing','can_override_status','can_view_commission','can_edit_catalog','can_manage_team','can_manage_settings'];
+const PERMS_KEYS = ['can_move_pipeline','can_view_job_costing','can_override_status','can_view_commission','can_edit_catalog','can_manage_team','can_manage_settings','can_finalize_costing'];
 function PERMS_ALL_TRUE() { const o = {}; for (const k of PERMS_KEYS) o[k] = true; return o; }
 
 async function passwordSignIn(email, password, errEl) {
@@ -12741,14 +12757,21 @@ async function renderSettingsUsers() {
     ['can_edit_catalog', 'Catalog'],
   ];
   const permVal = (uid, key) => { const r = permByUser[uid]; return r ? !!r[key] : true; };
-  const colCount = 4 + DELEGABLE_PERMS.length + 1; // Name, Email, Role, Auth + caps + Actions
+  // Finalize costing is the ONE capability that applies to ADMIN rows: it
+  // restricts the super-role (see canFinalizeCosting), so admins get a real
+  // checkbox here while their other capabilities stay "full access". Read with
+  // explicit-false semantics (missing row or pre-migration missing column =
+  // allowed), mirroring the runtime check exactly. Non-admins never finalize
+  // regardless, so their cell is informational.
+  const finalizeAllowed = (uid) => { const r = permByUser[uid]; return !(r && r.can_finalize_costing === false); };
+  const colCount = 4 + DELEGABLE_PERMS.length + 2; // Name, Email, Role, Auth + caps + Finalize costing + Actions
 
   root.innerHTML = `
     ${settingsTabBar('users')}
     <div class="pec-card">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
         <h3 style="margin:0">Users</h3>
-        <span style="color:var(--muted);font-size:.72rem">Staff logins, roles, and capabilities. New accounts get every capability by default; uncheck to remove one. Admins always have full access (the role is a super-role); Team and Settings management stay admin-only.</span>
+        <span style="color:var(--muted);font-size:.72rem">Staff logins, roles, and capabilities. New accounts get every capability by default; uncheck to remove one. Admins always have full access (the role is a super-role), with ONE exception: unchecking Finalize costing on an admin makes them submit costing for review instead. Team and Settings management stay admin-only.</span>
         <span style="flex:1"></span>
         <button class="pec-btn sm" id="pecUsersSavePerms">Save permissions</button>
         <button class="pec-btn primary sm" id="pecUsersAdd">+ Add Staff</button>
@@ -12758,6 +12781,7 @@ async function renderSettingsUsers() {
           <thead><tr>
             <th>Name</th><th>Email</th><th>Role</th><th>Linked Auth</th>
             ${DELEGABLE_PERMS.map(([, lbl]) => `<th style="text-align:center">${esc(lbl)}</th>`).join('')}
+            <th style="text-align:center">Finalize costing</th>
             <th>Actions</th>
           </tr></thead>
           <tbody>
@@ -12770,6 +12794,9 @@ async function renderSettingsUsers() {
                 ${t.role === 'admin'
                   ? `<td colspan="${DELEGABLE_PERMS.length}" style="color:var(--muted);font-size:.72rem">Admin (full access)</td>`
                   : DELEGABLE_PERMS.map(([key]) => `<td style="text-align:center"><input type="checkbox" data-perm-user="${esc(t.id)}" data-perm-key="${esc(key)}" ${permVal(t.id, key) ? 'checked' : ''}></td>`).join('')}
+                ${t.role === 'admin'
+                  ? `<td style="text-align:center"><input type="checkbox" data-perm-user="${esc(t.id)}" data-perm-key="can_finalize_costing" ${finalizeAllowed(t.id) ? 'checked' : ''}></td>`
+                  : `<td style="text-align:center;color:var(--muted);font-size:.72rem">submits for review</td>`}
                 <td style="white-space:nowrap">
                   <button class="pec-btn sm" data-edit-team="${esc(t.id)}">Edit</button>
                   ${t.auth_user_id ? `<button class="pec-btn sm" data-reset-team="${esc(t.id)}">Reset password</button>` : ''}
@@ -12823,11 +12850,25 @@ async function renderSettingsUsers() {
     });
     try {
       const rows = Object.values(byUser);
+      let finalizeSkipped = false;
       if (rows.length) {
-        const { error } = await supabase.from('user_permissions').upsert(rows, { onConflict: 'admin_user_id' });
+        let { error } = await supabase.from('user_permissions').upsert(rows, { onConflict: 'admin_user_id' });
+        // Deploy-order safety: before the 2026-07-06 migration adds the
+        // can_finalize_costing column, the upsert 400s on the unknown column.
+        // Retry without that key so saving the OTHER capabilities still works
+        // (finalize behavior stays fail-open until the column lands).
+        if (error && /can_finalize_costing/.test(error.message || '')) {
+          const stripped = rows.map(({ can_finalize_costing, ...rest }) => rest).filter(r => Object.keys(r).length > 1);
+          ({ error } = stripped.length
+            ? await supabase.from('user_permissions').upsert(stripped, { onConflict: 'admin_user_id' })
+            : { error: null });
+          if (!error) finalizeSkipped = true;
+        }
         if (error) throw error;
       }
-      showToast('Permissions saved. Affected users see the change on their next load.');
+      showToast(finalizeSkipped
+        ? 'Saved, except Finalize costing: run the 2026-07-06_can_finalize_costing migration first.'
+        : 'Permissions saved. Affected users see the change on their next load.', finalizeSkipped ? { ttl: 6000 } : {});
       await resolveAdminUser(); // refresh current admin's own permissions if they changed their row
       renderSettings();
     } catch (err) {
@@ -17539,10 +17580,13 @@ async function renderUnifiedJob(jobId) {
     : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
 
   // Submit-for-review approval step. Lifecycle is read off the two stamps (no
-  // enum): draft -> submitted (awaiting review) -> finalized. Finalize is
-  // admin-only; a non-admin submits and waits. costSubmitted excludes finalized
-  // jobs so a finalized job is never also shown as "submitted".
-  const costAdmin     = isAdmin();
+  // enum): draft -> submitted (awaiting review) -> finalized. Finalize (and the
+  // reviewer actions: Send back, Re-open) is gated on canFinalizeCosting, which
+  // is tighter than isAdmin (an explicit can_finalize_costing=false blocks an
+  // admin-role login like Anne's; she submits and waits like everyone else).
+  // costSubmitted excludes finalized jobs so a finalized job is never also
+  // shown as "submitted".
+  const costAdmin     = canFinalizeCosting();
   const costFinalized = !!job.costing_finalized_at;
   const costSubmitted = !!job.costing_submitted_at && !costFinalized;
   const submittedLine = `Submitted for review${job.costing_submitted_by ? ' by ' + esc(job.costing_submitted_by) : ''} on ${esc(fmtStamp(job.costing_submitted_at))}`;
@@ -17998,7 +18042,7 @@ async function renderUnifiedJob(jobId) {
   // Send back (admin): clears the submitted stamps so the submitter can edit again.
   const sendBackBtn = root.querySelector('#costingSendBackBtn');
   if (sendBackBtn) sendBackBtn.addEventListener('click', async () => {
-    if (!isAdmin()) { showToast('Only an admin can send costing back.', { ttl: 4000 }); return; }
+    if (!canFinalizeCosting()) { showToast('Only the costing reviewer can send costing back.', { ttl: 4000 }); return; }
     if (!confirm('Send this job costing back to the submitter for edits?')) return;
     await saveJobField(jobId, 'costing_submitted_at', null, sendBackBtn);
     await saveJobField(jobId, 'costing_submitted_by', null, sendBackBtn);
@@ -18014,7 +18058,7 @@ async function renderUnifiedJob(jobId) {
   });
   const finalizeBtn = root.querySelector('#costingFinalizeBtn');
   if (finalizeBtn) finalizeBtn.addEventListener('click', async () => {
-    if (!isAdmin()) { showToast('Only an admin can finalize job costing.', { ttl: 4000 }); return; }
+    if (!canFinalizeCosting()) { showToast('Only the costing reviewer can finalize job costing.', { ttl: 4000 }); return; }
     if (!confirm('Are you sure you want to finalize job costing for this job?')) return;
     finalizeBtn.disabled = true; finalizeBtn.textContent = 'Finalizing…';
     const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
@@ -18048,7 +18092,7 @@ async function renderUnifiedJob(jobId) {
   });
   const unfinalizeBtn = root.querySelector('#costingUnfinalizeBtn');
   if (unfinalizeBtn) unfinalizeBtn.addEventListener('click', async () => {
-    if (!isAdmin()) { showToast('Only an admin can re-open job costing.', { ttl: 4000 }); return; }
+    if (!canFinalizeCosting()) { showToast('Only the costing reviewer can re-open job costing.', { ttl: 4000 }); return; }
     if (!confirm('Re-open costing for this job? It will leave Completed Job Costing.')) return;
     await saveJobField(jobId, 'costing_finalized_at', null, unfinalizeBtn);
     await saveJobField(jobId, 'costing_finalized_by', null, unfinalizeBtn);
