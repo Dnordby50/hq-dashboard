@@ -7470,8 +7470,8 @@ async function renderJobs() {
           <thead><tr><th>Customer</th><th>Address</th><th>Price</th><th>Archived</th><th></th><th></th></tr></thead>
           <tbody>${archivedJobs.map(j => `
             <tr class="nohover" data-archived-job="${esc(j.id)}">
-              <td>${esc(j.customers?.name || '—')}</td>
-              <td>${esc(j.address || '—')}</td>
+              <td>${esc(j.customers?.name) || '&mdash;'}</td>
+              <td>${esc(j.address) || '&mdash;'}</td>
               <td>${fmtMoney(j.price)}</td>
               <td>${fmtDate(j.archived_at)}</td>
               <td><span class="pec-badge" style="--pec-badge-bg:#6b7280">Cancelled</span></td>
