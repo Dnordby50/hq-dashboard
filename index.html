@@ -16376,6 +16376,14 @@ async function loadCostingData() {
         supabase.from('jobs').select('id,dripjobs_deal_id,price,status,address,customers(name)').is('archived_at', null),
       ]), { label: 'loadCostingData:estimate' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
+      // Publish the catalog on THIS module's state for openAddMaterialModal.
+      // The modal used to read state.products, which only the PRODUCTION
+      // module's loadCatalog ever filled, and that is a separate <script
+      // type="module"> with its OWN state object, so the CRM module's copy was
+      // never populated no matter what the user visited first and "+ Add
+      // material" always toasted "No catalog products". Same fetch as the
+      // estimate above, so this costs zero extra queries.
+      state.products = prodRes.data || [];
       const slotsBySystem = {};
       for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
       for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
@@ -16445,6 +16453,16 @@ async function loadCostingData() {
       state.materialOrderedByJob = ordered;
     }
   } catch (e) { console.warn('[pec] costing estimate/derivation skipped:', e); }
+  // Catalog fallback for "+ Add material": if the estimate phase was skipped
+  // or died early (no prod jobs is moot, but a mid-phase fetch error is not),
+  // fetch the products directly so the modal still works. Read-only, cheap,
+  // and only fires when state.products is still empty.
+  if (!(state.products || []).length) {
+    try {
+      const prodRes2 = await withFreshSession(() => supabase.from('pec_prod_products').select('*'), { label: 'loadCostingData:products' });
+      if (!prodRes2.error) state.products = prodRes2.data || [];
+    } catch (e) { console.warn('[pec] costing products fallback skipped:', e); }
+  }
   // Bonus rows grouped per job; the per-job bonus total is the derived sum
   // shown in the Costs card on the unified page (replaces the stored
   // pec_prod_job_costing.bonus_cost number for jobs that have rows).
