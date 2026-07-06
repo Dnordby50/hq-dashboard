@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-06 07:59 MST] Cowork: scoped Claude Code prompt 9 (Invoicing last-invoice-sent column, commission basis verify, job archive rework + customer-vanish bug)
+By: Cowork
+Request: three items from Dylan: (1) Invoicing page needs a "date of most recent invoice sent" column so the team can confirm jobs are invoiced promptly; (2) verify sales commissions are calculated off revenue COLLECTED, not just deposits, so Aron gets the remainder when his jobs complete; (3) reported mid-session: deleting a job also "deletes" the customer; he wants job deletion to be a plain archive (customer cancels) that keeps the customer.
+Investigation (read-only): (1) renderInvoicing (~7582) has no send info; pec_email_log rows carry job_id + sent_at + template_key (invoice compose sends log as 'compose', a naming trap flagged in the prompt), SMS invoices land in pec_sms_log with kind='invoice'; jobs.invoice_first_sent_at only stamps the FIRST email send since ~June 15, so "most recent" must derive from the logs. (2) Good news: the Commission module already commissions EVERY pec_payments row at the rep's pct with pending carry-forward and per-payment payout freeze (~11643-11731); deposits and finals flow identically, so the realistic gap is final payments never being recorded, and the prompt adds a verification pass plus a completed-but-undercollected flag on the Commission sold-jobs rollup. (3) Surprising: the job Delete (~10155) is ALREADY a soft archive that never touches customers, and the Customers list was explicitly fixed to keep archived-job-only customers, yet Dylan sees the customer vanish from BOTH the list and search. Prompt orders a diagnosis with ranked hypotheses (the embedded jobs.archived_at filter behaving as an inner join; a hidden path setting customers.archived_at; operator flow via the customer Delete).
+Decisions from Dylan (16 multiple-choice questions, 4 rounds): column on completed-not-paid section only, email or SMS counts, derive from logs, "Jul 2 (4d ago)" format, red flag when 2+ days past completion with no send on/after completion minus 2 days, pre-June-15 completions show a dash with no flag; commission = verify end to end + safeguard flags on Invoicing and Commission, PROD audit by Cowork; delete rework = fix the vanish bug, relabel Danger zone to Archive with a simple confirm, cancellation tracking with restore (implementation latitude between a real status and an archived_at-based Cancelled view, status-machine gotchas flagged), calendar removal unchanged.
+Produced: claude-code-prompt-9-invoicing-commission-archive.md in the HQ workspace folder (outside the repo).
+Blocked (Supabase MCP still unresponsive, fifth attempt this session): the prompt-8 seeds (Allen Adamo, Matthew Hamby at $20/hr), the Eric Harris material-line audit, and the two new PROD audits for prompt 9 (completed jobs with payments short of price / Aron deposit-only commission; customers.archived_at correlated with job archive stamps). All queued for when the connector returns.
+Files touched: PROJECT-LOG.md only in the repo. No app code, no PROD data changed.
+Next steps: Dylan runs claude-code-prompt-9 in Claude Code (after prompt 8).
+Handoff to Cowork: when the Supabase MCP is back, run the four queued PROD items above and append results.
+Handoff to Dylan: run prompt 8 then prompt 9; the post-deploy checks are listed at the bottom of each prompt file.
+
+---
+
 ## [2026-07-06 07:42 MST] Cowork: investigated Anne's three Job Costing issues, scoped Claude Code prompt 8
 By: Cowork
 Request: Anne (VA) reported via Dylan: (1) adding materials on Job Costing still not working; (2) jobs with costing entered but not finalized disappear from the Pending Job Costing list and are only reachable via search; (3) no way to add hours for team members like Allen and Matthew (Dylan clarified "crews" meant individual team members).
