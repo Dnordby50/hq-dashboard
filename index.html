@@ -12637,8 +12637,8 @@ async function renderSettings() {
       return `
       <div class="pec-card">
         <div style="margin-bottom:8px">
-          <h3 style="margin:0">Crew Members</h3>
-          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Per-member hourly wage drives the Crew Bonus math (actual labor = hours x wage x 1.25 burden). A blank wage falls back to the default labor rate. Members are seeded via Cowork (BusyBusy sync); set wage and active here.</div>
+          <h3 style="margin:0">Team Members</h3>
+          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Per-member hourly wage drives the Crew Bonus math (actual labor = hours x wage x 1.25 burden). A blank wage falls back to the default labor rate. Add team members below; BusyBusy-linked members get their hours synced automatically.</div>
         </div>
         <table class="pec-table">
           <thead><tr><th>Name</th><th>Crew</th><th style="width:150px">Hourly wage ($)</th><th style="width:80px">Active</th></tr></thead>
@@ -17289,7 +17289,7 @@ async function renderUnifiedJob(jobId) {
   const bonusMemberLookup = (key) => {
     if (key.startsWith('bb:')) return { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null };
     const m = memberByIdAll[key];
-    return { name: m?.name || 'Crew member', wage: m?.hourly_wage ?? null };
+    return { name: m?.name || 'Team member', wage: m?.hourly_wage ?? null };
   };
   const jobEst = (state.estimateByJob || {})[jobId] || {};
   const realLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
@@ -17421,14 +17421,14 @@ async function renderUnifiedJob(jobId) {
        </div>`;
 
   const bonusOptions = crewMembers.length === 0
-    ? `<option value="">No crew members yet — seed via Cowork (see PROJECT-LOG handoff)</option>`
+    ? `<option value="">No team members yet (add them in Settings)</option>`
     : crewMembers.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
 
   const bonusesHtml = bonuses.length === 0
-    ? `<div class="pec-empty">No bonus rows yet. Add one per crew member as the job wraps up.</div>`
+    ? `<div class="pec-empty">No bonus rows yet. Add one per team member as the job wraps up.</div>`
     : `<table class="pec-table" style="font-size:.78rem">
          <thead><tr>
-           <th>Crew Member</th>
+           <th>Team Member</th>
            <th style="width:110px">Hours Actual</th>
            <th style="width:130px">Amount</th>
            <th>Note</th>
@@ -17477,7 +17477,7 @@ async function renderUnifiedJob(jobId) {
   };
 
   const bonusEarnedText = !bonusCalc.hasActuals
-    ? 'awaiting hours (enter crew labor below)'
+    ? 'awaiting hours (enter team member hours below)'
     : (jobLaborBudget == null ? 'NO (no labor budget — set system labor % + revenue)' : (bonusCalc.pool > 0 ? 'YES' : 'NO'));
   const bonusEarnedColor = (bonusCalc.hasActuals && bonusCalc.pool > 0) ? 'var(--rd-success,#16a34a)' : 'var(--muted)';
   const bonusSourceNote = bonusSource === 'busybusy' ? 'from BusyBusy hours' : bonusSource === 'manual' ? 'from manual hours' : '';
@@ -17485,7 +17485,7 @@ async function renderUnifiedJob(jobId) {
   const bonusMembersTable = `
     <div class="pec-table-wrap"><table class="pec-table" style="font-size:.76rem">
       <thead><tr>
-        <th>Crew member</th><th>Time punches</th>
+        <th>Team member</th><th>Time punches</th>
         <th style="text-align:right">Total hours</th>
         <th style="text-align:right">OT hrs</th>
         <th style="text-align:right">Total wage</th>
@@ -17550,23 +17550,23 @@ async function renderUnifiedJob(jobId) {
   const activeMembers = (state.crewMembers || []).filter(m => m.active !== false);
   const manualMemberOpts = activeMembers.length
     ? activeMembers.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')
-    : '<option value="">No crew members yet (seed via Cowork)</option>';
+    : '<option value="">No team members yet (add them in Settings)</option>';
   const manualLaborEditorHtml = `
         <div style="margin-top:14px">
-          <h3 style="font-size:.85rem;margin:0 0 6px">Crew hours${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
-          <div style="font-size:.72rem;color:var(--rd-ink-2,var(--text));margin:0 0 4px">Enter hours per crew member to calculate the bonus and GP/hr. BusyBusy will fill this automatically once connected.</div>
+          <h3 style="font-size:.85rem;margin:0 0 6px">Team member hours${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
+          <div style="font-size:.72rem;color:var(--rd-ink-2,var(--text));margin:0 0 4px">Enter hours per team member to calculate the bonus and GP/hr. BusyBusy will fill this automatically once connected.</div>
           <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Enter Regular hrs and OT hrs separately. OT is paid at ${OT_MULTIPLIER}x (Arizona = federal >40/week). Total = Regular + OT.</div>
           ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
-            <thead><tr><th>Crew member</th><th style="width:120px">Regular hrs</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
+            <thead><tr><th>Team member</th><th style="width:120px">Regular hrs</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
             <tbody>
               ${manualRows.map(m => `<tr class="nohover" data-manual-id="${esc(m.id)}">
-                <td>${esc(memberByIdAll[m.crew_member_id]?.name || 'Crew member')}</td>
+                <td>${esc(memberByIdAll[m.crew_member_id]?.name || 'Team member')}</td>
                 <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-reg value="${esc(Math.max(0, Number(m.hours || 0) - Number(m.ot_hours || 0)))}" style="width:100px"></td>
                 <td><input class="prod-num" type="number" min="0" step="0.25" data-manual-ot value="${esc(m.ot_hours ?? '')}" style="width:100px"></td>
                 <td><button class="pec-btn ghost sm" data-manual-delete title="Remove">✕</button></td>
               </tr>`).join('')}
             </tbody>
-          </table>` : '<div class="pec-empty" style="font-size:.75rem">No manual hours yet. Add a crew member and their hours to compute the bonus.</div>'}
+          </table>` : '<div class="pec-empty" style="font-size:.75rem">No manual hours yet. Add a team member and their hours to compute the bonus.</div>'}
           <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
             <select id="manualLaborSelect" style="max-width:220px">${manualMemberOpts}</select>
             <input id="manualLaborRegHours" class="prod-num" type="number" min="0" step="0.25" placeholder="regular hrs" style="width:90px">
@@ -17581,9 +17581,9 @@ async function renderUnifiedJob(jobId) {
         <div style="font-size:.95rem;margin:0 0 10px">Bonus earned: <strong style="color:${bonusEarnedColor}">${bonusEarnedText}</strong>${bonusSourceNote ? ` <span style="color:var(--muted);font-size:.72rem;font-weight:400">${bonusSourceNote}</span>` : ''}</div>
         ${formulaHtml}
         ${bbError && !hasManual
-          ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-bottom:8px">BusyBusy hours unavailable (${esc(bbError)}). Enter crew labor manually below to compute the bonus.</div>`
+          ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-bottom:8px">BusyBusy hours unavailable (${esc(bbError)}). Enter team member hours manually below to compute the bonus.</div>`
           : !bonusCalc.hasActuals
-            ? `<div class="pec-empty">No hours yet. Enter crew labor below to compute the bonus.</div>`
+            ? `<div class="pec-empty">No hours yet. Enter team member hours below to compute the bonus.</div>`
             : bonusMembersTable}
         ${manualLaborEditorHtml}
 
@@ -19172,7 +19172,7 @@ if (portalToken) {
   .pec-cal-week-row:last-child { margin-bottom:0 }
   .pec-cal-week-rev { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:10px 14px; background:var(--rd-soft, var(--s2)); border:1px solid var(--rd-line, var(--border)); border-radius:6px }
   .pec-cal-week-rev .rev-label { font-size:.65rem; letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-bottom:4px }
-  .pec-cal-week-rev .rev-amount { font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--fg, #0f172a) }
+  .pec-cal-week-rev .rev-amount { font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--rd-ink, #0f172a) }
   .pec-cal-week-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:6px; overflow:hidden; min-height:140px }
   .pec-cal-week-grid .day-c { background:var(--rd-card, var(--s1)); padding:6px 0; position:relative; display:flex; flex-direction:column }
   .pec-cal-week-grid .day-c.today { box-shadow: inset 0 0 0 2px var(--rd-accent, var(--accent)); background: color-mix(in srgb, var(--rd-accent, var(--accent)) 6%, var(--rd-card, var(--s1))) }
@@ -19188,15 +19188,15 @@ if (portalToken) {
      re-flowing the layout. The 3px left stripe is solid color across the
      whole bar; the body uses a 22% color-mix of the same color so the
      connected days read as continuous fill rather than per-day chips. */
-  .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; flex-wrap:wrap; gap:2px 6px; align-items:center; align-content:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--fg, #0f172a); container-type:inline-size }
+  .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; flex-wrap:wrap; gap:2px 6px; align-items:center; align-content:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--rd-ink, #0f172a); container-type:inline-size }
   .pec-cal-event-bar::before { content:''; position:absolute; left:3px; top:2px; bottom:2px; width:3px; background:var(--ev-color, #6366f1); border-radius:2px }
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
   .pec-cal-event-bar .bar-slot { flex:0 0 auto; font-weight:700; font-size:.6rem; letter-spacing:.5px; padding:1px 5px; border-radius:999px; background:var(--ev-color, #6366f1); color:#fff; overflow:visible }
   .pec-cal-event-bar > .bar-customer { font-weight:600; flex:1 1 auto }
-  .pec-cal-event-bar > .bar-rev { flex:0 0 auto; color:var(--fg, #0f172a); font-weight:700; font-variant-numeric:tabular-nums }
+  .pec-cal-event-bar > .bar-rev { flex:0 0 auto; color:var(--rd-ink, #0f172a); font-weight:700; font-variant-numeric:tabular-nums }
   .pec-cal-event-bar > .bar-system,
-  .pec-cal-event-bar > .bar-crew { flex:0 1 auto; color:var(--fg, #0f172a) }
+  .pec-cal-event-bar > .bar-crew { flex:0 1 auto; color:var(--rd-ink, #0f172a) }
   .pec-cal-event-bar > :not(:first-child) { position:relative; padding-left:11px }
   .pec-cal-event-bar > :not(:first-child)::before { content:'·'; position:absolute; left:2px; color:var(--muted) }
   /* Lanes are tall enough for two lines now, so narrow bars WRAP system + crew
@@ -19223,7 +19223,13 @@ if (portalToken) {
   .pec-cal-dayoff { position:relative; z-index:2; margin:1px 3px; padding:2px 7px; font-size:.66rem; line-height:1.3; border-radius:999px; background: color-mix(in srgb, #f59e0b 24%, transparent); border:1px solid color-mix(in srgb, #f59e0b 55%, transparent); color:var(--rd-ink, var(--text)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   /* Toast notifications */
   .pec-toast-host { position:fixed; bottom:16px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:10000; pointer-events:none }
-  .pec-toast { background:var(--rd-card, #1f2937); color:var(--fg, #f8fafc); border:1px solid var(--rd-line, var(--border)); border-left:3px solid var(--rd-accent, var(--accent)); border-radius:6px; box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:.78rem; display:flex; align-items:center; gap:10px; min-width:260px; max-width:420px; pointer-events:auto; animation:pec-toast-in .18s ease-out }
+  /* Text color must come from the SAME token family as the background:
+     --rd-card is white (defined at :root), but --fg was never defined
+     anywhere, so its near-white fallback made every toast white-on-white
+     (Dylan's invisible "No catalog products" toast, 2026-07-06). --rd-ink is
+     defined alongside --rd-card; if neither exists the fallbacks pair dark
+     bg + light text, so the toast is readable either way. */
+  .pec-toast { background:var(--rd-card, #1f2937); color:var(--rd-ink, #f8fafc); border:1px solid var(--rd-line, var(--border)); border-left:3px solid var(--rd-accent, var(--accent)); border-radius:6px; box-shadow:0 6px 24px rgba(0,0,0,.18); padding:10px 12px; font-size:.78rem; display:flex; align-items:center; gap:10px; min-width:260px; max-width:420px; pointer-events:auto; animation:pec-toast-in .18s ease-out }
   .pec-toast-msg { flex:1; line-height:1.35 }
   .pec-toast-action { background:transparent; color:var(--rd-accent, var(--accent)); border:1px solid var(--rd-accent, var(--accent)); border-radius:4px; padding:4px 10px; font-size:.7rem; cursor:pointer; font-weight:600 }
   .pec-toast-action:hover { background:var(--rd-accent, var(--accent)); color:var(--rd-card, #fff) }
