@@ -6714,15 +6714,21 @@ async function renderCustomers() {
   if (state.openCustomerId) return renderCustomerDetail(state.openCustomerId);
   const root = $('pecViewRoot');
   const from = (state.customersPage - 1) * PAGE;
+  // NO jobs(count) embed here, on purpose (the Timothy Gallagher vanish,
+  // 2026-07-06). The old query paired jobs(count) with the embedded filter
+  // .is('jobs.archived_at', null); its comment asserted that filter could not
+  // drop parent customers, but the case it cited (Samuel AE Reprographics)
+  // never exercised zero-matching-jobs, Samuel had another live job. The first
+  // customer whose ONLY job got archived (Gallagher, verified in PROD: row
+  // alive, archived_at null, zero live jobs) disappeared from this list AND
+  // its search mode, which are the only doorways to the detail page. Job
+  // counts now come from a second batched query counted client-side, so the
+  // customers page can never lose a row to embed-filter semantics, whatever
+  // the deployed PostgREST does with them. Archiving a job must never hide
+  // the customer.
   let q = supabase.from('customers')
-    .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip,jobs(count)', { count: 'exact' })
+    .select('id,name,first_name,last_name,company_name,email,phone,company,token,created_at,archived_at,lead_source,tags,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip', { count: 'exact' })
     .is('archived_at', null)
-    // Count only NON-archived jobs so the list count matches the expand (which
-    // already filters archived_at is null). This is an embedded-resource filter
-    // on the jobs(count) aggregate, NOT an inner join, so a customer whose only
-    // job is archived still appears with a count of 0. (Samuel AE Reprographics
-    // read 2 because an archived signed job was being counted.)
-    .is('jobs.archived_at', null)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.customersSearch) q = q.or(`name.ilike.%${state.customersSearch}%,email.ilike.%${state.customersSearch}%,phone.ilike.%${state.customersSearch}%`);
@@ -6730,6 +6736,16 @@ async function renderCustomers() {
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
   state.customers = data || [];
   state.customersTotal = count || 0;
+  // Non-archived job count per listed customer (one query for the whole page,
+  // no N+1). Matches the expand panel's filter exactly, so the count and the
+  // expanded list always agree.
+  const jobCountById = {};
+  const pageIds = state.customers.map(c => c.id);
+  if (pageIds.length) {
+    const jr = await withFreshSession(() => supabase.from('jobs')
+      .select('customer_id').in('customer_id', pageIds).is('archived_at', null), { label: 'renderCustomers:jobCounts' });
+    if (!jr.error) for (const r of (jr.data || [])) jobCountById[r.customer_id] = (jobCountById[r.customer_id] || 0) + 1;
+  }
 
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -6749,7 +6765,7 @@ async function renderCustomers() {
             <td>${esc(c.email || '—')}</td>
             <td>${esc(c.phone || '—')}</td>
             <td><span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${c.company === 'prescott-epoxy' ? 'PEC' : 'FTP'}</span></td>
-            <td>${c.jobs?.[0]?.count ?? 0}</td>
+            <td>${jobCountById[c.id] || 0}</td>
             <td style="white-space:nowrap">
               <button class="pec-btn sm" data-edit-cust="${c.id}">Edit</button>
               <button class="pec-btn sm" data-copy-token="${esc(c.token)}">Copy link</button>
