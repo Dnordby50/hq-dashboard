@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-06 08:32 MST] Cowork: ALL queued PROD items done (migration + Anne flip, seeds, Eric Harris dedupe, every audit), prompt 10 scoped (subcontractor expenses)
+By: Cowork
+Request: Dylan said "run migration" (the prompt-8 handoff), then added a build item mid-session: a subcontractor section to add sub expenses to Job Costing for jobs PEC subs out. This entry also closes out the Cowork handoffs in BOTH Claude Code entries below (08:07 and 08:27); the Supabase MCP recovered but stayed flaky, several items took timed retries.
+PROD changes:
+1. Applied supabase/migrations/2026-07-06_can_finalize_costing.sql via apply_migration. Verified: user_permissions.can_finalize_costing exists, boolean, default true.
+2. Anne flip, run as ONE atomic UPDATE with the exactly-one-Anne guard folded into the WHERE clause. Returned exactly one row: Anne Villalba (anne@finishingtouchpaintingaz.com, role admin), can_finalize_costing = false. The deploy is live (verified below), so the review gate is ACTIVE: Anne now submits, Dylan finalizes.
+3. Seeded pec_prod_crew_members: Allen Adamo and Matthew Hamby, hourly_wage 20.00, active true, duplicate-guarded; both inserted fresh.
+4. Eric Harris dedupe (proposal 2896510), run AFTER verifying the prompt-8 deploy is live (curl of prescottepoxy.netlify.app shows the Team-member-hours and canFinalizeCosting markers): deleted the 3 copies WITHOUT actual_used_qty (Polyaspartic 2gal $396.00, 1100 SL Haze Gray $288.54, Obsidian Flake $240.00). Verified after: exactly 1 line per product, each carrying its actual_used_qty. Materials Used unchanged (the kept copies hold the used values).
+Audits (read-only):
+5. Duplication signature before the dedupe: exactly 2 copies of each of 3 products created 33 MILLISECONDS apart, one copy per product with actual_used_qty, textbook interleaved double-insert confirming the per-input race diagnosis. Global audit: NO other job in PROD had the doubled signature. Affected-job count: 1 (Eric Harris only).
+6. RLS drift check: pec_prod_material_lines has exactly one FOR ALL policy (pec_prod_material_lines_staff), is_admin_staff() on both USING and WITH CHECK. No drift.
+7. Item-2 audit (08:27 entry handoff): 7 completed jobs have recorded payments short of price. Aron has exactly one: DJ Johnston ($3,490 price, $1,745 collected), which is the AR queue working, not a commission bug. Three completed jobs have ZERO payments recorded: Dan Patterson $41,140, Irene Varelas $3,275, David Owens $2,250 (flagged to Dylan below). Two more partials: Luca Paindelli ($4,562.75 remaining), Mike Long ($2,350), Cindy Schubert ($1,316.25), all salesperson-null.
+8. Item-3 confirmation pass: customers.archived_at is null for ALL customers as of ~08:30 MST, consistent with Claude Code's 08:15 diagnosis (Timothy Gallagher trigger case, client-side fix, no data repair needed). Note: Cowork independently reached the same zero-archived-customers conclusion at 08:30 and had updated the prompt-9 file with it; Claude Code's live diagnosis beat the file update. No conflict, same facts.
+Prompt 10 produced: claude-code-prompt-10-subcontractor-expenses.md in the HQ workspace folder. Decisions from Dylan (13 multiple-choice questions, 4 rounds): Subcontractors card on the costing detail; line items with exactly two entry boxes (free-text name + dollar amount), no directory, no paid tracking, no budget variance; lines sum into the EXISTING subcontractor_cost bucket so GP math and rollups are untouched; existing single-field amounts backfilled as one "Prior entry" line each; a subcontracted-job flag (costing surfaces only) that excludes the job from crew-hours expectations and the crew bonus calc, with finalize recording zero bonus; costing-access permissions, finalize locks the section; no new rollup column.
+Files touched: PROJECT-LOG.md in the repo; claude-code-prompt-9 (audit evidence added, historical note since Claude Code already ran it) and claude-code-prompt-10 (new) in the HQ workspace folder. PROD data changed as itemized above.
+Next steps: Dylan runs claude-code-prompt-10 in Claude Code; both Claude Code verify lists (08:07 and 08:27 entries) are ready to walk since the deploy is live and all data prerequisites are in.
+Handoff to Cowork: after prompt 10 ships, apply its migration + backfill per the file.
+Handoff to Dylan: (1) walk the two verify lists in the 08:07 and 08:27 entries; everything Cowork-side is in place, including Anne's live review gate, so have Anne submit a costing today; (2) from the audit: Dan Patterson ($41,140), Irene Varelas ($3,275), and David Owens ($2,250) are completed with ZERO payments recorded, worth chasing this week (Patterson also still carries the $43,590 vs $41,140 price discrepancy flagged 2026-07-02); (3) run prompt 10 when ready.
+
+---
+
 ## [2026-07-06 08:27 MST] Claude Code: customer-vanish bug fixed (diagnosed live in PROD), job archive rework + Cancelled view, Last-invoiced column, commission basis verified
 By: Claude Code
 Changed: index.html only, no migration. Commits 95cdd59 (customer-vanish fix), 41d325d (archive UX + Cancelled section), 098a20d (Last invoiced column), 8a7ad47 (commission flag), e424185 (placeholder cleanup). Built from Cowork's claude-code-prompt-9 (07:59 entry below, 16 decisions from Dylan).
