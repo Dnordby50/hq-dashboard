@@ -18153,32 +18153,40 @@ async function renderJobCosting() {
     return fid ? sysById[fid] : null;
   };
 
-  // Pending Job Costing: completed-but-not-costed jobs. Per Dylan (2026-06-12), a
-  // job only enters costing once it is EXPLICITLY marked complete (status
-  // 'completed'); the old "install date is today/past" heuristic surfaced jobs
-  // that nobody had finished yet and flooded the queue. Completion now flips
-  // pec_prod_jobs.status via both the status-pick modal and the Invoicing Mark
-  // Complete (mirrorProdStatus), so this gate is reliable. A job leaves the queue
-  // once a costing row exists. Archived jobs and touch-up callbacks are excluded.
+  // Pending Job Costing: completed jobs whose costing is not DONE yet. Per Dylan
+  // (2026-06-12), a job only enters costing once it is EXPLICITLY marked
+  // complete (status 'completed'); the old "install date is today/past"
+  // heuristic surfaced jobs that nobody had finished yet and flooded the queue.
+  // Completion now flips pec_prod_jobs.status via both the status-pick modal and
+  // the Invoicing Mark Complete (mirrorProdStatus), so this gate is reliable.
+  // A job leaves this queue only when it is FINALIZED or SUBMITTED for review
+  // (per Dylan 2026-07-06): the first keystroke on a costing field upserts the
+  // pec_prod_job_costing row, and the old "leave once a costing row exists"
+  // rule made every partially-costed job invisible everywhere except search
+  // (Anne's report). A costing row now just flips the badge to "In progress";
+  // one list, a job is never invisible. Archived jobs and touch-up callbacks
+  // are excluded as before.
   const pendingCosting = (state.prodJobs || []).filter(j => {
     if (j.archived_at) return false;
     if (j.is_callback) return false;
     if (costingIsFinalized(j)) return false; // finalized jobs live in Completed Job Costing
     if (j.costing_submitted_at) return false; // submitted jobs live in the review queue below
-    return costingIsCompleted(j) && !costByJob[j.id];
+    return costingIsCompleted(j);
   }).slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+  const pendingInProgress = pendingCosting.filter(j => costByJob[j.id]).length;
   const pendingHtml = pendingCosting.length ? `
     <div class="pec-card" style="border-radius:0;border-top:1px solid var(--border)">
-      <h3 style="margin:0 0 8px">Pending Job Costing <span style="color:var(--muted);font-size:.72rem;font-weight:400">${pendingCosting.length} completed job${pendingCosting.length === 1 ? '' : 's'} not yet costed</span></h3>
+      <h3 style="margin:0 0 8px">Pending Job Costing <span style="color:var(--muted);font-size:.72rem;font-weight:400">${pendingCosting.length} completed job${pendingCosting.length === 1 ? '' : 's'} awaiting costing${pendingInProgress ? ' · ' + pendingInProgress + ' in progress' : ''}</span></h3>
       <div style="display:flex;flex-direction:column;gap:6px">
         ${pendingCosting.map(j => {
           const sys = areaSystem(j);
+          const started = !!costByJob[j.id];
           return `<div data-pending-cost="${esc(j.id)}" style="display:flex;gap:10px;align-items:center;cursor:pointer;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text))">
             <span style="flex:1;font-weight:600">${esc(j.customer_name || '(no name)')}</span>
             <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
             ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
             <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.install_date ? 'Installed ' + esc(j.install_date) : esc(j.status || '')}</span>
-            <span class="pec-badge" style="--pec-badge-bg:#d97706">Needs costing</span>
+            ${started ? '<span class="pec-badge" style="--pec-badge-bg:#2563eb">In progress</span>' : '<span class="pec-badge" style="--pec-badge-bg:#d97706">Needs costing</span>'}
           </div>`;
         }).join('')}
       </div>
