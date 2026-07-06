@@ -7746,13 +7746,78 @@ async function renderInvoicing() {
   const payBtn = r => `<button class="pec-btn sm primary" data-pay="${r.id}">Mark Paid</button>`;
   const viewBtn = r => `<button class="pec-btn sm" data-invoice="${r.id}">View Invoice</button>`;
 
+  // "Last invoice sent" for the completed section only (Dylan 2026-07-06):
+  // derived at render time from the send logs, retroactive, no new column.
+  // TWO batched queries (one per log table) over just this section's job ids,
+  // never per-row. What counts as an invoice send:
+  //   EMAIL: pec_email_log row with this job_id, status not 'failed', and
+  //   template_key 'compose' or 'invoice'. The Email-invoice modal sends
+  //   compose mode (logs 'compose') and is TODAY the only job-attached email
+  //   path in the app (the only other send call is the template test-send,
+  //   which carries no job_id); 'invoice' future-proofs a stored-template
+  //   send. If some other job-attached compose email ever ships, revisit.
+  //   SMS: pec_sms_log row with this job_id, kind 'invoice', direction 'out',
+  //   status not 'failed'.
+  // The most recent of either wins. A missing log table or errored read
+  // degrades to dashes; the page never breaks on it.
+  const completedIds = completed.map(r => r.id);
+  const lastInvoiceSentByJob = {};
+  if (completedIds.length) {
+    let emRes = { data: [] }, smRes = { data: [] };
+    try {
+      [emRes, smRes] = await withFreshSession(() => Promise.all([
+        supabase.from('pec_email_log').select('job_id,sent_at,created_at')
+          .in('job_id', completedIds).neq('status', 'failed').in('template_key', ['compose', 'invoice']),
+        supabase.from('pec_sms_log').select('job_id,created_at')
+          .in('job_id', completedIds).eq('kind', 'invoice').eq('direction', 'out').neq('status', 'failed'),
+      ]), { label: 'renderInvoicing:lastSent' });
+    } catch (e) { console.warn('[pec] last-invoice-sent lookup skipped:', e); }
+    for (const r of (emRes.error ? [] : emRes.data || [])) {
+      const ts = new Date(r.sent_at || r.created_at).getTime();
+      if (Number.isFinite(ts) && ts > (lastInvoiceSentByJob[r.job_id] || 0)) lastInvoiceSentByJob[r.job_id] = ts;
+    }
+    for (const r of (smRes.error ? [] : smRes.data || [])) {
+      const ts = new Date(r.created_at).getTime();
+      if (Number.isFinite(ts) && ts > (lastInvoiceSentByJob[r.job_id] || 0)) lastInvoiceSentByJob[r.job_id] = ts;
+    }
+  }
+  // FLAG RULE (Dylan): a completed job is flagged when today is more than 2
+  // days past completed_date AND there is no non-failed invoice send dated on
+  // or after completed_date minus 2 days (a send shortly BEFORE completion
+  // counts as the invoice). FALSE-ALARM GUARD: pec_email_log only went live
+  // ~2026-06-15, so a job completed before that date has no send history to
+  // judge; it shows a plain dash and never flags.
+  const INVOICE_LOG_LIVE_DATE = '2026-06-15';
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const phxDay = ts => new Date(ts - 7 * 3600 * 1000).toISOString().slice(0, 10); // timestamptz ms -> Phoenix date, same UTC-7 rule as invToday
+  const lastSentCell = (r) => {
+    const ts = lastInvoiceSentByJob[r.id] || null;
+    const sentDay = ts ? phxDay(ts) : null;
+    const preLog = (r.completed_date || '') < INVOICE_LOG_LIVE_DATE;
+    const daysDone = invDaysSince(r.completed_date);
+    const stale = !preLog && daysDone != null && daysDone > 2
+      && !(sentDay && sentDay >= invAddDays(r.completed_date, -2));
+    if (!sentDay) {
+      return stale
+        ? '<td><span class="pec-badge" style="--pec-badge-bg:#ef4444">never sent</span></td>'
+        : '<td><span style="color:var(--muted)">&mdash;</span></td>';
+    }
+    const d = invParse(sentDay);
+    const days = invDaysSince(sentDay);
+    const label = `${MON[d.getUTCMonth()]} ${d.getUTCDate()} (${days === 0 ? 'today' : days + 'd ago'})`;
+    return stale
+      ? `<td><span style="color:var(--rd-danger,#ef4444);font-weight:600" title="Newest send is older than 2 days before completion; send the final invoice">${esc(label)}</span></td>`
+      : `<td>${esc(label)}</td>`;
+  };
+
   const completedRows = completed.map(r => `<tr class="nohover">
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
     <td>${invAgeCompleted(invDaysSince(r.completed_date))}</td>
     <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.completed_date)}</td>
+    ${lastSentCell(r)}
     <td style="white-space:nowrap">${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
-    || '<tr class="nohover"><td colspan="8" class="pec-empty">Nothing here. Nice.</td></tr>';
+    || '<tr class="nohover"><td colspan="9" class="pec-empty">Nothing here. Nice.</td></tr>';
 
   const signedRows = signedNoDep.map(r => `<tr class="nohover">
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
@@ -7789,7 +7854,7 @@ async function renderInvoicing() {
     <details class="pec-card pec-ar-sec" open>
       <summary>Completed work, not paid in full <span class="pec-ar-meta">${completed.length} job${completed.length === 1 ? '' : 's'} · ${invUSD(completedOwed)} owed</span></summary>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Salesperson</th><th>Completed</th><th></th></tr></thead>
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Salesperson</th><th>Completed</th><th>Last invoiced</th><th></th></tr></thead>
         <tbody>${completedRows}</tbody></table></div>
     </details>
 
