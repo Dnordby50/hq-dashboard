@@ -7401,12 +7401,29 @@ async function renderJobs() {
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
   if (state.jobsFilter.status) q = q.eq('status', state.jobsFilter.status);
-  const [jobsRes, sysRes] = await withFreshSession(() => Promise.all([
+  // Cancelled / archived jobs (Dylan, 2026-07-06): archiving is how a
+  // cancellation is recorded, so archived jobs get a visible, countable,
+  // restorable home instead of vanishing entirely. Represented purely by
+  // archived_at (NO new jobs.status value, which would ripple through
+  // deriveJobStatus / runScheduleStatusSync / the pipeline columns / the
+  // status CHECK constraint); the "Cancelled" badge in this section is
+  // display-only. Newest archived first; count shown even beyond the render
+  // cap. Unaffected by the toolbar filters on purpose (it is a tracking
+  // ledger, not a working list).
+  const archivedQ = supabase.from('jobs')
+    .select('id,address,status,price,created_at,archived_at,dripjobs_deal_id,customers(name)', { count: 'exact' })
+    .not('archived_at', 'is', null)
+    .order('archived_at', { ascending: false })
+    .limit(100);
+  const [jobsRes, sysRes, archivedRes] = await withFreshSession(() => Promise.all([
     q,
     cachedSystemTypes(),
+    archivedQ,
   ]), { label: 'renderJobs' });
   const { data, count, error } = jobsRes;
   if (error) { root.innerHTML = `<div class="pec-empty">${esc(error.message)}</div>`; return; }
+  const archivedJobs = archivedRes.error ? [] : (archivedRes.data || []);
+  const archivedTotal = archivedRes.error ? 0 : (archivedRes.count ?? archivedJobs.length);
   let jobs = data || [];
   if (state.jobsFilter.company) jobs = jobs.filter(j => j.customers?.company === state.jobsFilter.company);
   if (state.jobsFilter.system) jobs = jobs.filter(j => firstAreaSystemId(j.job_areas) === state.jobsFilter.system);
@@ -7444,6 +7461,25 @@ async function renderJobs() {
       </table>
       ${renderPagination(state.jobsPage, state.jobsTotal, p => { state.jobsPage = p; renderJobs(); })}
     </div>
+
+    <div class="pec-card">
+      <details>
+        <summary style="cursor:pointer;font-weight:600">Cancelled / archived jobs <span style="color:var(--muted);font-size:.75rem;font-weight:400">(${archivedTotal})</span></summary>
+        <div style="font-size:.72rem;color:var(--muted);margin:8px 0 10px">Jobs archived from the job page's Archive button. They are out of Jobs, Ordering, Schedule, and Invoicing; the customer is always kept. Restore puts a job back everywhere.</div>
+        ${archivedJobs.length ? `<table class="pec-table" style="font-size:.82rem">
+          <thead><tr><th>Customer</th><th>Address</th><th>Price</th><th>Archived</th><th></th><th></th></tr></thead>
+          <tbody>${archivedJobs.map(j => `
+            <tr class="nohover" data-archived-job="${esc(j.id)}">
+              <td>${esc(j.customers?.name || '—')}</td>
+              <td>${esc(j.address || '—')}</td>
+              <td>${fmtMoney(j.price)}</td>
+              <td>${fmtDate(j.archived_at)}</td>
+              <td><span class="pec-badge" style="--pec-badge-bg:#6b7280">Cancelled</span></td>
+              <td style="text-align:right"><button class="pec-btn sm" data-restore-job="${esc(j.id)}">Restore</button></td>
+            </tr>`).join('')}</tbody>
+        </table>${archivedTotal > archivedJobs.length ? `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">Showing the ${archivedJobs.length} most recent of ${archivedTotal}.</div>` : ''}` : '<div class="pec-empty" style="font-size:.8rem">No cancelled jobs.</div>'}
+      </details>
+    </div>
   `;
   ['Status','System','Company'].forEach(k => {
     const el = $('pecJob' + k);
@@ -7453,6 +7489,47 @@ async function renderJobs() {
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
     tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
   );
+  // Restore an archived job: clear jobs.archived_at (idempotent full-value
+  // update), then best-effort un-archive the linked pec_prod_jobs row so it
+  // returns to Ordering/Schedule. Resolution mirrors the archive side's
+  // coverage: dripjobs_deal_id when the job is webhook-bridged, else an exact
+  // name+address match (jobNameAddrKey, the same normalizer the schedule
+  // resolver uses) against archived prod rows. The prod write is non-fatal,
+  // same tolerance as archiving.
+  root.querySelectorAll('[data-restore-job]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const id = btn.dataset.restoreJob;
+    const j = archivedJobs.find(x => x.id === id); if (!j) return;
+    if (!confirm(`Restore the job at ${j.address || '(no address)'}? It returns to Jobs, Ordering, Schedule, and Invoicing.`)) return;
+    btn.disabled = true; btn.textContent = 'Restoring…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ archived_at: null }).eq('id', id), { label: 'job-restore' });
+      if (upd.error) throw upd.error;
+      try {
+        if (j.dripjobs_deal_id) {
+          const p = await supabase.from('pec_prod_jobs').update({ archived_at: null }).eq('dripjobs_deal_id', j.dripjobs_deal_id);
+          if (p.error) console.warn('[pec] restore prod row (non-fatal):', p.error.message);
+        } else if (typeof window.jobNameAddrKey === 'function') {
+          const key = window.jobNameAddrKey(j.customers?.name, j.address);
+          if (key) {
+            const cand = await supabase.from('pec_prod_jobs').select('id,customer_name,address').not('archived_at', 'is', null);
+            const hits = (cand.data || []).filter(p => window.jobNameAddrKey(p.customer_name, p.address) === key);
+            for (const h of hits) {
+              const p = await supabase.from('pec_prod_jobs').update({ archived_at: null }).eq('id', h.id);
+              if (p.error) console.warn('[pec] restore prod row (non-fatal):', p.error.message);
+            }
+          }
+        }
+      } catch (pe) { console.warn('[pec] restore prod row threw (non-fatal):', pe); }
+      logJobActivity(id, 'restore', { archived_at: j.archived_at }, { archived_at: null });
+      showToast('Job restored.', { ttl: 2500 });
+      renderJobs();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Restore';
+      console.error('[pec] restore job:', err);
+      showToast('Restore failed: ' + (err?.message || err), { ttl: 5000 });
+    }
+  }));
 }
 
 // ============================================================
@@ -10185,9 +10262,9 @@ async function renderJobDetailInner(id) {
     </div>
 
     <div class="pec-card" style="border:1px solid var(--danger, #c0392b)">
-      <h3 style="color:var(--danger, #c0392b)">Danger zone</h3>
-      <div style="font-size:.8rem;color:var(--muted);margin-bottom:10px">Archive this job. It is removed from Jobs, Ordering, Schedule, and Invoicing but kept in the database so it can be restored. Invoice and payment history is preserved.</div>
-      <button class="pec-btn danger" id="jobDeleteBtn">Delete job</button>
+      <h3 style="color:var(--danger, #c0392b)">Archive job</h3>
+      <div style="font-size:.8rem;color:var(--muted);margin-bottom:10px">For cancelled or dead jobs. Removes this job from Jobs, Ordering, Schedule, and Invoicing. The customer is kept. Reversible: archived jobs live in the Cancelled section at the bottom of the Jobs page, with a Restore button. Invoice and payment history is preserved.</div>
+      <button class="pec-btn danger" id="jobDeleteBtn">Archive job</button>
     </div>
 
     <div id="jobActivity"></div>
@@ -10200,30 +10277,31 @@ async function renderJobDetailInner(id) {
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
 
-  // Danger zone: archive this job (reversible). Requires typing DELETE to
-  // confirm. Archive (not a hard delete) keeps invoice/payment history; the job
-  // just leaves every list. Also archives the linked pec_prod_jobs row (the
-  // exact row the schedule resolver matched, no fuzzy customer_id guess) so it
-  // leaves Ordering/Schedule too. The prod-row write is best-effort and tolerates
-  // the archived_at column not existing yet (before the migration runs) so the
-  // CRM archive still succeeds.
+  // Archive this job (reversible; the old "type DELETE" gate is gone per Dylan,
+  // 2026-07-06: archiving is the normal way to record a cancellation, not a
+  // rare destructive act, so a plain confirm is enough). The copy names the JOB
+  // as the thing archived; the old modal said "This archives <customer name>",
+  // which read as archiving the CUSTOMER and helped cause the vanish confusion.
+  // Archive (not a hard delete) keeps invoice/payment history; the job just
+  // leaves every list and shows up in the Jobs page Cancelled section with a
+  // Restore button. Also archives the linked pec_prod_jobs row (the exact row
+  // the schedule resolver matched, no fuzzy customer_id guess) so it leaves
+  // Ordering/Schedule too. The prod-row write is best-effort and tolerates the
+  // archived_at column not existing yet (before the migration runs) so the CRM
+  // archive still succeeds.
   $('jobDeleteBtn').addEventListener('click', () => {
     const prodJobId = scheduleState?.prodJob?.id || null;
     openModal(`
-      <h3 style="color:var(--danger, #c0392b)">Delete this job?</h3>
-      <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">This archives <strong>${esc(job.customers?.name || 'this job')}</strong>. It is removed from Jobs, Ordering, Schedule, and Invoicing but kept in the database (restorable). To confirm, type <strong>DELETE</strong> below.</div>
-      <div class="pec-field"><input id="jobDeleteConfirm" placeholder="Type DELETE to confirm" autocomplete="off"></div>
+      <h3 style="color:var(--danger, #c0392b)">Archive this job?</h3>
+      <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">The job at <strong>${esc(job.address || '(no address)')}</strong> leaves Jobs, Ordering, Schedule, and Invoicing and is counted as cancelled. The customer${job.customers?.name ? ` (<strong>${esc(job.customers.name)}</strong>)` : ''} is kept. You can restore it any time from the Cancelled section on the Jobs page.</div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
-        <button type="button" class="pec-btn danger" id="jobDeleteGo" disabled>Delete job</button>
+        <button type="button" class="pec-btn danger" id="jobDeleteGo">Archive job</button>
       </div>
     `, { onMount: modal => {
-      const input = modal.querySelector('#jobDeleteConfirm');
       const go = modal.querySelector('#jobDeleteGo');
-      input.addEventListener('input', () => { go.disabled = input.value !== 'DELETE'; });
       go.addEventListener('click', async () => {
-        if (input.value !== 'DELETE') return;
-        go.disabled = true; go.textContent = 'Deleting…';
+        go.disabled = true; go.textContent = 'Archiving…';
         try {
           const stamp = new Date().toISOString();
           const upd = await supabase.from('jobs').update({ archived_at: stamp }).eq('id', job.id);
@@ -10236,13 +10314,13 @@ async function renderJobDetailInner(id) {
           }
           logJobActivity(job.id, 'archive', { archived_at: null }, { archived_at: stamp });
           closeModal();
-          showToast('Job archived', { ttl: 2500 });
+          showToast('Job archived. Restore it from the Cancelled section on the Jobs page.', { ttl: 4000 });
           state.openJobId = null;
           switchView('jobs');
         } catch (err) {
-          go.disabled = false; go.textContent = 'Delete job';
+          go.disabled = false; go.textContent = 'Archive job';
           console.error('[pec] archive job:', err);
-          showToast('Delete failed: ' + (err?.message || err), { ttl: 5000 });
+          showToast('Archive failed: ' + (err?.message || err), { ttl: 5000 });
         }
       });
     }});
