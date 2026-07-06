@@ -11957,6 +11957,12 @@ async function renderCommission() {
         signed_date: j.signed_date, price: invNum(j.price),
         depo: j.deposit_waived ? 'Waived' : (j.deposit_collected ? 'Yes' : 'No'),
         collected: agg.collected, earned: round2(agg.earned), paid: round2(agg.paid), owed: round2(agg.earned - agg.paid),
+        // Safeguard flag (Dylan 2026-07-06): a COMPLETED job whose recorded
+        // payments fall short of the sold price means the remainder was not
+        // collected, or was collected outside the system and never recorded,
+        // and either way no commission line exists for it yet. Surfacing it
+        // here makes a light paycheck explainable at a glance.
+        shortCollected: j.status === 'completed' && (invNum(j.price) - agg.collected) > 0.005,
       };
     })
     .sort((a, b) => String(b.signed_date || '').localeCompare(String(a.signed_date || '')));
@@ -12074,7 +12080,7 @@ async function renderCommission() {
             <td>${esc(j.sp)} ${j.pct == null ? '<span style="color:var(--warn);font-size:.7rem">(no rate)</span>' : ''}</td>
             <td style="text-align:right">${invUSD(j.price)}</td>
             <td>${depoBadge(j.depo)}</td>
-            <td style="text-align:right">${invUSD(j.collected)}</td>
+            <td style="text-align:right">${invUSD(j.collected)}${j.shortCollected ? '<div style="color:var(--warn,#b45309);font-size:.68rem;white-space:nowrap">completed, remainder not collected/recorded</div>' : ''}</td>
             <td style="text-align:right">${invUSD(j.earned)}</td>
             <td style="text-align:right">${invUSD(j.paid)}</td>
             <td style="text-align:right"><strong>${invUSD(j.owed)}</strong></td>
