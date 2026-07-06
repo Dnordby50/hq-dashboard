@@ -17002,8 +17002,35 @@ function saveLineActualUsedQty(lineId, qty) {
 // payload so the value the user just typed is what gets persisted. On any error
 // the caller surfaces it; on reload with no saved lines loadCostingData simply
 // re-derives, so nothing is lost beyond the just-typed qty.
-async function persistDerivedLines(jobId) {
+//
+// DUPLICATION FIX (the Eric Harris doubling, 2026-07-06). Two defenses:
+//  1. Per-JOB serialization. The old guard was per-INPUT, so two quick Used
+//     edits on different derived lines ran this function concurrently and the
+//     interleaved pairs could land as del,del,ins,ins = every line twice (the
+//     pre-write session warm-up can hold a delete for seconds, so the race
+//     window was wide). Calls now chain: each run starts only after the job's
+//     previous run settles, and it rebuilds its payload from current state at
+//     RUN time, so the freshest typed values win and exactly one delete+insert
+//     pair is ever in flight per job.
+//  2. Verify-the-delete-landed. If rows for the job still exist after the
+//     delete reports success (a silent zero-row delete, e.g. PROD RLS drift
+//     that allows insert but not delete), inserting would stack a second set
+//     on top, which is exactly how lines double. Abort loudly instead.
+const _derivedPersistChain = {}; // jobId -> tail promise of that job's persist chain
+function persistDerivedLines(jobId) {
+  const prev = _derivedPersistChain[jobId] || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => persistDerivedLinesNow(jobId));
+  _derivedPersistChain[jobId] = run.finally(() => {
+    if (_derivedPersistChain[jobId] === run) delete _derivedPersistChain[jobId];
+  });
+  return run;
+}
+async function persistDerivedLinesNow(jobId) {
   const lines = (state.materialLinesByJob[jobId] || []);
+  // A chained run can find the lines already persisted (a reload swapped in
+  // the real rows while it waited). Nothing to write in that case; writing
+  // anyway would race the reload it is observing.
+  if (!lines.length || !lines.some(l => l._derived)) return { error: null };
   const payload = lines.map(l => ({
     job_id: jobId, area_id: null,
     material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
@@ -17017,6 +17044,12 @@ async function persistDerivedLines(jobId) {
   try {
     const del = await withFreshWrite(() => supabase.from('pec_prod_material_lines').delete().eq('job_id', jobId), { label: 'costing-derived-del' });
     if (del.error) throw del.error;
+    const leftover = await withFreshSession(() => supabase.from('pec_prod_material_lines')
+      .select('id').eq('job_id', jobId).limit(1), { label: 'costing-derived-verify' });
+    if (leftover.error) throw leftover.error;
+    if ((leftover.data || []).length) {
+      throw new Error('Existing material lines could not be cleared, so nothing was saved (saving would have duplicated the lines). Reload the page and try again.');
+    }
     if (payload.length) {
       const ins = await withFreshWrite(() => supabase.from('pec_prod_material_lines').insert(payload), { label: 'costing-derived-ins' });
       if (ins.error) throw ins.error;
@@ -17734,13 +17767,19 @@ async function renderUnifiedJob(jobId) {
       }
       // Derived lines have no DB row yet: persist the whole set ONCE (qty baked
       // in), then re-render so the lines come back with real ids and every later
-      // edit takes the normal per-line update path below.
+      // edit takes the normal per-line update path below. persistDerivedLines
+      // serializes per job, so edits on OTHER derived inputs while this one is
+      // in flight chain safely instead of racing (the doubling fix).
       if (line && line._derived) {
         persisting = true;
         inp.disabled = true;
         const { error } = await persistDerivedLines(jobId);
         if (error) { costingSaveFailed(error, inp, 'material used qty'); inp.disabled = false; persisting = false; return; }
         costingSaveOk(inp);
+        // Drain any persists that chained behind ours (a value typed into
+        // another derived input while ours saved) BEFORE reloading, so the
+        // re-render shows the final rows and no just-typed value is dropped.
+        while (_derivedPersistChain[jobId]) { try { await _derivedPersistChain[jobId]; } catch (_) {} }
         return renderUnifiedJob(jobId);
       }
       const { error } = await saveLineActualUsedQty(lineId, qty);
