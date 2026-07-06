@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-06 07:42 MST] Cowork: investigated Anne's three Job Costing issues, scoped Claude Code prompt 8
+By: Cowork
+Request: Anne (VA) reported via Dylan: (1) adding materials on Job Costing still not working; (2) jobs with costing entered but not finalized disappear from the Pending Job Costing list and are only reachable via search; (3) no way to add hours for team members like Allen and Matthew (Dylan clarified "crews" meant individual team members).
+Investigation (read-only, code + one PROD query): (1) openAddMaterialModal (~18006) reads state.products, which only loadCatalog (~19572) fills, and loadCatalog only runs when Ordering/Catalog is entered (ensureBooted ~21684), so straight-to-costing users get the "No catalog products available to add" toast; Dylan reproduced that exact toast, and it rendered white-on-white (invisible). Dylan ALSO reproduced a worse bug on the Eric Harris job: entering an actual-used value doubled every material line; the suspect is persistDerivedLines (~17005) delete-then-insert (silent zero-row delete under RLS, stale derived state, or a per-input race are the ranked hypotheses). (2) Confirmed by design flaw: the first keystroke on a costing field upserts the pec_prod_job_costing row (~16760) and the Pending filter (~18111) drops any job with a costing row; unfinalized + unsubmitted jobs are invisible everywhere but search. (3) PROD pec_prod_crew_members has exactly 4 rows (Caden, Davey, Kyle, Landen); Allen and Matthew do not exist and the app has NO add-member UI (no insert path anywhere). Bonus finding: the review queue is always empty because Anne's role passes isAdmin() (~17494), so she finalizes directly and nothing ever stops at Submitted for review.
+Decisions from Dylan (12 multiple-choice questions, 3 rounds): fix catalog loading for the costing modal; fix the duplication defensively + Cowork cleans the doubled data after; partially-costed jobs STAY in Pending with an "In progress" badge; Anne submits and ONLY Dylan finalizes (keep her other capabilities); add an "Add team member" form in Settings; Cowork seeds Allen Adamo and Matthew Hamby at $20/hr (NO Preston, Dylan explicit); rename user-facing "Crew hours"/"Crew member" labels to "Team member" wording (display only); audit toast/error text visibility app-wide.
+Attempted but blocked: seeding Allen Adamo + Matthew Hamby into pec_prod_crew_members failed because the Supabase MCP stopped responding mid-session (four attempts). The Eric Harris duplicate-line audit query is also pending for the same reason.
+Produced: claude-code-prompt-8-jobcosting-fixes.md in the HQ workspace folder (outside the repo), self-contained with file:line evidence, ranked hypotheses, decisions, dependency-ordered tasks, and guardrails.
+Files touched: PROJECT-LOG.md only in the repo. No app code, no PROD data changed (the one PROD query was read-only).
+Next steps: Dylan runs claude-code-prompt-8 in Claude Code.
+Handoff to Cowork: once the Supabase MCP is back: (1) seed pec_prod_crew_members with Allen Adamo and Matthew Hamby, hourly_wage 20.00, active true (guard against duplicates by name); (2) query the Eric Harris job's material lines and record the duplication signature; dedupe AFTER Claude Code's fix ships.
+Handoff to Dylan: run the prompt; when Claude Code hands back the review-gate SQL for Anne's staff record, approve it before Cowork applies it.
+
+---
+
 ## [2026-07-03 07:32 MST] Cowork: reworked slide 8 of the June meeting deck prompt to crew-lead costing numbers
 By: Cowork
 Request: Dylan wants slide 8's job costing numbers to be about crew leads, not individual workers (it previously showed per-member hours and a Production MVP podium).
