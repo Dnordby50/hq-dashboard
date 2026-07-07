@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-06 20:46 MST] Claude Code: Quo call summaries + transcripts on the customer profile
+By: Claude Code
+Changed: netlify/functions/pec-webhook-quo.cjs, index.html, new migration supabase/migrations/2026-07-06_quo_call_log.sql (NOT applied; Cowork handoff below). Commit a9db570. Built live during Dylan's Quo webhook setup session (he asked: "can we add the transcripts to the customer profile, so we can see summaries of calls instead of just duration?").
+
+WHAT SHIPPED: Quo (OpenPhone) natively generates AI call summaries and transcripts and fires webhook events when each is ready. The already-verified /api/quo/webhook endpoint now ingests three call events into a new pec_call_log table, and the customer detail page grew a Calls card that shows each call's direction, time, duration, brand, Quo's AI SUMMARY and next steps, with the full transcript behind a collapsed expander. No more "just duration": the substance of the call is on the profile.
+
+HOW IT WORKS (plain English):
+1. Events can arrive in ANY order (a summary can beat its call record), so every event UPSERTS by the Quo call id: PATCH what this event knows onto the existing row, else insert a fresh one; each event fills only its own fields so none can blank out another's work, and the unique index on quo_call_id backstops a race between two inserts (the loser re-PATCHes).
+2. call.completed carries the base facts (direction, from/to, duration, when); the webhook matches the CUSTOMER side of the call to a customer row using the exact phone-matching logic texts use (normalized E.164 with a 10-digit-tail fallback; extracted into a shared helper so texts and calls attribute identically), and resolves the brand from OUR receiving number via pec_sms_senders. call.summary.completed adds summary + next steps; call.transcript.completed adds the dialogue turns as jsonb.
+3. Field extraction is tolerant of payload drift (from/to strings vs a participants array, summary as an array of lines vs one string) and the handler keeps the endpoint's never-retry-forever contract: handled events 200 even on soft failure. Unmatched calls still log with customer_id null so nothing is dropped; they surface on the profile once the customer's phone is corrected.
+4. Trust model mirrors pec_sms_log exactly: staff can READ pec_call_log, there is NO client write policy, only the service-role webhook writes. The Calls card degrades to a clear migration note pre-migration and a friendly empty state before the call events are subscribed in Quo.
+Guardrails: message + STOP handling in the webhook is behaviorally unchanged (the call path peels off before it; the customer-match and brand lookups were extracted, not altered). No client config, timedFetch, wedge recovery, or payment paths touched. No em dashes; node --check passes on the webhook and every extracted script block.
+Why: call context is half the customer relationship and it lived only inside Quo; now the profile shows what was SAID, not just that a call happened.
+Files touched: netlify/functions/pec-webhook-quo.cjs, index.html, supabase/migrations/2026-07-06_quo_call_log.sql (new), PROJECT-LOG.md.
+Next steps: Dylan finishes the webhook checklist (he is mid-setup now, adding the call events alongside message received); Cowork applies the migration; then a live call test.
+
+Handoff to Cowork: (1) Apply supabase/migrations/2026-07-06_quo_call_log.sql to PROD (idempotent; verify queries at the bottom: table exists, exactly one select-only policy, unique constraint on quo_call_id). (2) OPTIONAL BACKFILL, only if Dylan wants history: the Quo MCP's transcript/call tools can fetch recent calls per inbox; inserting them as pec_call_log rows (quo_call_id, direction, numbers, duration, occurred_at, summary/transcript where available, customer matched by phone) would pre-populate the Calls cards. Confirm appetite with Dylan before doing it; go-forward capture works without it. (3) Nothing else in PROD.
+
+Handoff to Dylan: (1) In the Quo webhook you are setting up right now, subscribe to FOUR events: message received, call.completed, call.summary.completed, call.transcript.completed, on BOTH numbers, same URL and signing key (the call events are safe to enable before the deploy: the live endpoint verifies and ignores them until this ships). (2) Finish the checklist: set QUO_WEBHOOK_SECRET in Netlify to the signing key QUO GENERATED when you created the webhook (replace any value you made up yourself), set QUO_API_KEY if not already, then trigger a redeploy. (3) Push this commit to deploy after Cowork applies the migration. (4) Live test: text the PEC number from your cell (message appears in Messages/customer thread), then place a short call to the PEC number and hang around 60 seconds after it ends: the call should appear on the matched customer's profile Calls card, first as a duration-only row, then gaining the AI summary and transcript as Quo finishes generating them (they arrive as separate events, usually within a minute or two). A 401 in Netlify function logs means the signing key and env var do not match.
+
+---
+
 ## [2026-07-06 08:40 MST] Cowork: located the existing Quo integration setup runbook for Dylan
 By: Cowork
 Request: Dylan asked for "the Quo integration step by step guide". Before writing a new one, confirmed one already exists.
