@@ -1,4 +1,4 @@
-// Quo (OpenPhone) inbound webhook -> two-way texting + STOP handling.
+// Quo (OpenPhone) inbound webhook -> two-way texting + STOP handling + call log.
 // Routed at /api/quo/webhook (netlify.toml). Quo POSTs here when a customer
 // texts one of our workspace numbers. We:
 //   1. Verify the request is really from Quo (QUO_WEBHOOK_SECRET).
@@ -6,6 +6,16 @@
 //   3. Insert a pec_sms_log row (direction in, status received).
 //   4. Handle STOP / START so the CRM's own opt-out state stays in sync with
 //      the carrier-level STOP that Quo already enforces.
+//
+// CALL EVENTS (2026-07-06, Dylan: call summaries on the customer profile):
+// the same webhook also ingests three call events into pec_call_log, keyed on
+// the Quo call id so they can arrive in ANY order, each PATCHing in what it
+// knows (insert-on-first-arrival):
+//   call.completed            -> base row: direction, numbers, duration, when,
+//                                brand, matched customer
+//   call.summary.completed    -> Quo's AI summary + next steps
+//   call.transcript.completed -> the dialogue turns (jsonb)
+// The customer profile's Calls card reads pec_call_log by customer_id.
 //
 // Defensive by design: this NEVER throws back to Quo in a way that makes it
 // retry forever. Handled events return 200 even on a soft failure (we log and
@@ -100,6 +110,97 @@ function parseInbound(payload) {
   };
 }
 
+// Match a customer by phone. Customers store phone in varied formats, so we
+// match on the normalized E.164 AND the bare 10-digit tail as a fallback,
+// re-normalizing candidates so a partial digit-run can't false-match. Shared
+// by the message path and the call path so both attribute identically.
+async function matchCustomerByPhone(e164) {
+  if (!e164) return null;
+  const exact = await sb('GET', `/customers?phone=eq.${encodeURIComponent(e164)}&select=id,sms_opt_out&limit=1`);
+  if (Array.isArray(exact) && exact[0]) return exact[0];
+  const tail = e164.replace(/\D/g, '').slice(-10);
+  // PostgREST: phone contains the 10-digit tail (handles (928) 555-1234 etc.)
+  const fuzzy = await sb('GET', `/customers?phone=like.*${encodeURIComponent(tail)}*&select=id,phone,sms_opt_out&limit=2`);
+  if (Array.isArray(fuzzy)) return fuzzy.find(c => toE164(c.phone) === e164) || null;
+  return null;
+}
+
+// Brand from OUR workspace number (the pec_sms_senders map, same as texting).
+async function brandForOurNumber(e164) {
+  if (!e164) return null;
+  const senders = await sb('GET', `/pec_sms_senders?from_number=eq.${encodeURIComponent(e164)}&select=brand&limit=1`);
+  return (Array.isArray(senders) && senders[0]) ? senders[0].brand : null;
+}
+
+// Upsert a pec_call_log row keyed on quo_call_id: PATCH what this event knows
+// onto the existing row, else INSERT a fresh one. Events arrive in any order
+// (summary can beat call.completed); each fills only its own fields, so no
+// event can null out another's work. The unique index on quo_call_id is the
+// backstop if two events race their inserts; the loser re-PATCHes.
+async function upsertCall(quoCallId, fields) {
+  if (!quoCallId) return;
+  const q = `/pec_call_log?quo_call_id=eq.${encodeURIComponent(quoCallId)}`;
+  const patched = await sb('PATCH', q, fields, true);
+  if (Array.isArray(patched) && patched.length) return;
+  try {
+    await sb('POST', '/pec_call_log', { quo_call_id: quoCallId, ...fields });
+  } catch (e) {
+    if (/duplicate|23505|409/.test(String(e.message || ''))) { await sb('PATCH', q, fields, true); return; }
+    throw e;
+  }
+}
+
+// Handle the three call events. Field extraction is deliberately tolerant of
+// payload shape drift (from/to strings vs a participants array; summary as an
+// array of lines vs one string) so a Quo API change degrades to sparse rows,
+// never to a hard failure that makes Quo retry.
+async function handleCallEvent(type, payload) {
+  const obj = (payload.data && (payload.data.object || payload.data)) || payload.object || {};
+  if (/summary/i.test(type)) {
+    const summary = Array.isArray(obj.summary) ? obj.summary.join('\n') : (obj.summary || null);
+    const nextSteps = Array.isArray(obj.nextSteps) ? obj.nextSteps.join('\n') : (obj.nextSteps || null);
+    const fields = {};
+    if (summary) fields.summary = summary;
+    if (nextSteps) fields.next_steps = nextSteps;
+    if (Object.keys(fields).length) await upsertCall(obj.callId || obj.id, fields);
+    return;
+  }
+  if (/transcript/i.test(type)) {
+    const dialogue = Array.isArray(obj.dialogue) ? obj.dialogue : null;
+    const fields = {};
+    if (dialogue) fields.transcript = dialogue;
+    if (Number(obj.duration) > 0) fields.duration_seconds = Number(obj.duration);
+    if (Object.keys(fields).length) await upsertCall(obj.callId || obj.id, fields);
+    return;
+  }
+  // call.completed (or any other call.* lifecycle event carrying the call object)
+  const callId = obj.id || obj.callId;
+  if (!callId) return;
+  const direction = /out/i.test(obj.direction || '') ? 'out' : 'in';
+  let from = obj.from, to = obj.to;
+  if (Array.isArray(to)) to = to[0];
+  if (!from && Array.isArray(obj.participants)) from = obj.participants[0];
+  if (!to && Array.isArray(obj.participants)) to = obj.participants[1];
+  const fromN = toE164(from), toN = toE164(to);
+  const ourNum = direction === 'in' ? toN : fromN;     // our workspace number
+  const custNum = direction === 'in' ? fromN : toN;    // the customer's number
+  const customer = await matchCustomerByPhone(custNum).catch(() => null);
+  const brand = await brandForOurNumber(ourNum).catch(() => null);
+  const durationSec = Number(obj.duration) > 0 ? Number(obj.duration)
+    : (obj.answeredAt && obj.completedAt ? Math.max(0, Math.round((new Date(obj.completedAt) - new Date(obj.answeredAt)) / 1000)) : null);
+  const fields = {
+    direction,
+    from_number: fromN || from || null,
+    to_number: toN || to || null,
+    occurred_at: obj.createdAt || obj.answeredAt || obj.completedAt || new Date().toISOString(),
+    status: obj.status || 'completed',
+  };
+  if (customer) fields.customer_id = customer.id;
+  if (brand) fields.brand = brand;
+  if (durationSec != null) fields.duration_seconds = durationSec;
+  await upsertCall(callId, fields);
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });
 
@@ -112,6 +213,14 @@ exports.handler = async (event) => {
   catch { return json(200, { success: true, ignored: 'unparseable body' }); }
 
   try {
+    const evType = String(payload.type || payload.event || '');
+
+    // Call events peel off first; everything below is the message path.
+    if (/^call\./i.test(evType)) {
+      await handleCallEvent(evType, payload);
+      return json(200, { success: true });
+    }
+
     const msg = parseInbound(payload);
 
     // Only act on INBOUND messages. Quo also fires events for outbound + delivery;
@@ -124,26 +233,10 @@ exports.handler = async (event) => {
     const bodyTrimmed = msg.body.trim();
 
     // Brand: which of our numbers received this text.
-    let brand = null;
-    if (toE164Num) {
-      const senders = await sb('GET', `/pec_sms_senders?from_number=eq.${encodeURIComponent(toE164Num)}&select=brand&limit=1`);
-      if (Array.isArray(senders) && senders[0]) brand = senders[0].brand;
-    }
+    const brand = await brandForOurNumber(toE164Num).catch(() => null);
 
-    // Match the customer by phone. Customers store phone in varied formats, so we
-    // match on the normalized E.164 AND the bare 10-digit tail as a fallback.
-    let customer = null;
-    if (fromE164) {
-      const exact = await sb('GET', `/customers?phone=eq.${encodeURIComponent(fromE164)}&select=id,sms_opt_out&limit=1`);
-      if (Array.isArray(exact) && exact[0]) customer = exact[0];
-      if (!customer) {
-        const tail = fromE164.replace(/\D/g, '').slice(-10);
-        // PostgREST: phone contains the 10-digit tail (handles (928) 555-1234 etc.)
-        const fuzzy = await sb('GET', `/customers?phone=like.*${encodeURIComponent(tail)}*&select=id,phone,sms_opt_out&limit=2`);
-        // Re-normalize candidates so a partial digit-run can't false-match.
-        if (Array.isArray(fuzzy)) customer = fuzzy.find(c => toE164(c.phone) === fromE164) || null;
-      }
-    }
+    // Match the customer by phone (shared helper; also used by the call path).
+    const customer = fromE164 ? await matchCustomerByPhone(fromE164).catch(() => null) : null;
 
     // 1. Log the inbound message (best-effort; never blocks STOP handling).
     await sb('POST', '/pec_sms_log', {

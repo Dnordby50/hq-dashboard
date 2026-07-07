@@ -6937,6 +6937,8 @@ async function renderCustomerDetail(id) {
 
     ${customerSmsCardHtml()}
 
+    ${customerCallsCardHtml()}
+
     <div class="pec-card">
       <h3>Lifetime revenue</h3>
       <div class="pec-row-3" style="align-items:flex-end">
@@ -7017,6 +7019,7 @@ async function renderCustomerDetail(id) {
   }));
   // Two-way SMS thread for this customer (async so it never blocks the page).
   mountCustomerSmsThread(root.querySelector('#pecCustSmsCard'), c);
+  mountCustomerCalls(root.querySelector('#pecCustCallsCard'), c);
 }
 
 async function openCustomerForm(c) {
@@ -13220,6 +13223,73 @@ async function mountCustomerSmsThread(card, c) {
   });
 
   reload();
+}
+
+// Calls card for the customer detail page (Dylan 2026-07-06: "see summaries of
+// calls instead of just duration"). Reads pec_call_log rows the Quo webhook
+// ingests (call.completed + call.summary.completed + call.transcript.completed,
+// upserted by quo_call_id). Each call shows direction, when, duration, brand,
+// Quo's AI summary + next steps, and the full transcript behind an expander.
+// Display-only: the client has SELECT (staff) on pec_call_log and no write
+// policy; all rows come from the service-role webhook. Degrades to a clear
+// migration note pre-migration, and to a friendly empty state before the Quo
+// call events are subscribed.
+function customerCallsCardHtml() {
+  return `
+    <div class="pec-card" id="pecCustCallsCard">
+      <h3>Calls</h3>
+      <div data-calls-body><div class="pec-empty" style="font-size:.8rem">Loading calls…</div></div>
+    </div>`;
+}
+async function mountCustomerCalls(card, c) {
+  if (!card) return;
+  const body = card.querySelector('[data-calls-body]');
+  try {
+    const { data, error } = await supabase.from('pec_call_log').select('*')
+      .eq('customer_id', c.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(50);
+    if (error) throw error;
+    if (!data || !data.length) {
+      body.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:6px 2px">No calls logged yet. Calls land here automatically (with their Quo AI summary) once the call webhooks are on.</div>';
+      return;
+    }
+    const fmtDur = (s) => {
+      const n = Number(s);
+      if (!Number.isFinite(n) || n <= 0) return '';
+      const m = Math.floor(n / 60), sec = Math.round(n % 60);
+      return m ? `${m}m ${sec}s` : `${sec}s`;
+    };
+    const fmtWhen = (iso) => {
+      const d = iso ? new Date(iso) : null;
+      return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    };
+    body.innerHTML = data.map(r => {
+      const dirLabel = r.direction === 'out' ? 'Outgoing' : 'Incoming';
+      const noAnswer = !(Number(r.duration_seconds) > 0);
+      const summaryHtml = r.summary
+        ? `<div style="font-size:.85rem;line-height:1.45;white-space:pre-wrap">${esc(r.summary)}</div>`
+        : `<div style="color:var(--muted);font-size:.8rem">No summary${noAnswer ? ' (missed or very short call)' : ' yet'}.</div>`;
+      const nextHtml = r.next_steps
+        ? `<div style="font-size:.78rem;margin-top:4px"><strong>Next steps:</strong> <span style="white-space:pre-wrap">${esc(r.next_steps)}</span></div>` : '';
+      const turns = Array.isArray(r.transcript) ? r.transcript : null;
+      const transcriptHtml = (turns && turns.length)
+        ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.75rem;color:var(--muted)">Transcript (${turns.length} lines)</summary>
+             <div style="max-height:260px;overflow-y:auto;margin-top:6px;padding:8px 10px;background:var(--rd-soft,#f5f6f8);border-radius:8px;font-size:.8rem;line-height:1.5">
+               ${turns.map(t => `<div style="margin-bottom:4px">${t && t.identifier ? `<strong>${esc(t.identifier)}:</strong> ` : ''}${esc((t && (t.content || t.text)) || '')}</div>`).join('')}
+             </div></details>`
+        : '';
+      const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), r.brand ? emailBrandLabel(r.brand) : ''].filter(Boolean).join(' · ');
+      return `<div style="padding:10px 2px;border-bottom:1px solid var(--rd-line,var(--border))">
+        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
+          <strong style="font-size:.8rem">${dirLabel} call${noAnswer ? ' <span style="color:var(--muted);font-weight:400">(no answer)</span>' : ''}</strong>
+          <span style="color:var(--muted);font-size:.75rem">${esc(metaBits)}</span>
+        </div>
+        ${summaryHtml}${nextHtml}${transcriptHtml}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    const needsMigration = /pec_call_log/.test(e.message || '');
+    body.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
+  }
 }
 
 // Unified Messages view: latest text per conversation (one row per customer or,
