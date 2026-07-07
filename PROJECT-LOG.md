@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-06 08:40 MST] Cowork: located the existing Quo integration setup runbook for Dylan
+By: Cowork
+Request: Dylan asked for "the Quo integration step by step guide". Before writing a new one, confirmed one already exists.
+Found and delivered: quo-integration-setup-runbook.md in the HQ workspace folder (written 2026-06-28), the setup/config reference covering the Quo API key, prepaid credits, per-number A2P checks, Netlify env vars (QUO_API_KEY, QUO_WEBHOOK_SECRET), and the /api/quo/webhook registration with acceptance checks per step. Also verified the current code matches it (pec-send-sms.cjs, pec-webhook-quo.cjs, netlify.toml route). Related but different doc, not delivered: SHARED-ADMIN-002 QUO to Google Sheets Zapier Integration Setup (the Zapier sheet sync, not the CRM texting stack).
+Files touched: PROJECT-LOG.md only. No code, no PROD data.
+Next steps: none.
+Handoff to Cowork: None.
+Handoff to Dylan: if any runbook step is still unchecked (credits, webhook secret), say the word and Cowork will walk it with you.
+
+---
+
 ## [2026-07-06 08:32 MST] Cowork: ALL queued PROD items done (migration + Anne flip, seeds, Eric Harris dedupe, every audit), prompt 10 scoped (subcontractor expenses)
 By: Cowork
 Request: Dylan said "run migration" (the prompt-8 handoff), then added a build item mid-session: a subcontractor section to add sub expenses to Job Costing for jobs PEC subs out. This entry also closes out the Cowork handoffs in BOTH Claude Code entries below (08:07 and 08:27); the Supabase MCP recovered but stayed flaky, several items took timed retries.
