@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-07 21:18 MST] Claude Code: CORRECTION + live-test diagnosis, incoming calls were logging as blank texts; call-log build pushed
+By: Claude Code
+Changed: no new code. Pushed the 2026-07-06 call-log build (a9db570 + 3b5059b, c8c1e83..3b5059b on main) after diagnosing Dylan's live test against PROD (read-only queries). This entry corrects a claim in the 2026-07-06 20:46 entry below.
+
+WHAT DYLAN SAW: "can't get a text to work from my phone, but I just called." His texts actually WORKED: both test messages are in pec_sms_log (21:02 from the FTP line, 21:09 from his cell, status received, brand resolved). The webhook, Quo signing key, and Netlify env are all functioning.
+
+THE CORRECTION: the 20:46 entry (and my live guidance) said subscribing the three call.* webhook events before deploying was safe because "the endpoint verifies and quietly ignores them." WRONG for one case: the THEN-DEPLOYED webhook classified inbound events with (/received|incoming|message.received/ on the TYPE) OR (/incoming|inbound/ on the DIRECTION), and a call.completed event for an incoming call carries direction 'incoming', so the second clause matched and every incoming CALL logged as a blank inbound TEXT. Since the events went live this morning, 26 blank rows accumulated in pec_sms_log (verified in PROD: 26 empty-body inbound rows, first 07:31 MST, last 21:15 MST; 7 real texts are fine). Dylan's own 21:15 test call overwrote his 21:09 "Test" as his number's newest message, which made the Messages list preview look blank, hence "text not working."
+
+THE FIX: the pushed build routes every call.* event away from the message path before the inbound test runs (they now upsert pec_call_log instead), so the pollution stops the moment Netlify finishes deploying, even before the call-log migration is applied (pre-migration the call events fail softly into the 200-never-retry path and write nothing). Lesson recorded for future me: "the endpoint ignores unknown events" must be verified against EVERY clause of the classifier, not just the event-type match.
+
+Files touched: PROJECT-LOG.md only.
+Next steps: Cowork cleans the 26 blank rows + applies the call-log migration; Dylan re-tests after both.
+
+Handoff to Cowork: (1) Apply supabase/migrations/2026-07-06_quo_call_log.sql to PROD (idempotent, verify queries at the bottom). (2) AFTER confirming the deploy is live (the Netlify build for push 3b5059b), delete the blank call-echo rows: DELETE FROM public.pec_sms_log WHERE direction = 'in' AND coalesce(body, '') = ''; then report the deleted count (expected around 26, plus any that accumulated between my query at 21:15 MST and the deploy going live). Every real text has a body; the blank rows are all call echoes, they carry zero message content. (3) Optional, if Dylan wants call history backfilled, see the 2026-07-06 20:46 entry's handoff item 2.
+Handoff to Dylan: after the deploy goes green and Cowork finishes both items: (1) refresh the dashboard and open Messages: your two "Test" texts should now show as the conversation previews (the blank echoes are gone); (2) place a fresh short call to the PEC number, wait a minute or two, and check the matched customer's profile Calls card (your cell is not attached to any customer record, so for the profile test either call from a phone number that is on a customer, or add your cell to a test customer first); (3) send an OUTBOUND text from a customer thread or Text invoice once, since the log shows zero outbound sends ever, which is expected if nobody has tried yet, but if it errors, QUO_API_KEY in Netlify is the first suspect.
+
+---
+
 ## [2026-07-06 20:46 MST] Claude Code: Quo call summaries + transcripts on the customer profile
 By: Claude Code
 Changed: netlify/functions/pec-webhook-quo.cjs, index.html, new migration supabase/migrations/2026-07-06_quo_call_log.sql (NOT applied; Cowork handoff below). Commit a9db570. Built live during Dylan's Quo webhook setup session (he asked: "can we add the transcripts to the customer profile, so we can see summaries of calls instead of just duration?").
