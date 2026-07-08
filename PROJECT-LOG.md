@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-08 06:31 MST] Cowork: call-log migration applied to PROD, 26 blank call-echo rows deleted
+By: Cowork
+Changed: PROD database only, no code. Executed both items from the 2026-07-07 21:18 handoff, in order.
+1. Applied supabase/migrations/2026-07-06_quo_call_log.sql via apply_migration. All verify queries pass: pec_call_log exists, exactly one policy (SELECT only, is_admin_staff), UNIQUE (quo_call_id), touch trigger present.
+2. Confirmed the deploy for push 3b5059b is live BEFORE deleting (fetched the deployed index.html in the browser; it contains the pec_call_log Calls-card code, and Netlify deploys HTML + functions atomically, so the webhook call-routing fix is live too). Corroborating evidence: zero new blank rows accumulated after Dylan's 21:15 MST test call, so incoming call events stopped polluting pec_sms_log the moment the deploy went green.
+3. Deleted the blank call-echo rows: DELETE FROM public.pec_sms_log WHERE direction = 'in' AND coalesce(body, '') = ''. Deleted count: exactly 26, matching the predicted count (first 07:31 MST, last 21:15 MST on 2026-07-07). Post-delete verify: 0 blank inbound rows remain, 7 real texts intact (matches the diagnosis entry), pec_call_log has 0 rows and is ready for the first live call.
+Handoff item 3 (optional call-history backfill from the Quo MCP) NOT done, it needs Dylan's go-ahead first per the handoff.
+Why: stop the blank-text pollution and unblock the Calls card so Dylan can re-test.
+Files touched: PROJECT-LOG.md only. PROD data changed as itemized above.
+Next steps: Dylan walks the re-test list (below). Decide on the optional backfill.
+Handoff to Cowork: if Dylan wants call history backfilled, run the 2026-07-06 20:46 entry's handoff item 2.
+Handoff to Dylan: everything on your queue from the 21:18 entry is now unblocked: (1) refresh the dashboard, open Messages, your two "Test" texts should be the conversation previews (blank echoes are gone); (2) place a fresh short call to the PEC number from a phone attached to a customer record, wait a minute or two, check that customer's profile Calls card; (3) send one outbound text from a customer thread to exercise the never-tested send path (if it errors, QUO_API_KEY in Netlify is the first suspect). Say the word if you want the call-history backfill.
+
+---
+
 ## [2026-07-07 21:18 MST] Claude Code: CORRECTION + live-test diagnosis, incoming calls were logging as blank texts; call-log build pushed
 By: Claude Code
 Changed: no new code. Pushed the 2026-07-06 call-log build (a9db570 + 3b5059b, c8c1e83..3b5059b on main) after diagnosing Dylan's live test against PROD (read-only queries). This entry corrects a claim in the 2026-07-06 20:46 entry below.
