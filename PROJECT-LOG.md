@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-09 09:52 MST] Claude Code: Last invoiced column moved into view (it was deployed all along, hidden in table overflow) + repo lock cleanup
+By: Claude Code
+Changed: index.html (commit 384474c, pushed). Dylan reported the Invoicing "invoice sent" column "still not showing" in TopCoat.
+Diagnosis: the live Netlify bundle was verified CURRENT (curl of the deployed site contains the Last invoiced markers plus every newer feature marker), so this was never a deploy problem. The column shipped as the 8th of 9 columns inside the completed table's horizontal-scroll wrapper, which puts it past the right edge on a laptop unless you scroll the table sideways; on first glance that reads as "not showing". Since the whole point is glanceable collection promptness, the column now sits right after Age (Customer, Address, Total, Balance, Age, Last invoiced, Salesperson, Completed, actions). Same data and flag logic, order only. Expect red "never sent" badges on the known never-invoiced completed jobs from the 2026-07-06 audit (Patterson, Varelas, Owens) once visible, that is the column doing its job.
+Repo housekeeping for the record: Cowork's environment could not delete git lock files it inherited ("Operation not permitted"), leaving a day-old stale .git/HEAD.lock + index.lock + a June-old objects/maintenance.lock, and its 09:41 ACH entry sat uncommitted in the working tree. I removed all three locks, and Cowork's complete ACH entry rode along inside commit 384474c (content intact, append-only respected); its trailing lock-note amendment landed in 4b28fdc. Nothing was lost, attribution is just split across those two commits.
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: Dylan hard-refreshes TopCoat after the deploy goes green and checks the column; pending build prompts are prompt 10 (subcontractor expenses) then prompt 11 (ACH), in that order per Cowork.
+Handoff to Cowork: none.
+Handoff to Dylan: (1) after this deploy, hard refresh (Cmd+Shift+R) and open Invoicing: "Last invoiced" now sits beside Age in the completed section; (2) heads up from Cowork's ACH scoping: do NOT enable ACH in the Stripe Dashboard until prompt 11 ships, the current webhook would silently drop ACH payments; (3) prompts 10 and 11 are ready to run whenever you are.
+
+---
+
 ## [2026-07-09 09:41 MST] Cowork: ACH payments scoped, prompt 11 written (Stripe async settlement)
 By: Cowork
 Changed: no code, no PROD data. Dylan asked how to add an ACH payment option (DripJobs used to offer it through Stripe; cards already work). Diagnosed from the repo: pec-stripe-checkout.cjs creates sessions without payment_method_types, so enabling ACH is just a Stripe Dashboard toggle, BUT pec-stripe-webhook.cjs only records paid checkout.session.completed events. ACH completes unpaid and settles days later via checkout.session.async_payment_succeeded, which the webhook ignores, so an ACH payment would never be recorded (no pec_payments row, no commission line, job stuck in completed-not-paid). Scoped the fix with Dylan through 12 multiple-choice decisions and wrote claude-code-prompt-11-ach-payments.md in the HQ workspace folder.
