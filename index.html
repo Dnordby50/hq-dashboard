@@ -8092,6 +8092,385 @@ function pecDownloadEstimatePdf(job, areas, total, sysNameFor) {
 // Per-job invoice view. Reached from the Invoicing list ("View Invoice"), the
 // job card ("View Invoice"), via state.openInvoiceJobId + the renderInvoicing
 // short-circuit. Read-only summary of one job's invoice: totals, line items,
+// ============================================================
+// Change orders as SCOPE (prompt 12, 2026-07-09)
+// ============================================================
+// One modal, two modes, shared by the Invoicing detail and the job detail
+// Estimate section (both write the same rows, so the surfaces cannot drift):
+//   AREA mode: the change order is a real job_areas row (system + sqft +
+//   price, is_change_order = true) PLUS the same is_change_order line item /
+//   price bump the simple mode has always written. The line item is the
+//   invoice's representation; the area row is production scope that costing
+//   derivation and labor budgets pick up. The estimate editor never sees CO
+//   areas (filtered on load; the replace RPC's delete spares them), which is
+//   what prevents double-counting on a re-save.
+//   SIMPLE mode: byte-for-byte today's title + amount append (for non-scope
+//   change orders like "haul away debris").
+// Both modes mint a pec_change_order_signatures row (token -> /co/<token>,
+// the native approval page). Billing hits at save (Dylan: signature is
+// documentation, not a gate).
+async function openChangeOrderModal(jobId, { onSaved } = {}) {
+  openModal(`
+    <h3 style="margin-top:0">Add change order</h3>
+    <div class="pec-empty" data-co-loading>Loading pricing data…</div>
+    <div data-co-body style="display:none"></div>
+  `, { onMount: async (modal) => {
+    let job, systems = [], productById = {}, fullSlotsBySystem = {}, defaultBasecoatByFlake = {}, settingsMap = {};
+    let coCount = 0, areaModeAvailable = true;
+    try {
+      const [jobRes, sysRes, prodRes, slotRes, pairRes, setRes] = await withFreshSession(() => Promise.all([
+        supabase.from('jobs').select('id,price,line_items,finalized,customer_id,dripjobs_deal_id,address,customers(name,company,email,phone)').eq('id', jobId).single(),
+        cachedSystemTypes(),
+        cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
+        cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
+        cachedRef('pair', () => supabase.from('pec_prod_color_pairings').select('*')),
+        supabase.from('settings').select('key,value').in('key', ['estimator_target_gp_pct','estimator_default_commission_pct','estimator_price_increment','estimator_charm_threshold','estimator_charm_band','default_labor_hourly_rate']),
+      ]), { label: 'change-order-modal' });
+      if (jobRes.error) throw jobRes.error;
+      job = jobRes.data;
+      systems = sortSystemTypes(sysRes.data || []);
+      productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
+      for (const s of (slotRes.data || [])) (fullSlotsBySystem[s.system_type_id] ||= []).push(s);
+      for (const k in fullSlotsBySystem) fullSlotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+      for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+      for (const r of (setRes.data || [])) settingsMap[r.key] = r.value;
+      // CO count doubles as the migration probe: pre-migration the
+      // is_change_order filter 400s and AREA mode is disabled with a note
+      // (simple mode keeps working exactly like today).
+      const coRes = await supabase.from('job_areas').select('order_index').eq('job_id', jobId).eq('is_change_order', true);
+      if (coRes.error) { areaModeAvailable = false; }
+      else coCount = (coRes.data || []).length;
+    } catch (err) {
+      modal.querySelector('[data-co-loading]').textContent = 'Could not load: ' + (err?.message || err);
+      return;
+    }
+
+    const laborRate = Number(settingsMap.default_labor_hourly_rate) > 0 ? Number(settingsMap.default_labor_hourly_rate) : 35;
+    const targetGpPct = Number(settingsMap.estimator_target_gp_pct) > 0 ? Number(settingsMap.estimator_target_gp_pct) : 50;
+    const defaultCommissionPct = Number(settingsMap.estimator_default_commission_pct) >= 0 && settingsMap.estimator_default_commission_pct != null ? Number(settingsMap.estimator_default_commission_pct) : 0;
+    const priceIncrement = Number(settingsMap.estimator_price_increment) > 0 ? Number(settingsMap.estimator_price_increment) : 5;
+    const charmThreshold = Number(settingsMap.estimator_charm_threshold) >= 0 && settingsMap.estimator_charm_threshold != null ? Number(settingsMap.estimator_charm_threshold) : 1000;
+    const charmBand = Number(settingsMap.estimator_charm_band) >= 0 && settingsMap.estimator_charm_band != null ? Number(settingsMap.estimator_charm_band) : 250;
+
+    const sysOptions = systems.filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+    const body = modal.querySelector('[data-co-body]');
+    modal.querySelector('[data-co-loading]').style.display = 'none';
+    body.style.display = '';
+    body.innerHTML = `
+      <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden;margin-bottom:12px">
+        <button type="button" class="pec-btn sm primary" data-co-mode="area" style="border:none;border-radius:0">Scope change (new area)</button>
+        <button type="button" class="pec-btn sm ghost" data-co-mode="simple" style="border:none;border-radius:0">Simple (title + amount)</button>
+      </div>
+      <div data-co-pane="area">
+        ${areaModeAvailable ? `
+        <div class="pec-ar-sub" style="margin-bottom:10px">Adds real scope: a new estimate line whose materials and labor flow to Job Costing, Ordering, and the crew paperwork. The invoice shows one line: title + price.</div>
+        <div class="pec-field" style="margin-bottom:8px"><label>Title <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-title placeholder="e.g. Add patio, 300 sqft"></div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>System <span style="color:var(--accent,#D8531C)">*</span></label><select data-co-system><option value="">Pick a system…</option>${sysOptions}</select></div>
+          <div class="pec-field"><label>Square footage <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-sqft type="number" min="0" step="1" placeholder="e.g. 300"></div>
+        </div>
+        <div class="pec-field" style="margin-bottom:2px"><label>Price ($) <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-price type="number" min="0" step="0.01" placeholder="auto-fills from system + sqft"></div>
+        <div data-co-price-hint style="font-size:.7rem;color:var(--muted);min-height:1em;margin-bottom:8px"></div>
+        <div class="pec-field"><label>Scope detail (optional)</label><textarea data-co-desc rows="2" placeholder="What the crew is adding" style="resize:vertical"></textarea></div>
+        ` : `<div class="pec-empty" style="font-size:.8rem">Scope mode needs the 2026-07-09_change_orders_scope migration applied first. Use Simple mode for now.</div>`}
+      </div>
+      <div data-co-pane="simple" style="display:none">
+        <div class="pec-ar-sub" style="margin-bottom:10px">A billable line with no production scope (e.g. haul away debris). Increases the invoice total / balance owed.</div>
+        <div class="pec-field" style="margin-bottom:8px"><label>Title <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-s-title placeholder="e.g. Haul away debris"></div>
+        <div class="pec-field" style="margin-bottom:8px"><label>Detail (optional)</label><textarea data-co-s-desc rows="2" placeholder="Scope of the add-on" style="resize:vertical"></textarea></div>
+        <div class="pec-field"><label>Amount ($) <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-s-amt type="number" step="0.01" placeholder="0.00"></div>
+      </div>
+      <div class="prod-msg-err" data-co-err style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" data-co-save>Add change order</button>
+      </div>`;
+
+    let mode = areaModeAvailable ? 'area' : 'simple';
+    const setMode = (m) => {
+      mode = m;
+      body.querySelectorAll('[data-co-mode]').forEach(b => { b.classList.toggle('primary', b.dataset.coMode === m); b.classList.toggle('ghost', b.dataset.coMode !== m); });
+      body.querySelector('[data-co-pane="area"]').style.display = m === 'area' ? '' : 'none';
+      body.querySelector('[data-co-pane="simple"]').style.display = m === 'simple' ? '' : 'none';
+    };
+    body.querySelectorAll('[data-co-mode]').forEach(b => b.addEventListener('click', () => setMode(b.dataset.coMode)));
+    setMode(mode);
+
+    const errEl = body.querySelector('[data-co-err]');
+    const saveBtn = body.querySelector('[data-co-save]');
+    const titleEl = body.querySelector('[data-co-title]');
+    const sysEl = body.querySelector('[data-co-system]');
+    const sqftEl = body.querySelector('[data-co-sqft]');
+    const priceEl = body.querySelector('[data-co-price]');
+    const hintEl = body.querySelector('[data-co-price-hint]');
+    const descEl = body.querySelector('[data-co-desc]');
+
+    // Pre-fill from the SAME pricing engine the estimator uses (cost-plus to
+    // target GP with the standard house commission, charm-rounded). Editable:
+    // a manual edit sticks until the system or sqft changes again.
+    let priceTouched = false;
+    const recompute = () => {
+      if (!areaModeAvailable || priceTouched) return;
+      const sqft = Number(sqftEl.value), sid = sysEl.value;
+      if (!(sqft > 0) || !sid) { hintEl.textContent = ''; return; }
+      try {
+        const out = window.computeEstimatePricing({
+          areas: [{ id: 'co', name: titleEl.value || 'Change order', sqft, system_type_id: sid, flake_product_id: null, basecoat_product_id: null }],
+          productsById: productById, recipeSlotsBySystemType: fullSlotsBySystem, defaultBasecoatByFlake,
+          systemTypes: systems, laborRate, commissionPct: defaultCommissionPct, targetGpPct,
+          priceIncrement, charmThreshold, charmBand,
+        });
+        if (out && !out.error && Number(out.price) > 0) {
+          priceEl.value = out.price;
+          hintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely.`;
+        } else {
+          hintEl.textContent = 'Could not auto-price (' + esc((out && out.error) || 'no pricing data') + '). Enter the price manually.';
+        }
+      } catch (e) { hintEl.textContent = 'Could not auto-price. Enter the price manually.'; }
+    };
+    if (areaModeAvailable) {
+      sysEl.addEventListener('change', () => { priceTouched = false; recompute(); });
+      sqftEl.addEventListener('input', () => { priceTouched = false; recompute(); });
+      priceEl.addEventListener('input', () => { priceTouched = true; hintEl.textContent = 'Manual price.'; });
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const existingItems = Array.isArray(job.line_items) ? job.line_items : [];
+      if (mode === 'simple') {
+        // Byte-for-byte today's simple change order: one write, line + price.
+        const name = body.querySelector('[data-co-s-title]').value.trim();
+        const description = body.querySelector('[data-co-s-desc]').value.trim();
+        const amt = parseFloat(body.querySelector('[data-co-s-amt]').value);
+        if (!name) { errEl.textContent = 'Enter a title.'; return; }
+        if (!Number.isFinite(amt) || amt === 0) { errEl.textContent = 'Enter a non-zero amount.'; return; }
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+        try {
+          const nextItems = existingItems.concat([{ name, description, price: invRound2(amt), is_change_order: true }]);
+          const nextPrice = invRound2(invNum(job.price) + amt);
+          const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
+          if (upd.error) throw upd.error;
+          await mintCoSignature(jobId, { area_id: null, title: name, description, system_name: null, sqft: null, amount: invRound2(amt) });
+          closeModal();
+          showToast('Change order added (' + invUSD(amt) + ')', { ttl: 3500 });
+          if (onSaved) onSaved();
+        } catch (err) {
+          saveBtn.disabled = false; saveBtn.textContent = 'Add change order';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled. Try again.' : (err.message || String(err));
+        }
+        return;
+      }
+      // AREA mode.
+      if (!areaModeAvailable) { errEl.textContent = 'Scope mode needs the 2026-07-09 migration. Use Simple mode.'; return; }
+      const title = titleEl.value.trim();
+      const description = descEl.value.trim();
+      const sid = sysEl.value;
+      const sqft = Number(sqftEl.value);
+      const price = parseFloat(priceEl.value);
+      if (!title) { errEl.textContent = 'Enter a title.'; return; }
+      if (!sid) { errEl.textContent = 'Pick a system.'; return; }
+      if (!(sqft > 0)) { errEl.textContent = 'Enter the square footage.'; return; }
+      if (!Number.isFinite(price) || price <= 0) { errEl.textContent = 'Enter a price greater than 0.'; return; }
+      const sysName = (systems.find(s => s.id === sid) || {}).name || null;
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        // 1. The scope row. order_index 500+ keeps CO areas out of the editor
+        // range (0..n) so the replace RPC's spared rows can never collide.
+        const ins = await withFreshWrite(() => supabase.from('job_areas')
+          .insert({ job_id: jobId, name: title, sqft, system_type_id: sid, price: invRound2(price), description: description || null, order_index: 500 + coCount, is_change_order: true })
+          .select().single(), { label: 'co-area-insert' });
+        if (ins.error) throw ins.error;
+        // 2. The billing moment: same line + price write as simple mode. If it
+        // fails, roll back the scope row so nothing half-exists.
+        const nextItems = existingItems.concat([{ name: title, description, price: invRound2(price), is_change_order: true }]);
+        const nextPrice = invRound2(invNum(job.price) + price);
+        const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
+        if (upd.error) {
+          try { await supabase.from('job_areas').delete().eq('id', ins.data.id); } catch (_) {}
+          throw upd.error;
+        }
+        // 3. Signature record (token for /co/<token>); best-effort.
+        await mintCoSignature(jobId, { area_id: ins.data.id, title, description, system_name: sysName, sqft, amount: invRound2(price) });
+        // 4. Costing materials for jobs whose lines are already saved
+        // (derive-path jobs pick the area up automatically); best-effort with
+        // a visible note either way.
+        await pushChangeOrderMaterialsToProd(job, { name: title, sqft, system_type_id: sid }, { productById, fullSlotsBySystem, defaultBasecoatByFlake, systems, laborRate });
+        closeModal();
+        showToast('Change order added (' + invUSD(price) + ')', { ttl: 3500 });
+        if (onSaved) onSaved();
+      } catch (err) {
+        saveBtn.disabled = false; saveBtn.textContent = 'Add change order';
+        errEl.textContent = /is_change_order/i.test(err?.message || '')
+          ? 'Scope mode needs the 2026-07-09_change_orders_scope migration applied first. Use Simple mode for now.'
+          : (isSessionStale(err) ? 'Session briefly stalled. Try again.' : (err.message || String(err)));
+      }
+    });
+  } });
+}
+
+// Mint the signature row for a just-saved CO. Best-effort: pre-migration (no
+// table) or a transient failure never blocks the CO itself; staff just see no
+// signature link until the migration lands.
+async function mintCoSignature(jobId, fields) {
+  try {
+    const s = await withFreshWrite(() => supabase.from('pec_change_order_signatures')
+      .insert({ job_id: jobId, ...fields }).select().single(), { label: 'co-signature' });
+    if (s.error) throw s.error;
+    return s.data;
+  } catch (err) {
+    console.warn('[pec] CO signature row skipped:', err?.message || err);
+    showToast('Change order saved. Signature link unavailable (' + (/pec_change_order_signatures/.test(err?.message || '') ? 'run the 2026-07-09 migration' : (err?.message || 'error')) + ').', { ttl: 6000 });
+    return null;
+  }
+}
+
+// Bridge a CO area's MATERIALS to the production side when the prod twin's
+// costing lines are already SAVED (persisted pec_prod_material_lines freeze
+// the derive path, so a new area would otherwise never reach Job Costing,
+// the Order Sheet, or the crew paperwork). Jobs still on derived lines need
+// nothing: the next costing load re-derives from ALL areas, CO included.
+// ADDITIVE insert only, never delete-then-insert (the Eric Harris doubling
+// lived in the replace path; appending has no interleave to race, and the
+// disabled Save button guards the double-click). Non-idempotent: bounded
+// withFreshWrite, no auto-retry. Every degrade is a visible toast, never a
+// silent drop (prompt 12 rule).
+async function pushChangeOrderMaterialsToProd(job, coArea, inputs) {
+  try {
+    let prod = null;
+    if (job.dripjobs_deal_id) {
+      const r = await supabase.from('pec_prod_jobs').select('id').eq('dripjobs_deal_id', job.dripjobs_deal_id).limit(1);
+      if (!r.error && r.data && r.data[0]) prod = r.data[0];
+    }
+    if (!prod && typeof window.jobNameAddrKey === 'function') {
+      const key = window.jobNameAddrKey(job.customers?.name, job.address);
+      if (key) {
+        const cand = await supabase.from('pec_prod_jobs').select('id,customer_name,address').is('archived_at', null);
+        if (!cand.error) prod = (cand.data || []).find(p => window.jobNameAddrKey(p.customer_name, p.address) === key) || null;
+      }
+    }
+    if (!prod) {
+      showToast('Change order saved. No production twin found for this job, so Job Costing materials were not updated.', { ttl: 6000 });
+      return;
+    }
+    const existing = await supabase.from('pec_prod_material_lines').select('id,order_index').eq('job_id', prod.id);
+    if (existing.error) throw existing.error;
+    window.pecCostingStale = true; // costing re-loads either way
+    if (!(existing.data || []).length) return; // derive path picks the CO area up on next load
+    const est = window.computeJobEstimate({
+      areas: [{ id: 'co', name: coArea.name, sqft: Number(coArea.sqft) || 0, system_type_id: coArea.system_type_id, flake_product_id: null, basecoat_product_id: null }],
+      productsById: inputs.productById, recipeSlotsBySystemType: inputs.fullSlotsBySystem,
+      defaultBasecoatByFlake: inputs.defaultBasecoatByFlake, systemTypes: inputs.systems,
+      revenue: 0, laborRate: inputs.laborRate,
+    });
+    const lines = est.materialLines || [];
+    if (!lines.length) {
+      showToast('Change order saved. No materials derive for this system (check its recipe slots).', { ttl: 5000 });
+      return;
+    }
+    const maxIdx = (existing.data || []).reduce((m, l) => (Number(l.order_index) < 9000 && Number(l.order_index) > m) ? Number(l.order_index) : m, 0);
+    const payload = lines.map((l, i) => ({
+      job_id: prod.id, area_id: null,
+      material_type: l.material_type, product_id: l.product_id || null, product_name: l.product_name,
+      supplier: l.supplier, color: l.color, spread_rate: l.spread_rate, kit_size: l.kit_size,
+      qty_needed: l.qty_needed, backstock_qty: 0, order_qty: l.order_qty,
+      use_backstock: false, ordered: false, delivered: false,
+      unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: maxIdx + 1 + i,
+      cure_speed: l.cure_speed || null,
+      notes: 'Change order: ' + (coArea.name || ''),
+    }));
+    const ins = await withFreshWrite(() => supabase.from('pec_prod_material_lines').insert(payload), { label: 'co-materials' });
+    if (ins.error) throw ins.error;
+    showToast(`Change order materials added to Job Costing (${payload.length} line${payload.length === 1 ? '' : 's'}).`, { ttl: 4500 });
+  } catch (err) {
+    console.warn('[pec] CO materials push:', err);
+    showToast('Change order saved, but costing materials could not be added: ' + (err?.message || err), { ttl: 6000 });
+  }
+}
+
+// The "Change orders" card (Invoicing detail + job detail Estimate section):
+// one row per signature record with the pending/signed badge and the send /
+// link actions. Legacy CO lines (pre-signature data) keep rendering in the
+// line-items table as before; this card only lists tokened COs. Degrades to
+// nothing pre-migration.
+async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows = null }) {
+  if (!el) return;
+  let rows = sigRows;
+  if (rows == null) {
+    const r = await supabase.from('pec_change_order_signatures').select('*').eq('job_id', jobId).order('created_at');
+    rows = r.error ? [] : (r.data || []);
+  }
+  if (!rows.length) { el.innerHTML = ''; return; }
+  let customer = null;
+  if (customerId) {
+    try {
+      const c = await supabase.from('customers').select('id,name,company,email,phone,sms_opt_out').eq('id', customerId).maybeSingle();
+      customer = c.error ? null : c.data;
+    } catch (_) {}
+  }
+  const brand = smsBrandFromCompany(customer?.company);
+  const fmtStamp = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d.getTime()) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''; };
+  el.innerHTML = `
+    <div class="pec-card">
+      <h3>Change orders <span style="color:var(--muted);font-size:.72rem;font-weight:400">${rows.length} · customer approval links</span></h3>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${rows.map(r => `
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px">
+            <div style="flex:1;min-width:180px">
+              <strong style="font-size:.85rem">${esc(r.title)}</strong>
+              <div style="font-size:.72rem;color:var(--muted)">${esc([r.system_name, r.sqft ? Number(r.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ') || 'No production scope')} · ${invUSD(invNum(r.amount))}</div>
+            </div>
+            ${r.status === 'signed'
+              ? `<span class="pec-badge" style="--pec-badge-bg:#16a34a" title="Signed by ${esc(r.signed_name || '')}">Signed ${esc(fmtStamp(r.signed_at))}</span>`
+              : '<span class="pec-badge" style="--pec-badge-bg:#d97706">Pending signature</span>'}
+            <span style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="pec-btn sm ghost" data-co-view="${esc(r.token)}">View</button>
+              <button class="pec-btn sm ghost" data-co-copy="${esc(r.token)}">Copy link</button>
+              ${r.status === 'signed' ? '' : `<button class="pec-btn sm" data-co-email="${esc(r.token)}">Email link</button>
+              <button class="pec-btn sm" data-co-text="${esc(r.token)}">Text link</button>`}
+            </span>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  const rowByToken = Object.fromEntries(rows.map(r => [String(r.token), r]));
+  el.querySelectorAll('[data-co-view]').forEach(b => b.addEventListener('click', () => window.open('/co/' + b.dataset.coView, '_blank')));
+  el.querySelectorAll('[data-co-copy]').forEach(b => b.addEventListener('click', () => {
+    navigator.clipboard.writeText(`${location.origin}/co/${b.dataset.coCopy}`).then(() => { b.textContent = 'Copied'; setTimeout(() => { b.textContent = 'Copy link'; }, 1500); });
+  }));
+  el.querySelectorAll('[data-co-email]').forEach(b => b.addEventListener('click', async () => {
+    const r = rowByToken[b.dataset.coEmail]; if (!r) return;
+    if (!customer?.email) { showToast('No email on file for this customer.', { ttl: 4000 }); return; }
+    b.disabled = true; b.textContent = 'Sending…';
+    try {
+      const link = `${location.origin}/co/${r.token}`;
+      // Compose-mode send with its OWN log key so the Last-invoiced column
+      // (which counts compose/invoice) never mistakes a CO link for an invoice.
+      await pecSendEmail({
+        brand, to_email: customer.email, job_id: jobId, customer_id: customer.id,
+        subject: `Change order approval: ${r.title}`,
+        body_html: `<p>Hi ${esc(customer.name || '')},</p><p>A change order for your project needs your approval:</p><p><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</p><p><a href="${esc(link)}" style="display:inline-block;background:#D8531C;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; sign</a></p><p style="font-size:13px;color:#64748b">Or open this link: ${esc(link)}</p>`,
+        log_template_key: 'change_order',
+      });
+      showToast('Approval link emailed ✓', { ttl: 3000 });
+      b.textContent = 'Email link'; b.disabled = false;
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Email link';
+      showToast('Email failed: ' + (err?.message || err), { ttl: 5000 });
+    }
+  }));
+  el.querySelectorAll('[data-co-text]').forEach(b => b.addEventListener('click', async () => {
+    const r = rowByToken[b.dataset.coText]; if (!r) return;
+    b.disabled = true; b.textContent = 'Sending…';
+    try {
+      await pecSendSms({ brand, job_id: jobId, customer_id: customer?.id || customerId, kind: 'change_order', co_token: r.token });
+      showToast('Approval link texted ✓', { ttl: 3000 });
+      b.textContent = 'Text link'; b.disabled = false;
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Text link';
+      showToast('Text failed: ' + (err?.message || err), { ttl: 5000 });
+    }
+  }));
+}
+
 // payments. Mark Paid / Mark Complete reuse the shared modals, which re-call
 // renderInvoicing() and land back here while openInvoiceJobId is set.
 async function renderJobInvoice(jobId) {
@@ -8122,9 +8501,14 @@ async function renderJobInvoice(jobId) {
     res = await withFreshSession(() => Promise.all([
       supabase.from('pec_job_ar').select('*').eq('id', jobId).maybeSingle(),
       supabase.from('pec_payments').select('*').eq('job_id', jobId).order('received_date'),
+      // Change-order signature records (badges + send actions). A missing
+      // table (pre-migration) resolves with an error inside the result and
+      // the card simply does not render.
+      supabase.from('pec_change_order_signatures').select('*').eq('job_id', jobId).order('created_at'),
     ]), { label: 'renderJobInvoice' });
-  } catch (e) { res = [{ error: e }, {}]; }
-  const [arRes, payRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}]; }
+  const [arRes, payRes, coSigRes] = res;
+  const coSigRows = (coSigRes && !coSigRes.error) ? (coSigRes.data || []) : [];
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
   const r = arRes.data;
@@ -8201,6 +8585,7 @@ async function renderJobInvoice(jobId) {
         <thead><tr><th>Item</th><th>Scope</th><th style="text-align:right">Price</th></tr></thead>
         <tbody>${itemRows}</tbody></table></div>
     </div>
+    <div id="invCoCard"></div>
     <div class="pec-card">
       <h3>Payments</h3>
       <div class="pec-scroll-x"><table class="pec-table">
@@ -8208,6 +8593,7 @@ async function renderJobInvoice(jobId) {
         <tbody>${payRows}</tbody></table></div>
     </div>
   `;
+  mountChangeOrderCard($('invCoCard'), { jobId, customerId: row.customer_id, sigRows: coSigRows, onChanged: () => renderJobInvoice(jobId) });
   root.querySelectorAll('[data-edit-pay]').forEach(b => b.addEventListener('click', () => {
     const p = payments.find(x => x.id === b.dataset.editPay);
     if (p) openEditPaymentModal(p, jobId);
@@ -8346,49 +8732,13 @@ async function renderJobInvoice(jobId) {
       });
     } });
   });
-  // Change order: an add-on after the job begins. Appends an is_change_order
-  // line to jobs.line_items AND bumps jobs.price by the amount, so the AR
-  // balance (price - paid_to_date) increases. Works even on a finalized job --
-  // this is the sanctioned way to change a locked total.
+  // Change order: an add-on after the job begins. Since prompt 12 this opens
+  // the SHARED two-mode modal (scope area or simple title+amount); the same
+  // modal serves the job detail Estimate section, so both surfaces write the
+  // same rows and cannot drift. Works even on a finalized job -- this is the
+  // sanctioned way to change a locked total.
   const coB = $('pecInvChangeOrder');
-  if (coB) coB.addEventListener('click', () => {
-    openModal(`
-      <h3>Add change order</h3>
-      <div class="pec-ar-sub" style="margin-bottom:12px">Adds a billable line and increases the invoice total / balance owed.</div>
-      <div class="pec-field"><label>Title</label><input id="coName" placeholder="e.g. Add floor drain"></div>
-      <div class="pec-field"><label>Detail (optional)</label><textarea id="coDesc" rows="2" placeholder="Scope of the add-on" style="resize:vertical"></textarea></div>
-      <div class="pec-field"><label>Amount ($)</label><input id="coAmt" type="number" step="0.01" placeholder="0.00"></div>
-      <div class="prod-msg-err" id="coErr" style="min-height:16px"></div>
-      <div class="pec-modal-actions">
-        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
-        <button type="button" class="pec-btn primary" id="coSave">Add change order</button>
-      </div>
-    `, { onMount: modal => {
-      modal.querySelector('#coSave').addEventListener('click', async () => {
-        const errEl = modal.querySelector('#coErr'); errEl.textContent = '';
-        const name = modal.querySelector('#coName').value.trim();
-        const description = modal.querySelector('#coDesc').value.trim();
-        const amt = parseFloat(modal.querySelector('#coAmt').value);
-        if (!name) { errEl.textContent = 'Enter a title.'; return; }
-        if (!Number.isFinite(amt) || amt === 0) { errEl.textContent = 'Enter a non-zero amount.'; return; }
-        const sb = modal.querySelector('#coSave'); sb.disabled = true; sb.textContent = 'Saving…';
-        const existing = Array.isArray(row.line_items) ? row.line_items : [];
-        const nextItems = existing.concat([{ name, description, price: invRound2(amt), is_change_order: true }]);
-        const nextPrice = invRound2(invNum(row.price) + amt);
-        try {
-          const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', row.id), { label: 'change-order' });
-          if (upd.error) throw upd.error;
-          closeModal();
-          showToast('Change order added (' + invUSD(amt) + ')', { ttl: 3500 });
-          renderInvoicing();
-        } catch (err) {
-          console.error('[pec] change order failed', err);
-          sb.disabled = false; sb.textContent = 'Add change order';
-          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
-        }
-      });
-    } });
-  });
+  if (coB) coB.addEventListener('click', () => openChangeOrderModal(row.id, { onSaved: () => renderInvoicing() }));
   // Full invoice line editor (for the switch-over): add / edit / delete /
   // reorder ALL lines and recompute the total. Saving sets
   // line_items_manual_override so saveJob() stops regenerating line_items from
@@ -10173,7 +10523,11 @@ async function renderJobDetailInner(id) {
     }
     return area;
   };
-  let areas = (areasRes.data || []).map(buildArea);
+  // Change-order areas are PRODUCTION scope, not estimate lines: the editor
+  // never shows or re-saves them (the replace RPC's delete spares them, and
+  // their invoice representation is the preserved is_change_order line item).
+  // Pre-migration the column is undefined and nothing is filtered.
+  let areas = (areasRes.data || []).filter(a => !a.is_change_order).map(buildArea);
   if (!areas.length) {
     areas = [buildArea({ name: 'Main', sqft: job.sqft ?? '', system_type_id: job.system_type_id || '' })];
   }
@@ -10890,20 +11244,24 @@ async function renderJobDetailInner(id) {
     const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
     const sysNameFor = (sid) => (systemTypes.find(s => s.id === sid) || {}).name || '—';
 
-    // Header card: title + live total + Finalize state (Reopen when locked).
+    // Header card: title + live total + Add change order + Finalize state
+    // (Reopen when locked). The data-co-card slot under it hosts the shared
+    // change-order list (badges + signature-link actions), mounted async so
+    // the page never blocks on it.
     const headerCard = `
       <div class="pec-card">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
           <div style="display:flex;align-items:center;gap:10px">
             <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(total)}</strong></div>
+            <button type="button" class="pec-btn sm" id="estAddChangeOrder">Add change order</button>
             <button type="button" class="pec-btn ghost sm" id="estDownloadPdf">Download PDF</button>
           </div>
         </div>
         ${finalized
-          ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked — add a change order from the invoice to adjust the total. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
+          ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked. Use Add change order to adjust the total; scope-mode change orders flow to production and costing. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
           : `<div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Each line is one area: system + colors + square footage + price. The line prices sum to the job price, and the invoice + work order build from these lines. Use "Same as line 1" to copy the first line's system and colors.</div>`}
-      </div>`;
+      </div><div data-co-card></div>`;
 
     // Bind the "Download PDF" button (in headerCard) in both the finalized and
     // editable paths. Total is recomputed at click time so unsaved price edits
@@ -10911,6 +11269,12 @@ async function renderJobDetailInner(id) {
     const wireEstPdfBtn = () => {
       const b = host.querySelector('#estDownloadPdf');
       if (b) b.addEventListener('click', () => pecDownloadEstimatePdf(job, areas, areaPriceSum(), sysNameFor));
+      // Add change order: the SAME shared modal Invoicing uses (both surfaces
+      // write the same rows). Re-renders the whole job detail on save so the
+      // total, the line list, and the CO card all refresh together.
+      const coB = host.querySelector('#estAddChangeOrder');
+      if (coB) coB.addEventListener('click', () => openChangeOrderModal(job.id, { onSaved: () => renderJobDetail(job.id) }));
+      mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, onChanged: () => renderJobDetail(job.id) });
     };
 
     if (finalized) {
