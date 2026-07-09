@@ -12,7 +12,7 @@ Why: ACH is 0.8% capped at $5 vs roughly 2.9% + 30 cents on cards, real money at
 Files touched: PROJECT-LOG.md in the repo; claude-code-prompt-11-ach-payments.md in the HQ workspace folder.
 Next steps: Dylan runs prompt 10 in Claude Code, then prompt 11.
 Handoff to Cowork: after prompt 11 ships, apply the pec_stripe_pending migration per the prompt file, and verify the live ACH test once it settles.
-Handoff to Dylan: do NOT enable ACH in the Stripe Dashboard until prompt 11 is deployed; the current webhook would silently drop the payment. Full toggle + test steps are in the prompt file.
+Handoff to Dylan: do NOT enable ACH in the Stripe Dashboard until prompt 11 is deployed; the current webhook would silently drop the payment. Full toggle + test steps are in the prompt file. Also: this entry is UNCOMMITTED. Stale lock files from a prior session (.git/HEAD.lock, .git/index.lock, .git/objects/maintenance.lock, dated 2026-07-08 06:32) could not be removed from Cowork's environment (Operation not permitted). From your machine run: rm -f .git/HEAD.lock .git/index.lock .git/objects/maintenance.lock && git add PROJECT-LOG.md && git commit -m "cowork: ACH payments scoped, prompt 11 written" (or let the next Claude Code session clean up and commit, per its existing stale-lock note in the 2026-07-06 08:07 entry).
 
 ---
 
