@@ -7817,8 +7817,8 @@ async function renderInvoicing() {
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
     <td>${invAgeCompleted(invDaysSince(r.completed_date))}</td>
-    <td>${esc(r.salesperson || '—')}</td><td>${invFmtDate(r.completed_date)}</td>
     ${lastSentCell(r)}
+    <td>${esc(r.salesperson) || '&mdash;'}</td><td>${invFmtDate(r.completed_date)}</td>
     <td style="white-space:nowrap">${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="9" class="pec-empty">Nothing here. Nice.</td></tr>';
 
@@ -7857,7 +7857,7 @@ async function renderInvoicing() {
     <details class="pec-card pec-ar-sec" open>
       <summary>Completed work, not paid in full <span class="pec-ar-meta">${completed.length} job${completed.length === 1 ? '' : 's'} · ${invUSD(completedOwed)} owed</span></summary>
       <div class="pec-scroll-x"><table class="pec-table">
-        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Salesperson</th><th>Completed</th><th>Last invoiced</th><th></th></tr></thead>
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Last invoiced</th><th>Salesperson</th><th>Completed</th><th></th></tr></thead>
         <tbody>${completedRows}</tbody></table></div>
     </details>
 

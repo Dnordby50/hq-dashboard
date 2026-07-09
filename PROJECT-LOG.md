@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-09 09:41 MST] Cowork: ACH payments scoped, prompt 11 written (Stripe async settlement)
+By: Cowork
+Changed: no code, no PROD data. Dylan asked how to add an ACH payment option (DripJobs used to offer it through Stripe; cards already work). Diagnosed from the repo: pec-stripe-checkout.cjs creates sessions without payment_method_types, so enabling ACH is just a Stripe Dashboard toggle, BUT pec-stripe-webhook.cjs only records paid checkout.session.completed events. ACH completes unpaid and settles days later via checkout.session.async_payment_succeeded, which the webhook ignores, so an ACH payment would never be recorded (no pec_payments row, no commission line, job stuck in completed-not-paid). Scoped the fix with Dylan through 12 multiple-choice decisions and wrote claude-code-prompt-11-ach-payments.md in the HQ workspace folder.
+Key decisions: ACH everywhere cards are; all payment UX stays on Stripe hosted surfaces (nothing local); pending ACH gets a marker row (new pec_stripe_pending table) and an "ACH pending" chip in Invoicing, payment row + deposit flip only at settlement, received_date = settlement date; job stays in completed-not-paid until settled; late failures alert via Slack #epoxysales + email + red job flag (SLACK_OFFICE_WEBHOOK and Resend patterns already exist in pec-invoice-intent.cjs); processing banner instead of paid banner on the pay page for pending ACH; light ACH nudge copy; Dylan flips the Stripe toggle himself AFTER deploy; live small-amount test; ships after prompt 10.
+Why: ACH is 0.8% capped at $5 vs roughly 2.9% + 30 cents on cards, real money at PEC job sizes, and customers had this option under DripJobs.
+Files touched: PROJECT-LOG.md in the repo; claude-code-prompt-11-ach-payments.md in the HQ workspace folder.
+Next steps: Dylan runs prompt 10 in Claude Code, then prompt 11.
+Handoff to Cowork: after prompt 11 ships, apply the pec_stripe_pending migration per the prompt file, and verify the live ACH test once it settles.
+Handoff to Dylan: do NOT enable ACH in the Stripe Dashboard until prompt 11 is deployed; the current webhook would silently drop the payment. Full toggle + test steps are in the prompt file.
+
+---
+
 ## [2026-07-08 06:31 MST] Cowork: call-log migration applied to PROD, 26 blank call-echo rows deleted
 By: Cowork
 Changed: PROD database only, no code. Executed both items from the 2026-07-07 21:18 handoff, in order.
