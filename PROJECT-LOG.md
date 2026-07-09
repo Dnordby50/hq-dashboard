@@ -41,6 +41,19 @@ Handoff to Dylan: (1) after this deploy, hard refresh (Cmd+Shift+R) and open Inv
 
 ---
 
+## [2026-07-09 16:37 MST] Cowork: CORRECTION, order-sheet workflow retired; only the work-order skill needs the CO patch
+By: Cowork
+Changed: no code, no PROD data. Corrects part of the 16:31 entry below: Dylan confirmed he pulls materials and orders directly off TopCoat now, so the PEC Order Sheet Google Sheet workflow (Zapier row from DripJobs + spread-rate math) is RETIRED and the pec-order-sheet skill is obsolete. The order-sheet section of skill-updates-change-orders.md is removed; the file now carries only the pec-work-order (job cards) section, which is still needed because that skill reads DripJobs and the job cache, not the TopCoat database. Cowork memory updated so future sessions do not route material questions through the order sheet.
+Why: prompt 12's handoff item 2 assumed both skills were live; one of the two workflows no longer exists.
+Files touched: PROJECT-LOG.md in the repo; skill-updates-change-orders.md in the HQ workspace folder (rewritten).
+Next steps: unchanged from 16:31 except drop the order-sheet paste and the "check the PEC Order Sheet picks up materials" step from the live test.
+Handoff to Cowork: none.
+Handoff to Dylan: (1) paste only the work-order section from skill-updates-change-orders.md; (2) delete the pec-order-sheet skill in settings when convenient; (3) if job cards also come off TopCoat at some point, say so and the work-order patch retires too.
+
+UPDATE 16:39 MST, same session: item 3 happened immediately. Dylan confirmed change orders are recorded in TopCoat and he does not need the work-order patch either. NO skill updates are needed for change orders at all; prompt 12 handoff item 2 is closed with zero skill changes. skill-updates-change-orders.md is now a tombstone (safe to delete). Remaining Dylan items: delete the pec-order-sheet skill in settings, deploy, run the live test from the 11:51 entry (minus any order-sheet step).
+
+---
+
 ## [2026-07-09 16:31 MST] Cowork: change-orders migration applied to PROD, all verifies pass; skill updates drafted (manual paste needed)
 By: Cowork
 Changed: PROD database only, no code. Executed the Cowork handoff from the 2026-07-09 11:51 Claude Code entry (prompt 12). Logged as a new entry rather than a line inside that entry, per standing rule 3 (append only, never edit past entries).
