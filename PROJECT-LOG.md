@@ -16,6 +16,18 @@ Handoff to Dylan: (1) after this deploy, hard refresh (Cmd+Shift+R) and open Inv
 
 ---
 
+## [2026-07-09 10:33 MST] Cowork: change orders scoped, prompt 12 written (jumps the queue, runs BEFORE prompts 10 and 11)
+By: Cowork
+Changed: no code, no PROD data. Dylan asked to move the Add change order button to the job detail and let change orders add materials when scope changes, reflecting on the invoice. Scoped through 17 multiple-choice decisions and wrote claude-code-prompt-12-change-orders.md in the HQ workspace folder.
+Key decisions: change orders become NEW AREA LINES (system selector + sqft, like estimate lines) with price pre-filled from estimator sqft pricing and editable; the simple title+amount mode survives for non-scope COs; button on the Jobs page job detail Estimate section AND kept on Invoicing (single source of truth, both surfaces sync); materials auto-derive via recipe formulas into Job Costing estimated lines; labor hours flow into crew-hours expectations; CO materials must surface to the PEC Order Sheet and work order workflows (Cowork skill updates handed off in the prompt); invoice shows one line, title + price; billing hits immediately at save; customer signature via a NATIVE token-gated approval page in our stack (no vendor, no login; Dylan initially picked DocuSign then clarified "whatever is easiest, no customer sign-in, on our page", so native won; e-sign API pricing checked for the record: SignWell 25 free API docs/month then $0.85/doc, DocuSign API ~$50/month), sent by email or text via the existing Resend/Quo paths with distinct log keys; pending/signed badge; permissions unchanged; SHIPS FIRST, prompts 10 and 11 slide behind it.
+Why: today a change order is a name and a price; production, costing, ordering, and the crew learn nothing when scope changes mid-job.
+Files touched: PROJECT-LOG.md in the repo; claude-code-prompt-12-change-orders.md in the HQ workspace folder.
+Next steps: Dylan runs prompt 12 in Claude Code, then 10, then 11.
+Handoff to Cowork: after prompt 12 ships, apply its migration and update the pec-order-sheet and pec-work-order skill workflows per the prompt file.
+Handoff to Dylan: run order is now 12, 10, 11. The ACH warning stands: do not enable ACH in Stripe until prompt 11 deploys. Note: the stale git locks from 2026-07-08 are gone (cleaned outside this session), so this commit includes the previously uncommitted 09:41 entry.
+
+---
+
 ## [2026-07-09 09:41 MST] Cowork: ACH payments scoped, prompt 11 written (Stripe async settlement)
 By: Cowork
 Changed: no code, no PROD data. Dylan asked how to add an ACH payment option (DripJobs used to offer it through Stripe; cards already work). Diagnosed from the repo: pec-stripe-checkout.cjs creates sessions without payment_method_types, so enabling ACH is just a Stripe Dashboard toggle, BUT pec-stripe-webhook.cjs only records paid checkout.session.completed events. ACH completes unpaid and settles days later via checkout.session.async_payment_succeeded, which the webhook ignores, so an ACH payment would never be recorded (no pec_payments row, no commission line, job stuck in completed-not-paid). Scoped the fix with Dylan through 12 multiple-choice decisions and wrote claude-code-prompt-11-ach-payments.md in the HQ workspace folder.
