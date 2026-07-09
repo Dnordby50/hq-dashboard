@@ -41,6 +41,19 @@ Handoff to Dylan: (1) after this deploy, hard refresh (Cmd+Shift+R) and open Inv
 
 ---
 
+## [2026-07-09 16:31 MST] Cowork: change-orders migration applied to PROD, all verifies pass; skill updates drafted (manual paste needed)
+By: Cowork
+Changed: PROD database only, no code. Executed the Cowork handoff from the 2026-07-09 11:51 Claude Code entry (prompt 12). Logged as a new entry rather than a line inside that entry, per standing rule 3 (append only, never edit past entries).
+1. Applied supabase/migrations/2026-07-09_change_orders_scope.sql via apply_migration. All verify queries pass: job_areas.is_change_order exists (1 column), pec_replace_job_areas RPC body contains the spared-delete predicate (is_change_order is not true = TRUE), pec_change_order_signatures exists with exactly 1 policy (staff FOR ALL), UNIQUE (token) constraint present, touch trigger present. Baseline: 0 existing CO areas, as expected pre-deploy.
+2. Skill updates (handoff item 2): confirmed by reading both skills that NEITHER pec-order-sheet NOR pec-work-order queries the database; both pull sqft/materials from DripJobs job cards and compute quantities from spread rates, so TopCoat change orders are invisible to them without changes. Cowork sessions cannot edit skill files (read-only cache), so the exact paste-ready sections (query job_areas where is_change_order = true, plus pec_prod_material_lines notes starting 'Change order: ', with handling rules for order-sheet rows and job-card material tables) are drafted in skill-updates-change-orders.md in the HQ workspace folder. Dylan pastes them via Claude settings > Capabilities > Skills.
+Why: unblock the prompt-12 deploy and live test; scope mode self-disables until this migration is live.
+Files touched: PROJECT-LOG.md in the repo; skill-updates-change-orders.md in the HQ workspace folder. PROD changed as itemized above.
+Next steps: Dylan deploys and runs the live test from the 11:51 entry, and pastes the two skill sections.
+Handoff to Cowork: none until the live test surfaces issues.
+Handoff to Dylan: (1) push to deploy (migration is live, scope mode will enable itself); (2) run the live test in the 11:51 entry: area-mode CO on a finalized job, price pre-fill, invoice line + bumped total, CO materials and labor budget in Job Costing, text yourself the approval link, sign on your phone, badge flips to Signed, page prints clean; (3) paste the two sections from skill-updates-change-orders.md into the pec-order-sheet and pec-work-order skills in settings; (4) then prompts 10 and 11, ACH stays OFF in Stripe until 11 deploys.
+
+---
+
 ## [2026-07-09 10:33 MST] Cowork: change orders scoped, prompt 12 written (jumps the queue, runs BEFORE prompts 10 and 11)
 By: Cowork
 Changed: no code, no PROD data. Dylan asked to move the Add change order button to the job detail and let change orders add materials when scope changes, reflecting on the invoice. Scoped through 17 multiple-choice decisions and wrote claude-code-prompt-12-change-orders.md in the HQ workspace folder.
