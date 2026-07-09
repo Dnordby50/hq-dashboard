@@ -134,11 +134,19 @@ exports.handler = async (event) => {
   catch { return jc(400, { ok: false, error: 'Invalid JSON' }); }
 
   const { template_key, brand, to_email, job_id = null, customer_id = null, vars = {},
-          subject: subjectOverride = null, body_html = null, cc = null } = body;
+          subject: subjectOverride = null, body_html = null, cc = null,
+          log_template_key = null } = body;
   // Compose mode: the client sends an edited subject + body verbatim (tokens
   // already resolved client-side). Template mode: render from a stored template.
+  // log_template_key lets a compose-mode caller pick its own LOG key (e.g.
+  // 'change_order' for CO approval links): log-derived features key on
+  // template_key, and the Invoicing "Last invoiced" column counts ONLY
+  // 'compose'/'invoice' rows, so CO sends must log under a different key or
+  // they would read as invoice sends. Sanitized to a short slug; anything else
+  // falls back to the normal key.
   const composeMode = !!body_html;
-  const logTemplateKey = composeMode ? 'compose' : template_key;
+  const logKeyOverride = (composeMode && typeof log_template_key === 'string' && /^[a-z0-9_]{1,40}$/.test(log_template_key)) ? log_template_key : null;
+  const logTemplateKey = logKeyOverride || (composeMode ? 'compose' : template_key);
   if (!brand || !to_email) return jc(400, { ok: false, error: 'brand and to_email are required' });
   if (composeMode) {
     if (!subjectOverride) return jc(400, { ok: false, error: 'subject is required in compose mode' });

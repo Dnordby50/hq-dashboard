@@ -104,9 +104,13 @@ exports.handler = async (event) => {
   catch { return jc(400, { ok: false, error: 'Invalid JSON' }); }
 
   const { brand, to_number = null, customer_id = null, job_id = null,
-          kind = 'manual', body: rawBody = null, estimate_token = null } = input;
+          kind = 'manual', body: rawBody = null, estimate_token = null,
+          co_token = null } = input;
   if (!brand) return jc(400, { ok: false, error: 'brand is required' });
-  const VALID_KINDS = ['invoice', 'manual', 'estimate'];
+  // 'change_order' is deliberately its OWN kind (not 'invoice'): the Invoicing
+  // "Last invoiced" column counts pec_sms_log rows with kind 'invoice', and a
+  // change-order approval link is not an invoice send.
+  const VALID_KINDS = ['invoice', 'manual', 'estimate', 'change_order'];
   if (!VALID_KINDS.includes(kind)) return jc(400, { ok: false, error: `kind must be one of ${VALID_KINDS.join(', ')}` });
 
   // Env guard: surface a clean 503 and still record the attempt.
@@ -190,6 +194,16 @@ exports.handler = async (event) => {
       // validate it against, so do not pretend. Remove this block when the seam
       // above is built.
       return jc(501, { ok: false, error: 'Estimate texting is not enabled yet (no estimate link source wired).' });
+    } else if (kind === 'change_order') {
+      // Change-order approval link. The CO row is looked up by its signature
+      // token so the body always carries a REAL link (never a staff-typed one),
+      // identified sender + STOP line like the invoice text.
+      if (!co_token) return jc(400, { ok: false, error: 'co_token is required for a change-order text.' });
+      const coRows = await sb('GET', `/pec_change_order_signatures?token=eq.${encodeURIComponent(co_token)}&select=title,amount,status&limit=1`);
+      const co = Array.isArray(coRows) ? coRows[0] : null;
+      if (!co) return jc(400, { ok: false, error: 'Change order not found for that token.' });
+      const coUrl = `${SITE_URL}/co/${co_token}`;
+      messageBody = `${businessName}: A change order "${co.title}" for ${usd(co.amount)} needs your approval. Review and sign: ${coUrl}.${STOP_LINE}`;
     } else { // manual
       const trimmed = String(rawBody || '').trim();
       if (!trimmed) return jc(400, { ok: false, error: 'Message body is empty.' });

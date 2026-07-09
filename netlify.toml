@@ -130,6 +130,21 @@
   status = 200
   force = true
 
+# Public change-order approval page (same token pattern as /pay), plus its
+# signing POST. Both land on pec-public-change-order; the HTTP method
+# distinguishes render (GET) from sign (POST).
+[[redirects]]
+  from = "/co/*"
+  to = "/.netlify/functions/pec-public-change-order?token=:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/co/sign"
+  to = "/.netlify/functions/pec-public-change-order"
+  status = 200
+  force = true
+
 # Stripe: clean paths for the Checkout-session creator (linked from the invoice
 # page) and the webhook (the only place a card payment is recorded). The webhook
 # URL goes into the Stripe Dashboard endpoint config.
