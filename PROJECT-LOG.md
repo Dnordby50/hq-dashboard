@@ -68,6 +68,20 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 20:37 MST] Cowork: ACH live test INITIATED AND VERIFIED pending; prompt 13 written (pending on invoice + email-tab fix)
+By: Cowork
+Changed: PROD got one deliberate test fixture (details below); no code. Three things this session:
+1. TEST SETUP: created a dedicated test fixture in PROD so no real customer's AR is touched: customer "ACH TEST (Dylan, delete after settle)" + job 63c361be-498c-4055-98c9-1cef1f7480cc (invoice ACH-TEST-1, price $1.00, deposit waived, status completed, public_token 57ba3edc-9f0b-47f6-92a9-6280d5d4da0f). Verified the /pay page renders with the Pay $1.00 button and prompt 11's ACH nudge copy. Cleanup after settlement: delete the job, customer, test payment row, and pending row (the Jul 15 scheduled check reminds us).
+2. TEST RESULT: Dylan paid via US bank account; the pending marker landed exactly as designed: pec_stripe_pending row pi_3TrV6085aAKLOAgM1o5y0PuH, kind balance, amount 1.00, status pending, created 2026-07-10 03:32 UTC. A one-time scheduled task (ach-test-settlement-check) runs 2026-07-15 09:00 MST to verify settlement (payment row + succeeded status + this entry's cleanup reminder).
+3. DYLAN'S FEEDBACK, scoped through 10 decisions into claude-code-prompt-13-pending-invoice-and-email-fix.md (in the REPO ROOT per the run-prompt-N convention): the customer invoice must reflect a pending ACH immediately and persistently. Pending renders as a Payments-section line with a PENDING badge on every visit, Amount due shows net of pending with a qualifier, pay buttons hide when pending covers the full balance (and the checkout function clamps server-side so a stale link cannot double-charge), partial pendings leave buttons for the remainder, failures show a red pay-again notice that clears itself when a later payment lands, identical for balance/deposit/custom, and staff get a confirm dialog before emailing/texting an invoice with a pending ACH. Prompt 13 also bundles the emailBrandLabel fix (19:29 entry diagnosis) per Dylan's choice.
+Why: without this, a paying customer looks unpaid to themselves for 3 to 5 days, which generates office calls and double payments; that defeats the point of ACH.
+Files touched: PROJECT-LOG.md, claude-code-prompt-13-pending-invoice-and-email-fix.md (new, repo root). PROD as itemized in 1.
+Next steps: Dylan runs prompt 13 in Claude Code, ideally BEFORE the test ACH settles (Jul 14-16) so the pending state is live for verification.
+Handoff to Cowork: none new; the Jul 15 scheduled settlement check is queued.
+Handoff to Dylan: run prompt 13; its log entry will carry your post-deploy verify list (the $1 pending invoice is the fixture).
+
+---
+
 ## [2026-07-09 19:29 MST] Cowork: Klarna + Pix disabled in Stripe; BUG FOUND, Settings > Email tab is dead (emailBrandLabel undefined)
 By: Cowork
 Changed: Stripe account settings only. No code, no PROD database changes. Dylan asked to remove Klarna and Pix and to find where he can adjust payment-related settings in TopCoat.
