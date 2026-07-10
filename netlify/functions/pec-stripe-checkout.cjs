@@ -57,20 +57,35 @@ exports.handler = async (event) => {
   if (!row) return page(404, 'Invoice not found', 'This payment link is invalid or has expired.');
 
   const balance = round2(row.balance_remaining);
+  // DOUBLE-PAY GUARD (prompt 13): pec_job_ar knows nothing about in-flight ACH,
+  // so a stale link or back button could charge money that is already clearing.
+  // Every kind clamps to (balance minus pending ACH sum); nothing chargeable
+  // redirects back to the invoice, which shows the processing state. Fail-OPEN
+  // on a lookup error (the hidden-buttons UI is the primary guard; a marker
+  // table hiccup must never block a legitimate payment).
+  let pendingSum = 0;
+  try {
+    const pend = await sb('GET', `/pec_stripe_pending?job_id=eq.${encodeURIComponent(row.id)}&status=eq.pending&select=amount`);
+    for (const p of (Array.isArray(pend) ? pend : [])) pendingSum += Number(p.amount) || 0;
+  } catch (err) {
+    console.error('stripe-checkout: pending lookup failed (charging without the clamp)', err.message);
+  }
+  const chargeable = round2(balance - pendingSum);
+  if (chargeable < 0.5) return redirect(`${SITE_URL}/pay/${token}`);
   let amount;
   if (kind === 'deposit') {
     if (row.deposit_collected || row.deposit_waived) return redirect(`${SITE_URL}/pay/${token}`);
     const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
-    amount = round2(Math.min(owed, balance));
+    amount = round2(Math.min(owed, chargeable));
   } else if (kind === 'custom') {
     // Office-entered amount arrives in CENTS (?amt=). Validate + clamp SERVER-SIDE
-    // to [50 cents, current balance] so the client can never charge more than is
-    // owed or below the Stripe minimum.
+    // to [50 cents, chargeable remainder] so the client can never charge more
+    // than is owed net of pending, or below the Stripe minimum.
     const cents = Math.round(Number(q.amt));
     if (!Number.isFinite(cents) || cents <= 0) return redirect(`${SITE_URL}/pay/${token}`);
-    amount = round2(Math.min(Math.max(cents / 100, 0.5), balance));
+    amount = round2(Math.min(Math.max(cents / 100, 0.5), chargeable));
   } else {
-    amount = balance;
+    amount = chargeable;
   }
   // Stripe minimum charge is $0.50; nothing meaningful to charge otherwise.
   if (!(amount >= 0.5)) return redirect(`${SITE_URL}/pay/${token}`);
