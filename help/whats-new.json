@@ -1,0 +1,123 @@
+[
+  {
+    "id": "whats-new-system",
+    "date": "2026-07-09",
+    "title": "TopCoat now tells you what changed",
+    "summary": "New features show up in this popup when you sign in, and the full history lives in Help.",
+    "howto": [
+      "When something new ships, you will see this popup once at sign in. Click Got it and you will not see those items again.",
+      "To browse everything later, open the Help tab. The What's New card at the top lists every update.",
+      "You can also ask the help assistant (the ? bubble, bottom right) how any new feature works."
+    ]
+  },
+  {
+    "id": "pending-ach-on-invoice",
+    "date": "2026-07-09",
+    "title": "Pending bank transfers show on the customer invoice",
+    "summary": "While a customer's bank transfer is clearing (3 to 5 days), their invoice shows it as PENDING, the amount due drops, and the pay buttons hide so nobody pays twice.",
+    "howto": [
+      "Nothing to do. The customer's /pay page handles it automatically the moment they pay by bank.",
+      "In Invoicing, the completed list shows an ACH pending chip under the balance so you know not to chase that customer.",
+      "If you try to email or text an invoice that has a pending transfer, TopCoat asks you to confirm first."
+    ]
+  },
+  {
+    "id": "messages-calls-tab",
+    "date": "2026-07-09",
+    "title": "Messages and Calls tab on every job",
+    "summary": "Open a job and see the customer's texts and phone calls in one feed, in time order, and text them right from the job.",
+    "howto": [
+      "Jobs tab, open a job, click Messages & Calls (the toggle under the job header).",
+      "Calls show the AI summary; click Transcript to read the whole conversation.",
+      "Type in the box at the bottom to text the customer. Replies show up when you hit Refresh."
+    ]
+  },
+  {
+    "id": "ach-bank-payments",
+    "date": "2026-07-09",
+    "title": "Customers can pay invoices by bank transfer (ACH)",
+    "summary": "The Pay online button on invoices now offers bank transfer as well as card. Bank transfers cost us about $5 instead of about 3 percent.",
+    "howto": [
+      "Nothing changes when you send an invoice; the customer picks card or bank on the Stripe payment page.",
+      "Bank transfers take 3 to 5 business days to land. The payment records itself automatically when it clears.",
+      "If a transfer bounces, the job gets a red ACH failed chip in Invoicing and Dylan gets an alert."
+    ]
+  },
+  {
+    "id": "subcontractor-expenses",
+    "date": "2026-07-09",
+    "title": "Itemized subcontractor expenses on Job Costing",
+    "summary": "Record who was paid what on subbed-out jobs, and flag a whole job as subcontracted so the crew bonus math skips it.",
+    "howto": [
+      "Job Costing, open the job, find the Subcontractors card. Add a line with the sub's name and the dollar amount.",
+      "The total flows into the job's costs and profit automatically.",
+      "If the whole job was subbed out, tick This job is subcontracted; hours expectations and crew bonus then skip it."
+    ]
+  },
+  {
+    "id": "change-orders-scope",
+    "date": "2026-07-09",
+    "title": "Change orders that carry real scope",
+    "summary": "Add a change order from the job page with a system and square footage; pricing suggests itself, materials flow to costing, and the customer can sign it online.",
+    "howto": [
+      "Jobs tab, open the job, click Add change order in the Estimate section (also on the Invoicing detail).",
+      "Pick the system and square feet and the price pre-fills like the estimator; or use Simple mode for a title and amount.",
+      "In the Change orders card you can email or text the customer a signing link and watch the badge flip to Signed."
+    ]
+  },
+  {
+    "id": "call-summaries",
+    "date": "2026-07-07",
+    "title": "Phone calls with AI summaries on customer profiles",
+    "summary": "Every call to or from the office number now logs on the customer's profile with a summary, next steps, and the full transcript.",
+    "howto": [
+      "Customers tab, open a customer, scroll to the Calls card.",
+      "Each call shows who called, how long it lasted, and what it was about.",
+      "Click Transcript to read the word-for-word conversation."
+    ]
+  },
+  {
+    "id": "invoicing-visibility",
+    "date": "2026-07-06",
+    "title": "Last invoiced column and a Cancelled jobs section",
+    "summary": "Invoicing now shows when each completed job was last sent an invoice (red if never), and cancelled jobs live in their own section with a Restore button.",
+    "howto": [
+      "Invoicing tab, completed section: the Last invoiced column sits right after Age. Red means send the invoice.",
+      "Jobs tab, bottom: the Cancelled / archived jobs card lists every archived job.",
+      "Click Restore on an archived job to bring it back to Jobs and the Schedule."
+    ]
+  },
+  {
+    "id": "costing-review-flow",
+    "date": "2026-07-06",
+    "title": "Job costing submit-for-review flow",
+    "summary": "Non-admin staff submit a finished costing for review instead of finalizing it; Dylan reviews and finalizes, which records the crew bonus.",
+    "howto": [
+      "Fill in the job's costing as usual, then click Submit for review. Your numbers lock while it waits.",
+      "Dylan sees it in the Submitted for review queue on the Job Costing page and finalizes or sends it back.",
+      "Team member hours are entered per person on the job page; they drive the bonus math."
+    ]
+  },
+  {
+    "id": "two-way-texting",
+    "date": "2026-06-28",
+    "title": "Text customers from TopCoat",
+    "summary": "Two-way texting from customer profiles through the office number, plus a Text invoice button that sends the pay link.",
+    "howto": [
+      "Customers tab, open a customer, use the Texts card to send and read messages.",
+      "On an invoice, click Text invoice to send the customer their pay link by text.",
+      "Customers who reply STOP are opted out automatically and TopCoat will refuse to text them."
+    ]
+  },
+  {
+    "id": "estimator-beta",
+    "date": "2026-06-21",
+    "title": "In-house estimator (beta)",
+    "summary": "A TopCoat estimator that prices jobs from square footage and system type, using the same catalog and math as Job Costing.",
+    "howto": [
+      "Open it from the Estimator button in the nav (admins and estimators only while in beta).",
+      "Enter the areas and square footage; the price suggestion comes from cost plus target margin.",
+      "Talk to Dylan before using it on a live customer while it is in beta."
+    ]
+  }
+]
