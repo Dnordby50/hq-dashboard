@@ -1596,6 +1596,111 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
   }
 }
 </style>
+
+<!-- ============================================================
+     Messages & Calls console (.qo-*). Modeled on the Quo/OpenPhone
+     dark inbox Dylan screenshotted (2026-07-09): avatar header,
+     sender-labeled chat bubbles, AI call-summary cards. Deliberately
+     DARK inside the light CRM, same precedent as the JARVIS tab.
+     Loaded AFTER the redesign + crm-light-theme skins so the .qo-input
+     rules below out-cascade their global !important input repaints.
+     ============================================================ -->
+<style id="qo-comms-theme">
+.qo-shell, .qo-mini {
+  --qo-bg: #0d0d12;
+  --qo-line: #26262f;
+  --qo-text: #f1f2f6;
+  --qo-muted: #8f95a3;
+  --qo-blue: #3574f2;
+  --qo-bubble-in: #26262e;
+  --qo-ai: #a78bfa;
+  background: var(--qo-bg);
+  border: 1px solid #23232c;
+  color: var(--qo-text);
+  overflow: hidden;
+}
+.qo-shell { border-radius: 18px; box-shadow: 0 18px 44px rgba(8,10,18,.30); margin-bottom: 14px; }
+.qo-mini  { border-radius: 16px; }
+
+/* Header: avatar + name + phone left, icon actions right */
+.qo-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--qo-line); flex-wrap: wrap; }
+.qo-head-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.qo-name { font-weight: 700; font-size: 1.02rem; color: var(--qo-text); line-height: 1.2; }
+.qo-phone-num { color: var(--qo-muted); font-size: .8rem; margin-top: 2px; }
+.qo-actions { display: flex; gap: 4px; }
+.qo-icon-btn { width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--qo-muted); background: transparent; border: none; transition: background .15s, color .15s; }
+.qo-icon-btn:hover { background: #1e1e26; color: var(--qo-text); }
+.qo-icon-btn svg { width: 17px; height: 17px; }
+.qo-icon-btn:disabled { opacity: .5; }
+.qo-spin svg { animation: qoSpin 1s linear infinite; }
+@keyframes qoSpin { to { transform: rotate(360deg); } }
+
+/* Feed */
+.qo-feed { display: flex; flex-direction: column; overflow-y: auto; padding: 14px 16px 10px; max-height: min(62vh, 620px); min-height: 200px; }
+.qo-mini .qo-feed { max-height: 360px; min-height: 120px; }
+.qo-feed::-webkit-scrollbar-thumb { background: #2c2c37 !important; }
+.qo-day { align-self: center; font-size: .68rem; font-weight: 500; color: var(--qo-muted); margin: 14px 0 6px; letter-spacing: .3px; }
+.qo-empty { color: var(--qo-muted); font-size: .84rem; padding: 26px 10px; text-align: center; }
+.qo-note { color: var(--qo-muted); font-size: .76rem; padding: 8px 10px; text-align: center; }
+
+/* Text bubbles: sender label above, avatar beside, blue out / gray in */
+.qo-msg { display: flex; gap: 8px; align-items: flex-end; margin: 2px 0; }
+.qo-msg.out { flex-direction: row-reverse; }
+.qo-msg-main { max-width: 74%; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.qo-msg.out .qo-msg-main { align-items: flex-end; }
+.qo-msg-name { font-size: .68rem; color: var(--qo-muted); margin: 10px 6px 3px; }
+.qo-bubble { padding: 9px 13px; border-radius: 18px; font-size: .88rem; line-height: 1.4; white-space: pre-wrap; word-break: break-word; background: var(--qo-bubble-in); color: var(--qo-text); }
+.qo-msg.out .qo-bubble { background: var(--qo-blue); color: #fff; }
+.qo-msg.failed .qo-bubble { background: rgba(248,113,113,.14); color: #fca5a5; border: 1px solid rgba(248,113,113,.35); }
+.qo-msg-err { font-size: .66rem; color: #f87171; margin: 3px 6px 0; }
+.qo-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: .7rem; font-weight: 700; flex: none; user-select: none; letter-spacing: .3px; }
+.qo-avatar.cust { background: #d9a43e; color: #33230a; }
+.qo-avatar.staff { background: #3a3a45; color: #e6e8f0; }
+.qo-avatar.lg { width: 44px; height: 44px; font-size: .95rem; }
+
+/* Calls: event line + AI summary card (purple bullets, transcript link) */
+.qo-callwrap { margin: 12px 0 6px; }
+.qo-feed .qo-callwrap { margin-left: 40px; }
+.qo-call-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.qo-call-ic { width: 26px; height: 26px; border-radius: 50%; background: #26262e; display: flex; align-items: center; justify-content: center; color: #9aa1af; flex: none; }
+.qo-call-ic.miss { color: #f87171; }
+.qo-call-ic svg { width: 13px; height: 13px; }
+.qo-call-title { font-weight: 600; font-size: .82rem; color: var(--qo-text); }
+.qo-call-meta { color: var(--qo-muted); font-size: .74rem; }
+.qo-summary { position: relative; border: 1px solid #2e2e39; background: #131319; border-radius: 14px; padding: 14px 16px; max-width: 640px; }
+.qo-summary-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-right: 112px; }
+.qo-summary-title { font-weight: 600; font-size: .86rem; color: var(--qo-text); }
+.qo-ai { color: var(--qo-ai); font-size: .76rem; font-weight: 500; white-space: nowrap; }
+.qo-bullets { list-style: none; margin: 0; padding: 0; }
+.qo-bullets li { position: relative; padding-left: 18px; margin: 7px 0; font-size: .84rem; line-height: 1.45; color: #dcdfe7; }
+.qo-bullets li::before { content: ""; position: absolute; left: 4px; top: .5em; width: 5px; height: 5px; border-radius: 50%; background: var(--qo-ai); }
+.qo-next-title { font-size: .8rem; font-weight: 600; color: var(--qo-text); margin: 12px 0 2px; }
+.qo-call-none { color: var(--qo-muted); font-size: .78rem; }
+.qo-tr summary { position: absolute; top: 14px; right: 16px; cursor: pointer; list-style: none; font-size: .76rem; color: var(--qo-muted); }
+.qo-tr summary::-webkit-details-marker { display: none; }
+.qo-tr summary:hover { color: var(--qo-text); }
+.qo-tr summary::before { content: "View transcript"; }
+.qo-tr[open] summary::before { content: "Hide transcript"; }
+.qo-tr-body { margin-top: 12px; border-top: 1px solid #262630; padding-top: 10px; max-height: 260px; overflow-y: auto; font-size: .8rem; line-height: 1.55; color: #cfd3dc; }
+.qo-tr-body strong { color: var(--qo-text); }
+
+/* Banner (opt-out / no phone) */
+.qo-banner { margin: 12px 16px 0; background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.32); color: #fbbf24; border-radius: 10px; padding: 8px 12px; font-size: .8rem; }
+
+/* Composer: pill input + round blue send. The !important pairs beat the
+   redesign skin's global input/textarea !important repaint (this sheet
+   loads later, so equal importance resolves to these). */
+.qo-compose { display: flex; gap: 8px; align-items: flex-end; padding: 12px 14px 14px; border-top: 1px solid var(--qo-line); }
+.qo-compose textarea.qo-input { background: #1a1a21 !important; border: 1px solid #2b2b36 !important; color: var(--qo-text) !important; border-radius: 20px !important; padding: 9px 14px; font-size: .88rem; line-height: 1.4; min-height: 40px; max-height: 120px; resize: none; overflow-y: auto; flex: 1; }
+.qo-compose textarea.qo-input:focus { border-color: var(--qo-blue) !important; box-shadow: 0 0 0 3px rgba(53,116,242,.22) !important; }
+.qo-compose textarea.qo-input::placeholder { color: #6b7280; }
+.qo-send { width: 38px; height: 38px; flex: none; border-radius: 50%; background: var(--qo-blue); color: #fff; display: flex; align-items: center; justify-content: center; border: none; transition: opacity .15s; }
+.qo-send svg { width: 16px; height: 16px; }
+.qo-send:disabled { opacity: .4; cursor: default; }
+
+/* Profile-card variant: calls list inside the dark mini panel */
+.qo-callist { padding: 10px 16px 12px; max-height: 420px; overflow-y: auto; }
+</style>
 </head>
 <body>
 
@@ -10704,8 +10809,9 @@ async function renderJobDetailInner(id) {
       <button class="pec-btn sm" id="pecJobViewInvoice">View Invoice</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
       ${job.customers?.token
-        ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
-        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
+        ? `<button class="pec-btn sm" id="pecJobViewPortal" style="margin-left:auto">View customer portal</button>`
+        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet" style="margin-left:auto">View customer portal</button>`}
+      <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : ''}" id="pecJobTabBtnComms" title="${activeTab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Messages &amp; Calls</button>
     </div>
 
     <div class="pec-card">
@@ -10791,15 +10897,11 @@ async function renderJobDetailInner(id) {
       </div>
     </div>
 
-    <!-- Job detail tabs. Switching toggles display ONLY (never re-renders), so
-         unsaved Details edits and live handlers survive; toolbar + header card
-         above stay visible on both tabs. -->
-    <div style="margin:0 0 14px">
-      <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden">
-        <button class="pec-btn sm ${activeTab === 'details' ? 'primary' : 'ghost'}" id="pecJobTabBtnDetails" style="border:none;border-radius:0">Details</button>
-        <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : 'ghost'}" id="pecJobTabBtnComms" style="border:none;border-radius:0">Messages &amp; Calls</button>
-      </div>
-    </div>
+    <!-- Job detail tabs. The Messages & Calls trigger lives in the toolbar
+         (top right, next to View customer portal, per Dylan 2026-07-09) and
+         TOGGLES the two panes. Switching toggles display ONLY (never
+         re-renders), so unsaved Details edits and live handlers survive;
+         toolbar + header card above stay visible on both tabs. -->
     <div id="pecJobTabDetails" style="display:${activeTab === 'details' ? '' : 'none'}">
 
     <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : (colorsUrgent ? '#dc2626' : '#d97706')}">
@@ -10864,7 +10966,7 @@ async function renderJobDetailInner(id) {
 
     <div id="jobActivity"></div>
     </div>
-    <div id="pecJobTabComms" style="display:${activeTab === 'comms' ? '' : 'none'}">${jobCommsCardHtml()}</div>
+    <div id="pecJobTabComms" style="display:${activeTab === 'comms' ? '' : 'none'}">${jobCommsCardHtml(job)}</div>
   `;
 
   // Route through the fenced dispatcher (commit 84797a1) so any renderJobs
@@ -10885,10 +10987,9 @@ async function renderJobDetailInner(id) {
     state.jobDetailTab = tab;
     $('pecJobTabDetails').style.display = tab === 'details' ? '' : 'none';
     $('pecJobTabComms').style.display = tab === 'comms' ? '' : 'none';
-    for (const [btnId, t] of [['pecJobTabBtnDetails', 'details'], ['pecJobTabBtnComms', 'comms']]) {
-      $(btnId).classList.toggle('primary', tab === t);
-      $(btnId).classList.toggle('ghost', tab !== t);
-    }
+    const tabBtn = $('pecJobTabBtnComms');
+    tabBtn.classList.toggle('primary', tab === 'comms');
+    tabBtn.title = tab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer';
     if (tab === 'comms') {
       mountCommsOnce();
       // Hidden-mount fix: scrollHeight is 0 while display:none, so the mount's
@@ -10898,8 +10999,8 @@ async function renderJobDetailInner(id) {
       if (feed && feed.scrollTop === 0) feed.scrollTop = feed.scrollHeight;
     }
   };
-  $('pecJobTabBtnDetails').addEventListener('click', () => showJobTab('details'));
-  $('pecJobTabBtnComms').addEventListener('click', () => showJobTab('comms'));
+  // One toolbar button toggles the two panes (highlighted while on comms).
+  $('pecJobTabBtnComms').addEventListener('click', () => showJobTab(state.jobDetailTab === 'comms' ? 'details' : 'comms'));
   if (activeTab === 'comms') mountCommsOnce();
 
   // Archive this job (reversible; the old "type DELETE" gate is gone per Dylan,
@@ -13708,44 +13809,136 @@ const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Pres
 // customers.company IS the brand key the SMS sender map uses.
 const smsBrandFromCompany = company => company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
 
-// ONE pec_sms_log row as a text-message bubble (out = right/accent, in =
-// left/gray, failed = red). Shared by the customer-profile Texts card and the
-// job detail's Messages & Calls feed so the two surfaces can never drift.
-function smsBubbleHtml(r) {
+// ---- Quo-inbox look helpers (.qo-*), modeled on the OpenPhone dark UI Dylan
+// screenshotted 2026-07-09. Shared by the customer-profile Texts/Calls cards
+// and the job detail's Messages & Calls console so the surfaces never drift.
+const QO_SVG = {
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+  person: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+};
+// Two-letter initials from a name ("Luca Paindelli" -> "LP").
+function qoInitials(s) {
+  const parts = String(s || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  const a = parts[0][0] || '';
+  const b = parts.length > 1 ? (parts[parts.length - 1][0] || '') : (parts[0][1] || '');
+  return (a + b).toUpperCase();
+}
+function qoAvatarHtml(nameSrc, kind, size) {
+  return `<span class="qo-avatar ${kind}${size ? ' ' + size : ''}">${esc(qoInitials(nameSrc))}</span>`;
+}
+// (760) 576-4073 formatting for 10-digit US numbers; anything else passes through.
+function qoFmtPhone(p) {
+  const d = String(p || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || '');
+}
+function qoTelHref(p) {
+  const d = String(p || '').replace(/\D/g, '');
+  return d ? ('tel:' + (d.length === 10 ? '+1' + d : '+' + d)) : '';
+}
+function qoWhenFull(iso) {
+  const d = iso ? new Date(iso) : null;
+  return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+}
+// Centered day separators ("Tue, Jul 7") between different days in a feed.
+function qoDayKey(ts) { const d = new Date(ts); return isNaN(d.getTime()) ? '' : d.toDateString(); }
+function qoDaySepHtml(ts) {
+  const d = new Date(ts);
+  if (!ts || isNaN(d.getTime())) return '';
+  const opts = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return `<div class="qo-day">${esc(d.toLocaleDateString([], opts))}</div>`;
+}
+// Quo's summary/next-steps text as the purple-bulleted list from the
+// screenshot. Multi-line text bullets per line; a single paragraph splits on
+// sentence boundaries. Presentation only, the stored text is untouched.
+function qoBulletsHtml(text) {
+  let lines = String(text || '').split(/\n+/).map(s => s.trim()).filter(Boolean);
+  if (lines.length === 1) {
+    const parts = lines[0].split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map(s => s.trim()).filter(Boolean);
+    if (parts.length > 1) lines = parts;
+  }
+  lines = lines.map(s => s.replace(/^[-•*]\s*/, ''));
+  return `<ul class="qo-bullets">${lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+}
+// auth_user_id -> staff name, for the sender labels above outbound bubbles
+// (pec_sms_log.sent_by_user stores the sender's auth uid; admin_users is
+// staff-readable). Cached for the page life; failure degrades to no labels.
+let _qoStaffNamesPromise = null;
+function qoStaffNames() {
+  if (!_qoStaffNamesPromise) {
+    _qoStaffNamesPromise = supabase.from('admin_users').select('auth_user_id,name')
+      .then(({ data }) => {
+        const m = {};
+        (data || []).forEach(u => { if (u.auth_user_id && u.name) m[u.auth_user_id] = u.name; });
+        return m;
+      })
+      .catch(() => ({}));
+  }
+  return _qoStaffNamesPromise;
+}
+
+// ONE pec_sms_log row as a chat bubble (out = blue/right with the sender's
+// name, in = gray/left with the customer's name, failed = red + reason).
+// ctx: { custName, staffNames, showName }; showName false suppresses the
+// name label inside a same-sender run; full timestamp lives in the title.
+function smsBubbleHtml(r, ctx) {
+  ctx = ctx || {};
   const out = r.direction === 'out';
   const failed = r.status === 'failed';
-  const align = out ? 'flex-end' : 'flex-start';
-  const bg = failed ? '#fee2e2' : (out ? 'var(--accent, #ea580c)' : 'var(--s3, #e2e8f0)');
-  const fg = (out && !failed) ? '#fff' : 'var(--text, #0f172a)';
-  const kindTag = (r.kind && !['system', 'manual'].includes(r.kind)) ? ' · ' + r.kind : '';
-  const meta = `${invFmtDate(r.created_at)}${failed ? ' · failed' : ''}${kindTag}`;
-  return `<div style="display:flex;justify-content:${align};margin:5px 0">
-    <div style="max-width:78%;background:${bg};color:${fg};padding:8px 12px;border-radius:14px;font-size:.86rem;line-height:1.35;white-space:pre-wrap;word-break:break-word">
-      ${esc(r.body || (failed ? '(not sent)' : ''))}
-      <div style="font-size:.62rem;opacity:.72;margin-top:4px">${esc(meta)}${failed && r.error_message ? ' · ' + esc(r.error_message) : ''}</div>
-    </div></div>`;
+  const senderName = out ? ((ctx.staffNames || {})[r.sent_by_user] || '') : (ctx.custName || '');
+  const firstName = senderName ? senderName.trim().split(/\s+/)[0] : '';
+  const kindTag = (r.kind && !['system', 'manual'].includes(r.kind)) ? r.kind : '';
+  const nameRow = (ctx.showName !== false && (firstName || kindTag))
+    ? `<div class="qo-msg-name">${esc([firstName, kindTag].filter(Boolean).join(' · '))}</div>` : '';
+  const avatarSrc = senderName || (out ? emailBrandLabel(r.brand) : (ctx.custName || '?'));
+  return `<div class="qo-msg ${out ? 'out' : 'in'}${failed ? ' failed' : ''}">
+    ${qoAvatarHtml(avatarSrc, out ? 'staff' : 'cust')}
+    <div class="qo-msg-main">
+      ${nameRow}
+      <div class="qo-bubble" title="${esc(qoWhenFull(r.created_at))}">${esc(r.body || (failed ? '(not sent)' : ''))}</div>
+      ${failed ? `<div class="qo-msg-err">Not delivered${r.error_message ? ' · ' + esc(r.error_message) : ''}</div>` : ''}
+    </div>
+  </div>`;
 }
 
-// Render a list of pec_sms_log rows as text-message bubbles. Chronological
-// order is the caller's job.
-function smsThreadRowsHtml(rows) {
-  if (!rows || !rows.length) return '<div style="color:var(--muted);font-size:.85rem;padding:10px 2px">No texts yet.</div>';
-  return rows.map(smsBubbleHtml).join('');
+// Render a list of pec_sms_log rows as a chat feed: day separators between
+// days, sender label once per same-sender run (a >15 min gap starts a new
+// run). Chronological order is the caller's job.
+function smsThreadRowsHtml(rows, ctx) {
+  if (!rows || !rows.length) return '<div class="qo-empty">No texts yet.</div>';
+  ctx = ctx || {};
+  let html = '', prevDay = null, prevRun = null, prevTs = 0;
+  for (const r of rows) {
+    const ts = Date.parse(r.created_at) || 0;
+    const day = qoDayKey(ts);
+    if (ts && day !== prevDay) { html += qoDaySepHtml(ts); prevDay = day; prevRun = null; }
+    const run = r.direction + '|' + (r.direction === 'out' ? (r.sent_by_user || '') : 'cust');
+    const showName = run !== prevRun || (ts - prevTs) > 15 * 60 * 1000;
+    html += smsBubbleHtml(r, { ...ctx, showName });
+    prevRun = run; prevTs = ts;
+  }
+  return html;
 }
 
-// The SMS thread card markup for a customer detail page. Populated async by
-// mountCustomerSmsThread so customer detail still loads pre-migration.
+// The SMS thread card markup for a customer detail page: the dark Quo-inbox
+// mini panel inside the white card. Populated async by mountCustomerSmsThread
+// so customer detail still loads pre-migration.
 function customerSmsCardHtml() {
   return `
     <div class="pec-card" id="pecCustSmsCard">
       <h3>Texts</h3>
       <div data-sms-banner style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:.82rem;margin-bottom:10px"></div>
-      <div data-sms-thread style="max-height:340px;overflow-y:auto;padding:4px 2px;display:flex;flex-direction:column">
-        <div class="pec-empty" style="font-size:.8rem">Loading texts…</div>
-      </div>
-      <div data-sms-compose style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
-        <textarea data-sms-input rows="2" placeholder="Text this customer…" style="flex:1;resize:vertical;min-height:42px;padding:8px 10px;border-radius:8px;border:1px solid var(--border, #cbd5e1);font-size:.86rem"></textarea>
-        <button class="pec-btn primary" data-sms-send>Send text</button>
+      <div class="qo-mini">
+        <div data-sms-thread class="qo-feed">
+          <div class="qo-empty">Loading texts…</div>
+        </div>
+        <div data-sms-compose class="qo-compose">
+          <textarea data-sms-input class="qo-input" rows="1" placeholder="Text this customer…"></textarea>
+          <button class="qo-send" data-sms-send title="Send text">${QO_SVG.send}</button>
+        </div>
       </div>
     </div>`;
 }
@@ -13775,31 +13968,45 @@ async function mountCustomerSmsThread(card, c) {
       const { data, error } = await supabase.from('pec_sms_log').select('*')
         .eq('customer_id', c.id).order('created_at', { ascending: true }).limit(200);
       if (error) throw error;
-      threadEl.innerHTML = smsThreadRowsHtml(data || []);
+      threadEl.innerHTML = smsThreadRowsHtml(data || [], { custName: c.name || '', staffNames: await qoStaffNames() });
       threadEl.scrollTop = threadEl.scrollHeight;
     } catch (e) {
       const needsMigration = /pec_sms_log/.test(e.message || '');
-      threadEl.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-06-28_quo_sms.sql migration to enable texting.' : esc(e.message || 'Could not load texts.')}</div>`;
+      threadEl.innerHTML = `<div class="qo-empty">${needsMigration ? 'Run the 2026-06-28_quo_sms.sql migration to enable texting.' : esc(e.message || 'Could not load texts.')}</div>`;
     }
   }
 
   if (!c.phone) showBanner('No phone number on file for this customer.');
   else if (optedOut) showBanner('This customer opted out of texts (replied STOP). Texting is disabled.');
 
+  // Round icon send button: disabled while empty and while a send is in
+  // flight (non-idempotent, no blind retry). Enter sends, Shift+Enter breaks.
+  const updateSendState = () => { if (sendBtn) sendBtn.disabled = !(ta.value || '').trim(); };
+  if (ta) {
+    updateSendState();
+    ta.addEventListener('input', () => {
+      updateSendState();
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (sendBtn && !sendBtn.disabled) sendBtn.click(); }
+    });
+  }
   if (sendBtn) sendBtn.addEventListener('click', async () => {
     const body = (ta.value || '').trim();
     if (!body) return;
-    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    sendBtn.disabled = true;
     try {
       await pecSendSms({ brand, customer_id: c.id, kind: 'manual', body });
-      ta.value = '';
+      ta.value = ''; ta.style.height = 'auto';
       await reload();
       showToast('Text sent ✓', { ttl: 2500 });
     } catch (err) {
       // Server enforces the opt-out guard; surface its message verbatim.
       showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 5000 });
     } finally {
-      sendBtn.disabled = false; sendBtn.textContent = 'Send text';
+      updateSendState();
     }
   });
 
@@ -13819,11 +14026,13 @@ function customerCallsCardHtml() {
   return `
     <div class="pec-card" id="pecCustCallsCard">
       <h3>Calls</h3>
-      <div data-calls-body><div class="pec-empty" style="font-size:.8rem">Loading calls…</div></div>
+      <div class="qo-mini"><div data-calls-body class="qo-callist"><div class="qo-empty">Loading calls…</div></div></div>
     </div>`;
 }
-// ONE pec_call_log row as an inline call event (direction, when/duration/brand
-// meta, AI summary, next steps, transcript behind an expander). Shared by the
+// ONE pec_call_log row as a call event line + the AI summary card from the
+// screenshot: "Call summary / Powered by AI" header, purple-bulleted summary
+// and next steps, "View transcript" link top-right (a styled <details>, so
+// static innerHTML keeps working with no extra wiring). Shared by the
 // customer-profile Calls card and the job detail's Messages & Calls feed.
 // fmtDur/fmtWhen live inside on purpose: they exist nowhere else and staying
 // local keeps them collision-free in this crowded module.
@@ -13838,27 +14047,33 @@ function callRowHtml(r) {
     const d = iso ? new Date(iso) : null;
     return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
   };
-  const dirLabel = r.direction === 'out' ? 'Outgoing' : 'Incoming';
   const noAnswer = !(Number(r.duration_seconds) > 0);
-  const summaryHtml = r.summary
-    ? `<div style="font-size:.85rem;line-height:1.45;white-space:pre-wrap">${esc(r.summary)}</div>`
-    : `<div style="color:var(--muted);font-size:.8rem">No summary${noAnswer ? ' (missed or very short call)' : ' yet'}.</div>`;
-  const nextHtml = r.next_steps
-    ? `<div style="font-size:.78rem;margin-top:4px"><strong>Next steps:</strong> <span style="white-space:pre-wrap">${esc(r.next_steps)}</span></div>` : '';
+  const title = r.direction === 'out'
+    ? (noAnswer ? 'Outgoing call · no answer' : 'Outgoing call')
+    : (noAnswer ? 'Missed call' : 'Incoming call');
+  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), r.brand ? emailBrandLabel(r.brand) : ''].filter(Boolean).join(' · ');
   const turns = Array.isArray(r.transcript) ? r.transcript : null;
   const transcriptHtml = (turns && turns.length)
-    ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.75rem;color:var(--muted)">Transcript (${turns.length} lines)</summary>
-         <div style="max-height:260px;overflow-y:auto;margin-top:6px;padding:8px 10px;background:var(--rd-soft,#f5f6f8);border-radius:8px;font-size:.8rem;line-height:1.5">
-           ${turns.map(t => `<div style="margin-bottom:4px">${t && t.identifier ? `<strong>${esc(t.identifier)}:</strong> ` : ''}${esc((t && (t.content || t.text)) || '')}</div>`).join('')}
-         </div></details>`
+    ? `<details class="qo-tr"><summary aria-label="Toggle transcript"></summary>
+         <div class="qo-tr-body">${turns.map(t => `<div style="margin-bottom:5px">${t && t.identifier ? `<strong>${esc(t.identifier)}:</strong> ` : ''}${esc((t && (t.content || t.text)) || '')}</div>`).join('')}</div>
+       </details>`
     : '';
-  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), r.brand ? emailBrandLabel(r.brand) : ''].filter(Boolean).join(' · ');
-  return `<div style="padding:10px 2px;border-bottom:1px solid var(--rd-line,var(--border))">
-    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
-      <strong style="font-size:.8rem">${dirLabel} call${noAnswer ? ' <span style="color:var(--muted);font-weight:400">(no answer)</span>' : ''}</strong>
-      <span style="color:var(--muted);font-size:.75rem">${esc(metaBits)}</span>
+  const hasCard = !!(r.summary || r.next_steps || transcriptHtml);
+  const cardHtml = hasCard
+    ? `<div class="qo-summary">
+        <div class="qo-summary-head"><span class="qo-summary-title">Call summary</span><span class="qo-ai">Powered by AI ✦</span></div>
+        ${r.summary ? qoBulletsHtml(r.summary) : '<div class="qo-call-none">No summary yet.</div>'}
+        ${r.next_steps ? `<div class="qo-next-title">Next steps</div>${qoBulletsHtml(r.next_steps)}` : ''}
+        ${transcriptHtml}
+      </div>`
+    : (noAnswer ? '' : '<div class="qo-call-none">No summary yet.</div>');
+  return `<div class="qo-callwrap">
+    <div class="qo-call-head">
+      <span class="qo-call-ic${noAnswer ? ' miss' : ''}">${QO_SVG.phone}</span>
+      <span class="qo-call-title">${title}</span>
+      <span class="qo-call-meta">${esc(metaBits)}</span>
     </div>
-    ${summaryHtml}${nextHtml}${transcriptHtml}
+    ${cardHtml}
   </div>`;
 }
 
@@ -13870,13 +14085,13 @@ async function mountCustomerCalls(card, c) {
       .eq('customer_id', c.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(50);
     if (error) throw error;
     if (!data || !data.length) {
-      body.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:6px 2px">No calls logged yet. Calls land here automatically (with their Quo AI summary) once the call webhooks are on.</div>';
+      body.innerHTML = '<div class="qo-empty">No calls logged yet. Calls land here automatically (with their Quo AI summary) once the call webhooks are on.</div>';
       return;
     }
     body.innerHTML = data.map(callRowHtml).join('');
   } catch (e) {
     const needsMigration = /pec_call_log/.test(e.message || '');
-    body.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
+    body.innerHTML = `<div class="qo-empty">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
   }
 }
 
@@ -13891,20 +14106,35 @@ async function mountCustomerCalls(card, c) {
 // smsBubbleHtml / callRowHtml helpers as the customer-profile cards, so the
 // surfaces cannot drift. No polling, matching every other Quo surface: the
 // feed loads on first open, after each send, and via the Refresh button.
-function jobCommsCardHtml() {
+function jobCommsCardHtml(job) {
+  const cust = job && job.customers;
+  const name = (cust && cust.name) || 'No customer linked';
+  const firstName = (cust && cust.name) ? cust.name.trim().split(/\s+/)[0] : 'this customer';
+  const phoneLine = cust ? (cust.phone ? qoFmtPhone(cust.phone) : 'No phone on file') : '';
+  const tel = cust ? qoTelHref(cust.phone) : '';
   return `
-    <div class="pec-card" id="jobCommsCard">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <h3 style="margin:0">Messages &amp; Calls</h3>
-        <button class="pec-btn ghost sm" data-comms-refresh>Refresh</button>
+    <div class="qo-shell" id="jobCommsCard">
+      <div class="qo-head">
+        <div class="qo-head-id">
+          ${qoAvatarHtml(cust && cust.name, 'cust', 'lg')}
+          <div style="min-width:0">
+            <div class="qo-name">${esc(name)}</div>
+            ${phoneLine ? `<div class="qo-phone-num">${esc(phoneLine)}</div>` : ''}
+          </div>
+        </div>
+        <div class="qo-actions">
+          ${tel ? `<a class="qo-icon-btn" href="${esc(tel)}" title="Call ${esc(name)}">${QO_SVG.phone}</a>` : ''}
+          ${cust && cust.id ? `<button class="qo-icon-btn" data-comms-open-cust title="Open customer profile">${QO_SVG.person}</button>` : ''}
+          <button class="qo-icon-btn" data-comms-refresh title="Refresh">${QO_SVG.refresh}</button>
+        </div>
       </div>
-      <div data-comms-banner style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:.82rem;margin:10px 0 0"></div>
-      <div data-comms-feed style="max-height:480px;overflow-y:auto;padding:4px 2px;display:flex;flex-direction:column;margin-top:10px">
-        <div class="pec-empty" style="font-size:.8rem">Loading messages and calls&hellip;</div>
+      <div data-comms-banner class="qo-banner" style="display:none"></div>
+      <div data-comms-feed class="qo-feed">
+        <div class="qo-empty">Loading messages and calls&hellip;</div>
       </div>
-      <div data-comms-compose style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
-        <textarea data-comms-input rows="2" placeholder="Text this customer&hellip;" style="flex:1;resize:vertical;min-height:42px;padding:8px 10px;border-radius:8px;border:1px solid var(--border, #cbd5e1);font-size:.86rem"></textarea>
-        <button class="pec-btn primary" data-comms-send>Send text</button>
+      <div data-comms-compose class="qo-compose">
+        <textarea data-comms-input class="qo-input" rows="1" placeholder="Text ${esc(firstName)}&hellip;"></textarea>
+        <button class="qo-send" data-comms-send title="Send text">${QO_SVG.send}</button>
       </div>
     </div>`;
 }
@@ -13916,15 +14146,21 @@ async function mountJobComms(card, job) {
   const ta = card.querySelector('[data-comms-input]');
   const sendBtn = card.querySelector('[data-comms-send]');
   const refreshBtn = card.querySelector('[data-comms-refresh]');
+  const openCustBtn = card.querySelector('[data-comms-open-cust]');
 
   // Manual prod-bridged jobs can lack a customers row entirely.
   const cust = job.customers;
   if (!cust || !cust.id) {
-    feedEl.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:6px 2px">No customer is linked to this job, so there are no texts or calls to show.</div>';
+    feedEl.innerHTML = '<div class="qo-empty">No customer is linked to this job, so there are no texts or calls to show.</div>';
     composeWrap.style.display = 'none';
     return;
   }
   const brand = smsBrandFromCompany(cust.company);
+
+  if (openCustBtn) openCustBtn.addEventListener('click', () => {
+    state.openCustomerId = cust.id;
+    switchView('customers');
+  });
 
   const showBanner = (text) => { bannerEl.style.display = ''; bannerEl.textContent = text; composeWrap.style.display = 'none'; };
 
@@ -13940,9 +14176,10 @@ async function mountJobComms(card, job) {
       // Newest N DESCENDING then reversed, deliberately unlike the profile
       // Texts card (asc + limit keeps the OLDEST 200 and silently drops new
       // texts past the cap); an inbox must keep the newest window.
-      const [smsRes, callRes] = await Promise.all([
+      const [smsRes, callRes, staffNames] = await Promise.all([
         supabase.from('pec_sms_log').select('*').eq('customer_id', cust.id).order('created_at', { ascending: false }).limit(200),
         supabase.from('pec_call_log').select('*').eq('customer_id', cust.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(50),
+        qoStaffNames(),
       ]);
       // Per-source degrade: one missing table still renders the other source.
       const notes = [];
@@ -13963,22 +14200,53 @@ async function mountJobComms(card, job) {
       // Date.parse guarded with || 0 so one bad stamp sinks to the top instead
       // of NaN-scrambling the whole sort.
       const items = [
-        ...smsRows.map(r => ({ ts: Date.parse(r.created_at) || 0, html: smsBubbleHtml(r) })),
-        ...callRows.map(r => ({ ts: Date.parse(r.occurred_at || r.created_at) || 0, html: callRowHtml(r) })),
+        ...smsRows.map(r => ({ ts: Date.parse(r.created_at) || 0, kind: 'sms', r })),
+        ...callRows.map(r => ({ ts: Date.parse(r.occurred_at || r.created_at) || 0, kind: 'call', r })),
       ].sort((a, b) => a.ts - b.ts);
-      const noteHtml = notes.map(n => `<div class="pec-empty" style="font-size:.78rem">${n}</div>`).join('');
+      // Chat-feed pass: day separators between days; the sender label shows
+      // once per same-sender run (a call or a >15 min gap starts a new run).
+      const ctx = { custName: cust.name || '', staffNames };
+      let bodyHtml = '', prevDay = null, prevRun = null, prevTs = 0;
+      for (const it of items) {
+        const day = qoDayKey(it.ts);
+        if (it.ts && day !== prevDay) { bodyHtml += qoDaySepHtml(it.ts); prevDay = day; prevRun = null; }
+        if (it.kind === 'sms') {
+          const run = it.r.direction + '|' + (it.r.direction === 'out' ? (it.r.sent_by_user || '') : 'cust');
+          bodyHtml += smsBubbleHtml(it.r, { ...ctx, showName: run !== prevRun || (it.ts - prevTs) > 15 * 60 * 1000 });
+          prevRun = run;
+        } else {
+          bodyHtml += callRowHtml(it.r);
+          prevRun = null;
+        }
+        prevTs = it.ts;
+      }
+      const noteHtml = notes.map(n => `<div class="qo-note">${n}</div>`).join('');
       feedEl.innerHTML = noteHtml + (items.length
-        ? items.map(i => i.html).join('')
-        : (notes.length ? '' : '<div style="color:var(--muted);font-size:.85rem;padding:10px 2px">No texts or calls with this customer yet.</div>'));
+        ? bodyHtml
+        : (notes.length ? '' : '<div class="qo-empty">No texts or calls with this customer yet.</div>'));
       feedEl.scrollTop = feedEl.scrollHeight;
     } catch (e) {
-      feedEl.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${esc(e.message || 'Could not load messages and calls.')}</div>`;
+      feedEl.innerHTML = `<div class="qo-empty">${esc(e.message || 'Could not load messages and calls.')}</div>`;
     }
   }
 
   if (!cust.phone) showBanner('No phone number on file for this customer.');
   else if (optedOut) showBanner('This customer opted out of texts (replied STOP). Texting is disabled.');
 
+  // Round icon send button: disabled while empty and while a send is in
+  // flight. Enter sends, Shift+Enter breaks; the textarea grows to 120px.
+  const updateSendState = () => { if (sendBtn) sendBtn.disabled = !(ta.value || '').trim(); };
+  if (ta) {
+    updateSendState();
+    ta.addEventListener('input', () => {
+      updateSendState();
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (sendBtn && !sendBtn.disabled) sendBtn.click(); }
+    });
+  }
   if (sendBtn) sendBtn.addEventListener('click', async () => {
     const body = (ta.value || '').trim();
     if (!body) return;
@@ -13987,22 +14255,22 @@ async function mountJobComms(card, job) {
     // and its message surfaces verbatim. job_id ties the log row to THIS job
     // (kind 'manual' never counts toward the Last-invoiced column, which
     // filters on kind 'invoice').
-    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    sendBtn.disabled = true;
     try {
       await pecSendSms({ brand, customer_id: cust.id, job_id: job.id, kind: 'manual', body });
-      ta.value = '';
+      ta.value = ''; ta.style.height = 'auto';
       await reload();
       showToast('Text sent ✓', { ttl: 2500 });
     } catch (err) {
       showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 5000 });
     } finally {
-      sendBtn.disabled = false; sendBtn.textContent = 'Send text';
+      updateSendState();
     }
   });
 
   if (refreshBtn) refreshBtn.addEventListener('click', async () => {
-    refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
-    try { await reload(); } finally { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
+    refreshBtn.disabled = true; refreshBtn.classList.add('qo-spin');
+    try { await reload(); } finally { refreshBtn.disabled = false; refreshBtn.classList.remove('qo-spin'); }
   });
 
   reload();

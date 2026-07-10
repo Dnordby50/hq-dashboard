@@ -1,5 +1,17 @@
 [
   {
+    "id": "messages-calls-inbox-look",
+    "date": "2026-07-09",
+    "title": "Messages & Calls got a phone-app look and moved to the top right",
+    "summary": "The job's Messages & Calls feed now looks like a real texting app: chat bubbles with names and avatars, call summaries in a card, and a cleaner compose box. The button to open it now sits at the top right of the job, next to View customer portal.",
+    "howto": [
+      "Open a job and click Messages & Calls at the top right, next to View customer portal. Click it again to go back to the job details.",
+      "Calls show their AI summary as bullet points; click View transcript on a call to read the whole conversation.",
+      "Type in the box at the bottom to text the customer. Enter sends, Shift+Enter starts a new line.",
+      "The Texts and Calls cards on the customer profile use the same new look."
+    ]
+  },
+  {
     "id": "whats-new-system",
     "date": "2026-07-09",
     "title": "TopCoat now tells you what changed",
@@ -27,7 +39,7 @@
     "title": "Messages and Calls tab on every job",
     "summary": "Open a job and see the customer's texts and phone calls in one feed, in time order, and text them right from the job.",
     "howto": [
-      "Jobs tab, open a job, click Messages & Calls (the toggle under the job header).",
+      "Jobs tab, open a job, click Messages & Calls (top right, next to View customer portal).",
       "Calls show the AI summary; click Transcript to read the whole conversation.",
       "Type in the box at the bottom to text the customer. Replies show up when you hit Refresh."
     ]
