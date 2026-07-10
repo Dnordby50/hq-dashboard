@@ -8671,6 +8671,19 @@ async function renderJobInvoice(jobId) {
   // short, compliant body from the AR row. Mirrors the email button's gating.
   // The server is the authority on the opt-out guard (returns a clear 409); this
   // also disables the button up front for opted-out customers as a courtesy.
+  // Prompt 13 decision 8: never dun a customer whose bank transfer is already
+  // clearing. ONE lookup per send CLICK (not per keystroke, not per render);
+  // degrades to 0 and never blocks the send if the marker table is unreachable.
+  const confirmDespitePendingAch = async () => {
+    let pendSum = 0;
+    try {
+      const { data, error } = await supabase.from('pec_stripe_pending').select('amount').eq('job_id', row.id).eq('status', 'pending');
+      if (!error && Array.isArray(data)) pendSum = data.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    } catch (_) { /* treat as none */ }
+    if (pendSum > 0.005 && !confirm(`This job has a ${invUSD(pendSum)} bank transfer pending. Send anyway?`)) return false;
+    return true;
+  };
+
   const textB = $('pecInvText');
   if (textB) {
     const smsBrand = smsBrandFromCompany(row.customer_company);
@@ -8682,7 +8695,8 @@ async function renderJobInvoice(jobId) {
     }
     if (!row.customer_phone) { textB.disabled = true; textB.title = 'No phone number on file for this customer.'; }
     textB.addEventListener('click', async () => {
-      if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+      if (!row.public_token) { showToast('Public link not ready yet &mdash; run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+      if (!(await confirmDespitePendingAch())) return;
       const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
       if (!confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`)) return;
       textB.disabled = true; const prevText = textB.textContent; textB.textContent = 'Texting…';
@@ -8703,6 +8717,7 @@ async function renderJobInvoice(jobId) {
   // Sends in compose mode (server wraps the body in brand chrome).
   const emailB = $('pecInvEmail');
   if (emailB) emailB.addEventListener('click', async () => {
+    if (!(await confirmDespitePendingAch())) return;
     const brand = 'prescott-epoxy'; // PEC-only CRM
     await fetchBrandIdentity(); // for the CTA color + chrome match
     const values = emailComposeValues(row);
