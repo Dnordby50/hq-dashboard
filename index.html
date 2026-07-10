@@ -13531,6 +13531,15 @@ async function pecSendSms(payload) {
 }
 
 const smsBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
+// RESTORED 2026-07-09: emailBrandLabel was deleted by accident in 9b2c4b4 (the
+// Quo SMS section was written over its line while "mirroring the email
+// helpers"), which killed Settings > Email (renderSettingsEmail throws
+// ReferenceError), the email-log rows, and the customer-profile Calls card
+// meta for rows with a brand (its try/catch showed the error text instead of
+// calls). Five call sites still reference it. Email itself is PEC-only since
+// 269b6db, but the Calls card labels BOTH brands, so the two-brand helper is
+// the correct restoration, not a hardcoded 'Prescott Epoxy'.
+const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Prescott Epoxy';
 // customers.company IS the brand key the SMS sender map uses.
 const smsBrandFromCompany = company => company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
 
