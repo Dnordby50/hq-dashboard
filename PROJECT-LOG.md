@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 06:38 MST] Claude Code: job detail toolbar buttons bolder, all left-aligned
+By: Claude Code
+Changed: index.html, help/whats-new.json. Commit f08d49c, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's ask: "make buttons at the top of the job detail more bold, they kind of blend in right now. move all buttons to left side." Dylan picked the "bold neutral" style from three options (vs dark ink fills or orange accent outlines).
+
+WHAT CHANGED, VISUALLY: the five job detail toolbar buttons (Back to jobs, View Invoice, Copy portal link, View customer portal, Messages & Calls) now sit together on the left and read as one uniform row of white buttons with weight-600 ink text, a clearly visible #c9cfd8 border, a soft drop shadow, and slightly larger text. Before, they were white fills with a near-invisible #e6e8ec hairline at weight 500 on the #eef0f3 page (that is the "blend in"), Back to jobs was a transparent ghost at a different size than its .sm neighbors, and the 2026-07-09 comms redesign had split the row with margin-left:auto on View customer portal, pushing it and Messages & Calls to the right edge.
+
+HOW IT WORKS: the toolbar div gained a second class, pec-job-toolbar, and one new CSS block in the crm-light-theme style tag (right after the .pec-btn.sm rule) styles .pec-job-toolbar .pec-btn:not(.primary). Three deliberate mechanics in that selector: (1) :not(.primary) keeps the active Messages & Calls button orange, because without it the new rule ties the .primary rule on specificity and would win by source order, repainting the active state white; (2) the extra classes out-specify the .ghost and .sm rules above, which is what unifies all five buttons including the ghost Back button; (3) the base rule also out-specifies the generic .pec-btn:hover, so the block carries its own :hover (orange border + soft bg, same feedback as before) plus a :disabled rule (opacity .55) so the no-portal-token variant of View customer portal does not read as a clickable bold button. Left alignment is just the two inline margin-left:auto deletions (both the token and disabled branches); .pec-toolbar is already display:flex with no justify-content, so children flow left natively and flex-wrap behaves better without the auto margin. Scoping to pec-job-toolbar means table-row .sm buttons and every other CRM toolbar are untouched; extending the look elsewhere later is one class per toolbar.
+
+ALSO: the stale code comment above the tab containers ("top right, next to View customer portal, per Dylan 2026-07-09") now reflects the left placement, and the 07-09 "messages-calls-inbox-look" What's New entry had its "top right" wording neutralized to "in the toolbar at the top" so a crew member seeing both entries in one popup does not get contradictory directions (changelog content fixes are ordinary commits by design, per the 07-09 22:29 entry; the entry id was not touched, so nobody re-sees an acked popup).
+
+Verified: all 7 extracted index.html script blocks pass node --check; help/whats-new.json parses (14 entries, new one first); em dash scan of added lines = 0; and a throwaway harness with the verbatim tokens + real toolbar markup + old and new CSS side by side was screenshotted in Chrome: before row split right and washed out, after row grouped left and bold, active comms button still orange, disabled portal faded, hover still highlights orange.
+Why: the job detail is the most-visited screen and its actions were the least visible thing on it; low-contrast chrome that looks clean in a mockup costs real clicks when the crew is hunting for View Invoice on a phone in a garage.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Dylan eyeballs a real job after deploy.
+
+Handoff to Cowork: none.
+
+Handoff to Dylan: after the deploy goes green, hard refresh and open any job: all five buttons should sit together at the top left, noticeably bolder; click Messages & Calls and confirm it still turns orange while on the conversation view; glance on your phone (the row wraps cleaner now that nothing is pinned right). If the border or shadow feels too heavy or too light, say so, it is two CSS values.
+
+---
+
 ## [2026-07-09 23:55 MST] Claude Code: customer invoice page redesigned in the voltcoatings.com design language, PEC brand colors
 By: Claude Code
 Changed: netlify/functions/pec-public-invoice.cjs, help/whats-new.json. Commit ba467b3, pushed with this entry. No migration, no client (index.html) changes, no Cowork DB work. Built from Dylan's ask: "make the customer invoice page look like the ui of voltcoatings.com but keep the PEC brand colors. i want it to look more professional and less basic."
