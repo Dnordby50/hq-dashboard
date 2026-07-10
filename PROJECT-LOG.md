@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-09 23:55 MST] Claude Code: customer invoice page redesigned in the voltcoatings.com design language, PEC brand colors
+By: Claude Code
+Changed: netlify/functions/pec-public-invoice.cjs, help/whats-new.json. Commit ba467b3, pushed with this entry. No migration, no client (index.html) changes, no Cowork DB work. Built from Dylan's ask: "make the customer invoice page look like the ui of voltcoatings.com but keep the PEC brand colors. i want it to look more professional and less basic."
+
+THE LOOK: Volt's design language translated onto the /pay page in PEC colors: off-white page, white cards with layered soft shadows and 16px radii, a white topbar carrying the logo and the status pill, then a dark ink hero band (brand primary_color) with "Invoice #N" and the NET amount due in big tight-tracked Inter, each under an uppercase letterspaced orange eyebrow label. Tables lost their heavy ink header bars for muted uppercase column labels over a 2px ink rule, amounts render in tabular numerals, the Amount due total prints in the accent orange, buttons are chunky 10px-radius fills with hover states, the Stripe reassurance line gained a lock icon, and the page closes with a dark footer band: 44px orange rule (the same underline motif the CRM brand theme puts under the logo), uppercase business name, address/phone/license meta. The 404 page matches. Inter loads from Google Fonts with system fallbacks, so print/PDF still works offline.
+
+WHAT DID NOT CHANGE (the part that matters): every payment behavior from prompts 11 and 13 is byte-equivalent. Same ACH banners (pending amber, failed red, paid green), same pending netting into Amount due with the qualifier line, same full-coverage processing note replacing the buttons, same deposit clamp and showDeposit rule, same offline panel + payment-intent notify flow (identical element ids and inline script), same print button, same noindex/no-store headers, same brand-row-driven colors so a Finishing Touch invoice restyles itself with its own palette.
+
+ONE BEHAVIOR FIX that fell out of the redesign, in prompt 13's spirit: statusPill now takes pendingSum and shows an amber "Payment processing" pill when an in-flight bank transfer covers the whole balance. Before, the pill said "Payment due" right next to the netted $0.00 Amount due, which is exactly the contradiction prompt 13 scrubbed from the buttons and totals; the pill was the last surface still saying it.
+
+Verified: node --check passes on the function; the REAL handler (supabase helper stubbed with fixtures) was rendered and eyeballed in a browser across three states: balance due (hero $6,200, red Payment due pill, both pay buttons, offline panel expands with the intent buttons), ACH pending covering the balance (amber banner, Payment processing pill, $0.00 net hero, pending totals row, buttons replaced by the processing note), and paid in full (green pill and banner, $0.00). Em dash scan of the file = 0 (also swapped the pre-existing &mdash; in the paid banner and the em dash title separator, per standing rule 6).
+Why: the invoice is the last thing a customer sees before handing over four or five figures; it should look like the premium brand the work is priced as, not a generic receipt.
+Files touched: netlify/functions/pec-public-invoice.cjs, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Dylan opens the live $1 ACH fixture invoice after deploy (it exercises the pending state end to end) plus any normal due invoice.
+
+Handoff to Cowork: none. Your Jul 15 settlement check is unaffected (the page logic under the new skin is identical); just expect the new look when you open the test invoice.
+
+Handoff to Dylan: after the deploy goes green: (1) open the $1 test invoice /pay/57ba3edc-9f0b-47f6-92a9-6280d5d4da0f: new design, amber payment-initiated banner, amber "Payment processing" pill (this pill is the one behavior change), $0.00 amount due in the dark header, pending row under Payments; (2) open any completed job's pay link: dark hero with the amount due, orange Pay button, and the check/cash/Zelle panel still expands with the three "let the office know" buttons; (3) hit Print / Save as PDF once to confirm the PDF looks right; (4) glance at it on your phone (the hero stacks, buttons wrap). If you want the hero lighter or the orange dialed up or down, say so, it is a few CSS lines.
+
+---
+
 ## [2026-07-09 23:20 MST] Claude Code: Messages & Calls redesigned to the Quo-inbox look, trigger moved next to View customer portal
 By: Claude Code
 Changed: index.html, help/whats-new.json. Commit ed5e5a1, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's OpenPhone screenshot ("i want the customer message tab on job detail to look exactly like this, its currently very archaic").
