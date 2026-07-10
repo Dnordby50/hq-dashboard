@@ -7813,9 +7813,47 @@ async function renderInvoicing() {
       : `<td>${esc(label)}</td>`;
   };
 
+  // ACH marker chips (prompt 11): ONE batched pec_stripe_pending read over the
+  // completed section's job ids (the Last-invoiced pattern above, never
+  // per-row). A pending row renders a muted "ACH pending $X" chip under the
+  // balance (someone already paid, do not chase); a failed row renders a red
+  // "ACH failed" chip that clears AUTOMATICALLY once a later payment lands for
+  // the job (r.last_payment_date on/after the failure day, the zero-new-UI
+  // lifecycle from the prompt). Missing table pre-migration degrades to no
+  // chips; the page never breaks.
+  const achByJob = {};
+  if (completedIds.length) {
+    try {
+      const pres = await withFreshSession(() => supabase
+        .from('pec_stripe_pending')
+        .select('job_id,amount,status,created_at,resolved_at')
+        .in('job_id', completedIds)
+        .in('status', ['pending', 'failed']), { label: 'renderInvoicing:achPending' });
+      for (const p of (pres.error ? [] : pres.data || [])) {
+        const a = (achByJob[p.job_id] ||= { pending: 0, failedAt: null });
+        if (p.status === 'pending') {
+          a.pending += Number(p.amount || 0);
+        } else {
+          const ts = new Date(p.resolved_at || p.created_at).getTime();
+          const day = Number.isFinite(ts) ? phxDay(ts) : null;
+          if (day && (!a.failedAt || day > a.failedAt)) a.failedAt = day;
+        }
+      }
+    } catch (e) { console.warn('[pec] ach marker lookup skipped:', e); }
+  }
+  const achCell = (r) => {
+    const a = achByJob[r.id];
+    if (!a) return '';
+    let out = '';
+    if (a.pending > 0.005) out += `<div style="margin-top:3px"><span class="pec-badge" style="--pec-badge-bg:#64748b" title="A bank transfer is clearing (3 to 5 business days). No need to chase this customer.">ACH pending ${invUSD(a.pending)}</span></div>`;
+    const failedCleared = a.failedAt && r.last_payment_date && r.last_payment_date >= a.failedAt;
+    if (a.failedAt && !failedCleared) out += `<div style="margin-top:3px"><span class="pec-badge" style="--pec-badge-bg:#ef4444" title="The bank returned the ACH debit. The balance is still owed; arrange payment again.">ACH failed</span></div>`;
+    return out;
+  };
+
   const completedRows = completed.map(r => `<tr class="nohover">
-    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
-    <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${r.customer_name ? esc(r.customer_name) : '&mdash;'}</button></td><td>${r.address ? esc(r.address) : '&mdash;'}</td>
+    <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong>${achCell(r)}</td>
     <td>${invAgeCompleted(invDaysSince(r.completed_date))}</td>
     ${lastSentCell(r)}
     <td>${esc(r.salesperson) || '&mdash;'}</td><td>${invFmtDate(r.completed_date)}</td>
