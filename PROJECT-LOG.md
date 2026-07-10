@@ -29,6 +29,22 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 19:29 MST] Cowork: Klarna + Pix disabled in Stripe; BUG FOUND, Settings > Email tab is dead (emailBrandLabel undefined)
+By: Cowork
+Changed: Stripe account settings only. No code, no PROD database changes. Dylan asked to remove Klarna and Pix and to find where he can adjust payment-related settings in TopCoat.
+STRIPE (all done, verified by status chips after each change):
+1. Klarna DISABLED in the payment method configuration.
+2. Klarna DISABLED inside Link too (Link settings > Pay later with Klarna was "Automatically enabled", now off). Without this, Klarna still surfaced for Link customers, up to $9,999.99 per transaction.
+3. Pix DISABLED ("Pix is disabled" toast confirmed).
+TOPCOAT SETTINGS ANSWER FOR DYLAN: the place to adjust customer-facing payment wording TODAY is Settings > Brand > "Payment instructions (shown on the public invoice page)", it works and already carries the check/phone instructions; add an ACH line there. Invoice email template text lives in Settings > Email, BUT:
+BUG (diagnosed live, console evidence): clicking Settings > Email does nothing; the tab never activates. Console shows ReferenceError: emailBrandLabel is not defined, thrown from renderSettingsEmail (deployed index around 14072-14074), four occurrences per click. Repo grep: emailBrandLabel is CALLED in five places (13682 calls-card meta line, 13817 email log row, 14074/14087/14102 in the email settings renderer) but DEFINED nowhere; git log -S shows it disappeared in commit 269b6db ("email: PEC-only (drop Finishing Touch)"), which likely deleted the helper but left call sites, and the Quo work later added two more call sites referencing the ghost. smsBrandLabel (13533) is the surviving sibling helper. FALLOUT BEYOND THE TAB: 13682 is the Calls card meta on the customer profile (r.brand ? emailBrandLabel(r.brand) : ''), so any call row WITH a brand set should throw during render; same for 13817 in the email log. Worth checking whether the Calls card has been silently broken since the Quo push.
+Files touched: PROJECT-LOG.md only.
+Next steps: Claude Code fixes the bug; Dylan can add ACH wording to the Brand payment instructions now without waiting.
+Handoff to Claude Code: restore or replace emailBrandLabel (one-line helper mirroring smsBrandLabel at 13533, or inline the label since email is PEC-only per 269b6db); audit all five call sites; verify the Email tab renders, the customer-profile Calls card renders for calls with brand set, and the email log rows render. Standard commit + log rules.
+Handoff to Dylan: (1) ACH wording: Settings > Brand > Payment instructions, add a line like "Pay online by card or bank transfer (ACH) from your invoice link", it feeds the public invoice page; (2) the invoice EMAIL template edit waits on the bug fix; (3) run the ACH live test whenever ready.
+
+---
+
 ## [2026-07-09 19:18 MST] Cowork: Stripe ACH setup completed in the dashboard (with Dylan); only the live test remains
 By: Cowork
 Changed: Stripe account settings only (via browser, Dylan signed in and asked Cowork to drive). No code, no PROD database changes.
