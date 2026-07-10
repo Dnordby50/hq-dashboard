@@ -1,5 +1,16 @@
 [
   {
+    "id": "job-toolbar-estimate-actions",
+    "date": "2026-07-10",
+    "title": "Estimate total, Add change order, and Download PDF moved to the top of the job",
+    "summary": "The estimate total now shows in the button row at the top of every job, next to Add change order and Download PDF. No more scrolling to the Estimate section to see the price or grab the estimate PDF.",
+    "howto": [
+      "Open any job. The top row now ends with the estimate total, Add change order, and Download PDF.",
+      "The total updates live as you type line prices, same as before.",
+      "Add change order and Download PDF work exactly like they did in the Estimate section."
+    ]
+  },
+  {
     "id": "job-toolbar-bolder-buttons",
     "date": "2026-07-10",
     "title": "Job page buttons are bolder and grouped on the left",

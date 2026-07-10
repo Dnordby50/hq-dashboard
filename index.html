@@ -10837,6 +10837,9 @@ async function renderJobDetailInner(id) {
         ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
         : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
       <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : ''}" id="pecJobTabBtnComms" title="${activeTab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Messages &amp; Calls</button>
+      <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(areaPriceSum())}</strong></div>
+      <button type="button" class="pec-btn sm" id="estAddChangeOrder">Add change order</button>
+      <button type="button" class="pec-btn sm" id="estDownloadPdf">Download PDF</button>
     </div>
 
     <div class="pec-card">
@@ -11567,43 +11570,46 @@ async function renderJobDetailInner(id) {
     };
 
     const finalized = !!job.finalized;
-    const total = areaPriceSum();
     // The estimate's own change-order lines live only on jobs.line_items (added
     // from the invoice; areas have no materials). Surface them read-only here so
     // the locked summary total matches the invoice.
     const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
     const sysNameFor = (sid) => (systemTypes.find(s => s.id === sid) || {}).name || '—';
 
-    // Header card: title + live total + Add change order + Finalize state
-    // (Reopen when locked). The data-co-card slot under it hosts the shared
-    // change-order list (badges + signature-link actions), mounted async so
-    // the page never blocks on it.
+    // Header card: title + Finalize state (Reopen when locked). The live total
+    // and the Add change order / Download PDF buttons live in the top toolbar
+    // (moved there per Dylan 2026-07-10); wireEstPdfBtn below still owns their
+    // behavior. The data-co-card slot under it hosts the shared change-order
+    // list (badges + signature-link actions), mounted async so the page never
+    // blocks on it.
     const headerCard = `
       <div class="pec-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
-          <div style="display:flex;align-items:center;gap:10px">
-            <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(total)}</strong></div>
-            <button type="button" class="pec-btn sm" id="estAddChangeOrder">Add change order</button>
-            <button type="button" class="pec-btn ghost sm" id="estDownloadPdf">Download PDF</button>
-          </div>
-        </div>
+        <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
         ${finalized
           ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked. Use Add change order to adjust the total; scope-mode change orders flow to production and costing. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
           : `<div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Each line is one area: system + colors + square footage + price. The line prices sum to the job price, and the invoice + work order build from these lines. Use "Same as line 1" to copy the first line's system and colors.</div>`}
       </div><div data-co-card></div>`;
 
-    // Bind the "Download PDF" button (in headerCard) in both the finalized and
-    // editable paths. Total is recomputed at click time so unsaved price edits
-    // are reflected. sysNameFor is in this scope; areaPriceSum is the live sum.
+    // Bind the "Download PDF" + "Add change order" buttons (in the top toolbar)
+    // in both the finalized and editable paths. Total is recomputed at click
+    // time so unsaved price edits are reflected. sysNameFor is in this scope;
+    // areaPriceSum is the live sum. The buttons live OUTSIDE host, so they
+    // SURVIVE renderAreas repaints: bind with .onclick assignment (replaces,
+    // never stacks) instead of addEventListener, or every repaint would add
+    // one more handler and a single click would fire several downloads.
     const wireEstPdfBtn = () => {
-      const b = host.querySelector('#estDownloadPdf');
-      if (b) b.addEventListener('click', () => pecDownloadEstimatePdf(job, areas, areaPriceSum(), sysNameFor));
+      const b = $('estDownloadPdf');
+      if (b) b.onclick = () => pecDownloadEstimatePdf(job, areas, areaPriceSum(), sysNameFor);
       // Add change order: the SAME shared modal Invoicing uses (both surfaces
       // write the same rows). Re-renders the whole job detail on save so the
       // total, the line list, and the CO card all refresh together.
-      const coB = host.querySelector('#estAddChangeOrder');
-      if (coB) coB.addEventListener('click', () => openChangeOrderModal(job.id, { onSaved: () => renderJobDetail(job.id) }));
+      const coB = $('estAddChangeOrder');
+      if (coB) coB.onclick = () => openChangeOrderModal(job.id, { onSaved: () => renderJobDetail(job.id) });
+      // The toolbar total is not part of the host subtree this repaint just
+      // rebuilt, so sync it here: add/remove/mirror-line and system changes
+      // refresh the total ONLY via the repaint (they never call
+      // recalcEstimateTotal like the price-typing path does).
+      recalcEstimateTotal();
       mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, onChanged: () => renderJobDetail(job.id) });
     };
 
