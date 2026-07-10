@@ -91,6 +91,19 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 22:19 MST] Cowork: What's New system scoped, prompt 14 written (runs BEFORE prompt 13)
+By: Cowork
+Changed: no code, no PROD data. Dylan asked for a sign-in popup summarizing new CRM changes, with the history accessible later in Help, to train the crew and automate update communication. Scoped through 11 decisions into claude-code-prompt-14-whats-new.md (repo root).
+Key decisions: entries AUTO-WRITTEN by Claude Code with every user-facing change (becomes a CLAUDE.md standing rule, wording in the prompt); one-line summary + 2-3 how-to steps per feature, plain language; content in a JSON file in the repo, only ack tracking in the DB (new per-user ack table, unique user+entry, "Got it" button, works across devices, tracked silently with no admin report UI); popup is a modal at sign-in stacking unseen entries newest first, never blocks sign-in, degrades silently; full history in a What's New card at the top of Help; the Help assistant gets the same content so it can answer questions about new features; no audience filtering; no Slack; backfill roughly the last 30 days of user-facing changes (candidate list in the prompt).
+RUN ORDER WARNING (also in the prompt): Dylan chose to run 14 BEFORE 13, but prompt 13's live fixture (the $1 pending ACH) settles around Jul 14-16. Run 14 and 13 back to back in one sitting so 13 still has the fixture.
+Why: features have been shipping daily and the crew learns about them by word of mouth; this closes that loop permanently and makes every future prompt self-announcing.
+Files touched: PROJECT-LOG.md, claude-code-prompt-14-whats-new.md (new, repo root).
+Next steps: Dylan runs prompt 14 in Claude Code, then prompt 13 immediately after.
+Handoff to Cowork: after prompt 14 ships, apply its ack-table migration and run the post-deploy verify list in the prompt.
+Handoff to Dylan: run 14 then 13 in one sitting, before the test ACH settles.
+
+---
+
 ## [2026-07-09 20:37 MST] Cowork: ACH live test INITIATED AND VERIFIED pending; prompt 13 written (pending on invoice + email-tab fix)
 By: Cowork
 Changed: PROD got one deliberate test fixture (details below); no code. Three things this session:
