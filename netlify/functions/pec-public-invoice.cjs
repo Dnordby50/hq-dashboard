@@ -15,7 +15,7 @@
 // logic (ACH pending/failed treatment, netting, deposit clamp, offline intent
 // flow) is unchanged from prompts 11 + 13.
 
-const { sb } = require('./_pec-supabase.cjs');
+const { sb, tokenFromEvent } = require('./_pec-supabase.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -384,18 +384,9 @@ function invoicePage(row, brand, payments, opts) {
 
 exports.handler = async (event) => {
   if (event.httpMethod && event.httpMethod !== 'GET') return htmlResponse(405, 'Method not allowed');
-  // Token normally arrives as ?token= (set by the /pay/* rewrite). But Netlify
-  // does NOT reliably interpolate :splat into a toml redirect's query string, so
-  // through /pay the query token can be empty. Fall back to parsing the UUID out
-  // of the request path (event.path / rawUrl is the original /pay/<token>).
-  let token = (event.queryStringParameters && event.queryStringParameters.token) || '';
-  let rawUrlPath = '';
-  try { rawUrlPath = event.rawUrl ? new URL(event.rawUrl).pathname : ''; } catch (_) {}
-  if (!token) {
-    const src = `${event.path || ''} ${rawUrlPath}`;
-    const m = src.match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
-    if (m) token = m[1];
-  }
+  // ?token= with a path-parse fallback for Netlify's :splat quirk; see
+  // tokenFromEvent in _pec-supabase.cjs.
+  const token = tokenFromEvent(event);
   // Basic shape check before hitting the DB (v4 UUID).
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)) {
     console.warn('public-invoice: token failed UUID shape check');

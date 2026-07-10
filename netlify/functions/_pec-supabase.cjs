@@ -34,6 +34,26 @@ function randomToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+// Extract the public token for a customer-facing token page (/pay/<token>,
+// /co/<token>). The token normally arrives as ?token= (set by the netlify.toml
+// rewrite), but Netlify does NOT reliably interpolate :splat into a toml
+// redirect's query string, so fall back to parsing the UUID out of the request
+// path (event.path / event.rawUrl still carry the original /pay/<token> URL).
+// Any new public token page MUST use this instead of reading
+// queryStringParameters.token directly. Beware when testing: the direct
+// /.netlify/functions/... URL always has the query param, so it renders fine
+// even when the customer-facing URL 404s. That masked the /co/ bug (b5ba809).
+function tokenFromEvent(event) {
+  let token = (event.queryStringParameters && event.queryStringParameters.token) || '';
+  if (!token) {
+    let rawUrlPath = '';
+    try { rawUrlPath = event.rawUrl ? new URL(event.rawUrl).pathname : ''; } catch (_) {}
+    const m = `${event.path || ''} ${rawUrlPath}`.match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
+    if (m) token = m[1];
+  }
+  return token;
+}
+
 async function sb(method, path, payload, returnRow) {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('Supabase env vars not configured (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)');
@@ -87,4 +107,4 @@ async function logIngest(fields) {
   }
 }
 
-module.exports = { sb, json, badSecret, randomToken, epoxyStages, paintStages, logIngest };
+module.exports = { sb, json, badSecret, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest };

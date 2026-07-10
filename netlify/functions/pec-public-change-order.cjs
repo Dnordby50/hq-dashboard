@@ -20,7 +20,7 @@
 // second sign attempt on an already-signed CO returns 409 and the page shows
 // the existing signature.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, tokenFromEvent } = require('./_pec-supabase.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -247,19 +247,9 @@ exports.handler = async (event) => {
     }
   }
 
-  // GET /co/<token>: render the document. Token normally arrives as ?token=
-  // (set by the /co/* rewrite), but Netlify does NOT reliably interpolate
-  // :splat into a toml redirect's query string (the same platform quirk
-  // pec-public-invoice.cjs works around at its handler top), so fall back to
-  // parsing the UUID out of the request path (event.path / rawUrl is the
-  // original /co/<token>).
-  let token = (event.queryStringParameters || {}).token || '';
-  if (!token) {
-    let rawUrlPath = '';
-    try { rawUrlPath = event.rawUrl ? new URL(event.rawUrl).pathname : ''; } catch (_) {}
-    const m = `${event.path || ''} ${rawUrlPath}`.match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
-    if (m) token = m[1];
-  }
+  // GET /co/<token>: render the document. ?token= with a path-parse fallback
+  // for Netlify's :splat quirk; see tokenFromEvent in _pec-supabase.cjs.
+  const token = tokenFromEvent(event);
   try {
     const loaded = await loadCo(token);
     if (!loaded || !loaded.co) return notFoundPage();

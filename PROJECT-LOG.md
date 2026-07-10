@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 16:29 MST] Claude Code: hoisted the public-token path-parse fallback into a shared tokenFromEvent helper
+By: Claude Code
+Changed: netlify/functions/_pec-supabase.cjs, pec-public-invoice.cjs, pec-public-change-order.cjs. Follow-up to Cowork's 14:57 entry (b5ba809), which fixed the /co/<token> 404 by duplicating pec-public-invoice's path-parse fallback and suggested hoisting it so a third public token page cannot re-introduce the bug. Internal refactor, no behavior change, no whats-new entry.
+
+HOW IT WORKS: _pec-supabase.cjs now exports tokenFromEvent(event). It reads event.queryStringParameters.token first (the normal case, set by the netlify.toml rewrite), and only when that is empty falls back to regex-extracting a UUID from event.path plus the rawUrl pathname. The fallback exists because Netlify does not reliably interpolate :splat into a toml redirect's query string, so through /pay/<token> or /co/<token> the query param can arrive empty even though the original URL still carries the token in its path. Both public pages' GET branches now call the helper instead of carrying their own copy; the POST /api/co/sign branch is untouched because its token travels in the JSON body, no splat involved. The helper's comment also warns about the trap that hid the original bug: the direct /.netlify/functions/... URL always has the query param, so it renders fine even while the customer-facing URL 404s, which is WHY verification must use the /pay/ and /co/ URLs.
+
+Verified: node --check passes on all three files; a six-case unit exercise of the helper passes (query param wins, empty-query path fallback, uppercase UUID, rawUrl-only, no-UUID returns empty, empty event returns empty); em dash scan of all three files = 0. Live verification after deploy recorded in Next steps.
+Why: two hand-synced copies of a platform-quirk workaround is how the /co/ 404 happened in the first place (the CO page was written to mirror the invoice page but missed the fallback). One exported helper makes the fallback the default path for the next public token page (customer portal is ARM 2).
+Files touched: netlify/functions/_pec-supabase.cjs, netlify/functions/pec-public-invoice.cjs, netlify/functions/pec-public-change-order.cjs, PROJECT-LOG.md.
+Next steps: push (this push also carries Cowork's unpushed b5ba809, per their entry's "let Claude Code's next push carry it"), wait for the Netlify deploy to go green, then verify BOTH customer-facing URLs render: /pay/57ba3edc-... (the $1 ACH fixture) and /co/6938a16b-... (the Gerlach CO). Tokens truncated here on purpose: this log is in a public repo and the full token IS the access credential. Result recorded in a follow-up line below once checked.
+
+Handoff to Cowork: none.
+
+Handoff to Dylan: none. After this deploy the Gerlach CO link works; send it when ready.
+
+---
+
 ## [2026-07-10 14:57 MST] Cowork: fixed /co/<token> change order links returning "Change order not found"
 By: Cowork
 Changed: netlify/functions/pec-public-change-order.cjs only. Dylan reported the Charles Gerlach change order saved fine but its signature link showed "Change order not found". Diagnosis chain, each step verified live: (1) both Gerlach CO rows exist in prod pec_change_order_signatures with valid tokens and status pending, so the DB and the mint path are fine; (2) reproduced the 404 in Chrome at /co/6938a16b-...; (3) Supabase API logs show ZERO token lookups from the function while a /pay load hits the API within a second, so the function was 404ing before ever querying; (4) calling the function directly as /.netlify/functions/pec-public-change-order?token=6938a16b-... renders the full CO document perfectly. Root cause: Netlify does not reliably interpolate :splat into a toml redirect query string. pec-public-invoice.cjs already carries a documented fallback for this exact quirk (parse the UUID out of event.path / rawUrl, see its handler top around line 387), but pec-public-change-order.cjs, though written to mirror it, only reads event.queryStringParameters.token, so the empty token failed the UUID shape check and returned notFoundPage with no DB traffic. Fix: ported the same path-parsing fallback into the GET branch. The POST /api/co/sign path needs no change (token travels in the JSON body, no splat involved). node --check passes; the fallback was unit-tested against the real Gerlach URL shape (extracts and passes the UUID regex); em dash scan of the file = 0.
