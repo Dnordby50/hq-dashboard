@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-09 19:37 MST] Claude Code: emailBrandLabel restored; Settings > Email, email-log rows, and the Calls card meta work again
+By: Claude Code
+Changed: index.html (commit 9dad6cc, pushed with this entry). Executes Cowork's 19:29 bug handoff. Also committed Cowork's two pending entries (c78b987, 640b7c8) and removed the stale HEAD.lock + index.lock from its sandbox (the recurring pattern; Cowork's environment cannot delete them).
+
+ROOT CAUSE, one commit later than the 19:29 entry guessed (correction per standing rule 3): 269b6db (email: PEC-only) did NOT delete the helper, it only removed one call site; the definition line survived it as diff context. The deleter was 9b2c4b4 (Quo invoice texting, phase 1, 2026-06-28): its diff shows minus const emailBrandLabel and plus const smsBrandLabel at the same spot, meaning the new SMS section was written OVER the helper's exact line while "mirroring the email helpers". Every Settings > Email render since then threw ReferenceError before painting, so the tab looked simply dead; the email-log rows shared the fate; and a9db570 (the Quo call log) then added a fifth call site on the ghost, so the customer-profile Calls card, whose row map sits inside a try/catch, swallowed the throw and showed the error TEXT instead of calls for any call row with a brand set. That is why nothing crashed loudly for eleven days: one surface looked dead, one surface showed a cryptic one-liner, and template edits are rare enough that nobody hit the tab until Dylan went to add the ACH line tonight.
+
+FIX: restored the one-line helper next to its sibling smsBrandLabel, with a comment telling the story so the next section-insert does not repeat it. Deliberately the TWO-BRAND version, not a hardcoded 'Prescott Epoxy': email is PEC-only since 269b6db, but the Calls card labels calls for BOTH brands (pec_call_log.brand can be finishing-touch), and the two Settings > Email call sites just print whatever brand the row carries (all prescott-epoxy today). All five call sites audited against the restored signature; a ghost-identifier sweep of the whole renderSettingsEmail body found no other undefined helpers, so the tab has exactly one reason it was dead and that reason is gone.
+Why: Dylan needs Settings > Email to add the ACH nudge line to the invoice template, the Calls card is a daily surface, and a helper that dies silently in two different ways is exactly the kind of rot that spreads.
+Testing: node --check passes on all 7 extracted script blocks; em dash scan of added lines = 0. Live checks are Dylan's list below (the fix is a render-path restoration, so the meaningful verification is opening the three surfaces).
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: Dylan hard-refreshes after deploy and walks the three surfaces; then the ACH template edit he originally set out to make.
+
+Handoff to Cowork: none (this closes your 19:29 handoff; the root-cause correction above supersedes the 269b6db attribution).
+
+Handoff to Dylan: after the deploy goes green, hard refresh (Cmd+Shift+R), then: (1) Settings > Email should render sender + template cards now; add the ACH line to the invoice template while you are there ("Pay online by card or bank transfer, ACH, from your invoice link" or similar); (2) open a customer profile that has logged calls (your 2026-07-07 test caller works) and confirm the Calls card shows the call rows with a brand label in the meta line instead of an error note; (3) glance at Settings > Email's send log table (it renders per-row brands too). Then run the ACH live test whenever ready; everything else from tonight's queue is done.
+
+---
+
 ## [2026-07-09 18:20 MST] Claude Code: prompt 11 shipped, ACH bank payments (async settlement, pending markers, failure alerts)
 By: Claude Code
 Changed: netlify/functions/pec-stripe-webhook.cjs (rebuilt around event-type routing), pec-public-invoice.cjs, index.html, new migration supabase/migrations/2026-07-09_stripe_pending.sql (NOT applied; Cowork handoff below). Commits e3ecdc4 (migration), 376b5cf (webhook), 7752305 (pay page), 265bc0c (Invoicing chips). Built from claude-code-prompt-11-ach-payments.md in the repo root. Also for the record: prompt 10 was pushed and deployed at the start of this session (4627d11..cc128b8), and one more stale .git/HEAD.lock from Cowork's 18:09 session was removed before committing.
