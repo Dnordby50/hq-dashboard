@@ -86,11 +86,13 @@ function statusPill(row) {
   return { bg: '#334155', text: 'Balance due' };
 }
 
-// Online card payment via Stripe Checkout (PEC absorbs the processing fee, so the
-// customer is charged the exact amount -- no surcharge). The "Pay by card" button
-// links to /api/stripe/checkout; a "Pay deposit" button also shows when a deposit
-// is still due and is smaller than the balance. Check + Zelle stay as secondary
-// options. `token` is the invoice public_token used to build the checkout link.
+// Online payment via Stripe Checkout (PEC absorbs the processing fee, so the
+// customer is charged the exact amount -- no surcharge). The "Pay online" button
+// links to /api/stripe/checkout, where Stripe's hosted page offers every method
+// the Dashboard enables (card, and ACH once Dylan flips the toggle; the nudge
+// line below the buttons is decision 9 of prompt 11). A "Pay deposit" button
+// also shows when a deposit is still due and is smaller than the balance. Check
+// + Zelle stay as secondary options. `token` is the invoice public_token.
 function payButtons(b, row, token) {
   const due = round2(row.balance_remaining);
   if (due <= 0.005 || !token) return '';
@@ -114,11 +116,11 @@ function payButtons(b, row, token) {
   return `<div class="card" style="margin-top:16px;padding:20px 22px">
     <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay your balance</h3>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} by card`, accent)}
+      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} online`, accent)}
       ${showDeposit ? linkBtn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
       <button type="button" id="offlineToggle" style="${fillStyle(primary)}">Pay by check, cash, or Zelle</button>
     </div>
-    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Card payments are secured by Stripe (we cover the processing fee).</div>
+    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Pay online by card or bank transfer (ACH), no card fees on bank transfer. Payments are secured by Stripe (we cover the processing fee).</div>
     <div id="offlinePanel" style="display:none;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:16px">
       <div style="font-size:14px;color:#334155;line-height:1.5">${offlineDetails}</div>
       <div style="margin-top:14px;font-size:13px;color:#64748b">Let our office know how you'll pay so we can watch for it:</div>
@@ -213,7 +215,9 @@ function invoicePage(row, brand, payments, opts) {
 </style></head>
 <body>
   <div class="wrap">
-    ${o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received — thank you! It will appear in the Payments section below within a moment.</div>` : ''}
+    ${o.achPending
+      ? `<div class="noprint" style="background:#fef3c7;border:1px solid #d97706;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#92400e;font-weight:600">Payment initiated${o.achAmount ? ' (' + usd(o.achAmount) + ')' : ''}. Bank transfers take 3 to 5 business days to clear. No need to pay that amount again; it will appear under Payments once it clears.</div>`
+      : o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received &mdash; thank you! It will appear in the Payments section below within a moment.</div>` : ''}
     <div style="text-align:center;margin-bottom:18px"><img src="${esc(logoUrl)}" alt="${esc(biz)}" style="max-height:64px;max-width:280px"></div>
     <div class="card">
       <div class="band">
@@ -319,8 +323,19 @@ exports.handler = async (event) => {
       const pr = await sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount,method,reference,received_date&order=received_date.asc`);
       if (Array.isArray(pr)) payments = pr;
     } catch (_) { /* show page without the ledger */ }
+    // ACH processing state (prompt 11): an unresolved pec_stripe_pending row on
+    // this job means an initiated bank transfer is still clearing. Checked on
+    // EVERY render, not just ?paid=1, so a customer returning days later sees
+    // the amber processing banner instead of "Payment due" and is not tempted
+    // to pay the same amount twice. Best-effort: a missing table pre-migration
+    // (or any read hiccup) just means no banner; the page never breaks.
+    let achAmount = null;
+    try {
+      const pend = await sb('GET', `/pec_stripe_pending?job_id=eq.${encodeURIComponent(row.id)}&status=eq.pending&select=amount`);
+      if (Array.isArray(pend) && pend.length) achAmount = pend.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0);
+    } catch (_) { /* no banner */ }
     const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
-    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true' });
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', achPending: achAmount != null, achAmount });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);
