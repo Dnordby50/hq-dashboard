@@ -93,16 +93,30 @@ function statusPill(row) {
 // line below the buttons is decision 9 of prompt 11). A "Pay deposit" button
 // also shows when a deposit is still due and is smaller than the balance. Check
 // + Zelle stay as secondary options. `token` is the invoice public_token.
-function payButtons(b, row, token) {
+function payButtons(b, row, token, pendingSum) {
   const due = round2(row.balance_remaining);
   if (due <= 0.005 || !token) return '';
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
+  // Prompt 13 decisions 3 + 4: a pending bank transfer covering the FULL
+  // balance replaces the buttons with a processing note (they return
+  // automatically if the ACH fails, because failed markers leave pendingSum);
+  // a PARTIAL pending leaves the buttons targeting the remainder only. The
+  // checkout function clamps server-side too, so a stale link or back button
+  // cannot double-charge past the remainder either way.
+  const pendSum = round2(Number(pendingSum) || 0);
+  const remainder = round2(Math.max(0, due - pendSum));
+  if (remainder <= 0.005) {
+    return `<div class="card" style="margin-top:16px;padding:20px 22px">
+      <h3 style="margin:0 0 8px;color:${primary};font-size:16px">Payment processing</h3>
+      <div style="font-size:14px;color:#334155;line-height:1.5">Your bank transfer of ${usd(pendSum)} is processing and covers the balance. No further payment is needed right now. Bank transfers take 3 to 5 business days to clear.</div>
+    </div>`;
+  }
   const fillStyle = (bg) => `display:inline-block;background:${bg};color:#fff;font-weight:700;font-size:15px;border-radius:8px;padding:13px 22px;text-decoration:none;border:0;cursor:pointer;font-family:inherit`;
   const linkBtn = (href, label, bg) => `<a href="${esc(href)}" style="${fillStyle(bg)}">${label}</a>`;
   const depositDue = !row.deposit_collected && !row.deposit_waived;
   const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
-  const showDeposit = depositDue && owed >= 0.5 && owed < due - 0.005;
+  const showDeposit = depositDue && owed >= 0.5 && owed < remainder - 0.005;
   const zelle = b.zelle_email || 'dylan@prescottepoxy.com';
   const phone = b.phone || '(928) 800-8154';
   const tok = encodeURIComponent(token);
@@ -116,7 +130,7 @@ function payButtons(b, row, token) {
   return `<div class="card" style="margin-top:16px;padding:20px 22px">
     <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay your balance</h3>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(due)} online`, accent)}
+      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(remainder)} online`, accent)}
       ${showDeposit ? linkBtn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
       <button type="button" id="offlineToggle" style="${fillStyle(primary)}">Pay by check, cash, or Zelle</button>
     </div>
@@ -156,11 +170,15 @@ function payButtons(b, row, token) {
 }
 function name(b) { return b.business_name || 'Prescott Epoxy Company'; }
 
-// Payment ledger for this invoice (from pec_payments). Shows date, method,
-// reference (check #), and amount per payment, plus the total paid.
-function paymentsSection(payments, b) {
+// Payment ledger for this invoice (from pec_payments), plus any IN-FLIGHT bank
+// transfers (prompt 13): a pending ACH renders as a real line with a PENDING
+// badge on every visit while it clears, so the customer sees their payment
+// exists the moment they make it. Pending lines are NOT counted in Total paid
+// (the money has not settled); the Amount due math handles the netting.
+function paymentsSection(payments, b, pendingRows) {
   const list = Array.isArray(payments) ? payments : [];
-  if (!list.length) return '';
+  const pend = Array.isArray(pendingRows) ? pendingRows : [];
+  if (!list.length && !pend.length) return '';
   const methodLabel = (m) => ({ check: 'Check', cash: 'Cash', zelle: 'Zelle', stripe: 'Card', card: 'Card' }[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '—'));
   const rows = list.map(p => `<tr>
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(fmtDate(p.received_date))}</td>
@@ -168,14 +186,23 @@ function paymentsSection(payments, b) {
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(p.reference || '')}</td>
       <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${usd(p.amount)}</td>
     </tr>`).join('');
+  // Initiated day in Phoenix time (created_at is a UTC timestamptz).
+  const phxDay = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t - 7 * 3600 * 1000).toISOString().slice(0, 10) : null; };
+  const pendRows = pend.map(p => `<tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(fmtDate(phxDay(p.created_at)))}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">Bank transfer</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#64748b">processing</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${usd(p.amount)} <span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:999px;font-size:10px;font-weight:700;padding:2px 8px;vertical-align:middle">PENDING</span></td>
+    </tr>`).join('');
   const totalPaid = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   return `<div class="card" style="margin-top:16px;padding:20px 22px">
     <h3 style="margin:0 0 12px;color:${esc(b.primary_color)};font-size:16px">Payments received</h3>
     <table class="li">
       <thead><tr><th>Date</th><th>Method</th><th>Reference / Check #</th><th style="text-align:right;width:120px">Amount</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows}${pendRows}</tbody>
     </table>
     <div style="text-align:right;margin-top:10px;font-weight:700;color:${esc(b.primary_color)}">Total paid: ${usd(totalPaid)}</div>
+    ${pend.length ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:4px">Pending bank transfers are not counted until they clear (3 to 5 business days).</div>` : ''}
   </div>`;
 }
 
@@ -189,6 +216,11 @@ function invoicePage(row, brand, payments, opts) {
   const billTo = row.bill_to_address || row.address || '';
   const total = Number(row.price || 0);
   const due = Number(row.balance_remaining || 0);
+  // Prompt 13: Amount due shows NET of in-flight bank transfers, so a customer
+  // whose ACH is clearing never reads as still owing that money. Reverts
+  // automatically if the ACH fails (failed markers are not in pendingSum).
+  const pendingSum = Number(o.pendingSum || 0);
+  const dueNet = Math.max(0, round2(due - pendingSum));
 
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Invoice ${esc(invNo)} — ${esc(biz)}</title>
@@ -215,9 +247,11 @@ function invoicePage(row, brand, payments, opts) {
 </style></head>
 <body>
   <div class="wrap">
-    ${o.achPending
-      ? `<div class="noprint" style="background:#fef3c7;border:1px solid #d97706;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#92400e;font-weight:600">Payment initiated${o.achAmount ? ' (' + usd(o.achAmount) + ')' : ''}. Bank transfers take 3 to 5 business days to clear. No need to pay that amount again; it will appear under Payments once it clears.</div>`
-      : o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received &mdash; thank you! It will appear in the Payments section below within a moment.</div>` : ''}
+    ${pendingSum > 0.005
+      ? `<div class="noprint" style="background:#fef3c7;border:1px solid #d97706;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#92400e;font-weight:600">Payment initiated (${usd(pendingSum)}). Bank transfers take 3 to 5 business days to clear. No need to pay that amount again; it shows as PENDING under Payments until it clears.</div>`
+      : o.achFailed
+        ? `<div class="noprint" style="background:#fee2e2;border:1px solid #dc2626;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#7f1d1d;font-weight:600">Your bank transfer could not be completed. Please pay again below or contact us.</div>`
+        : o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received &mdash; thank you! It will appear in the Payments section below within a moment.</div>` : ''}
     <div style="text-align:center;margin-bottom:18px"><img src="${esc(logoUrl)}" alt="${esc(biz)}" style="max-height:64px;max-width:280px"></div>
     <div class="card">
       <div class="band">
@@ -235,7 +269,7 @@ function invoicePage(row, brand, payments, opts) {
       </div>
       <div style="padding:22px">
         ${b.invoice_intro_text ? `<div style="font-size:14px;color:#334155;line-height:1.55;margin-bottom:18px">${paymentInstructionsHtml(b.invoice_intro_text)}</div>` : ''}
-        ${due > 0.005 ? `<div style="background:${esc(b.accent_color)}1a;border:1px solid ${esc(b.accent_color)};border-radius:8px;padding:12px 16px;margin-bottom:18px;font-weight:600;color:${esc(b.primary_color)}">A payment of ${usd(due)} is due. See payment options below.</div>` : ''}
+        ${dueNet > 0.005 ? `<div style="background:${esc(b.accent_color)}1a;border:1px solid ${esc(b.accent_color)};border-radius:8px;padding:12px 16px;margin-bottom:18px;font-weight:600;color:${esc(b.primary_color)}">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : ''}
         <div style="display:flex;flex-wrap:wrap;gap:18px;margin-bottom:18px;font-size:14px">
           <div style="flex:1;min-width:180px"><div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:1px">Bill to</div><div style="font-weight:600">${esc(row.customer_name || '')}</div><div style="color:#475569">${esc(billTo)}</div></div>
           <div style="min-width:160px"><div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:1px">Job address</div><div style="color:#475569">${esc(row.address || billTo)}</div>${row.completed_date ? `<div style="color:#475569;font-size:13px;margin-top:4px">Completed ${esc(fmtDate(row.completed_date))}</div>` : (row.signed_date ? `<div style="color:#475569;font-size:13px;margin-top:4px">Signed ${esc(fmtDate(row.signed_date))}</div>` : '')}</div>
@@ -248,14 +282,16 @@ function invoicePage(row, brand, payments, opts) {
           <tr><td>Invoice amount</td><td>${usd(total)}</td></tr>
           <tr><td>Tax</td><td>${usd(0)}</td></tr>
           <tr><td>Paid to date</td><td>-${usd(row.paid_to_date)}</td></tr>
-          <tr class="total"><td>Amount due</td><td>${usd(due)}</td></tr>
+          ${pendingSum > 0.005 ? `<tr><td>Pending bank transfer</td><td>-${usd(pendingSum)}</td></tr>` : ''}
+          <tr class="total"><td>Amount due</td><td>${usd(dueNet)}</td></tr>
         </table>
+        ${pendingSum > 0.005 ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:6px">Amount due reflects a pending bank transfer of ${usd(pendingSum)} that takes 3 to 5 business days to clear.</div>` : ''}
       </div>
     </div>
 
-    ${paymentsSection(payments, b)}
+    ${paymentsSection(payments, b, o.pendingRows)}
 
-    ${payButtons(b, row, o.token)}
+    ${payButtons(b, row, o.token, pendingSum)}
 
     ${b.payment_instructions_html ? `<div class="card" style="margin-top:16px;padding:20px 22px">
       <h3 style="margin:0 0 8px;color:${esc(b.primary_color)};font-size:16px">More on payment</h3>
@@ -323,19 +359,37 @@ exports.handler = async (event) => {
       const pr = await sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount,method,reference,received_date&order=received_date.asc`);
       if (Array.isArray(pr)) payments = pr;
     } catch (_) { /* show page without the ledger */ }
-    // ACH processing state (prompt 11): an unresolved pec_stripe_pending row on
-    // this job means an initiated bank transfer is still clearing. Checked on
-    // EVERY render, not just ?paid=1, so a customer returning days later sees
-    // the amber processing banner instead of "Payment due" and is not tempted
-    // to pay the same amount twice. Best-effort: a missing table pre-migration
-    // (or any read hiccup) just means no banner; the page never breaks.
-    let achAmount = null;
+    // ACH state (prompts 11 + 13): pending markers make the invoice reflect an
+    // in-flight bank transfer IMMEDIATELY and persistently (pending line in
+    // Payments, net Amount due, buttons hidden when fully covered), and the
+    // newest failed marker drives the pay-again notice. Checked on EVERY
+    // render, not just ?paid=1. Best-effort: a missing table pre-migration (or
+    // any read hiccup) just means no ACH treatment; the page never breaks.
+    let pendingRows = [];
+    let achFailed = false;
     try {
-      const pend = await sb('GET', `/pec_stripe_pending?job_id=eq.${encodeURIComponent(row.id)}&status=eq.pending&select=amount`);
-      if (Array.isArray(pend) && pend.length) achAmount = pend.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0);
-    } catch (_) { /* no banner */ }
+      const marks = await sb('GET', `/pec_stripe_pending?job_id=eq.${encodeURIComponent(row.id)}&status=in.(pending,failed)&select=amount,kind,status,created_at,resolved_at&order=created_at.asc`);
+      const list = Array.isArray(marks) ? marks : [];
+      pendingRows = list.filter(m => m.status === 'pending');
+      // Failure notice (decision 6): show while the NEWEST failed marker has no
+      // successful payment dated on/after its initiation day (received_date is
+      // a Phoenix date, so compare at day granularity; a same-day payment
+      // counts as the customer having paid again). Judgment call: also
+      // suppressed while a NEWER pending marker exists, because "pay again"
+      // next to "payment initiated" for the retry they already made would
+      // read as a contradiction; if that retry fails too, ITS failure shows.
+      const failed = list.filter(m => m.status === 'failed');
+      const newestFailed = failed.length ? failed[failed.length - 1] : null;
+      if (newestFailed) {
+        const failedDay = new Date(Date.parse(newestFailed.created_at) - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const paidAfter = (payments || []).some(p => p.received_date && p.received_date >= failedDay);
+        const retriedAfter = pendingRows.some(p => String(p.created_at) > String(newestFailed.created_at));
+        achFailed = !paidAfter && !retriedAfter;
+      }
+    } catch (_) { /* no ACH treatment */ }
+    const pendingSum = round2(pendingRows.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0));
     const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
-    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', achPending: achAmount != null, achAmount });
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);
