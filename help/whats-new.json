@@ -1,5 +1,16 @@
 [
   {
+    "id": "invoice-page-redesign",
+    "date": "2026-07-09",
+    "title": "The customer invoice page got a professional new look",
+    "summary": "The invoice customers open from their pay link now looks like a premium brand: a bold dark header with the amount due front and center, clean line items, and clearer payment buttons. Same links, same payment options.",
+    "howto": [
+      "Nothing to do. Every existing /pay invoice link wears the new design automatically.",
+      "Email or text an invoice as usual; the customer's link opens the new page.",
+      "All payment behavior is unchanged: card, bank transfer, deposit, check, cash, and Zelle work exactly as before."
+    ]
+  },
+  {
     "id": "messages-calls-inbox-look",
     "date": "2026-07-09",
     "title": "Messages & Calls got a phone-app look and moved to the top right",

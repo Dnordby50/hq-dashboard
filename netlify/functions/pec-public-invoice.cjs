@@ -6,6 +6,14 @@
 // Online card payment is via Stripe Checkout: the "Pay by card" buttons link to
 // /api/stripe/checkout (pec-stripe-checkout.cjs), and the payment is recorded by
 // the signature-verified pec-stripe-webhook.cjs (never by this page).
+//
+// Look (Dylan 2026-07-09): modeled on voltcoatings.com's design language in PEC
+// brand colors. White cards with soft shadows on an off-white page, a dark ink
+// hero band with the invoice number and amount due in big tight-tracked type,
+// uppercase letterspaced "eyebrow" section labels in the accent orange, chunky
+// rounded buttons, and a dark footer band with the accent rule. All payment
+// logic (ACH pending/failed treatment, netting, deposit clamp, offline intent
+// flow) is unchanged from prompts 11 + 13.
 
 const { sb } = require('./_pec-supabase.cjs');
 
@@ -36,9 +44,10 @@ const BRAND_DEFAULTS = {
 };
 
 // Hosted logo (navy "PRESCOTT" + orange "EPOXY COMPANY" on transparent). Shown
-// on the light background, NOT on the orange band (its orange text would vanish
-// there). Used unless the brand row sets its own logo_url. Relative path so it
-// resolves against whatever domain serves the page (domain-rename proof).
+// on the white topbar, NEVER on the dark hero or orange surfaces (its orange
+// text would vanish there). Used unless the brand row sets its own logo_url.
+// Relative path so it resolves against whatever domain serves the page
+// (domain-rename proof).
 const LOGO_URL = '/assets/pec-logo.png';
 
 function htmlResponse(statusCode, html) {
@@ -54,33 +63,42 @@ function htmlResponse(statusCode, html) {
 }
 
 function notFoundPage() {
-  return htmlResponse(404, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice not found</title></head>
-<body style="margin:0;font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;color:#0f172a">
-  <div style="max-width:520px;margin:80px auto;padding:0 20px;text-align:center">
-    <h1 style="font-size:20px">Invoice not found</h1>
-    <p style="color:#64748b">This link is invalid or has expired. If you believe this is a mistake, please contact Prescott Epoxy Company at (928) 800-8154.</p>
+  return htmlResponse(404, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Invoice not found</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"></head>
+<body style="margin:0;font-family:'Inter',-apple-system,'Segoe UI',Arial,sans-serif;background:#f4f5f7;color:#14181C">
+  <div style="max-width:520px;margin:80px auto;padding:0 20px">
+    <div style="background:#fff;border-radius:16px;box-shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px rgba(16,24,40,.06);padding:34px 32px;text-align:center">
+      <div style="font-size:11px;font-weight:800;letter-spacing:2.2px;text-transform:uppercase;color:#D8531C;margin-bottom:10px">Invoice</div>
+      <h1 style="margin:0 0 10px;font-size:22px;font-weight:800;letter-spacing:-.01em">Invoice not found</h1>
+      <p style="margin:0;color:#6b7280;font-size:14.5px;line-height:1.6">This link is invalid or has expired. If you believe this is a mistake, please contact Prescott Epoxy Company at (928) 800-8154.</p>
+    </div>
   </div>
 </body></html>`);
 }
 
 function lineItemsRows(items) {
   const list = Array.isArray(items) ? items : [];
-  if (!list.length) return '<tr><td colspan="2" style="padding:10px;color:#64748b;text-align:center">No line items.</td></tr>';
+  if (!list.length) return '<tr><td colspan="2" style="padding:14px 12px;color:#6b7280;text-align:center">No line items.</td></tr>';
   return list.map(li => {
     const price = li.price != null ? li.price : (li.total != null ? li.total : li.unit_price);
     return `<tr>
-      <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0">${esc(li.name || '')}${li.is_change_order ? ' <span style="color:#b45309;font-size:12px">(change order)</span>' : ''}${li.description ? `<div style="color:#64748b;font-size:13px;margin-top:3px;white-space:pre-wrap">${esc(li.description)}</div>` : ''}</td>
-      <td style="padding:10px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${price != null ? usd(price) : ''}</td>
+      <td><span style="font-weight:600">${esc(li.name || '')}</span>${li.is_change_order ? ' <span style="color:#b45309;font-size:12px;font-weight:600">(change order)</span>' : ''}${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}</td>
+      <td>${price != null ? usd(price) : ''}</td>
     </tr>`;
   }).join('');
 }
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-// Status pill shown in the header (right side). Color + label only.
-function statusPill(row) {
+// Status pill shown in the topbar (right side). Color + label only. When an
+// in-flight bank transfer covers the whole balance the pill says so; a
+// "Payment due" pill next to the netted "$0.00" amount would read as a
+// contradiction (the exact confusion prompt 13 removed everywhere else).
+function statusPill(row, pendingSum) {
   const balance = Number(row.balance_remaining || 0);
   if (balance <= 0.005) return { bg: '#16a34a', text: 'Paid in full' };
+  if (round2(balance - (Number(pendingSum) || 0)) <= 0.005) return { bg: '#b45309', text: 'Payment processing' };
   if (row.status === 'completed') return { bg: '#b91c1c', text: 'Payment due' };
   if (!row.deposit_collected && !row.deposit_waived) return { bg: '#b45309', text: 'Deposit due' };
   return { bg: '#334155', text: 'Balance due' };
@@ -96,8 +114,6 @@ function statusPill(row) {
 function payButtons(b, row, token, pendingSum) {
   const due = round2(row.balance_remaining);
   if (due <= 0.005 || !token) return '';
-  const primary = esc(b.primary_color);
-  const accent = esc(b.accent_color);
   // Prompt 13 decisions 3 + 4: a pending bank transfer covering the FULL
   // balance replaces the buttons with a processing note (they return
   // automatically if the ACH fails, because failed markers leave pendingSum);
@@ -107,13 +123,12 @@ function payButtons(b, row, token, pendingSum) {
   const pendSum = round2(Number(pendingSum) || 0);
   const remainder = round2(Math.max(0, due - pendSum));
   if (remainder <= 0.005) {
-    return `<div class="card" style="margin-top:16px;padding:20px 22px">
-      <h3 style="margin:0 0 8px;color:${primary};font-size:16px">Payment processing</h3>
-      <div style="font-size:14px;color:#334155;line-height:1.5">Your bank transfer of ${usd(pendSum)} is processing and covers the balance. No further payment is needed right now. Bank transfers take 3 to 5 business days to clear.</div>
+    return `<div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">Payment</div>
+      <h3 class="sec">Payment processing</h3>
+      <div style="font-size:14.5px;color:#374151;line-height:1.6">Your bank transfer of ${usd(pendSum)} is processing and covers the balance. No further payment is needed right now. Bank transfers take 3 to 5 business days to clear.</div>
     </div>`;
   }
-  const fillStyle = (bg) => `display:inline-block;background:${bg};color:#fff;font-weight:700;font-size:15px;border-radius:8px;padding:13px 22px;text-decoration:none;border:0;cursor:pointer;font-family:inherit`;
-  const linkBtn = (href, label, bg) => `<a href="${esc(href)}" style="${fillStyle(bg)}">${label}</a>`;
   const depositDue = !row.deposit_collected && !row.deposit_waived;
   const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
   const showDeposit = depositDue && owed >= 0.5 && owed < remainder - 0.005;
@@ -124,24 +139,24 @@ function payButtons(b, row, token, pendingSum) {
   const offlineDetails = b.offline_payment_details_text
     ? paymentInstructionsHtml(b.offline_payment_details_text)
     : `<p style="margin:0 0 10px">Pay by check (give it to the crew or mail it) or send Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(name(b))} at <strong>${esc(phone)}</strong>.</p>`;
-  const notifyBtn = (m, label) => `<button type="button" data-intent-method="${m}" style="background:#fff;border:1.5px solid ${primary};color:${primary};font-weight:600;font-size:13px;border-radius:7px;padding:9px 14px;cursor:pointer;font-family:inherit">${label}</button>`;
-  // Card AND offline are presented with equal weight (two filled buttons of the
+  // Card AND offline are presented with equal weight (filled buttons of the
   // same size). The offline button expands an in-page panel; no navigation.
-  return `<div class="card" style="margin-top:16px;padding:20px 22px">
-    <h3 style="margin:0 0 14px;color:${primary};font-size:16px">Pay your balance</h3>
+  return `<div class="card pad" style="margin-top:18px">
+    <div class="eyebrow">Payment options</div>
+    <h3 class="sec">Pay your balance</h3>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      ${linkBtn(`/api/stripe/checkout?token=${tok}&kind=balance`, `Pay ${usd(remainder)} online`, accent)}
-      ${showDeposit ? linkBtn(`/api/stripe/checkout?token=${tok}&kind=deposit`, `Pay deposit ${usd(owed)}`, primary) : ''}
-      <button type="button" id="offlineToggle" style="${fillStyle(primary)}">Pay by check, cash, or Zelle</button>
+      <a class="btn accent" href="/api/stripe/checkout?token=${tok}&kind=balance">Pay ${usd(remainder)} online</a>
+      ${showDeposit ? `<a class="btn ink" href="/api/stripe/checkout?token=${tok}&kind=deposit">Pay deposit ${usd(owed)}</a>` : ''}
+      <button type="button" id="offlineToggle" class="btn ink">Pay by check, cash, or Zelle</button>
     </div>
-    <div style="font-size:13px;color:#64748b;margin-top:12px;line-height:1.5">Pay online by card or bank transfer (ACH), no card fees on bank transfer. Payments are secured by Stripe (we cover the processing fee).</div>
-    <div id="offlinePanel" style="display:none;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:16px">
-      <div style="font-size:14px;color:#334155;line-height:1.5">${offlineDetails}</div>
-      <div style="margin-top:14px;font-size:13px;color:#64748b">Let our office know how you'll pay so we can watch for it:</div>
-      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px">
-        ${notifyBtn('check', 'Paying by check')}${notifyBtn('cash', 'Paying cash')}${notifyBtn('zelle', 'Sending Zelle')}
+    <div class="secure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Pay online by card or bank transfer (ACH), no card fees on bank transfer. Payments are secured by Stripe (we cover the processing fee).</div>
+    <div id="offlinePanel" style="display:none;margin-top:18px;border-top:1px solid #eef0f3;padding-top:18px">
+      <div style="font-size:14.5px;color:#374151;line-height:1.6">${offlineDetails}</div>
+      <div style="margin-top:14px;font-size:13px;color:#6b7280">Let our office know how you'll pay so we can watch for it:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
+        <button type="button" data-intent-method="check" class="btn mini">Paying by check</button><button type="button" data-intent-method="cash" class="btn mini">Paying cash</button><button type="button" data-intent-method="zelle" class="btn mini">Sending Zelle</button>
       </div>
-      <div id="intentStatus" style="margin-top:10px;font-size:13px;font-weight:600"></div>
+      <div id="intentStatus" style="margin-top:12px;font-size:13px;font-weight:600"></div>
     </div>
     <script>
       (function(){
@@ -153,7 +168,7 @@ function payButtons(b, row, token, pendingSum) {
           btn.addEventListener('click',function(){
             var m=btn.getAttribute('data-intent-method');
             Array.prototype.forEach.call(document.querySelectorAll('[data-intent-method]'),function(x){x.disabled=true;});
-            if(status){status.style.color='#64748b';status.textContent='Letting the office know…';}
+            if(status){status.style.color='#6b7280';status.textContent='Letting the office know…';}
             fetch('/api/invoice/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,method:m})})
               .then(function(r){return r.json();}).then(function(d){
                 if(d&&d.ok){if(status){status.style.color='#16a34a';status.textContent='Thanks! Our office has been notified and will be in touch.';}}
@@ -179,29 +194,30 @@ function paymentsSection(payments, b, pendingRows) {
   const list = Array.isArray(payments) ? payments : [];
   const pend = Array.isArray(pendingRows) ? pendingRows : [];
   if (!list.length && !pend.length) return '';
-  const methodLabel = (m) => ({ check: 'Check', cash: 'Cash', zelle: 'Zelle', stripe: 'Card', card: 'Card' }[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '—'));
+  const methodLabel = (m) => ({ check: 'Check', cash: 'Cash', zelle: 'Zelle', stripe: 'Card', card: 'Card' }[m] || (m ? m.charAt(0).toUpperCase() + m.slice(1) : '-'));
   const rows = list.map(p => `<tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(fmtDate(p.received_date))}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(methodLabel(p.method))}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(p.reference || '')}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${usd(p.amount)}</td>
+      <td>${esc(fmtDate(p.received_date))}</td>
+      <td>${esc(methodLabel(p.method))}</td>
+      <td>${esc(p.reference || '')}</td>
+      <td>${usd(p.amount)}</td>
     </tr>`).join('');
   // Initiated day in Phoenix time (created_at is a UTC timestamptz).
   const phxDay = (iso) => { const t = Date.parse(iso); return Number.isFinite(t) ? new Date(t - 7 * 3600 * 1000).toISOString().slice(0, 10) : null; };
   const pendRows = pend.map(p => `<tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">${esc(fmtDate(phxDay(p.created_at)))}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0">Bank transfer</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;color:#64748b">processing</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e2e8f0;text-align:right;white-space:nowrap">${usd(p.amount)} <span style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:999px;font-size:10px;font-weight:700;padding:2px 8px;vertical-align:middle">PENDING</span></td>
+      <td>${esc(fmtDate(phxDay(p.created_at)))}</td>
+      <td>Bank transfer</td>
+      <td style="color:#6b7280">processing</td>
+      <td>${usd(p.amount)} <span class="pendtag">PENDING</span></td>
     </tr>`).join('');
   const totalPaid = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  return `<div class="card" style="margin-top:16px;padding:20px 22px">
-    <h3 style="margin:0 0 12px;color:${esc(b.primary_color)};font-size:16px">Payments received</h3>
+  return `<div class="card pad" style="margin-top:18px">
+    <div class="eyebrow">Payment history</div>
+    <h3 class="sec">Payments received</h3>
     <table class="li">
-      <thead><tr><th>Date</th><th>Method</th><th>Reference / Check #</th><th style="text-align:right;width:120px">Amount</th></tr></thead>
+      <thead><tr><th>Date</th><th>Method</th><th>Reference / Check #</th><th style="text-align:right;width:130px">Amount</th></tr></thead>
       <tbody>${rows}${pendRows}</tbody>
     </table>
-    <div style="text-align:right;margin-top:10px;font-weight:700;color:${esc(b.primary_color)}">Total paid: ${usd(totalPaid)}</div>
+    <div style="text-align:right;margin-top:14px;font-weight:800;font-size:15px;color:${esc(b.primary_color)}">Total paid: ${usd(totalPaid)}</div>
     ${pend.length ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:4px">Pending bank transfers are not counted until they clear (3 to 5 business days).</div>` : ''}
   </div>`;
 }
@@ -212,7 +228,6 @@ function invoicePage(row, brand, payments, opts) {
   const biz = name(b);
   const logoUrl = b.logo_url || LOGO_URL;
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
-  const pill = statusPill(row);
   const billTo = row.bill_to_address || row.address || '';
   const total = Number(row.price || 0);
   const due = Number(row.balance_remaining || 0);
@@ -221,58 +236,108 @@ function invoicePage(row, brand, payments, opts) {
   // automatically if the ACH fails (failed markers are not in pendingSum).
   const pendingSum = Number(o.pendingSum || 0);
   const dueNet = Math.max(0, round2(due - pendingSum));
+  const pill = statusPill(row, pendingSum);
+  const primary = esc(b.primary_color);
+  const accent = esc(b.accent_color);
+  const dateLine = row.completed_date
+    ? `Completed ${esc(fmtDate(row.completed_date))}`
+    : (row.signed_date ? `Signed ${esc(fmtDate(row.signed_date))}` : '');
 
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Invoice ${esc(invNo)} — ${esc(biz)}</title>
+<title>Invoice ${esc(invNo)} &middot; ${esc(biz)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
   @page { size: letter; margin: 0.5in; }
-  body { margin:0; font-family:Arial,Helvetica,sans-serif; background:#f1f5f9; color:${esc(b.primary_color)}; }
-  .wrap { max-width:720px; margin:0 auto; padding:24px 16px 48px; }
-  .card { background:#fff; border-radius:12px; box-shadow:0 1px 6px rgba(0,0,0,.08); overflow:hidden; }
-  .band { background:${esc(b.accent_color)}; color:#fff; padding:22px; display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px; }
-  .band .inv { text-align:right; }
-  .pill { display:inline-block; background:${pill.bg}; color:#fff; font-size:12px; font-weight:700; border-radius:999px; padding:4px 12px; margin-top:6px; }
-  table.li { width:100%; border-collapse:collapse; font-size:14px; }
-  table.li th { background:${esc(b.primary_color)}; color:#fff; text-align:left; padding:9px 12px; font-size:12px; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:'Inter',-apple-system,'Segoe UI',Arial,sans-serif; background:#f4f5f7; color:${primary}; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:780px; margin:0 auto; padding:28px 18px 56px; }
+  .card { background:#fff; border-radius:16px; box-shadow:0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06); overflow:hidden; }
+  .pad { padding:26px 30px; }
+  .eyebrow { font-size:11px; font-weight:800; letter-spacing:2.2px; text-transform:uppercase; color:${accent}; margin-bottom:6px; }
+  h3.sec { margin:0 0 16px; font-size:19px; font-weight:800; letter-spacing:-.01em; color:${primary}; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:18px 30px; }
+  .topbar img { max-height:46px; max-width:240px; display:block; }
+  .pill { display:inline-block; background:${pill.bg}; color:#fff; font-size:11px; font-weight:800; letter-spacing:1.2px; text-transform:uppercase; border-radius:999px; padding:6px 14px; white-space:nowrap; }
+  .hero { background:${primary}; color:#fff; padding:30px; display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:20px; }
+  .hero .big { font-size:34px; font-weight:800; letter-spacing:-.02em; line-height:1.05; }
+  .hero .sub { color:rgba(255,255,255,.62); font-size:13px; margin-top:8px; }
+  .hero .right { text-align:right; }
+  .lbl { font-size:11px; font-weight:800; letter-spacing:2px; text-transform:uppercase; color:#98a1ad; margin-bottom:6px; }
+  .grid2 { display:flex; flex-wrap:wrap; gap:22px; margin-bottom:24px; font-size:14.5px; }
+  .grid2 > div { flex:1; min-width:200px; }
+  table.li { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; }
+  table.li th { text-align:left; padding:0 12px 10px; font-size:11px; font-weight:800; letter-spacing:1.8px; text-transform:uppercase; color:#98a1ad; border-bottom:2px solid ${primary}; }
+  table.li td { padding:14px 12px; border-bottom:1px solid #eef0f3; vertical-align:top; line-height:1.5; }
   table.li th:last-child, table.li td:last-child { text-align:right; width:130px; white-space:nowrap; }
+  table.li .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:pre-wrap; font-weight:400; }
   /* Totals table: same width + last-column width as the line items table, so the
      amounts line up directly under the line-item Amount column. */
-  table.tot { width:100%; border-collapse:collapse; font-size:14px; margin-top:6px; }
-  table.tot td { padding:4px 12px; }
-  table.tot td:first-child { text-align:right; color:#475569; }
+  table.tot { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; margin-top:10px; }
+  table.tot td { padding:5px 12px; }
+  table.tot td:first-child { text-align:right; color:#6b7280; }
   table.tot td:last-child { text-align:right; width:130px; white-space:nowrap; }
-  table.tot tr.total td { border-top:2px solid ${esc(b.primary_color)}; padding-top:8px; font-size:16px; font-weight:700; color:${esc(b.primary_color)}; }
-  .printbtn { display:inline-block; background:${esc(b.primary_color)}; color:#fff; border:0; border-radius:8px; padding:11px 20px; font-size:14px; font-weight:600; cursor:pointer; }
-  @media print { .noprint { display:none !important; } body { background:#fff; } .card { box-shadow:none; } }
+  table.tot tr.total td { border-top:2px solid ${primary}; padding-top:12px; font-size:19px; font-weight:800; color:${primary}; }
+  table.tot tr.total td:last-child { color:${accent}; }
+  .btn { display:inline-block; border:0; border-radius:10px; padding:14px 24px; font-family:inherit; font-size:15px; font-weight:700; cursor:pointer; text-decoration:none; transition:filter .15s; }
+  .btn:hover { filter:brightness(.9); }
+  .btn.accent { background:${accent}; color:#fff; }
+  .btn.ink { background:${primary}; color:#fff; }
+  .btn.mini { background:#fff; border:1.5px solid ${primary}; color:${primary}; font-size:13px; font-weight:600; border-radius:8px; padding:9px 14px; }
+  .btn.mini:disabled { opacity:.55; cursor:default; }
+  .secure { display:flex; align-items:flex-start; gap:8px; font-size:13px; color:#6b7280; margin-top:14px; line-height:1.5; }
+  .secure svg { width:15px; height:15px; flex:none; margin-top:1px; color:#16a34a; }
+  .banner { border-radius:12px; padding:14px 18px; margin-bottom:18px; font-weight:600; font-size:14px; line-height:1.5; }
+  .duebox { background:${accent}14; border:1px solid ${accent}55; border-radius:12px; padding:14px 18px; margin-bottom:22px; font-weight:700; color:${primary}; font-size:15px; }
+  .footerband { background:${primary}; color:#fff; border-radius:16px; padding:28px 30px; margin-top:18px; text-align:center; }
+  .footerband .rule { width:44px; height:4px; background:${accent}; margin:0 auto 16px; border-radius:2px; }
+  .footerband .bizname { font-weight:800; letter-spacing:1.5px; text-transform:uppercase; font-size:15px; }
+  .footerband .meta { color:rgba(255,255,255,.6); font-size:13px; margin-top:8px; line-height:1.6; }
+  .printbtn { display:inline-block; background:#fff; color:${primary}; border:1.5px solid ${primary}; border-radius:10px; padding:12px 22px; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer; }
+  @media print {
+    .noprint { display:none !important; }
+    body { background:#fff; }
+    .card, .footerband { box-shadow:none; border:1px solid #e5e7eb; }
+    * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+  @media (max-width:560px) {
+    .pad { padding:22px; }
+    .topbar { padding:16px 22px; }
+    .hero { padding:24px 22px; }
+    .hero .right { text-align:left; }
+    .hero .big { font-size:28px; }
+  }
 </style></head>
 <body>
   <div class="wrap">
     ${pendingSum > 0.005
-      ? `<div class="noprint" style="background:#fef3c7;border:1px solid #d97706;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#92400e;font-weight:600">Payment initiated (${usd(pendingSum)}). Bank transfers take 3 to 5 business days to clear. No need to pay that amount again; it shows as PENDING under Payments until it clears.</div>`
+      ? `<div class="banner noprint" style="background:#fffbeb;border:1px solid #f59e0b;color:#92400e">Payment initiated (${usd(pendingSum)}). Bank transfers take 3 to 5 business days to clear. No need to pay that amount again; it shows as PENDING under Payments until it clears.</div>`
       : o.achFailed
-        ? `<div class="noprint" style="background:#fee2e2;border:1px solid #dc2626;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#7f1d1d;font-weight:600">Your bank transfer could not be completed. Please pay again below or contact us.</div>`
-        : o.paid ? `<div class="noprint" style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:12px 16px;margin-bottom:16px;color:#14532d;font-weight:600">Payment received &mdash; thank you! It will appear in the Payments section below within a moment.</div>` : ''}
-    <div style="text-align:center;margin-bottom:18px"><img src="${esc(logoUrl)}" alt="${esc(biz)}" style="max-height:64px;max-width:280px"></div>
+        ? `<div class="banner noprint" style="background:#fef2f2;border:1px solid #dc2626;color:#7f1d1d">Your bank transfer could not be completed. Please pay again below or contact us.</div>`
+        : o.paid ? `<div class="banner noprint" style="background:#f0fdf4;border:1px solid #16a34a;color:#14532d">Payment received, thank you! It will appear in the Payments section below within a moment.</div>` : ''}
     <div class="card">
-      <div class="band">
+      <div class="topbar">
+        <img src="${esc(logoUrl)}" alt="${esc(biz)}">
+        <span class="pill">${esc(pill.text)}</span>
+      </div>
+      <div class="hero">
         <div>
-          <div style="font-size:22px;font-weight:800;letter-spacing:.5px;margin-bottom:6px">${esc(biz)}</div>
-          <div style="font-size:13px;opacity:.95">${esc(b.address_line)}</div>
-          ${b.phone ? `<div style="font-size:13px;opacity:.95">${esc(b.phone)}</div>` : ''}
-          ${b.license_number ? `<div style="font-size:12px;opacity:.85">License ${esc(b.license_number)}</div>` : ''}
+          <div class="eyebrow">${esc(biz)}</div>
+          <div class="big">Invoice #${esc(invNo)}</div>
+          ${dateLine ? `<div class="sub">${dateLine}</div>` : ''}
         </div>
-        <div class="inv">
-          <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;opacity:.9">Invoice</div>
-          <div style="font-size:22px;font-weight:800">#${esc(invNo)}</div>
-          <div class="pill">${esc(pill.text)}</div>
+        <div class="right">
+          <div class="eyebrow">Amount due</div>
+          <div class="big">${usd(dueNet)}</div>
+          <div class="sub">Total ${usd(total)} &middot; Paid ${usd(row.paid_to_date)}</div>
         </div>
       </div>
-      <div style="padding:22px">
-        ${b.invoice_intro_text ? `<div style="font-size:14px;color:#334155;line-height:1.55;margin-bottom:18px">${paymentInstructionsHtml(b.invoice_intro_text)}</div>` : ''}
-        ${dueNet > 0.005 ? `<div style="background:${esc(b.accent_color)}1a;border:1px solid ${esc(b.accent_color)};border-radius:8px;padding:12px 16px;margin-bottom:18px;font-weight:600;color:${esc(b.primary_color)}">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : ''}
-        <div style="display:flex;flex-wrap:wrap;gap:18px;margin-bottom:18px;font-size:14px">
-          <div style="flex:1;min-width:180px"><div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:1px">Bill to</div><div style="font-weight:600">${esc(row.customer_name || '')}</div><div style="color:#475569">${esc(billTo)}</div></div>
-          <div style="min-width:160px"><div style="color:#64748b;font-size:12px;text-transform:uppercase;letter-spacing:1px">Job address</div><div style="color:#475569">${esc(row.address || billTo)}</div>${row.completed_date ? `<div style="color:#475569;font-size:13px;margin-top:4px">Completed ${esc(fmtDate(row.completed_date))}</div>` : (row.signed_date ? `<div style="color:#475569;font-size:13px;margin-top:4px">Signed ${esc(fmtDate(row.signed_date))}</div>` : '')}</div>
+      <div class="pad">
+        ${b.invoice_intro_text ? `<div style="font-size:14.5px;color:#374151;line-height:1.6;margin-bottom:20px">${paymentInstructionsHtml(b.invoice_intro_text)}</div>` : ''}
+        ${dueNet > 0.005 ? `<div class="duebox">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : ''}
+        <div class="grid2">
+          <div><div class="lbl">Bill to</div><div style="font-weight:700">${esc(row.customer_name || '')}</div><div style="color:#4b5563;margin-top:2px">${esc(billTo)}</div></div>
+          <div><div class="lbl">Job address</div><div style="color:#4b5563">${esc(row.address || billTo)}</div>${dateLine ? `<div style="color:#4b5563;font-size:13px;margin-top:4px">${dateLine}</div>` : ''}</div>
         </div>
         <table class="li">
           <thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
@@ -285,7 +350,7 @@ function invoicePage(row, brand, payments, opts) {
           ${pendingSum > 0.005 ? `<tr><td>Pending bank transfer</td><td>-${usd(pendingSum)}</td></tr>` : ''}
           <tr class="total"><td>Amount due</td><td>${usd(dueNet)}</td></tr>
         </table>
-        ${pendingSum > 0.005 ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:6px">Amount due reflects a pending bank transfer of ${usd(pendingSum)} that takes 3 to 5 business days to clear.</div>` : ''}
+        ${pendingSum > 0.005 ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:8px">Amount due reflects a pending bank transfer of ${usd(pendingSum)} that takes 3 to 5 business days to clear.</div>` : ''}
       </div>
     </div>
 
@@ -293,22 +358,25 @@ function invoicePage(row, brand, payments, opts) {
 
     ${payButtons(b, row, o.token, pendingSum)}
 
-    ${b.payment_instructions_html ? `<div class="card" style="margin-top:16px;padding:20px 22px">
-      <h3 style="margin:0 0 8px;color:${esc(b.primary_color)};font-size:16px">More on payment</h3>
-      <div style="font-size:14px;color:#334155;line-height:1.5">${paymentInstructionsHtml(b.payment_instructions_html)}</div>
+    ${b.payment_instructions_html ? `<div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">Good to know</div>
+      <h3 class="sec">More on payment</h3>
+      <div style="font-size:14.5px;color:#374151;line-height:1.6">${paymentInstructionsHtml(b.payment_instructions_html)}</div>
     </div>` : ''}
 
-    ${b.invoice_footer_text ? `<div class="card" style="margin-top:16px;padding:20px 22px">
-      <div style="font-size:14px;color:#334155;line-height:1.5">${paymentInstructionsHtml(b.invoice_footer_text)}</div>
+    ${b.invoice_footer_text ? `<div class="card pad" style="margin-top:18px">
+      <div style="font-size:14.5px;color:#374151;line-height:1.6">${paymentInstructionsHtml(b.invoice_footer_text)}</div>
     </div>` : ''}
 
-    ${b.invoice_terms_text ? `<div style="margin-top:16px;font-size:12px;color:#94a3b8;line-height:1.5">${paymentInstructionsHtml(b.invoice_terms_text)}</div>` : ''}
+    ${b.invoice_terms_text ? `<div style="margin-top:18px;font-size:12px;color:#9ca3af;line-height:1.6">${paymentInstructionsHtml(b.invoice_terms_text)}</div>` : ''}
 
-    <div class="noprint" style="text-align:center;margin-top:22px">
+    <div class="noprint" style="text-align:center;margin-top:24px">
       <button class="printbtn" onclick="window.print()">Print / Save as PDF</button>
     </div>
-    <div style="text-align:center;color:#94a3b8;font-size:12px;margin-top:22px">
-      ${esc(biz)}${b.address_line ? ' &middot; ' + esc(b.address_line) : ''}${b.license_number ? ' &middot; License ' + esc(b.license_number) : ''}
+    <div class="footerband">
+      <div class="rule"></div>
+      <div class="bizname">${esc(biz)}</div>
+      <div class="meta">${[b.address_line, b.phone, b.license_number ? 'License ' + b.license_number : ''].filter(Boolean).map(esc).join(' &middot; ')}</div>
     </div>
   </div>
 </body></html>`);
