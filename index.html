@@ -1447,6 +1447,31 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.sm {
   font-size: .76rem;
 }
 
+/* Job detail toolbar: bolder chrome so the actions stand out on the gray page
+   (Dylan 2026-07-10; the white-on-light hairline look washed out). :not(.primary)
+   keeps the active Messages & Calls button orange, and the extra class
+   out-specifies the .ghost and .sm rules above so all five buttons share one
+   uniform look. The base rule below also out-specifies the generic .pec-btn:hover,
+   so hover feedback needs its own rule here. */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-job-toolbar .pec-btn:not(.primary) {
+  background: #fff;
+  color: var(--rd-ink);
+  border: 1px solid #c9cfd8;
+  font-weight: 600;
+  font-size: .8rem;
+  padding: 8px 14px;
+  box-shadow: 0 1px 3px rgba(15,20,32,.10), 0 1px 2px rgba(15,20,32,.06);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-job-toolbar .pec-btn:not(.primary):hover {
+  border-color: var(--rd-accent);
+  background: var(--rd-soft);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-job-toolbar .pec-btn:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 /* Form fields */
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-field label { color: var(--rd-muted); }
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-field input,
@@ -10804,13 +10829,13 @@ async function renderJobDetailInner(id) {
   const activeTab = state.jobDetailTab === 'comms' ? 'comms' : 'details';
 
   root.innerHTML = `
-    <div class="pec-toolbar">
+    <div class="pec-toolbar pec-job-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
       <button class="pec-btn sm" id="pecJobViewInvoice">View Invoice</button>
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
       ${job.customers?.token
-        ? `<button class="pec-btn sm" id="pecJobViewPortal" style="margin-left:auto">View customer portal</button>`
-        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet" style="margin-left:auto">View customer portal</button>`}
+        ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
+        : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
       <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : ''}" id="pecJobTabBtnComms" title="${activeTab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Messages &amp; Calls</button>
     </div>
 
@@ -10898,7 +10923,8 @@ async function renderJobDetailInner(id) {
     </div>
 
     <!-- Job detail tabs. The Messages & Calls trigger lives in the toolbar
-         (top right, next to View customer portal, per Dylan 2026-07-09) and
+         (left-aligned with the other actions per Dylan 2026-07-10; it had sat
+         top right since 2026-07-09) and
          TOGGLES the two panes. Switching toggles display ONLY (never
          re-renders), so unsaved Details edits and live handlers survive;
          toolbar + header card above stay visible on both tabs. -->

@@ -1,5 +1,16 @@
 [
   {
+    "id": "job-toolbar-bolder-buttons",
+    "date": "2026-07-10",
+    "title": "Job page buttons are bolder and grouped on the left",
+    "summary": "The action buttons at the top of a job (Back to jobs, View Invoice, Copy portal link, View customer portal, Messages & Calls) now sit together on the left and stand out more, so they are easier to spot at a glance.",
+    "howto": [
+      "Open any job. All five action buttons now sit together at the top left.",
+      "Messages & Calls is the last button in that row and still turns orange while you are on the conversation view.",
+      "Every button does exactly what it did before; only the look and placement changed."
+    ]
+  },
+  {
     "id": "invoice-page-redesign",
     "date": "2026-07-09",
     "title": "The customer invoice page got a professional new look",
@@ -13,10 +24,10 @@
   {
     "id": "messages-calls-inbox-look",
     "date": "2026-07-09",
-    "title": "Messages & Calls got a phone-app look and moved to the top right",
-    "summary": "The job's Messages & Calls feed now looks like a real texting app: chat bubbles with names and avatars, call summaries in a card, and a cleaner compose box. The button to open it now sits at the top right of the job, next to View customer portal.",
+    "title": "Messages & Calls got a phone-app look and moved into the job's top toolbar",
+    "summary": "The job's Messages & Calls feed now looks like a real texting app: chat bubbles with names and avatars, call summaries in a card, and a cleaner compose box. The button to open it now sits in the toolbar at the top of the job.",
     "howto": [
-      "Open a job and click Messages & Calls at the top right, next to View customer portal. Click it again to go back to the job details.",
+      "Open a job and click Messages & Calls in the toolbar at the top. Click it again to go back to the job details.",
       "Calls show their AI summary as bullet points; click View transcript on a call to read the whole conversation.",
       "Type in the box at the bottom to text the customer. Enter sends, Shift+Enter starts a new line.",
       "The Texts and Calls cards on the customer profile use the same new look."
