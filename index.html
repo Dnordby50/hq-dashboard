@@ -13543,24 +13543,29 @@ const emailBrandLabel = b => b === 'finishing-touch' ? 'Finishing Touch' : 'Pres
 // customers.company IS the brand key the SMS sender map uses.
 const smsBrandFromCompany = company => company === 'finishing-touch' ? 'finishing-touch' : 'prescott-epoxy';
 
-// Render a list of pec_sms_log rows as text-message bubbles (out = right/accent,
-// in = left/gray, failed = red). Chronological order is the caller's job.
+// ONE pec_sms_log row as a text-message bubble (out = right/accent, in =
+// left/gray, failed = red). Shared by the customer-profile Texts card and the
+// job detail's Messages & Calls feed so the two surfaces can never drift.
+function smsBubbleHtml(r) {
+  const out = r.direction === 'out';
+  const failed = r.status === 'failed';
+  const align = out ? 'flex-end' : 'flex-start';
+  const bg = failed ? '#fee2e2' : (out ? 'var(--accent, #ea580c)' : 'var(--s3, #e2e8f0)');
+  const fg = (out && !failed) ? '#fff' : 'var(--text, #0f172a)';
+  const kindTag = (r.kind && !['system', 'manual'].includes(r.kind)) ? ' · ' + r.kind : '';
+  const meta = `${invFmtDate(r.created_at)}${failed ? ' · failed' : ''}${kindTag}`;
+  return `<div style="display:flex;justify-content:${align};margin:5px 0">
+    <div style="max-width:78%;background:${bg};color:${fg};padding:8px 12px;border-radius:14px;font-size:.86rem;line-height:1.35;white-space:pre-wrap;word-break:break-word">
+      ${esc(r.body || (failed ? '(not sent)' : ''))}
+      <div style="font-size:.62rem;opacity:.72;margin-top:4px">${esc(meta)}${failed && r.error_message ? ' · ' + esc(r.error_message) : ''}</div>
+    </div></div>`;
+}
+
+// Render a list of pec_sms_log rows as text-message bubbles. Chronological
+// order is the caller's job.
 function smsThreadRowsHtml(rows) {
   if (!rows || !rows.length) return '<div style="color:var(--muted);font-size:.85rem;padding:10px 2px">No texts yet.</div>';
-  return rows.map(r => {
-    const out = r.direction === 'out';
-    const failed = r.status === 'failed';
-    const align = out ? 'flex-end' : 'flex-start';
-    const bg = failed ? '#fee2e2' : (out ? 'var(--accent, #ea580c)' : 'var(--s3, #e2e8f0)');
-    const fg = (out && !failed) ? '#fff' : 'var(--text, #0f172a)';
-    const kindTag = (r.kind && !['system', 'manual'].includes(r.kind)) ? ' · ' + r.kind : '';
-    const meta = `${invFmtDate(r.created_at)}${failed ? ' · failed' : ''}${kindTag}`;
-    return `<div style="display:flex;justify-content:${align};margin:5px 0">
-      <div style="max-width:78%;background:${bg};color:${fg};padding:8px 12px;border-radius:14px;font-size:.86rem;line-height:1.35;white-space:pre-wrap;word-break:break-word">
-        ${esc(r.body || (failed ? '(not sent)' : ''))}
-        <div style="font-size:.62rem;opacity:.72;margin-top:4px">${esc(meta)}${failed && r.error_message ? ' · ' + esc(r.error_message) : ''}</div>
-      </div></div>`;
-  }).join('');
+  return rows.map(smsBubbleHtml).join('');
 }
 
 // The SMS thread card markup for a customer detail page. Populated async by
@@ -13652,6 +13657,46 @@ function customerCallsCardHtml() {
       <div data-calls-body><div class="pec-empty" style="font-size:.8rem">Loading calls…</div></div>
     </div>`;
 }
+// ONE pec_call_log row as an inline call event (direction, when/duration/brand
+// meta, AI summary, next steps, transcript behind an expander). Shared by the
+// customer-profile Calls card and the job detail's Messages & Calls feed.
+// fmtDur/fmtWhen live inside on purpose: they exist nowhere else and staying
+// local keeps them collision-free in this crowded module.
+function callRowHtml(r) {
+  const fmtDur = (s) => {
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const m = Math.floor(n / 60), sec = Math.round(n % 60);
+    return m ? `${m}m ${sec}s` : `${sec}s`;
+  };
+  const fmtWhen = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  };
+  const dirLabel = r.direction === 'out' ? 'Outgoing' : 'Incoming';
+  const noAnswer = !(Number(r.duration_seconds) > 0);
+  const summaryHtml = r.summary
+    ? `<div style="font-size:.85rem;line-height:1.45;white-space:pre-wrap">${esc(r.summary)}</div>`
+    : `<div style="color:var(--muted);font-size:.8rem">No summary${noAnswer ? ' (missed or very short call)' : ' yet'}.</div>`;
+  const nextHtml = r.next_steps
+    ? `<div style="font-size:.78rem;margin-top:4px"><strong>Next steps:</strong> <span style="white-space:pre-wrap">${esc(r.next_steps)}</span></div>` : '';
+  const turns = Array.isArray(r.transcript) ? r.transcript : null;
+  const transcriptHtml = (turns && turns.length)
+    ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.75rem;color:var(--muted)">Transcript (${turns.length} lines)</summary>
+         <div style="max-height:260px;overflow-y:auto;margin-top:6px;padding:8px 10px;background:var(--rd-soft,#f5f6f8);border-radius:8px;font-size:.8rem;line-height:1.5">
+           ${turns.map(t => `<div style="margin-bottom:4px">${t && t.identifier ? `<strong>${esc(t.identifier)}:</strong> ` : ''}${esc((t && (t.content || t.text)) || '')}</div>`).join('')}
+         </div></details>`
+    : '';
+  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), r.brand ? emailBrandLabel(r.brand) : ''].filter(Boolean).join(' · ');
+  return `<div style="padding:10px 2px;border-bottom:1px solid var(--rd-line,var(--border))">
+    <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
+      <strong style="font-size:.8rem">${dirLabel} call${noAnswer ? ' <span style="color:var(--muted);font-weight:400">(no answer)</span>' : ''}</strong>
+      <span style="color:var(--muted);font-size:.75rem">${esc(metaBits)}</span>
+    </div>
+    ${summaryHtml}${nextHtml}${transcriptHtml}
+  </div>`;
+}
+
 async function mountCustomerCalls(card, c) {
   if (!card) return;
   const body = card.querySelector('[data-calls-body]');
@@ -13663,40 +13708,7 @@ async function mountCustomerCalls(card, c) {
       body.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:6px 2px">No calls logged yet. Calls land here automatically (with their Quo AI summary) once the call webhooks are on.</div>';
       return;
     }
-    const fmtDur = (s) => {
-      const n = Number(s);
-      if (!Number.isFinite(n) || n <= 0) return '';
-      const m = Math.floor(n / 60), sec = Math.round(n % 60);
-      return m ? `${m}m ${sec}s` : `${sec}s`;
-    };
-    const fmtWhen = (iso) => {
-      const d = iso ? new Date(iso) : null;
-      return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-    };
-    body.innerHTML = data.map(r => {
-      const dirLabel = r.direction === 'out' ? 'Outgoing' : 'Incoming';
-      const noAnswer = !(Number(r.duration_seconds) > 0);
-      const summaryHtml = r.summary
-        ? `<div style="font-size:.85rem;line-height:1.45;white-space:pre-wrap">${esc(r.summary)}</div>`
-        : `<div style="color:var(--muted);font-size:.8rem">No summary${noAnswer ? ' (missed or very short call)' : ' yet'}.</div>`;
-      const nextHtml = r.next_steps
-        ? `<div style="font-size:.78rem;margin-top:4px"><strong>Next steps:</strong> <span style="white-space:pre-wrap">${esc(r.next_steps)}</span></div>` : '';
-      const turns = Array.isArray(r.transcript) ? r.transcript : null;
-      const transcriptHtml = (turns && turns.length)
-        ? `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:.75rem;color:var(--muted)">Transcript (${turns.length} lines)</summary>
-             <div style="max-height:260px;overflow-y:auto;margin-top:6px;padding:8px 10px;background:var(--rd-soft,#f5f6f8);border-radius:8px;font-size:.8rem;line-height:1.5">
-               ${turns.map(t => `<div style="margin-bottom:4px">${t && t.identifier ? `<strong>${esc(t.identifier)}:</strong> ` : ''}${esc((t && (t.content || t.text)) || '')}</div>`).join('')}
-             </div></details>`
-        : '';
-      const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), r.brand ? emailBrandLabel(r.brand) : ''].filter(Boolean).join(' · ');
-      return `<div style="padding:10px 2px;border-bottom:1px solid var(--rd-line,var(--border))">
-        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
-          <strong style="font-size:.8rem">${dirLabel} call${noAnswer ? ' <span style="color:var(--muted);font-weight:400">(no answer)</span>' : ''}</strong>
-          <span style="color:var(--muted);font-size:.75rem">${esc(metaBits)}</span>
-        </div>
-        ${summaryHtml}${nextHtml}${transcriptHtml}
-      </div>`;
-    }).join('');
+    body.innerHTML = data.map(callRowHtml).join('');
   } catch (e) {
     const needsMigration = /pec_call_log/.test(e.message || '');
     body.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
