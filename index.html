@@ -16955,7 +16955,7 @@ function openTaskModal(task, opts = {}) {
 // ============================================================
 async function loadCostingData() {
   await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
-  const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes] = await withFreshSession(() => Promise.all([
+  const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes, subExpRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
     // select('*') (not an explicit list) so hourly_wage is included once the
     // migration lands, without 400ing before it does. Needed for the bonus math.
@@ -16970,6 +16970,11 @@ async function loadCostingData() {
     // select('*') (not an explicit list) so ot_hours is picked up once the
     // 2026-06-19_ot_hours migration lands, without 400ing before it does.
     supabase.from('pec_prod_job_manual_labor').select('*'),
+    // Itemized subcontractor expenses (prompt 10). A missing table pre-migration
+    // resolves with { error } inside the result (never a throw), so this is safe
+    // to include before the 2026-07-09 migration lands; the Subcontractors card
+    // degrades to a run-the-migration note off state.subExpensesError.
+    supabase.from('pec_prod_job_sub_expenses').select('*').order('created_at'),
   ]), { label: 'loadCostingData' });
   state.costing = costRes.data || [];
   state.crewMembers = membersRes.data || [];
@@ -16977,6 +16982,13 @@ async function loadCostingData() {
   const manualLaborByJob = {};
   for (const m of (manualLaborRes && manualLaborRes.data) || []) (manualLaborByJob[m.job_id] ||= []).push(m);
   state.manualLaborByJob = manualLaborByJob;
+  // Subcontractor expense lines grouped per job (empty pre-migration). The
+  // error string is kept so the Subcontractors card can tell "no lines" apart
+  // from "table not live yet" and degrade visibly instead of breaking.
+  const subExpensesByJob = {};
+  for (const s of (subExpRes && subExpRes.data) || []) (subExpensesByJob[s.job_id] ||= []).push(s);
+  state.subExpensesByJob = subExpensesByJob;
+  state.subExpensesError = (subExpRes && subExpRes.error) ? (subExpRes.error.message || String(subExpRes.error)) : null;
   // Aggregate material_lines per job. ordered = sum of line_cost (cost to
   // order); used = sum of actual_used_qty * unit_cost_snapshot (cost actually
   // consumed; the PM fills in actual_used_qty on the unified job page).
@@ -17343,7 +17355,8 @@ async function renderCrewBonus() {
 
   // Gated on FINALIZED costing (Phase 4.3): a job becomes payable in Crew Bonus
   // only after an admin finalizes its costing, not merely when it is completed.
-  const completed = (state.prodJobs || []).filter(j => costingIsFinalized(j) && !j.archived_at)
+  // Subcontracted jobs are excluded (prompt 10): no crew bonus on subbed work.
+  const completed = (state.prodJobs || []).filter(j => costingIsFinalized(j) && !j.archived_at && !j.subcontracted)
     .sort((a, b) => String(b.costing_finalized_at || '').localeCompare(String(a.costing_finalized_at || '')));
 
   // key -> { name, wage }. 'bb:' keys are BusyBusy members not yet mapped to a
@@ -17807,6 +17820,55 @@ async function deleteBonusRow(rowId, jobId) {
   state.bonusesByJob[jobId] = (state.bonusesByJob[jobId] || []).filter(b => b.id !== rowId);
 }
 
+// Subcontractor expense lines (prompt 10). Same write discipline as the bonus
+// rows above: INSERT is non-idempotent (withFreshWrite, button disabled at the
+// call site, no blind retry), edit and delete are idempotent by id
+// (withFreshWriteRetry). After every successful change the call site runs
+// syncSubExpenseTotal so the ONE bucket the GP math and rollups already read
+// (pec_prod_job_costing.subcontractor_cost) is always the sum of the lines.
+async function addSubExpenseRow(jobId, name, amount) {
+  const payload = { job_id: jobId, name, amount };
+  const { data, error } = await withFreshWrite(() => supabase.from('pec_prod_job_sub_expenses').insert(payload).select().single(), { label: 'subexp-insert' }).catch(err => ({ error: err }));
+  if (error) { costingSaveFailed(error, null, 'subcontractor line'); return null; }
+  (state.subExpensesByJob ||= {});
+  (state.subExpensesByJob[jobId] ||= []).push(data);
+  return data;
+}
+async function saveSubExpenseField(rowId, jobId, field, value, inp) {
+  try {
+    const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_sub_expenses').update({ [field]: value }).eq('id', rowId), { label: 'subexp-field' });
+    if (error) throw error;
+    const row = (state.subExpensesByJob?.[jobId] || []).find(s => s.id === rowId);
+    if (row) row[field] = value;
+    costingSaveOk(inp);
+    return true;
+  } catch (err) {
+    costingSaveFailed(err, inp, 'subcontractor ' + field);
+    return false;
+  }
+}
+async function deleteSubExpenseRow(rowId, jobId) {
+  const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_job_sub_expenses').delete().eq('id', rowId), { label: 'subexp-delete' }).catch(err => ({ error: err }));
+  if (error) { costingSaveFailed(error, null, 'subcontractor delete'); return false; }
+  state.subExpensesByJob[jobId] = (state.subExpensesByJob[jobId] || []).filter(s => s.id !== rowId);
+  return true;
+}
+// The sum-into-bucket write. Recomputes the sum from state and writes it to
+// pec_prod_job_costing.subcontractor_cost through saveCostingField (debounced
+// idempotent upsert on job_id), updating the in-memory costing row eagerly so
+// refreshUnifiedTotals shows the new GP before the write settles. Single
+// source of truth: once a job has lines, nothing else writes this bucket (the
+// Costs card field turns into a read-only display of this sum).
+function syncSubExpenseTotal(jobId, inp) {
+  const sum = (state.subExpensesByJob?.[jobId] || []).reduce((s, x) => s + Number(x.amount || 0), 0);
+  const rounded = Math.round(sum * 100) / 100;
+  let c = state.costing.find(c => c.job_id === jobId);
+  if (!c) { c = { job_id: jobId }; state.costing.push(c); }
+  c.subcontractor_cost = rounded;
+  saveCostingField(jobId, 'subcontractor_cost', rounded, inp);
+  return rounded;
+}
+
 async function renderUnifiedJob(jobId) {
   const root = $('pecViewRoot');
   if (!can('can_view_job_costing')) {
@@ -17845,6 +17907,11 @@ async function renderUnifiedJob(jobId) {
   const crewName = schedState.crewName;
   const lines    = (state.materialLinesByJob[jobId] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const bonuses  = (state.bonusesByJob?.[jobId] || []).slice();
+  const subExpenses = (state.subExpensesByJob?.[jobId] || []).slice();
+  // Subcontracted-job flag (prompt 10): flagged jobs are excluded from the
+  // crew-hours expectations and the crew bonus calc below. Pre-migration the
+  // column is absent from the select('*') row, so this reads false everywhere.
+  const isSubbed = !!job.subcontracted;
   const sched    = (state.scheduleByJob?.[jobId] || []).slice().sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date)));
   const crewMembers = (state.crewMembers || []).filter(m => m.active !== false);
 
@@ -17929,7 +17996,11 @@ async function renderUnifiedJob(jobId) {
   // ONE shared math path with the Crew Bonus tab (computeCrewBonus). The 25%
   // burden is applied exactly once INSIDE computeCrewBonus (CREW_BONUS_BURDEN);
   // do not re-apply it here.
-  const bonusCalc = computeCrewBonus(jobLaborBudget, effHoursByKey, bonusMemberLookup, defaultLaborRate);
+  // A subcontracted job passes a NULL labor budget so the pool stays null and
+  // every member bonus computes to zero: no crew worked it, nobody earns a
+  // labor-savings bonus from unspent budgeted labor. Entered hours are still
+  // summed and displayed (do-not-delete-data rule); only the calc is excluded.
+  const bonusCalc = computeCrewBonus(isSubbed ? null : jobLaborBudget, effHoursByKey, bonusMemberLookup, defaultLaborRate);
 
   // Short date for the reconciled / finalized stamps (Phases 3-4).
   const fmtStamp = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' }); };
@@ -18058,10 +18129,13 @@ async function renderUnifiedJob(jobId) {
   // recomputed the same way inside refreshUnifiedTotals when costs/revenue change.
   const gpHrEff  = (actHrsEff && actHrsEff > 0) ? r.gp / actHrsEff : null;
   const revHrEff = (actHrsEff && actHrsEff > 0) ? r.revenue / actHrsEff : null;
-  const overUnderEff = (actHrsEff && r.estHrs) ? (actHrsEff - r.estHrs) : null;
-  const overUnderEffPct = (actHrsEff && r.estHrs) ? ((actHrsEff - r.estHrs) / r.estHrs) : null;
+  // Crew-hours expectations do not apply to a subcontracted job (the crew never
+  // worked it), so Over/Under reads n/a instead of judging the sub's pace
+  // against our estimated hours. Actual hours still display if entered.
+  const overUnderEff = (!isSubbed && actHrsEff && r.estHrs) ? (actHrsEff - r.estHrs) : null;
+  const overUnderEffPct = (!isSubbed && actHrsEff && r.estHrs) ? ((actHrsEff - r.estHrs) / r.estHrs) : null;
   const actHrsEffDisplay = actHrsEff == null ? '—' : fmtNum(actHrsEff) + ' hrs';
-  const overUnderEffDisplay = `${overUnderEff == null ? '—' : fmtNum(overUnderEff)} (${fmtPct(overUnderEffPct)})`;
+  const overUnderEffDisplay = isSubbed ? 'n/a (subcontracted)' : `${overUnderEff == null ? '&mdash;' : fmtNum(overUnderEff)} (${fmtPct(overUnderEffPct)})`;
   const overUnderEffCls = overUnderEff == null ? '' : (overUnderEff > 0 ? 'cost-neg' : 'cost-pos');
 
   const fmtPunch = (p) => {
@@ -18075,9 +18149,11 @@ async function renderUnifiedJob(jobId) {
     return f(p.start, true) + ' to ' + (p.end ? f(p.end, false) : 'open');
   };
 
-  const bonusEarnedText = !bonusCalc.hasActuals
-    ? 'awaiting hours (enter team member hours below)'
-    : (jobLaborBudget == null ? 'NO (no labor budget — set system labor % + revenue)' : (bonusCalc.pool > 0 ? 'YES' : 'NO'));
+  const bonusEarnedText = isSubbed
+    ? 'subcontracted, crew bonus skipped'
+    : !bonusCalc.hasActuals
+      ? 'awaiting hours (enter team member hours below)'
+      : (jobLaborBudget == null ? 'NO (no labor budget &mdash; set system labor % + revenue)' : (bonusCalc.pool > 0 ? 'YES' : 'NO'));
   const bonusEarnedColor = (bonusCalc.hasActuals && bonusCalc.pool > 0) ? 'var(--rd-success,#16a34a)' : 'var(--muted)';
   const bonusSourceNote = bonusSource === 'busybusy' ? 'from BusyBusy hours' : bonusSource === 'manual' ? 'from manual hours' : '';
 
@@ -18133,7 +18209,13 @@ async function renderUnifiedJob(jobId) {
   const otLineHtml = bonusCalc.totalOtHours > 0
     ? `<span style="color:var(--muted)">of which overtime</span><span><strong>${fmtNum(bonusCalc.totalOtHours)} hrs</strong> <span style="color:var(--muted)">at ${OT_MULTIPLIER}x = +${fmtMoneyOrDash(otPremiumTotal)} premium (before burden), which shrinks the pool below the flat-rate number</span></span>`
     : '';
-  const formulaHtml = `
+  // Subcontracted jobs replace the whole formula block with the skip note:
+  // showing a budgeted-vs-actual savings pool would suggest a bonus exists.
+  // Hours or bonus rows already entered stay visible below (never deleted).
+  const formulaHtml = isSubbed ? `
+        <div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:.82rem;color:var(--muted)">
+          This job is subcontracted, so it is excluded from crew-hours expectations and the crew bonus calculation. Finalizing records zero crew bonus. Any team member hours or bonus rows below are kept for reference.
+        </div>` : `
         <div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:.82rem">
           <div style="display:grid;grid-template-columns:auto 1fr;gap:5px 14px;align-items:baseline">
             <span style="color:var(--muted)">Budgeted labor</span><span><strong>${budgetedLaborStr}</strong>${jobLaborPct != null ? ` <span style="color:var(--muted)">(${sys ? esc(sys.name) + ' ' : ''}${fmtPctNum(jobLaborPct)} of revenue)</span>` : ''}${laborBudgetEstimated ? ` <span style="color:var(--rd-warn,#b45309);font-size:.7rem">labor budget estimated at ${fmtPctNum(laborBudgetEstPct)} of revenue (system has no estimate)</span>` : ''}</span>
@@ -18188,7 +18270,7 @@ async function renderUnifiedJob(jobId) {
 
         <h3 style="margin-top:18px">Hours</h3>
         <div class="pec-row-3">
-          ${derivedField('Estimated Hours', r.estHrs ? r.estHrs.toFixed(1) + ' hrs' : '—')}
+          ${derivedField('Estimated Hours', isSubbed ? 'n/a (subcontracted)' : (r.estHrs ? r.estHrs.toFixed(1) + ' hrs' : '&mdash;'))}
           ${derivedField('Actual Hours' + (bonusCalc.hasActuals ? ' (BusyBusy)' : ' (manual)'), actHrsEffDisplay, '', 'actHrsEff')}
           ${derivedField('Over / Under', overUnderEffDisplay, overUnderEffCls, 'overUnderEff')}
         </div>
@@ -18208,12 +18290,14 @@ async function renderUnifiedJob(jobId) {
   // Read-only crew-bonus recap (Phase 4.4): shown on a finalized job so looking
   // up a past job later shows what the crew earned. Same per-member numbers as
   // the Bonus Payout box (recomputed from the shared helper).
-  const bonusRecapHtml = (bonusCalc.hasActuals && bonusCalc.pool != null)
-    ? `<div style="margin-top:10px;font-size:.8rem">
+  const bonusRecapHtml = isSubbed
+    ? `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: $0, skipped (subcontracted job).</div>`
+    : (bonusCalc.hasActuals && bonusCalc.pool != null)
+      ? `<div style="margin-top:10px;font-size:.8rem">
          <strong>Crew bonus pool: ${bonusCalc.pool > 0 ? fmtMoneyOrDash(bonusCalc.pool) : '$0 (no savings)'}</strong>
          ${bonusCalc.pool > 0 ? `<div style="color:var(--muted);margin-top:2px">${bonusCalc.members.filter(m => m.bonus > 0).map(m => esc(m.name) + ': ' + fmtMoneyOrDash(m.bonus)).join(' · ')}</div>` : ''}
        </div>`
-    : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
+      : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
 
   // Submit-for-review approval step. Lifecycle is read off the two stamps (no
   // enum): draft -> submitted (awaiting review) -> finalized. Finalize (and the
@@ -18254,6 +18338,40 @@ async function renderUnifiedJob(jobId) {
                  <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Finalizing moves this job to Completed Job Costing and records the crew bonus into the Bonus Report (pending payout).</div>`
               : `<button class="pec-btn primary" id="costingSubmitBtn">Submit for review</button>
                  <div style="color:var(--muted);font-size:.72rem;margin-top:6px">Submitting locks your numbers and sends this job to Dylan to review and finalize.</div>`)}
+      </div>`;
+
+  // --- Subcontractors card (prompt 10): itemized expense lines (name + amount
+  // only, per Dylan's decisions) that sum into the existing subcontractor_cost
+  // bucket, plus the subcontracted-job checkbox. Pre-migration the table read
+  // errors inside the result, so the card degrades to a run-the-migration note
+  // while the Costs card keeps today's editable single Subcontractor field.
+  const subExpensesLive = !state.subExpensesError;
+  const subLinesSum = subExpenses.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const hasSubLines = subExpenses.length > 0;
+  const subsCardHtml = `
+      <div class="pec-card" id="sec-subs">
+        <h3>Subcontractors <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="sub-sum">${fmtMoneyOrDash(subLinesSum)}</span></span></h3>
+        ${subExpensesLive ? `
+        <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;margin:2px 0 12px">
+          <input type="checkbox" id="subcontractedToggle" ${isSubbed ? 'checked' : ''} style="width:auto">
+          This job is subcontracted <span style="color:var(--muted);font-size:.72rem">(excluded from crew-hours expectations and the crew bonus)</span>
+        </label>
+        ${hasSubLines ? `<table class="pec-table" style="font-size:.78rem">
+          <thead><tr><th>Subcontractor</th><th style="width:150px">Amount</th><th style="width:40px"></th></tr></thead>
+          <tbody>
+            ${subExpenses.map(s => `<tr class="nohover" data-sub-id="${esc(s.id)}">
+              <td><input class="cost-text" data-sub-field="name" value="${esc(s.name || '')}"></td>
+              <td><input class="cost-money" type="number" min="0" step="0.01" data-sub-field="amount" value="${esc(s.amount ?? 0)}" style="width:130px"></td>
+              <td><button class="pec-btn ghost sm" data-sub-delete title="Delete line">✕</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>` : '<div class="pec-empty" style="font-size:.75rem">No subcontractor expense lines yet. Add one below; the total flows into the Subcontractor cost bucket, Total Var, and GP.</div>'}
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <input id="subExpName" class="cost-text" placeholder="Subcontractor name" style="max-width:240px">
+          <input id="subExpAmount" class="cost-money" type="number" min="0" step="0.01" placeholder="Amount" style="width:120px">
+          <button class="pec-btn sm" id="subExpAdd">+ Add expense</button>
+        </div>`
+        : `<div class="pec-empty">Itemized subcontractor expenses need the 2026-07-09 sub expenses migration (Cowork applies it). Until then, keep using the single Subcontractor field in Costs below, exactly as before.</div>`}
       </div>`;
 
   const html = `
@@ -18298,6 +18416,7 @@ async function renderUnifiedJob(jobId) {
           <span style="color:var(--muted);font-size:.7rem;margin-left:8px">Record a product used on the job but not in the estimate. It counts as Materials Used.</span></div>
       </div>
 
+      ${subsCardHtml}
 
       <div class="pec-card" id="sec-bonuses">
         <h3>Crew Bonuses <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span></h3>
@@ -18320,7 +18439,9 @@ async function renderUnifiedJob(jobId) {
           ${derivedField('Materials (est.)', `<span data-uderived="ordered">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span>`, '', 'ordered-box')}
           ${derivedField('Materials Used',    `<span data-uderived="used">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span>`, '', 'used-box')}
           ${moneyInput('Salary & Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
-          ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
+          ${(subExpensesLive && hasSubLines)
+            ? derivedField('Subcontractor', `<span data-uderived="sub">${fmtMoneyOrDash(r.buckets.subcontractor_cost)}</span> <span style="color:var(--muted);font-size:.65rem">sum of the Subcontractors lines</span>`, '', 'sub-box')
+            : moneyInput('Subcontractor',   'subcontractor_cost', 'cost', cost?.subcontractor_cost, subExpensesLive ? 'or itemize in Subcontractors above' : '')}
           ${derivedField('Bonus',           `<span data-uderived="bonus">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span>`, '', 'bonus-box')}
           ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
           ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
@@ -18351,7 +18472,7 @@ async function renderUnifiedJob(jobId) {
   // revenue is intentionally left editable, matching the card list in the spec.)
   const costLocked = costSubmitted && !costAdmin;
   if (costLocked) {
-    ['sec-costs', 'sec-materials', 'sec-bonuses', 'sec-notes'].forEach(id => {
+    ['sec-costs', 'sec-materials', 'sec-bonuses', 'sec-subs', 'sec-notes'].forEach(id => {
       const card = root.querySelector('#' + id);
       if (card) card.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
     });
@@ -18377,6 +18498,10 @@ async function renderUnifiedJob(jobId) {
     set('[data-uderived="used-sum"]', fmtMoneyOrDash(r.buckets.materials_used_cost));
     set('[data-uderived="bonus"]', fmtMoneyOrDash(r.buckets.bonus_cost));
     set('[data-uderived="bonus-sum"]', fmtMoneyOrDash(r.buckets.bonus_cost));
+    // Subcontractor bucket: the Costs-card display and the Subcontractors card
+    // header total track the same synced bucket (sum of lines once lines exist).
+    set('[data-uderived="sub"]', fmtMoneyOrDash(r.buckets.subcontractor_cost));
+    set('[data-uderived="sub-sum"]', fmtMoneyOrDash(r.buckets.subcontractor_cost));
     set('[data-uderived="totalVar"]', fmtMoneyOrDash(r.totalVar));
     set('[data-uderived="totalVarPct"]', fmtPct(r.pct(r.totalVar)));
     set('[data-uderived="gp"]', fmtMoneyOrDash(r.gp));
@@ -18395,10 +18520,10 @@ async function renderUnifiedJob(jobId) {
     // manual actual_hours field (live via r) drives both displays.
     const actEff = bonusCalc.hasActuals ? bonusCalc.totalHours : (r.actHrs || null);
     set('[data-uderived="actHrsEff"]', actEff == null ? '—' : fmtNum(actEff) + ' hrs');
-    const ouEff = (actEff && r.estHrs) ? (actEff - r.estHrs) : null;
-    const ouEffPct = (actEff && r.estHrs) ? ((actEff - r.estHrs) / r.estHrs) : null;
+    const ouEff = (!isSubbed && actEff && r.estHrs) ? (actEff - r.estHrs) : null;
+    const ouEffPct = (!isSubbed && actEff && r.estHrs) ? ((actEff - r.estHrs) / r.estHrs) : null;
     const ouCls = ouEff == null ? '' : (ouEff > 0 ? 'cost-neg' : 'cost-pos');
-    set('[data-uderived="overUnderEff"]', `${ouEff == null ? '—' : fmtNum(ouEff)} (${fmtPct(ouEffPct)})`, ouCls);
+    set('[data-uderived="overUnderEff"]', isSubbed ? 'n/a (subcontracted)' : `${ouEff == null ? '&mdash;' : fmtNum(ouEff)} (${fmtPct(ouEffPct)})`, ouCls);
     // GP / TotalVar coloring on their wrapping cells
     root.querySelectorAll('[data-uderived="gp-box"], [data-uderived="totalVar-box"]').forEach(el => {
       el.classList.remove('cost-neg', 'cost-pos');
@@ -18637,6 +18762,69 @@ async function renderUnifiedJob(jobId) {
     });
   });
 
+  // Subcontractor expense lines (prompt 10). Add is a NON-idempotent insert:
+  // the button is disabled while in flight and addSubExpenseRow uses
+  // withFreshWrite with no blind retry (the bonus-insert rule; a retry could
+  // double the line). Edit and delete are idempotent by id. Every successful
+  // change re-syncs the bucket via syncSubExpenseTotal, so GP moves in place
+  // and the Costs-card display always equals the sum of the lines.
+  const subAddBtn = root.querySelector('#subExpAdd');
+  if (subAddBtn) subAddBtn.addEventListener('click', async () => {
+    const nameEl = root.querySelector('#subExpName');
+    const amtEl = root.querySelector('#subExpAmount');
+    const name = ((nameEl && nameEl.value) || '').trim();
+    const amount = amtEl && amtEl.value !== '' ? Number(amtEl.value) : null;
+    if (!name) { showToast('Enter the subcontractor name.', { ttl: 3000 }); return; }
+    if (amount == null || !Number.isFinite(amount) || amount < 0) { showToast('Enter a dollar amount (0 or more).', { ttl: 4000 }); return; }
+    subAddBtn.disabled = true;
+    const row = await addSubExpenseRow(jobId, name, amount);
+    if (!row) { subAddBtn.disabled = false; return; }
+    syncSubExpenseTotal(jobId);
+    renderUnifiedJob(jobId);
+  });
+  root.querySelectorAll('input[data-sub-field]').forEach(inp => {
+    const handler = async () => {
+      const rowId = inp.closest('tr[data-sub-id]')?.dataset.subId;
+      const field = inp.dataset.subField;
+      if (!rowId) return;
+      let val;
+      // amount is NOT NULL in the table; a cleared input saves as 0.
+      if (inp.type === 'number') val = inp.value === '' ? 0 : Number(inp.value);
+      else val = inp.value.trim();
+      if (field === 'name' && !val) { showToast('Subcontractor name cannot be empty.', { ttl: 3000 }); renderUnifiedJob(jobId); return; }
+      if (field === 'amount' && !(val >= 0)) { showToast('Amount must be 0 or more.', { ttl: 4000 }); renderUnifiedJob(jobId); return; }
+      const ok = await saveSubExpenseField(rowId, jobId, field, val, inp);
+      if (ok && field === 'amount') syncSubExpenseTotal(jobId, inp);
+      refreshUnifiedTotals();
+    };
+    // change only (it fires on commit for text and number inputs): a paired
+    // blur listener would run the handler twice on tab-out, and the invalid-
+    // value branch above re-renders, so a double fire would double the toast.
+    inp.addEventListener('change', handler);
+  });
+  root.querySelectorAll('button[data-sub-delete]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const rowId = btn.closest('tr[data-sub-id]')?.dataset.subId;
+      if (!rowId) return;
+      if (!confirm('Delete this subcontractor expense line?')) return;
+      btn.disabled = true;
+      const ok = await deleteSubExpenseRow(rowId, jobId);
+      if (!ok) { btn.disabled = false; return; }
+      syncSubExpenseTotal(jobId);
+      renderUnifiedJob(jobId);
+    });
+  });
+  // Subcontracted-job flag: idempotent full-value job-column write through
+  // saveJobField (errors surface via its costingSaveFailed toast, e.g. if the
+  // migration has not landed). Re-render so the bonus box, hours expectations,
+  // and finalize behavior flip immediately.
+  const subToggle = root.querySelector('#subcontractedToggle');
+  if (subToggle) subToggle.addEventListener('change', async () => {
+    subToggle.disabled = true;
+    await saveJobField(jobId, 'subcontracted', subToggle.checked, subToggle);
+    renderUnifiedJob(jobId);
+  });
+
   // Hours reconciled button (Phase 3). Stamps who + when on pec_prod_jobs via
   // saveJobField (the same write path as the other job fields). The current user
   // is the resolved signed-in admin. Re-open clears the stamp.
@@ -18708,9 +18896,16 @@ async function renderUnifiedJob(jobId) {
     // are skipped: they cannot be paid. Uses the same bonusCalc that drove the box.
     try {
       const NOTE = 'Labor-savings bonus';
+      // A SUBCONTRACTED job records ZERO crew bonus at finalize (prompt 10): the
+      // delete below still clears the calc's OWN auto rows (note filter only),
+      // so a job flagged after an earlier finalize wipes its stale suggestion
+      // instead of paying it, while hand-entered bonus rows (crew lead, ad hoc)
+      // are never touched and the Bonus Report gets no pending line. bonusCalc
+      // already computes zero bonuses for flagged jobs (null budget); the
+      // explicit guard also covers a stale render-time closure.
       const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').delete().eq('job_id', jobId).eq('note', NOTE), { label: 'bonus-ledger-del' });
       if (del.error) throw del.error;
-      const ledgerRows = bonusCalc.members
+      const ledgerRows = (job.subcontracted ? [] : bonusCalc.members)
         .filter(m => m.bonus > 0 && m.key && !m.key.startsWith('bb:'))
         .map(m => ({ job_id: jobId, crew_member_id: m.key, crew_member_name: m.name, hours_actual: m.hours, amount: Math.round(m.bonus * 100) / 100, note: NOTE }));
       if (ledgerRows.length) {
@@ -18866,6 +19061,7 @@ async function renderJobCosting() {
             <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
             ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
             <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.install_date ? 'Installed ' + esc(j.install_date) : esc(j.status || '')}</span>
+            ${j.subcontracted ? '<span class="pec-badge" style="--pec-badge-bg:#64748b">Subcontracted</span>' : ''}
             ${started ? '<span class="pec-badge" style="--pec-badge-bg:#2563eb">In progress</span>' : '<span class="pec-badge" style="--pec-badge-bg:#d97706">Needs costing</span>'}
           </div>`;
         }).join('')}
@@ -18910,6 +19106,7 @@ async function renderJobCosting() {
             <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
             ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
             <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.costing_submitted_by ? 'by ' + esc(j.costing_submitted_by) + ' · ' : ''}${esc(fmtStamp(j.costing_submitted_at))}</span>
+            ${j.subcontracted ? '<span class="pec-badge" style="--pec-badge-bg:#64748b">Subcontracted</span>' : ''}
             <span class="pec-badge" style="--pec-badge-bg:#d8531c">Awaiting review</span>
           </div>`;
         }).join('') : `<div style="padding:8px 10px;color:var(--rd-muted,var(--muted));font-size:.82rem">No jobs awaiting review</div>`}
@@ -18985,7 +19182,10 @@ async function renderJobCosting() {
   };
   const crewName = (j) => j.crew_id && crewById[j.crew_id] ? esc(crewById[j.crew_id].name) : '<span style="color:var(--muted)">—</span>';
   const sysName = (sys) => sys ? esc(sys.name) : '<span style="color:var(--muted)">—</span>';
-  const custCell = (j) => `<td><strong>${esc(j.customer_name || '—')}</strong><div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address && j.proposal_number ? ' · ' : ''}${j.proposal_number ? '#' + esc(j.proposal_number) : ''}</div></td>`;
+  // Subcontracted chip: costing surfaces only per prompt 10 (this list + the
+  // detail). No badges on Jobs, Schedule, or Invoicing.
+  const subbedChip = (j) => j.subcontracted ? ' <span class="pec-badge" style="--pec-badge-bg:#64748b;font-size:.55rem">Subcontracted</span>' : '';
+  const custCell = (j) => `<td><strong>${j.customer_name ? esc(j.customer_name) : '&mdash;'}</strong>${subbedChip(j)}<div style="color:var(--muted);font-size:.62rem">${esc(j.address || '')}${j.address && j.proposal_number ? ' · ' : ''}${j.proposal_number ? '#' + esc(j.proposal_number) : ''}</div></td>`;
 
   // COMPLETED list: folded in from the old renderCompletedCosting (read-only,
   // clickable). Same columns it had, summarized by the finalized rollups above.
