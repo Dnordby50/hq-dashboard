@@ -118,6 +118,25 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 22:36 MST] Cowork: whats-new-acks migration applied to PROD, all verifies pass; What's New is live pending Dylan's sign-in test
+By: Cowork
+Changed: PROD database only, no code. Executed task 1 of the prompt-14 handoff (495a8b4 entry below).
+1. Applied supabase/migrations/2026-07-09_whats_new_acks.sql via apply_migration. Verify outputs, all four pass:
+   (a) relrowsecurity = true.
+   (b) Exactly TWO policies: wna_insert_own (INSERT) and wna_select_own (SELECT); no update/delete policies exist.
+   (c) UNIQUE (admin_user_id, entry_id) constraint present.
+   (d) Row count 0 (starts empty).
+2. Deploy verified live: fetched https://prescottepoxy.netlify.app/help/whats-new.json in the sandbox; it serves exactly 11 entries, newest first (whats-new-system through estimator-beta).
+3. Content accuracy check (worth recording): the backfill includes entries for prompt 13's pending-ACH invoice behavior and the Messages & Calls job tab. Confirmed against git history that BOTH shipped before prompt 14 (prompt 13: d717488/af5eb16/71cb535/6627e48 including the emailBrandLabel fix noted as previously shipped; Messages & Calls: bd4ff9d). No popup entry promises anything that is not deployed.
+4. Task 2 (Dylan's sign-in test) and task 3 (ack spot-check) are pending Dylan; steps relayed to him in chat.
+Why: the popup was dormant until the ack table existed; it is now armed.
+Files touched: PROJECT-LOG.md only. PROD changed as itemized in 1.
+Next steps: Dylan runs the sign-in test; Cowork spot-checks acks after.
+Handoff to Cowork: after Dylan and one non-admin have signed in and clicked Got it, run: select admin_user_id, count(*) from pec_whats_new_acks group by 1; expect 11 per user; log the result.
+Handoff to Dylan: (1) sign in fresh: popup should list all 11 entries newest first; click Got it; hard refresh: no popup; (2) Help tab: What's New card lists all 11 with dates; (3) ask the help bubble "how do I add a change order": expect an answer naming the Add change order button in the job page Estimate section; (4) have Aron or a PM sign in once: popup exactly once for them; (5) tell Cowork so the ack spot-check runs.
+
+---
+
 ## [2026-07-09 22:19 MST] Cowork: What's New system scoped, prompt 14 written (runs BEFORE prompt 13)
 By: Cowork
 Changed: no code, no PROD data. Dylan asked for a sign-in popup summarizing new CRM changes, with the history accessible later in Help, to train the crew and automate update communication. Scoped through 11 decisions into claude-code-prompt-14-whats-new.md (repo root).
