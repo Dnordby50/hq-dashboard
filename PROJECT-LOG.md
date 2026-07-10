@@ -4,6 +4,19 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 14:57 MST] Cowork: fixed /co/<token> change order links returning "Change order not found"
+By: Cowork
+Changed: netlify/functions/pec-public-change-order.cjs only. Dylan reported the Charles Gerlach change order saved fine but its signature link showed "Change order not found". Diagnosis chain, each step verified live: (1) both Gerlach CO rows exist in prod pec_change_order_signatures with valid tokens and status pending, so the DB and the mint path are fine; (2) reproduced the 404 in Chrome at /co/6938a16b-...; (3) Supabase API logs show ZERO token lookups from the function while a /pay load hits the API within a second, so the function was 404ing before ever querying; (4) calling the function directly as /.netlify/functions/pec-public-change-order?token=6938a16b-... renders the full CO document perfectly. Root cause: Netlify does not reliably interpolate :splat into a toml redirect query string. pec-public-invoice.cjs already carries a documented fallback for this exact quirk (parse the UUID out of event.path / rawUrl, see its handler top around line 387), but pec-public-change-order.cjs, though written to mirror it, only reads event.queryStringParameters.token, so the empty token failed the UUID shape check and returned notFoundPage with no DB traffic. Fix: ported the same path-parsing fallback into the GET branch. The POST /api/co/sign path needs no change (token travels in the JSON body, no splat involved). node --check passes; the fallback was unit-tested against the real Gerlach URL shape (extracts and passes the UUID regex); em dash scan of the file = 0.
+Why: customers cannot sign change orders if the approval link 404s; the Gerlach CO ($950 seal control joints, plus the $1,250 acid wash) is waiting on exactly this.
+Files touched: netlify/functions/pec-public-change-order.cjs, PROJECT-LOG.md
+Next steps: push to deploy (Cowork does not push without Dylan's say-so). After the deploy goes green, the existing links work as-is, nothing needs re-minting. Claude Code: consider whether this warrants a whats-new entry (judgment call: it makes an already-announced feature work as announced; I did not touch help/whats-new.json because it has uncommitted in-flight changes from the active Claude Code session). Also consider hoisting the token-extraction fallback into _pec-supabase.cjs so the next public token page cannot re-introduce this.
+Handoff to Cowork: None
+Handoff to Dylan: say the word and I push, or let Claude Code's next push carry it. After deploy, open the Gerlach job, click View on either change order, confirm the document renders, then send the link.
+
+Note on commit hygiene: committed ONLY the function file and this log entry (not git add ., per the commit rules' spirit) because index.html and help/whats-new.json carry uncommitted changes from a concurrently running Claude Code session that are not mine to commit.
+
+---
+
 ## [2026-07-10 14:53 MST] Claude Code: estimate total, Add change order, and Download PDF moved into the job toolbar
 By: Claude Code
 Changed: index.html, help/whats-new.json. Commit 5fe137f, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's ask: "on job detail, move estimate total price, change order, and download pdf next to other buttons on the top." Follow-up to this morning's f08d49c (bolder, left-grouped toolbar).

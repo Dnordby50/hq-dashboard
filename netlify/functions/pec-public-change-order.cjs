@@ -247,8 +247,19 @@ exports.handler = async (event) => {
     }
   }
 
-  // GET /co/<token>: render the document.
-  const token = (event.queryStringParameters || {}).token;
+  // GET /co/<token>: render the document. Token normally arrives as ?token=
+  // (set by the /co/* rewrite), but Netlify does NOT reliably interpolate
+  // :splat into a toml redirect's query string (the same platform quirk
+  // pec-public-invoice.cjs works around at its handler top), so fall back to
+  // parsing the UUID out of the request path (event.path / rawUrl is the
+  // original /co/<token>).
+  let token = (event.queryStringParameters || {}).token || '';
+  if (!token) {
+    let rawUrlPath = '';
+    try { rawUrlPath = event.rawUrl ? new URL(event.rawUrl).pathname : ''; } catch (_) {}
+    const m = `${event.path || ''} ${rawUrlPath}`.match(/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/);
+    if (m) token = m[1];
+  }
   try {
     const loaded = await loadCo(token);
     if (!loaded || !loaded.co) return notFoundPage();
