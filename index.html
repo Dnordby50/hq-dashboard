@@ -1620,6 +1620,76 @@ body:not(.pec-portal-mode) #tab-prescott-crm .prod-msg-err { color: var(--rd-dan
     white-space: nowrap;
   }
 }
+
+/* ---------- Job detail estimate redesign (Dylan 2026-07-10, DripJobs-style) ----------
+   Shared line-item table primitives + change-order boxes. Scoped to the CRM tab,
+   specificity over !important per this file's skin convention. */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-td-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-sub {
+  font-size: .74rem;
+  color: var(--rd-muted);
+  margin-top: 2px;
+  max-width: 520px;
+  font-weight: 400;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-total-row td {
+  border-top: 2px solid var(--rd-line);
+  border-bottom: none;
+  font-weight: 700;
+}
+/* The grand-total cell highlight from the reference design: soft accent tint. */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-grand-cell {
+  background: var(--rd-accent-soft);
+  font-weight: 700;
+}
+@media (max-width: 720px) {
+  body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-hide-sm { display: none; }
+}
+
+/* Change order boxes: accent-bordered card, gray header band with title + status
+   pill, single-line items table, actions bottom right. One box per signature row;
+   shared by the job detail and the invoice view (same renderer). */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-co-box {
+  border: 1.5px solid var(--rd-accent);
+  border-radius: 14px;
+  background: var(--rd-card);
+  overflow: hidden;
+  margin-bottom: 14px;
+  box-shadow: var(--rd-shadow-sm);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-co-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--rd-soft);
+  border-bottom: 1px solid var(--rd-line);
+  font-size: .95rem;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-co-body { padding: 4px 16px 0; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-co-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding: 12px 16px 14px;
+}
+/* Outlined-accent button variant (the reference's "Mark as Accepted" chrome),
+   used for the send-link actions. */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.accent-line {
+  color: var(--rd-accent);
+  border-color: var(--rd-accent);
+  background: #fff;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.accent-line:hover {
+  background: var(--rd-accent-soft);
+  color: var(--rd-accent);
+}
 </style>
 
 <!-- ============================================================
@@ -8657,28 +8727,61 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
   }
   const brand = smsBrandFromCompany(customer?.company);
   const fmtStamp = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d.getTime()) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''; };
-  el.innerHTML = `
-    <div class="pec-card">
-      <h3>Change orders <span style="color:var(--muted);font-size:.72rem;font-weight:400">${rows.length} · customer approval links</span></h3>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        ${rows.map(r => `
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px">
-            <div style="flex:1;min-width:180px">
-              <strong style="font-size:.85rem">${esc(r.title)}</strong>
-              <div style="font-size:.72rem;color:var(--muted)">${esc([r.system_name, r.sqft ? Number(r.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ') || 'No production scope')} · ${invUSD(invNum(r.amount))}</div>
-            </div>
-            ${r.status === 'signed'
-              ? `<span class="pec-badge" style="--pec-badge-bg:#16a34a" title="Signed by ${esc(r.signed_name || '')}">Signed ${esc(fmtStamp(r.signed_at))}</span>`
-              : '<span class="pec-badge" style="--pec-badge-bg:#d97706">Pending signature</span>'}
-            <span style="display:flex;gap:6px;flex-wrap:wrap">
-              <button class="pec-btn sm ghost" data-co-view="${esc(r.token)}">View</button>
-              <button class="pec-btn sm ghost" data-co-copy="${esc(r.token)}">Copy link</button>
-              ${r.status === 'signed' ? '' : `<button class="pec-btn sm" data-co-email="${esc(r.token)}">Email link</button>
-              <button class="pec-btn sm" data-co-text="${esc(r.token)}">Text link</button>`}
-            </span>
-          </div>`).join('')}
+  // One accent-bordered box per CO (DripJobs-style, Dylan 2026-07-10): header
+  // band with derived #N (rows are created_at-ordered on both mount surfaces,
+  // so numbering is stable) + status pill, the CO's single line as a 6-column
+  // items table (qty is always 1.00 and tax always $0.00: COs are lump-sum,
+  // the columns exist to match the reference layout), then the REAL actions
+  // bottom right. The data-co-* attributes are the wiring contract with the
+  // handler block below; do not rename them. Buttons stay text-only because
+  // the send handlers rewrite textContent (Sending... then restore), which
+  // would silently strip any inline icon after the first use.
+  el.innerHTML = rows.map((r, i) => {
+    const amt = invUSD(invNum(r.amount));
+    const sub = [r.system_name, r.sqft ? Number(r.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ');
+    return `
+    <div class="pec-co-box">
+      <div class="pec-co-head">
+        <strong>Change Order #${i + 1}</strong>
+        ${r.status === 'signed'
+          ? `<span class="pec-age pec-age-green" title="Signed by ${esc(r.signed_name || '')}">Signed ${esc(fmtStamp(r.signed_at))}</span>`
+          : '<span class="pec-age pec-age-yellow">Pending signature</span>'}
+      </div>
+      <div class="pec-co-body">
+        <div class="pec-scroll-x"><table class="pec-table">
+          <thead><tr><th>Product / Service</th><th class="pec-td-num pec-li-hide-sm">Quantity</th><th class="pec-td-num pec-li-hide-sm">Price</th><th class="pec-td-num pec-li-hide-sm">Subtotal</th><th class="pec-td-num pec-li-hide-sm">Tax</th><th class="pec-td-num">Total</th></tr></thead>
+          <tbody>
+            <tr class="nohover">
+              <td><strong>${esc(r.title)}</strong>
+                ${sub ? `<div class="pec-li-sub">${esc(sub)}</div>` : ''}
+                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}</td>
+              <td class="pec-td-num pec-li-hide-sm">1.00</td>
+              <td class="pec-td-num pec-li-hide-sm">${amt} / Ea</td>
+              <td class="pec-td-num pec-li-hide-sm">${amt}</td>
+              <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+              <td class="pec-td-num">${amt}</td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="pec-li-total-row nohover">
+              <td>Total</td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-td-num pec-li-hide-sm">${amt}</td>
+              <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+              <td class="pec-td-num pec-li-grand-cell">${amt}</td>
+            </tr>
+          </tfoot>
+        </table></div>
+      </div>
+      <div class="pec-co-actions">
+        <button class="pec-btn sm ghost" data-co-copy="${esc(r.token)}">Copy link</button>
+        ${r.status === 'signed' ? '' : `<button class="pec-btn sm accent-line" data-co-email="${esc(r.token)}">Email link</button>
+        <button class="pec-btn sm accent-line" data-co-text="${esc(r.token)}">Text link</button>`}
+        <button class="pec-btn sm primary" data-co-view="${esc(r.token)}">View</button>
       </div>
     </div>`;
+  }).join('');
   const rowByToken = Object.fromEntries(rows.map(r => [String(r.token), r]));
   el.querySelectorAll('[data-co-view]').forEach(b => b.addEventListener('click', () => window.open('/co/' + b.dataset.coView, '_blank')));
   el.querySelectorAll('[data-co-copy]').forEach(b => b.addEventListener('click', () => {
