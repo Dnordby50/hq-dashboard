@@ -464,13 +464,6 @@ textarea{resize:vertical;min-height:60px}
 .pec-btn.ghost{background:transparent}
 .pec-btn.sm{padding:4px 10px;font-size:.7rem}
 .pec-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px}
-/* Job-detail estimate: heavy divider between consecutive line-item cards only.
-   Scoped to #jobAreas + .pec-line-card so the Estimate header card (also a
-   .pec-card inside #jobAreas) and every other card in the app keep the normal
-   1px border. The finalized table gets the same clarity with a 2px rule
-   between rows (on top of the standard 1px td border-bottom). */
-#jobAreas .pec-line-card + .pec-line-card{border-top:3px solid var(--accent)}
-#jobAreas .pec-table tbody tr + tr td{border-top:2px solid rgba(129,140,248,.45)}
 .pec-card h3{font-family:var(--sans);font-weight:700;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
 .pec-grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .pec-stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
@@ -1689,6 +1682,111 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.accent-line {
 body:not(.pec-portal-mode) #tab-prescott-crm .pec-btn.accent-line:hover {
   background: var(--rd-accent-soft);
   color: var(--rd-accent);
+}
+
+/* Line Items card: header row, note line, accordion name-toggles, editor row,
+   and the footer button rows. The table deliberately has NO .pec-scroll-x
+   wrapper (the inline editor row must stay full-width); QTY/PRICE/SUBTOTAL/TAX
+   columns hide under 720px instead (.pec-li-hide-sm above). */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-head h3,
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals-head {
+  font-size: 1.15rem;
+  margin-bottom: 6px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-note {
+  font-size: .78rem;
+  color: var(--rd-muted);
+  margin-bottom: 10px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-table th:first-child { width: 42%; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-name {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--rd-accent);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-name:hover { text-decoration: underline; }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-caret {
+  display: inline-block;
+  font-size: .7rem;
+  transition: transform .15s;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-name[aria-expanded="true"] .pec-li-caret { transform: rotate(90deg); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-desc {
+  max-height: 64px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-editor-row td {
+  padding: 0;
+  background: var(--rd-softer);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-editor {
+  padding: 16px 18px;
+  border-left: 3px solid var(--rd-accent);
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-editor-bar {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-li-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* Totals card: right-aligned Subtotal/Change orders/Tax rows over the dark
+   grand-total band (same hero gradient as the /pay page and brand headers). */
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals-head {
+  border-bottom: 1px solid var(--rd-line);
+  padding-bottom: 8px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals {
+  max-width: 380px;
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: .9rem;
+  font-variant-numeric: tabular-nums;
+}
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals-row .lbl { color: var(--rd-muted); }
+body:not(.pec-portal-mode) #tab-prescott-crm .pec-totals-band {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: linear-gradient(160deg, var(--rd-accent-hero), var(--rd-accent-hero-2));
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.05rem;
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-top: 10px;
+  font-variant-numeric: tabular-nums;
 }
 </style>
 
@@ -10918,6 +11016,10 @@ async function renderJobDetailInner(id) {
   // their invoice representation is the preserved is_change_order line item).
   // Pre-migration the column is undefined and nothing is filtered.
   let areas = (areasRes.data || []).filter(a => !a.is_change_order).map(buildArea);
+  // Which line's accordion editor is open in the Line Items table (null =
+  // all collapsed). Lives here, not in renderAreas, so it survives the
+  // repaints that swatch clicks / system changes / custom rows trigger.
+  let openLineIdx = null;
   if (!areas.length) {
     areas = [buildArea({ name: 'Main', sqft: job.sqft ?? '', system_type_id: job.system_type_id || '' })];
   }
@@ -11673,25 +11775,119 @@ async function renderJobDetailInner(id) {
     };
 
     const finalized = !!job.finalized;
-    // The estimate's own change-order lines live only on jobs.line_items (added
-    // from the invoice; areas have no materials). Surface them read-only here so
-    // the locked summary total matches the invoice.
+    // Change-order lines live on jobs.line_items (billing truth: unsigned COs
+    // count too, because billing hits at CO save; the signature is
+    // documentation). They feed the Totals card and the CO boxes below; they
+    // are no longer rows inside the Line Items table.
     const changeOrderLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order);
+    const coSum = invRound2(changeOrderLines.reduce((s, l) => s + lineItemPrice(l), 0));
     const sysNameFor = (sid) => (systemTypes.find(s => s.id === sid) || {}).name || '—';
 
-    // Header card: title + Finalize state (Reopen when locked). The live total
-    // and the Add change order / Download PDF buttons live in the top toolbar
-    // (moved there per Dylan 2026-07-10); wireEstPdfBtn below still owns their
-    // behavior. The data-co-card slot under it hosts the shared change-order
-    // list (badges + signature-link actions), mounted async so the page never
-    // blocks on it.
-    const headerCard = `
+    // ---- Line Items table (DripJobs-style, Dylan 2026-07-10) ----
+    // One row per estimate line. Editable mode: the line name is a toggle that
+    // expands the FULL existing editor (system, colors, sqft, price, scope) in
+    // an accordion row directly under it, so all the data-area-*/data-slot-*
+    // wiring below keeps finding its inputs unchanged. Quantity is always 1.00
+    // and tax always $0.00: lines are lump-sum; those columns exist to match
+    // the reference layout, nothing is fabricated beyond constants.
+    const liRow = (a, idx) => {
+      const placeholderName = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
+      const amt = invUSD(Number(a.price) || 0);
+      const liSub = [a.system_type_id ? sysNameFor(a.system_type_id) : '', (a.sqft !== '' && a.sqft != null) ? Number(a.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ');
+      const nameCell = finalized
+        ? `<strong>${esc(a.name || placeholderName)}</strong>
+           ${liSub ? `<div class="pec-li-sub">${esc(liSub)}</div>` : ''}
+           ${a.description ? `<div class="pec-li-sub pec-li-desc">${esc(a.description)}</div>` : ''}`
+        : `<button type="button" class="pec-li-name" data-li-toggle="${idx}" aria-expanded="${openLineIdx === idx}"><span class="pec-li-caret">&#9656;</span><span data-li-name-label="${idx}">${esc(a.name || placeholderName)}</span></button>
+           ${liSub ? `<div class="pec-li-sub">${esc(liSub)}</div>` : ''}`;
+      return `<tr class="nohover">
+        <td>${nameCell}</td>
+        <td class="pec-td-num pec-li-hide-sm">1.00</td>
+        <td class="pec-td-num pec-li-hide-sm" data-li-price="${idx}">${amt} / Ea</td>
+        <td class="pec-td-num pec-li-hide-sm" data-li-subtotal="${idx}">${amt}</td>
+        <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+        <td class="pec-td-num" data-li-total="${idx}">${amt}</td>
+      </tr>`;
+    };
+
+    // The accordion editor row: the pre-redesign line card's innards, verbatim,
+    // inside a full-width table row. Same-as-line-1 / Remove ride in the
+    // editor's top bar, so removing a line means opening it first.
+    const liEditorRow = (a, idx) => {
+      const placeholderName = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
+      const slots = reorderForFlakeSystem(slotsBySystem[a.system_type_id] || []);
+      const slotsBody = a.system_type_id
+        ? (slots.map(s => slotHtml(a, idx, s)).join('') || '<div style="margin-top:10px;color:var(--muted);font-size:.78rem">This system has no recipe slots yet&mdash;use Custom options below, or add slots in Material Catalog.</div>')
+        : '';
+      return `
+        <tr class="pec-li-editor-row nohover"><td colspan="6">
+          <div class="pec-li-editor">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+              <input data-area-name="${idx}" value="${esc(a.name)}" placeholder="${placeholderName}" style="flex:1;min-width:120px;font-size:1rem;font-weight:600">
+              <div style="display:flex;gap:6px;align-items:center">
+                ${idx > 0 ? `<button type="button" class="pec-btn ghost sm" data-area-mirror="${idx}" title="Copy the system + colors from line 1">Same as line 1</button>` : ''}
+                ${areas.length > 1 ? `<button type="button" class="pec-btn ghost sm" data-area-remove="${idx}">Remove</button>` : ''}
+              </div>
+              <div style="display:flex;gap:4px;align-items:center" title="Line price">
+                <span style="color:var(--muted);font-weight:600">$</span>
+                <input type="number" step="0.01" data-area-price="${idx}" value="${esc(a.price)}" placeholder="0.00" style="width:120px;text-align:right;font-weight:600">
+              </div>
+            </div>
+            <div class="pec-row-2">
+              <div class="pec-field"><label>Square footage</label><input type="number" min="0" step="1" data-area-sqft="${idx}" value="${esc(a.sqft)}"></div>
+              <div class="pec-field"><label>System type</label><select data-area-system="${idx}">${sysOptions(a.system_type_id)}</select></div>
+            </div>
+            ${slotsBody}
+            ${customHtml(a, idx)}
+            <div class="pec-field" style="margin-top:12px"><label>Detail / scope of work</label><textarea data-area-desc="${idx}" rows="3" placeholder="What's included in this line (paste from the proposal)" style="width:100%;resize:vertical;overflow-y:auto">${esc(a.description)}</textarea></div>
+            <div class="pec-li-editor-bar"><button type="button" class="pec-btn sm" data-li-close="${idx}">Done</button></div>
+          </div>
+        </td></tr>`;
+    };
+
+    const estSub = areaPriceSum();
+    const lineItemsCard = `
       <div class="pec-card">
-        <h3 style="margin:0">Estimate ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
+        <div class="pec-li-head">
+          <h3>Line Items ${finalized ? '<span class="pec-age pec-age-green">Finalized</span>' : ''}</h3>
+          ${finalized ? '<button type="button" class="pec-btn ghost sm" id="jobReopen">Reopen</button>' : ''}
+        </div>
         ${finalized
-          ? `<div style="margin-top:8px;font-size:.78rem;color:var(--muted)">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked. Use Add change order to adjust the total; scope-mode change orders flow to production and costing. <button class="pec-btn ghost sm" id="jobReopen" style="margin-left:8px">Reopen</button></div>`
-          : `<div style="margin-top:6px;font-size:.78rem;color:var(--muted)">Each line is one area: system + colors + square footage + price. The line prices sum to the job price, and the invoice + work order build from these lines. Use "Same as line 1" to copy the first line's system and colors.</div>`}
-      </div><div data-co-card></div>`;
+          ? `<div class="pec-li-note">Finalized${job.finalized_at ? ' ' + fmtDate(job.finalized_at) : ''}. The estimate is locked. Use Add change order in the top toolbar to adjust the total; scope-mode change orders flow to production and costing.</div>`
+          : `<div class="pec-li-note">Each line is one area. Click a line name to edit its system, colors, square footage, price, and scope. Line prices sum to the job price; the invoice and work order build from these lines.</div>`}
+        <table class="pec-table pec-li-table">
+          <thead><tr><th>Product / Service</th><th class="pec-td-num pec-li-hide-sm">Quantity</th><th class="pec-td-num pec-li-hide-sm">Price</th><th class="pec-td-num pec-li-hide-sm">Subtotal</th><th class="pec-td-num pec-li-hide-sm">Tax</th><th class="pec-td-num">Total</th></tr></thead>
+          <tbody>
+            ${areas.map((a, idx) => liRow(a, idx) + (!finalized && openLineIdx === idx ? liEditorRow(a, idx) : '')).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="pec-li-total-row nohover">
+              <td>Total</td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-td-num pec-li-hide-sm" id="liSumSub">${invUSD(estSub)}</td>
+              <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+              <td class="pec-td-num pec-li-grand-cell" id="liSumGrand">${invUSD(estSub)}</td>
+            </tr>
+          </tfoot>
+        </table>
+        ${finalized ? '' : '<div class="pec-li-footer"><button type="button" class="pec-btn sm" id="jobAddArea">+ Add line</button></div>'}
+      </div>`;
+
+    // ---- Totals card ----
+    // Subtotal = estimate lines; Change orders = line_items CO sum; the dark
+    // band's grand total = the same derivation saveJob writes to jobs.price.
+    const totalsCard = `
+      <div class="pec-card">
+        <h3 class="pec-totals-head">Totals</h3>
+        <div class="pec-totals">
+          <div class="pec-totals-row"><span class="lbl">Subtotal</span><span id="estTotalsSub">${invUSD(estSub)}</span></div>
+          ${coSum > 0 ? `<div class="pec-totals-row"><span class="lbl">Change orders</span><span>${invUSD(coSum)}</span></div>` : ''}
+          <div class="pec-totals-row"><span class="lbl">Tax</span><span>$0.00</span></div>
+        </div>
+        <div class="pec-totals-band"><span>Total</span><span id="estTotalsGrand">${invUSD(invRound2(estSub + coSum))}</span></div>
+        ${finalized ? '' : '<div class="pec-li-footer" style="justify-content:flex-end"><button type="button" class="pec-btn primary sm" id="jobFinalize">Finalize estimate</button></div>'}
+      </div>`;
 
     // Bind the "Download PDF" + "Add change order" buttons (in the top toolbar)
     // in both the finalized and editable paths. Total is recomputed at click
@@ -11716,78 +11912,59 @@ async function renderJobDetailInner(id) {
       mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, onChanged: () => renderJobDetail(job.id) });
     };
 
+    // One shared paint for both modes: Line Items card, then the change-order
+    // boxes mount slot, then Totals. Finalized just skips the editing wiring.
+    host.innerHTML = lineItemsCard + '<div data-co-card></div>' + totalsCard;
+
+    wireEstPdfBtn();
+
     if (finalized) {
-      // Read-only summary (line · system · sqft · detail · price) + the
-      // invoice-added change orders, mirroring the prior finalized view.
-      host.innerHTML = headerCard + `
-        <div class="pec-card">
-          <div class="pec-scroll-x"><table class="pec-table">
-            <thead><tr><th>Line</th><th>System</th><th style="text-align:right">Sq ft</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
-            <tbody>
-              ${areas.map((a, idx) => `<tr class="nohover">
-                <td>${esc(a.name || (idx === 0 ? 'Main Area' : `Area ${idx+1}`))}</td>
-                <td>${esc(sysNameFor(a.system_type_id))}</td>
-                <td style="text-align:right">${a.sqft !== '' && a.sqft != null ? esc(a.sqft) : '—'}</td>
-                <td style="font-size:.8rem;color:var(--muted)"><div style="max-height:84px;overflow-y:auto;white-space:pre-wrap">${esc(a.description || '')}</div></td>
-                <td style="text-align:right">${invUSD(Number(a.price) || 0)}</td></tr>`).join('')}
-              ${changeOrderLines.map(l => `<tr class="nohover">
-                <td>${esc(l.name || '—')} <span class="pec-age pec-age-yellow">Change order</span></td>
-                <td>—</td><td style="text-align:right">—</td>
-                <td style="font-size:.8rem;color:var(--muted)"><div style="max-height:84px;overflow-y:auto;white-space:pre-wrap">${esc(l.description || '')}</div></td>
-                <td style="text-align:right">${invUSD(lineItemPrice(l))}</td></tr>`).join('')}
-            </tbody>
-          </table></div>
-        </div>`;
-      wireEstPdfBtn();
       renderBudget();
       wireEstimateControls();
       return;
     }
 
-    host.innerHTML = headerCard + areas.map((a, idx) => {
-      const placeholderName = idx === 0 ? 'Main Area' : `Area ${idx+1}`;
-      const slots = reorderForFlakeSystem(slotsBySystem[a.system_type_id] || []);
-      const slotsBody = a.system_type_id
-        ? (slots.map(s => slotHtml(a, idx, s)).join('') || '<div style="margin-top:10px;color:var(--muted);font-size:.78rem">This system has no recipe slots yet — use Custom options below, or add slots in Material Catalog.</div>')
-        : '';
-      return `
-        <div class="pec-card pec-line-card">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
-            <input data-area-name="${idx}" value="${esc(a.name)}" placeholder="${placeholderName}" style="flex:1;min-width:120px;font-size:1rem;font-weight:600">
-            <div style="display:flex;gap:6px;align-items:center">
-              ${idx > 0 ? `<button type="button" class="pec-btn ghost sm" data-area-mirror="${idx}" title="Copy the system + colors from line 1">Same as line 1</button>` : ''}
-              ${areas.length > 1 ? `<button type="button" class="pec-btn ghost sm" data-area-remove="${idx}">Remove</button>` : ''}
-            </div>
-            <div style="display:flex;gap:4px;align-items:center" title="Line price">
-              <span style="color:var(--muted);font-weight:600">$</span>
-              <input type="number" step="0.01" data-area-price="${idx}" value="${esc(a.price)}" placeholder="0.00" style="width:120px;text-align:right;font-weight:600">
-            </div>
-          </div>
-          <div class="pec-row-2">
-            <div class="pec-field"><label>Square footage</label><input type="number" min="0" step="1" data-area-sqft="${idx}" value="${esc(a.sqft)}"></div>
-            <div class="pec-field"><label>System type</label><select data-area-system="${idx}">${sysOptions(a.system_type_id)}</select></div>
-          </div>
-          ${slotsBody}
-          ${customHtml(a, idx)}
-          <div class="pec-field" style="margin-top:12px"><label>Detail / scope of work</label><textarea data-area-desc="${idx}" rows="3" placeholder="What's included in this line (paste from the proposal)" style="width:100%;resize:vertical;overflow-y:auto">${esc(a.description)}</textarea></div>
-        </div>`;
-    }).join('') + `
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-        <button type="button" class="pec-btn sm" id="jobAddArea">+ Add line</button>
-        <span style="flex:1"></span>
-        <button type="button" class="pec-btn primary sm" id="jobFinalize">Finalize estimate</button>
-      </div>`;
-
-    wireEstPdfBtn();
-
     const parse = (v) => { const p = v.split('|'); return { a: areas[+p[0]], rest: p.slice(1) }; };
 
+    // Accordion toggles. Expand/collapse repaints (cheap, same idiom as the
+    // swatch/system handlers below); typing inside the editor never repaints.
+    // Focus is restored after the repaint so keyboard users are not dropped.
+    host.querySelectorAll('[data-li-toggle]').forEach(el => el.addEventListener('click', () => {
+      const idx = +el.dataset.liToggle;
+      openLineIdx = (openLineIdx === idx) ? null : idx;
+      renderAreas();
+      const f = openLineIdx == null ? host.querySelector(`[data-li-toggle="${idx}"]`) : host.querySelector(`[data-area-name="${idx}"]`);
+      if (f) f.focus();
+    }));
+    host.querySelectorAll('[data-li-close]').forEach(el => el.addEventListener('click', () => {
+      const idx = +el.dataset.liClose;
+      openLineIdx = null;
+      renderAreas();
+      const f = host.querySelector(`[data-li-toggle="${idx}"]`);
+      if (f) f.focus();
+    }));
     host.querySelectorAll('[data-area-sqft]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaSqft].sqft = el.value; }));
     // Line name / detail / price mutate in place (no re-render) so the inputs
-    // keep focus while typing. Price additionally updates the live total.
-    host.querySelectorAll('[data-area-name]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaName].name = el.value; }));
+    // keep focus while typing. Name and price ALSO mirror into the line's
+    // table row (textContent writes never steal focus); price then updates
+    // the live totals.
+    host.querySelectorAll('[data-area-name]').forEach(el => el.addEventListener('input', () => {
+      const i = +el.dataset.areaName;
+      areas[i].name = el.value;
+      const lbl = host.querySelector(`[data-li-name-label="${i}"]`);
+      if (lbl) lbl.textContent = el.value || (i === 0 ? 'Main Area' : `Area ${i+1}`);
+    }));
     host.querySelectorAll('[data-area-desc]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaDesc].description = el.value; }));
-    host.querySelectorAll('[data-area-price]').forEach(el => el.addEventListener('input', () => { areas[+el.dataset.areaPrice].price = el.value; recalcEstimateTotal(); }));
+    host.querySelectorAll('[data-area-price]').forEach(el => el.addEventListener('input', () => {
+      const i = +el.dataset.areaPrice;
+      areas[i].price = el.value;
+      const amt = invUSD(Number(el.value) || 0);
+      const put = (sel, v) => { const c = host.querySelector(sel); if (c) c.textContent = v; };
+      put(`[data-li-price="${i}"]`, amt + ' / Ea');
+      put(`[data-li-subtotal="${i}"]`, amt);
+      put(`[data-li-total="${i}"]`, amt);
+      recalcEstimateTotal();
+    }));
     // "Same as line 1": copy line 1's system + colors (recipe picks) into this
     // line. Square footage, price, name and detail stay per-line.
     host.querySelectorAll('[data-area-mirror]').forEach(el => el.addEventListener('click', () => {
@@ -11844,7 +12021,11 @@ async function renderJobDetailInner(id) {
     }));
     host.querySelectorAll('[data-area-remove]').forEach(el => el.addEventListener('click', () => {
       if (areas.length <= 1) return;
-      areas.splice(+el.dataset.areaRemove, 1);
+      const ri = +el.dataset.areaRemove;
+      areas.splice(ri, 1);
+      // Keep the accordion pointed at the same LINE, not the same index.
+      if (openLineIdx === ri) openLineIdx = null;
+      else if (openLineIdx != null && openLineIdx > ri) openLineIdx--;
       renderAreas();
     }));
     host.querySelectorAll('[data-custom-label]').forEach(el => el.addEventListener('input', () => {
@@ -11874,19 +12055,32 @@ async function renderJobDetailInner(id) {
       const next = { id: null, name: '', sqft: '', system_type_id: inheritSystem, topcoat_cure_speed: '', price: '', description: '', picks: {}, customs: [] };
       seedAreaDefaults(next);
       areas.push(next);
+      // A new line opens ready to edit.
+      openLineIdx = areas.length - 1;
       renderAreas();
+      const f = host.querySelector(`[data-area-name="${openLineIdx}"]`);
+      if (f) f.focus();
     });
     wireEstimateControls();
     // Budget recomputes any time renderAreas paints, so it tracks the user's
     // sqft / system / flake edits live without waiting for a Save.
     renderBudget();
   }
-  // Keep the live Estimate total + the header price field in sync with the
-  // per-line prices as they're typed (no re-render needed).
+  // Single writer for every live money surface: the toolbar total, the header
+  // price field, the Line Items total row, and the Totals card. Null-guarded
+  // id lookups, so it works no matter which surfaces are currently mounted.
+  // Called on every price keystroke AND after every renderAreas repaint (via
+  // wireEstPdfBtn), which is what keeps the add/remove/mirror flows in sync.
   function recalcEstimateTotal() {
     const t = areaPriceSum();
+    const co = invRound2(((Array.isArray(job.line_items) ? job.line_items : []).filter(l => l.is_change_order)).reduce((s, l) => s + lineItemPrice(l), 0));
+    const put = (id, v) => { const el = $(id); if (el) el.textContent = v; };
     const tEl = $('estimateTotal'); if (tEl) tEl.textContent = invUSD(t);
     const pf = $('jobPrice'); if (pf) pf.value = t;
+    put('liSumSub', invUSD(t));
+    put('liSumGrand', invUSD(t));
+    put('estTotalsSub', invUSD(t));
+    put('estTotalsGrand', invUSD(invRound2(t + co)));
   }
   // Bind the Finalize (editable) / Reopen (locked) buttons rendered inside the
   // Estimate header by renderAreas. Both go through saveJob / doReopen.
@@ -12007,7 +12201,15 @@ async function renderJobDetailInner(id) {
             slotKind: kind, minSelect: slot.min_select, picksForSlot: pk,
           });
           const sel = `[data-slot-select^="${i}|${slot.id}"], [data-slot-choice^="${i}|${slot.id}"], [data-slot-text^="${i}|${slot.id}"], [data-slot-swatch^="${i}|${slot.id}"]`;
-          const anchor = root.querySelector(sel);
+          let anchor = root.querySelector(sel);
+          // Line editors are accordion rows now: a collapsed line has no slot
+          // DOM to anchor the outline/scroll to. Expand the offending line and
+          // re-query so the user lands on the actual missing field.
+          if (!anchor && openLineIdx !== i) {
+            openLineIdx = i;
+            renderAreas();
+            anchor = root.querySelector(sel);
+          }
           const target = anchor ? (anchor.closest('div[style*="margin-top"]') || anchor) : null;
           if (target) {
             target.classList.add('pec-slot-missing');
