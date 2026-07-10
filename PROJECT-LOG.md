@@ -15,6 +15,8 @@ Why: two hand-synced copies of a platform-quirk workaround is how the /co/ 404 h
 Files touched: netlify/functions/_pec-supabase.cjs, netlify/functions/pec-public-invoice.cjs, netlify/functions/pec-public-change-order.cjs, PROJECT-LOG.md.
 Next steps: push (this push also carries Cowork's unpushed b5ba809, per their entry's "let Claude Code's next push carry it"), wait for the Netlify deploy to go green, then verify BOTH customer-facing URLs render: /pay/57ba3edc-... (the $1 ACH fixture) and /co/6938a16b-... (the Gerlach CO). Tokens truncated here on purpose: this log is in a public repo and the full token IS the access credential. Result recorded in a follow-up line below once checked.
 
+Follow-up (16:33 MST, deploy of 079ae0c live): verified through the customer-facing URLs, not the direct function URL. /co/6938a16b-... renders the full Change Order document (page title "Change Order · Prescott Epoxy Company", signature UI present), and /pay/57ba3edc-... renders "Invoice ACH-TEST-1". Both pass. This also confirms Cowork's b5ba809 fix live for the Gerlach CO link.
+
 Handoff to Cowork: none.
 
 Handoff to Dylan: none. After this deploy the Gerlach CO link works; send it when ready.
