@@ -1,5 +1,17 @@
 [
   {
+    "id": "job-detail-redesign",
+    "date": "2026-07-10",
+    "title": "The job page got a clean new layout",
+    "summary": "The estimate is now a Line Items table with the totals at a glance, each change order sits in its own orange box with its status, and the whole page is tidier: notes and job card fields side by side, and a Save bar that follows you as you scroll.",
+    "howto": [
+      "Open any job. The estimate shows as a Line Items table; click a line name to open and edit that line, then click Done.",
+      "Each change order has its own box with a Pending signature or Signed pill and its send buttons.",
+      "The Totals section at the bottom of the estimate shows Subtotal, Change orders, and the grand Total in the dark bar.",
+      "Save job now rides in a bar at the bottom of the screen, so you never scroll to find it."
+    ]
+  },
+  {
     "id": "job-toolbar-estimate-actions",
     "date": "2026-07-10",
     "title": "Estimate total, Add change order, and Download PDF moved to the top of the job",
