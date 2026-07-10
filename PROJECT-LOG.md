@@ -29,6 +29,24 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 18:26 MST] Cowork: stripe-pending migration applied to PROD, all verifies pass; Dylan clear to flip ACH after deploy check
+By: Cowork
+Changed: PROD database only, no code. Executed task 1 of the prompt-11 handoff (the 813ce51 log entry below).
+1. Applied supabase/migrations/2026-07-09_stripe_pending.sql via apply_migration. Verify outputs, all four pass:
+   (a) pec_stripe_pending exists (1 table).
+   (b) UNIQUE (payment_intent) constraint present.
+   (c) relrowsecurity = true; EXACTLY one policy (pec_stripe_pending_read, cmd SELECT). No client write policy; only the service-role webhook writes.
+   (d) Status check constraint present: status in ('pending', 'succeeded', 'failed').
+2. Deploy spot-check: prescottepoxy.netlify.app serves the current build (login shell + nav render). Function versions are not verifiable from outside; Dylan confirms the Netlify deploy for 265bc0c is green before flipping the toggle. Netlify deploys HTML + functions atomically.
+3. Task 2 of the handoff (settlement verification: exactly one pec_payments row for the test PI, pending row succeeded with resolved_at, commission line present) is QUEUED and gets its own entry when Dylan's live test settles in 3 to 5 business days.
+Why: unblock the ACH toggle; the async webhook is deployed and the marker table is live, so an ACH payment can no longer be silently dropped.
+Files touched: PROJECT-LOG.md; PROD as itemized above.
+Next steps: Dylan's sequence in the handoff below.
+Handoff to Cowork: run task 2 (settlement verification) once Dylan says the test settled.
+Handoff to Dylan: in order: (1) confirm the Netlify deploy for 265bc0c is green; (2) Stripe Dashboard: Settings > Payments > Payment methods, turn ON ACH Direct Debit, and under Developers > Webhooks confirm the endpoint subscribes to checkout.session.async_payment_succeeded and async_payment_failed (add them if missing); (3) run the small live ACH test from your own bank: expect the amber processing banner on the pay page and the "ACH pending" chip in Invoicing immediately, then the payment row + commission line when it settles; tell Cowork when it does. Optional: Stripe test mode's failure account exercises the Slack/email alert and red chip. Optional: add an ACH mention to the invoice email template in Settings (template lives in the DB, not code).
+
+---
+
 ## [2026-07-09 18:09 MST] Cowork: sub-expenses migration applied to PROD, all verifies pass, backfill legitimately zero
 By: Cowork
 Changed: PROD database only, no code. Executed task 1 of the prompt-10 handoff (17:04 entry below).
