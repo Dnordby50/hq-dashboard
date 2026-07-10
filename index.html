@@ -6207,10 +6207,84 @@ function renderGlobalAuthGate() {
   setAuthGateState('hidden');
   try { window.applyAuthShell(deriveAuthShell(state.adminUser)); }
   catch (e) { console.error('[crm] applyAuthShell failed', e); }
+  // What's New popup (prompt 14): fire-and-forget AFTER the gate hides, so a
+  // slow or failed check can never block sign-in.
+  maybeShowWhatsNew();
   // Render the CRM tab now only if it is already the active tab; otherwise it
   // renders lazily when the user opens TopCoat (observer in boot below).
   const crmTab = document.getElementById('tab-prescott-crm');
   if (crmTab && crmTab.classList.contains('active')) renderAuthUI();
+}
+
+// ============================================================
+// What's New (prompt 14): sign-in popup for unseen changelog entries + the
+// Help view card. Content ships in the repo (help/whats-new.json, one entry
+// per user-facing feature, newest first); ONLY the per-user acks live in the
+// DB (pec_whats_new_acks, own-rows RLS keyed on admin_users.id). Every step
+// degrades silently to "no popup" (missing table pre-migration included), so
+// sign-in is never blocked. The check runs once per page load; later auth
+// events (token refreshes re-run renderGlobalAuthGate) do not re-pop it.
+// ============================================================
+function wnEntryHtml(e) {
+  return `
+    <div style="padding:12px 0;border-bottom:1px solid var(--rd-line,var(--border))">
+      <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+        <strong>${esc(e.title || '')}</strong>
+        <span style="color:var(--muted);font-size:.72rem">${esc(e.date || '')}</span>
+      </div>
+      <div style="font-size:.85rem;margin-top:3px">${esc(e.summary || '')}</div>
+      ${Array.isArray(e.howto) && e.howto.length ? `<ul style="margin:6px 0 0;padding-left:18px;font-size:.8rem">${e.howto.map(h => `<li style="margin-bottom:2px">${esc(h)}</li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+let _whatsNewChecked = false;
+async function maybeShowWhatsNew() {
+  if (_whatsNewChecked || !state.adminUser) return;
+  _whatsNewChecked = true;
+  try {
+    const res = await fetch('help/whats-new.json', { cache: 'no-cache' });
+    if (!res.ok) return;
+    const entries = await res.json();
+    if (!Array.isArray(entries) || !entries.length) return;
+    const { data: acks, error } = await supabase.from('pec_whats_new_acks')
+      .select('entry_id').eq('admin_user_id', state.adminUser.id);
+    if (error) return; // table not live yet, or a read hiccup: no popup
+    const seen = new Set((acks || []).map(a => a.entry_id));
+    const unseen = entries.filter(e => e && e.id && !seen.has(e.id));
+    if (!unseen.length) return;
+    openModal(`
+      <h3 style="margin:0 0 4px">What's New in TopCoat</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:4px">${unseen.length} update${unseen.length === 1 ? '' : 's'} since you last checked</div>
+      <div style="max-height:56vh;overflow-y:auto">${unseen.map(wnEntryHtml).join('')}</div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" id="wnHelpLink">See all updates in Help</button>
+        <button type="button" class="pec-btn primary" id="wnGotIt">Got it</button>
+      </div>
+    `, { onMount: (modal) => {
+      // Ack = idempotent upsert (unique admin_user_id + entry_id, duplicates
+      // ignored), double-click safe via disabled buttons. A failed ack is
+      // silent by decision: the popup just reappears next sign-in. The Help
+      // link acks too; the entries were shown either way, and re-popping
+      // someone who went to read MORE would punish the curious.
+      const ack = async () => {
+        try {
+          const rows = unseen.map(e => ({ admin_user_id: state.adminUser.id, entry_id: e.id }));
+          await supabase.from('pec_whats_new_acks').upsert(rows, { onConflict: 'admin_user_id,entry_id', ignoreDuplicates: true });
+        } catch (_) { /* silent */ }
+      };
+      const both = modal.querySelectorAll('#wnGotIt, #wnHelpLink');
+      modal.querySelector('#wnGotIt').addEventListener('click', async () => {
+        both.forEach(b => { b.disabled = true; });
+        await ack();
+        closeModal();
+      });
+      modal.querySelector('#wnHelpLink').addEventListener('click', async () => {
+        both.forEach(b => { b.disabled = true; });
+        await ack();
+        closeModal();
+        switchView('docs');
+      });
+    } });
+  } catch (_) { /* never block sign-in */ }
 }
 
 // Internal staff debug shim. Cowork's 2026-05-24 diagnosis tried to call
@@ -9878,7 +9952,12 @@ function openMetricsDrill(id) {
 
 function renderInvoicingDocs() {
   const root = $('pecViewRoot');
-  root.innerHTML = `<div class="pec-card"><div class="pec-doc">
+  root.innerHTML = `<div class="pec-card">
+    <h3>What's New</h3>
+    <div style="color:var(--muted);font-size:.78rem;margin-bottom:4px">Every update to TopCoat, newest first. New items also pop up once at sign in.</div>
+    <div id="wnHelpList" class="pec-empty" style="font-size:.8rem">Loading updates&hellip;</div>
+  </div>
+  <div class="pec-card"><div class="pec-doc">
     <h3>Help &amp; FAQ</h3>
     <p>Quick reference for what each tab does, followed by the full invoicing and AR documentation.</p>
     <h4>What each tab does</h4>
@@ -9948,6 +10027,25 @@ function renderInvoicingDocs() {
     <h4>Phase notes</h4>
     <p>Phase 1 (this) is AR visibility only. Phase 2 adds branded PDF invoices, a customer-facing hosted invoice page, and Stripe Checkout with a webhook that auto-records card payments. Phase 3 adds internal aging alerts, edge cases (refunds, returned checks, change orders, disputes, invoice corrections), and full retirement of DripJobs invoicing for PEC.</p>
   </div></div>`;
+  fillWhatsNewHelpCard();
+}
+
+// Fill the Help view's What's New card from the same repo JSON the sign-in
+// popup reads (single source). Always shows the FULL history regardless of
+// ack state; degrades to a one-line note if the file cannot load.
+async function fillWhatsNewHelpCard() {
+  const el = $('wnHelpList');
+  if (!el) return;
+  try {
+    const res = await fetch('help/whats-new.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const entries = await res.json();
+    if (!Array.isArray(entries) || !entries.length) { el.textContent = 'No updates recorded yet.'; return; }
+    el.classList.remove('pec-empty');
+    el.innerHTML = entries.map(wnEntryHtml).join('');
+  } catch (_) {
+    el.textContent = 'Could not load the updates list. Refresh to retry.';
+  }
 }
 
 async function openNewJobForm() {
@@ -23038,6 +23136,23 @@ function _mergeAcrossAreas(areaPlans) {
     } catch { crmHelpDoc = ''; }
     return crmHelpDoc;
   }
+  // What's New grounding (prompt 14): the SAME repo JSON the sign-in popup and
+  // Help card read, flattened to text so the assistant can answer "how do I
+  // use <new feature>" and "what changed recently" from one source instead of
+  // duplicated prose in crm-help.md. This widget is a separate classic script,
+  // so it fetches the file itself (no cross-module sharing).
+  let whatsNewDoc = null;
+  async function getWhatsNewDoc(){
+    if (whatsNewDoc !== null) return whatsNewDoc;
+    try {
+      const res = await fetch('help/whats-new.json', { cache: 'no-cache' });
+      const list = res.ok ? await res.json() : [];
+      whatsNewDoc = (Array.isArray(list) ? list : []).map(e =>
+        `- ${e.date} | ${e.title}: ${e.summary}${Array.isArray(e.howto) && e.howto.length ? ' Steps: ' + e.howto.join(' ') : ''}`
+      ).join('\n');
+    } catch { whatsNewDoc = ''; }
+    return whatsNewDoc;
+  }
   function pageContext(){
     try {
       const st = window.pecState || {};
@@ -23065,6 +23180,7 @@ function _mergeAcrossAreas(areaPlans) {
     if (systemPrompt) return systemPrompt;
     try { if (typeof loadSOPs === 'function') await loadSOPs(); } catch {}
     const doc = await getCrmHelpDoc();
+    const news = await getWhatsNewDoc();
     const sops = sopBlob();
     systemPrompt = `You are the in-app Help assistant for TopCoat, the CRM used by Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP) in Prescott, AZ.
 
@@ -23078,6 +23194,9 @@ HOW TO ANSWER:
 
 === CURRENT PAGE CONTEXT ===
 ${pageContext()}
+
+=== WHAT'S NEW (recent app updates, newest first; use for "what changed" and how-to questions about new features) ===
+${news || '(No recent-updates list loaded.)'}
 
 === CRM HELP DOC ===
 ${doc || '(The CRM help doc could not be loaded. Answer from general CRM knowledge and clearly note you could not load the app-specific help.)'}

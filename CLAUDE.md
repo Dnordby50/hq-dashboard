@@ -36,6 +36,8 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
    Stay direct (still ask Dylan) when this Claude Code session is BLOCKED on a binary architectural choice that fundamentally changes downstream work, or when waiting on Cowork would cost more than the answer is worth (a 1-2 word reply that unblocks 30+ minutes of work). The trigger for direct asking is "this session is stalled until I get this answer", not "this needs Dylan's input eventually". When in doubt, write the Cowork prompt.
 
+9. Every user-facing change ships with a What's New entry: append one entry (id, date, title, one-line summary, 2-3 how-to steps, plain language, no em dashes) to the changelog JSON in the same session. Internal-only changes (refactors, webhooks, migrations with no visible behavior change) do not get entries. The changelog JSON is help/whats-new.json (newest first); the sign-in popup, the Help view's What's New card, and the help assistant all read that one file.
+
 ## Cowork Handoff Prompt Format
 
 Cowork prompts go to a separate operator with no chat history, no familiarity with the current session's reasoning, and no access to this conversation. They MUST be self-contained. When you write one, print it in chat as a fenced code block in this shape:
