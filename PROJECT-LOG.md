@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 14:53 MST] Claude Code: estimate total, Add change order, and Download PDF moved into the job toolbar
+By: Claude Code
+Changed: index.html, help/whats-new.json. Commit 5fe137f, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's ask: "on job detail, move estimate total price, change order, and download pdf next to other buttons on the top." Follow-up to this morning's f08d49c (bolder, left-grouped toolbar).
+
+WHAT CHANGED, VISUALLY: the job detail toolbar now ends with the live estimate total (muted "Total" label + bold price) followed by Add change order and Download PDF, in the order Dylan listed, after the existing five buttons. The Estimate card header slims down to just "Estimate [Finalized]" plus its note line (Reopen stays in the finalized note; the Finalize button was never in the header and is untouched at the bottom of the line list). Download PDF dropped its ghost class so both moved buttons wear the toolbar's uniform bold look from f08d49c with zero new CSS. The invoice view's own Add change order / Download PDF are separate buttons and were not touched.
+
+THE TWO MECHANICS THAT MATTERED (both are lifecycle bugs waiting to happen, and both were handled):
+
+1. Duplicate handlers. The Estimate section repaints itself (renderAreas sets host.innerHTML) on every add/remove/mirror-line and system change, then re-wires its buttons. That was safe when the buttons lived inside the repainted subtree, because each repaint destroyed the old nodes along with their listeners. The toolbar SURVIVES those repaints, so re-wiring with addEventListener would stack one more handler per repaint and a single Download PDF click would fire several downloads. The bindings switched to .onclick assignment, which replaces instead of stacking, so re-wiring per repaint stays correct by construction. Wiring stays inside wireEstPdfBtn (renderAreas scope) because the PDF handler needs sysNameFor from that scope; lookups changed from host.querySelector to $() since the buttons are outside host now.
+
+2. Stale total. Add/remove/mirror-line flows refreshed the displayed total ONLY by rebuilding the #estimateTotal element inside the repainted card header; they never call recalcEstimateTotal (only the price-typing path does). With the element out of that subtree, those flows would leave the toolbar total stale. Fix is one line: wireEstPdfBtn (which runs after every repaint in both the finalized and editable paths) now calls recalcEstimateTotal, which updates #estimateTotal and #jobPrice by id wherever they live. Price typing already went through recalcEstimateTotal and keeps working unchanged.
+
+Also: const total inside renderAreas became unused (headerCard was its only consumer) and was removed; the headerCard and wireEstPdfBtn comments were rewritten for the new home.
+
+Verified: all 7 extracted script blocks pass node --check; whats-new.json parses (15 entries, new one first); em dash scan of added lines = 0; and a behavior harness in Chrome replicated the exact wiring pattern and proved it on-page: 3 simulated repaints + 1 click = exactly 1 download call with .onclick (a control wired 3x with addEventListener fired 3 times, confirming the avoided bug), and a simulated repaint refreshed the toolbar total. Layout eyeballed at desktop and 420px width (row wraps cleanly).
+Why: the estimate total and its actions were buried below the fold on the busiest page in the CRM; the top row is where Dylan consolidated actions this morning, and the total is the number he checks most.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Dylan eyeballs a real job after deploy.
+
+Handoff to Cowork: none.
+
+Handoff to Dylan: after the deploy goes green, hard refresh and open any job: (1) the top row should end with Total $X, Add change order, Download PDF; (2) type in a line price and watch the toolbar total tick live; (3) add a line, then remove it, and confirm the toolbar total updates both times; (4) after adding a line, click Download PDF ONCE and confirm you get exactly one PDF (this exercises the duplicate-handler fix); (5) open a finalized job: same row on top, Reopen still in the Estimate note. If the total feels lost at the end of the row, it can move ahead of the buttons or get a divider cheaply.
+
+---
+
 ## [2026-07-10 06:38 MST] Claude Code: job detail toolbar buttons bolder, all left-aligned
 By: Claude Code
 Changed: index.html, help/whats-new.json. Commit f08d49c, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's ask: "make buttons at the top of the job detail more bold, they kind of blend in right now. move all buttons to left side." Dylan picked the "bold neutral" style from three options (vs dark ink fills or orange accent outlines).
