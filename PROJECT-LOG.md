@@ -29,6 +29,22 @@ Handoff to Dylan: (1) Deploy is the gate for everything: this session pushes the
 
 ---
 
+## [2026-07-09 19:18 MST] Cowork: Stripe ACH setup completed in the dashboard (with Dylan); only the live test remains
+By: Cowork
+Changed: Stripe account settings only (via browser, Dylan signed in and asked Cowork to drive). No code, no PROD database changes.
+1. Netlify deploy verified GREEN: production is main@813ce51 (the prompt-11 push), published today 6:22 PM, deploys from GitHub with auto-publish on.
+2. FINDING: ACH Direct Debit was ALREADY ENABLED in the payment method configuration (pmc_1TlLyT85aAKLOAgMgJM4G70I), likely since account setup. Nothing to flip. That means ACH was exposed on checkout BEFORE the async webhook existed, so an early ACH payment would have been dropped.
+3. Audited that risk: filtered succeeded payments in Stripe, all 4 are card or Link (Wolfgang Schmansky deposit, Mike Long 2812764, Greg Gutierrez 2794445, Eric Harris 2896510). ZERO us_bank_account payments ever. Nothing was dropped; the gap never fired.
+4. Webhook endpoint we_1TlMBt85aAKLOAgMt4WL3QKx (https://prescottepoxy.netlify.app/api/stripe/webhook) was listening to ONLY checkout.session.completed. Added checkout.session.async_payment_succeeded and checkout.session.async_payment_failed via Edit destination; saved; endpoint now shows 3 events. Signing secret untouched.
+5. Side observation for Dylan, no action taken: several payment methods beyond cards are enabled in the Stripe config (Klarna, Amazon Pay, Apple Pay, Pix among them). Klarna on large invoices carries materially higher fees than cards; worth a deliberate look at the enabled list sometime.
+Why: closes every setup item in the prompt-11 handoff except the live test itself.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan runs the small live ACH test from his own bank; Cowork verifies settlement 3 to 5 business days later (task 2 of the handoff).
+Handoff to Cowork: settlement verification when Dylan says the test has settled (or on the scheduled check if he opts in).
+Handoff to Dylan: run the live test whenever ready: pay a small custom amount on a test invoice via US bank account; expect the amber processing banner and the "ACH pending" chip in Invoicing immediately. Tell Cowork when you initiate it.
+
+---
+
 ## [2026-07-09 18:26 MST] Cowork: stripe-pending migration applied to PROD, all verifies pass; Dylan clear to flip ACH after deploy check
 By: Cowork
 Changed: PROD database only, no code. Executed task 1 of the prompt-11 handoff (the 813ce51 log entry below).
