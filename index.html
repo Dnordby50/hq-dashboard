@@ -5913,6 +5913,12 @@ const state = {
   referrals: [], referralsFilter: { status: '' },
   reviews: [], team: [], settings: {},
   openJobId: null, openCustomerId: null,
+  // Job detail tab (details | comms). jobDetailTabFor remembers WHICH job the
+  // tab choice belongs to, so a post-save re-render of the same job restores
+  // the active tab while opening a different job resets to Details. The reset
+  // lives inside renderJobDetailInner because openJobId is set from 10+ call
+  // sites (jobs list, pipeline, AR, invoice, hash restore).
+  jobDetailTab: 'details', jobDetailTabFor: null,
   // Job Schedule + Job Costing (PEC production)
   crews: [], systemTypes: [], prodJobs: [], scheduleDays: [], productAreasByJob: {}, salesTeam: [],
   // Schedule overlays: company holidays (hard block) + per-crew-member days off
@@ -10574,6 +10580,11 @@ async function renderJobDetailInner(id) {
   // save, so this drives the header price field and the Estimate card total.
   const areaPriceSum = () => invRound2(areas.reduce((s, a) => s + (Number(a.price) || 0), 0));
 
+  // Tab memory: same job keeps its tab across the frequent post-save
+  // re-renders; a different job starts back on Details.
+  if (state.jobDetailTabFor !== id) { state.jobDetailTabFor = id; state.jobDetailTab = 'details'; }
+  const activeTab = state.jobDetailTab === 'comms' ? 'comms' : 'details';
+
   root.innerHTML = `
     <div class="pec-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
@@ -10667,6 +10678,17 @@ async function renderJobDetailInner(id) {
       </div>
     </div>
 
+    <!-- Job detail tabs. Switching toggles display ONLY (never re-renders), so
+         unsaved Details edits and live handlers survive; toolbar + header card
+         above stay visible on both tabs. -->
+    <div style="margin:0 0 14px">
+      <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden">
+        <button class="pec-btn sm ${activeTab === 'details' ? 'primary' : 'ghost'}" id="pecJobTabBtnDetails" style="border:none;border-radius:0">Details</button>
+        <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : 'ghost'}" id="pecJobTabBtnComms" style="border:none;border-radius:0">Messages &amp; Calls</button>
+      </div>
+    </div>
+    <div id="pecJobTabDetails" style="display:${activeTab === 'details' ? '' : 'none'}">
+
     <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : (colorsUrgent ? '#dc2626' : '#d97706')}">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div>
@@ -10728,6 +10750,8 @@ async function renderJobDetailInner(id) {
     </div>
 
     <div id="jobActivity"></div>
+    </div>
+    <div id="pecJobTabComms" style="display:${activeTab === 'comms' ? '' : 'none'}">${jobCommsCardHtml()}</div>
   `;
 
   // Route through the fenced dispatcher (commit 84797a1) so any renderJobs
@@ -10736,6 +10760,34 @@ async function renderJobDetailInner(id) {
   // from Kathy Carmack's job detail did nothing.
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
+
+  // Job detail tabs. commsMounted is LOCAL on purpose: every re-render rebuilds
+  // the DOM from scratch, so the mount must happen again per render; a global
+  // flag would leave the new DOM empty. Mount is lazy (first switch to the tab,
+  // or render-time when the tab is already active after a save), so users who
+  // never open Messages & Calls pay zero extra queries.
+  let commsMounted = false;
+  const mountCommsOnce = () => { if (!commsMounted) { commsMounted = true; mountJobComms($('jobCommsCard'), job); } };
+  const showJobTab = (tab) => {
+    state.jobDetailTab = tab;
+    $('pecJobTabDetails').style.display = tab === 'details' ? '' : 'none';
+    $('pecJobTabComms').style.display = tab === 'comms' ? '' : 'none';
+    for (const [btnId, t] of [['pecJobTabBtnDetails', 'details'], ['pecJobTabBtnComms', 'comms']]) {
+      $(btnId).classList.toggle('primary', tab === t);
+      $(btnId).classList.toggle('ghost', tab !== t);
+    }
+    if (tab === 'comms') {
+      mountCommsOnce();
+      // Hidden-mount fix: scrollHeight is 0 while display:none, so the mount's
+      // scroll-to-bottom was a no-op. Re-assert only from the untouched
+      // position so a reading position is never stomped on later switches.
+      const feed = document.querySelector('#jobCommsCard [data-comms-feed]');
+      if (feed && feed.scrollTop === 0) feed.scrollTop = feed.scrollHeight;
+    }
+  };
+  $('pecJobTabBtnDetails').addEventListener('click', () => showJobTab('details'));
+  $('pecJobTabBtnComms').addEventListener('click', () => showJobTab('comms'));
+  if (activeTab === 'comms') mountCommsOnce();
 
   // Archive this job (reversible; the old "type DELETE" gate is gone per Dylan,
   // 2026-07-06: archiving is the normal way to record a cancellation, not a
@@ -13713,6 +13765,134 @@ async function mountCustomerCalls(card, c) {
     const needsMigration = /pec_call_log/.test(e.message || '');
     body.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
   }
+}
+
+// ============================================================
+// Job detail "Messages & Calls" tab (Dylan 2026-07-09): the customer's Quo
+// texts AND calls merged into ONE chronological feed, Quo-inbox style (oldest
+// at top, newest at bottom, composer underneath). Quo data is CUSTOMER-scoped
+// (pec_call_log has no job_id; inbound texts log customer_id only), so the
+// feed shows the job's customer's full history; outbound texts sent from here
+// DO carry this job_id (pec-send-sms already accepts and logs it), so job
+// attribution improves going forward for free. Rows render through the same
+// smsBubbleHtml / callRowHtml helpers as the customer-profile cards, so the
+// surfaces cannot drift. No polling, matching every other Quo surface: the
+// feed loads on first open, after each send, and via the Refresh button.
+function jobCommsCardHtml() {
+  return `
+    <div class="pec-card" id="jobCommsCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <h3 style="margin:0">Messages &amp; Calls</h3>
+        <button class="pec-btn ghost sm" data-comms-refresh>Refresh</button>
+      </div>
+      <div data-comms-banner style="display:none;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;font-size:.82rem;margin:10px 0 0"></div>
+      <div data-comms-feed style="max-height:480px;overflow-y:auto;padding:4px 2px;display:flex;flex-direction:column;margin-top:10px">
+        <div class="pec-empty" style="font-size:.8rem">Loading messages and calls&hellip;</div>
+      </div>
+      <div data-comms-compose style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
+        <textarea data-comms-input rows="2" placeholder="Text this customer&hellip;" style="flex:1;resize:vertical;min-height:42px;padding:8px 10px;border-radius:8px;border:1px solid var(--border, #cbd5e1);font-size:.86rem"></textarea>
+        <button class="pec-btn primary" data-comms-send>Send text</button>
+      </div>
+    </div>`;
+}
+async function mountJobComms(card, job) {
+  if (!card) return;
+  const feedEl = card.querySelector('[data-comms-feed]');
+  const composeWrap = card.querySelector('[data-comms-compose]');
+  const bannerEl = card.querySelector('[data-comms-banner]');
+  const ta = card.querySelector('[data-comms-input]');
+  const sendBtn = card.querySelector('[data-comms-send]');
+  const refreshBtn = card.querySelector('[data-comms-refresh]');
+
+  // Manual prod-bridged jobs can lack a customers row entirely.
+  const cust = job.customers;
+  if (!cust || !cust.id) {
+    feedEl.innerHTML = '<div style="color:var(--muted);font-size:.85rem;padding:6px 2px">No customer is linked to this job, so there are no texts or calls to show.</div>';
+    composeWrap.style.display = 'none';
+    return;
+  }
+  const brand = smsBrandFromCompany(cust.company);
+
+  const showBanner = (text) => { bannerEl.style.display = ''; bannerEl.textContent = text; composeWrap.style.display = 'none'; };
+
+  // Opt-out state (column may not exist pre-migration -> treat as opted in).
+  let optedOut = false;
+  try {
+    const { data } = await supabase.from('customers').select('sms_opt_out').eq('id', cust.id).maybeSingle();
+    optedOut = !!(data && data.sms_opt_out);
+  } catch (_) { /* pre-migration: assume opted in */ }
+
+  async function reload() {
+    try {
+      // Newest N DESCENDING then reversed, deliberately unlike the profile
+      // Texts card (asc + limit keeps the OLDEST 200 and silently drops new
+      // texts past the cap); an inbox must keep the newest window.
+      const [smsRes, callRes] = await Promise.all([
+        supabase.from('pec_sms_log').select('*').eq('customer_id', cust.id).order('created_at', { ascending: false }).limit(200),
+        supabase.from('pec_call_log').select('*').eq('customer_id', cust.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(50),
+      ]);
+      // Per-source degrade: one missing table still renders the other source.
+      const notes = [];
+      let smsRows = [], callRows = [];
+      if (smsRes.error) {
+        notes.push(/pec_sms_log/.test(smsRes.error.message || '') ? 'Run the 2026-06-28_quo_sms.sql migration to enable texting.' : 'Texts unavailable: ' + esc(smsRes.error.message || ''));
+        composeWrap.style.display = 'none';
+      } else {
+        smsRows = (smsRes.data || []).slice().reverse();
+      }
+      if (callRes.error) {
+        notes.push(/pec_call_log/.test(callRes.error.message || '') ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : 'Calls unavailable: ' + esc(callRes.error.message || ''));
+      } else {
+        callRows = (callRes.data || []).slice().reverse();
+      }
+      // Merge ascending on the per-source timestamps (texts: created_at;
+      // calls: occurred_at with created_at fallback, occurred_at is nullable).
+      // Date.parse guarded with || 0 so one bad stamp sinks to the top instead
+      // of NaN-scrambling the whole sort.
+      const items = [
+        ...smsRows.map(r => ({ ts: Date.parse(r.created_at) || 0, html: smsBubbleHtml(r) })),
+        ...callRows.map(r => ({ ts: Date.parse(r.occurred_at || r.created_at) || 0, html: callRowHtml(r) })),
+      ].sort((a, b) => a.ts - b.ts);
+      const noteHtml = notes.map(n => `<div class="pec-empty" style="font-size:.78rem">${n}</div>`).join('');
+      feedEl.innerHTML = noteHtml + (items.length
+        ? items.map(i => i.html).join('')
+        : (notes.length ? '' : '<div style="color:var(--muted);font-size:.85rem;padding:10px 2px">No texts or calls with this customer yet.</div>'));
+      feedEl.scrollTop = feedEl.scrollHeight;
+    } catch (e) {
+      feedEl.innerHTML = `<div class="pec-empty" style="font-size:.8rem">${esc(e.message || 'Could not load messages and calls.')}</div>`;
+    }
+  }
+
+  if (!cust.phone) showBanner('No phone number on file for this customer.');
+  else if (optedOut) showBanner('This customer opted out of texts (replied STOP). Texting is disabled.');
+
+  if (sendBtn) sendBtn.addEventListener('click', async () => {
+    const body = (ta.value || '').trim();
+    if (!body) return;
+    // Non-idempotent send: button disabled while in flight, NO blind retry;
+    // the server owns the guards (opt-out 409, 50/user/hour 429, 1600 chars)
+    // and its message surfaces verbatim. job_id ties the log row to THIS job
+    // (kind 'manual' never counts toward the Last-invoiced column, which
+    // filters on kind 'invoice').
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      await pecSendSms({ brand, customer_id: cust.id, job_id: job.id, kind: 'manual', body });
+      ta.value = '';
+      await reload();
+      showToast('Text sent ✓', { ttl: 2500 });
+    } catch (err) {
+      showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 5000 });
+    } finally {
+      sendBtn.disabled = false; sendBtn.textContent = 'Send text';
+    }
+  });
+
+  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
+    try { await reload(); } finally { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
+  });
+
+  reload();
 }
 
 // Unified Messages view: latest text per conversation (one row per customer or,
