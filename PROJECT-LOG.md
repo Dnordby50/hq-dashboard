@@ -4,6 +4,33 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-09 23:20 MST] Claude Code: Messages & Calls redesigned to the Quo-inbox look, trigger moved next to View customer portal
+By: Claude Code
+Changed: index.html, help/whats-new.json. Commit ed5e5a1, pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's OpenPhone screenshot ("i want the customer message tab on job detail to look exactly like this, its currently very archaic").
+
+WHAT CHANGED, VISUALLY: the job detail comms tab is now a self-contained dark console modeled bubble-for-bubble on the Quo/OpenPhone inbox: header with the customer's gold initials avatar, name, and formatted phone number plus three icon actions (tap-to-call tel: link, open customer profile, refresh); the feed shows day separators, sender-labeled chat bubbles (blue outbound right, gray inbound left, red tint + "Not delivered · reason" for failed sends) with initials avatars; calls render as an event line plus the screenshot's AI summary card ("Call summary / Powered by AI" in purple, purple-bulleted summary and Next steps, "View transcript" link top right that expands inline); the composer is a pill textarea with a round blue send button, Enter sends and Shift+Enter breaks. The tab trigger moved out of the pill toggle under the header card into the toolbar, top right next to View customer portal (which now carries margin-left:auto so the pair sits at the right edge), and the ONE button toggles the two panes, highlighted orange while on comms.
+
+WHY DARK INSIDE THE LIGHT CRM: the screenshot is OpenPhone dark mode, and Dylan asked for "exactly like this". The app already has the deliberate-dark-island precedent (the JARVIS tab keeps its arc-reactor theme inside the light shell). All comms styling is scoped .qo-* classes carrying their own palette; flipping the console to a light variant later is a swap of the custom-property block at the top of the qo-comms-theme style tag, nothing structural.
+
+HOW IT AVOIDS THE SKIN FIGHTS: the new <style id="qo-comms-theme"> block sits AFTER the redesign skin and crm-light-theme blocks, so its .qo-input !important rules out-cascade their global `input, textarea { ... !important }` repaints the same way the JARVIS input row does. The card is .qo-shell (not .pec-card), so no white-card !important rules apply to it at all.
+
+SENDER NAMES (the screenshot's "Dusty" labels): pec_sms_log.sent_by_user stores the sender's AUTH uid, and admin_users is staff-readable (policies.sql admin_users_select), so a page-cached one-query map (qoStaffNames) resolves outbound labels and avatar initials; inbound uses the customer's name. Lookup failure degrades to unlabeled bubbles, never an error. Names show once per same-sender run (a call or a >15 minute gap starts a new run), iMessage-style.
+
+SHARED HELPERS KEPT SHARED: smsBubbleHtml/callRowHtml grew a ctx parameter but remain the single source for BOTH surfaces, so the customer-profile Texts and Calls cards now render the same bubbles/summary cards inside dark .qo-mini panels within their white cards (they had to restyle together: the new bubbles assume a dark background). The profile Texts card still carries its known oldest-200 cap quirk (2026-07-09 20:15 entry); untouched again, still worth folding the newest-window fix in someday.
+
+NOT PRESENT ON PURPOSE: the screenshot's voicemail player and Payment/Scheduling chips (pec_call_log has no recording URL or category fields; nothing fabricated), the participant avatar cluster, and the green presence dots (fake presence is worse than none).
+
+Guardrails: send stays non-idempotent-safe (button disabled in flight, no blind retry, server messages surface verbatim in the toast); opt-out and no-phone banners still hide the composer; per-source degrade notes and the no-linked-customer case kept; tab switching still toggles display only (unsaved Details edits survive), tab memory + lazy mount + hidden-mount scroll fix unchanged. Verified: all 7 extracted script blocks pass node --check; em dash scan of added lines = 0; added-line div balance nets to zero; and the real extracted CSS + renderers were driven in a browser against sample data matching the screenshot (bubbles, summary card, transcript expander, failed bubble, day separators all eyeballed).
+Why: the old tab was functional but archaic (flat bubbles, text-only call rows); the crew lives in this view and Dylan named the Quo inbox as the bar.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Dylan hard-refreshes after deploy and eyeballs a real job (the July 7 test caller works): toolbar button top right next to View customer portal, toggle both ways, transcript expander, send a text (Enter), confirm the profile Texts/Calls cards wear the same look.
+
+Handoff to Cowork: none.
+
+Handoff to Dylan: after the deploy goes green, hard refresh, open the July 7 test caller's job: (1) Messages & Calls now sits top right next to View customer portal; click it, the dark inbox console should look like your OpenPhone screenshot (avatar header, bubbles with names, call summary card with purple bullets, View transcript top right); (2) send yourself a text with Enter and confirm the blue bubble carries your first name above it; (3) click the phone icon in the console header, your phone app should offer to dial the customer; (4) the same look now lives on the customer profile's Texts and Calls cards. If the dark panel clashes with your taste in the light CRM, say the word and it flips to a light variant cheaply (the colors are one variable block).
+
+---
+
 ## [2026-07-09 22:29 MST] Claude Code: prompt 14 shipped, What's New system (sign-in popup, Help history, assistant grounding, standing rule)
 By: Claude Code
 Changed: help/whats-new.json (new), supabase/migrations/2026-07-09_whats_new_acks.sql (new, NOT applied; Cowork handoff below), index.html, CLAUDE.md. Commits ebf8e53 (content + migration), 653369b (popup, Help card, assistant grounding, standing rule), pushed with this entry. Sequencing note: the prompt asked for 14 before 13, but 13 had already shipped tonight (20:46 entry) with the $1 fixture still pending, so the timing caveat resolved itself; both are live before the fixture settles.
