@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 21:25 MST] Cowork: investigated Dylan's three tweaks (Trujillo commission, Gallagher invoice, toast text), scoped with 11 answered questions, Claude Code prompt written
+By: Cowork
+Changed: No code or data changed. Investigation plus scoping only; the Claude Code prompt was printed in chat for Dylan to paste.
+Why: Dylan reported three issues: (1) Rachel Trujillo removed part of her estimate and the commission paid may not match what Aron earned; (2) the Timothy Gallagher invoice should be deleted (cancelled job); (3) the bottom-right popup still shows white text on white.
+Findings, verified live in prod (Supabase project zdfpzmmrgotynrwkeakd):
+- Trujillo job 713ae4e0-9708-48d8-b9af-e13cac1c05ec is now $1,900 (Man Cave line only). Payment on file: pec_payments 43bf0e07-302e-41bb-ac94-bc6f67e7421f, $2,645 check received 2026-06-25 (50% deposit on the original larger estimate). Commission payout: $158.70 (6% of 2,645) to Aron Bronson, paid 2026-07-01, payroll 2026-06-26. At 6% of the $1,900 job he earned $114, so $44.70 was overpaid. Dylan confirmed he refunded her $745 by check.
+- Gallagher job 2419dc1c-4bb4-4b01-a313-f384b86b2caa: $4,850, zero payments, archived 2026-07-09, voided_at null. Root cause it still shows in Invoicing: pec_job_ar filters only voided_at, not archived_at, so archived jobs sit in AR (his row inflates pending deposits by about $2,425).
+- Toast: the white-on-white pec-toast was already fixed 2026-07-06 (commit 1ecbd8b); current CSS at index.html ~21031 pairs --rd-card with --rd-ink correctly. Dylan does not remember the exact popup and says it might be fixed already, so this is a verify-first item.
+Dylan's decisions (from 11 multiple choice answers): commission is 6% of job total paid on revenue collected; correct the overpayment with a negative adjustment entry, keep the $158.70 payout as history; fix the payment record too (record the $745 refund); VOID the Gallagher invoice, do not delete the job; fix pec_job_ar to exclude archived jobs going forward; Claude Code executes all three via a prompt.
+Files touched: PROJECT-LOG.md only.
+Next steps: Dylan pastes the Claude Code prompt (printed in chat). Claude Code will hand the two prod data writes (Trujillo -$745 refund insert, Gallagher void UPDATE) and the pec_job_ar migration back to Cowork; Cowork needs the refund check date and reference from Dylan at that point.
+Handoff to Cowork: None yet (expected back from Claude Code after the code work).
+Handoff to Dylan: Paste the prompt into Claude Code. Have the Trujillo refund check date and check number ready.
+
+---
+
 ## [2026-07-10 16:55 MST] Claude Code: job detail redesigned DripJobs-style (Line Items table, change order boxes, Totals band) + page declutter
 By: Claude Code
 Changed: index.html, help/whats-new.json. Commits 174acfa (CO boxes), 4468bd7 (Line Items + Totals + accordion editing), 2887f9a (page declutter), pushed with this entry. No migration, no function changes, no Cowork DB work. Built from Dylan's screenshot of a DripJobs estimate ("reorganize job detail to look almost exactly like this... same look and feel, boxes, hilights, all of it") plus three answered choices: PEC orange (not the screenshot's purple), whole-page tidy-up (not just the estimate region), and click-a-line-to-edit.
