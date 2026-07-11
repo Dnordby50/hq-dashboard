@@ -18,7 +18,9 @@
 const { sb, tokenFromEvent } = require('./_pec-supabase.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const usd = (n) => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Accounting-style negatives ("-$745.00"): a refund is a negative pec_payments
+// row, and it shows on the customer's payment ledger like any other line.
+const usd = (n) => (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (s) => s ? new Date(String(s).slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC' }) : '';
 
 // Payment instructions are stored as PLAIN TEXT (so non-technical staff can edit

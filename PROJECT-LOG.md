@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 22:35 MST] Claude Code: payments + commission tolerate negative (refund) rows; enables the Trujillo -$745 correction
+By: Claude Code
+Changed: index.html, netlify/functions/pec-public-invoice.cjs. Task 1 of the three Cowork-scoped fixes (see the 21:25 entry). Internal plumbing, no whats-new entry (the guardrail's judgment call: nothing user-visible changes until the negative row exists). No data written; the actual -$745 insert is Cowork's (handoff at the end of this session's entries).
+
+THE MECHANISM (Dylan's decision, baked in): commission is 6% of dollars collected, per payment. Cowork inserts a pec_payments row of -745.00 on the Trujillo job. pec_job_ar's sum() nets paid_to_date to 1,900.00 and balance to 0 with NO view change; the Commission tab computes -44.70 pending for Aron (6% of -745) which nets his next payroll run; marking it paid freezes -44.70 in pec_commission_payouts. The negative pending IS the adjustment entry; the original $158.70 payout row is never touched.
+
+AUDIT OF EVERY pec_payments CONSUMER against a negative row, and what actually needed fixing (three things):
+1. invUSD / invUSD0 printed "$-745.00"; now accounting-style "-$745.00" (abs + sign prefix). Same fix to usd() in pec-public-invoice.cjs so the customer-facing payment ledger reads sanely.
+2. The Commission pending amount input had min="0", which browsers flag :invalid for a prefilled -44.70 and whose spinners clamp at 0. min removed; negative adjustments are first-class.
+3. A why-comment block on renderCommission documenting the negative-payment adjustment model so the next reader does not "fix" it.
+
+Audited and confirmed already-correct with NO change: pec_job_ar's sum(amount) nets signs; renderInvoicing buckets (balance 0 drops the job to Recently closed via last_payment_date, which the refund date refreshes); the EPS comparisons; the Stripe "Nothing to charge" gate (balance 0 blocks correctly); openPaymentModal's amount > 0 gate stays on purpose (no refund UI, per scope; refunds enter via SQL); deposit_collected logic (only runs in the modal flow, and Trujillo's deposit is already collected); deletePayment's payout guard (a refund with a recorded payout refuses deletion, protecting the -44.70 record once frozen); Metrics payment sums (a refund correctly reduces collected revenue in the week it lands); the invoice PDF and public page totals (they render the view's netted numbers).
+
+Verified: 34/34 assertions in a Chrome harness driving the REAL extracted functions (renderJobInvoice, renderInvoicing, renderCommission, deletePayment, openChargeCardModal, all inv* helpers) against a data-backed fake supabase seeded with the exact Trujillo shape (+2,645 with its 158.70 payout, -745 pending): refund line renders -$745.00 on the invoice with Paid $1,900.00 / Balance $0.00; job sits in Recently closed, not Completed-unpaid, Total AR $0; Commission pending shows Aron -$44.70 with the input prefilled and negative-capable; Sold jobs row reads earned $114.00 / paid $158.70 / owed -$44.70; Mark selected paid upserts exactly one payout row (p2, -44.70) and no write touches the p1/158.70 row; after the payout lands the pending queue drains and the period nets to $114.00 with no false "remainder not collected" flag; the delete guard refuses payout-backed rows and the confirm text reads the negative amount correctly. All 7 script blocks pass node --check; pec-public-invoice.cjs passes node --check; em dash scan of added lines = 0.
+Why: Rachel Trujillo dropped her garage line after paying a $2,645 deposit on the original estimate; Dylan refunded $745 by check outside the system. The books and Aron's commission need to reflect a $1,900 job without rewriting payment or payout history.
+Files touched: index.html, netlify/functions/pec-public-invoice.cjs, PROJECT-LOG.md.
+Next steps: task 2 (Gallagher void + AR view migration) in this session; Cowork runs the insert (handoff below in the 22:50 entry).
+Handoff to Cowork: consolidated in this session's final entry.
+Handoff to Dylan: none directly; Cowork will need the refund check date and check number.
+
+---
+
 ## [2026-07-10 22:20 MST] Claude Code: schedule day numbers are always chronological (earliest date = Day 1) + prod backfill
 By: Claude Code
 Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_day_index_chronological.sql. Third of the three schedule features this session. Backfill ALREADY APPLIED to prod via the Supabase MCP: 38 of 210 pec_prod_job_schedule_days rows across 8 jobs were misnumbered from the old click-order behavior; after the migration a re-run of the same window-function check returns 0 misnumbered rows.

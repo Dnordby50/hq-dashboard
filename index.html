@@ -8068,8 +8068,12 @@ window.pecJobSearchInput = (raw) => {
 // ============================================================
 const invNum = v => (v == null || v === '') ? 0 : Number(v);
 const invRound2 = n => Math.round(n * 100) / 100;
-const invUSD = n => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const invUSD0 = n => n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
+// Negative amounts print accounting-style ("-$745.00", not "$-745.00").
+// Negative pec_payments rows are legal: a refund is a negative payment, so
+// paid_to_date/balance net out in pec_job_ar (sum) and commission nets the
+// same way (payment x pct goes negative). First real case: Trujillo 2026-07.
+const invUSD = n => n == null ? '\u2014' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const invUSD0 = n => n == null ? '\u2014' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Math.round(Number(n))).toLocaleString('en-US');
 const invDays = n => n == null ? '—' : (Math.round(n * 10) / 10) + 'd';
 const invPct = n => n == null ? '—' : Math.round(n * 100) + '%';
 const invToday = () => new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -12885,6 +12889,14 @@ function openTeamForm(t) {
 // went out that period, while the Pending queue carries forward every earned-but-
 // unpaid payment from any date (so nothing falls through). Office managers mark
 // payouts (admin only); reps with can_view_commission can see what is coming.
+//
+// NEGATIVE payments (refunds) flow through the same model on purpose: a refund
+// row produces a NEGATIVE pending commission (refund x pct) that nets against
+// the rep's next payroll run, and marking it paid freezes the negative amount
+// in pec_commission_payouts as the correction record. The original positive
+// payout row stays untouched as history. That is Dylan's chosen adjustment
+// mechanism (2026-07-10, Trujillo/Bronson): never rewrite a paid payout,
+// always net it out with a counter-entry.
 function commissionDefaultRange() {
   const today = invToday();                 // YYYY-MM-DD in Phoenix time
   return { start: today.slice(0, 8) + '01', end: today };
@@ -13168,7 +13180,7 @@ async function renderCommission() {
             <td>${jobLink(l.job_id, l.customer)}</td>
             <td>${esc(l.sp)} ${rate(l)}</td>
             <td style="text-align:right">${invUSD(l.collected)}</td>
-            <td style="text-align:right">${isAdm ? `<input type="number" step="0.01" min="0" class="com-amt" data-pid="${esc(l.id)}" value="${l.commission.toFixed(2)}" style="width:90px;text-align:right">` : `<strong>${invUSD(l.commission)}</strong>`}</td>
+            <td style="text-align:right">${isAdm ? `<input type="number" step="0.01" class="com-amt" data-pid="${esc(l.id)}" value="${l.commission.toFixed(2)}" style="width:90px;text-align:right">` : `<strong>${invUSD(l.commission)}</strong>`}</td>
           </tr>`).join('') || `<tr class="nohover"><td colspan="${isAdm ? 7 : 6}" class="pec-empty">Nothing pending. All collected commission has been paid out.</td></tr>`}
         </tbody>
         ${pending.length ? `<tfoot><tr class="li-total"><td colspan="${isAdm ? 6 : 5}"><strong>Total pending</strong></td><td style="text-align:right"><strong>${invUSD(pendingTotal)}</strong></td></tr></tfoot>` : ''}
