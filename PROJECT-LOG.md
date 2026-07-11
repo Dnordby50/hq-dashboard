@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 22:16 MST] Claude Code: per-segment schedule notes ("flake portion") visible on the calendar bars and run sheet
+By: Claude Code
+Changed: index.html, help/whats-new.json. Second of the three schedule features this session. No migration: reuses pec_prod_job_schedule_days.notes, which has existed since the original 2026-05-04 schedule DDL but was only ever displayed read-only in the job detail schedule table.
+
+HOW IT WORKS: a segment is a contiguous run of consecutive scheduled dates for a job. A Fri to Mon run is ONE segment even though the calendar splits it into two bars at the week boundary; the note is written onto EVERY pec_prod_job_schedule_days.notes row in the segment, so any single day row (a bar's first day, a run-sheet card's one day) can answer for the whole segment and both boundary halves show the same text.
+
+Editing lives in openScheduleModal, below the day picker: the selected dates group into segments (labeled "Jul 13 to Jul 16", single days just "Jul 13"), one text input each, maxlength 60. notesByDate (iso -> note) is the single source of truth: seeded from the existing day rows, written by the inputs (typing writes the value onto every date of that segment), and re-prefetched by date containment on every re-render, so typed values survive selection changes as long as their dates stay selected. If a merge (selecting the middle day between two noted runs) produces conflicting notes inside one segment, the EARLIEST noted day wins the prefill and the save rewrites the whole segment with it, so the data heals to consistent. Save normalizes once more (segmentsFor + segNoteFor) before building the insert rows. Feature 1's Reschedule reinsert already carries notes over by date, so pulls do not lose notes.
+
+Display: (a) 3-week bars, a muted italic .bar-note span after customer/revenue and before system/crew, ellipsis-truncated; it drops FIRST in the progressive collapse (container query at 150px, vs crew at 96px; the customer name never drops) and rides the tooltip untruncated; (b) week run sheet, one muted italic line per card. The run sheet's "no job notes" rule (Dylan, 2026-06-10) still stands for FULL job notes; this is the new dedicated short field, and the code comment now says so explicitly. (c) The job detail schedule table already printed the notes column, confirmed populating for free at the esc(s.notes) cell.
+
+Verified: 20/20 assertions in the same extracted-real-functions Chrome harness style as Feature 1: segment grouping (2 runs -> 2 inputs, date-range labels, maxlength 60), save lands the note on exactly the segment's rows and null elsewhere, Fri-to-Mon is one input and saves onto all 4 rows, the calendar splits it into 2 bars that BOTH show the note (and both tooltips carry it), part order in the bar is customer/revenue/note/system, week run-sheet cards each show the note line, typed values survive a selection re-render, and the merge-conflict case prefills from the earliest day and saves the segment consistent. One initial harness failure was a harness artifact (a prior test's unsaved modal left open, so the next test queried the stale modal); confirmed by direct replay before fixing the harness, not the product code. All 7 script blocks pass node --check; em dash scan of added lines = 0; whats-new.json parses.
+Why: Dylan wants "flake portion" / "patio portion" readable at a glance on the schedule without resurrecting the full job notes that got pulled off the run sheet in June for being too much.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: feature 3 (chronological day numbers) lands next in this session.
+Handoff to Cowork: None
+Handoff to Dylan: after deploy, open a scheduled job from the calendar, type a short note under the day picker, Save, and check the bar, the week run sheet, and the hover text.
+
+---
+
 ## [2026-07-10 21:47 MST] Claude Code: schedule Reschedule flow, pulled days park the job in Pending with an amber "days owed" badge
 By: Claude Code
 Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_reschedule_limbo.sql. First of three schedule features this session (Reschedule limbo, segment notes, chronological day numbers), one commit each. Migration ALREADY APPLIED to prod via the Supabase MCP (project zdfpzmmrgotynrwkeakd), verified live: pec_prod_jobs.reschedule_days_owed (integer, not null, default 0) and pec_prod_jobs.rescheduled_from (date) both exist. No Cowork DB work needed.

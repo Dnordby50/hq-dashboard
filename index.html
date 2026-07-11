@@ -16484,13 +16484,16 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     for (const jobId of Object.keys(byJob)) {
       const ev = eventFor(jobId); if (!ev) continue;
       const sorted = byJob[jobId].slice().sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date));
-      let runStart = null, runEnd = null, runSlot = null;
-      const flush = () => { if (runStart !== null) bars.push({ jobId, startCol: runStart, spanCols: runEnd - runStart + 1, ev, slot: runSlot }); };
+      // runNote: the segment note (schedule modal writes it onto every day
+      // row of a segment, so the first day's note answers for the whole run;
+      // the first non-empty fallback covers legacy rows noted mid-run).
+      let runStart = null, runEnd = null, runSlot = null, runNote = null;
+      const flush = () => { if (runStart !== null) bars.push({ jobId, startCol: runStart, spanCols: runEnd - runStart + 1, ev, slot: runSlot, note: runNote }); };
       for (const sd of sorted) {
         const col = isoToCol.get(sd.scheduled_date);
-        if (runStart === null) { runStart = col; runEnd = col; runSlot = sd.time_slot || null; }
-        else if (col === runEnd + 1) { runEnd = col; }
-        else { flush(); runStart = col; runEnd = col; runSlot = sd.time_slot || null; }
+        if (runStart === null) { runStart = col; runEnd = col; runSlot = sd.time_slot || null; runNote = sd.notes || null; }
+        else if (col === runEnd + 1) { runEnd = col; if (!runNote && sd.notes) runNote = sd.notes; }
+        else { flush(); runStart = col; runEnd = col; runSlot = sd.time_slot || null; runNote = sd.notes || null; }
       }
       flush();
     }
@@ -16524,11 +16527,19 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const barRev = bar.ev.revPerDay * bar.spanCols;
     const revLabel = compactRev(barRev);
     if (revLabel) parts.push(`<span class="bar-rev">${esc(revLabel)}</span>`);
+    // Segment note ("flake portion"): the schedule modal writes it on every
+    // day row of the segment, so a Fri to Mon run split at the week boundary
+    // shows the SAME note on both bars. Muted + truncated; the .bar-note
+    // container query drops it first in the progressive collapse, long
+    // before the customer name.
+    if (bar.note) parts.push(`<span class="bar-note">${esc(bar.note)}</span>`);
     if (bar.ev.sys && bar.ev.sys.name) parts.push(`<span class="bar-system">${esc(bar.ev.sys.name)}</span>`);
     if (bar.ev.crew) parts.push(`<span class="bar-crew">${esc(bar.ev.crew)}</span>`);
     // Tooltip shows the FULL contract plus this week's prorated slice so the
-    // prorated bar and the tooltip do not look like a contradiction.
+    // prorated bar and the tooltip do not look like a contradiction. The
+    // segment note rides along untruncated.
     const tip = bar.ev.tooltipBase
+      + (bar.note ? ` · ${bar.note}` : '')
       + (bar.ev.revFull ? ` · Contract ${bar.ev.revFull}` + (barRev > 0 ? ` · this week ${fullRev(barRev)}` : '') : '');
     return `<div class="pec-cal-event-bar"
       data-event-job="${esc(bar.jobId)}"
@@ -16606,9 +16617,11 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
             const dayRevLabel = fullRev(ev.revPerDay);
             // Run sheet: stacked card per job (slot + customer, then price, system,
             // address, crew lead, job #). Everything on its own line so nothing
-            // trails off to the side. Job notes intentionally omitted (Dylan,
-            // 2026-06-10: too much info on the schedule). Columns are tall, so
-            // nothing is truncated.
+            // trails off to the side. Full JOB notes intentionally omitted (Dylan,
+            // 2026-06-10: too much info on the schedule); the short per-segment
+            // note (sd.notes, maxlength 60, from the schedule modal) is a
+            // different, deliberately tiny field and DOES show. Columns are
+            // tall, so nothing is truncated.
             const muted = 'font-size:.7rem;color:var(--rd-muted,var(--muted));margin-top:3px;line-height:1.35';
             const tip = ev.tooltipBase
               + (ev.revFull ? ` · Contract ${ev.revFull}` + (ev.revPerDay > 0 ? ` · this day ${fullRev(ev.revPerDay)}` : '') : '');
@@ -16618,6 +16631,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
                 <strong style="font-size:.86rem;line-height:1.2;flex:1">${esc(ev.customer || '(no name)')}</strong>
               </div>
               ${dayRevLabel ? `<div style="font-size:.8rem;font-weight:700;color:var(--rd-ink,var(--text));margin-top:3px">${esc(dayRevLabel)}${totalDays > 1 ? `<span style="font-weight:500;color:var(--rd-muted,var(--muted))"> · of ${esc(ev.revFull)} total</span>` : ''}</div>` : ''}
+              ${sd.notes ? `<div style="${muted};font-style:italic">${esc(sd.notes)}</div>` : ''}
               <div style="${muted}">${ev.sys && ev.sys.name ? `<span class="pec-color-dot" style="background:${esc(ev.sys.color || '#888')}"></span>${esc(ev.sys.name)}` : 'No system yet'}</div>
               ${job.address ? `<div style="${muted}">${esc(job.address)}</div>` : ''}
               ${job.crew_lead ? `<div style="${muted}">Lead: ${esc(job.crew_lead)}</div>` : ''}
@@ -16950,11 +16964,42 @@ function openScheduleModal(jobId) {
     system_type_id: sys ? sys.id : '',
   };
 
+  // Per-SEGMENT notes: a short label like "flake portion" shown on the
+  // calendar. A segment is a contiguous run of consecutive selected dates
+  // (a Fri to Mon run is ONE segment even though rendering splits it into
+  // two bars at the week boundary). The note is stored on EVERY
+  // pec_prod_job_schedule_days.notes row in the segment, so any day row can
+  // answer for its bar or run-sheet card. notesByDate is the single source:
+  // keyed by iso date, seeded from the existing rows, written by the segment
+  // inputs, and normalized per segment again at save time.
+  const notesByDate = {};
+  for (const d of existingDays) if (d.notes) notesByDate[d.scheduled_date] = d.notes;
+  const nextIso = (iso) => isoDate(addDays(parseISO(iso), 1));
+  const segmentsFor = (dates) => {
+    const segs = [];
+    for (const iso of dates.slice().sort()) {
+      const cur = segs[segs.length - 1];
+      if (cur && nextIso(cur[cur.length - 1]) === iso) cur.push(iso);
+      else segs.push([iso]);
+    }
+    return segs;
+  };
+  // A merge (two runs joined by a newly selected middle day) can leave
+  // conflicting notes inside one segment: the EARLIEST day with a note wins
+  // and the save rewrites the whole segment with it, so the segment reads
+  // consistent again.
+  const segNoteFor = (seg) => { for (const iso of seg) { if (notesByDate[iso]) return notesByDate[iso]; } return ''; };
+  const segLabel = (seg) => {
+    const fmt = (iso) => parseISO(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return seg.length === 1 ? fmt(seg[0]) : `${fmt(seg[0])} to ${fmt(seg[seg.length - 1])}`;
+  };
+
   const renderBody = (modal) => {
     const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
     const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
     const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     const idxFor = (iso) => draft.selectedDates.indexOf(iso) + 1;
+    const segs = segmentsFor(draft.selectedDates);
     modal.querySelector('#schedDayGrid').innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <button type="button" class="pec-btn sm ghost" id="schedPickerPrev">‹</button>
@@ -16971,6 +17016,13 @@ function openScheduleModal(jobId) {
         }).join('')}
       </div>
       <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add/remove. The order you click sets day 1, day 2, etc.</div>
+      ${segs.length ? `<div style="margin-top:10px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Segment notes <span style="text-transform:none;letter-spacing:0">· short label shown on the calendar</span></div>
+        ${segs.map((seg, i) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="flex:0 0 118px;font-size:.72rem;color:var(--muted)">${esc(segLabel(seg))}</span>
+          <input class="sched-seg-note" data-seg="${i}" maxlength="60" value="${esc(segNoteFor(seg))}" placeholder="e.g. flake portion" style="flex:1;font-size:.8rem">
+        </div>`).join('')}
+      </div>` : ''}
     `;
     modal.querySelector('#schedPickerPrev').addEventListener('click', () => {
       draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() - 1, 1);
@@ -16986,6 +17038,13 @@ function openScheduleModal(jobId) {
       if (i >= 0) draft.selectedDates.splice(i, 1);
       else draft.selectedDates.push(iso);
       renderBody(modal);
+    }));
+    // Typing writes the note onto every date of that segment, so a re-render
+    // (date selection changed) re-prefills by date containment and typed
+    // values survive as long as their dates stay selected.
+    modal.querySelectorAll('.sched-seg-note').forEach(inp => inp.addEventListener('input', e => {
+      const seg = segs[Number(e.target.dataset.seg)] || [];
+      for (const iso of seg) notesByDate[iso] = e.target.value;
     }));
   };
 
@@ -17162,12 +17221,21 @@ function openScheduleModal(jobId) {
           // Replace existing schedule rows
           const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
           if (del.error) { await revertJob(); return errEl.textContent = del.error.message; }
+          // Normalize notes per segment at save: every row in a contiguous
+          // run gets the SAME note (earliest noted day wins on conflicts), so
+          // week-boundary bars and run-sheet cards always agree.
+          const noteByIso = {};
+          for (const seg of segmentsFor(draft.selectedDates)) {
+            const note = (segNoteFor(seg) || '').trim().slice(0, 60);
+            for (const iso of seg) noteByIso[iso] = note || null;
+          }
           const rows = draft.selectedDates.map((iso, idx) => ({
             job_id: job.id,
             scheduled_date: iso,
             day_index: idx,
             crew_id: draft.crew_id || null,
             time_slot: draft.time_slot || null,
+            notes: noteByIso[iso],
           }));
           let ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
           if (ins.error && /time_slot/.test(ins.error.message || '')) {
@@ -21107,11 +21175,16 @@ if (portalToken) {
   .pec-cal-event-bar > .bar-rev { flex:0 0 auto; color:var(--rd-ink, #0f172a); font-weight:700; font-variant-numeric:tabular-nums }
   .pec-cal-event-bar > .bar-system,
   .pec-cal-event-bar > .bar-crew { flex:0 1 auto; color:var(--rd-ink, #0f172a) }
+  .pec-cal-event-bar > .bar-note { flex:0 1 auto; color:var(--rd-muted, var(--muted)); font-style:italic; font-size:.68rem }
   .pec-cal-event-bar > :not(:first-child) { position:relative; padding-left:11px }
   .pec-cal-event-bar > :not(:first-child)::before { content:'·'; position:absolute; left:2px; color:var(--muted) }
   /* Lanes are tall enough for two lines now, so narrow bars WRAP system + crew
      onto a second line instead of dropping them -- more info per job. Only an
-     extremely narrow cell hides crew to avoid a third line. */
+     extremely narrow cell hides crew to avoid a third line. The segment note
+     is nice-to-have context, so it drops FIRST (wider threshold than crew) and
+     long before the customer name, which never drops. The full note stays in
+     the bar tooltip. */
+  @container (max-width: 150px) { .pec-cal-event-bar .bar-note { display:none } }
   @container (max-width: 96px) { .pec-cal-event-bar .bar-crew { display:none } }
   /* Crew task chips: dashed border + muted background so they read as
      reminders, clearly distinct from the solid color-coded job bars. */

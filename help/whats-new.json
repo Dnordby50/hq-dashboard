@@ -1,5 +1,16 @@
 [
   {
+    "id": "schedule-segment-notes",
+    "date": "2026-07-10",
+    "title": "Short notes on the schedule, like \"flake portion\"",
+    "summary": "Each stretch of scheduled days can now carry a short note that shows right on the calendar bar, on the week run sheet, and in the bar's hover text. Perfect for splitting one job into its flake days and patio days at a glance.",
+    "howto": [
+      "Open a job from the calendar. Below the day picker you'll see one note box per stretch of back-to-back days, labeled with its dates.",
+      "Type a short label (up to 60 characters), like flake portion, and Save.",
+      "The note shows on the calendar bar in both views and in the job's schedule table. Hover the bar to read it in full."
+    ]
+  },
+  {
     "id": "schedule-reschedule-pending",
     "date": "2026-07-10",
     "title": "Pull install days off the calendar for rescheduling",
