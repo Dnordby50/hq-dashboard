@@ -50,6 +50,39 @@ function cleanStr(s) {
   return out || null;
 }
 
+// Kick off the per-lead AI analysis for a freshly inserted lead (Dylan's
+// decision: AI runs on arrival plus on-demand refresh). Best-effort by
+// contract: a slow or failed analysis must NEVER fail or delay the intake
+// response, because Zapier treats non-200s as retryable and would re-fire.
+//
+// HOW the timeout works: we POST to pec-lead-ai (its own Netlify invocation)
+// and wait at most AI_TRIGGER_WAIT_MS for the request to be ACCEPTED. The
+// race is awaited (not fire-and-forget: a dangling promise can be frozen
+// when this lambda returns), but once the HTTP request has left this
+// function, pec-lead-ai runs to completion on its own invocation even if we
+// stopped waiting. Every failure path lands in console.warn and nothing else.
+const AI_TRIGGER_WAIT_MS = 2500;
+async function triggerLeadAi(leadId) {
+  try {
+    const base = process.env.URL || 'https://prescottepoxy.netlify.app';
+    const req = fetch(`${base}/.netlify/functions/pec-lead-ai`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-webhook-secret': process.env.PEC_WEBHOOK_SECRET || '',
+      },
+      body: JSON.stringify({ lead_id: leadId }),
+    }).then(
+      (res) => { if (!res.ok) console.warn(`pec-lead-intake: AI trigger returned ${res.status} for lead ${leadId}`); },
+      (err) => { console.warn('pec-lead-intake: AI trigger failed:', err && err.message); }
+    );
+    const timeout = new Promise((resolve) => setTimeout(resolve, AI_TRIGGER_WAIT_MS));
+    await Promise.race([req, timeout]);
+  } catch (err) {
+    console.warn('pec-lead-intake: AI trigger threw:', err && err.message);
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { success: false, error: 'Method not allowed' });
   if (badSecret(event)) return json(401, { success: false, error: 'Invalid webhook secret' });
@@ -139,6 +172,10 @@ exports.handler = async (event) => {
       to_stage: 'new',
       payload: { source, raw: body },
     });
+
+    // NEW leads only: both dedupe paths return above, so a Zapier retry or a
+    // repeat inquiry never re-runs (and re-bills) the analysis.
+    await triggerLeadAi(lead.id);
 
     await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source})`, payload: body });
     return json(200, { success: true, deduped: false, lead_id: lead.id });

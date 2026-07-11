@@ -1,5 +1,16 @@
 [
   {
+    "id": "lead-intake-live",
+    "date": "2026-07-11",
+    "title": "New leads flow straight into HQ (no more DripJobs for new leads)",
+    "summary": "Facebook and Google leads now land in HQ automatically the moment someone submits a form, each with an instant AI read: a summary, a 1-100 score, and a suggested next step. Duplicate submissions fold into the existing lead instead of cluttering the list.",
+    "howto": [
+      "Nothing to do day to day; leads arrive on their own once the Zaps are connected.",
+      "A second inquiry from the same person attaches to their existing lead as a note instead of creating a copy.",
+      "The Leads board to work them lands next; the data is already collecting."
+    ]
+  },
+  {
     "id": "invoicing-archived-jobs-drop-out",
     "date": "2026-07-10",
     "title": "Archived jobs no longer sit in Invoicing",

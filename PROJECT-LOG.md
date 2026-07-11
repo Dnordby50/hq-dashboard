@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-11 06:08 MST] Claude Code: leads phase 1 live, migration applied to prod + intake triggers AI analysis on arrival
+By: Claude Code
+Changed: netlify/functions/pec-lead-intake.cjs, help/whats-new.json. Phase 1 of the weekend leads build (plan approved by Dylan; phases: intake, kanban, $/sqft + metrics, AI panel/OpenPhone). Builds on Cowork's 9171462 framework (previous entry).
+
+MIGRATION APPLIED TO PROD from this session via the Supabase MCP (project zdfpzmmrgotynrwkeakd): 2026-07-11_lead_intake_ai.sql. Verified live with the migration's own footer checks: leads.campaign / ad_meta / ai_analysis / ai_analyzed_at all exist (4 columns), idx_leads_phone_live + idx_leads_email_live + idx_lead_events_type all present, leads table currently 0 rows (nothing writes until the Zaps connect). Cowork's "apply on go" handoff from the previous entry is hereby closed.
+
+INTAKE -> AI HOOK: pec-lead-intake.cjs grows triggerLeadAi(leadId). On the NEW-insert path only (both dedupe paths return earlier, so Zapier retries and repeat inquiries never re-run or re-bill an analysis), right after the 'created' lead_event, it POSTs { lead_id } to pec-lead-ai on this site (process.env.URL, prod fallback prescottepoxy.netlify.app) with the shared x-webhook-secret. The wait is a 2.5s Promise.race, awaited on purpose: a truly detached promise can be frozen when the lambda returns, but once the HTTP request has LEFT this function, pec-lead-ai runs to completion as its own invocation even though intake stopped waiting. Every failure path (non-200, rejection, hang) is console.warn only; the intake response is never failed or delayed past the race window, because Zapier treats non-200 as retryable and would double-fire.
+
+Verified: node --check on both functions; 23/23 assertions in a unit harness that injects a mocked _pec-supabase.cjs into require.cache and stubs global.fetch, driving the REAL handler: bad secret 401; missing name 400 with rejected ingest log; missing phone+email 400; source_ref dedupe returns the existing id with no insert and NO AI call; phone dedupe (normalized last-10) appends the duplicate_intake event, no insert, no AI call; a new lead inserts with stage new / normalized phone / lowercased email / campaign + ad_meta harvest / explicit-only sms_consent, writes the created event, and fires EXACTLY ONE AI call carrying the secret header and lead_id; a hanging AI endpoint still returns 200 in about 2.5s; a rejecting AI endpoint is swallowed. End-to-end curl against prod needs PEC_WEBHOOK_SECRET (Netlify env only), so that is a Dylan step below.
+Why: this is the start of the DripJobs exit; new Meta/Google leads land in our own table with an instant AI read instead of going to DripJobs.
+Files touched: netlify/functions/pec-lead-intake.cjs, help/whats-new.json, PROJECT-LOG.md.
+Next steps: phase 2 (Leads kanban tab) next in this session.
+Handoff to Cowork: None (the migration handoff from the previous entry is done).
+Handoff to Dylan (after this deploy goes green):
+1. Verify ANTHROPIC_API_KEY exists in Netlify env vars (sop-chat uses the same key; if the SOP chat works, the key is set and nothing is needed).
+2. Smoke-test the endpoint with your webhook secret (run once to create, rerun the same command to see deduped:true):
+   curl -s -X POST https://prescottepoxy.netlify.app/.netlify/functions/pec-lead-intake -H "Content-Type: application/json" -H "x-webhook-secret: YOUR_SECRET" -d '{"source":"webform","source_ref":"test-1","full_name":"Test Lead","phone":"928 555 0000","campaign":"smoke test"}'
+   Expected: first run {"success":true,"deduped":false,...}, second run {"deduped":true}. Then tell Claude Code or Cowork to verify the rows (leads, lead_events created + ai_analysis, ingest log) and delete the test lead.
+3. Wire the two Zaps (Meta Lead Ads, Google Lead Forms) to POST that same URL with the secret header, mapping fields per the comment block at the top of pec-lead-intake.cjs.
+
+---
+
 ## [2026-07-10 23:15 MST] Cowork: leads/pipeline weekend build framework (intake webhook, AI endpoint, migration) + Claude Code build prompt
 By: Cowork
 Changed: Discovery interview with Dylan (12 questions) locked the weekend build scope, then the framework was built: (1) supabase/migrations/2026-07-11_lead_intake_ai.sql adds leads.campaign, leads.ad_meta, leads.ai_analysis, leads.ai_analyzed_at, dedupe indexes on phone/email, and a lead_events event_type index. NOT applied to prod yet. (2) netlify/functions/pec-lead-intake.cjs, the generic Zapier lead-intake webhook (Meta + Google + any source): PEC_WEBHOOK_SECRET auth, two-layer dedupe (source_ref idempotency, then same phone/email within 90 days appends a duplicate_intake lead_event instead of a new row), inserts leads + created lead_event, logs every attempt to pec_webhook_ingest_log under endpoint 'lead-intake'. SMS consent only when explicitly sent true. (3) netlify/functions/pec-lead-ai.cjs, per-lead Claude analysis (summary, 1-100 score, next action, call script, draft SMS/email, risk flags) stored on leads.ai_analysis with score mirrored to leads.score; auth is staff JWT or webhook secret; drafts are copy-only, the AI never sends. Both functions pass node --check; zero em dashes. A self-contained Claude Code build prompt for the rest (Leads kanban tab, lead detail + AI panel, OpenPhone call pull, $/sqft, Metrics additions) was written and given to Dylan.
