@@ -9005,7 +9005,11 @@ async function renderJobInvoice(jobId) {
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
   const r = arRes.data;
-  if (!r) { root.innerHTML = backBar + '<div class="pec-empty">Invoice not found. It may have been voided.</div>'; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
+  // No row: the job is voided OR archived (the 2026-07-10 AR migration filters
+  // both out of pec_job_ar). Accepted behavior for archived jobs: nothing in
+  // the UI links here for them anymore, so this only shows on a stale deep
+  // link, and a dead-end message beats resurrecting a cancelled job's invoice.
+  if (!r) { root.innerHTML = backBar + '<div class="pec-empty">Invoice not found. It may have been voided or archived.</div>'; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
   const row = {
     ...r,
     price: invNum(r.price),
@@ -15669,7 +15673,10 @@ async function loadPipelineData() {
   const rows = [];
   for (const r of arRes.data || []) {
     const extra = extraById[r.id] || {};
-    if (extra.archived_at) continue; // pec_job_ar keeps archived rows; drop them here
+    // Since the 2026-07-10 AR migration, pec_job_ar filters archived rows in
+    // the VIEW; this client-side drop stays as the pre-migration defense (the
+    // deploy can land before Cowork runs the migration) and costs nothing.
+    if (extra.archived_at) continue;
     const inst = installInfo(r.dripjobs_deal_id, r.customer_name, extra.address);
     // Reconcile the pipeline column with the schedule calendar using the SAME
     // canonical rule (deriveJobStatus) the sweep will persist, so the column the

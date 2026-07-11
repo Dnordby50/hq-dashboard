@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 22:42 MST] Claude Code: pec_job_ar migration drops archived jobs from AR; Gallagher void queued for Cowork
+By: Claude Code
+Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_ar_exclude_archived.sql. Task 2 of the three Cowork-scoped fixes. The migration and the Gallagher void UPDATE are NOT applied from this session; both go to Cowork (handoff in this session's final entry). The client code ships first and tolerates the pre-migration window (archived rows are still dropped client-side where it matters, see below).
+
+THE MIGRATION: recreates pec_job_ar (definition copied from 2026-06-15_invoice_first_sent.sql) with the where clause extended to `voided_at is null AND archived_at is null`. The view's SELECT was validated against prod via EXPLAIN (read-only), and the acceptance numbers were computed live: pending deposits drop from $13,795.00 to $11,370.00, exactly Gallagher's $2,425.00 (his job is the ONLY archived row currently in an AR bucket).
+
+CONSUMER AUDIT (every pec_job_ar reader) and the decision the prompt asked for:
+- renderJobInvoice (reads by id): an archived job's invoice detail now returns the no-row path. DECISION: accepted, no special case. Reasoning: post-migration, archived jobs appear in no Invoicing bucket, no pipeline card, and no commission/sold list, so nothing in the UI links to their invoice anymore; the only route is a stale deep link. The message was updated from "It may have been voided." to "It may have been voided or archived." so the dead end is honest. A special-case fetch (jobs table fallback) would resurrect a cancelled job's invoice screen, which is the opposite of what Dylan asked for.
+- Public /pay/<token> page and /api/stripe/checkout: both resolve tokens through the view, so an archived job's pay link goes dead (404 page / no checkout). Correct: never collect money on a cancelled job.
+- loadPipelineData: already dropped archived rows client-side; that filter is KEPT as the pre-migration defense (deploy lands before Cowork runs the migration) and its stale comment ("pec_job_ar keeps archived rows") was rewritten.
+- renderCommission: maps payments to salespeople through the view. All 3 archived jobs that have payments carry salesperson NULL, so their historical lines already showed as Unassigned; no behavior change.
+- renderMetrics: SIDE EFFECT flagged to Dylan: 3 previously archived jobs carry $8,602.50 of real payments (Samuel AE Reprographics $1,950 fully paid, Robert Waxler $4,702.50 fully paid, Wendell Henson $1,950 of $3,900), and after the migration that money leaves the Metrics collected-revenue history. If those were real completed jobs archived as cleanup rather than cancellations, unarchive them; the two fully-paid completed ones look like cleanup.
+
+Verified: the not-found path exercised in the extracted-functions harness (view returns no row -> "Invoice not found. It may have been voided or archived." with a working Back button); the 34/34 task-1 suite still passes on the current file; EXPLAIN validates the new view SQL against prod columns; all 7 script blocks pass node --check; whats-new.json parses (20 entries); em dash scan of added lines = 0.
+Why: pec_job_ar's only filter was voided_at, so archiving (the CRM's delete) left cancelled jobs inflating AR; Gallagher's $2,425 phantom deposit was the live case.
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-10_ar_exclude_archived.sql, PROJECT-LOG.md.
+Next steps: Cowork voids Gallagher, applies the migration, and inserts the Trujillo refund (final entry's handoff).
+Handoff to Cowork: consolidated in this session's final entry.
+Handoff to Dylan: after Cowork runs the migration, glance at Metrics; if the collected-revenue history dipping by $8,602.50 bothers you, say the word and the two fully-paid archived jobs (Samuel AE Reprographics, Robert Waxler) get unarchived.
+
+---
+
 ## [2026-07-10 22:35 MST] Claude Code: payments + commission tolerate negative (refund) rows; enables the Trujillo -$745 correction
 By: Claude Code
 Changed: index.html, netlify/functions/pec-public-invoice.cjs. Task 1 of the three Cowork-scoped fixes (see the 21:25 entry). Internal plumbing, no whats-new entry (the guardrail's judgment call: nothing user-visible changes until the negative row exists). No data written; the actual -$745 insert is Cowork's (handoff at the end of this session's entries).

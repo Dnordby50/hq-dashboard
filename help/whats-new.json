@@ -1,5 +1,16 @@
 [
   {
+    "id": "invoicing-archived-jobs-drop-out",
+    "date": "2026-07-10",
+    "title": "Archived jobs no longer sit in Invoicing",
+    "summary": "Archiving a job now removes it from every Invoicing section and the AR totals, the same way voiding does. Cancelled jobs stop inflating pending deposits, and their public pay links go dead so nobody can pay a cancelled job.",
+    "howto": [
+      "Archive a cancelled job from its job page like before; it disappears from Invoicing on its own.",
+      "The Total AR number and the section totals no longer count archived jobs.",
+      "The job itself is untouched; it is just out of the money views."
+    ]
+  },
+  {
     "id": "schedule-day-numbers-by-date",
     "date": "2026-07-10",
     "title": "Day numbers now always follow the calendar",
