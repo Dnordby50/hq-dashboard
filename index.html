@@ -2361,6 +2361,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="messages">Messages</button>
+          <button data-pec-view="leads">Leads</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
                switchView view). Hidden by default; wireEstimatorNav() reveals it
@@ -6275,6 +6276,10 @@ const state = {
   // Jobs Pipeline (kanban). Filters apply on Go; window is the changed-date range.
   pipelineFilters: { salesperson: '', crew: '', leadSource: '', window: 'any' },
   pendingWorkOrderJobId: null,
+  // Leads pipeline (pre-sale kanban, separate from the Jobs pipeline; feeds it
+  // on accept through the estimator). openLeadId drives the detail pane.
+  leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '' },
+  leadsData: null, openLeadId: null,
   // Next-Day finalization board (crew x AM/PM). Anchor defaults to tomorrow.
   nextDayAnchor: null,
 };
@@ -6782,6 +6787,7 @@ function switchView(v) {
       schedule: renderSchedule,
       nextday: renderNextDay,
       pipeline: renderPipeline,
+      leads: renderLeads,
       costing: renderJobCosting,
       // Job Costing + Completed Job Costing merged into one view with an
       // Active/Completed toggle. The old completed-costing route is kept as an
@@ -15881,6 +15887,422 @@ async function renderPipeline() {
       });
     });
   }
+}
+
+// ============================================================
+// Leads pipeline (pre-sale kanban)
+// ============================================================
+// Separate from the Jobs pipeline above ON PURPOSE: leads are pre-sale
+// (Zapier intake from Meta/Google, manual entry) and FEED the Jobs pipeline
+// when an estimate is accepted; nothing here touches jobs/pec_prod_jobs.
+// Stages are the leads_stage_check constraint's six values, never more.
+// Lead VALUE is not a leads column: it is the lead's latest live estimate
+// price (accepted estimate wins), computed in loadLeadsData.
+
+const LEAD_STAGES = [
+  { key: 'new', title: 'New' },
+  { key: 'contacted', title: 'Contacted' },
+  { key: 'estimate_sent', title: 'Estimate Sent' },
+  { key: 'presented', title: 'Presented' },
+  { key: 'accepted', title: 'Accepted' },
+  { key: 'lost', title: 'Lost' },
+];
+// Stage -> its first-reached timestamp column. Set on a stage change ONLY when
+// still null (first touch wins): a re-drag or a backward-then-forward move can
+// never rewrite contacted_at, which the speed-to-lead metric depends on.
+const LEAD_STAGE_TS = {
+  contacted: 'contacted_at',
+  estimate_sent: 'estimate_sent_at',
+  presented: 'presented_at',
+  accepted: 'accepted_at',
+  lost: 'lost_at',
+};
+// Source badge colors (kanban card + filter). Unknown sources fall back gray.
+const LEAD_SOURCE_COLORS = {
+  meta: '#1877f2', google_lsa: '#188038', webform: '#7c3aed', manual: '#475569',
+  referral: '#64748b', angi: '#ea580c', openphone: '#0ea5e9', dripjobs: '#b45309',
+};
+const LEAD_SOURCE_LABELS = {
+  meta: 'Meta', google_lsa: 'Google LSA', webform: 'Web form', manual: 'Manual',
+  openphone: 'OpenPhone', dripjobs: 'DripJobs', angi: 'Angi',
+};
+const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[s] || titleCaseValue(s || 'unknown');
+
+let _leadsById = {};
+let _leadsElapsedTimer = null;
+
+// "How long has this NEW lead been waiting" label. This is the speed-to-lead
+// behavior driver: red past one hour. Returns null for unparseable dates.
+function leadElapsed(createdAt) {
+  const diff = Date.now() - new Date(createdAt).getTime();
+  if (!Number.isFinite(diff) || diff < 0) return null;
+  const m = Math.floor(diff / 60000);
+  const text = m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d`;
+  return { text: 'waiting ' + text, red: diff > 3600 * 1000 };
+}
+
+// One 60s ticker rewrites ONLY the [data-lead-elapsed] spans (no full
+// re-render, so an in-progress drag is never interrupted) and self-clears
+// as soon as the user navigates off the leads view.
+function startLeadsElapsedTimer() {
+  if (_leadsElapsedTimer) clearInterval(_leadsElapsedTimer);
+  _leadsElapsedTimer = setInterval(() => {
+    if (state.view !== 'leads') { clearInterval(_leadsElapsedTimer); _leadsElapsedTimer = null; return; }
+    document.querySelectorAll('[data-lead-elapsed]').forEach(el => {
+      const e = leadElapsed(el.dataset.leadElapsed);
+      if (!e) return;
+      el.textContent = e.text;
+      el.style.color = e.red ? 'var(--rd-danger, #ef4444)' : '';
+    });
+  }, 60000);
+}
+
+// Load leads + the estimate-derived value map + owner names + source options.
+async function loadLeadsData() {
+  const [leadsRes, estRes, srcRes, staffNames] = await withFreshSession(() => Promise.all([
+    supabase.from('leads').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
+    supabase.from('estimates').select('id,lead_id,price,status,created_at')
+      .is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
+    supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
+    qoStaffNames(),
+  ]), { label: 'loadLeadsData' });
+  if (leadsRes.error) throw new Error(leadsRes.error.message);
+  const leads = leadsRes.data || [];
+  // Value per lead: an ACCEPTED estimate wins regardless of age; otherwise the
+  // newest live estimate. Rows arrive newest-first, so first-seen = newest.
+  const valueMap = {};
+  const acceptedSeen = {};
+  for (const e of (estRes.error ? [] : estRes.data || [])) {
+    const v = Number(e.price) || 0;
+    if (e.status === 'accepted') {
+      if (!acceptedSeen[e.lead_id]) { acceptedSeen[e.lead_id] = true; valueMap[e.lead_id] = v; }
+    } else if (!acceptedSeen[e.lead_id] && !(e.lead_id in valueMap)) {
+      valueMap[e.lead_id] = v;
+    }
+  }
+  // Source options: schema tokens + anything already in the data + the active
+  // pec_lead_sources names (free-text sources are legal on manual leads).
+  const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
+  for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
+  for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
+  return { leads, valueMap, staffNames: staffNames || {}, sources };
+}
+
+function leadCardHtml(lead) {
+  const value = (state.leadsData && state.leadsData.valueMap[lead.id]) || 0;
+  const flags = (lead.ai_analysis && Array.isArray(lead.ai_analysis.risk_flags)) ? lead.ai_analysis.risk_flags : [];
+  const score = lead.score == null ? null : Number(lead.score);
+  const scoreCls = score == null ? '' : score >= 70 ? 'pec-age-green' : score >= 40 ? 'pec-age-yellow' : 'pec-age-red';
+  const srcColor = LEAD_SOURCE_COLORS[lead.source] || '#64748b';
+  const elapsed = lead.stage === 'new' ? leadElapsed(lead.created_at) : null;
+  return `<div class="pipeline-card lead-card" draggable="true" data-lead-id="${esc(lead.id)}"
+      style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
+      <strong style="font-size:.9rem;line-height:1.2">${esc(lead.full_name || '(no name)')}</strong>
+      ${flags.length ? `<span title="${esc('AI risk: ' + flags.join('; '))}" style="width:9px;height:9px;border-radius:50%;background:var(--rd-danger,#ef4444);flex-shrink:0;margin-top:4px"></span>` : ''}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+      <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
+      ${score != null && Number.isFinite(score) ? `<span class="pec-age ${scoreCls}" title="${esc('AI score' + (lead.ai_analysis && lead.ai_analysis.score_reason ? ': ' + lead.ai_analysis.score_reason : ''))}">${score}</span>` : ''}
+    </div>
+    ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
+    ${value > 0 ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(value)}</div>` : ''}
+    <div style="display:flex;justify-content:space-between;gap:6px;margin-top:8px;font-size:.7rem;color:var(--rd-muted,#6b7280)">
+      <span>updated ${esc(fmtRelativeTime(lead.updated_at))}</span>
+      ${elapsed ? `<span data-lead-elapsed="${esc(lead.created_at)}" style="font-weight:700;${elapsed.red ? 'color:var(--rd-danger,#ef4444)' : ''}">${esc(elapsed.text)}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+// Write a stage change: stage + first-touch timestamp (+ lost_reason), then a
+// stage_change lead_event. The patch is a full-value idempotent write, so
+// withFreshWriteRetry may safely recover a wedged client and retry once.
+// updated_at is NEVER sent (the leads touch trigger owns it).
+async function commitLeadStage(lead, toStage, extra = {}) {
+  const fromStage = lead.stage;
+  const patch = { stage: toStage };
+  if (extra.lost_reason) patch.lost_reason = extra.lost_reason;
+  const tsCol = LEAD_STAGE_TS[toStage];
+  if (tsCol && !lead[tsCol]) patch[tsCol] = new Date().toISOString();
+  const upd = await withFreshWriteRetry(() => supabase.from('leads').update(patch).eq('id', lead.id), { label: 'lead-stage' });
+  if (upd.error) throw upd.error;
+  // History is best-effort: the stage move already landed, so an event miss
+  // must not surface as a failed move (it would tempt a double-drag).
+  const evt = await supabase.from('lead_events').insert({
+    lead_id: lead.id,
+    event_type: 'stage_change',
+    from_stage: fromStage,
+    to_stage: toStage,
+    actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+    payload: extra.lost_reason ? { lost_reason: extra.lost_reason } : {},
+  });
+  if (evt.error) console.warn('[leads] stage_change event failed:', evt.error.message);
+  Object.assign(lead, patch);
+}
+
+// Drop handler. Lost requires a reason (modal); everything else commits
+// directly. Local state mutates only AFTER the write succeeds, so a failed
+// move leaves the card exactly where it was.
+function moveLeadStage(leadId, toStage) {
+  const lead = _leadsById[leadId];
+  if (!lead || lead.stage === toStage) return;
+  if (toStage === 'lost') { openLeadLostModal(lead, () => renderLeads()); return; }
+  commitLeadStage(lead, toStage)
+    .then(() => {
+      const col = LEAD_STAGES.find(s => s.key === toStage);
+      showToast(`Moved to ${col ? col.title : toStage}`, { ttl: 1800 });
+      renderLeads();
+    })
+    .catch(err => {
+      console.error('[leads] stage move:', err);
+      showToast('Move failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+    });
+}
+
+// Lost needs a reason (Dylan's conversion metrics depend on it). Mirrors the
+// openPipelineMoveModal shape: required pick, disable-while-saving, toast.
+function openLeadLostModal(lead, onDone) {
+  const REASONS = ['Price', 'Went with competitor', 'Timing / not ready', 'No response', 'Not a fit', 'Other'];
+  openModal(`
+    <h3>Mark lost: ${esc(lead.full_name || 'lead')}</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Why was this lead lost? This feeds the conversion-by-source numbers, so pick the closest reason.</div>
+    <div class="pec-field"><label>Reason</label>
+      <select id="leadLostReason"><option value="">Pick a reason…</option>${REASONS.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+    </div>
+    <div class="pec-field" id="leadLostOtherWrap" style="display:none"><label>What happened?</label><input id="leadLostOther" maxlength="200" placeholder="Short note"></div>
+    <div class="prod-msg-err" id="leadLostErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn" id="leadLostGo">Mark lost</button>
+    </div>
+  `, { onMount: modal => {
+    const sel = modal.querySelector('#leadLostReason');
+    const otherWrap = modal.querySelector('#leadLostOtherWrap');
+    const otherEl = modal.querySelector('#leadLostOther');
+    const errEl = modal.querySelector('#leadLostErr');
+    const go = modal.querySelector('#leadLostGo');
+    sel.addEventListener('change', () => { otherWrap.style.display = sel.value === 'Other' ? '' : 'none'; });
+    go.addEventListener('click', async () => {
+      errEl.textContent = '';
+      let reason = sel.value;
+      if (!reason) { errEl.textContent = 'Pick a reason.'; return; }
+      if (reason === 'Other') {
+        const note = (otherEl.value || '').trim();
+        if (!note) { errEl.textContent = 'Say what happened in a few words.'; return; }
+        reason = note;
+      }
+      go.disabled = true; go.textContent = 'Saving…';
+      try {
+        await commitLeadStage(lead, 'lost', { lost_reason: reason });
+        closeModal();
+        showToast('Marked lost', { ttl: 1800 });
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        go.disabled = false; go.textContent = 'Mark lost';
+        console.error('[leads] mark lost:', err);
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
+
+// Manual lead entry. Same validation contract as the intake webhook (name
+// required, phone or email required) so a manual lead is never a lesser row.
+function openNewLeadModal() {
+  const staffNames = (state.leadsData && state.leadsData.staffNames) || {};
+  const sources = (state.leadsData && state.leadsData.sources) || ['manual'];
+  openModal(`
+    <h3>New lead</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Name <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlName" autocomplete="off"></div>
+      <div class="pec-field"><label>Phone</label><input id="nlPhone" placeholder="(928) 555-1212"></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Email</label><input id="nlEmail" placeholder="phone or email required"></div>
+      <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${s === 'manual' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
+    </div>
+    <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Street, City, State"></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Campaign</label><input id="nlCampaign" placeholder="optional"></div>
+      <div class="pec-field"><label>Owner</label><select id="nlOwner"><option value="">Unassigned</option>${Object.entries(staffNames).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('')}</select></div>
+    </div>
+    <div class="pec-field"><label>Notes</label><textarea id="nlNotes" rows="3" placeholder="What they want, timing, anything useful"></textarea></div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="nlSms" style="width:auto"> They agreed to receive texts (do not guess)</label>
+    <div class="prod-msg-err" id="nlErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="nlSave">Add lead</button>
+    </div>
+  `, { onMount: modal => {
+    const errEl = modal.querySelector('#nlErr');
+    const save = modal.querySelector('#nlSave');
+    modal.querySelector('#nlName').focus();
+    save.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const val = id => (modal.querySelector('#' + id).value || '').trim();
+      const name = val('nlName');
+      const phone = val('nlPhone').replace(/\D/g, '');
+      const email = val('nlEmail').toLowerCase();
+      if (!name) { errEl.textContent = 'Name is required.'; return; }
+      if (!phone && !email) { errEl.textContent = 'Enter a phone or an email.'; return; }
+      save.disabled = true; save.textContent = 'Saving…';
+      try {
+        const smsYes = modal.querySelector('#nlSms').checked;
+        const ins = await withFreshWrite(() => supabase.from('leads').insert({
+          brand: 'PEC',
+          source: val('nlSource') || 'manual',
+          full_name: name,
+          phone: phone ? phone.slice(-10) : null,
+          email: email || null,
+          address: val('nlAddress') || null,
+          campaign: val('nlCampaign') || null,
+          owner_user_id: val('nlOwner') || null,
+          notes: val('nlNotes') || null,
+          stage: 'new',
+          created_by: (state.session && state.session.user && state.session.user.id) || null,
+          sms_consent: smsYes,
+          sms_consent_source: smsYes ? 'manual entry' : null,
+          sms_consent_at: smsYes ? new Date().toISOString() : null,
+        }).select('id').single(), { label: 'lead-manual-insert' });
+        if (ins.error) throw ins.error;
+        const evt = await supabase.from('lead_events').insert({
+          lead_id: ins.data.id,
+          event_type: 'created',
+          to_stage: 'new',
+          actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+          payload: { source: 'manual' },
+        });
+        if (evt.error) console.warn('[leads] created event failed:', evt.error.message);
+        closeModal();
+        showToast(`Added lead ${esc(name)}`, { ttl: 2500 });
+        renderLeads();
+      } catch (err) {
+        save.disabled = false; save.textContent = 'Add lead';
+        console.error('[leads] manual insert:', err);
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
+
+async function renderLeads() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading leads…</div>';
+  let data;
+  try {
+    data = await loadLeadsData();
+  } catch (e) {
+    root.innerHTML = `<div class="pec-empty">Could not load leads: ${esc(e.message || String(e))}</div>`;
+    return;
+  }
+  state.leadsData = data;
+
+  const f = state.leadsFilters;
+  const qNorm = (f.q || '').trim().toLowerCase();
+  const qDigits = qNorm.replace(/\D/g, '');
+  const rows = data.leads.filter(l => {
+    if (f.source && l.source !== f.source) return false;
+    if (f.campaign && (l.campaign || '') !== f.campaign) return false;
+    if (f.owner && (l.owner_user_id || '') !== f.owner) return false;
+    const day = String(l.created_at || '').slice(0, 10);
+    if (f.from && day < f.from) return false;
+    if (f.to && day > f.to) return false;
+    if (qNorm) {
+      const hitName = (l.full_name || '').toLowerCase().includes(qNorm);
+      const hitEmail = (l.email || '').toLowerCase().includes(qNorm);
+      const hitPhone = !!qDigits && String(l.phone || '').replace(/\D/g, '').includes(qDigits);
+      if (!hitName && !hitEmail && !hitPhone) return false;
+    }
+    return true;
+  });
+  _leadsById = Object.fromEntries(rows.map(l => [l.id, l]));
+
+  const open = rows.filter(l => l.stage !== 'accepted' && l.stage !== 'lost');
+  const openValue = open.reduce((s, l) => s + (data.valueMap[l.id] || 0), 0);
+  const campaigns = [...new Set(data.leads.map(l => l.campaign).filter(Boolean))].sort();
+  const sel = (val, cur) => (val === cur ? 'selected' : '');
+  const optList = (vals, cur, labelFor) => `<option value="">All</option>` + vals.map(v => `<option value="${esc(v)}" ${sel(v, cur)}>${esc(labelFor ? labelFor(v) : v)}</option>`).join('');
+
+  const columnsHtml = LEAD_STAGES.map(col => {
+    const colRows = rows.filter(l => l.stage === col.key);
+    // New sorts OLDEST first (the longest-waiting lead is the most urgent);
+    // every other column reads newest activity first.
+    colRows.sort(col.key === 'new'
+      ? (a, b) => String(a.created_at).localeCompare(String(b.created_at))
+      : (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+    const colValue = colRows.reduce((s, l) => s + (data.valueMap[l.id] || 0), 0);
+    const body = colRows.length
+      ? colRows.map(leadCardHtml).join('')
+      : `<div class="pec-empty" style="font-size:.8rem;padding:16px 8px">No leads</div>`;
+    return `<div class="pipeline-col lead-col" data-stage="${col.key}" style="flex:0 0 260px;display:flex;flex-direction:column;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px;max-height:calc(100vh - 230px)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">${esc(col.title)}</strong>
+        <span class="pec-badge" style="--pec-badge-bg:#475569">${colRows.length}</span>
+      </div>
+      <div class="pipeline-col-body" style="overflow-y:auto;flex:1">${body}</div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--rd-line,#e6e8ec);font-size:.8rem;font-weight:600">${invUSD0(colValue)}</div>
+    </div>`;
+  }).join('');
+
+  const ownerOpts = Object.entries(data.staffNames).map(([id, name]) => `<option value="${esc(id)}" ${sel(id, f.owner)}>${esc(name)}</option>`).join('');
+  root.innerHTML = `
+    <div style="padding:4px 2px 0">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <div class="pec-stat" style="min-width:150px"><div class="pec-stat-label">Open leads</div><div class="pec-stat-val">${open.length}</div></div>
+          <div class="pec-stat" style="min-width:170px"><div class="pec-stat-label">Open pipeline value</div><div class="pec-stat-val">${invUSD0(openValue)}</div></div>
+        </div>
+        <button type="button" class="pec-btn primary" id="leadNewBtn">+ New Lead</button>
+      </div>
+      <div style="color:var(--muted);font-size:.78rem;margin-top:6px">Total leads: ${rows.length} shown${rows.length === data.leads.length ? '' : ` of ${data.leads.length}`} · value is each lead's latest estimate; open value excludes Accepted and Lost</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:12px 0">
+        <div class="pec-field" style="margin:0"><label>Source</label><select id="leadFilterSource">${optList(data.sources, f.source, leadSourceLabel)}</select></div>
+        <div class="pec-field" style="margin:0"><label>Campaign</label><select id="leadFilterCampaign">${optList(campaigns, f.campaign)}</select></div>
+        <div class="pec-field" style="margin:0"><label>Owner</label><select id="leadFilterOwner"><option value="">All</option>${ownerOpts}</select></div>
+        <div class="pec-field" style="margin:0"><label>Created from</label><input type="date" id="leadFilterFrom" value="${esc(f.from)}"></div>
+        <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="leadFilterTo" value="${esc(f.to)}"></div>
+        <div class="pec-field" style="margin:0;min-width:180px"><label>Search</label><input id="leadFilterQ" value="${esc(f.q)}" placeholder="name, phone, or email"></div>
+        <button type="button" class="pec-btn" id="leadFilterGo">Go</button>
+        <button type="button" class="pec-btn ghost" id="leadFilterReset">Reset</button>
+      </div>
+      <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px">${columnsHtml}</div>
+    </div>`;
+
+  $('leadNewBtn').addEventListener('click', () => openNewLeadModal());
+  $('leadFilterGo').addEventListener('click', () => {
+    state.leadsFilters = {
+      source: $('leadFilterSource').value,
+      campaign: $('leadFilterCampaign').value,
+      owner: $('leadFilterOwner').value,
+      from: $('leadFilterFrom').value,
+      to: $('leadFilterTo').value,
+      q: $('leadFilterQ').value,
+    };
+    renderLeads();
+  });
+  $('leadFilterQ').addEventListener('keydown', e => { if (e.key === 'Enter') $('leadFilterGo').click(); });
+  $('leadFilterReset').addEventListener('click', () => {
+    state.leadsFilters = { source: '', campaign: '', owner: '', from: '', to: '', q: '' };
+    renderLeads();
+  });
+
+  // Drag and drop between stage columns (no gating: every dashboard user
+  // works leads, per Dylan).
+  let draggedId = null;
+  root.querySelectorAll('.lead-card').forEach(card => {
+    card.addEventListener('dragstart', e => { draggedId = card.dataset.leadId; e.dataTransfer.effectAllowed = 'move'; });
+    card.addEventListener('dragend', () => { draggedId = null; });
+  });
+  root.querySelectorAll('.lead-col').forEach(colEl => {
+    colEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    colEl.addEventListener('drop', e => {
+      e.preventDefault();
+      if (!draggedId) return;
+      moveLeadStage(draggedId, colEl.dataset.stage);
+    });
+  });
+
+  startLeadsElapsedTimer();
 }
 
 // Proration denominator, the ONE source shared by the calendar and the Next

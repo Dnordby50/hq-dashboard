@@ -1,5 +1,17 @@
 [
   {
+    "id": "leads-kanban-tab",
+    "date": "2026-07-11",
+    "title": "New Leads board: work every lead from first click to sold",
+    "summary": "A new Leads tab (next to Messages) shows every lead as a card in six columns, from New to Accepted or Lost. Drag cards between columns as you work them. New leads show how long they have been waiting, turning red after an hour, so nobody sits unclaimed.",
+    "howto": [
+      "Open the Leads tab. Each column shows its count and total estimate value; the top shows open leads and open pipeline value.",
+      "Drag a card to the next column as you work the lead. Dropping on Lost asks for a quick reason.",
+      "Use the filters for source, campaign, owner, dates, or search by name, phone, or email.",
+      "Walk-ins and phone leads: click + New Lead and type them in."
+    ]
+  },
+  {
     "id": "lead-intake-live",
     "date": "2026-07-11",
     "title": "New leads flow straight into HQ (no more DripJobs for new leads)",

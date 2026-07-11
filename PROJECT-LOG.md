@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-11 06:20 MST] Claude Code: Leads kanban tab shipped (phase 2), six-stage pre-sale pipeline with drag, filters, and speed-to-lead timers
+By: Claude Code
+Changed: index.html, help/whats-new.json. Phase 2 of the weekend leads build. The Leads tab sits between Messages and Jobs pipeline in the Sales nav group; the view is registered as leads: renderLeads in the switchView map with state slots leadsFilters/leadsData/openLeadId (openLeadId is phase 4 groundwork).
+
+HOW IT WORKS, and the decisions inside it:
+- Six fixed columns straight from the leads_stage_check constraint (New, Contacted, Estimate Sent, Presented, Accepted, Lost); LEAD_STAGES is the only stage list and nothing can add a seventh. Column headers carry a count badge and a dollar total; the top shows Open leads and Open pipeline value (accepted + lost excluded), DripJobs-Sales-Pipeline style.
+- Lead VALUE is not a leads column: loadLeadsData derives it from the lead's estimates (newest live estimate; an ACCEPTED estimate wins over anything newer, so a post-accept draft cannot inflate the Accepted column). Leads with no estimate count $0.
+- Cards: name, colored source badge (meta blue, google green, manual slate, unknown gray), campaign, AI score chip on the .pec-age pill pattern (green 70+, amber 40-69, red under 40, hidden until the AI has run), value, "updated Xm/h/d ago", and a red dot when ai_analysis.risk_flags is non-empty (flags in the tooltip).
+- Speed-to-lead is a BEHAVIOR driver, not just a metric: New-column cards show "waiting 14m" style labels that turn red past one hour, the New column sorts OLDEST first so the longest-waiting lead is always on top, and one 60-second ticker rewrites only the [data-lead-elapsed] spans (never a full re-render, so an in-progress drag is not interrupted) and self-clears when the user leaves the view.
+- Drag between columns writes stage plus the matching stage timestamp, FIRST TOUCH ONLY: the timestamp is set only when still null, so a re-drag or backward move can never rewrite contacted_at and corrupt the speed-to-lead metric. (The spec said "set on every stage change"; first-touch is the reading that keeps the metric honest, noted here as the judgment call.) Every move inserts a stage_change lead_event with from/to and the acting user; updated_at is never sent (the touch trigger owns it). Local state mutates only after the write lands, so a failed move snaps the card back.
+- Dropping on Lost opens a reason modal (required; common reasons + Other with a note) because conversion-by-source in phase 3 needs lost_reason populated. New Lead modal enforces the same contract as the intake webhook (name required, phone or email required), inserts with source manual + created lead_event, and never guesses SMS consent (explicit checkbox only).
+- No gating per Dylan: every dashboard user sees and works the board.
+- All wiring is addEventListener inside renderLeads (no inline onclick), so the module-scope/window-bridge trap never comes up.
+
+Verified: 37/37 assertions in a Chrome harness driving the REAL extracted functions (renderLeads, leadCardHtml, loadLeadsData, commitLeadStage, moveLeadStage, openLeadLostModal, openNewLeadModal, plus helpers) over a data-backed fake supabase: column counts and dollar totals; accepted-beats-newer-draft value pick; open tiles; card anatomy (badge, campaign, all three score bands, risk tooltip); New sorted oldest-first with red past-1h labels and no waiting label off the New column; source/owner/phone-digit filters; stage patch shape (stage + first-touch timestamp only, no updated_at) and the stage_change event with actor; backward move writes stage only; same-stage drop writes nothing; lost blocks without a reason then writes lost_reason + lost_at and the event payload; New Lead validation and insert shape (manual source, last-10 phone, consent defaults false, created_by stamped, created event). All 7 script blocks pass node --check; em dash scan of added lines = 0; whats-new.json parses. Jobs pipeline untouched by construction (the new section sits after renderPipeline; no pipeline lines changed in the diff).
+Why: this is the board Dylan works leads from instead of DripJobs; the speed-to-lead pressure on the New column is the point of the whole build.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: phase 3 ($/sqft + Metrics Sales section) next in this session.
+Handoff to Cowork: None
+Handoff to Dylan: after deploy, open the Leads tab, click + New Lead and add yourself, watch the waiting timer on the New card, drag it through the stages, and drop one on Lost to see the reason prompt.
+
+---
+
 ## [2026-07-11 06:08 MST] Claude Code: leads phase 1 live, migration applied to prod + intake triggers AI analysis on arrival
 By: Claude Code
 Changed: netlify/functions/pec-lead-intake.cjs, help/whats-new.json. Phase 1 of the weekend leads build (plan approved by Dylan; phases: intake, kanban, $/sqft + metrics, AI panel/OpenPhone). Builds on Cowork's 9171462 framework (previous entry).
