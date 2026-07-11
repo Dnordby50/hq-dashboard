@@ -16998,7 +16998,13 @@ function openScheduleModal(jobId) {
     const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
     const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
     const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-    const idxFor = (iso) => draft.selectedDates.indexOf(iso) + 1;
+    // Day numbers are CHRONOLOGICAL, not click order (matches openAddJobModal
+    // and the save path below): adding an earlier day to an existing schedule
+    // makes that day badge 1 and renumbers the rest.
+    const idxFor = (iso) => {
+      const sorted = draft.selectedDates.slice().sort();
+      return sorted.indexOf(iso) + 1;
+    };
     const segs = segmentsFor(draft.selectedDates);
     modal.querySelector('#schedDayGrid').innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -17015,7 +17021,7 @@ function openScheduleModal(jobId) {
           return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
         }).join('')}
       </div>
-      <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add/remove. The order you click sets day 1, day 2, etc.</div>
+      <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add/remove. Days are numbered by date; the earliest selected day is Day 1.</div>
       ${segs.length ? `<div style="margin-top:10px">
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Segment notes <span style="text-transform:none;letter-spacing:0">· short label shown on the calendar</span></div>
         ${segs.map((seg, i) => `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
@@ -17229,7 +17235,10 @@ function openScheduleModal(jobId) {
             const note = (segNoteFor(seg) || '').trim().slice(0, 60);
             for (const iso of seg) noteByIso[iso] = note || null;
           }
-          const rows = draft.selectedDates.map((iso, idx) => ({
+          // day_index comes from the chronologically sorted dates (sortedIso),
+          // NOT click order, so the earliest date is always Day 1 (day_index
+          // 0). Matches openAddJobModal and the picker's corner badges.
+          const rows = sortedIso.map((iso, idx) => ({
             job_id: job.id,
             scheduled_date: iso,
             day_index: idx,

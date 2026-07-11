@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 22:20 MST] Claude Code: schedule day numbers are always chronological (earliest date = Day 1) + prod backfill
+By: Claude Code
+Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_day_index_chronological.sql. Third of the three schedule features this session. Backfill ALREADY APPLIED to prod via the Supabase MCP: 38 of 210 pec_prod_job_schedule_days rows across 8 jobs were misnumbered from the old click-order behavior; after the migration a re-run of the same window-function check returns 0 misnumbered rows.
+
+HOW IT WORKS: openScheduleModal numbered days by CLICK order in two places, and both now sort. The picker's corner badges (idxFor) index into the chronologically sorted selectedDates (exactly what openAddJobModal already did), and the save path builds the insert rows from sortedIso instead of the raw click-ordered array, so day_index 0 is always the earliest date. Adding a day BEFORE an already scheduled date instantly rebadges it 1 in the picker and saves it as day_index 0. The hint text swapped from "The order you click sets day 1" to "Days are numbered by date; the earliest selected day is Day 1." Click-order numbering is fully removed, not optional. The segment-note rows key by iso date (noteByIso), so notes were untouched by the reorder.
+
+WHY THE BACKFILL IS SAFE AS ONE UPDATE: day_index has no uniqueness constraint and nothing joins on it; it only feeds "Day N" labels. The job detail schedule table sorts by scheduled_date and prints day_index + 1, so misnumbered history read as "Day 3, Day 1, Day 2" down an ascending date list; the backfill (row_number() over partition by job_id order by scheduled_date, minus 1) makes the stored index agree with the sort every reader uses. Day-number surfaces audited: the picker badges (fixed here), the job detail Day column (fixed by backfill + new writers), and the work order, which prints date RANGES via scheduleLabelFromState and never day numbers, confirmed by grep: day_index renders in exactly one place.
+
+Verified: 11/11 assertions in the extracted-real-functions Chrome harness: existing 2-day job badges 1,2; clicking an EARLIER day rebadges it 1 and shifts the others to 2,3; the save payload for that selection is sorted with day_index 0,1,2 and the earliest date holds 0; a fresh job clicked in reverse order still badges and saves chronologically; hint text asserts the new wording and the absence of the click-order wording; and segment notes still land on the right dates after the sort change. All 7 script blocks pass node --check; em dash scan of added lines = 0; whats-new.json parses.
+Why: crews read "Day 1" as the first day on site. Click-order numbering let a prepended day silently become "Day 3", which is wrong everywhere the number shows.
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-10_day_index_chronological.sql, PROJECT-LOG.md.
+Next steps: push all three schedule commits; Netlify deploys from main.
+Handoff to Cowork: None
+Handoff to Dylan: after deploy, open a scheduled job from the calendar and click a day before its current start: the new day should show the little 1 badge immediately, and after Save the job page's schedule table should read Day 1 on the earliest date.
+
+---
+
 ## [2026-07-10 22:16 MST] Claude Code: per-segment schedule notes ("flake portion") visible on the calendar bars and run sheet
 By: Claude Code
 Changed: index.html, help/whats-new.json. Second of the three schedule features this session. No migration: reuses pec_prod_job_schedule_days.notes, which has existed since the original 2026-05-04 schedule DDL but was only ever displayed read-only in the job detail schedule table.

@@ -1,5 +1,16 @@
 [
   {
+    "id": "schedule-day-numbers-by-date",
+    "date": "2026-07-10",
+    "title": "Day numbers now always follow the calendar",
+    "summary": "Day 1 is always the earliest scheduled day. Before, the schedule window numbered days in the order you clicked them, so adding an earlier day could leave the numbers out of order. Existing jobs were renumbered too.",
+    "howto": [
+      "Open a job's schedule and add a day before the current start; the new day becomes Day 1 automatically.",
+      "The little corner numbers in the day picker and the Day column on the job page both follow date order now.",
+      "Nothing to do for old jobs; they were renumbered in the same update."
+    ]
+  },
+  {
     "id": "schedule-segment-notes",
     "date": "2026-07-10",
     "title": "Short notes on the schedule, like \"flake portion\"",
