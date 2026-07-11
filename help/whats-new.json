@@ -1,5 +1,17 @@
 [
   {
+    "id": "schedule-reschedule-pending",
+    "date": "2026-07-10",
+    "title": "Pull install days off the calendar for rescheduling",
+    "summary": "When a job (or just part of one) gets bumped, open it from the Job Schedule and click Reschedule. The pulled days come off the calendar and the job shows in the Pending column with an amber Reschedule badge until you rebook it. Crew, hours, and price stay on the job.",
+    "howto": [
+      "Click the job's bar on the calendar to open the schedule window.",
+      "Deselect the day or days getting pulled (deselect all of them to pull the whole job), then click Reschedule.",
+      "The job shows in Pending on the left with an amber badge like Reschedule, 2 days, plus the date it was pulled from.",
+      "When you rebook it, click + Schedule on the card, pick the new days, and Save. The badge clears on its own."
+    ]
+  },
+  {
     "id": "job-detail-redesign",
     "date": "2026-07-10",
     "title": "The job page got a clean new layout",

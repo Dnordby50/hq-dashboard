@@ -16244,11 +16244,24 @@ async function renderSchedule() {
   };
   const sumSqft = (job) => (state.productAreasByJob[job.id] || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
 
-  // Pending = no install_date AND no schedule rows. Also exclude jobs the user
-  // removed from the Pending list (pending_hidden_at) and archived jobs
-  // (archived already dropped upstream in loadProdCore; kept here defensively).
+  // Pending has TWO sources:
+  //  1. Brand-new jobs: no install_date AND no schedule rows AND status
+  //     unscheduled. Excludes jobs the user removed from the list
+  //     (pending_hidden_at) and archived jobs (archived already dropped
+  //     upstream in loadProdCore; kept here defensively).
+  //  2. Reschedule limbo: any job with reschedule_days_owed > 0 (days were
+  //     pulled off the calendar via the schedule modal's Reschedule flow).
+  //     These can STILL have day rows on the calendar (partial pull), so the
+  //     no-day-rows filter must not apply; they show first with an amber
+  //     badge. pending_hidden_at is ignored on purpose: owed days must stay
+  //     visible until they are rescheduled (saving clears the flag).
+  //     Number() tolerates the column not existing yet (undefined -> NaN,
+  //     NaN > 0 is false), same best-effort posture as the write side.
   const scheduledJobIds = new Set(state.scheduleDays.map(d => d.job_id));
-  const pending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled' && !j.pending_hidden_at && !j.archived_at);
+  const owedDays = (j) => Number(j.reschedule_days_owed) > 0 ? Number(j.reschedule_days_owed) : 0;
+  const needsResched = state.prodJobs.filter(j => owedDays(j) > 0 && !j.archived_at);
+  const freshPending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled' && !j.pending_hidden_at && !j.archived_at && !owedDays(j));
+  const pending = [...needsResched, ...freshPending];
 
   root.innerHTML = `
     <div class="pec-sched-grid">
@@ -16257,9 +16270,16 @@ async function renderSchedule() {
         <div class="pec-sched-pending" id="pecSchedPending">
           ${pending.length === 0 ? '<div class="pec-empty" style="padding:20px 8px">No pending jobs. New jobs from accepted DripJobs estimates land here automatically.</div>' : pending.map(j => {
             const sys = areaSystem(j);
+            const owed = owedDays(j);
+            // Flagged cards keep the amber badge instead of the x remove
+            // button: hiding a job that still owes days would strand them.
             return `<div class="pec-sched-pcard" style="position:relative">
-              <button data-hide-pending="${esc(j.id)}" title="Remove from Pending list" aria-label="Remove from Pending list" style="position:absolute;top:4px;right:4px;border:none;background:transparent;color:var(--muted);font-size:1.15rem;line-height:1;cursor:pointer;padding:2px 6px">×</button>
+              ${owed ? '' : `<button data-hide-pending="${esc(j.id)}" title="Remove from Pending list" aria-label="Remove from Pending list" style="position:absolute;top:4px;right:4px;border:none;background:transparent;color:var(--muted);font-size:1.15rem;line-height:1;cursor:pointer;padding:2px 6px">×</button>`}
               <h4>${esc(j.customer_name)}</h4>
+              ${owed ? `<div style="margin:2px 0 4px">
+                <span style="display:inline-block;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:color-mix(in srgb, #f59e0b 16%, transparent);color:#b45309;border:1px solid color-mix(in srgb, #f59e0b 45%, transparent);border-radius:999px;padding:2px 8px">Reschedule · ${owed} day${owed === 1 ? '' : 's'}</span>
+                ${j.rescheduled_from ? `<div style="font-size:.68rem;color:var(--muted);margin-top:3px">was scheduled for ${esc(fmtDate(j.rescheduled_from))}</div>` : ''}
+              </div>` : ''}
               <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${j.revenue ? ' · ' + fmtMoney(j.revenue) : ''}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
               <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs est` : ''}</div>
               <button class="pec-btn primary sm" data-schedule-job="${esc(j.id)}" style="width:100%">+ Schedule</button>
@@ -17024,7 +17044,8 @@ function openScheduleModal(jobId) {
         <div class="pec-field"><div style="font-size:.7rem;color:var(--muted);margin-top:20px">Scheduled jobs must carry revenue (price integrity constraint). The value saves to the job.</div></div>
       </div>`}
       <div class="pec-modal-actions">
-        ${existingDays.length ? '<button class="pec-btn danger" id="schedClear">Clear schedule</button>' : ''}
+        ${existingDays.length ? `<button class="pec-btn danger" id="schedClear">Clear schedule</button>
+        <button class="pec-btn" id="schedResched" title="Deselect the day(s) to pull off the calendar, then click here. They land back in Pending flagged for rescheduling.">Reschedule…</button>` : ''}
         <span style="flex:1"></span>
         <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
         <button class="pec-btn primary" id="schedSave">Save schedule</button>
@@ -17098,6 +17119,16 @@ function openScheduleModal(jobId) {
           sales_team: job.sales_team || null,
           revenue: job.revenue ?? null,
         };
+        // A flagged job (days pulled for rescheduling) clears its flag on
+        // save: saving is a full replace of the day rows, so whatever days
+        // were owed are considered handled by the new schedule. Undo restores
+        // the flag. Guarded on the flag being set so pre-migration rows
+        // (columns absent -> undefined, never > 0) never send the columns.
+        const clearsReschedFlag = Number(job.reschedule_days_owed) > 0 || !!job.rescheduled_from;
+        if (clearsReschedFlag) {
+          undoSnapshot.reschedule_days_owed = Number(job.reschedule_days_owed) || 0;
+          undoSnapshot.rescheduled_from = job.rescheduled_from || null;
+        }
         let firstSavedIso = null;
         try {
           const sortedIso = draft.selectedDates.slice().sort();
@@ -17117,6 +17148,7 @@ function openScheduleModal(jobId) {
             sales_team: draft.sales_team || null,
           };
           if (!job.is_callback) { jobPatch.status = 'scheduled'; jobPatch.revenue = revenue; }
+          if (clearsReschedFlag) { jobPatch.reschedule_days_owed = 0; jobPatch.rescheduled_from = null; }
           const update = await supabase.from('pec_prod_jobs').update(jobPatch).eq('id', job.id);
           if (update.error) {
             const m = update.error.message || '';
@@ -17202,6 +17234,78 @@ function openScheduleModal(jobId) {
           return; // do not close on error so user can retry
         }
         closeModal();
+        renderSchedule();
+      });
+      // Reschedule flow: the user DESELECTS the day(s) to pull in the picker,
+      // then clicks Reschedule. The pulled days come off the calendar and the
+      // job lands in the Pending column flagged "Reschedule · N day(s)".
+      // Partial pull keeps the remaining days on the calendar (renumbered
+      // chronologically); full pull behaves like Clear schedule but KEEPS
+      // crew, hours, and revenue on the job so rescheduling pre-fills them,
+      // and still sets the flag. Saving days for a flagged job later clears
+      // the flag (see clearsReschedFlag in the save handler).
+      const reschedBtn = modal.querySelector('#schedResched');
+      if (reschedBtn) reschedBtn.addEventListener('click', async () => {
+        const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
+        const existingIsos = existingDays.map(d => d.scheduled_date);
+        const pulled = existingIsos.filter(iso => !draft.selectedDates.includes(iso)).sort();
+        const added = draft.selectedDates.filter(iso => !existingIsos.includes(iso));
+        if (added.length) return errEl.textContent = 'Reschedule only pulls existing days off the calendar. Deselect the newly added day(s), or use Save schedule to move days directly.';
+        if (!pulled.length) return errEl.textContent = 'Deselect the day(s) you want to pull off the calendar first, then click Reschedule.';
+        const kept = existingIsos.filter(iso => draft.selectedDates.includes(iso)).sort();
+        if (!confirm(`Pull ${pulled.length} day${pulled.length === 1 ? '' : 's'} off the calendar and flag this job for rescheduling?${kept.length ? ` The other ${kept.length} day${kept.length === 1 ? ' stays' : 's stay'} scheduled.` : ''}`)) return;
+        try {
+          // Flag accumulates across pulls: owed days add up and
+          // rescheduled_from keeps the EARLIEST pulled date overall, so a
+          // second pull never hides the first.
+          const prevOwed = Number(job.reschedule_days_owed) > 0 ? Number(job.reschedule_days_owed) : 0;
+          const prevFrom = job.rescheduled_from || null;
+          const earliestPulled = prevFrom && prevFrom < pulled[0] ? prevFrom : pulled[0];
+          // crew_id, estimated_hours, sales_team, and revenue stay untouched
+          // so rescheduling pre-fills them; only the schedule anchor fields
+          // move. status flips only on a full pull (a partial pull still has
+          // days on the calendar, so it stays scheduled).
+          const jobPatch = { reschedule_days_owed: prevOwed + pulled.length, rescheduled_from: earliestPulled };
+          if (kept.length) jobPatch.install_date = kept[0];
+          else { jobPatch.install_date = null; if (!job.is_callback) jobPatch.status = 'unscheduled'; }
+          let upd = await supabase.from('pec_prod_jobs').update(jobPatch).eq('id', job.id);
+          if (upd.error && /reschedule_days_owed|rescheduled_from/.test(upd.error.message || '')) {
+            // Pre-migration fallback: pull the days anyway, just without the
+            // Pending badge (same best-effort posture as pending_hidden_at).
+            const { reschedule_days_owed, rescheduled_from, ...noFlag } = jobPatch;
+            upd = await supabase.from('pec_prod_jobs').update(noFlag).eq('id', job.id);
+          }
+          if (upd.error) return errEl.textContent = upd.error.message;
+          // Rewrite the day rows to just the kept dates, renumbered
+          // chronologically. Per-day crew/slot/lead/notes carry over by date.
+          const byIso = Object.fromEntries(existingDays.map(d => [d.scheduled_date, d]));
+          const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('job_id', job.id);
+          if (del.error) return errEl.textContent = del.error.message;
+          if (kept.length) {
+            const rows = kept.map((iso, idx) => ({
+              job_id: job.id,
+              scheduled_date: iso,
+              day_index: idx,
+              crew_id: byIso[iso]?.crew_id || null,
+              time_slot: byIso[iso]?.time_slot || null,
+              crew_lead: byIso[iso]?.crew_lead || null,
+              notes: byIso[iso]?.notes || null,
+            }));
+            let ins = await supabase.from('pec_prod_job_schedule_days').insert(rows);
+            if (ins.error && /time_slot/.test(ins.error.message || '')) {
+              ins = await supabase.from('pec_prod_job_schedule_days').insert(rows.map(({ time_slot, ...r }) => r)); // pre-migration fallback
+            }
+            if (ins.error) return errEl.textContent = ins.error.message;
+          }
+          // Calendar -> CRM status: a partial pull keeps the remaining span,
+          // a full pull reads as cleared.
+          await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, kept.length ? { start: kept[0], end: kept[kept.length - 1] } : { cleared: true });
+        } catch (err) {
+          errEl.textContent = 'Reschedule failed: ' + err.message;
+          return; // do not close on error so user can retry
+        }
+        closeModal();
+        showToast(`Moved ${pulled.length} day${pulled.length === 1 ? '' : 's'} of <strong>${esc(job.customer_name || 'job')}</strong> back to Pending for rescheduling.`);
         renderSchedule();
       });
     },

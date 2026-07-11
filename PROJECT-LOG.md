@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 21:47 MST] Claude Code: schedule Reschedule flow, pulled days park the job in Pending with an amber "days owed" badge
+By: Claude Code
+Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_reschedule_limbo.sql. First of three schedule features this session (Reschedule limbo, segment notes, chronological day numbers), one commit each. Migration ALREADY APPLIED to prod via the Supabase MCP (project zdfpzmmrgotynrwkeakd), verified live: pec_prod_jobs.reschedule_days_owed (integer, not null, default 0) and pec_prod_jobs.rescheduled_from (date) both exist. No Cowork DB work needed.
+
+HOW IT WORKS: the schedule modal (openScheduleModal) grows a "Reschedule…" button next to Clear schedule, shown only when the job has day rows. The flow is deselect-then-click: the user unticks the day(s) being pulled in the existing day picker and clicks Reschedule instead of Save. Partial pull is the point: pulling 2 days of a 4-day job leaves the other 2 days on the calendar (day rows rewritten to just the kept dates, renumbered chronologically from 0, per-day crew/slot/lead/notes carried over by date) AND parks the job in the Pending column with the badge. Full pull (all days deselected) behaves like Clear schedule (all rows deleted, status back to unscheduled) but, unlike Clear, KEEPS crew_id, estimated_hours, sales_team, and revenue on the job so rebooking pre-fills them, and still sets the flag. The flag accumulates across pulls (owed adds up, rescheduled_from keeps the earliest pulled date) so a second pull never hides the first. Newly added (never-scheduled) dates in the picker make Reschedule refuse with a pointer to Save schedule, so the two flows cannot half-merge.
+
+The Pending column (renderSchedule) now has two sources: brand-new unscheduled jobs (unchanged filter) plus any job with reschedule_days_owed > 0, even if it still has day rows on the calendar. Flagged cards render first with an amber "Reschedule · N day(s)" pill and a muted "was scheduled for <date>" line, and they trade the x remove button for the badge (hiding a job that still owes days would strand them; pending_hidden_at is ignored for flagged jobs on purpose). Saving a schedule for a flagged job clears the flag in the same jobPatch (a save is a full replace of day rows, so no per-day decrement), and the save toast's Undo snapshot restores it.
+
+Pre-migration tolerance (moot now that the migration is applied, but kept for replays): the pull write retries without the two new columns if the update errors on them (same posture as the pending_hidden_at best-effort write), the Pending filter reads undefined as not-flagged via Number(), and an unflagged job's save never includes the columns at all.
+
+Verified: 33/33 assertions in a Chrome harness driving the REAL extracted functions (renderSchedule, renderScheduleCalendar, openScheduleModal plus their helpers, extracted from index.html by name, not copied) against a fake supabase that records writes: baseline pending/bar render, partial pull payloads (owed 2, rescheduled_from earliest pulled, install_date moves to first kept day, status untouched, rows renumbered 0..1 chronologically, crew/slot carried), post-pull render (badge text, was-scheduled-for line, flagged card first, no x button, remaining bar spans 2 columns), save clears both flag columns and the job leaves Pending, unflagged saves send no new columns, full pull (owed 4, unscheduled, crew/revenue/hours untouched, CRM sync cleared), and the nothing-deselected guard writes nothing. All 7 index.html script blocks pass node --check; em dash scan of added lines = 0; whats-new.json parses.
+Why: bumped jobs (weather, material delays) currently have to be either fully cleared (losing crew and the visual reminder to rebook) or left wrong on the calendar. Limbo keeps the owed days visible in the Pending column until they are rebooked.
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-10_reschedule_limbo.sql, PROJECT-LOG.md.
+Next steps: features 2 (segment notes) and 3 (chronological day numbers) land next in this session.
+Handoff to Cowork: None
+Handoff to Dylan: after deploy, open a multi-day job from the calendar, deselect one day, click Reschedule: the day disappears from the calendar and the job shows in Pending with the amber badge. Rebook it and the badge clears.
+
+---
+
 ## [2026-07-10 21:25 MST] Cowork: investigated Dylan's three tweaks (Trujillo commission, Gallagher invoice, toast text), scoped with 11 answered questions, Claude Code prompt written
 By: Cowork
 Changed: No code or data changed. Investigation plus scoping only; the Claude Code prompt was printed in chat for Dylan to paste.
