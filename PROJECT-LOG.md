@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-11 06:32 MST] Claude Code: $/sqft everywhere + Metrics Sales section + cached AI weekly read (phase 3)
+By: Claude Code
+Changed: index.html, netlify/functions/pec-metrics-ai.cjs (new), help/whats-new.json. Phase 3 of the weekend leads build.
+
+$/SQFT: one shared rule, jobEffectiveSqft (module helper next to the inv* money helpers): the MANUAL jobs.sqft wins when set, else the sum of the job's estimate-area sqft; 0 means unknown and every surface hides the chip instead of dividing. Surfaces: (a) job detail header gains a Sqft input (#jobSqft, prefilled from jobs.sqft, placeholder hints the areas sum) plus a $/sqft chip next to it; (b) Jobs pipeline cards show "$X.X/sqft · N sqft" under the price (loadPipelineData's narrow jobs select gained sqft + job_areas(sqft); pipelineCardHtml only, PIPELINE_COLUMNS and the move logic untouched); (c) Metrics (below).
+
+THE RISKIEST EDIT, called out on purpose: saveJob used to overwrite jobs.sqft from areas[0].sqft on EVERY save (the webhook-populated value or a manual backfill would be clobbered by the next save). Resolution: the manual #jobSqft input wins; the areas[0] mirror is the fallback ONLY when the field is blank. A job whose field is never touched saves byte-identically to before; a hand-entered value survives every later save; clearing the field deliberately reverts to the mirror.
+
+METRICS "Sales" SECTION (after the weekly charts, before More metrics), four cards, every lead/estimate read degrading independently so an errored source empties its card and never the tab:
+1. Price per sq ft (sold jobs, by month): new invBuildMonths helper (month buckets; weeks are too noisy for an average that only moves when jobs sign), bar chart with per-month drilldowns to the underlying jobs, a coverage note ("$/sqft available for X of Y sold jobs") since sqft is sparse until backfilled, and a per-system table (jobs.system_type_id wins; else the area holding the most sqft decides; names from pec_prod_system_types).
+2. Speed to lead: MEDIAN created_at to contacted_at for leads created in the window (median so one forgotten weekend lead cannot swamp it), weekly trend bars, owner split via admin_users names.
+3. Conversion by source and campaign: leads / accepted / rate / accepted value per group; accepted value uses leadValueMapFrom, the SAME accepted-wins-else-newest-estimate rule the kanban uses (extracted to a shared helper so the surfaces cannot disagree).
+4. Open pipeline by stage (open = not accepted/lost, any date) + the AI weekly read: the RENDER only ever shows the cached copy from settings key metrics_sales_ai_insight; the Refresh button is the only thing that calls the API.
+
+NEW FUNCTION pec-metrics-ai.cjs (clones pec-lead-ai's dual auth: staff JWT or x-webhook-secret): gathers funnel aggregates server-side (stage/source counts, 28-day median speed-to-lead, open value by stage, lost reasons), asks claude-sonnet-5 (PEC_METRICS_AI_MODEL override) for 3-4 plain internal sentences, and caches to the settings row (PATCH when the row exists, POST otherwise; sb() has no upsert-header support and this handler is the only writer). Serves the cache without any model call when younger than 7 days and not force; a fresh cache is served even when ANTHROPIC_API_KEY is missing (503 only when a generate is actually needed). AbortController at 25s, one second under Netlify's kill: pec-lead-ai predates this guard, this function does not repeat the omission. Internal analysis only; it never drafts customer contact.
+
+Verified: 14/14 unit assertions on pec-metrics-ai (mocked _pec-supabase + stubbed fetch: 405/401s, fresh-cache hit with zero model calls or writes, force regenerates and PATCHes, stale cache regenerates, missing-row POSTs, missing key = 503 unless the cache can serve, model failure = clean 500) and 24/24 in a Chrome harness driving the REAL extracted renderMetrics/pipelineCardHtml/jobEffectiveSqft: the effective-sqft rule (manual wins, blank falls back, garbage ignored, unknown = 0), pipeline chip renders and hides correctly with drag attributes untouched, all four Sales cards render, the $5.0 month average from a 4.0 manual-sqft job + 6.0 areas-sqft job, coverage note "2 of 3", per-system averages including the dominant-area attribution, median 60m formatted 1.0h with owner split, Meta conversion row 2/1/50%/$7,000, campaign table with (none) bucket, open pipeline total excluding accepted, cached insight text + Generated stamp with no network call, month bar drilldown listing exactly the covered jobs, and the pre-existing metric groups intact. All 7 script blocks + the new .cjs pass node --check; em dash scan of added lines = 0 (two null-dash literals written as unicode escapes per the 07-10 precedent); whats-new.json parses (24 entries).
+Why: $/sqft is Dylan's pricing sanity check, and conversion-by-source is the "which ad money works" view the whole leads build feeds.
+Files touched: index.html, netlify/functions/pec-metrics-ai.cjs, help/whats-new.json, PROJECT-LOG.md.
+Next steps: phase 4 (lead detail + AI panel, OpenPhone poller), the flex item.
+Handoff to Cowork: None
+Handoff to Dylan: after deploy, open Metrics and click Refresh on the AI weekly read once (it will say there is little data yet, which is honest); open a completed job, type its square footage into the new Sqft field, save, and watch the $/sqft chip and the Metrics coverage count move.
+
+---
+
 ## [2026-07-11 06:20 MST] Claude Code: Leads kanban tab shipped (phase 2), six-stage pre-sale pipeline with drag, filters, and speed-to-lead timers
 By: Claude Code
 Changed: index.html, help/whats-new.json. Phase 2 of the weekend leads build. The Leads tab sits between Messages and Jobs pipeline in the Sales nav group; the view is registered as leads: renderLeads in the switchView map with state slots leadsFilters/leadsData/openLeadId (openLeadId is phase 4 groundwork).

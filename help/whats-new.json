@@ -1,5 +1,28 @@
 [
   {
+    "id": "metrics-sales-section",
+    "date": "2026-07-11",
+    "title": "Metrics: new Sales section shows which ad money works",
+    "summary": "The Metrics tab has a new Sales section: price per square foot by month with a per-system breakdown, speed to lead (how fast new leads get a first contact), conversion by source and campaign, and the open lead pipeline with an AI-written weekly read.",
+    "howto": [
+      "Open Metrics and scroll to the Sales section; the window picker at the top applies to it too.",
+      "Conversion by source and campaign shows leads, accepted count, rate, and sold value per ad source.",
+      "Speed to lead is the median time from a lead arriving to first contact; keep it under an hour.",
+      "Click Refresh on the AI weekly read for a fresh 3-4 sentence take on the funnel."
+    ]
+  },
+  {
+    "id": "job-dollars-per-sqft",
+    "date": "2026-07-11",
+    "title": "$/sqft on jobs, with a Sqft field you can backfill",
+    "summary": "Jobs now show their price per square foot on the job page header and on Jobs pipeline cards. A new Sqft field on the job page lets you fill in square footage for older jobs; a value you type there always wins over the estimate areas.",
+    "howto": [
+      "Open a job; the header shows a $/sqft chip when the square footage is known.",
+      "To backfill an older job, type the square footage into the new Sqft field next to Price and save.",
+      "Jobs pipeline cards show $/sqft under the price when it is known."
+    ]
+  },
+  {
     "id": "leads-kanban-tab",
     "date": "2026-07-11",
     "title": "New Leads board: work every lead from first click to sold",

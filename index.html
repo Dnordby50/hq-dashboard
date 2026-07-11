@@ -8085,6 +8085,15 @@ const invRound2 = n => Math.round(n * 100) / 100;
 // same way (payment x pct goes negative). First real case: Trujillo 2026-07.
 const invUSD = n => n == null ? '\u2014' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const invUSD0 = n => n == null ? '\u2014' : (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Math.round(Number(n))).toLocaleString('en-US');
+// Effective square footage for the $/sqft surfaces (job header, pipeline
+// cards, Metrics). The MANUAL jobs.sqft wins when set; otherwise the sum of
+// the job's estimate-area sqft values. 0 means unknown: callers hide the
+// chip instead of dividing.
+function jobEffectiveSqft(jobSqft, areaSqftList) {
+  const manual = Number(jobSqft);
+  if (Number.isFinite(manual) && manual > 0) return manual;
+  return (areaSqftList || []).reduce((s, v) => s + (Number(v) > 0 ? Number(v) : 0), 0);
+}
 const invDays = n => n == null ? '—' : (Math.round(n * 10) / 10) + 'd';
 const invPct = n => n == null ? '—' : Math.round(n * 100) + '%';
 const invToday = () => new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -8111,6 +8120,23 @@ function invBuildWeeks(key) {
   const weeks = [];
   for (let i = n - 1; i >= 0; i--) { const start = invAddDays(todayWeek, -7 * i); weeks.push({ start, end: invAddDays(start, 6), label: invShortDate(start) }); }
   return weeks;
+}
+// Month buckets from startIso's month through endIso's month (inclusive),
+// for the $/sqft-by-month chart (weeks are too noisy for an average that
+// only moves when jobs sign). Shape mirrors invBuildWeeks: [{key, label}],
+// key 'YYYY-MM', label like 'Jul 26'. Capped at 24 months as a footgun stop.
+function invBuildMonths(startIso, endIso) {
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const out = [];
+  let y = +String(startIso).slice(0, 4), m = +String(startIso).slice(5, 7);
+  const endKey = String(endIso).slice(0, 7);
+  for (let i = 0; i < 24 && y && m; i++) {
+    const key = `${y}-${String(m).padStart(2, '0')}`;
+    out.push({ key, label: `${MON[m - 1]} ${String(y).slice(2)}` });
+    if (key === endKey) break;
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
 }
 function invAgeCompleted(days) {
   if (days == null) return '<span class="pec-age">—</span>';
@@ -9753,9 +9779,20 @@ async function renderMetrics() {
       supabase.from('pec_prod_job_costing').select('job_id,materials_ordered_cost,materials_used_cost,equipment_rental_cost,salary_wages_cost,subcontractor_cost,misc_cost,bonus_cost,commission_cost'),
       supabase.from('pec_prod_material_lines').select('job_id,line_cost,actual_used_qty,unit_cost_snapshot'),
       supabase.from('pec_prod_job_bonuses').select('job_id,amount'),
+      // Sales section sources (2026-07-11): leads funnel, estimate values,
+      // per-job sqft + system for the $/sqft breakdown, system names, the
+      // cached AI insight, and owner names. Each degrades independently: an
+      // errored read empties its card, never the whole tab.
+      supabase.from('leads').select('id,stage,source,campaign,owner_user_id,created_at,contacted_at,accepted_at').is('deleted_at', null),
+      supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
+      supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
+      supabase.from('pec_prod_system_types').select('id,name'),
+      supabase.from('settings').select('value').eq('key', 'metrics_sales_ai_insight').maybeSingle(),
+      qoStaffNames(),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}]; }
-  const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
+    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames] = res;
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
   // the view does not have it yet, so the rest of Metrics renders normally.
@@ -10221,6 +10258,100 @@ async function renderMetrics() {
     share: invPct(r.pct),
   }));
 
+  // ---- Sales section (leads funnel + $/sqft), 2026-07-11 --------------------
+  // Every source degrades independently: an errored read empties its card.
+  const salesLeads = leadsRes && !leadsRes.error ? (leadsRes.data || []) : [];
+  const leadValueMap = leadValueMapFrom(leadEstRes && !leadEstRes.error ? (leadEstRes.data || []) : []);
+  const sqftById = {};
+  for (const j of (sqftRes && !sqftRes.error ? (sqftRes.data || []) : [])) sqftById[j.id] = j;
+  const sysNameById = Object.fromEntries((sysRes && !sysRes.error ? (sysRes.data || []) : []).map(s => [s.id, s.name]));
+
+  // 1. $/sqft of sold jobs by MONTH across the window's months (weeks are too
+  // noisy for an average that only moves when jobs sign). Effective sqft per
+  // job: manual jobs.sqft wins, else the job_areas sum.
+  const months = invBuildMonths(wStart, invToday());
+  const monthIdx = Object.fromEntries(months.map((mo, i) => [mo.key, i]));
+  const soldForSqft = jobs.filter(j => jobOk(j) && j.signed_date && (String(j.signed_date).slice(0, 7) in monthIdx));
+  const dpsfMonthSum = Array(months.length).fill(0), dpsfMonthN = Array(months.length).fill(0);
+  const dpsfBySystem = {};
+  const dpsfJobs = [];
+  for (const j of soldForSqft) {
+    const extra = sqftById[j.id] || {};
+    const eff = jobEffectiveSqft(extra.sqft, (extra.job_areas || []).map(a => a.sqft));
+    if (!(eff > 0 && j.price > 0)) continue;
+    const dpsf = j.price / eff;
+    dpsfJobs.push({ j, dpsf });
+    const mi = monthIdx[String(j.signed_date).slice(0, 7)];
+    dpsfMonthSum[mi] += dpsf; dpsfMonthN[mi]++;
+    // System attribution: the job's own system_type_id wins; else the area
+    // holding the most sqft decides.
+    let sysId = extra.system_type_id || null;
+    if (!sysId) {
+      let best = -1;
+      for (const a of (extra.job_areas || [])) { const s = Number(a.sqft) || 0; if (a.system_type_id && s > best) { best = s; sysId = a.system_type_id; } }
+    }
+    const g = (dpsfBySystem[sysNameById[sysId] || 'No system'] ||= { sum: 0, n: 0 });
+    g.sum += dpsf; g.n++;
+  }
+  const dpsfMonthly = months.map((mo, i) => dpsfMonthN[i] ? dpsfMonthSum[i] / dpsfMonthN[i] : 0);
+  const dpsfMonthIds = months.map((mo) => regDrill(jobsDrill(
+    `${mo.label}: sold jobs with $/sqft`,
+    dpsfJobs.filter(x => String(x.j.signed_date).slice(0, 7) === mo.key).map(x => x.j),
+    jb => jb.signed_date)));
+  const dpsfSystemRows = Object.entries(dpsfBySystem).sort((a, b) => b[1].n - a[1].n);
+
+  // 2. Speed to lead: created_at -> contacted_at minutes, leads created in
+  // the window. Median (not average) so one forgotten weekend lead cannot
+  // swamp the number.
+  const median = arr => { if (!arr.length) return null; const s = arr.slice().sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const fmtMins = v => v == null ? '\u2014' : v < 60 ? Math.round(v) + 'm' : v < 1440 ? (v / 60).toFixed(1) + 'h' : (v / 1440).toFixed(1) + 'd';
+  const leadsInWin = salesLeads.filter(l => inWin(String(l.created_at || '').slice(0, 10)));
+  const s2lMins = [];
+  const s2lByOwner = {};
+  const s2lWeekVals = weeks.map(() => []);
+  for (const l of leadsInWin) {
+    if (!l.contacted_at) continue;
+    const mins = (new Date(l.contacted_at) - new Date(l.created_at)) / 60000;
+    if (!Number.isFinite(mins) || mins < 0) continue;
+    s2lMins.push(mins);
+    const b = bucketOf(String(l.created_at).slice(0, 10)); if (b >= 0) s2lWeekVals[b].push(mins);
+    (s2lByOwner[l.owner_user_id || ''] ||= []).push(mins);
+  }
+  const s2lMedian = median(s2lMins);
+  const s2lWeekly = s2lWeekVals.map(vs => { const md = median(vs); return md == null ? 0 : Math.round(md); });
+  const s2lOwnerRows = Object.entries(s2lByOwner)
+    .map(([id, vs]) => ({ name: (staffNames && staffNames[id]) || 'Unassigned', md: median(vs), n: vs.length }))
+    .sort((a, b) => (a.md == null ? Infinity : a.md) - (b.md == null ? Infinity : b.md));
+
+  // 3. Conversion by source and campaign: leads created in the window; a
+  // conversion is stage accepted; accepted value uses the shared value map.
+  const convGroup = (keyFn) => {
+    const g = {};
+    for (const l of leadsInWin) {
+      const k = keyFn(l) || '(none)';
+      const e = (g[k] ||= { leads: 0, accepted: 0, value: 0 });
+      e.leads++;
+      if (l.stage === 'accepted') { e.accepted++; e.value += leadValueMap[l.id] || 0; }
+    }
+    return Object.entries(g).sort((a, b) => b[1].leads - a[1].leads);
+  };
+  const convBySource = convGroup(l => leadSourceLabel(l.source));
+  const convByCampaign = convGroup(l => l.campaign);
+  const convTable = (title, rows) => `<div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:10px 0 4px">${esc(title)}</div>
+    <table class="pec-table" style="font-size:.78rem"><thead><tr><th>${esc(title)}</th><th style="text-align:right">Leads</th><th style="text-align:right">Accepted</th><th style="text-align:right">Rate</th><th style="text-align:right">Accepted value</th></tr></thead><tbody>
+      ${rows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">${g.leads}</td><td style="text-align:right">${g.accepted}</td><td style="text-align:right">${g.leads ? Math.round((g.accepted / g.leads) * 100) + '%' : '\u2014'}</td><td style="text-align:right">${invUSD0(g.value)}</td></tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No leads in this window yet.</td></tr>'}
+    </tbody></table>`;
+
+  // 4. Open pipeline by stage (all open leads, any date) + the cached AI read.
+  const openLeads = salesLeads.filter(l => l.stage !== 'accepted' && l.stage !== 'lost');
+  const pipeByStage = LEAD_STAGES.filter(s => s.key !== 'accepted' && s.key !== 'lost').map(s => {
+    const list = openLeads.filter(l => l.stage === s.key);
+    return { title: s.title, n: list.length, value: list.reduce((sum, l) => sum + (leadValueMap[l.id] || 0), 0) };
+  });
+  const openPipeValue = pipeByStage.reduce((s, r) => s + r.value, 0);
+  let salesInsight = null;
+  try { salesInsight = (insightRes && !insightRes.error && insightRes.data) ? JSON.parse(insightRes.data.value) : null; } catch (_) { salesInsight = null; }
+
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -10267,6 +10398,45 @@ async function renderMetrics() {
     <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>
       <div class="pec-m-chart-wrap" id="pecChartJobsCompleted">${invBarChart(jobsCompleted, weeks, barIds.jobsCompleted, String)}</div>
     </div>
+    <div class="pec-m-group-h">Sales</div>
+    <div class="pec-m-rank-grid">
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Price per sq ft (sold jobs, by month)</div>
+        <div class="pec-m-chart-wrap">${invBarChart(dpsfMonthly, months, dpsfMonthIds, v => v > 0 ? '$' + v.toFixed(1) : '')}</div>
+        <div style="color:var(--muted);font-size:.68rem;margin-top:6px">$/sqft available for ${dpsfJobs.length} of ${soldForSqft.length} sold job${soldForSqft.length === 1 ? '' : 's'} in these months. Backfill the Sqft field on the job page to raise coverage.</div>
+        ${dpsfSystemRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>System</th><th style="text-align:right">Avg $/sqft</th><th style="text-align:right">Jobs</th></tr></thead><tbody>
+          ${dpsfSystemRows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">$${(g.sum / g.n).toFixed(2)}</td><td style="text-align:right">${g.n}</td></tr>`).join('')}
+        </tbody></table>` : ''}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Speed to lead (created to first contact)</div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
+          <span style="font-size:1.6rem;font-weight:700">${fmtMins(s2lMedian)}</span>
+          <span style="color:var(--muted);font-size:.72rem">median for leads created in this window (${s2lMins.length} contacted)</span>
+        </div>
+        <div class="pec-m-chart-wrap">${invBarChart(s2lWeekly, weeks, weeks.map(() => ''), v => v > 0 ? fmtMins(v) : '')}</div>
+        ${s2lOwnerRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>Owner</th><th style="text-align:right">Median</th><th style="text-align:right">Leads contacted</th></tr></thead><tbody>
+          ${s2lOwnerRows.map(r => `<tr class="nohover"><td>${esc(r.name)}</td><td style="text-align:right">${fmtMins(r.md)}</td><td style="text-align:right">${r.n}</td></tr>`).join('')}
+        </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem">No contacted leads in this window yet.</div>'}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Conversion by source and campaign</div>
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 4px">Which ad money works: leads created in this window, accepted = sold.</div>
+        ${convTable('Source', convBySource)}
+        ${convTable('Campaign', convByCampaign)}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Open pipeline and AI read</div>
+        <table class="pec-table" style="font-size:.78rem"><thead><tr><th>Stage</th><th style="text-align:right">Leads</th><th style="text-align:right">Value</th></tr></thead><tbody>
+          ${pipeByStage.map(r => `<tr class="nohover"><td>${esc(r.title)}</td><td style="text-align:right">${r.n}</td><td style="text-align:right">${invUSD0(r.value)}</td></tr>`).join('')}
+          <tr class="li-total"><td><strong>Open total</strong></td><td style="text-align:right"><strong>${openLeads.length}</strong></td><td style="text-align:right"><strong>${invUSD0(openPipeValue)}</strong></td></tr>
+        </tbody></table>
+        <div style="margin-top:10px;padding:10px 12px;background:var(--rd-soft,#f5f6f8);border-radius:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+            <span style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">AI weekly read</span>
+            <button type="button" class="pec-btn ghost sm" id="pecSalesInsightRefresh">Refresh</button>
+          </div>
+          <div id="pecSalesInsightText" style="font-size:.82rem;line-height:1.5">${salesInsight && salesInsight.text ? esc(salesInsight.text) : '<span style="color:var(--muted)">No insight generated yet. Click Refresh to write one.</span>'}</div>
+          ${salesInsight && salesInsight.generated_at ? `<div style="color:var(--muted);font-size:.68rem;margin-top:6px">Generated ${esc(fmtRelativeTime(salesInsight.generated_at))}</div>` : ''}
+        </div>
+      </div>
+    </div>
     <details class="pec-card pec-ar-sec">
       <summary>More metrics <span class="pec-ar-meta">deposits, jobs sold, reviews, payment timing, AR aging</span></summary>
       <div style="padding:14px 18px">
@@ -10288,6 +10458,30 @@ async function renderMetrics() {
 
   $('pecMetWin').addEventListener('change', e => { state.metricsWindow = e.target.value; renderMetrics(); });
   $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
+  // AI weekly read: render NEVER calls the API (the cached settings row above
+  // is all it shows); only this button does, force-regenerating and recaching
+  // server-side, then re-rendering to pick up the new settings row.
+  const insightBtn = $('pecSalesInsightRefresh');
+  if (insightBtn) insightBtn.addEventListener('click', async () => {
+    insightBtn.disabled = true; insightBtn.textContent = 'Writing…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session && session.access_token;
+      if (!token) throw new Error('Not signed in.');
+      const res = await fetch('/.netlify/functions/pec-metrics-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ force: true }),
+      });
+      let body = {}; try { body = await res.json(); } catch (_) {}
+      if (!res.ok || !body.success) throw new Error(body.error || `Refresh failed (${res.status})`);
+      renderMetrics();
+    } catch (err) {
+      insightBtn.disabled = false; insightBtn.textContent = 'Refresh';
+      console.error('[pec] sales insight refresh:', err);
+      showToast('Could not refresh the AI read: ' + esc(err.message || String(err)), { ttl: 6000 });
+    }
+  });
   // One universal hook serves every drillable surface: KPI cards, ranking
   // rows, and chart bars all carry data-drill ids into the same registry.
   root.querySelectorAll('[data-drill]').forEach(el => el.addEventListener('click', () => openMetricsDrill(el.dataset.drill)));
@@ -11092,6 +11286,13 @@ async function renderJobDetailInner(id) {
   if (state.jobDetailTabFor !== id) { state.jobDetailTabFor = id; state.jobDetailTab = 'details'; }
   const activeTab = state.jobDetailTab === 'comms' ? 'comms' : 'details';
 
+  // $/sqft for the header chip. Effective sqft = the manual jobs.sqft when
+  // set (the #jobSqft backfill field), else the estimate areas sum. Computed
+  // once per render; hidden entirely when sqft or price is unknown.
+  const headerAreasSqft = areas.reduce((s, a) => s + (Number(a.sqft) || 0), 0);
+  const headerEffSqft = jobEffectiveSqft(job.sqft, areas.map(a => a.sqft));
+  const headerPerSqft = (headerEffSqft > 0 && areaPriceSum() > 0) ? areaPriceSum() / headerEffSqft : null;
+
   root.innerHTML = `
     <div class="pec-toolbar pec-job-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
@@ -11131,6 +11332,11 @@ async function renderJobDetailInner(id) {
           <div style="display:flex;align-items:center;gap:6px">
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Price $</label>
             <input id="jobPrice" type="number" value="${areaPriceSum()}" readonly title="Sum of the estimate lines below" style="max-width:130px;background:var(--bg-soft,#f1f3f5);color:var(--muted)">
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Sqft</label>
+            <input id="jobSqft" type="number" min="0" step="1" value="${esc(job.sqft ?? '')}" placeholder="${headerAreasSqft > 0 ? 'areas: ' + headerAreasSqft.toLocaleString() : 'e.g. 850'}" title="Manual square footage (wins over the estimate areas sum). Used for the $/sqft metric." style="max-width:130px">
+            ${headerPerSqft != null ? `<span class="pec-age" title="Price divided by effective sqft (manual sqft if set, else the areas sum)">$${headerPerSqft.toFixed(1)}/sqft</span>` : ''}
           </div>
           <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">View Work Order</button>
         </div>
@@ -12352,7 +12558,13 @@ async function renderJobDetailInner(id) {
       // values are kept untouched. This is what the invoice + work order read.
       price: finalPrice,
       line_items: finalLineItems,
-      sqft: (areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null,
+      // Manual sqft wins (the #jobSqft backfill field in the header); the
+      // legacy areas[0] mirror is the fallback ONLY when the field is blank,
+      // so a hand-entered value survives every later save while jobs that
+      // never used the field keep saving exactly as before.
+      sqft: ($('jobSqft') && $('jobSqft').value.trim() !== '')
+        ? String($('jobSqft').value.trim())
+        : ((areas[0] && areas[0].sqft !== '' && areas[0].sqft != null) ? String(areas[0].sqft) : null),
       system_type_id: areas[0] ? (areas[0].system_type_id || null) : null,
       // Finalize locks the estimate (price changes only via a change order).
       ...(finalize ? { finalized: true, finalized_at: new Date().toISOString() } : {}),
@@ -15626,7 +15838,7 @@ async function loadPipelineData() {
     supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
     // pec_job_ar carries money + status but not colors_confirmed_at, archived_at,
     // or lead_source, so pull those from jobs (lead_source lives on customers).
-    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,address,status_manual_at,customers(lead_source)'),
+    supabase.from('jobs').select('id,colors_confirmed_at,archived_at,created_at,address,status_manual_at,sqft,job_areas(sqft),customers(lead_source)'),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
   ]), { label: 'loadPipelineData' });
   if (arRes.error) throw new Error(arRes.error.message);
@@ -15708,6 +15920,7 @@ async function loadPipelineData() {
       price: Number(r.price) || 0,
       paid: Number(r.paid_to_date) || 0,
       balance: Number(r.balance_remaining) || 0,
+      sqft: jobEffectiveSqft(extra.sqft, (extra.job_areas || []).map(a => a.sqft)),
       salesperson: r.salesperson || '',
       signedDate: r.signed_date || null,
       crew: inst.crew,
@@ -15749,6 +15962,7 @@ function pipelineCardHtml(r, canEdit) {
     </div>
     ${r.leadSource ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:2px">${esc(r.leadSource)}</div>` : ''}
     <div style="margin:8px 0 6px;font-size:.95rem;font-weight:600">${invUSD(r.paid)} <span style="color:var(--rd-muted,#6b7280);font-weight:400">of ${invUSD(r.price)}</span></div>
+    ${(r.sqft > 0 && r.price > 0) ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin:-2px 0 6px">$${(r.price / r.sqft).toFixed(1)}/sqft · ${r.sqft.toLocaleString()} sqft</div>` : ''}
     <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
       ${paidChip}
       <button type="button" class="pec-btn ghost sm" data-pipeline-invoice="${esc(r.id)}" style="padding:1px 7px;font-size:.72rem">invoice</button>
@@ -15931,6 +16145,24 @@ const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[s] || titleCaseValue(s || 'unk
 let _leadsById = {};
 let _leadsElapsedTimer = null;
 
+// lead_id -> dollar value from estimate rows (NEWEST-FIRST input, matching
+// the loaders' order clause): an ACCEPTED estimate wins regardless of age,
+// else the newest live estimate. Shared by the kanban and the Metrics Sales
+// section so the two surfaces can never disagree on a lead's value.
+function leadValueMapFrom(estRows) {
+  const valueMap = {};
+  const acceptedSeen = {};
+  for (const e of estRows || []) {
+    const v = Number(e.price) || 0;
+    if (e.status === 'accepted') {
+      if (!acceptedSeen[e.lead_id]) { acceptedSeen[e.lead_id] = true; valueMap[e.lead_id] = v; }
+    } else if (!acceptedSeen[e.lead_id] && !(e.lead_id in valueMap)) {
+      valueMap[e.lead_id] = v;
+    }
+  }
+  return valueMap;
+}
+
 // "How long has this NEW lead been waiting" label. This is the speed-to-lead
 // behavior driver: red past one hour. Returns null for unparseable dates.
 function leadElapsed(createdAt) {
@@ -15968,18 +16200,7 @@ async function loadLeadsData() {
   ]), { label: 'loadLeadsData' });
   if (leadsRes.error) throw new Error(leadsRes.error.message);
   const leads = leadsRes.data || [];
-  // Value per lead: an ACCEPTED estimate wins regardless of age; otherwise the
-  // newest live estimate. Rows arrive newest-first, so first-seen = newest.
-  const valueMap = {};
-  const acceptedSeen = {};
-  for (const e of (estRes.error ? [] : estRes.data || [])) {
-    const v = Number(e.price) || 0;
-    if (e.status === 'accepted') {
-      if (!acceptedSeen[e.lead_id]) { acceptedSeen[e.lead_id] = true; valueMap[e.lead_id] = v; }
-    } else if (!acceptedSeen[e.lead_id] && !(e.lead_id in valueMap)) {
-      valueMap[e.lead_id] = v;
-    }
-  }
+  const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
   // Source options: schema tokens + anything already in the data + the active
   // pec_lead_sources names (free-text sources are legal on manual leads).
   const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
