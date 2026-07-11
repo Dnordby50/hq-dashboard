@@ -4,6 +4,44 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-10 22:50 MST] Claude Code: toast color VERIFIED FIXED by 1ecbd8b; one silent-toast bridge fixed; Cowork handoff for the three prod writes
+By: Claude Code
+Changed: index.html (one line + comment), PROJECT-LOG.md. Task 3 of the three Cowork-scoped fixes, plus the consolidated Cowork handoff for tasks 1 and 2.
+
+TOAST VERDICT: verified fixed by 1ecbd8b (2026-07-06). Checked on the DEPLOYED site (prescottepoxy.netlify.app) by injecting a synthetic .pec-toast-host/.pec-toast/.pec-toast-msg DOM node (same shape showToast builds; no app code invoked, no data touched) and reading computed styles: background rgb(255,255,255), text rgb(15,20,32) (near-black), action button rgb(216,83,28) (PEC orange). Same result with body.pec-portal-mode toggled on. Token audit in source: --rd-card and --rd-ink are each defined exactly ONCE (:root, index.html ~662/665); nothing redefines them in portal mode, the dark HQ side, or anywhere else, and the toast host mounts on document.body where :root always applies. All 111 showToast callers pass plain or lightly-bold HTML; none injects color styles. The public /pay and /co pages have no toast-like element (their banners carry explicit paired fg/bg). Since Dylan could not name the exact popup, this covers every bottom-right toast surface that exists.
+
+ONE REAL BUG FOUND BY THE AUDIT (different failure mode, fixed): the CRM block is a script type="module", so showToast was never a window global, yet two production-module error paths (index.html ~22293, ~22309: "Save lines failed" and "Could not save checkbox") call `window.showToast && window.showToast(...)`. The && guard silently swallowed those toasts, so those two errors showed NOTHING (console only). Fix: `window.showToast = showToast;` bridged next to the definition, same pattern as window.pecCloseModal. Judged internal, no whats-new entry (error-path plumbing; the errors were always in the console).
+Why: Dylan reported "white text on white" on the bottom-right popup but suspected it was already fixed; it is, and the audit's real find was toasts that never appeared at all.
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: Cowork runs the three prod writes below; after the migration, spot-check Invoicing.
+
+## Handoff to Cowork
+
+Repo: hq-dashboard (github.com/Dnordby50/hq-dashboard, main). Supabase project: HQ Dashboard, zdfpzmmrgotynrwkeakd. Deploy: prescottepoxy.netlify.app (Netlify auto-deploys main). Run AFTER the deploy of commits 56de17a/8f295e9 goes green, in this order.
+
+1. Trujillo refund insert (needs two values from Dylan first: the refund CHECK DATE and CHECK NUMBER).
+   ```sql
+   INSERT INTO pec_payments (job_id, amount, method, reference, received_date, recorded_by)
+   VALUES ('713ae4e0-9708-48d8-b9af-e13cac1c05ec', -745.00, 'check',
+           '<check number> (refund)', '<YYYY-MM-DD check date>', 'Cowork (Dylan refund correction)');
+   ```
+   Acceptance: the Trujillo invoice (Invoicing > her job) shows a -$745.00 payment line, Paid to date $1,900.00, Balance $0.00, and she sits in Recently closed; Commission tab shows Aron Bronson pending -$44.70. Do NOT touch payment 43bf0e07-302e-41bb-ac94-bc6f67e7421f (+$2,645) or the $158.70 payout row.
+
+2. Gallagher void:
+   ```sql
+   UPDATE jobs SET voided_at = now() WHERE id = '2419dc1c-4bb4-4b01-a313-f384b86b2caa';
+   ```
+   Acceptance: `select voided_at from jobs where id = '2419dc1c-4bb4-4b01-a313-f384b86b2caa'` is non-null; he disappears from Invoicing immediately (voided_at filter is already live). Jobs page history unchanged. Do not delete the row.
+
+3. Apply supabase/migrations/2026-07-10_ar_exclude_archived.sql (whole file, it is idempotent inside begin/commit).
+   Acceptance (queries are in the migration footer): zero pec_job_ar rows join to archived jobs; Invoicing's "Signed proposal, no deposit collected" total drops from $13,795.00 to $11,370.00 (Gallagher's $2,425.00; note his void in step 2 already removes him, so if you run step 3 after step 2 the visible delta at THAT point is $0; the view-level check queries are the real acceptance).
+
+4. After all three: append a PROJECT-LOG entry (By: Cowork) with the refund check date/number used and the before/after pending-deposit totals, and report to Dylan: Aron's corrected net on Trujillo is $158.70 - $44.70 = $114.00 (6% of $1,900); mark the -$44.70 pending line paid on his next payroll run in the Commission tab.
+
+Handoff to Dylan: give Cowork the Trujillo refund check date and check number. After Cowork finishes, the Commission tab will show Aron at -$44.70 pending; mark it paid with the next payroll run.
+
+---
+
 ## [2026-07-10 22:42 MST] Claude Code: pec_job_ar migration drops archived jobs from AR; Gallagher void queued for Cowork
 By: Claude Code
 Changed: index.html, help/whats-new.json, supabase/migrations/2026-07-10_ar_exclude_archived.sql. Task 2 of the three Cowork-scoped fixes. The migration and the Gallagher void UPDATE are NOT applied from this session; both go to Cowork (handoff in this session's final entry). The client code ships first and tolerates the pre-migration window (archived rows are still dropped client-side where it matters, see below).

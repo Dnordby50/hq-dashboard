@@ -6923,6 +6923,11 @@ function showToast(html, opts = {}) {
   host.appendChild(toast);
   return toast;
 }
+// Bridge to window: this block is a <script type="module">, so the function is
+// NOT a global. The production module's error paths call
+// `window.showToast && window.showToast(...)`; without this line that guard
+// silently swallowed the toast (found during the 2026-07-10 toast audit).
+window.showToast = showToast;
 
 // Schedule-save success toast with Undo. Undo deletes the just-inserted
 // pec_prod_job_schedule_days rows and reverts the pec_prod_jobs fields back to
