@@ -1,5 +1,17 @@
 [
   {
+    "id": "lead-detail-ai-panel",
+    "date": "2026-07-11",
+    "title": "Click a lead for its full story plus an AI game plan",
+    "summary": "Clicking a card on the Leads board opens the lead's page: contact info, notes, and the full activity timeline on the left; an AI read on the right with a score, the single best next step, call talking points, and ready-to-copy text and email drafts. Nothing sends itself; you copy, you send.",
+    "howto": [
+      "Click any card on the Leads board. Back returns to the board.",
+      "The AI panel leads with the next action; Copy buttons grab the text or email draft (the text copy stays locked unless the lead agreed to texts).",
+      "Change the stage right from the page, edit notes, or hit Refresh analysis after a call.",
+      "Start estimate opens the estimator with the lead attached. Once OpenPhone is connected, calls and transcripts appear in the timeline on their own."
+    ]
+  },
+  {
     "id": "metrics-sales-section",
     "date": "2026-07-11",
     "title": "Metrics: new Sales section shows which ad money works",

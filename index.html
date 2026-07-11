@@ -16407,6 +16407,9 @@ function openNewLeadModal() {
 }
 
 async function renderLeads() {
+  // Detail pane: a card click sets openLeadId; Back clears it. Same
+  // list/detail pattern as the invoicing view's openInvoiceJobId.
+  if (state.openLeadId) return renderLeadDetail(state.openLeadId);
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading leads…</div>';
   let data;
@@ -16508,11 +16511,18 @@ async function renderLeads() {
   });
 
   // Drag and drop between stage columns (no gating: every dashboard user
-  // works leads, per Dylan).
+  // works leads, per Dylan). A click opens the detail pane; the dragEndedAt
+  // guard swallows the phantom click some browsers fire right after a drop.
   let draggedId = null;
+  let dragEndedAt = 0;
   root.querySelectorAll('.lead-card').forEach(card => {
     card.addEventListener('dragstart', e => { draggedId = card.dataset.leadId; e.dataTransfer.effectAllowed = 'move'; });
-    card.addEventListener('dragend', () => { draggedId = null; });
+    card.addEventListener('dragend', () => { draggedId = null; dragEndedAt = Date.now(); });
+    card.addEventListener('click', () => {
+      if (Date.now() - dragEndedAt < 300) return;
+      state.openLeadId = card.dataset.leadId;
+      renderLeads();
+    });
   });
   root.querySelectorAll('.lead-col').forEach(colEl => {
     colEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
@@ -16524,6 +16534,207 @@ async function renderLeads() {
   });
 
   startLeadsElapsedTimer();
+}
+
+// Copy helper for the AI drafts: clipboard write with a prompt() fallback for
+// older permission states. The AI never sends anything; copy is the ONLY exit.
+async function leadCopyText(text, label) {
+  try { await navigator.clipboard.writeText(text); showToast(`${esc(label)} copied`, { ttl: 2000 }); }
+  catch (_) { window.prompt('Copy this:', text); }
+}
+
+// One lead_events row for the detail timeline. Call transcripts collapse into
+// a <details> so a long transcript never buries the timeline (full job notes
+// were deliberately kept small everywhere; same instinct here).
+function leadEventHtml(ev, staffNames) {
+  const who = ev.actor_user_id && staffNames[ev.actor_user_id] ? ` · ${esc(staffNames[ev.actor_user_id])}` : '';
+  const when = `<span title="${esc(new Date(ev.created_at).toLocaleString())}">${esc(fmtRelativeTime(ev.created_at))}</span>${who}`;
+  const p = ev.payload || {};
+  let body;
+  if (ev.event_type === 'stage_change') {
+    body = `Stage: <strong>${esc(ev.from_stage || '?')}</strong> to <strong>${esc(ev.to_stage || '?')}</strong>${p.lost_reason ? ` · ${esc(p.lost_reason)}` : ''}`;
+  } else if (ev.event_type === 'call') {
+    const secs = Number(p.duration) || 0;
+    const head = `${p.direction === 'outgoing' ? 'Outbound' : 'Inbound'} call${secs ? ` · ${Math.round(secs / 60)}m ${secs % 60}s` : ''}`;
+    body = p.transcript
+      ? `<details><summary style="cursor:pointer">${esc(head)} · transcript</summary><div style="white-space:pre-wrap;font-size:.78rem;color:var(--muted);margin-top:6px;max-height:260px;overflow-y:auto">${esc(p.transcript)}</div></details>`
+      : esc(head);
+  } else if (ev.event_type === 'note') {
+    body = `<span style="white-space:pre-wrap">${esc(p.text || '')}</span>`;
+  } else if (ev.event_type === 'ai_analysis') {
+    body = `AI scored <strong>${esc(p.score)}</strong>${p.next_action ? ` · ${esc(p.next_action)}` : ''}`;
+  } else if (ev.event_type === 'duplicate_intake') {
+    body = `Reached out AGAIN (${esc(p.source || 'unknown')}); folded into this lead`;
+  } else if (ev.event_type === 'created') {
+    body = `Lead created (${esc(p.source || 'unknown')})`;
+  } else {
+    body = esc(titleCaseValue(ev.event_type));
+  }
+  return `<div style="padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.82rem">
+    <div style="color:var(--muted);font-size:.68rem;margin-bottom:2px">${when}</div>
+    <div>${body}</div>
+  </div>`;
+}
+
+async function renderLeadDetail(leadId) {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading lead…</div>';
+  const back = () => { state.openLeadId = null; renderLeads(); };
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('leads').select('*').eq('id', leadId).is('deleted_at', null).maybeSingle(),
+      supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
+      qoStaffNames(),
+    ]), { label: 'renderLeadDetail' });
+  } catch (e) { res = [{ error: e }, {}, {}]; }
+  const [leadRes, evRes, staffNames0] = res;
+  const staffNames = staffNames0 || {};
+  const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="leadBack">← Back to leads</button></div>';
+  if (leadRes.error || !leadRes.data) {
+    root.innerHTML = backBar + `<div class="pec-empty">${leadRes.error ? esc(leadRes.error.message) : 'Lead not found (it may have been deleted).'}</div>`;
+    $('leadBack').addEventListener('click', back);
+    return;
+  }
+  const lead = leadRes.data;
+  _leadsById[lead.id] = lead; // so the shared stage-move path can find it
+  const events = evRes.error ? [] : (evRes.data || []);
+  const ai = lead.ai_analysis || null;
+  const score = lead.score == null ? null : Number(lead.score);
+  const scoreCls = score == null ? '' : score >= 70 ? 'pec-age-green' : score >= 40 ? 'pec-age-yellow' : 'pec-age-red';
+  const owner = lead.owner_user_id ? (staffNames[lead.owner_user_id] || 'Unknown') : 'Unassigned';
+  const stageOpts = LEAD_STAGES.map(s => `<option value="${s.key}" ${lead.stage === s.key ? 'selected' : ''}>${esc(s.title)}</option>`).join('');
+  const contactRow = (label, val, href) => val ? `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${label}</span><div style="font-size:.88rem">${href ? `<a href="${esc(href)}" style="color:var(--rd-accent,var(--accent))">${esc(val)}</a>` : esc(val)}</div></div>` : '';
+
+  // AI panel body. next_action leads (bold, top) per Dylan: it is the thing
+  // the rep needs first. Drafts are COPY-ONLY; SMS copy is disabled without
+  // consent so a no-consent text cannot even be conveniently pasted.
+  const aiPanel = ai ? `
+    ${ai.next_action ? `<div style="padding:10px 12px;background:color-mix(in srgb, var(--rd-accent,#D8531C) 10%, transparent);border-left:3px solid var(--rd-accent,#D8531C);border-radius:6px;font-weight:700;font-size:.9rem;margin-bottom:12px">${esc(ai.next_action)}</div>` : ''}
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      ${score != null && Number.isFinite(score) ? `<span class="pec-age ${scoreCls}" style="font-size:.95rem;padding:4px 10px">${score}</span>` : ''}
+      <span style="font-size:.78rem;color:var(--muted)">${esc(ai.score_reason || '')}</span>
+    </div>
+    ${ai.summary ? `<div style="font-size:.84rem;line-height:1.5;margin-bottom:12px">${esc(ai.summary)}</div>` : ''}
+    ${Array.isArray(ai.risk_flags) && ai.risk_flags.length ? `<div style="margin-bottom:12px">${ai.risk_flags.map(f => `<div style="font-size:.78rem;color:var(--rd-danger,#ef4444)">&#9888; ${esc(f)}</div>`).join('')}</div>` : ''}
+    ${ai.call_script ? `<div style="margin-bottom:12px"><div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Call script</div><div style="font-size:.82rem;white-space:pre-wrap;line-height:1.5">${esc(ai.call_script)}</div></div>` : ''}
+    ${ai.draft_sms ? `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Draft text</span><button type="button" class="pec-btn ghost sm" id="leadCopySms" ${lead.sms_consent ? '' : 'disabled title="No SMS consent on file (TCPA); call or email instead."'}>Copy</button></div><div style="font-size:.8rem;background:var(--rd-soft,#f5f6f8);border-radius:6px;padding:8px 10px;white-space:pre-wrap">${esc(ai.draft_sms)}</div></div>` : ''}
+    ${ai.draft_email ? `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Draft email</span><button type="button" class="pec-btn ghost sm" id="leadCopyEmail">Copy</button></div><div style="font-size:.8rem;background:var(--rd-soft,#f5f6f8);border-radius:6px;padding:8px 10px;white-space:pre-wrap">${esc(ai.draft_email)}</div></div>` : ''}
+    <div style="color:var(--muted);font-size:.68rem">Analyzed ${esc(fmtRelativeTime(lead.ai_analyzed_at))} · drafts are copy-only, nothing sends itself</div>
+  ` : '<div class="pec-empty" style="padding:20px 8px">No AI analysis yet. It runs automatically when a lead arrives; click Refresh analysis to run it now.</div>';
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="justify-content:space-between">
+      <button class="pec-btn ghost" id="leadBack">← Back to leads</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <a class="pec-btn sm" href="/estimator/?lead_id=${esc(lead.id)}" target="_blank" rel="noopener" title="Opens the estimator with this lead attached">Start estimate</a>
+        ${lead.stage === 'accepted' ? '' : '<button class="pec-btn sm" id="leadMarkAccepted">Mark accepted</button>'}
+        <button class="pec-btn sm primary" id="leadAiRefresh">Refresh analysis</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
+      <div>
+        <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div>
+              <div style="font-size:1.2rem;font-weight:700">${esc(lead.full_name || '(no name)')}</div>
+              <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
+                <span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[lead.source] || '#64748b')}">${esc(leadSourceLabel(lead.source))}</span>
+                ${lead.campaign ? `<span style="font-size:.75rem;color:var(--muted)">${esc(lead.campaign)}</span>` : ''}
+              </div>
+            </div>
+            <div class="pec-field" style="margin:0;min-width:160px">
+              <label>Stage</label>
+              <select id="leadStageSel">${stageOpts}</select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;margin-top:12px">
+            ${contactRow('Phone', lead.phone, lead.phone ? 'tel:' + lead.phone : null)}
+            ${contactRow('Email', lead.email, lead.email ? 'mailto:' + lead.email : null)}
+            ${contactRow('Address', [lead.address, lead.city, lead.state, lead.zip].filter(Boolean).join(', '), null)}
+            ${contactRow('Owner', owner, null)}
+            ${contactRow('Created', new Date(lead.created_at).toLocaleString(), null)}
+            ${lead.lost_reason ? contactRow('Lost reason', lead.lost_reason, null) : ''}
+          </div>
+        </div>
+        <div class="pec-card">
+          <h3>Notes</h3>
+          <textarea id="leadNotes" rows="3" style="width:100%">${esc(lead.notes || '')}</textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="pec-btn sm" id="leadNotesSave">Save notes</button></div>
+        </div>
+        <div class="pec-card">
+          <h3>Activity</h3>
+          ${events.length ? events.map(ev => leadEventHtml(ev, staffNames)).join('') : '<div class="pec-empty">No activity yet.</div>'}
+        </div>
+      </div>
+      <div class="pec-card">
+        <h3>AI read</h3>
+        ${aiPanel}
+      </div>
+    </div>
+  `;
+
+  $('leadBack').addEventListener('click', back);
+  // Stage select routes through the SAME path as a kanban drag (timestamps,
+  // stage_change event, lost-reason modal); a cancelled lost modal leaves the
+  // select stale until the re-render, which moveLeadStage triggers on commit.
+  $('leadStageSel').addEventListener('change', e => {
+    const to = e.target.value;
+    if (to === lead.stage) return;
+    moveLeadStage(lead.id, to);
+  });
+  const acceptBtn = $('leadMarkAccepted');
+  if (acceptBtn) acceptBtn.addEventListener('click', () => {
+    if (!confirm('Mark this lead accepted? The JOB itself still comes from the estimator accept flow (or manual entry on the schedule); this only moves the lead.')) return;
+    moveLeadStage(lead.id, 'accepted');
+  });
+  $('leadNotesSave').addEventListener('click', async () => {
+    const btn = $('leadNotesSave');
+    const text = $('leadNotes').value;
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('leads').update({ notes: text || null }).eq('id', lead.id), { label: 'lead-notes' });
+      if (upd.error) throw upd.error;
+      const evt = await supabase.from('lead_events').insert({
+        lead_id: lead.id, event_type: 'note',
+        actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+        payload: { text },
+      });
+      if (evt.error) console.warn('[leads] note event failed:', evt.error.message);
+      showToast('Notes saved', { ttl: 1800 });
+      renderLeads();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save notes';
+      showToast('Could not save notes: ' + (err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  });
+  const smsBtn = $('leadCopySms');
+  if (smsBtn && !smsBtn.disabled) smsBtn.addEventListener('click', () => leadCopyText(ai.draft_sms, 'Text draft'));
+  const emailBtn = $('leadCopyEmail');
+  if (emailBtn) emailBtn.addEventListener('click', () => leadCopyText(ai.draft_email, 'Email draft'));
+  // Refresh analysis: the user's JWT (pecSendEmail pattern); pec-lead-ai
+  // stores the result server-side, so a re-render reads it back.
+  $('leadAiRefresh').addEventListener('click', async () => {
+    const btn = $('leadAiRefresh');
+    btn.disabled = true; btn.textContent = 'Analyzing…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session && session.access_token;
+      if (!token) throw new Error('Not signed in.');
+      const res = await fetch('/.netlify/functions/pec-lead-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ lead_id: lead.id }),
+      });
+      let body = {}; try { body = await res.json(); } catch (_) {}
+      if (!res.ok || !body.success) throw new Error(body.error || `Analysis failed (${res.status})`);
+      renderLeads();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Refresh analysis';
+      console.error('[leads] ai refresh:', err);
+      showToast('Analysis failed: ' + esc(err.message || String(err)), { ttl: 6000 });
+    }
+  });
 }
 
 // Proration denominator, the ONE source shared by the calendar and the Next

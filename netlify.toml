@@ -27,6 +27,12 @@
 [functions."pec-auto-progress"]
   schedule = "0 13 * * *"
 
+# OpenPhone call/transcript pull onto leads (as 'call' lead_events). Idles
+# with a 200 until OPENPHONE_API_KEY is set in the Netlify env (Dylan).
+# Every 15 minutes; the call-id dedupe makes overlapping runs harmless.
+[functions."pec-openphone-sync"]
+  schedule = "*/15 * * * *"
+
 # Old auto-subdomain -> current one. The site was renamed from hq-prescott to
 # prescottepoxy; this 301s any request still hitting the old netlify.app host to
 # the current one (path + query preserved via :splat), so a browser Back button
