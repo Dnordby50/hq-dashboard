@@ -16834,8 +16834,12 @@ async function renderLeadDetail(leadId) {
 // List view (chronological + search) and the estimate's own page. The
 // estimator itself stays a separate PWA (opened via openEstimatorModal); these
 // views only READ estimate rows and write small in-place fields (status,
-// flake color, line items). "Send to customer" is deliberately stubbed: the
-// customer-facing proposal is the next build (prompt 16).
+// flake color, line items). "Send to customer" (prompt 16) emails the
+// customer their /e/<public_token> link via pec-send-email and stamps
+// sent_at + status 'sent'; sending is the ONLY thing that makes the public
+// page resolve (it 404s until sent_at). The customer signs / requests
+// changes / rejects on that page (pec-public-estimate.cjs), and accepting
+// creates the job in BOTH job tables server-side.
 // ============================================================
 
 const EST_STATUS_META = {
@@ -17025,7 +17029,10 @@ async function renderEstimateDetail(estimateId) {
         <button class="pec-btn sm" id="estEdit" title="Reopens the estimator prefilled; saving edits this estimate in place">Edit</button>
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
-        <button class="pec-btn sm primary" disabled title="Sending lands in the next build: the customer-facing proposal page with sign / request changes / reject.">Send to customer</button>
+        <button class="pec-btn sm ghost" id="estCopyLink" ${est.sent_at ? '' : 'disabled title="The link is private (404) until the estimate is sent. Send it first."'}>Copy link</button>
+        ${['draft', 'sent', 'change_requested'].includes(est.status)
+          ? `<button class="pec-btn sm primary" id="estSend">${est.sent_at ? 'Re-send to customer' : 'Send to customer'}</button>`
+          : `<button class="pec-btn sm primary" disabled title="This estimate is ${esc(est.status)}; it can no longer be sent.">Send to customer</button>`}
       </div>
     </div>
     <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
@@ -17101,6 +17108,18 @@ async function renderEstimateDetail(estimateId) {
       </div>
       <div>
         <div class="pec-card">
+          <h3>Customer view</h3>
+          ${!est.sent_at ? `
+            <div style="color:var(--muted);font-size:.82rem;line-height:1.5">Not sent yet. The public link stays private (it 404s) until you send the estimate.</div>
+          ` : `
+            <div style="font-size:.82rem;margin-bottom:4px">Sent ${esc(fmtRelativeTime(est.sent_at))} <span style="color:var(--muted)" title="${esc(new Date(est.sent_at).toLocaleString())}">(${esc(new Date(est.sent_at).toLocaleDateString())})</span></div>
+            ${est.signed_at ? `<div style="background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Signed by ${esc(est.signed_name || 'customer')}</strong> ${esc(fmtRelativeTime(est.signed_at))}${est.job_id ? ' · <a href="#" id="estOpenJob" style="color:var(--rd-accent,var(--accent))">Open job</a>' : ''}</div>` : ''}
+            ${est.status === 'change_requested' && est.change_request_note ? `<div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Changes requested:</strong> <span style="white-space:pre-wrap">${esc(est.change_request_note)}</span><div style="color:var(--muted);font-size:.72rem;margin-top:4px">Edit the estimate, then re-send. Same number, same link, new sent date.</div></div>` : ''}
+            ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
+            ${est.public_token ? `<div style="color:var(--muted);font-size:.7rem;margin-top:8px;word-break:break-all">${esc(location.origin + '/e/' + est.public_token)}</div>` : ''}
+          `}
+        </div>
+        <div class="pec-card">
           <h3>Pricing intelligence</h3>
           ${snapComps ? `
             <div style="font-weight:700">${snapComps.median_ppsf != null ? 'Median $' + Number(snapComps.median_ppsf).toFixed(2) + '/sqft' : 'Comps'}</div>
@@ -17139,6 +17158,20 @@ async function renderEstimateDetail(estimateId) {
 
   $('estBack').addEventListener('click', back);
   $('estEdit').addEventListener('click', () => openEstimatorModal({ estimateId: est.id }));
+  const copyLinkBtn = $('estCopyLink');
+  if (copyLinkBtn && est.sent_at) copyLinkBtn.addEventListener('click', async () => {
+    const url = `${location.origin}/e/${est.public_token}`;
+    try { await navigator.clipboard.writeText(url); showToast('Estimate link copied', { ttl: 2500 }); }
+    catch (_) { window.prompt('Copy this link:', url); }
+  });
+  const sendBtn2 = $('estSend');
+  if (sendBtn2) sendBtn2.addEventListener('click', () => openEstimateSendModal(est));
+  const openJobLink = $('estOpenJob');
+  if (openJobLink) openJobLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.openJobId = est.job_id;
+    switchView('jobs');
+  });
   const openLead = $('estOpenLead');
   if (openLead) openLead.addEventListener('click', (e) => {
     e.preventDefault();
@@ -17159,7 +17192,7 @@ async function renderEstimateDetail(estimateId) {
   const acceptBtn = $('estMarkAccepted');
   if (acceptBtn) acceptBtn.addEventListener('click', () => setStatus(
     { status: 'accepted', accepted_at: new Date().toISOString() },
-    'Mark this estimate accepted? The JOB is not created automatically yet (that lands with the customer-facing proposal build); this records the win on the estimate.',
+    'Mark this estimate accepted? This records the win only; the JOB is created automatically when the customer accepts through their link (Send to customer). For an in-person win, open the sent link on your phone and have them sign there, or add the job manually.',
   ));
   const lostBtn = $('estMarkLost');
   if (lostBtn) lostBtn.addEventListener('click', () => setStatus({ status: 'lost' }, 'Mark this estimate lost?'));
@@ -17227,6 +17260,131 @@ async function renderEstimateDetail(estimateId) {
       });
     } });
   });
+}
+
+// Send-to-customer (prompt 16): compose modal (the invoice email pattern) that
+// POSTs pec-send-email in compose mode with the customer's /e/<token> link,
+// THEN stamps sent_at + status 'sent'. The order matters: sending is what
+// makes the public link live, so the stamp happens only after Resend accepted
+// the email. A re-send from change_requested is a NEW sent_at on the SAME
+// number and link. Statuses allowed to send: draft / sent / change_requested
+// (the button gating in renderEstimateDetail matches this .in() filter).
+async function openEstimateSendModal(est) {
+  // Pre-migration rows only: mint the token the estimator never wrote. The
+  // 2026-07-11 migration gives new rows a DB default and backfilled old ones,
+  // so this is a belt-and-braces guard. CAS on "still null" so two tabs can
+  // never write different tokens; the re-read returns whichever landed.
+  if (!est.public_token) {
+    const tok = crypto.randomUUID();
+    try {
+      await withFreshWriteRetry(() => supabase.from('estimates').update({ public_token: tok }).eq('id', est.id).is('public_token', null), { label: 'estimate-token' });
+      const { data } = await supabase.from('estimates').select('public_token').eq('id', est.id).maybeSingle();
+      est.public_token = (data && data.public_token) || tok;
+    } catch (err) {
+      showToast('Could not prepare the estimate link: ' + esc(err.message || String(err)), { ttl: 5000 });
+      return;
+    }
+  }
+  await fetchBrandIdentity();
+  const brand = 'prescott-epoxy'; // PEC-only, matches est.brand today
+  const accent = (state.brandIdentity && state.brandIdentity.accent_color) || '#D8531C';
+  const link = `${location.origin}/e/${est.public_token}`;
+  const number = estNumberLabel(est);
+  const firstName = (est.customer_name || '').trim().split(/\s+/)[0] || 'there';
+  const totalTxt = fmtMoney(estimateLineItemsTotal(est.line_items));
+  const staffEmail = state.adminUser?.email || '';
+  const defaultSubject = `Your estimate ${number} from Prescott Epoxy Company`;
+  const defaultBody = `<p>Hi ${esc(firstName)},</p>
+<p>Thank you for the opportunity to quote your project. Your estimate ${esc(number)} (${esc(totalTxt)}) is ready to review online. You can look it over, tick any optional add-ons, and accept and sign right from your phone.</p>
+<p style="margin:18px 0"><a href="${esc(link)}" style="display:inline-block;background:${esc(accent)};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">View &amp; sign your estimate</a></p>
+<p>Want something adjusted first? Use the Request changes button on the estimate, or just reply to this email.</p>`;
+  openModal(`
+    <h3>${est.sent_at ? 'Re-send estimate' : 'Send estimate'} ${esc(number)}</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>To</label><input id="estCmpTo" value="${esc(est.customer_email || '')}" placeholder="customer@example.com"></div>
+      <div class="pec-field"><label>Cc</label><input id="estCmpCc" placeholder="optional, comma-separated"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="estCmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
+    <div class="pec-field"><label>Subject</label><input id="estCmpSubject" value="${esc(defaultSubject)}"></div>
+    <div class="pec-field"><label>Body</label><div id="estCmpEditorWrap" style="background:#fff;border-radius:6px"><div id="estCmpEditor" style="min-height:220px"></div></div></div>
+    <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
+    <div class="prod-msg-err" id="estCmpErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="estCmpSend" disabled>Loading editor…</button>
+    </div>
+  `, { onMount: async modal => {
+    let quill = null;
+    try {
+      await ensureQuill();
+      quill = new Quill(modal.querySelector('#estCmpEditor'), { theme: 'snow', modules: { toolbar: [['bold', 'italic', 'underline'], [{ list: 'ordered' }, { list: 'bullet' }], ['link'], ['clean']] } });
+      quill.clipboard.dangerouslyPasteHTML(defaultBody);
+    } catch (e) {
+      modal.querySelector('#estCmpEditorWrap').innerHTML = `<textarea id="estCmpEditorTa" rows="12" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem">${esc(defaultBody)}</textarea>`;
+    }
+    const sendBtn = modal.querySelector('#estCmpSend');
+    sendBtn.disabled = false; sendBtn.textContent = est.sent_at ? 'Re-send estimate' : 'Send estimate';
+    sendBtn.addEventListener('click', async () => {
+      const errEl = modal.querySelector('#estCmpErr'); errEl.textContent = '';
+      const to = modal.querySelector('#estCmpTo').value.trim();
+      let cc = modal.querySelector('#estCmpCc').value.trim();
+      if (modal.querySelector('#estCmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
+      const subject = modal.querySelector('#estCmpSubject').value.trim();
+      const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
+      if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
+      if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
+      sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+      try {
+        // log_template_key 'estimate' keeps these out of the Invoicing "Last
+        // invoiced" counter (which keys on compose/invoice rows).
+        await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate' });
+        const nowIso = new Date().toISOString();
+        const upd = await withFreshWriteRetry(() => supabase.from('estimates')
+          .update({ sent_at: nowIso, status: 'sent' })
+          .eq('id', est.id)
+          .in('status', ['draft', 'sent', 'change_requested']), { label: 'estimate-sent' });
+        if (upd.error) throw upd.error;
+        estimateSentLeadEffects(est, nowIso); // best-effort, no await needed
+        closeModal();
+        showToast(`Estimate ${esc(number)} sent to ${esc(to)} ✓`, { ttl: 4000 });
+        renderEstimateDetail(est.id);
+      } catch (err) {
+        console.error('[pec] estimate send failed', err);
+        sendBtn.disabled = false; sendBtn.textContent = est.sent_at ? 'Re-send estimate' : 'Send estimate';
+        errEl.textContent = isSessionStale(err) ? 'Session briefly stalled, try again.' : (err.message || String(err));
+      }
+    });
+  } });
+}
+
+// Best-effort lead bookkeeping for a send: first-touch estimate_sent_at, a
+// FORWARD-ONLY stage nudge (new/contacted go to estimate_sent; presented or
+// later never moves backward), and a timeline event. Failures only warn: the
+// email already went out, so bookkeeping must never surface as a failed send.
+async function estimateSentLeadEffects(est, nowIso) {
+  if (!est.lead_id) return;
+  try {
+    const { data: lead } = await supabase.from('leads').select('id,stage,estimate_sent_at').eq('id', est.lead_id).maybeSingle();
+    if (!lead) return;
+    const forward = lead.stage === 'new' || lead.stage === 'contacted';
+    const patch = {};
+    if (!lead.estimate_sent_at) patch.estimate_sent_at = nowIso;
+    if (forward) patch.stage = 'estimate_sent';
+    if (Object.keys(patch).length) {
+      const upd = await supabase.from('leads').update(patch).eq('id', lead.id);
+      if (upd.error) throw upd.error;
+    }
+    const evt = forward
+      ? { event_type: 'stage_change', from_stage: lead.stage, to_stage: 'estimate_sent', payload: { estimate_id: est.id, estimate_number: est.estimate_number } }
+      : { event_type: 'note', payload: { text: `Estimate ${estNumberLabel(est)} sent to the customer`, estimate_id: est.id, estimate_number: est.estimate_number } };
+    await supabase.from('lead_events').insert({
+      lead_id: lead.id,
+      actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+      ...evt,
+    });
+  } catch (err) {
+    console.warn('[estimates] lead send bookkeeping skipped:', err && err.message ? err.message : err);
+  }
 }
 
 // Proration denominator, the ONE source shared by the calendar and the Next
