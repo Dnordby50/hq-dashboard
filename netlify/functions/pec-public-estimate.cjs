@@ -39,6 +39,22 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const SLACK_OFFICE_WEBHOOK = process.env.SLACK_OFFICE_WEBHOOK;
 const OFFICE_NOTIFY_EMAIL = process.env.OFFICE_NOTIFY_EMAIL || '';
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Validate a staff access token for the authenticated PREVIEW route (the
+// public estimate routes are token-based and unauthenticated; preview is not).
+// Same pattern as pec-estimate-ai.cjs.
+async function getUser(token) {
+  if (!token || !SUPABASE_URL || !SERVICE_KEY) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) { return null; }
+}
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const usd = (n) => (Number(n) < 0 ? '-' : '') + '$' + Math.abs(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -240,15 +256,21 @@ function stateForStatus(est) {
   return { live: true, banner: '' };
 }
 
-function estimatePage(est, brand, sysName, totalSqft) {
+function estimatePage(est, brand, sysName, totalSqft, opts) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const biz = b.business_name || 'Prescott Epoxy Company';
   const logoUrl = b.logo_url || LOGO_URL;
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
   const state = stateForStatus(est);
+  // PREVIEW MODE (15c): staff sees the EXACT customer page from this same
+  // renderer, but nothing is live. interactive gates the client script + the
+  // enabled controls, so a preview carries NO public token and NO working
+  // actions (buttons render disabled). Faithful preview or none.
+  const preview = !!(opts && opts.preview);
+  const interactive = state.live && !preview;
   const items = Array.isArray(est.line_items) ? est.line_items : [];
-  const total = state.live ? includedTotal(items) : Number(est.price || includedTotal(items));
+  const total = (interactive || preview) ? includedTotal(items) : Number(est.price || includedTotal(items));
   const invNoTxt = estimateNo(est);
   const pillMeta = est.status === 'accepted' ? ['#16a34a', 'Accepted']
     : est.status === 'rejected' ? ['#64748b', 'Declined']
@@ -256,15 +278,16 @@ function estimatePage(est, brand, sysName, totalSqft) {
     : est.status === 'change_requested' ? ['#b45309', 'Changes requested']
     : ['#334155', 'For your review'];
 
-  const actions = !state.live ? '' : `
+  const actions = !(state.live || preview) ? '' : `
     <div class="card pad" style="margin-top:18px" id="actionsCard">
       <div class="eyebrow">Your decision</div>
       <h3 class="sec">Ready to move forward?</h3>
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-        <button type="button" class="btn accent" id="btnAccept">Accept &amp; sign</button>
-        ${state.changePending ? '' : '<button type="button" class="btn ink" id="btnChange">Request changes</button>'}
-        <button type="button" class="btn ghost" id="btnReject">Decline</button>
+        <button type="button" class="btn accent" id="btnAccept"${preview ? ' disabled' : ''}>Accept &amp; sign</button>
+        ${state.changePending ? '' : `<button type="button" class="btn ink" id="btnChange"${preview ? ' disabled' : ''}>Request changes</button>`}
+        <button type="button" class="btn ghost" id="btnReject"${preview ? ' disabled' : ''}>Decline</button>
       </div>
+      ${preview ? '<div style="margin-top:12px;color:#6b7280;font-size:13px">These buttons are live for the customer. In this preview they are disabled.</div>' : ''}
 
       <div id="panelAccept" class="panel" style="display:none">
         <div style="font-weight:700;margin-bottom:6px">Accept this estimate</div>
@@ -370,8 +393,9 @@ function estimatePage(est, brand, sysName, totalSqft) {
   }
 </style></head>
 <body>
+  ${preview ? `<div style="position:sticky;top:0;z-index:10;background:${accent};color:#fff;text-align:center;padding:10px 16px;font-size:13.5px;font-weight:700;letter-spacing:.02em">PREVIEW &middot; this is exactly what the customer will see. It has not been sent, and the buttons are disabled.</div>` : ''}
   <div class="wrap">
-    ${state.banner}
+    ${preview ? '' : state.banner}
     <div class="card">
       <div class="topbar">
         <img src="${esc(logoUrl)}" alt="${esc(biz)}">
@@ -384,9 +408,9 @@ function estimatePage(est, brand, sysName, totalSqft) {
           ${est.sent_at ? `<div class="sub">Sent ${esc(fmtStamp(est.sent_at))}</div>` : ''}
         </div>
         <div class="right">
-          <div class="eyebrow">${state.live ? 'Your total' : 'Total'}</div>
+          <div class="eyebrow">${(state.live || preview) ? 'Your total' : 'Total'}</div>
           <div class="big" id="heroTotal">${usd(total)}</div>
-          ${state.live ? '<div class="sub">Updates as you tick optional items</div>' : ''}
+          ${interactive ? '<div class="sub">Updates as you tick optional items</div>' : ''}
         </div>
       </div>
       <div class="pad">
@@ -402,7 +426,7 @@ function estimatePage(est, brand, sysName, totalSqft) {
         <div class="eyebrow" style="margin-top:26px">Your estimate</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items, !state.live)}</tbody>
+          <tbody>${lineItemRowsHtml(items, !interactive)}</tbody>
         </table>
         <table class="tot">
           <tr class="total"><td>Total</td><td id="grandTotal">${usd(total)}</td></tr>
@@ -422,7 +446,7 @@ function estimatePage(est, brand, sysName, totalSqft) {
       <div class="meta">${[b.address_line, b.phone, b.license_number ? 'License ' + b.license_number : ''].filter(Boolean).map(esc).join(' &middot; ')}</div>
     </div>
   </div>
-${!state.live ? '' : `<script>
+${!interactive ? '' : `<script>
 (function(){
   var TOKEN=${JSON.stringify(String(est.public_token))};
   var money=function(n){return '$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
@@ -530,6 +554,18 @@ async function loadLineItems(estimateId) {
     const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
+}
+
+// Load an estimate BY ID for the staff preview (no token, no sent_at gate: the
+// whole point of a preview is to see an unsent estimate). Staff-authenticated
+// at the call site.
+async function loadEstimateById(id) {
+  if (!UUID_RE.test(String(id || ''))) return null;
+  const rows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(id)}&deleted_at=is.null&select=*&limit=1`);
+  const est = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  if (!est) return null;
+  est.line_items = await loadLineItems(est.id);
+  return est;
 }
 
 async function loadAreas(estimateId) {
@@ -976,6 +1012,35 @@ exports.handler = async (event) => {
 
   if (event.httpMethod && event.httpMethod !== 'GET') return json(405, { ok: false, error: 'Method not allowed' });
 
+  const qs = event.queryStringParameters || {};
+
+  // STAFF PREVIEW: GET ?preview=<estimate_id> with a staff JWT renders the
+  // EXACT customer page (same estimatePage renderer, preview:true) for an
+  // estimate that has NOT been sent, WITHOUT setting sent_at, flipping status,
+  // or exposing the public token. Authenticated, not token-based. The dashboard
+  // fetches this with the user's Bearer token and drops the HTML into an
+  // iframe, so it never navigates the browser (which would drop the header).
+  if (qs.preview) {
+    const auth = event.headers.authorization || event.headers.Authorization || '';
+    const user = await getUser(auth.replace(/^Bearer\s+/i, ''));
+    if (!user || !user.id) return htmlResponse(401, '<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:40px">Not authorized to preview this estimate.</body>');
+    if (!UUID_RE.test(String(qs.preview))) return notFoundPage();
+    try {
+      const est = await loadEstimateById(qs.preview);
+      if (!est) return notFoundPage();
+      const [brand, sysName, areas] = await Promise.all([
+        loadBrand(est.brand),
+        loadSystemName(est.system_type_id),
+        loadAreas(est.id),
+      ]);
+      const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+      return estimatePage(est, brand, sysName, totalSqft, { preview: true });
+    } catch (err) {
+      console.error('public-estimate preview error:', err.message);
+      return notFoundPage();
+    }
+  }
+
   // GET /e/<token>: render. ?token= with the path-parse fallback for
   // Netlify's :splat quirk (tokenFromEvent, the /co/ lesson).
   const token = tokenFromEvent(event);
@@ -999,5 +1064,6 @@ exports.handler = async (event) => {
 // _pec-supabase mocked through the require cache), not reimplementations.
 exports._internals = {
   deterministicUuid, includedTotal, freezeLineItems, ensureJobCreated,
-  loadEstimate, estimatePage, notFoundPage, stateForStatus, moveLead,
+  loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
+  mdToSafeHtml, applySelection,
 };

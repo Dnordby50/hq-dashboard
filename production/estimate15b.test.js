@@ -432,6 +432,97 @@ await section('public page: optional add-on excluded until ticked; accept freeze
 });
 
 // ===========================================================================
+// Estimate preview (15c): the staff preview renders the SAME page as the
+// public route (one renderer, no drift) while leaving sent_at null + status
+// unchanged and never exposing the public token.
+// ===========================================================================
+await section('preview: identical body to the public route, no send, no token', async () => {
+  const TOKEN = '22222222-3333-4333-8444-555555555555';
+  const PVID = '33333333-3333-4333-8444-666666666666';
+  const estRow = () => ({
+    id: PVID, public_token: TOKEN, sent_at: '2026-07-13T00:00:00Z', status: 'sent',
+    deleted_at: null, mvb: 'none', flake_color: 'Domino', intake: { salesperson_name: 'Aron' },
+    system_type_id: 'sys-flake', customer_name: 'Jane', customer_email: 'jane@example.com',
+    customer_address: '1 Main', estimate_number: 102026, price: null, brand: 'prescott-epoxy', lead_id: null,
+    scope_of_work: null,
+  });
+  const seed = () => ({
+    estimates: [estRow()],
+    estimate_areas: [{ id: 'ar1', estimate_id: PVID, name: 'Garage', sqft: 600, system_type_id: 'sys-flake', sort_order: 0 }],
+    estimate_line_items: [
+      { id: 'req1', estimate_id: PVID, label: 'Standard Flake floor coating system', description: 'the scope', qty: 1, unit_price: 4200, total: 4200, is_optional: false, selected_by_customer: true, sort_order: 0 },
+      { id: 'opt1', estimate_id: PVID, label: 'Stem Walls', description: null, qty: 1, unit_price: 350, total: 350, is_optional: true, selected_by_customer: false, sort_order: 1 },
+    ],
+    pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake' }],
+    pec_brand_identity: [], pec_email_senders: [], customers: [], jobs: [], timeline_stages: [],
+    job_areas: [], pec_prod_jobs: [], pec_prod_areas: [], leads: [], lead_events: [],
+  });
+
+  // Public GET (token) render.
+  global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+  const pubDb = seed();
+  const pubMod = loadFn('pec-public-estimate.cjs', makeMockSb(pubDb));
+  const pubRes = await pubMod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+
+  // Staff preview: getUser() must pass. It calls fetch(/auth/v1/user); return a
+  // user with an id. The mock sb is the SAME, so the data is identical.
+  global.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) return { ok: true, json: async () => ({ id: 'staff-1' }) };
+    return { ok: true, text: async () => '', json: async () => ({}) };
+  };
+  const prevDb = seed();
+  const prevMod = loadFn('pec-public-estimate.cjs', makeMockSb(prevDb));
+  const prevRes = await prevMod.handler({ httpMethod: 'GET', headers: { authorization: 'Bearer good' }, queryStringParameters: { preview: PVID } });
+
+  ok(prevRes.statusCode === 200, 'preview renders 200 for a staff user');
+  // Same renderer, so the CONTENT is identical once the deliberate
+  // interactivity chrome is normalized out (disabled attrs, the tick-to-update
+  // hints, the optional-items helper copy). What remains, hero -> footer, must
+  // match byte-for-byte: proof the preview cannot drift from the customer page.
+  // Compare the customer-facing CONTENT (hero -> the start of the decision
+  // card). The actions card itself is where preview deliberately differs
+  // (disabled buttons + a preview note), so it is excluded; everything a
+  // customer reads before deciding must be identical.
+  const core = (html) => html.slice(html.indexOf('<div class="hero">'), html.indexOf('id="actionsCard"'))
+    .replace(/ disabled/g, '')
+    .replace(/cursor:(pointer|default)/g, 'cursor:X')
+    .replace('<div class="sub">Updates as you tick optional items</div>', '')
+    .replace('Tick any you would like to add. The total updates as you choose.', 'OPTHELP')
+    .replace('The selection below is what was chosen.', 'OPTHELP')
+    .replace(/\s+/g, ' '); // collapse the empty-template-slot spacing so structural content compares cleanly
+  ok(core(prevRes.body) === core(pubRes.body), 'preview customer content (hero -> decision card) matches the public page once the interactive chrome is normalized');
+  // Preview-only chrome + safety:
+  ok(/PREVIEW/.test(prevRes.body) && !/PREVIEW/.test(pubRes.body), 'preview shows the PREVIEW banner; the public page does not');
+  ok(prevRes.body.includes('disabled>Accept') || /id="btnAccept" disabled/.test(prevRes.body) || /btnAccept"? disabled/.test(prevRes.body.replace(/\s+/g, ' ')), 'preview renders the Accept button disabled');
+  ok(!prevRes.body.includes(TOKEN), 'preview never contains the public token');
+  ok(pubRes.body.includes(TOKEN), '(the live public page DOES embed the token in its action script)');
+  ok(!/<script>[\s\S]*fetch\('\/api\/estimate\/action'/.test(prevRes.body), 'preview has no live action script');
+  // Nothing was mutated by the preview.
+  ok(prevDb.estimates[0].status === 'sent' && prevDb.estimates[0].sent_at === '2026-07-13T00:00:00Z', 'preview left status + sent_at unchanged');
+
+  // A preview WITHOUT a staff token is refused (not a token-based route).
+  global.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) return { ok: false, json: async () => ({}) };
+    return { ok: true, text: async () => '', json: async () => ({}) };
+  };
+  const noAuthMod = loadFn('pec-public-estimate.cjs', makeMockSb(seed()));
+  const noAuthRes = await noAuthMod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { preview: PVID } });
+  ok(noAuthRes.statusCode === 401, 'preview without a staff token is 401');
+
+  // Preview works on an UNSENT (draft) estimate, which the public route 404s.
+  const draftDb = seed();
+  draftDb.estimates[0].status = 'draft';
+  draftDb.estimates[0].sent_at = null;
+  global.fetch = async (url) => {
+    if (String(url).includes('/auth/v1/user')) return { ok: true, json: async () => ({ id: 'staff-1' }) };
+    return { ok: true, text: async () => '', json: async () => ({}) };
+  };
+  const draftMod = loadFn('pec-public-estimate.cjs', makeMockSb(draftDb));
+  const draftRes = await draftMod.handler({ httpMethod: 'GET', headers: { authorization: 'Bearer good' }, queryStringParameters: { preview: PVID } });
+  ok(draftRes.statusCode === 200 && /Estimate EST-102026/.test(draftRes.body), 'preview renders an UNSENT draft (the public route would 404 it)');
+});
+
+// ===========================================================================
 // Duplicate-estimate guard (15c): the REAL status set + wiring, read from
 // index.html so the test tracks the shipped code, not a copy.
 // ===========================================================================
