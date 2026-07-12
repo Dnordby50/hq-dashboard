@@ -1,5 +1,17 @@
 [
   {
+    "id": "estimate-customer-sign-online",
+    "date": "2026-07-12",
+    "title": "Customers can now sign an estimate online",
+    "summary": "Send to customer on an estimate's page emails them a private link where they can review the scope and line items, tick optional add-ons (the total updates as they choose), and accept and sign by typing their name. They can also request changes with a message or decline with a reason. Accepting creates the job automatically on both the Jobs page and the Job Schedule, with the areas and work-order details carried over. The link stays private (it does not work at all) until you send it.",
+    "howto": [
+      "Open an estimate and click Send to customer. Review the prefilled email and send it.",
+      "The customer opens their link, ticks any optional items, and signs by typing their name. You get a Slack and email notification either way.",
+      "On accept, the job appears on the Jobs page and in the Job Schedule's pending list automatically, and the lead moves to Accepted.",
+      "If they request changes, edit the estimate and click Re-send: same number, same link, new sent date."
+    ]
+  },
+  {
     "id": "estimator-modal-thin",
     "date": "2026-07-12",
     "title": "Estimator opens over the dashboard and asks for way less",
