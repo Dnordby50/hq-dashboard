@@ -583,6 +583,11 @@ button.pec-stat:hover{border-color:var(--accent)}
 @media (max-width:720px){.pec-row-2,.pec-row-3{grid-template-columns:1fr}}
 .pec-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px}
 .pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto}
+/* Estimator iframe modal: near-fullscreen shell, zero padding so the PWA owns
+   the whole surface. The iframe fills it; the app inside provides its own
+   chrome (topbar, Close button that postMessages the dashboard). */
+.pec-modal.pec-modal-estimator{max-width:min(1180px,96vw);width:96vw;height:92vh;max-height:92vh;padding:0;overflow:hidden}
+.pec-estimator-frame{display:block;width:100%;height:100%;border:0}
 .pec-modal h3{font-family:var(--sans);font-weight:600;margin-bottom:14px}
 .pec-modal .pec-modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .pec-pagination{display:flex;gap:8px;margin-top:14px;align-items:center;justify-content:center;font-size:.75rem;color:var(--muted)}
@@ -2362,12 +2367,14 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="messages">Messages</button>
           <button data-pec-view="leads">Leads</button>
+          <button data-pec-view="estimates">Estimates</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
-          <!-- Full-page launch into the estimator PWA at /estimator/ (NOT a
-               switchView view). Hidden by default; wireEstimatorNav() reveals it
-               only for emails in settings.estimator_allowed_emails (defaults to
-               the owner only), so the beta stays visible to just Dylan until he
-               adds others to that one setting. -->
+          <!-- Opens the estimator PWA in an iframe MODAL over the dashboard
+               (walk-up estimates with no lead). Hidden by default;
+               wireEstimatorNav() reveals it only for emails in
+               settings.estimator_allowed_emails (defaults to the owner only),
+               so the beta stays visible to just Dylan until he adds others to
+               that one setting. -->
           <button id="pecEstimatorNav" style="display:none">Estimator (Beta)</button>
           <div class="pec-subnav-group">Production</div>
           <button data-pec-view="ordering">Ordering</button>
@@ -6280,6 +6287,9 @@ const state = {
   // on accept through the estimator). openLeadId drives the detail pane.
   leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '' },
   leadsData: null, openLeadId: null,
+  // Estimates (first-class numbered objects, 2026-07-12 build). openEstimateId
+  // drives the detail page; estimatesSearch is the list view's filter text.
+  openEstimateId: null, estimatesSearch: '',
   // Next-Day finalization board (crew x AM/PM). Anchor defaults to tomorrow.
   nextDayAnchor: null,
 };
@@ -6469,15 +6479,15 @@ function renderAuthUI() {
 //   - otherwise -> a comma/space/semicolon-separated list of emails
 // So it ships hidden-to-everyone-but-Dylan with zero setup, and "turn it on for
 // others later" is just editing that one setting in Settings. The data itself is
-// admin-only via RLS regardless. The button full-page-navigates to the estimator
-// PWA at /estimator/ (not an in-page switchView view).
+// admin-only via RLS regardless. The button opens the estimator MODAL (walk-up
+// estimate, no lead behind it); the PWA itself still lives at /estimator/.
 const ESTIMATOR_OWNER_EMAIL = 'dylan@prescottepoxy.com';
 let _estimatorNavWired = false;
 async function wireEstimatorNav() {
   const btn = document.getElementById('pecEstimatorNav');
   if (!btn) return;
   if (!_estimatorNavWired) {
-    btn.addEventListener('click', () => { window.location.assign('/estimator/'); });
+    btn.addEventListener('click', () => { openEstimatorModal(); });
     _estimatorNavWired = true;
   }
   let show = false;
@@ -6507,6 +6517,55 @@ async function wireEstimatorNav() {
   try { console.info('[estimator] nav gate', { email, allow, show }); } catch (_) {}
   btn.style.display = show ? '' : 'none';
 }
+
+// ---- Estimator iframe modal ------------------------------------------------
+// The estimator PWA stays exactly as it is architecturally (offline outbox,
+// its own service worker); this is only a shell that frames it OVER the
+// dashboard instead of a new tab. Uses #pecModalRoot via openModal() per the
+// two-modal-root rule. Launch shapes:
+//   openEstimatorModal()                          walk-up, no lead
+//   openEstimatorModal({ leadId })                from a lead detail page
+//   openEstimatorModal({ estimateId })            Edit on the estimate page
+function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
+  const params = new URLSearchParams({ embed: '1' });
+  if (estimateId) params.set('estimate_id', estimateId);
+  else if (leadId) params.set('lead_id', leadId);
+  const wrap = openModal(
+    `<iframe class="pec-estimator-frame" src="/estimator/?${params.toString()}" title="PEC Estimator"></iframe>`,
+  );
+  const modal = wrap.querySelector('.pec-modal');
+  if (modal) modal.classList.add('pec-modal-estimator');
+  return wrap;
+}
+window.pecOpenEstimatorModal = openEstimatorModal;
+
+// The iframe talks back with postMessage. The origin check is NOT optional:
+// without it any page this tab ever framed-or-was-framed-by could close our
+// modals or navigate the dashboard by posting a matching message shape.
+window.addEventListener('message', (ev) => {
+  if (ev.origin !== window.location.origin) return;
+  const msg = ev.data;
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'pec-estimator-close') {
+    closeModal();
+    return;
+  }
+  if (msg.type === 'pec-estimate-saved') {
+    closeModal();
+    const num = msg.estimate_number != null ? `EST-${msg.estimate_number}` : 'Estimate';
+    showToast(`${esc(num)} saved`, { ttl: 3000 });
+    // Land on the estimate's own page. If the row has not synced yet (saved
+    // offline inside the iframe), renderEstimateDetail shows its honest
+    // not-synced-yet state instead of a broken page.
+    if (msg.estimate_id) {
+      state.openEstimateId = String(msg.estimate_id);
+      switchView('estimates');
+    } else if (state.view === 'leads') {
+      // No id (should not happen): at least refresh whatever leads surface is up.
+      renderLeads();
+    }
+  }
+});
 
 // ---- Whole-app auth gate ----------------------------------------------------
 // The #authGate overlay covers the entire app until a Supabase session resolves
@@ -6788,6 +6847,7 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       leads: renderLeads,
+      estimates: renderEstimates,
       costing: renderJobCosting,
       // Job Costing + Completed Job Costing merged into one view with an
       // Active/Completed toggle. The old completed-costing route is kept as an
@@ -6884,8 +6944,11 @@ function openModal(html, { onMount } = {}) {
   // Backdrop click closes ONLY for info dialogs (no inputs). Data-entry modals
   // (payment, edit contact, change order, compose, ...) must be dismissed with
   // their explicit Cancel/✕ button so a stray click just outside the box can't
-  // wipe what's been typed -- this is the "very touchy" complaint.
-  if (!wrap.querySelector('form, input, textarea, select')) {
+  // wipe what's been typed -- this is the "very touchy" complaint. `iframe` is
+  // in the guard because the estimator modal's inputs live INSIDE its iframe
+  // where this selector cannot see them; without it a stray backdrop click
+  // would wipe a half-built estimate.
+  if (!wrap.querySelector('form, input, textarea, select, iframe')) {
     wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
   }
   $('pecModalRoot').appendChild(wrap);
@@ -6968,7 +7031,12 @@ function clearAllModalRoots() {
   ['pecModalRoot', 'prodModalRoot'].forEach(id => {
     const root = document.getElementById(id);
     if (!root) return;
-    if (root.querySelector('form, input, textarea, select')) return; // mid-entry -- leave it
+    // `iframe` added alongside the input guard (2026-07-12): the estimator
+    // modal's form state lives inside its iframe where this selector cannot
+    // see it, and a stray unhandledrejection used to be able to wipe an
+    // in-progress estimate. Applied to BOTH roots by construction (this loop),
+    // per the two-modal-root rule.
+    if (root.querySelector('form, input, textarea, select, iframe')) return; // mid-entry -- leave it
     root.innerHTML = '';
   });
 }
@@ -16586,9 +16654,11 @@ async function renderLeadDetail(leadId) {
       supabase.from('leads').select('*').eq('id', leadId).is('deleted_at', null).maybeSingle(),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       qoStaffNames(),
+      supabase.from('estimates').select('id,estimate_number,status,price,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
     ]), { label: 'renderLeadDetail' });
-  } catch (e) { res = [{ error: e }, {}, {}]; }
-  const [leadRes, evRes, staffNames0] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}]; }
+  const [leadRes, evRes, staffNames0, leadEstsRes] = res;
+  const leadEstimates = (leadEstsRes && !leadEstsRes.error && leadEstsRes.data) || [];
   const staffNames = staffNames0 || {};
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="leadBack">← Back to leads</button></div>';
   if (leadRes.error || !leadRes.data) {
@@ -16627,7 +16697,7 @@ async function renderLeadDetail(leadId) {
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="leadBack">← Back to leads</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <a class="pec-btn sm" href="/estimator/?lead_id=${esc(lead.id)}" target="_blank" rel="noopener" title="Opens the estimator with this lead attached">Start estimate</a>
+        <button class="pec-btn sm" id="leadStartEstimate" title="Opens the estimator over the dashboard with this lead attached">Start estimate</button>
         ${lead.stage === 'accepted' ? '' : '<button class="pec-btn sm" id="leadMarkAccepted">Mark accepted</button>'}
         <button class="pec-btn sm primary" id="leadAiRefresh">Refresh analysis</button>
       </div>
@@ -16658,6 +16728,20 @@ async function renderLeadDetail(leadId) {
           </div>
         </div>
         <div class="pec-card">
+          <h3>Estimates</h3>
+          ${leadEstimates.length ? leadEstimates.map(est => `
+            <div class="pec-lead-est-row" data-open-estimate="${esc(est.id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));cursor:pointer">
+              <div style="display:flex;align-items:center;gap:8px">
+                <strong>${est.estimate_number != null ? 'EST-' + esc(est.estimate_number) : '(unnumbered)'}</strong>
+                ${estStatusChip(est.status)}
+              </div>
+              <div style="display:flex;gap:12px;align-items:baseline">
+                <span style="font-weight:600">${fmtMoney(est.price)}</span>
+                <span style="color:var(--muted);font-size:.72rem">${esc(fmtRelativeTime(est.created_at))}</span>
+              </div>
+            </div>`).join('') : '<div class="pec-empty" style="padding:12px 8px">No estimates yet. Start one from the button above.</div>'}
+        </div>
+        <div class="pec-card">
           <h3>Notes</h3>
           <textarea id="leadNotes" rows="3" style="width:100%">${esc(lead.notes || '')}</textarea>
           <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="pec-btn sm" id="leadNotesSave">Save notes</button></div>
@@ -16675,6 +16759,14 @@ async function renderLeadDetail(leadId) {
   `;
 
   $('leadBack').addEventListener('click', back);
+  // Estimator opens as an iframe modal OVER this page (not a tab), so saving
+  // returns the rep right here; the postMessage listener near
+  // openEstimatorModal handles close + navigation to the new estimate.
+  $('leadStartEstimate').addEventListener('click', () => openEstimatorModal({ leadId: lead.id }));
+  root.querySelectorAll('[data-open-estimate]').forEach(row => row.addEventListener('click', () => {
+    state.openEstimateId = row.dataset.openEstimate;
+    switchView('estimates');
+  }));
   // Stage select routes through the SAME path as a kanban drag (timestamps,
   // stage_change event, lost-reason modal); a cancelled lost modal leaves the
   // select stale until the re-render, which moveLeadStage triggers on commit.
@@ -16734,6 +16826,406 @@ async function renderLeadDetail(leadId) {
       console.error('[leads] ai refresh:', err);
       showToast('Analysis failed: ' + esc(err.message || String(err)), { ttl: 6000 });
     }
+  });
+}
+
+// ============================================================
+// Estimates: first-class numbered objects (2026-07-12 build).
+// List view (chronological + search) and the estimate's own page. The
+// estimator itself stays a separate PWA (opened via openEstimatorModal); these
+// views only READ estimate rows and write small in-place fields (status,
+// flake color, line items). "Send to customer" is deliberately stubbed: the
+// customer-facing proposal is the next build (prompt 16).
+// ============================================================
+
+const EST_STATUS_META = {
+  draft:            ['Draft', '#64748b'],
+  sent:             ['Sent', '#2563eb'],
+  signed:           ['Signed', '#7c3aed'],
+  accepted:         ['Accepted', '#16a34a'],
+  change_requested: ['Change requested', '#d97706'],
+  rejected:         ['Rejected', '#dc2626'],
+  lost:             ['Lost', '#475569'],
+};
+function estStatusChip(status) {
+  const meta = EST_STATUS_META[status] || [titleCaseValue(status || 'unknown'), '#64748b'];
+  // The `system` modifier is the one badge class that actually consumes
+  // --pec-badge-bg (tinted background + matching text, see the CSS at the
+  // .pec-badge.system rule).
+  return `<span class="pec-badge system" style="--pec-badge-bg:${meta[1]}">${esc(meta[0])}</span>`;
+}
+function estNumberLabel(est) {
+  // Pre-numbering legacy rows (saved before the 2026-07-12 migration) have a
+  // NULL estimate_number; every row saved after it gets one from the sequence.
+  return est && est.estimate_number != null ? `EST-${est.estimate_number}` : '(unnumbered)';
+}
+
+// The one line-items money rule, shared by the detail page total and (later)
+// prompt 16's public page: optional lines are EXCLUDED until the customer (or
+// the rep, on their behalf) ticks selected_by_customer.
+function estimateLineItemsTotal(items) {
+  return (Array.isArray(items) ? items : []).reduce((sum, li) => {
+    if (!li) return sum;
+    if (li.optional && !li.selected_by_customer) return sum;
+    const t = Number(li.total);
+    return sum + (Number.isFinite(t) ? t : 0);
+  }, 0);
+}
+
+// Search rule for the estimates list: number (with or without the EST- prefix),
+// customer name, phone (digit-insensitive), address.
+function estimateMatchesSearch(est, q) {
+  const s = String(q || '').trim().toLowerCase();
+  if (!s) return true;
+  const num = est.estimate_number != null ? String(est.estimate_number) : '';
+  if (num && (('est-' + num).includes(s) || num.includes(s))) return true;
+  if ((est.customer_name || '').toLowerCase().includes(s)) return true;
+  if ((est.customer_address || '').toLowerCase().includes(s)) return true;
+  const digits = s.replace(/\D/g, '');
+  if (digits && String(est.customer_phone || '').replace(/\D/g, '').includes(digits)) return true;
+  return false;
+}
+
+function estimateSqft(est) {
+  const areas = Array.isArray(est.estimate_areas) ? est.estimate_areas : [];
+  return areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+}
+
+async function renderEstimates() {
+  if (state.openEstimateId) return renderEstimateDetail(state.openEstimateId);
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimates…</div>';
+  let res;
+  try {
+    res = await withFreshSession(() => supabase.from('estimates')
+      .select('id,estimate_number,status,price,gp_pct,mvb,created_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft),pec_prod_system_types(name)')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .limit(500), { label: 'renderEstimates' });
+  } catch (e) { res = { error: e }; }
+  if (res.error) {
+    root.innerHTML = `<div class="pec-empty">${esc(res.error.message || String(res.error))}</div>`;
+    return;
+  }
+  const all = res.data || [];
+
+  const draw = () => {
+    const q = state.estimatesSearch;
+    const rows = all.filter(est => estimateMatchesSearch(est, q));
+    const body = rows.map(est => {
+      const sqft = estimateSqft(est);
+      const sys = est.pec_prod_system_types && est.pec_prod_system_types.name
+        ? est.pec_prod_system_types.name
+        : (est.mvb === 'standalone' ? 'MVB only' : '');
+      return `<tr data-est-id="${esc(est.id)}" style="cursor:pointer">
+        <td style="white-space:nowrap"><strong>${esc(estNumberLabel(est))}</strong></td>
+        <td>${esc(est.customer_name || '(no name)')}</td>
+        <td>${esc(sys)}${est.mvb === 'addon' ? ' <span style="color:var(--muted);font-size:.7rem">+MVB</span>' : ''}</td>
+        <td style="text-align:right">${sqft > 0 ? Math.round(sqft).toLocaleString() : '--'}</td>
+        <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}</td>
+        <td style="text-align:right">${est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : '--'}</td>
+        <td>${estStatusChip(est.status)}</td>
+        <td style="white-space:nowrap;color:var(--muted)">${esc(fmtRelativeTime(est.created_at))}</td>
+      </tr>`;
+    }).join('');
+    const tableHost = $('pecEstListHost');
+    if (!tableHost) return;
+    tableHost.innerHTML = rows.length ? `
+      <div class="pec-table-wrap"><table class="pec-table">
+        <thead><tr><th>Number</th><th>Customer</th><th>System</th><th style="text-align:right">Sqft</th><th style="text-align:right">Price</th><th style="text-align:right">GP%</th><th>Status</th><th>Age</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`
+      : `<div class="pec-empty">${q ? 'No estimates match that search.' : 'No estimates yet. Start one from a lead, or the New estimate button above.'}</div>`;
+    tableHost.querySelectorAll('tr[data-est-id]').forEach(tr => tr.addEventListener('click', () => {
+      state.openEstimateId = tr.dataset.estId;
+      renderEstimateDetail(tr.dataset.estId);
+    }));
+  };
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <input id="pecEstSearch" type="search" placeholder="Search number, customer, phone, address…" value="${esc(state.estimatesSearch || '')}" style="flex:1;min-width:220px;max-width:420px">
+      <button class="pec-btn sm primary" id="pecEstNew">+ New estimate</button>
+    </div>
+    <div id="pecEstListHost"></div>
+  `;
+  $('pecEstSearch').addEventListener('input', e => { state.estimatesSearch = e.target.value; draw(); });
+  $('pecEstNew').addEventListener('click', () => openEstimatorModal());
+  draw();
+}
+
+async function renderEstimateDetail(estimateId) {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimate…</div>';
+  const back = () => { state.openEstimateId = null; renderEstimates(); };
+  const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="estBack">← Back to estimates</button></div>';
+  let res;
+  try {
+    res = await withFreshSession(() => supabase.from('estimates')
+      .select('*,estimate_areas(name,sqft,sort_order),pec_prod_system_types(name),leads(full_name)')
+      .eq('id', estimateId).is('deleted_at', null).maybeSingle(), { label: 'renderEstimateDetail' });
+  } catch (e) { res = { error: e }; }
+  if (res.error || !res.data) {
+    root.innerHTML = backBar + `<div class="pec-empty">${res.error
+      ? esc(res.error.message)
+      : 'Estimate not found. If it was just saved OFFLINE on another device, it appears here once that device syncs.'}</div>`;
+    $('estBack').addEventListener('click', back);
+    return;
+  }
+  const est = res.data;
+  const intake = est.intake || {};
+  const sysName = est.pec_prod_system_types && est.pec_prod_system_types.name ? est.pec_prod_system_types.name : null;
+  const leadName = est.leads && est.leads.full_name ? est.leads.full_name : null;
+  const areas = (est.estimate_areas || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const sqft = estimateSqft(est);
+  const items = Array.isArray(est.line_items) ? est.line_items : [];
+  const requiredItems = items.filter(li => li && !li.optional);
+  const optionalItems = items.filter(li => li && li.optional);
+  const snapshot = est.pricing_snapshot || {};
+  const snapComps = snapshot.comps || null;
+  const snapAi = snapshot.ai || null;
+  const mvbLabel = est.mvb === 'standalone' ? 'MVB only (standalone job)' : est.mvb === 'addon' ? 'Add-on to the system' : 'None';
+
+  const gpPctTxt = est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : null;
+  const discountTxt = intake.discount_pct != null && Number(intake.discount_pct) > 0
+    ? `${Number(intake.discount_pct).toFixed(1)}% discount off ${fmtMoney(intake.base_price)}`
+    : null;
+
+  const detailRow = (label, val) => val == null || val === '' ? '' :
+    `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${esc(label)}</span><div style="font-size:.86rem">${val}</div></div>`;
+
+  const lineRow = (li, optional) => `
+    <tr data-li-id="${esc(li.id)}">
+      ${optional ? `<td style="width:28px"><input type="checkbox" class="est-li-toggle" data-li-id="${esc(li.id)}" ${li.selected_by_customer ? 'checked' : ''} title="Include in the total"></td>` : ''}
+      <td ${optional ? '' : 'colspan="1"'}>
+        <div style="font-weight:600">${esc(li.label || '')}</div>
+        ${li.description ? `<div style="color:var(--muted);font-size:.75rem">${esc(li.description)}</div>` : ''}
+      </td>
+      <td style="text-align:right">${Number(li.qty) || 1}</td>
+      <td style="text-align:right">${fmtMoney(li.unit_price)}</td>
+      <td style="text-align:right;font-weight:600">${fmtMoney(li.total)}</td>
+      ${optional ? `<td style="width:28px"><button class="pec-btn ghost sm est-li-remove" data-li-id="${esc(li.id)}" title="Remove optional item">✕</button></td>` : '<td></td>'}
+    </tr>`;
+
+  // Activity trail from the row's own lifecycle timestamps (estimates have no
+  // events table; these columns ARE the history).
+  const trail = [];
+  if (est.created_at) trail.push([est.created_at, 'Created' + (intake.salesperson_name ? ` by ${esc(intake.salesperson_name)}` : '')]);
+  if (est.sent_at) trail.push([est.sent_at, 'Sent to customer']);
+  if (est.signed_at) trail.push([est.signed_at, `Signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}`]);
+  if (est.accepted_at) trail.push([est.accepted_at, 'Accepted']);
+  if (est.rejected_at) trail.push([est.rejected_at, `Rejected${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}`]);
+  if (est.change_request_note) trail.push([est.updated_at, `Change requested: ${esc(est.change_request_note)}`]);
+  trail.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="justify-content:space-between">
+      <button class="pec-btn ghost" id="estBack">← Back to estimates</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="pec-btn sm" id="estEdit" title="Reopens the estimator prefilled; saving edits this estimate in place">Edit</button>
+        ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
+        ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
+        <button class="pec-btn sm primary" disabled title="Sending lands in the next build: the customer-facing proposal page with sign / request changes / reject.">Send to customer</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
+      <div>
+        <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:1.35rem;font-weight:800">${esc(estNumberLabel(est))}</div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+                ${estStatusChip(est.status)}
+                <span style="color:var(--muted);font-size:.75rem">created ${esc(fmtRelativeTime(est.created_at))}</span>
+              </div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:1.5rem;font-weight:800">${fmtMoney(est.price)}</div>
+              <div style="color:var(--muted);font-size:.78rem">${gpPctTxt ? `GP ${gpPctTxt}` : ''}${discountTxt ? ` · ${discountTxt}` : ''}</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;margin-top:12px">
+            ${detailRow('Customer', esc(est.customer_name || '(no name)'))}
+            ${detailRow('Phone', est.customer_phone ? `<a href="tel:${esc(est.customer_phone)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_phone)}</a>` : null)}
+            ${detailRow('Email', est.customer_email ? `<a href="mailto:${esc(est.customer_email)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_email)}</a>` : null)}
+            ${detailRow('Address', est.customer_address ? esc(est.customer_address) : null)}
+            ${detailRow('System', esc(sysName || (est.mvb === 'standalone' ? 'MVB only' : 'Unknown')))}
+            ${detailRow('Sqft', sqft > 0 ? Math.round(sqft).toLocaleString() : null)}
+            ${detailRow('MVB', esc(mvbLabel))}
+            ${detailRow('Salesperson', intake.salesperson_name ? esc(intake.salesperson_name) : null)}
+            ${leadName ? detailRow('Lead', `<a href="#" id="estOpenLead" style="color:var(--rd-accent,var(--accent))">${esc(leadName)}</a>`) : ''}
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-end;margin-top:10px">
+            <div class="pec-field" style="margin:0;max-width:240px">
+              <label>Flake color <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(customer often picks after the presentation)</span></label>
+              <input id="estFlakeColor" value="${esc(est.flake_color || '')}" placeholder="Not picked yet">
+            </div>
+            <button class="pec-btn sm" id="estFlakeSave">Save</button>
+          </div>
+        </div>
+
+        <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h3 style="margin:0">Line items</h3>
+            <button class="pec-btn ghost sm" id="estAddOptional">+ Add optional item</button>
+          </div>
+          <div class="pec-table-wrap" style="margin-top:8px"><table class="pec-table">
+            <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Total</th><th></th></tr></thead>
+            <tbody>${requiredItems.length ? requiredItems.map(li => lineRow(li, false)).join('') : '<tr><td colspan="5" style="color:var(--muted)">No line items recorded (estimate predates line items).</td></tr>'}</tbody>
+          </table></div>
+          ${optionalItems.length ? `
+            <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-top:12px">Optional items <span style="text-transform:none;letter-spacing:0">(excluded from the total until ticked)</span></div>
+            <div class="pec-table-wrap"><table class="pec-table">
+              <tbody>${optionalItems.map(li => lineRow(li, true)).join('')}</tbody>
+            </table></div>` : ''}
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;font-size:1.05rem;font-weight:800">
+            Total: <span id="estItemsTotal" style="margin-left:8px">${fmtMoney(estimateLineItemsTotal(items))}</span>
+          </div>
+        </div>
+
+        <div class="pec-card">
+          <h3>Production detail</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px">
+            ${detailRow('Areas', areas.length ? areas.map(a => `${esc(a.name || 'Area')}: ${Math.round(Number(a.sqft) || 0).toLocaleString()} sqft`).join('<br>') : null)}
+            ${detailRow('Gate code', intake.gate_code ? esc(intake.gate_code) : null)}
+            ${detailRow('Moisture (1-5)', intake.moisture != null ? esc(intake.moisture) : null)}
+            ${detailRow('MOHS hardness', intake.mohs_hardness != null ? esc(intake.mohs_hardness) : null)}
+            ${detailRow('Grinder tooling / grit', intake.grinder_tooling_grit ? esc(intake.grinder_tooling_grit) : null)}
+            ${detailRow('Additional non-slip', intake.additional_non_slip ? esc(intake.additional_non_slip) : null)}
+            ${detailRow('Coat past garage door', intake.coat_past_garage ? 'Yes' : null)}
+            ${detailRow('Stem walls', intake.stem_walls ? 'Yes' : null)}
+          </div>
+          ${intake.special_notes ? `<div style="margin-top:8px;font-size:.84rem;white-space:pre-wrap">${esc(intake.special_notes)}</div>` : ''}
+          <div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit these by reopening the estimator (Edit button above).</div>
+        </div>
+      </div>
+      <div>
+        <div class="pec-card">
+          <h3>Pricing intelligence</h3>
+          ${snapComps ? `
+            <div style="font-weight:700">${snapComps.median_ppsf != null ? 'Median $' + Number(snapComps.median_ppsf).toFixed(2) + '/sqft' : 'Comps'}</div>
+            <div style="color:var(--muted);font-size:.75rem;margin-bottom:8px">${esc(snapComps.rule_label || '')}</div>
+            ${Array.isArray(snapComps.rows) && snapComps.rows.length ? `
+              <div class="pec-table-wrap" style="max-height:220px;overflow-y:auto"><table class="pec-table" style="font-size:.78rem">
+                <thead><tr><th>Customer</th><th style="text-align:right">Sqft</th><th style="text-align:right">Price</th><th style="text-align:right">$/sqft</th><th style="text-align:right">GP%</th></tr></thead>
+                <tbody>${snapComps.rows.map(r => `<tr>
+                  <td>${esc(r.customer_name || '--')}</td>
+                  <td style="text-align:right">${r.sqft != null ? Math.round(r.sqft).toLocaleString() : '--'}</td>
+                  <td style="text-align:right">${fmtMoney(r.price)}</td>
+                  <td style="text-align:right">${r.ppsf != null ? '$' + Number(r.ppsf).toFixed(2) : '--'}</td>
+                  <td style="text-align:right">${r.gp_pct != null ? (Number(r.gp_pct) * 100).toFixed(0) + '%' : '--'}</td>
+                </tr>`).join('')}</tbody>
+              </table></div>` : ''}
+          ` : '<div style="color:var(--muted);font-size:.82rem">No comps snapshot on this estimate.</div>'}
+          <div style="border-top:1px solid var(--rd-line,var(--border));margin-top:12px;padding-top:12px">
+            ${snapAi ? `
+              <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">AI price read</div>
+              <div style="font-weight:800">${fmtMoney(snapAi.recommended_low)} to ${fmtMoney(snapAi.recommended_high)}</div>
+              <div style="font-size:.84rem;line-height:1.5;margin-top:6px">${esc(snapAi.why || '')}</div>
+              <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${snapAi.generated_at ? 'Generated ' + esc(fmtRelativeTime(snapAi.generated_at)) + ' · ' : ''}the AI never set this price; the rep did.</div>
+            ` : '<div style="color:var(--muted);font-size:.82rem">No AI read stored for this estimate.</div>'}
+          </div>
+        </div>
+        <div class="pec-card">
+          <h3>Activity</h3>
+          ${trail.length ? trail.map(([ts, txt]) => `<div style="padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.82rem">
+            <div style="color:var(--muted);font-size:.68rem;margin-bottom:2px">${esc(new Date(ts).toLocaleString())}</div>
+            <div>${txt}</div>
+          </div>`).join('') : '<div class="pec-empty">No activity yet.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('estBack').addEventListener('click', back);
+  $('estEdit').addEventListener('click', () => openEstimatorModal({ estimateId: est.id }));
+  const openLead = $('estOpenLead');
+  if (openLead) openLead.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.openLeadId = est.lead_id;
+    switchView('leads');
+  });
+
+  const setStatus = async (patch, confirmMsg) => {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update(patch).eq('id', est.id), { label: 'estimate-status' });
+      if (upd.error) throw upd.error;
+      renderEstimateDetail(est.id);
+    } catch (err) {
+      showToast('Update failed: ' + esc(err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  };
+  const acceptBtn = $('estMarkAccepted');
+  if (acceptBtn) acceptBtn.addEventListener('click', () => setStatus(
+    { status: 'accepted', accepted_at: new Date().toISOString() },
+    'Mark this estimate accepted? The JOB is not created automatically yet (that lands with the customer-facing proposal build); this records the win on the estimate.',
+  ));
+  const lostBtn = $('estMarkLost');
+  if (lostBtn) lostBtn.addEventListener('click', () => setStatus({ status: 'lost' }, 'Mark this estimate lost?'));
+
+  $('estFlakeSave').addEventListener('click', async () => {
+    const btn = $('estFlakeSave');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const val = $('estFlakeColor').value.trim() || null;
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ flake_color: val }).eq('id', est.id), { label: 'estimate-flake' });
+      if (upd.error) throw upd.error;
+      showToast('Flake color saved', { ttl: 1800 });
+      renderEstimateDetail(est.id);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save';
+      showToast('Could not save flake color: ' + esc(err && err.message ? err.message : err), { ttl: 5000 });
+    }
+  });
+
+  // Line item writes replace the whole jsonb array (same posture as
+  // jobs.line_items). Small arrays, single-editor page; last write wins.
+  const writeItems = async (nextItems) => {
+    const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ line_items: nextItems }).eq('id', est.id), { label: 'estimate-items' });
+    if (upd.error) throw upd.error;
+    renderEstimateDetail(est.id);
+  };
+  root.querySelectorAll('.est-li-toggle').forEach(cb => cb.addEventListener('change', async () => {
+    try {
+      await writeItems(items.map(li => li && li.id === cb.dataset.liId ? { ...li, selected_by_customer: cb.checked } : li));
+    } catch (err) { showToast('Could not update item: ' + esc(err.message || err), { ttl: 5000 }); }
+  }));
+  root.querySelectorAll('.est-li-remove').forEach(btn => btn.addEventListener('click', async () => {
+    if (!confirm('Remove this optional item?')) return;
+    try {
+      await writeItems(items.filter(li => !li || li.id !== btn.dataset.liId));
+    } catch (err) { showToast('Could not remove item: ' + esc(err.message || err), { ttl: 5000 }); }
+  }));
+  $('estAddOptional').addEventListener('click', () => {
+    openModal(`
+      <h3>Add optional item</h3>
+      <div class="pec-field"><label>Label</label><input id="estOptLabel" placeholder="Stem walls, extra bay, MVB…"></div>
+      <div class="pec-field"><label>Description (optional)</label><input id="estOptDesc"></div>
+      <div class="pec-field"><label>Price $</label><input id="estOptPrice" inputmode="decimal"></div>
+      <div class="pec-modal-actions">
+        <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button class="pec-btn primary" id="estOptAdd">Add item</button>
+      </div>
+    `, { onMount: (modal) => {
+      modal.querySelector('#estOptAdd').addEventListener('click', async () => {
+        const label = modal.querySelector('#estOptLabel').value.trim();
+        const price = Number(modal.querySelector('#estOptPrice').value.replace(/[^0-9.]/g, ''));
+        if (!label || !(price > 0)) { showToast('A label and a price above zero are required.', { ttl: 3500 }); return; }
+        const li = {
+          id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+          label,
+          description: modal.querySelector('#estOptDesc').value.trim() || null,
+          qty: 1, unit_price: price, total: price,
+          optional: true, selected_by_customer: false,
+          created_at: new Date().toISOString(),
+        };
+        try {
+          closeModal();
+          await writeItems([...items, li]);
+        } catch (err) { showToast('Could not add item: ' + esc(err.message || err), { ttl: 5000 }); }
+      });
+    } });
   });
 }
 
@@ -24727,7 +25219,11 @@ function _mergeAcrossAreas(areaPlans) {
     // invisibly over the catalog/ordering view and swallow clicks (e.g. the
     // "+ Add product" button). Mirrors the clearAllModalRoots() call in the
     // CRM switchView; inlined here because that helper is in the other module.
-    ['pecModalRoot', 'prodModalRoot'].forEach(id => { const m = document.getElementById(id); if (m) m.innerHTML = ''; });
+    // Same mid-entry guard as the canonical helper (2026-07-12): a stale/empty
+    // backdrop still clears, but a modal holding inputs or the estimator
+    // IFRAME (whose form state is invisible to this selector) survives the
+    // navigation instead of eating a half-built estimate.
+    ['pecModalRoot', 'prodModalRoot'].forEach(id => { const m = document.getElementById(id); if (m && !m.querySelector('form, input, textarea, select, iframe')) m.innerHTML = ''; });
     const r = root();
     if (r) {
       r.style.display = 'block';
