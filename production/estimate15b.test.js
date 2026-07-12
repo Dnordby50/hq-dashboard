@@ -432,6 +432,45 @@ await section('public page: optional add-on excluded until ticked; accept freeze
 });
 
 // ===========================================================================
+// Duplicate-estimate guard (15c): the REAL status set + wiring, read from
+// index.html so the test tracks the shipped code, not a copy.
+// ===========================================================================
+await section('duplicate guard: open-status set + every-path wiring', async () => {
+  const { readFileSync } = require('fs');
+  const html = readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+
+  // Extract and evaluate the REAL OPEN_ESTIMATE_STATUSES array literal.
+  const m = html.match(/const OPEN_ESTIMATE_STATUSES\s*=\s*(\[[^\]]*\])/);
+  ok(!!m, 'OPEN_ESTIMATE_STATUSES is defined in index.html');
+  const statuses = JSON.parse(m[1].replace(/'/g, '"'));
+  const isOpen = (s) => statuses.includes(s);
+  ok(isOpen('draft') && isOpen('sent') && isOpen('signed') && isOpen('change_requested'), 'guard fires on draft/sent/signed/change_requested');
+  ok(!isOpen('rejected') && !isOpen('lost') && !isOpen('accepted'), 'guard stays silent on rejected/lost/accepted');
+  ok(statuses.length === 4, 'exactly the four open statuses, nothing else');
+
+  // The guard lives in the SHARED openEstimatorModal (so every caller is
+  // covered), keyed on the lead and the open statuses.
+  ok(/async function openEstimatorModal/.test(html), 'openEstimatorModal is async (can await the check)');
+  const fnStart = html.indexOf('async function openEstimatorModal');
+  const fnSlice = html.slice(fnStart, fnStart + 1600);
+  ok(/\.eq\('lead_id', leadId\)/.test(fnSlice) && /\.in\('status', OPEN_ESTIMATE_STATUSES\)/.test(fnSlice), 'the guard queries the lead\'s estimates filtered to the open statuses');
+  ok(/showDuplicateEstimateModal\(openEstimates/.test(fnSlice), 'when open estimates exist it shows the duplicate prompt instead of opening');
+  ok(/leadId && !estimateId/.test(fnSlice), 'editing an existing estimate and walk-ups skip the guard');
+
+  // Every create-for-a-lead path routes through openEstimatorModal (the lead
+  // detail button does; there is no other lead-attached create call).
+  ok(/leadStartEstimate.*openEstimatorModal\(\{ leadId: lead\.id \}\)/s.test(html) || /openEstimatorModal\(\{ leadId: lead\.id \}\)/.test(html), 'the Start-estimate button routes through the guarded openEstimatorModal');
+  const leadIdCreateCalls = (html.match(/openEstimatorFrame\(\{ leadId \}\)/g) || []).length;
+  ok(leadIdCreateCalls >= 1 && !/openEstimatorFrame\(\{ leadId: lead/.test(html), 'the raw frame opener is only reached AFTER the guard (never called directly with a fresh lead)');
+
+  // The prompt lists all open estimates, offers Open + Create new anyway.
+  ok(/function showDuplicateEstimateModal/.test(html), 'the duplicate modal exists');
+  const dupStart = html.indexOf('function showDuplicateEstimateModal');
+  const dupSlice = html.slice(dupStart, dupStart + 1800);
+  ok(/Create new anyway/.test(dupSlice) && /data-open-est=/.test(dupSlice), 'the modal offers Create-new-anyway and an Open action per estimate');
+});
+
+// ===========================================================================
 // Offline save: areas + add-ons ride the outbox in FK order and drain complete.
 // Drives the REAL apps/estimator saveEstimateOffline + drainOutbox, bundled by
 // esbuild with IndexedDB and supabase stubbed.

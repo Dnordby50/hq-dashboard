@@ -6526,7 +6526,15 @@ async function wireEstimatorNav() {
 //   openEstimatorModal()                          walk-up, no lead
 //   openEstimatorModal({ leadId })                from a lead detail page
 //   openEstimatorModal({ estimateId })            Edit on the estimate page
-function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
+//
+// The DUPLICATE GUARD lives HERE, not on the Start-estimate button, so EVERY
+// path that opens the estimator for a lead is covered (a guard on one caller is
+// theater). It fires only when the lead has an OPEN estimate (draft / sent /
+// signed / change_requested); a rejected or lost estimate is dead and
+// re-estimating after a rejection is normal, so it stays silent there.
+const OPEN_ESTIMATE_STATUSES = ['draft', 'sent', 'signed', 'change_requested'];
+
+function openEstimatorFrame({ leadId = null, estimateId = null } = {}) {
   const params = new URLSearchParams({ embed: '1' });
   if (estimateId) params.set('estimate_id', estimateId);
   else if (leadId) params.set('lead_id', leadId);
@@ -6537,7 +6545,70 @@ function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
   if (modal) modal.classList.add('pec-modal-estimator');
   return wrap;
 }
+
+async function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
+  // Editing an existing estimate or a walk-up (no lead) never triggers the
+  // guard; only CREATING a new estimate for a lead does.
+  if (leadId && !estimateId) {
+    let openEstimates = [];
+    try {
+      const { data } = await supabase.from('estimates')
+        .select('id,estimate_number,status,price,created_at')
+        .eq('lead_id', leadId)
+        .in('status', OPEN_ESTIMATE_STATUSES)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false });
+      openEstimates = data || [];
+    } catch (err) {
+      // A failed check must not block estimating; proceed as if none exist.
+      console.warn('[estimates] duplicate check skipped:', err && err.message ? err.message : err);
+    }
+    if (openEstimates.length) {
+      showDuplicateEstimateModal(openEstimates, () => openEstimatorFrame({ leadId }));
+      return;
+    }
+  }
+  return openEstimatorFrame({ leadId, estimateId });
+}
 window.pecOpenEstimatorModal = openEstimatorModal;
+
+// The "this lead already has an open estimate" prompt. Lists every open
+// estimate (Open goes to its page); Create new anyway proceeds; Cancel backs
+// out. Uses #pecModalRoot via openModal per the two-modal-root rule.
+function showDuplicateEstimateModal(estimates, onCreateNew) {
+  const rows = estimates.map(e => {
+    const num = e.estimate_number != null ? `EST-${e.estimate_number}` : '(unnumbered)';
+    const meta = EST_STATUS_META[e.status] || [e.status, '#64748b'];
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border))">
+      <div>
+        <strong>${esc(num)}</strong>
+        <span class="pec-badge system" style="--pec-badge-bg:${meta[1]};margin-left:6px">${esc(meta[0])}</span>
+        <div style="color:var(--muted);font-size:.72rem;margin-top:2px">${fmtMoney(e.price)} · created ${esc(fmtRelativeTime(e.created_at))}</div>
+      </div>
+      <button class="pec-btn sm" data-open-est="${esc(e.id)}">Open</button>
+    </div>`;
+  }).join('');
+  const plural = estimates.length === 1 ? 'an open estimate' : `${estimates.length} open estimates`;
+  openModal(`
+    <h3>This lead already has ${plural}</h3>
+    <div style="color:var(--muted);font-size:.84rem;margin-bottom:10px">Open one instead of starting another, or create a new one anyway if that is what you mean to do.</div>
+    <div style="max-height:260px;overflow-y:auto;margin-bottom:14px">${rows}</div>
+    <div class="pec-modal-actions">
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn" id="dupCreateNew">Create new anyway</button>
+    </div>
+  `, { onMount: (modal) => {
+    modal.querySelectorAll('[data-open-est]').forEach(b => b.addEventListener('click', () => {
+      closeModal();
+      state.openEstimateId = b.dataset.openEst;
+      switchView('estimates');
+    }));
+    modal.querySelector('#dupCreateNew').addEventListener('click', () => {
+      closeModal();
+      onCreateNew();
+    });
+  } });
+}
 
 // The iframe talks back with postMessage. The origin check is NOT optional:
 // without it any page this tab ever framed-or-was-framed-by could close our
@@ -16728,7 +16799,11 @@ async function renderLeadDetail(leadId) {
           </div>
         </div>
         <div class="pec-card">
-          <h3>Estimates</h3>
+          <h3>Estimates${leadEstimates.length ? ` <span style="color:var(--muted);font-weight:400;font-size:.75rem">(${leadEstimates.length})</span>` : ''}</h3>
+          ${(() => {
+            const openCount = leadEstimates.filter(e => OPEN_ESTIMATE_STATUSES.includes(e.status)).length;
+            return openCount > 1 ? `<div style="color:#b45309;font-size:.74rem;margin-bottom:6px">${openCount} are still open. Start estimate will ask before creating another.</div>` : '';
+          })()}
           ${leadEstimates.length ? leadEstimates.map(est => `
             <div class="pec-lead-est-row" data-open-estimate="${esc(est.id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));cursor:pointer">
               <div style="display:flex;align-items:center;gap:8px">
