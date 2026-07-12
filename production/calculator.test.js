@@ -738,6 +738,64 @@ assertThrows(() => {
   assertEq(r.price, undefined, 'pricing: no price when the material plan is broken');
 }
 
+// --- Swatch slot WITH a default prices as a real line, not a $0 placeholder --
+// 2026-07-12 fix: an unpicked flake used to price as $0 (placeholder) because
+// the prod Flake slot had no default_product_id. With a default set (the
+// "Standard Flake (color TBD)" placeholder product), planForArea resolves
+// pick || default and the flake COST lands in M while the color stays TBD.
+{
+  const slotsWithFlakeDefault = {
+    std: [
+      { id: 's1', order_index: 1, material_type: 'Basecoat', default_product_id: 'basecoat', required: true },
+      { id: 's2', order_index: 2, material_type: 'Flake',    default_product_id: 'flake',    required: true },
+      { id: 's3', order_index: 3, material_type: 'Topcoat',  default_product_id: 'topcoat',  required: true },
+    ],
+  };
+  // NO picks at all: the area carries only sqft + system.
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std' }];
+  const plan = computeMaterialPlan({ areas, productsById, recipeSlotsBySystemType: slotsWithFlakeDefault, defaultBasecoatByFlake });
+  assertEq(plan.lines.filter((l) => l.product_id == null).length, 0, 'flake default: no $0 placeholder line');
+  const flakeLine = plan.lines.find((l) => l.material_type === 'Flake');
+  assertEq(flakeLine.qty_needed, 2, 'flake default: real qty from the default product');
+  assertEq(flakeLine.line_cost, 190, 'flake default: flake cost counted in the plan');
+  const r = computeEstimatePricing({
+    areas, productsById, recipeSlotsBySystemType: slotsWithFlakeDefault, defaultBasecoatByFlake,
+    systemTypes: [{ id: 'std', labor_budget_pct: 20 }], laborRate: 50, commissionPct: 8, targetGpPct: 50,
+  });
+  assertEq(r.error, null, 'no-picks estimate: prices without any selection (system + sqft alone)');
+  assertEq(r.materialsCost, 1630, 'no-picks estimate: M identical to the fully-picked plan');
+}
+
+// --- Prod reference job: 1000 sqft Standard Flake at the 52% flake target ----
+// Mirrors the LIVE catalog after the 2026-07-12 migration: basecoat 144.27/
+// 150/3kit, flake TBD 87.44/325/1, topcoat 132/120/2kit, labor 15, standard
+// commission 6, per-system target_gp_pct 52. M = 3*144.27 + 4*87.44 + 5*132
+// = 1442.57; divisor = 1 - .15 - .06 - .52 = .27; 1442.57/.27 = 5342.85 ->
+// nearest $5 = 5345 (345 above the 5000 charm threshold > 250 band, no charm).
+// This is the price-sheet anchor: Aron sells 1000 sqft garages at $5,000-5,500.
+{
+  const prodProducts = {
+    bc:  { id: 'bc',  name: 'Simiron 1100 SL - Light Gray',   material_type: 'Basecoat', spread_rate: 150, kit_size: 3, unit_cost: 144.27 },
+    fl:  { id: 'fl',  name: 'Standard Flake (color TBD)',     material_type: 'Flake',    spread_rate: 325, kit_size: 1, unit_cost: 87.44 },
+    tc:  { id: 'tc',  name: 'Simiron Polyaspartic 2gal Kit',  material_type: 'Topcoat',  spread_rate: 120, kit_size: 2, unit_cost: 132 },
+  };
+  const prodSlots = { flake: [
+    { id: 'p1', order_index: 1, material_type: 'Basecoat', default_product_id: 'bc', required: true },
+    { id: 'p2', order_index: 2, material_type: 'Flake',    default_product_id: 'fl', required: true },
+    { id: 'p3', order_index: 3, material_type: 'Topcoat',  default_product_id: 'tc', required: true },
+  ] };
+  const r = computeEstimatePricing({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 1000, system_type_id: 'flake' }],
+    productsById: prodProducts, recipeSlotsBySystemType: prodSlots, defaultBasecoatByFlake: {},
+    systemTypes: [{ id: 'flake', labor_budget_pct: 15, target_gp_pct: 52 }],
+    laborRate: 50, commissionPct: 6, targetGpPct: 50,
+  });
+  assertEq(r.error, null, 'reference job: prices clean');
+  assertEq(r.materialsCost, 1442.57, 'reference job: M = 1442.57 (kits rounded up)');
+  assertEq(r.price, 5345, 'reference job: 1000 sqft flake at 52% GP = $5,345 (price-sheet anchor)');
+  assertEq(Math.abs(r.gpPct - 0.52) < 0.005, true, 'reference job: budgeted GP within half a point of 52%');
+}
+
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
 // The inline copy in index.html must carry the SAME CALC_VERSION. This asserts
 // the canonical value exists and is a non-empty string so the mirror check has

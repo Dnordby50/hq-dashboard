@@ -25070,7 +25070,7 @@ function _mergeAcrossAreas(areaPlans) {
             <label>Calendar color <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">shown as the band on Job Schedule events</span></label>
             <input id="smColor" type="color" value="${esc(s.color || '#7c3aed')}" style="width:80px;height:36px;padding:2px;cursor:pointer">
           </div>
-          <div class="pec-row-2">
+          <div class="pec-row-3">
             <div class="pec-field">
               <label>Labor budget % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">of job revenue</span></label>
               <input id="smLaborPct" type="number" min="0" max="100" step="0.01" value="${esc(s.labor_budget_pct ?? '')}" placeholder="e.g. 20">
@@ -25078,6 +25078,10 @@ function _mergeAcrossAreas(areaPlans) {
             <div class="pec-field">
               <label>Materials budget % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">of job revenue, optional</span></label>
               <input id="smMatPct" type="number" min="0" max="100" step="0.01" value="${esc(s.materials_budget_pct ?? '')}" placeholder="e.g. 25">
+            </div>
+            <div class="pec-field">
+              <label>Target GP % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">sets the estimator's price; blank = global default</span></label>
+              <input id="smTargetGp" type="number" min="0" max="100" step="0.01" value="${esc(s.target_gp_pct ?? '')}" placeholder="e.g. 52">
             </div>
           </div>
           <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
@@ -25097,6 +25101,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('smSave').addEventListener('click', async () => {
       const laborPctRaw = $('smLaborPct').value;
       const matPctRaw = $('smMatPct').value;
+      const targetGpRaw = $('smTargetGp').value;
       const payload = {
         name: $('smName').value.trim(),
         description: $('smDesc').value || null,
@@ -25106,6 +25111,10 @@ function _mergeAcrossAreas(areaPlans) {
         color: $('smColor').value || null,
         labor_budget_pct: laborPctRaw === '' ? null : Number(laborPctRaw),
         materials_budget_pct: matPctRaw === '' ? null : Number(matPctRaw),
+        // Whole-number percent (52 = 52%); the pricing engine divides by 100.
+        // Null falls back to the global estimator_target_gp_pct setting. Feeds
+        // BOTH the computed price and the estimator's red-GP threshold.
+        target_gp_pct: targetGpRaw === '' ? null : Number(targetGpRaw),
         notes: $('smNotes').value || null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
