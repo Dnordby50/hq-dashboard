@@ -76,6 +76,9 @@ export type SaveEstimateArgs = {
   customer: { name: string | null; phone: string | null; email: string | null; address: string | null };
   mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
+  // Rep's answers to the templates' BLANK placeholders, keyed by context hash
+  // (15c). The scope writer substitutes these before the model call.
+  scopeAnswers: Record<string, string>;
   lineItems: LineItemInput[];
   pricingSnapshot: Record<string, unknown> | null; // comps + AI read that priced it
   areas: AreaInput[];
@@ -126,6 +129,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     customer_address: args.customer.address,
     mvb: args.mvb,
     flake_color: args.flakeColor,
+    scope_answers: args.scopeAnswers || {},
     pricing_snapshot: args.pricingSnapshot as unknown,
     materials_cost: p.materialsCost ?? null,
     fixed_addons: p.fixedAddons ?? 0,

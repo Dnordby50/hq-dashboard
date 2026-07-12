@@ -18,6 +18,9 @@ export type Addon = {
   is_optional_default: boolean;
   system_type_id: string | null;
   sort_order: number;
+  // The scope paragraph appended to the customer scope; scanned for BLANK
+  // placeholders the rep must answer (15c).
+  scope_snippet: string | null;
 };
 
 export type PricingConfig = {
@@ -47,7 +50,7 @@ export async function loadCatalog(): Promise<Catalog> {
   const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
-      .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order')
+      .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order,scope_template,scope_template_mvb')
       .eq('active', true)
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true }),
@@ -66,7 +69,7 @@ export async function loadCatalog(): Promise<Catalog> {
       .order('name', { ascending: true }),
     supabase
       .from('pec_prod_addons')
-      .select('id,name,description,unit,default_price,default_cost,is_optional_default,system_type_id,sort_order')
+      .select('id,name,description,unit,default_price,default_cost,is_optional_default,system_type_id,sort_order,scope_snippet')
       .eq('active', true)
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true }),

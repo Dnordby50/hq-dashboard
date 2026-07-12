@@ -17107,6 +17107,20 @@ async function renderEstimateDetail(estimateId) {
           </div>
         </div>
 
+        ${(() => {
+          // Open BLANK questions the scope writer recorded. A rep who saved
+          // fast at the job site finishes them here at the desk; answering and
+          // saving substitutes them into the scope on the next write.
+          const qs = Array.isArray(est.scope_questions) ? est.scope_questions : [];
+          if (!qs.length) return '';
+          return `<div class="pec-card" style="border:1px solid rgba(217,119,6,.5)">
+            <h3 style="margin:0 0 4px">Finish the scope</h3>
+            <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">The scope of work still has ${qs.length} blank${qs.length === 1 ? '' : 's'} the template left for you. Fill ${qs.length === 1 ? 'it' : 'them'} in so the customer never sees the word BLANK, then Regenerate the scope.</div>
+            ${qs.map(q => `<div class="pec-field" style="margin-bottom:8px"><label>${esc(q.label || 'Fill in the blank')}</label><input class="est-scope-answer" data-key="${esc(q.key)}" value="${esc((est.scope_answers && est.scope_answers[q.key]) || '')}" placeholder="Fill in the blank"></div>`).join('')}
+            <button class="pec-btn sm primary" id="estScopeAnswerSave">Save answers &amp; rewrite scope</button>
+          </div>`;
+        })()}
+
         <div class="pec-card">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
             <h3 style="margin:0">Scope of work</h3>
@@ -17115,6 +17129,10 @@ async function renderEstimateDetail(estimateId) {
               <button class="pec-btn sm" id="estScopeGen">${est.scope_of_work ? 'Regenerate' : 'Generate scope'}</button>
             </div>
           </div>
+          ${est.scope_of_work && /\bBLANK\b/.test(String(est.scope_of_work)) ? `
+            <div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.45);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>This scope still says BLANK.</strong> Fill in the questions above (or Edit the text) before you send it; a customer should never read the word BLANK in a document they are signing.
+            </div>` : ''}
           ${est.scope_stale && est.scope_edited_at ? `
             <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
               <strong>The estimate changed since you edited this scope.</strong> Your text is untouched; Regenerate replaces it with a fresh write-up from the current estimate.
@@ -17354,6 +17372,31 @@ async function renderEstimateDetail(estimateId) {
     } });
   });
 
+  // ---- Finish the scope: answer the BLANK questions, then rewrite ------------
+  const answerSaveBtn = $('estScopeAnswerSave');
+  if (answerSaveBtn) answerSaveBtn.addEventListener('click', async () => {
+    // Merge the answers onto scope_answers (never drop keys the rep left blank
+    // this session but answered before), then regenerate so they substitute in.
+    const answers = { ...(est.scope_answers && typeof est.scope_answers === 'object' ? est.scope_answers : {}) };
+    root.querySelectorAll('.est-scope-answer').forEach(inp => { answers[inp.dataset.key] = inp.value.trim(); });
+    // A hand-edited scope is protected: answering questions must not silently
+    // overwrite it. Warn, and only force-regenerate if the rep agrees.
+    const force = !!est.scope_edited_at;
+    if (force && !confirm('The scope was edited by hand. Saving these answers and rewriting REPLACES your edited text. Continue?')) return;
+    answerSaveBtn.disabled = true; answerSaveBtn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ scope_answers: answers }).eq('id', est.id), { label: 'estimate-scope-answers' });
+      if (upd.error) throw upd.error;
+      const body = await callScopeGen(force);
+      if (body.generated === false) showToast(esc(body.reason || 'Answers saved.'), { ttl: 4000 });
+      else showToast('Scope updated ✓', { ttl: 2500 });
+      renderEstimateDetail(est.id);
+    } catch (err) {
+      answerSaveBtn.disabled = false; answerSaveBtn.textContent = 'Save answers & rewrite scope';
+      showToast('Could not update the scope: ' + esc(err.message || String(err)), { ttl: 6000 });
+    }
+  });
+
   // ---- Scope card actions ----------------------------------------------------
   const genBtn = $('estScopeGen');
   if (genBtn) genBtn.addEventListener('click', async () => {
@@ -17479,6 +17522,14 @@ async function openEstimateSendModal(est) {
       const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
+      // SEND GATE (warn, do not block): a scope that still literally says BLANK
+      // is the failure mode we fear most, a customer reading BLANK in a document
+      // they are asked to sign. Make it impossible to miss, but honor Dylan's
+      // "warn-but-allow".
+      if (/\bBLANK\b/.test(String(est.scope_of_work || '')) &&
+          !confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?')) {
+        return;
+      }
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {
         // log_template_key 'estimate' keeps these out of the Invoicing "Last

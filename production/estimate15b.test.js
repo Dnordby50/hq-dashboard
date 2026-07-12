@@ -241,6 +241,74 @@ await section('scope: an add-on with an EMPTY snippet is skipped, not invented',
   ok(db.estimate_line_items.find((l) => l.id === 'li-addon').description == null, 'the empty-snippet add-on line gets no invented description');
 });
 
+// --- BLANK scope questions (15c) ---------------------------------------------
+const QUARTZ_BLANK = 'Scope of work for quartz coating BLANK AREA\n\nExpected project duration:\n\nBLANK';
+function blankDb({ answers = {}, scopeEditedAt = null } = {}) {
+  return {
+    estimates: [{ id: 'e1', mvb: 'none', flake_color: null, intake: {}, scope_of_work: scopeEditedAt ? 'EDITED' : null, scope_edited_at: scopeEditedAt, scope_answers: answers, estimate_number: 102026 }],
+    estimate_areas: [{ id: 'ar1', estimate_id: 'e1', name: 'Patio', sqft: 400, system_type_id: 'sys-quartz', sort_order: 0 }],
+    estimate_line_items: [{ id: 'li-area', estimate_id: 'e1', addon_id: null, estimate_area_id: 'ar1', label: 'Patio: Quartz floor coating system', description: null, is_optional: false, selected_by_customer: false, sort_order: 0 }],
+    pec_prod_system_types: [{ id: 'sys-quartz', name: 'Quartz', scope_template: QUARTZ_BLANK, scope_template_mvb: null }],
+    pec_prod_addons: [],
+    leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [],
+  };
+}
+const scope = require(path.join(__dirname, 'scope.cjs'));
+
+await section('scope BLANK: a template with BLANK produces questions', async () => {
+  const db = blankDb();
+  let captured = '';
+  // The model is told to leave BLANK verbatim; echo the (answer-applied) template back.
+  global.fetch = async (url, opts) => {
+    captured = JSON.parse(opts.body).messages[0].content;
+    // The template reaches the model with unanswered BLANKs still present.
+    const t = JSON.parse(captured.split('LINE ITEMS TO ASSEMBLE')[1].match(/\[[\s\S]*\]/)[0])[0].template;
+    return modelResponse({ lines: [{ line_item_id: 'li-area', scope: t }] });
+  };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.generated === true, 'generates');
+  ok(body.open_questions.length === 2, 'two BLANK questions detected (BLANK AREA + duration)');
+  ok(body.has_blank === true, 'the document still contains BLANK (unanswered)');
+  ok(Array.isArray(db.estimates[0].scope_questions) && db.estimates[0].scope_questions.length === 2, 'open questions stored on the estimate for the Finish-the-scope card');
+  // The question keys are the SAME ones the estimator computes for that template.
+  const clientKeys = scope.detectBlanks(QUARTZ_BLANK, 'Quartz').map((q) => q.key).sort();
+  const serverKeys = body.open_questions.map((q) => q.key).sort();
+  ok(JSON.stringify(clientKeys) === JSON.stringify(serverKeys), 'server question keys match the client (estimator) keys');
+});
+
+await section('scope BLANK: answers substitute into the generated scope', async () => {
+  const qs = scope.detectBlanks(QUARTZ_BLANK, 'Quartz');
+  const answers = { [qs[0].key]: 'the back patio', [qs[1].key]: '2 days' };
+  const db = blankDb({ answers });
+  let captured = '';
+  global.fetch = async (url, opts) => {
+    captured = JSON.parse(opts.body).messages[0].content;
+    const t = JSON.parse(captured.split('LINE ITEMS TO ASSEMBLE')[1].match(/\[[\s\S]*\]/)[0])[0].template;
+    return modelResponse({ lines: [{ line_item_id: 'li-area', scope: t }] });
+  };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  const body = JSON.parse(res.body);
+  ok(captured.includes('the back patio') && !/\bBLANK\b/.test(captured.split('LINE ITEMS TO ASSEMBLE')[1]), 'the answer-applied template reaches the model with NO BLANK left');
+  ok(body.open_questions.length === 0, 'no open questions once answered');
+  ok(body.has_blank === false, 'the generated document has no BLANK');
+  ok(db.estimate_line_items.find((l) => l.id === 'li-area').description.includes('the back patio'), 'the answer is written into the line scope');
+});
+
+await section('scope BLANK: a template with NO blank produces no questions', async () => {
+  const db = blankDb();
+  db.pec_prod_system_types[0].scope_template = 'Scope of work for quartz coating. Grind, coat, topcoat. Do not walk on floor for 24 hours.';
+  global.fetch = async () => modelResponse({ lines: [{ line_item_id: 'li-area', scope: 'clean scope' }] });
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  const body = JSON.parse(res.body);
+  ok(body.open_questions.length === 0, 'no BLANK, no questions');
+  ok(body.has_blank === false, 'no BLANK in the document');
+  ok(db.estimates[0].scope_questions.length === 0, 'no questions stored');
+});
+
 // ===========================================================================
 // pec-estimate-ai.cjs: Quo history as intent signal + the empty-history honesty
 // ===========================================================================

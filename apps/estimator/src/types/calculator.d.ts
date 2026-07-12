@@ -113,3 +113,23 @@ declare module '*/production/comps.js' {
   export function compsRuleLabel(comps: unknown, systemName?: string | null): string;
   export function compsGpCaveat(comps: unknown): string | null;
 }
+
+// Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared
+// with pec-estimate-scope.cjs so answer keys match across client and server.
+declare module '*/production/scope.cjs' {
+  export interface ScopeQuestion {
+    key: string;
+    label: string;
+    context: string;
+    contextLabel: string | null;
+    index?: number;
+  }
+  export function containsBlank(text: unknown): boolean;
+  export function detectBlanks(text: unknown, contextLabel?: string | null): ScopeQuestion[];
+  export function applyAnswers(text: unknown, answersByKey: Record<string, string>, contextLabel?: string | null): string;
+  export function openQuestions(
+    sources: Array<{ text: unknown; contextLabel?: string | null }>,
+    answersByKey: Record<string, string>,
+  ): ScopeQuestion[];
+  export function stableKey(contextLabel: string, context: string, ordinal?: number): string;
+}

@@ -43,6 +43,8 @@ export type SystemType = {
   labor_budget_pct: number | null;
   target_gp_pct?: number | null;
   active?: boolean;
+  scope_template?: string | null;
+  scope_template_mvb?: string | null;
 };
 
 export type RecipeSlot = {

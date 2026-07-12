@@ -36,6 +36,7 @@ export type LoadedEstimate = {
   // instead of regenerating (the never-silently-overwrite rule).
   scopeEditedAt: string | null;
   hasScope: boolean;
+  scopeAnswers: Record<string, string>;
   areas: Array<{ name: string; sqft: string; systemTypeId: string | null; slotValues: Record<string, string> }>;
   addonLines: LoadedAddonLine[];
 };
@@ -44,7 +45,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   const [estRes, areasRes, linesRes] = await Promise.all([
     supabase
       .from('estimates')
-      .select('id,estimate_number,status,system_type_id,mvb,flake_color,lead_id,created_by,customer_name,customer_phone,customer_email,customer_address,intake,pricing_snapshot,scope_edited_at,scope_of_work')
+      .select('id,estimate_number,status,system_type_id,mvb,flake_color,lead_id,created_by,customer_name,customer_phone,customer_email,customer_address,intake,pricing_snapshot,scope_edited_at,scope_of_work,scope_answers')
       .eq('id', id)
       .is('deleted_at', null)
       .maybeSingle(),
@@ -106,6 +107,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     pricingSnapshot: (e.pricing_snapshot as Record<string, unknown> | null) ?? null,
     scopeEditedAt: (e.scope_edited_at as string | null) ?? null,
     hasScope: e.scope_of_work != null && String(e.scope_of_work).trim() !== '',
+    scopeAnswers: (e.scope_answers && typeof e.scope_answers === 'object' ? e.scope_answers : {}) as Record<string, string>,
     areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, slotValues: {} }],
     addonLines,
   };

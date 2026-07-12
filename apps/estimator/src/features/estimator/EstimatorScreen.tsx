@@ -28,6 +28,7 @@ import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type Com
 import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
 import { supabase } from '../../lib/supabase';
 import { uuid } from '../../offline/uuid';
+import { openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
 
 type AreaForm = { name: string; sqft: string; systemTypeId: string; slotValues: Record<string, string> };
 type Mvb = 'none' | 'addon' | 'standalone';
@@ -207,6 +208,9 @@ export default function EstimatorScreen({
       optional: li.isOptional,
     })),
   );
+  // Rep's answers to the templates' BLANK placeholders, keyed by the context
+  // hash production/scope.cjs computes (same keys the server uses).
+  const [scopeAnswers, setScopeAnswers] = useState<Record<string, string>>(() => editing?.scopeAnswers ?? {});
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
@@ -291,6 +295,30 @@ export default function EstimatorScreen({
   const dominantSystemId = systemsBySqft[0]?.systemId ?? areas[0]?.systemTypeId ?? fallbackSystemId;
   const dominantSystem = systemTypes.find((s) => s.id === dominantSystemId);
   const mixedSystems = systemsBySqft.length > 1;
+
+  // BLANK placeholder questions (15c): scan the chosen systems' templates (the
+  // MVB variant when the estimate carries a barrier) and the selected add-ons'
+  // snippets for the literal word BLANK, ask the rep here in the garage where
+  // they actually know the answer. Only OPEN (unanswered) ones show. Standalone
+  // MVB uses no system template, so no system BLANKs there.
+  const scopeQuestions: ScopeQuestion[] = useMemo(() => {
+    const sources: Array<{ text: string; contextLabel: string }> = [];
+    if (mvb !== 'standalone') {
+      for (const g of systemsBySqft) {
+        const sys = systemTypes.find((s) => s.id === g.systemId);
+        if (!sys) continue;
+        const tpl = (mvb !== 'none' && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
+        if (tpl) sources.push({ text: tpl, contextLabel: sys.name });
+      }
+    }
+    for (const f of addonForms) {
+      if (!f.addonId) continue; // one-offs have no template
+      const cat = addonCatalog.find((a) => a.id === f.addonId);
+      if (cat && cat.scope_snippet && cat.scope_snippet.trim()) sources.push({ text: cat.scope_snippet, contextLabel: cat.name });
+    }
+    return scopeOpenQuestions(sources, scopeAnswers);
+  }, [systemsBySqft, systemTypes, mvb, addonForms, addonCatalog, scopeAnswers]);
+  const setScopeAnswer = (key: string, value: string) => setScopeAnswers((prev) => ({ ...prev, [key]: value }));
 
   const pricing: PricingResult | null = useMemo(() => {
     if (!salesperson || !engineAreas.length) return null;
@@ -514,7 +542,7 @@ export default function EstimatorScreen({
   }, [online, refreshPending]);
   useEffect(() => {
     setSaveState('idle');
-  }, [areas, salespersonId, intake, mvb, customer, finalSell, addonForms]);
+  }, [areas, salespersonId, intake, mvb, customer, finalSell, addonForms, scopeAnswers]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -812,6 +840,7 @@ export default function EstimatorScreen({
         },
         mvb,
         flakeColor: editing?.flakeColor ?? flakeColorFromPicks,
+        scopeAnswers,
         lineItems,
         pricingSnapshot,
         areas: areaInputs,
@@ -847,7 +876,7 @@ export default function EstimatorScreen({
       setSaveState('error');
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, mvb, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
+  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, mvb, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: keyof typeof customer, v: string) => setCustomer((p) => ({ ...p, [k]: v }));
@@ -1023,6 +1052,23 @@ export default function EstimatorScreen({
               </div>
             ))}
           </section>
+
+          {scopeQuestions.length > 0 && (
+            <section className="card scope-questions">
+              <div className="areas-head"><span>Finish the scope</span></div>
+              <p className="hint">Your template leaves these blanks for the customer. Fill them in now while you are on site; anything left blank shows up as the word BLANK in the scope they sign.</p>
+              {scopeQuestions.map((q) => (
+                <label className="field" key={q.key}>
+                  <span>{q.label}</span>
+                  <input
+                    value={scopeAnswers[q.key] ?? ''}
+                    onChange={(e) => setScopeAnswer(q.key, e.target.value)}
+                    placeholder="Fill in the blank"
+                  />
+                </label>
+              ))}
+            </section>
+          )}
 
           {/* Everything below is OPTIONAL and collapsed: a rep who never opens
               it still gets a correct price off the recipe defaults. */}

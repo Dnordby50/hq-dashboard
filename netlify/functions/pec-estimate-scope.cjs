@@ -30,6 +30,8 @@
 // Env: ANTHROPIC_API_KEY (shared), optional PEC_SCOPE_AI_MODEL.
 
 const { sb, badSecret } = require('./_pec-supabase.cjs');
+// Canonical BLANK-placeholder logic, shared with the estimator so keys match.
+const { applyAnswers, openQuestions, containsBlank } = require('../../production/scope.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -114,8 +116,9 @@ exports.handler = async (event) => {
 
   try {
     const est = loadOne(await sb('GET',
-      `/estimates?id=eq.${encodeURIComponent(estimateId)}&deleted_at=is.null&select=id,mvb,flake_color,intake,scope_of_work,scope_edited_at,estimate_number&limit=1`));
+      `/estimates?id=eq.${encodeURIComponent(estimateId)}&deleted_at=is.null&select=id,mvb,flake_color,intake,scope_of_work,scope_edited_at,scope_answers,estimate_number&limit=1`));
     if (!est) return jc(404, { success: false, error: 'Estimate not found' });
+    const scopeAnswers = (est.scope_answers && typeof est.scope_answers === 'object') ? est.scope_answers : {};
 
     // The never-overwrite rule: a human's words are never lost without a click.
     if (est.scope_edited_at && !force) {
@@ -173,23 +176,32 @@ exports.handler = async (event) => {
     //                  Time and Upgraded Flake Color ship without language)
     //   one-offs    -> keep the rep's own description, never model-written
     //   MVB-only    -> no template describes a barrier-only job; skipped
+    // Each target carries its RAW template (with any literal BLANK) under a
+    // contextLabel (system or add-on name), used to detect BLANK questions with
+    // keys that match the estimator's. The `template` sent to the model has the
+    // rep's answers already substituted (applyAnswers), so an answered BLANK is
+    // gone and an unanswered one stays verbatim (the model leaves it, per the
+    // system prompt, and it trips the send warning).
     const targets = [];
     const skipped = [];
+    const blankSources = []; // { text: rawTemplate, contextLabel } for open-question detection
     for (const li of lines) {
       if (li.estimate_area_id) {
         const area = areaById.get(li.estimate_area_id);
         const sys = area ? systemById.get(area.system_type_id) : null;
-        const template = sys
+        const rawTemplate = sys
           ? ((est.mvb && est.mvb !== 'none' && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template)
           : null;
-        if (template) {
+        if (rawTemplate) {
+          const contextLabel = sys ? sys.name : null;
+          blankSources.push({ text: rawTemplate, contextLabel });
           targets.push({
             line_item_id: li.id,
             label: li.label,
             kind: 'system',
             area: area ? { name: area.name, sqft: Number(area.sqft) || 0 } : null,
             system_name: sys ? sys.name : null,
-            template,
+            template: applyAnswers(rawTemplate, scopeAnswers, contextLabel),
           });
         } else {
           skipped.push({ id: li.id, label: li.label, reason: sys ? `no scope template on system "${sys.name}"` : 'area has no system' });
@@ -200,7 +212,9 @@ exports.handler = async (event) => {
         const ad = addonById.get(li.addon_id);
         const snippet = ad && ad.scope_snippet && String(ad.scope_snippet).trim();
         if (snippet) {
-          targets.push({ line_item_id: li.id, label: li.label, kind: 'addon', template: snippet });
+          const contextLabel = ad.name;
+          blankSources.push({ text: snippet, contextLabel });
+          targets.push({ line_item_id: li.id, label: li.label, kind: 'addon', template: applyAnswers(snippet, scopeAnswers, contextLabel) });
         } else {
           skipped.push({ id: li.id, label: li.label, reason: 'add-on has no scope snippet yet' });
         }
@@ -209,6 +223,10 @@ exports.handler = async (event) => {
       // One-off or the standalone-MVB line: the rep's words stand.
       skipped.push({ id: li.id, label: li.label, reason: 'one-off or MVB-only line; keeps its own description' });
     }
+
+    // Open BLANK questions (still unanswered), written to the estimate so the
+    // page's "Finish the scope" card lists them without loading templates.
+    const openBlanks = openQuestions(blankSources, scopeAnswers);
 
     if (!targets.length) {
       return jc(200, {
@@ -291,6 +309,11 @@ exports.handler = async (event) => {
     });
     const doc = sections.join('\n\n---\n\n');
 
+    // A BLANK can survive two ways: an unanswered question (in openBlanks), or
+    // a literal BLANK the model left in text that had no detectable question
+    // context. The send gate keys off the ACTUAL document, so report both.
+    const docHasBlank = containsBlank(doc);
+
     const nowIso = new Date().toISOString();
     await sb('PATCH', `/estimates?id=eq.${encodeURIComponent(estimateId)}`, {
       scope_of_work: doc,
@@ -298,6 +321,7 @@ exports.handler = async (event) => {
       scope_model: MODEL,
       scope_stale: false,
       scope_edited_at: null, // machine text again; the next hand edit re-stamps it
+      scope_questions: openBlanks,
     });
 
     return jc(200, {
@@ -306,6 +330,8 @@ exports.handler = async (event) => {
       scope_of_work: doc,
       lines_written: targets.length,
       skipped,
+      open_questions: openBlanks,
+      has_blank: docHasBlank,
       model: MODEL,
       generated_at: nowIso,
     });
