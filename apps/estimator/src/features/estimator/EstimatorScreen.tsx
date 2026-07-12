@@ -122,11 +122,21 @@ export default function EstimatorScreen({
   // collapsed "More detail" section shows real picks instead of empty selects.
   // The engine already falls back to the same defaults, so this changes what
   // the rep SEES (and what persists to estimate_area_materials), not the price.
+  //
+  // EXCEPT swatch slots (flake / quartz / metallic pigment): a swatch pick IS
+  // the customer's color choice, which usually happens after the presentation,
+  // so prefilling one would silently write a color nobody chose (it flows into
+  // estimates.flake_color via flakeColorFromPicks). Left unpicked, the slot
+  // shows "Color / custom blend" and the engine STILL prices it from the
+  // slot's default product (pick || default_product_id in planForArea), which
+  // as of 2026-07-12 is the "Standard Flake (color TBD)" cost placeholder. So
+  // the price is right and the color stays honestly TBD.
   const defaultSlotValues = useCallback(
     (sysId: string): Record<string, string> => {
       const out: Record<string, string> = {};
       for (const s of recipeSlotsBySystemType[sysId] ?? []) {
         if (s.editor_hidden) continue;
+        if (SWATCH_TYPES.has(s.material_type)) continue;
         if (kindOf(s) === 'product' && s.default_product_id) out[s.id] = s.default_product_id;
       }
       return out;
@@ -729,7 +739,7 @@ export default function EstimatorScreen({
               </div>
             ))}
             {mvb !== 'standalone' && (
-              <p className="hint">Flake color can stay unpicked; the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
+              <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
             )}
             <div className="areas-head" style={{ marginTop: 10 }}><span>Work order</span></div>
             <div className="wo-grid">
