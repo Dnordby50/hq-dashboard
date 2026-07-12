@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-12 00:15 MST] Claude Code: estimator process fixes, system-only pricing + flake priced at standard cost when unpicked + 52% GP target on Standard Flake
+By: Claude Code
+Changed: supabase/migrations/2026-07-12_estimator_pricing_defaults.sql (new, APPLIED to prod), apps/estimator/src/features/estimator/EstimatorScreen.tsx, index.html, production/calculator.test.js, help/whats-new.json, PROJECT-LOG.md. Commits: d49b270 (migration), 532ceff (estimator swatch prefill), 3eac88e (catalog Target GP field + tests), plus this docs commit. Plan approved by Dylan in plan mode this session.
+
+ROOT CAUSES, from the code and the live DB, not guesses:
+1. "Basecoat feels mandatory" was DATA, not code. The engine only hard-blocks when a REQUIRED non-swatch slot has neither a pick nor a default_product_id (calculator.js planForArea, MISSING_PRODUCT). Three live systems had exactly that hole: Standard Flake's Basecoat, Grind and Seal's Basecoat AND Topcoat, and Metallic's visible "Basecoat color". Quartz was fine, which is why only some systems felt broken.
+2. "Pricing is off" was the unpicked flake pricing as ZERO. A swatch slot with no pick and no default emits a $0 placeholder, so 1000 sqft Standard Flake with no color chosen quoted ~$3,770 against the $5,000-5,500 price sheet: about $350 of flake cost missing from M, which the margin math turns into ~$1,500 of missing price.
+3. The 50% default GP was slightly under the sheet even with costs counted (~$4,975 for 1000 sqft).
+
+THE 60% CONVERSATION, recorded because it differs from the prompt: Dylan asked to "build in a 60% GP for flake jobs". With real catalog costs (1000 sqft = $1,442.57 materials: 3 basecoat kits x 144.27 + 4 flake boxes x 87.44 + 5 topcoat kits x 132), 15% labor, and the 6% standard commission, a true 60% GP prices 1000 sqft at ~$7,590. Dylan confirmed the GP definition, (price - materials - labor - commission) / price, which is exactly what the engine computes, and when shown that 60% means $7,590 while his sheet sells $5,000-5,500, he chose "~52%, match the sheet". So Standard Flake now carries target_gp_pct = 52 and the reference job prices at $5,345. If he later wants the real 60, it is one field in the catalog (below).
+
+WHAT SHIPPED:
+1. Migration (applied to prod, footer checks green): new product "Standard Flake (color TBD)" (Flake, 325 spread, $87.44, active) whose name cannot be mistaken for a color choice on a materials list; slot defaults filled ONLY where still NULL (Standard Flake Basecoat -> 1100 SL Light Gray, Standard Flake Flake -> the TBD placeholder, Grind and Seal Basecoat -> 1100 SL Clear and Topcoat -> Polyaspartic 2gal, Metallic "Basecoat color" -> 1100 SL Light Gray, matched by label so the hidden body-coat slot is untouched); target_gp_pct = 52 on Standard Flake only (whole-number percent, the engine divides by 100; other systems stay NULL -> global 50). Verified after apply: zero required non-swatch product slots without a default across all active systems.
+2. Estimator (EstimatorScreen.tsx): defaultSlotValues now SKIPS swatch slots (Flake/Quartz/Metallic Pigment), because a swatch pick IS the customer's color choice and prefilling one would silently write a color nobody chose into estimates.flake_color. The engine still prices the slot from its default (pick || default_product_id), so the price includes standard flake while the dropdown honestly shows "Color / custom blend". NO calculator change, NO CALC_VERSION bump; the index.html mirror is untouched. Hint copy updated to say the price already includes standard flake.
+3. Catalog UI (index.html openSystemTypeModal): new "Target GP %" field reading/writing pec_prod_system_types.target_gp_pct (blank = null = global default). This column already fed both the computed price and the estimator's red-GP threshold; it just had no UI. Dylan can now tune any system's margin himself, including flipping flake to a true 60 later.
+
+JUDGMENT CALLS: Grind and Seal and Metallic got sensible defaults in the same pass (they had the identical blocking hole and would have thrown the same error the moment someone quoted one); those defaults are Dylan-editable in the existing recipe-slot editor and were chosen to mirror what Quartz already used. The Metallic body-coat product still has unit_cost NULL (pre-existing, flagged by materialsMissingCost in the estimator); catalog data cleanup, deliberately not smuggled into this change.
+
+TESTED: npm test 124/124 (was 115; 9 new assertions): a swatch slot WITH a default and no pick produces a real cost line and no $0 placeholder; an estimate with ZERO picks (system + sqft only) prices cleanly with M identical to the fully-picked plan; and the prod reference job is pinned as a regression anchor: 1000 sqft Standard Flake at the live catalog costs, labor 15, standard commission 6, per-system target 52 = materials $1,442.57, price $5,345, GP within half a point of 52. Estimator tsc --noEmit and vite build clean. All 8 index.html script blocks parse. Em dash scan of added lines = 0. whats-new.json parses (30 entries).
+Files touched: supabase/migrations/2026-07-12_estimator_pricing_defaults.sql, apps/estimator/src/features/estimator/EstimatorScreen.tsx, index.html, production/calculator.test.js, help/whats-new.json, PROJECT-LOG.md.
+Next steps: push (this rides along with prompts 15 + 16, still undeployed); then the smoke below.
+Handoff to Cowork: None (migration applied from this session).
+Handoff to Dylan (after deploy):
+1. Smoke: open the estimator, pick Standard Flake, type 1000, pick a salesperson, touch NOTHING else. Expect a price near $5,345 with no product errors, flake showing "Color / custom blend" unpicked. Save; the saved estimate should have no flake color set.
+2. Cross-check two more sizes against Aron's sheet (say 400 and 2000 sqft). The price now scales off material cost at 52% GP; if the sheet and the estimator drift apart at small sizes, that is the missing minimum-job floor, a separate decision, tell Claude Code the sheet numbers and it can add one.
+3. If margins should move, Price & Material Catalog > edit a system > Target GP %. 52 is set on Standard Flake now; blank means the global 50.
+
+---
+
 ## [2026-07-11 21:35 MST] Claude Code: build prompt 16 shipped, the customer-facing estimate (send, sign, accept -> job)
 By: Claude Code
 Changed: supabase/migrations/2026-07-11_estimate_public_token_default.sql (new, APPLIED to prod), netlify/functions/pec-public-estimate.cjs (new), netlify.toml, index.html, help/whats-new.json, PROJECT-LOG.md. Commits: 82ae7c4 (migration), 0f9dbaf (public page + rewrites), 2b306a1 (dashboard send flow), plus this log/whats-new commit. Built on top of prompt 15's local commits.

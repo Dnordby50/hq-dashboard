@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-system-only-pricing",
+    "date": "2026-07-12",
+    "title": "Estimator prices with just the system and square footage",
+    "summary": "You no longer have to pick a basecoat or flake color to get a price. Every system's recipe now carries default products, and an unpicked flake is priced at the standard flake cost with the color left TBD for the customer to choose after the presentation. Flake job pricing now matches the price sheet: a 1000 sqft garage quotes about $5,345 at the new 52% gross profit target, and the target is editable per system in the catalog.",
+    "howto": [
+      "Open the estimator, pick the system, type the square footage, and the price appears. Nothing else is required.",
+      "Leave the flake color unpicked if the customer has not chosen; the price already includes standard flake and the color stays editable on the estimate page.",
+      "To tune margins, open Price & Material Catalog, edit a system type, and set its Target GP %. Blank means the global default."
+    ]
+  },
+  {
     "id": "estimate-customer-sign-online",
     "date": "2026-07-12",
     "title": "Customers can now sign an estimate online",
