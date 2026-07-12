@@ -1,5 +1,29 @@
 [
   {
+    "id": "estimator-modal-thin",
+    "date": "2026-07-12",
+    "title": "Estimator opens over the dashboard and asks for way less",
+    "summary": "Start estimate now opens the estimator in a window over the dashboard instead of a new tab. System, square footage, and an MVB switch are all it needs for a price; products, colors, and the work order live in a collapsed More detail section. A sell price or discount box shows the margin live, and comps from your own completed jobs plus an AI price read sit next to the number.",
+    "howto": [
+      "Open a lead and click Start estimate, or use the Estimator button in the sidebar for a walk-up.",
+      "Pick the system and type the square footage. The price, comps, and AI read appear on the right.",
+      "Type a sell price or a discount percent to see the gross profit move; it turns red below the system's target.",
+      "Save. The window closes and the estimate's own page opens."
+    ]
+  },
+  {
+    "id": "estimate-pages-numbers",
+    "date": "2026-07-12",
+    "title": "Estimates are now real numbered records with their own pages",
+    "summary": "Every saved estimate gets a sequential number (EST-102026 and up) and its own page: customer info, price and margin, line items with optional add-ons the customer can take, flake color you can fill in after the presentation, and the comps and AI read that priced it. A new Estimates section in the sidebar lists them all with search.",
+    "howto": [
+      "Click Estimates in the sidebar to see the list, newest first. Search by number, customer, phone, or address.",
+      "Click any row to open the estimate's page. Edit reopens the estimator with everything filled in.",
+      "Use + Add optional item for upsells like stem walls or an extra bay; they stay out of the total until ticked.",
+      "Mark accepted or Mark lost records the outcome. Sending it to the customer arrives in the next update."
+    ]
+  },
+  {
     "id": "estimator-lead-link",
     "date": "2026-07-11",
     "title": "Start estimate now carries the lead with it",
