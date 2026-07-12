@@ -66,11 +66,14 @@ function deterministicUuid(name) {
 }
 
 // The one line-items money rule, mirroring estimateLineItemsTotal in
-// index.html: optional lines count ONLY when selected_by_customer.
+// index.html: optional lines count ONLY when selected_by_customer. Line items
+// are estimate_line_items ROWS since 2026-07-13 (is_optional); the legacy
+// jsonb key (optional) is still honored so nothing breaks mid-deploy.
+const isOptionalLine = (li) => !!li && (li.is_optional === true || li.optional === true);
 function includedTotal(items) {
   return (Array.isArray(items) ? items : []).reduce((sum, li) => {
     if (!li) return sum;
-    if (li.optional && !li.selected_by_customer) return sum;
+    if (isOptionalLine(li) && !li.selected_by_customer) return sum;
     const t = Number(li.total);
     return sum + (Number.isFinite(t) ? t : 0);
   }, 0);
@@ -78,13 +81,57 @@ function includedTotal(items) {
 
 // Freeze the customer's optional-item selection at signature time (decision 4):
 // required lines are untouched, each optional line's selected_by_customer is
-// set from the ids the customer had ticked when they signed.
+// set from the ids the customer had ticked when they signed. Pure; the DB rows
+// are patched separately by applySelection (winner-only, after the CAS).
 function freezeLineItems(items, selectedIds) {
   const sel = new Set(Array.isArray(selectedIds) ? selectedIds.map(String) : []);
   return (Array.isArray(items) ? items : []).map(li => {
-    if (!li || !li.optional) return li;
+    if (!isOptionalLine(li)) return li;
     return { ...li, selected_by_customer: sel.has(String(li.id)) };
   });
+}
+
+// Write the signed selection onto the estimate_line_items rows. Idempotent
+// (absolute values per row) and driven by the signature's frozen id list, so
+// the accept-heal path can re-apply it after any crash. Only OPTIONAL rows are
+// touched; scoped to the estimate so a stray id cannot reach another estimate.
+async function applySelection(estimateId, items, selectedIds) {
+  const sel = new Set(Array.isArray(selectedIds) ? selectedIds.map(String) : []);
+  for (const li of (Array.isArray(items) ? items : [])) {
+    if (!isOptionalLine(li)) continue;
+    const want = sel.has(String(li.id));
+    if (li.selected_by_customer === want) continue;
+    await sb('PATCH',
+      `/estimate_line_items?id=eq.${encodeURIComponent(li.id)}&estimate_id=eq.${encodeURIComponent(estimateId)}`,
+      { selected_by_customer: want });
+  }
+}
+
+// Escape-then-format: the scope document is model-assembled markdown, and it
+// NEVER reaches the page as raw HTML. esc() runs FIRST, then a minimal, safe
+// subset of markdown (headings, bold, bullets, rules) is rebuilt from the
+// escaped text, so no model or user input can smuggle markup in.
+function mdToSafeHtml(text) {
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  const out = [];
+  let list = null;
+  const flushList = () => { if (list) { out.push(`<ul style="margin:6px 0 10px;padding-left:20px">${list.join('')}</ul>`); list = null; } };
+  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\s*[-*]\s+/.test(line)) {
+      (list ??= []).push(`<li style="margin:2px 0">${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`);
+      continue;
+    }
+    flushList();
+    if (!line.trim()) continue;
+    if (/^---+$/.test(line.trim())) { out.push('<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">'); continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<div style="font-weight:800;font-size:${h[1].length <= 2 ? '15px' : '13.5px'};margin:14px 0 6px">${inline(h[2])}</div>`); continue; }
+    out.push(`<p style="margin:6px 0">${inline(line)}</p>`);
+  }
+  flushList();
+  return out.join('');
 }
 
 const estimateNo = (est) => est && est.estimate_number != null ? `EST-${est.estimate_number}` : 'Estimate';
@@ -138,13 +185,17 @@ function scopeRowsHtml(est, sysName, totalSqft) {
 
 function lineItemRowsHtml(items, readOnly) {
   const list = Array.isArray(items) ? items : [];
-  const required = list.filter(li => li && !li.optional);
-  const optional = list.filter(li => li && li.optional);
+  const required = list.filter(li => li && !isOptionalLine(li));
+  const optional = list.filter(li => isOptionalLine(li));
+  // The per-line description is now the AI-assembled scope of work (markdown),
+  // rendered through mdToSafeHtml (escape-then-format) so it reads like the
+  // DripJobs proposal under each line and can never inject markup.
+  const descHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : '';
   const row = (li, opt) => `<tr>
       <td>${opt ? `<label style="display:flex;gap:10px;align-items:flex-start;cursor:${readOnly ? 'default' : 'pointer'}">
           <input type="checkbox" class="opt-toggle" data-li-id="${esc(li.id)}" data-li-total="${Number(li.total) || 0}" ${li.selected_by_customer ? 'checked' : ''} ${readOnly ? 'disabled' : ''} style="margin-top:3px;width:17px;height:17px;accent-color:#D8531C">
-          <span><span style="font-weight:600">${esc(li.label || '')}</span>${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}</span>
-        </label>` : `<span style="font-weight:600">${esc(li.label || '')}</span>${li.description ? `<div class="desc">${esc(li.description)}</div>` : ''}`}</td>
+          <span><span style="font-weight:600">${esc(li.label || '')}</span>${descHtml(li)}</span>
+        </label>` : `<span style="font-weight:600">${esc(li.label || '')}</span>${descHtml(li)}`}</td>
       <td>${usd(li.total)}</td>
     </tr>`;
   const requiredRows = required.length ? required.map(li => row(li, false)).join('')
@@ -345,7 +396,9 @@ function estimatePage(est, brand, sysName, totalSqft) {
         </div>
         <div class="eyebrow">Scope of work</div>
         <table class="scope">${scopeRowsHtml(est, sysName, totalSqft)}</table>
-        ${est.scope_of_work ? `<div style="font-size:14px;color:#374151;line-height:1.7;margin-top:14px;white-space:pre-wrap">${esc(est.scope_of_work)}</div>` : ''}
+        ${est.scope_of_work && !items.some(li => li && li.description)
+          ? `<div style="font-size:14px;color:#374151;line-height:1.7;margin-top:14px">${mdToSafeHtml(est.scope_of_work)}</div>`
+          : ''}
         <div class="eyebrow" style="margin-top:26px">Your estimate</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
@@ -374,7 +427,7 @@ ${!state.live ? '' : `<script>
   var TOKEN=${JSON.stringify(String(est.public_token))};
   var money=function(n){return '$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
   var toggles=Array.prototype.slice.call(document.querySelectorAll('.opt-toggle'));
-  var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !li.optional)))};
+  var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !isOptionalLine(li))))};
   function currentTotal(){
     var t=baseTotal;
     toggles.forEach(function(cb){ if(cb.checked) t+=Number(cb.getAttribute('data-li-total'))||0; });
@@ -464,7 +517,19 @@ async function loadEstimate(token) {
   const rows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(token)}&deleted_at=is.null&select=*&limit=1`);
   const est = Array.isArray(rows) && rows[0] ? rows[0] : null;
   if (!est || !est.sent_at) return null;
+  // Line items are estimate_line_items ROWS (2026-07-13). Load them onto
+  // est.line_items so every downstream reader (render, total, accept freeze)
+  // sees the rows, then overwrite the legacy jsonb reference. The rows carry
+  // the id the customer's tick and the signature freeze key on.
+  est.line_items = await loadLineItems(est.id);
   return est;
+}
+
+async function loadLineItems(estimateId) {
+  try {
+    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
 }
 
 async function loadAreas(estimateId) {
@@ -606,8 +671,12 @@ async function ensureJobCreated(est) {
   const intake = est.intake || {};
   const areas = await loadAreas(est.id);
   const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-  const items = Array.isArray(est.line_items) ? est.line_items : [];
-  const included = items.filter(li => li && (!li.optional || li.selected_by_customer));
+  // Read line items from the TABLE (est.line_items may be the row set already,
+  // or absent on a raw re-read); reloading makes ensureJobCreated correct no
+  // matter which caller reached it, including the crash-heal path. The signed
+  // selection was frozen onto the rows by applySelection before this runs.
+  const items = await loadLineItems(est.id);
+  const included = items.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer));
 
   // -- Customer: reuse by email, then by exact name + company (the manual-job
   // rule), then by this path's own deterministic id; create only when all
@@ -796,9 +865,10 @@ async function handleAccept(est, body, event) {
   const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
 
   // Compare-and-swap: only a row still in an open status flips to accepted,
-  // so exactly ONE request wins the signature. What the customer had selected
-  // at signature time freezes onto the row (decision 4), and the signed total
-  // becomes the estimate's price (it is what the job and the win metrics read).
+  // so exactly ONE request wins the signature. The signed total becomes the
+  // estimate's price (it is what the job and the win metrics read); the frozen
+  // selection is recorded in the signature jsonb (the audit record) AND
+  // written onto the estimate_line_items rows below.
   const updated = await sb('PATCH',
     `/estimates?id=eq.${encodeURIComponent(est.id)}&status=in.(sent,signed,change_requested,draft)`,
     {
@@ -808,7 +878,6 @@ async function handleAccept(est, body, event) {
       signed_at: nowIso,
       signed_ip: ip,
       signature: { typed_name: name, signed_at: nowIso, ip, user_agent: ua, selected_optional_ids: selectedIds, total, via: 'public_estimate_page' },
-      line_items: frozenItems,
       price: total,
     }, true);
 
@@ -826,6 +895,11 @@ async function handleAccept(est, body, event) {
     }
     return json(409, { ok: false, error: 'This estimate is no longer open. Please contact us at (928) 800-8154.' });
   }
+
+  // Freeze the selection onto the rows (per-row PATCH; idempotent by absolute
+  // value, keyed on the signed id list, so a retry re-applies the same state).
+  // Runs only from the CAS winner, before job creation reads the rows.
+  await applySelection(est.id, est.line_items, selectedIds);
 
   const result = await ensureJobCreated(fresh);
   // Notify only from the request that won the CAS, so a retry storm sends one

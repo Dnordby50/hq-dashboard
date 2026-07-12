@@ -16864,17 +16864,19 @@ function estNumberLabel(est) {
   return est && est.estimate_number != null ? `EST-${est.estimate_number}` : '(unnumbered)';
 }
 
-// The one line-items money rule, shared by the detail page total and (later)
-// prompt 16's public page: optional lines are EXCLUDED until the customer (or
-// the rep, on their behalf) ticks selected_by_customer.
+// The one line-items money rule, shared by the detail page total and the
+// public page: optional lines are EXCLUDED until the customer (or the rep, on
+// their behalf) ticks selected_by_customer. Accepts estimate_line_items ROWS
+// (is_optional, 2026-07-13) and the legacy jsonb shape (optional).
 function estimateLineItemsTotal(items) {
   return (Array.isArray(items) ? items : []).reduce((sum, li) => {
     if (!li) return sum;
-    if (li.optional && !li.selected_by_customer) return sum;
+    if ((li.is_optional === true || li.optional === true) && !li.selected_by_customer) return sum;
     const t = Number(li.total);
     return sum + (Number.isFinite(t) ? t : 0);
   }, 0);
 }
+const estLineOptional = (li) => !!li && (li.is_optional === true || li.optional === true);
 
 // Search rule for the estimates list: number (with or without the EST- prefix),
 // customer name, phone (digit-insensitive), address.
@@ -16966,7 +16968,7 @@ async function renderEstimateDetail(estimateId) {
   let res;
   try {
     res = await withFreshSession(() => supabase.from('estimates')
-      .select('*,estimate_areas(name,sqft,sort_order),pec_prod_system_types(name),leads(full_name)')
+      .select('*,estimate_areas(name,sqft,sort_order,system_type_id),estimate_line_items(*),pec_prod_system_types(name),leads(full_name)')
       .eq('id', estimateId).is('deleted_at', null).maybeSingle(), { label: 'renderEstimateDetail' });
   } catch (e) { res = { error: e }; }
   if (res.error || !res.data) {
@@ -16982,9 +16984,14 @@ async function renderEstimateDetail(estimateId) {
   const leadName = est.leads && est.leads.full_name ? est.leads.full_name : null;
   const areas = (est.estimate_areas || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const sqft = estimateSqft(est);
-  const items = Array.isArray(est.line_items) ? est.line_items : [];
-  const requiredItems = items.filter(li => li && !li.optional);
-  const optionalItems = items.filter(li => li && li.optional);
+  // Line items are ROWS now (estimate_line_items, 2026-07-13). The legacy
+  // jsonb estimates.line_items was backfilled into the table by the migration
+  // and is no longer read or written here; per-row writes mean the public
+  // page's optional-item tick and this page can never race an array replace.
+  const items = (Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [])
+    .slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const requiredItems = items.filter(li => li && !estLineOptional(li));
+  const optionalItems = items.filter(li => estLineOptional(li));
   const snapshot = est.pricing_snapshot || {};
   const snapComps = snapshot.comps || null;
   const snapAi = snapshot.ai || null;
@@ -16998,12 +17005,22 @@ async function renderEstimateDetail(estimateId) {
   const detailRow = (label, val) => val == null || val === '' ? '' :
     `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${esc(label)}</span><div style="font-size:.86rem">${val}</div></div>`;
 
+  // A line's description can now be its full AI-assembled scope (long); those
+  // collapse behind a "View scope" toggle so the table stays scannable.
+  const lineDesc = (li) => {
+    if (!li.description) return '';
+    const text = String(li.description);
+    if (text.length <= 180 && !text.includes('\n')) {
+      return `<div style="color:var(--muted);font-size:.75rem">${esc(text)}</div>`;
+    }
+    return `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View scope</summary><div style="color:var(--muted);font-size:.75rem;white-space:pre-wrap;margin-top:4px;max-height:260px;overflow-y:auto">${esc(text)}</div></details>`;
+  };
   const lineRow = (li, optional) => `
     <tr data-li-id="${esc(li.id)}">
       ${optional ? `<td style="width:28px"><input type="checkbox" class="est-li-toggle" data-li-id="${esc(li.id)}" ${li.selected_by_customer ? 'checked' : ''} title="Include in the total"></td>` : ''}
       <td ${optional ? '' : 'colspan="1"'}>
-        <div style="font-weight:600">${esc(li.label || '')}</div>
-        ${li.description ? `<div style="color:var(--muted);font-size:.75rem">${esc(li.description)}</div>` : ''}
+        <div style="font-weight:600">${esc(li.label || '')}${!li.addon_id && !li.estimate_area_id && !/floor coating system$|^Moisture vapor barrier \(MVB\)$/.test(String(li.label || '')) ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#b45309;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:999px;padding:1px 7px;vertical-align:middle" title="Typed by hand, not from the add-on catalog. If this keeps getting typed, add it to the catalog.">one-off</span>' : ''}</div>
+        ${lineDesc(li)}
       </td>
       <td style="text-align:right">${Number(li.qty) || 1}</td>
       <td style="text-align:right">${fmtMoney(li.unit_price)}</td>
@@ -17091,6 +17108,30 @@ async function renderEstimateDetail(estimateId) {
         </div>
 
         <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <h3 style="margin:0">Scope of work</h3>
+            <div style="display:flex;gap:8px">
+              ${est.scope_of_work ? '<button class="pec-btn ghost sm" id="estScopeEdit">Edit text</button>' : ''}
+              <button class="pec-btn sm" id="estScopeGen">${est.scope_of_work ? 'Regenerate' : 'Generate scope'}</button>
+            </div>
+          </div>
+          ${est.scope_stale && est.scope_edited_at ? `
+            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>The estimate changed since you edited this scope.</strong> Your text is untouched; Regenerate replaces it with a fresh write-up from the current estimate.
+            </div>` : ''}
+          <div id="estScopeView" style="margin-top:10px">
+            ${est.scope_of_work
+              ? `<div style="font-size:.84rem;line-height:1.55;white-space:pre-wrap;max-height:420px;overflow-y:auto;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:10px 12px">${esc(est.scope_of_work)}</div>`
+              : '<div style="color:var(--muted);font-size:.82rem">No scope yet. Generate writes the customer-facing scope from the system templates and this estimate’s details (areas, stem walls, add-ons). It runs automatically on save when online.</div>'}
+          </div>
+          <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
+            ${est.scope_edited_at
+              ? `Edited by hand ${esc(fmtRelativeTime(est.scope_edited_at))}. The AI never overwrites your edits without the Regenerate click.`
+              : (est.scope_generated_at ? `Generated ${esc(fmtRelativeTime(est.scope_generated_at))}${est.scope_model ? ' · ' + esc(est.scope_model) : ''} from the verbatim system templates; only this estimate’s facts were substituted.` : '')}
+          </div>
+        </div>
+
+        <div class="pec-card">
           <h3>Production detail</h3>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px">
             ${detailRow('Areas', areas.length ? areas.map(a => `${esc(a.name || 'Area')}: ${Math.round(Number(a.sqft) || 0).toLocaleString()} sqft`).join('<br>') : null)}
@@ -17141,6 +17182,8 @@ async function renderEstimateDetail(estimateId) {
               <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">AI price read</div>
               <div style="font-weight:800">${fmtMoney(snapAi.recommended_low)} to ${fmtMoney(snapAi.recommended_high)}</div>
               <div style="font-size:.84rem;line-height:1.5;margin-top:6px">${esc(snapAi.why || '')}</div>
+              ${snapAi.history_available && snapAi.intent_read ? `<div style="font-size:.84rem;line-height:1.5;margin-top:6px"><strong>Customer signal (from Quo calls/texts):</strong> ${esc(snapAi.intent_read)}</div>` : ''}
+              ${snapAi.history_available === false ? '<div style="color:var(--muted);font-size:.78rem;margin-top:6px">No call or text history on file for this customer.</div>' : ''}
               <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${snapAi.generated_at ? 'Generated ' + esc(fmtRelativeTime(snapAi.generated_at)) + ' · ' : ''}the AI never set this price; the rep did.</div>
             ` : '<div style="color:var(--muted);font-size:.82rem">No AI read stored for this estimate.</div>'}
           </div>
@@ -17212,22 +17255,53 @@ async function renderEstimateDetail(estimateId) {
     }
   });
 
-  // Line item writes replace the whole jsonb array (same posture as
-  // jobs.line_items). Small arrays, single-editor page; last write wins.
-  const writeItems = async (nextItems) => {
-    const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ line_items: nextItems }).eq('id', est.id), { label: 'estimate-items' });
-    if (upd.error) throw upd.error;
-    renderEstimateDetail(est.id);
+  // ---- Scope generation + the never-overwrite rule --------------------------
+  // Any line-item change here changes the estimate: while the scope has NOT
+  // been hand-edited it regenerates freely; once scope_edited_at is set the
+  // change only flips scope_stale (the server enforces the same rule, so even
+  // a buggy caller cannot silently replace a human's words).
+  const callScopeGen = async (force) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session && session.access_token;
+    if (!token) throw new Error('Not signed in.');
+    const res = await fetch('/.netlify/functions/pec-estimate-scope', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ estimate_id: est.id, force: !!force }),
+    });
+    let body = {}; try { body = await res.json(); } catch (_) {}
+    if (!res.ok || !body.success) throw new Error(body.error || `Scope generation failed (${res.status})`);
+    return body;
   };
+  const afterEstimateChanged = async () => {
+    if (est.scope_edited_at) {
+      // A human owns the text: mark stale, never touch the words.
+      await supabase.from('estimates').update({ scope_stale: true }).eq('id', est.id);
+    } else if (est.scope_of_work) {
+      // Machine text: regenerate freely, best-effort (Generate button covers a miss).
+      callScopeGen(false).catch(err => console.warn('[estimates] scope refresh skipped:', err && err.message));
+    }
+  };
+
+  // Line item writes are PER ROW (estimate_line_items, 2026-07-13): a tick is
+  // one small PATCH, so this page and the public page can never race a whole-
+  // array replace the way the old jsonb column could.
   root.querySelectorAll('.est-li-toggle').forEach(cb => cb.addEventListener('change', async () => {
     try {
-      await writeItems(items.map(li => li && li.id === cb.dataset.liId ? { ...li, selected_by_customer: cb.checked } : li));
+      const upd = await withFreshWriteRetry(() => supabase.from('estimate_line_items')
+        .update({ selected_by_customer: cb.checked }).eq('id', cb.dataset.liId), { label: 'estimate-item-toggle' });
+      if (upd.error) throw upd.error;
+      renderEstimateDetail(est.id);
     } catch (err) { showToast('Could not update item: ' + esc(err.message || err), { ttl: 5000 }); }
   }));
   root.querySelectorAll('.est-li-remove').forEach(btn => btn.addEventListener('click', async () => {
     if (!confirm('Remove this optional item?')) return;
     try {
-      await writeItems(items.filter(li => !li || li.id !== btn.dataset.liId));
+      const del = await withFreshWriteRetry(() => supabase.from('estimate_line_items')
+        .delete().eq('id', btn.dataset.liId), { label: 'estimate-item-remove' });
+      if (del.error) throw del.error;
+      await afterEstimateChanged();
+      renderEstimateDetail(est.id);
     } catch (err) { showToast('Could not remove item: ' + esc(err.message || err), { ttl: 5000 }); }
   }));
   $('estAddOptional').addEventListener('click', () => {
@@ -17235,7 +17309,10 @@ async function renderEstimateDetail(estimateId) {
       <h3>Add optional item</h3>
       <div class="pec-field"><label>Label</label><input id="estOptLabel" placeholder="Stem walls, extra bay, MVB…"></div>
       <div class="pec-field"><label>Description (optional)</label><input id="estOptDesc"></div>
-      <div class="pec-field"><label>Price $</label><input id="estOptPrice" inputmode="decimal"></div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Price $</label><input id="estOptPrice" inputmode="decimal"></div>
+        <div class="pec-field"><label>Cost $ <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(keeps GP honest)</span></label><input id="estOptCost" inputmode="decimal"></div>
+      </div>
       <div class="pec-modal-actions">
         <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
         <button class="pec-btn primary" id="estOptAdd">Add item</button>
@@ -17244,21 +17321,77 @@ async function renderEstimateDetail(estimateId) {
       modal.querySelector('#estOptAdd').addEventListener('click', async () => {
         const label = modal.querySelector('#estOptLabel').value.trim();
         const price = Number(modal.querySelector('#estOptPrice').value.replace(/[^0-9.]/g, ''));
+        const cost = Number(modal.querySelector('#estOptCost').value.replace(/[^0-9.]/g, '')) || 0;
         if (!label || !(price > 0)) { showToast('A label and a price above zero are required.', { ttl: 3500 }); return; }
-        const li = {
+        const row = {
           id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())),
+          estimate_id: est.id,
           label,
           description: modal.querySelector('#estOptDesc').value.trim() || null,
-          qty: 1, unit_price: price, total: price,
-          optional: true, selected_by_customer: false,
-          created_at: new Date().toISOString(),
+          qty: 1, unit_price: price, unit_cost: cost, total: price,
+          is_optional: true, selected_by_customer: false,
+          sort_order: items.length ? Math.max(...items.map(li => Number(li.sort_order) || 0)) + 1 : 0,
         };
         try {
           closeModal();
-          await writeItems([...items, li]);
+          const ins = await withFreshWriteRetry(() => supabase.from('estimate_line_items').insert(row), { label: 'estimate-item-add' });
+          if (ins.error) throw ins.error;
+          await afterEstimateChanged();
+          renderEstimateDetail(est.id);
         } catch (err) { showToast('Could not add item: ' + esc(err.message || err), { ttl: 5000 }); }
       });
     } });
+  });
+
+  // ---- Scope card actions ----------------------------------------------------
+  const genBtn = $('estScopeGen');
+  if (genBtn) genBtn.addEventListener('click', async () => {
+    // Regenerating over a HUMAN edit requires this explicit, warned click; the
+    // server also refuses without force, so the UI cannot bypass the rule.
+    const force = !!est.scope_edited_at;
+    if (force && !confirm('The scope was edited by hand. Regenerating REPLACES your edited text with a fresh write-up from the current estimate. Continue?')) return;
+    genBtn.disabled = true; genBtn.textContent = 'Writing…';
+    try {
+      const body = await callScopeGen(force);
+      if (body.generated === false) {
+        showToast(esc(body.reason || 'Nothing to generate for this estimate.'), { ttl: 6000 });
+        genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate' : 'Generate scope';
+        return;
+      }
+      showToast('Scope written ✓', { ttl: 2500 });
+      renderEstimateDetail(est.id);
+    } catch (err) {
+      genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate' : 'Generate scope';
+      showToast('Scope generation failed: ' + esc(err.message || String(err)), { ttl: 6000 });
+    }
+  });
+  const scopeEditBtn = $('estScopeEdit');
+  if (scopeEditBtn) scopeEditBtn.addEventListener('click', () => {
+    const view = $('estScopeView');
+    view.innerHTML = `
+      <textarea id="estScopeTa" rows="16" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem;line-height:1.5">${esc(est.scope_of_work || '')}</textarea>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="pec-btn sm primary" id="estScopeSave">Save text</button>
+        <button class="pec-btn sm ghost" id="estScopeCancel">Cancel</button>
+      </div>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:6px">Saving marks the scope as hand-edited: from then on the AI never replaces it without an explicit Regenerate.</div>`;
+    scopeEditBtn.style.display = 'none';
+    $('estScopeCancel').addEventListener('click', () => renderEstimateDetail(est.id));
+    $('estScopeSave').addEventListener('click', async () => {
+      const btn = $('estScopeSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('estimates')
+          .update({ scope_of_work: $('estScopeTa').value, scope_edited_at: new Date().toISOString(), scope_stale: false })
+          .eq('id', est.id), { label: 'estimate-scope-edit' });
+        if (upd.error) throw upd.error;
+        showToast('Scope saved', { ttl: 2000 });
+        renderEstimateDetail(est.id);
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save text';
+        showToast('Could not save scope: ' + esc(err.message || err), { ttl: 5000 });
+      }
+    });
   });
 }
 
@@ -17291,7 +17424,9 @@ async function openEstimateSendModal(est) {
   const link = `${location.origin}/e/${est.public_token}`;
   const number = estNumberLabel(est);
   const firstName = (est.customer_name || '').trim().split(/\s+/)[0] || 'there';
-  const totalTxt = fmtMoney(estimateLineItemsTotal(est.line_items));
+  // est.price is the stored base total (system sell + non-optional add-ons),
+  // kept current by the estimator's save; the jsonb line_items is legacy.
+  const totalTxt = fmtMoney(est.price);
   const staffEmail = state.adminUser?.email || '';
   const defaultSubject = `Your estimate ${number} from Prescott Epoxy Company`;
   const defaultBody = `<p>Hi ${esc(firstName)},</p>
