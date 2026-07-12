@@ -943,6 +943,25 @@ assertThrows(() => {
   assertEq(compsGpCaveat(noCost), null, 'no caveat when no comp carries a GP%');
 }
 
+// --- Commission flows into comps GP (2026-07-14) -----------------------------
+// A completed job sold by a 6% rep, once its costing row carries the derived
+// commission (revenue x rate, set by the pec_costing_set_commission trigger),
+// shows a GP net of that commission. This is the number that was reading ~30
+// points high while commission_cost sat at 0. actualGpPct reads the column, so
+// the same math the trigger applies is what the comps panel now reflects.
+{
+  const price = 3900; // Aron's Brian Wirick job
+  const noCommission = { materials_used_cost: 900, salary_wages_cost: 386, commission_cost: 0 };
+  const withCommission = { materials_used_cost: 900, salary_wages_cost: 386, commission_cost: 234 }; // 6% of 3900
+  const gpBefore = actualGpPct(price, noCommission);
+  const gpAfter = actualGpPct(price, withCommission);
+  // (3900 - 900 - 386) / 3900 = 0.6702...; with commission (3900 - 900 - 386 - 234) / 3900 = 0.6103...
+  assertEq(Math.round(gpBefore * 10000) / 10000, 0.6703, 'GP without commission (the old, too-high number)');
+  assertEq(Math.round(gpAfter * 10000) / 10000, 0.6103, 'GP once the 6% commission is counted');
+  assertEq(gpAfter < gpBefore, true, 'counting commission lowers the reported GP');
+  assertEq(Math.round((gpBefore - gpAfter) * price), 234, 'the GP drop equals the commission dollars (6% of 3900)');
+}
+
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
 // The inline copy in index.html must carry the SAME CALC_VERSION. This asserts
 // the canonical value exists and is a non-empty string so the mirror check has

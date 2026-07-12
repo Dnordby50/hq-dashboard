@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-14 00:30 MST] Claude Code: commission is now a rate-derived cost on job costing (auto going forward + Aron's completed jobs backfilled)
+By: Claude Code
+Changed: supabase/migrations/2026-07-14_job_costing_commission.sql (new, APPLIED to prod), index.html, production/calculator.test.js, PROJECT-LOG.md. Plan approved by Dylan in plan mode (auto-derived + locked; basis = full contract revenue).
+
+WHY: this is the first piece of the costing backfill the 15c entry handed to Dylan. pec_prod_job_costing.commission_cost was a manual field nobody had ever filled, so all 34 rows read $0, which is exactly why the comps GP% (production/comps.js reads that column) ran about 30 points high. Commission on a job is now ALWAYS the seller's rate times the full contract revenue, kept correct automatically.
+
+THE MODEL (Dylan's decisions): commission_cost = round(revenue * seller_rate / 100, 2), where the rate is pec_sales_team_members.commission_pct matched to pec_prod_jobs.sales_team by name (case/space-insensitive, the same match the Commission report uses), 0 when the seller is unknown, inactive, or flagged exclude_from_commission. Basis is the FULL contract revenue, not collected-to-date. The costing GP field already summed commission_cost into totalVar, so populating the column makes GP drop with no formula change.
+
+THIS IS THE COST SIDE, NOT A PAYOUT. It is separate from the Commission REPORT (renderCommission), which pays reps on money actually collected (pec_payments x rate) and freezes payouts into pec_commission_payouts. That ledger is untouched; commission_cost is a GP cost bucket. No double-pay.
+
+WHAT SHIPPED:
+1. Migration (applied to prod, footer checks green): a SQL function pec_costing_commission_for(job_id) with the one rule; Trigger A (BEFORE INSERT OR UPDATE on pec_prod_job_costing) sets commission_cost from it on any write, so the column is authoritative no matter which path wrote it and the incoming value is ignored; Trigger B (AFTER UPDATE OF revenue, sales_team on pec_prod_jobs) recomputes an EXISTING costing row's commission when the price or seller changes; and a backfill of every existing row. Verified live: Aron's three completed jobs now carry 6% (Brian Wirick 3900/234.00, DJ Johnston 3490/209.40, Larry George 2640/158.40), total commission across all rows = 601.80, Dylan's 31 completed jobs stay $0 (owner, 0%), both triggers present. Trigger B tested against prod by bumping Brian Wirick's revenue to 4000 (commission recomputed to 240.00) then restoring to 3900 (back to 234.00).
+2. UI (index.html): the Commission field in BOTH costing editors (the openCostingDetail modal and the unified job panel) is now READ-ONLY/derived, showing the trigger-set dollar amount plus a plain note ("6% of $3,900" or "no salesperson set"), matching the existing derived Materials-ordered / Bonus fields. New helpers commissionRateForJob() and commissionDerivedField() resolve the seller's rate from state.salesTeam the same way the trigger does. This stops the office from typing a value the trigger would overwrite. computeCostingRow / totalVar / GP are unchanged (they already counted commission_cost).
+
+TESTED: npm test 166/166 (calculator + comps; adds a commission-in-comps test: a $3,900 job sold by a 6% rep drops GP from 67.03% to 61.03%, the drop equalling the 234 commission dollars, which is the exact number that was reading high) and 87/87 (estimate15b harness, unchanged). All 9 index.html script blocks parse. Em-dash scan of added lines = 0.
+
+JUDGMENT CALLS:
+1. A DB trigger (not app-side auto-fill) is the mechanism, because production/comps.js and the estimate-page GP read the raw commission_cost column; only a trigger guarantees the column is correct regardless of whether anyone opens the costing UI.
+2. The trigger OWNS the column (ignores any passed value), so the UI is read-only. Nobody overrides commission today (all rows were 0), and locking it is what keeps GP honest. If a one-off split is ever needed, that is a future decision (a per-job override column), not built now.
+3. Trigger B only recomputes an EXISTING costing row; it never creates one. A completed job with no costing row still has no GP in comps (correct; it is uncosted), and gets commission the moment any cost is entered.
+
+Files touched: supabase/migrations/2026-07-14_job_costing_commission.sql, index.html, production/calculator.test.js, PROJECT-LOG.md.
+Next steps: Dylan pushes main (Netlify deploys the read-only UI; the migration + backfill are already live in prod).
+Handoff to Cowork: None (the migration was applied from this session).
+Handoff to Dylan:
+1. Push main. The commission data + triggers are already live in prod; the push deploys the read-only Commission field.
+2. This closes the commission part of the 15c costing backfill. The comps GP% for Aron's jobs now nets his 6%; MATERIALS are still $0 on every costing row (the bigger piece), so the comps completeness note still reads "0 of N have materials costed" until you fill those in. The trigger will keep commission correct as new jobs complete and as you set each job's salesperson.
+
 ## [2026-07-13 22:30 MST] Claude Code: build prompt 15c shipped, the four things the 15b smoke test surfaced
 By: Claude Code
 Changed: production/comps.js, production/calculator.test.js, production/scope.cjs (new), supabase/migrations/2026-07-13_estimate_scope_answers.sql (new, APPLIED to prod), netlify/functions/pec-estimate-scope.cjs, netlify/functions/pec-public-estimate.cjs, apps/estimator/src/* (catalog/calculator/comps/estimateLoad/ai libs, offline estimates, EstimatorScreen, types), index.html, production/estimate15b.test.js, help/whats-new.json, PROJECT-LOG.md. Commits: 06ba84e (comps math), 10bc930 (BLANK scope questions + migration), 98a0755 (duplicate guard), c631aac (preview), plus this docs commit. Built on Cowork's 0b4e224 (the 15b smoke-test log). All four items came out of that live prod smoke test, which PASSED on what 15b was built to do and surfaced these.

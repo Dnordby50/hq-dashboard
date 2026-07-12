@@ -20190,6 +20190,30 @@ async function loadCostingData() {
   window.pecCostingStale = false;
 }
 
+// Commission is a DERIVED cost since 2026-07-14: the seller's rate x the job's
+// revenue, maintained in the DB by the pec_costing_set_commission trigger and
+// shown READ-ONLY in the costing editors (the office cannot type a value the
+// trigger would overwrite). This resolves the seller's rate the same way the
+// trigger does: match pec_sales_team_members by name, respecting active +
+// exclude_from_commission. Returns 0 when there is no seller or a 0% seller.
+function commissionRateForJob(job) {
+  const name = String((job && job.sales_team) || '').trim().toLowerCase();
+  if (!name) return 0;
+  const m = (state.salesTeam || []).find(x => String(x.name || '').trim().toLowerCase() === name);
+  if (!m || m.active === false || m.exclude_from_commission) return 0;
+  return Number(m.commission_pct) || 0;
+}
+// The read-only Commission field for both editors: the stored (trigger-set)
+// dollar amount plus a plain-language rate note.
+function commissionDerivedField(r, derivedField) {
+  const rate = commissionRateForJob(r.job);
+  const seller = String((r.job && r.job.sales_team) || '').trim();
+  const note = rate > 0
+    ? `${rate}% of ${fmtMoneyOrDash(Number(r.job.revenue || 0))}`
+    : (seller ? `${seller} is 0% (no commission)` : 'no salesperson set');
+  return derivedField('Commission', `${fmtMoneyOrDash(r.buckets.commission_cost)} <span style="color:var(--muted);font-size:.65rem">${esc(note)}</span>`, '', 'commission-box');
+}
+
 function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCost, derivedBonusCost) {
   const c = cost || {};
   const revenue = Number(job.revenue || 0);
@@ -20625,7 +20649,7 @@ function openCostingDetail(jobId) {
         ${moneyInput('Salary & Wages', 'salary_wages_cost',  'cost', cost?.salary_wages_cost)}
         ${moneyInput('Subcontractor',     'subcontractor_cost', 'cost', cost?.subcontractor_cost)}
         ${moneyInput('Bonus',             'bonus_cost',         'cost', cost?.bonus_cost)}
-        ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
+        ${commissionDerivedField(r, derivedField)}
         ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
       </div>
       <div class="pec-row-3" style="margin-top:10px">
@@ -21462,7 +21486,7 @@ async function renderUnifiedJob(jobId) {
             ? derivedField('Subcontractor', `<span data-uderived="sub">${fmtMoneyOrDash(r.buckets.subcontractor_cost)}</span> <span style="color:var(--muted);font-size:.65rem">sum of the Subcontractors lines</span>`, '', 'sub-box')
             : moneyInput('Subcontractor',   'subcontractor_cost', 'cost', cost?.subcontractor_cost, subExpensesLive ? 'or itemize in Subcontractors above' : '')}
           ${derivedField('Bonus',           `<span data-uderived="bonus">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span>`, '', 'bonus-box')}
-          ${moneyInput('Commission',        'commission_cost',    'cost', cost?.commission_cost)}
+          ${commissionDerivedField(r, derivedField)}
           ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
         </div>
         <div class="pec-row-3" style="margin-top:10px">
