@@ -27,32 +27,38 @@ export type AreaInput = {
   materials: AreaMaterialInput[];
 };
 
-// One estimate line item (estimates.line_items jsonb, mirrors jobs.line_items).
-// optional=true lines are EXCLUDED from the total until selected_by_customer.
-export type LineItem = {
-  id: string;
+// One estimate line item, written as a ROW to public.estimate_line_items
+// (2026-07-13; the jsonb estimates.line_items is legacy-frozen). is_optional
+// lines are EXCLUDED from the total until selected_by_customer. areaIndex
+// binds a system line to its area: the estimate_areas ids are minted inside
+// saveEstimateOffline, so the caller points at the area by position and the
+// save resolves it to the real FK.
+export type LineItemInput = {
+  addonId: string | null; // pec_prod_addons id; null = system/area line or one-off
+  areaIndex: number | null; // index into args.areas; null = add-on / one-off / MVB
   label: string;
   description: string | null;
   qty: number;
-  unit_price: number;
+  unitPrice: number;
+  unitCost: number;
   total: number;
-  optional: boolean;
-  selected_by_customer: boolean;
-  created_at: string;
+  isOptional: boolean;
+  selectedByCustomer: boolean;
+  sortOrder: number;
 };
 
-// The rep's sell-price override (free-typed price or discount %), already run
-// through applySellPrice so the GP fields written to the row agree with what
-// the screen showed. Null means the engine price was accepted as-is.
-export type SellOverride = {
-  sellPrice: number;
-  discountPct: number | null;
-  laborDollars: number | null;
-  commissionDollars: number | null;
+// The money written onto the estimate row, computed by the screen so what is
+// stored is exactly what was displayed: system sell price (engine price or the
+// rep's override) PLUS non-optional add-on lines, with GP net of add-on costs
+// and commission. Optional lines stay out until the customer ticks them.
+export type EstimateTotals = {
+  price: number;
   gpDollars: number | null;
   gpPct: number | null;
-  budgetedHours: number | null;
   gpPerHour: number | null;
+  laborBudget: number | null;
+  commissionDollars: number | null;
+  budgetedHours: number | null;
 };
 
 export type SaveEstimateArgs = {
@@ -62,27 +68,35 @@ export type SaveEstimateArgs = {
   // Preserved on edit so reopening a sent estimate cannot silently reset it to
   // draft. New estimates pass 'draft'.
   status: string;
+  // The DOMINANT area's system (most sqft) for reporting; every area prices
+  // with its own system via estimate_areas.system_type_id.
   systemTypeId: string;
   salesperson: { id: string; name: string; commission_pct: number };
   intake: Record<string, unknown>; // work-order fields
   customer: { name: string | null; phone: string | null; email: string | null; address: string | null };
   mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
-  lineItems: LineItem[];
+  lineItems: LineItemInput[];
   pricingSnapshot: Record<string, unknown> | null; // comps + AI read that priced it
   areas: AreaInput[];
   pricing: PricingResult;
-  sell: SellOverride | null;
+  totals: EstimateTotals;
   createdBy: string | null;
   // Set when the estimator was opened from a lead (/estimator/?lead_id=<uuid>).
   // Null for a walk-up estimate with no lead behind it.
   leadId: string | null;
+  // True when editing an estimate whose scope a HUMAN edited (scope_edited_at
+  // set): the save marks the scope stale instead of regenerating, so the UI can
+  // offer the explicit Regenerate click. Never set on new estimates.
+  markScopeStale?: boolean;
 };
 
 // Persist an estimate offline: write a local copy of the parent first (durable +
 // readable offline), then enqueue the parent and its children IN ORDER so the
-// FIFO outbox uploads estimates -> estimate_areas -> estimate_area_materials,
-// satisfying the foreign keys. All ids are client-minted, so sync is idempotent.
+// FIFO outbox uploads estimates -> estimate_areas (-> estimate_area_materials)
+// -> estimate_line_items, satisfying the foreign keys (line items reference
+// their area, so they go last). All ids are client-minted, so sync is
+// idempotent.
 //
 // estimate_number is NEVER written from here: the column's Postgres sequence
 // default assigns it on insert (concurrency-safe), and the upsert's
@@ -92,9 +106,9 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   const estimateId = args.estimateId || uuid();
   const now = new Date().toISOString();
   const p = args.pricing;
-  const s = args.sell;
+  const t = args.totals;
 
-  const estimateRow = {
+  const estimateRow: Record<string, unknown> = {
     id: estimateId,
     system_type_id: args.systemTypeId,
     // Carries through the outbox unchanged, so an estimate written offline at a
@@ -112,35 +126,39 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     customer_address: args.customer.address,
     mvb: args.mvb,
     flake_color: args.flakeColor,
-    line_items: args.lineItems as unknown,
     pricing_snapshot: args.pricingSnapshot as unknown,
     materials_cost: p.materialsCost ?? null,
     fixed_addons: p.fixedAddons ?? 0,
     labor_pct: p.laborPct ?? null,
     commission_pct: p.commissionPct ?? null,
     target_gp_pct: p.targetGpPct ?? null,
-    // Money fields honor the sell override so the stored row matches the
-    // quoted number, not the engine's pre-discount solve.
-    price: s ? s.sellPrice : (p.price ?? null),
-    gp_dollars: s ? s.gpDollars : (p.gpDollars ?? null),
-    gp_pct: s ? s.gpPct : (p.gpPct ?? null),
-    gp_per_hour: s ? s.gpPerHour : (p.gpPerHour ?? null),
-    labor_budget: s ? s.laborDollars : (p.laborBudget ?? null),
-    commission_dollars: s ? s.commissionDollars : (p.commissionDollars ?? null),
-    budgeted_hours: s ? s.budgetedHours : (p.budgetedHours ?? null),
+    price: t.price,
+    gp_dollars: t.gpDollars,
+    gp_pct: t.gpPct,
+    gp_per_hour: t.gpPerHour,
+    labor_budget: t.laborBudget,
+    commission_dollars: t.commissionDollars,
+    budgeted_hours: t.budgetedHours,
     material_plan: (p.materialLines ?? null) as unknown,
     calc_version: p.calcVersion,
     created_by: args.createdBy,
     client_updated_at: now,
     rev: 0,
   };
+  // Human-edited scope + estimate changed: flag it stale so the estimate page
+  // shows the Regenerate banner. Deliberately NOT written otherwise, so the
+  // upsert leaves the column alone on ordinary saves.
+  if (args.markScopeStale) estimateRow.scope_stale = true;
 
   await idbPut('estimates', estimateRow);
   await enqueue({ table: 'estimates', id: estimateId, row: estimateRow, client_updated_at: now });
 
+  // Areas first (line items FK them), collecting the minted ids by position.
+  const areaIds: string[] = [];
   for (let i = 0; i < args.areas.length; i++) {
     const a = args.areas[i];
     const areaId = uuid();
+    areaIds.push(areaId);
     const areaRow = {
       id: areaId,
       estimate_id: estimateId,
@@ -172,6 +190,27 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       };
       await enqueue({ table: 'estimate_area_materials', id: matId, row: matRow, client_updated_at: now });
     }
+  }
+
+  // Line items LAST (they FK both the estimate and, for system lines, an area).
+  for (const li of args.lineItems) {
+    const liId = uuid();
+    const liRow = {
+      id: liId,
+      estimate_id: estimateId,
+      addon_id: li.addonId,
+      estimate_area_id: li.areaIndex != null ? areaIds[li.areaIndex] ?? null : null,
+      label: li.label,
+      description: li.description,
+      qty: li.qty,
+      unit_price: li.unitPrice,
+      unit_cost: li.unitCost,
+      total: li.total,
+      is_optional: li.isOptional,
+      selected_by_customer: li.selectedByCustomer,
+      sort_order: li.sortOrder,
+    };
+    await enqueue({ table: 'estimate_line_items', id: liId, row: liRow, client_updated_at: now });
   }
 
   return { id: estimateId };

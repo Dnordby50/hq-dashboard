@@ -118,8 +118,27 @@ select, input {
 .areas-head { display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: var(--muted); font-weight: 600; margin-bottom: 0.5rem; }
 .link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 0.85rem; padding: 0; }
 .area { border: 1px solid var(--line); border-radius: 0.6rem; padding: 0.7rem; margin-bottom: 0.7rem; }
-.area-top { display: grid; grid-template-columns: 1fr 5.5rem auto; gap: 0.4rem; align-items: center; }
+/* name | per-area system select | sqft | remove (multi-system estimates) */
+.area-top { display: grid; grid-template-columns: 1fr minmax(8rem, 12rem) 5.5rem auto; gap: 0.4rem; align-items: center; }
 .area-sqft { text-align: right; }
+@media (max-width: 520px) {
+  .area-top { grid-template-columns: 1fr 5.5rem auto; }
+  .area-top .area-system { grid-column: 1 / -1; }
+}
+
+/* Add-on / one-off lines */
+.addon-row { border: 1px solid var(--line); border-radius: 0.6rem; padding: 0.7rem; margin-bottom: 0.7rem; }
+.addon-main { display: flex; align-items: center; gap: 0.5rem; }
+.addon-label { font-weight: 600; flex: 1; }
+.addon-label-input { flex: 1; }
+.addon-desc { width: 100%; margin-top: 0.4rem; }
+.oneoff-badge { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 999px; padding: 0.1rem 0.5rem; }
+.addon-nums { display: grid; grid-template-columns: 4.5rem 6rem 6rem 1fr auto; gap: 0.5rem; align-items: end; margin-top: 0.5rem; }
+.addon-nums .field { margin-bottom: 0; }
+.addon-opt { white-space: nowrap; align-self: center; }
+.addon-total { font-weight: 700; align-self: center; }
+.addon-warn { margin-top: 0.5rem; }
+@media (max-width: 640px) { .addon-nums { grid-template-columns: 1fr 1fr; } }
 .x { background: none; border: none; color: var(--bad); font-size: 1.2rem; cursor: pointer; line-height: 1; }
 .slots { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.6rem; }
 .slots .field { margin-bottom: 0; }

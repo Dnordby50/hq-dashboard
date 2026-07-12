@@ -10,6 +10,11 @@ export type AiRecommendation = {
   recommended_low: number;
   recommended_high: number;
   why: string;
+  // Customer-intent read from Quo (OpenPhone) history: calls, transcripts,
+  // texts. Null when there is no history; history_available is set SERVER-SIDE
+  // (never model-claimed) so "no call history on file" is a fact, not a vibe.
+  intent_read?: string | null;
+  history_available?: boolean;
   model?: string;
   generated_at?: string;
   inputs_key?: string;
@@ -17,6 +22,9 @@ export type AiRecommendation = {
 
 export type AiRequest = {
   estimate_id: string | null; // set when editing: lets the server serve/refresh the row cache
+  // The lead behind this estimate (null for a walk-up): the server pulls its
+  // Quo call/text history as intent signal for the price read.
+  lead_id: string | null;
   inputs_key: string;
   system_type_name: string;
   sqft: number;

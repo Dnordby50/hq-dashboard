@@ -7,6 +7,9 @@ import {
   computeMaterialPlan as _computeMaterialPlan,
   roundEstimatePrice as _roundEstimatePrice,
   applySellPrice as _applySellPrice,
+  lineItemsTotal as _lineItemsTotal,
+  lineItemsGp as _lineItemsGp,
+  allocateProportionally as _allocateProportionally,
   CALC_VERSION as _CALC_VERSION,
 } from '../../../../production/calculator.js';
 
@@ -78,10 +81,26 @@ export type PricingInput = {
 export type PricingResult = ReturnType<typeof _computeEstimatePricing>;
 export type SellPriceResult = ReturnType<typeof _applySellPrice>;
 
+// Money shape lineItemsTotal / lineItemsGp accept (matches estimate_line_items
+// rows; the legacy jsonb `optional` key is also tolerated by the canonical fns).
+export type MoneyLineItem = {
+  total: number;
+  qty?: number;
+  unit_cost?: number;
+  is_optional?: boolean;
+  selected_by_customer?: boolean;
+};
+
 export const computeEstimatePricing = (input: PricingInput): PricingResult =>
   _computeEstimatePricing(input);
 export const computeJobEstimate = _computeJobEstimate;
 export const computeMaterialPlan = _computeMaterialPlan;
 export const roundEstimatePrice = _roundEstimatePrice;
 export const applySellPrice = _applySellPrice;
+export const lineItemsTotal = (items: MoneyLineItem[], opts?: { withAllOptions?: boolean }): number =>
+  _lineItemsTotal(items, opts);
+export const lineItemsGp = (items: MoneyLineItem[], standardCommissionPct?: number, opts?: { withAllOptions?: boolean }): number =>
+  _lineItemsGp(items, standardCommissionPct, opts);
+export const allocateProportionally = (total: number, weights: number[]): number[] =>
+  _allocateProportionally(total, weights);
 export const CALC_VERSION: string = _CALC_VERSION;

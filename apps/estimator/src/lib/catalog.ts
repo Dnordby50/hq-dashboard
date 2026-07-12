@@ -6,6 +6,20 @@ const CATALOG_CACHE_KEY = 'catalog';
 
 export type SalesPerson = { id: string; name: string; commission_pct: number; active: boolean };
 
+// One add-on catalog row (pec_prod_addons). Dylan manages the catalog; the
+// estimator only picks from it. system_type_id null = applies to any system.
+export type Addon = {
+  id: string;
+  name: string;
+  description: string | null;
+  unit: 'each' | 'sqft' | 'lf' | 'hour';
+  default_price: number;
+  default_cost: number;
+  is_optional_default: boolean;
+  system_type_id: string | null;
+  sort_order: number;
+};
+
 export type PricingConfig = {
   laborRate: number;
   standardCommissionPct: number; // estimator_default_commission_pct: the house rate baked into every quote
@@ -22,6 +36,7 @@ export type Catalog = {
   productsById: Record<string, Product>;
   recipeSlotsBySystemType: Record<string, RecipeSlot[]>;
   salespeople: SalesPerson[];
+  addons: Addon[];
   config: PricingConfig;
 };
 
@@ -29,7 +44,7 @@ export type Catalog = {
 // Each query is RLS-gated to admin staff (same as the dashboard), so this only
 // returns data for a signed-in admin.
 export async function loadCatalog(): Promise<Catalog> {
-  const [systemsRes, productsRes, slotsRes, salesRes, settingsRes] = await Promise.all([
+  const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
       .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order')
@@ -50,6 +65,12 @@ export async function loadCatalog(): Promise<Catalog> {
       .eq('active', true)
       .order('name', { ascending: true }),
     supabase
+      .from('pec_prod_addons')
+      .select('id,name,description,unit,default_price,default_cost,is_optional_default,system_type_id,sort_order')
+      .eq('active', true)
+      .order('sort_order', { ascending: true })
+      .order('name', { ascending: true }),
+    supabase
       .from('settings')
       .select('key,value')
       .in('key', [
@@ -64,7 +85,8 @@ export async function loadCatalog(): Promise<Catalog> {
   ]);
 
   const firstError =
-    systemsRes.error || productsRes.error || slotsRes.error || salesRes.error || settingsRes.error;
+    systemsRes.error || productsRes.error || slotsRes.error || salesRes.error ||
+    addonsRes.error || settingsRes.error;
   if (firstError) throw firstError;
 
   const productsById: Record<string, Product> = {};
@@ -101,6 +123,7 @@ export async function loadCatalog(): Promise<Catalog> {
     productsById,
     recipeSlotsBySystemType,
     salespeople: (salesRes.data ?? []) as SalesPerson[],
+    addons: (addonsRes.data ?? []) as Addon[],
     config,
   };
 

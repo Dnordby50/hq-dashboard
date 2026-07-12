@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Catalog, SalesPerson } from '../../lib/catalog';
+import type { Addon, Catalog, SalesPerson } from '../../lib/catalog';
 import {
+  allocateProportionally,
   applySellPrice,
   computeEstimatePricing,
+  lineItemsGp,
+  lineItemsTotal,
   type Area,
   type PricingResult,
   type Product,
@@ -13,12 +16,12 @@ import {
   saveEstimateOffline,
   type AreaInput,
   type AreaMaterialInput,
-  type LineItem,
-  type SellOverride,
+  type EstimateTotals,
+  type LineItemInput,
 } from '../../offline/estimates';
 import type { LeadLink } from '../../lib/lead';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
-import { deleteEstimateAreas } from '../../lib/estimateLoad';
+import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
 import { buildComps, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
@@ -26,7 +29,7 @@ import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../
 import { supabase } from '../../lib/supabase';
 import { uuid } from '../../offline/uuid';
 
-type AreaForm = { name: string; sqft: string; slotValues: Record<string, string> };
+type AreaForm = { name: string; sqft: string; systemTypeId: string; slotValues: Record<string, string> };
 type Mvb = 'none' | 'addon' | 'standalone';
 type Intake = {
   gate_code: string;
@@ -39,6 +42,20 @@ type Intake = {
   special_notes: string;
 };
 
+// One add-on / one-off line in form state. Catalog picks carry addonId (label
+// locked to the catalog name); a one-off has addonId null and everything
+// editable. Prices and costs prefill from the catalog and STAY editable.
+type AddonForm = {
+  key: string;
+  addonId: string | null;
+  label: string;
+  description: string;
+  qty: string;
+  unitPrice: string;
+  unitCost: string;
+  optional: boolean;
+};
+
 const SWATCH_TYPES = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
 // Same catalog row the dashboard's New Job flow resolves: the one MVB product
 // priced for standalone application (100 sqft/gal across all areas).
@@ -49,11 +66,12 @@ const money = (n: number | null | undefined) =>
 const money2 = (n: number | null | undefined) =>
   n == null ? '--' : n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 const pct = (frac: number | null | undefined) => (frac == null ? '--' : `${(frac * 100).toFixed(1)}%`);
+const r2 = (n: number) => Math.round(n * 100) / 100;
 
 const ERROR_COPY: Record<string, string> = {
   TARGET_UNREACHABLE:
     'Target margin is impossible for these inputs: labor + commission + target GP add up to 100% or more of revenue. Lower the target GP or commission.',
-  NO_LABOR_PCT: 'This system has no labor budget percent set. Set it in the Catalog before pricing.',
+  NO_LABOR_PCT: 'A selected system has no labor budget percent set. Set it in the Catalog before pricing.',
 };
 
 type SlotKind = 'choice' | 'text' | 'product';
@@ -116,6 +134,9 @@ export default function EstimatorScreen({
   editing: LoadedEstimate | null;
 }) {
   const { systemTypes, productsById, recipeSlotsBySystemType, salespeople, config } = catalog;
+  // A catalog cached before 2026-07-13 has no addons key; tolerate it so an
+  // offline rep still prices (the add-on picker is just empty until a refresh).
+  const addonCatalog: Addon[] = catalog.addons ?? [];
   const online = useOnline();
 
   // Product slots start PREFILLED with the system's default_product_id, so the
@@ -144,13 +165,12 @@ export default function EstimatorScreen({
     [recipeSlotsBySystemType],
   );
 
-  const initialSystemId = editing?.systemTypeId ?? systemTypes[0]?.id ?? '';
+  const fallbackSystemId = editing?.systemTypeId ?? systemTypes[0]?.id ?? '';
   const [salespersonId, setSalespersonId] = useState<string>(() => {
     const fromEdit = editing ? String(editing.intake.salesperson_id ?? '') : '';
     if (fromEdit && salespeople.some((s) => s.id === fromEdit)) return fromEdit;
     return salespeople[0]?.id ?? '';
   });
-  const [systemTypeId, setSystemTypeId] = useState<string>(initialSystemId);
   const [mvb, setMvb] = useState<Mvb>(editing?.mvb ?? 'none');
   const [customer, setCustomer] = useState(() => ({
     name: editing?.customer.name ?? leadLink?.name ?? '',
@@ -161,10 +181,31 @@ export default function EstimatorScreen({
   const [intake, setIntake] = useState<Intake>(() =>
     editing ? intakeFromLoaded(editing.intake) : emptyIntake,
   );
+  // Each area picks its OWN system (multi-system estimates, 2026-07-13): a
+  // real job is a garage plus a patio plus stem walls, and they are not the
+  // same system. The estimate-level system becomes the DOMINANT area's (most
+  // sqft) for reporting; pricing weights every area's own system.
   const [areas, setAreas] = useState<AreaForm[]>(() =>
     editing
-      ? editing.areas.map((a) => ({ name: a.name, sqft: a.sqft, slotValues: a.slotValues }))
-      : [{ name: 'Main', sqft: '', slotValues: initialSystemId ? defaultSlotValues(initialSystemId) : {} }],
+      ? editing.areas.map((a) => ({
+          name: a.name,
+          sqft: a.sqft,
+          systemTypeId: a.systemTypeId ?? fallbackSystemId,
+          slotValues: a.slotValues,
+        }))
+      : [{ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }],
+  );
+  const [addonForms, setAddonForms] = useState<AddonForm[]>(() =>
+    (editing?.addonLines ?? []).map((li) => ({
+      key: uuid(),
+      addonId: li.addonId,
+      label: li.label,
+      description: li.description ?? '',
+      qty: String(li.qty),
+      unitPrice: String(li.unitPrice),
+      unitCost: String(li.unitCost),
+      optional: li.isOptional,
+    })),
   );
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
@@ -172,21 +213,20 @@ export default function EstimatorScreen({
   const [pending, setPending] = useState(0);
 
   const salesperson: SalesPerson | undefined = salespeople.find((s) => s.id === salespersonId);
-  const systemType = systemTypes.find((s) => s.id === systemTypeId);
 
   const mvbProduct = useMemo(
     () => Object.values(productsById).find((p) => p.name === MVB_PRODUCT_NAME) ?? null,
     [productsById],
   );
 
-  // System's slots, ordered, with internal (editor_hidden) body coats removed.
+  // A system's slots, ordered, with internal (editor_hidden) body coats removed.
   // A standalone-MVB estimate has no system recipe, so no slots to pick.
-  const visibleSlots: RecipeSlot[] = useMemo(
-    () =>
+  const slotsFor = useCallback(
+    (sysId: string): RecipeSlot[] =>
       mvb === 'standalone'
         ? []
-        : (recipeSlotsBySystemType[systemTypeId] ?? []).filter((s) => !s.editor_hidden),
-    [recipeSlotsBySystemType, systemTypeId, mvb],
+        : (recipeSlotsBySystemType[sysId] ?? []).filter((s) => !s.editor_hidden),
+    [recipeSlotsBySystemType, mvb],
   );
 
   const productsByType = useMemo(() => {
@@ -197,13 +237,14 @@ export default function EstimatorScreen({
   }, [productsById]);
 
   // Map an area's raw slot answers to the flake/basecoat/topcoat the calculator
-  // resolves against (first product slot of each kind wins).
+  // resolves against (first product slot of each kind wins), using THAT AREA'S
+  // system's slots.
   const deriveProducts = useCallback(
-    (slotValues: Record<string, string>) => {
+    (slotValues: Record<string, string>, sysId: string) => {
       let flake: string | null = null;
       let basecoat: string | null = null;
       let topcoat: string | null = null;
-      for (const s of visibleSlots) {
+      for (const s of slotsFor(sysId)) {
         const v = slotValues[s.id];
         if (!v || kindOf(s) !== 'product') continue;
         if (SWATCH_TYPES.has(s.material_type) && !flake) flake = v;
@@ -212,38 +253,54 @@ export default function EstimatorScreen({
       }
       return { flake, basecoat, topcoat };
     },
-    [visibleSlots],
+    [slotsFor],
   );
+
+  // The pricable areas, in form order, each with its own system. engineAreas
+  // and the save's areaInputs both derive from this ONE filtered list so their
+  // indexes stay aligned (line items bind to areas by position).
+  const pricedAreas = useMemo(() => areas.filter((a) => Number(a.sqft) > 0 && a.systemTypeId), [areas]);
 
   const engineAreas: Area[] = useMemo(
     () =>
-      areas
-        .map((a, i) => {
-          const d = deriveProducts(a.slotValues);
-          return {
-            id: `a${i}`,
-            name: a.name || `Area ${i + 1}`,
-            sqft: Number(a.sqft) || 0,
-            system_type_id: systemTypeId,
-            flake_product_id: d.flake,
-            basecoat_product_id: d.basecoat,
-            topcoat_product_id: d.topcoat,
-          };
-        })
-        .filter((a) => a.sqft > 0),
-    [areas, systemTypeId, deriveProducts],
+      pricedAreas.map((a, i) => {
+        const d = deriveProducts(a.slotValues, a.systemTypeId);
+        return {
+          id: `a${i}`,
+          name: a.name || `Area ${i + 1}`,
+          sqft: Number(a.sqft) || 0,
+          system_type_id: a.systemTypeId,
+          flake_product_id: d.flake,
+          basecoat_product_id: d.basecoat,
+          topcoat_product_id: d.topcoat,
+        };
+      }),
+    [pricedAreas, deriveProducts],
   );
   const totalSqft = useMemo(() => engineAreas.reduce((s, a) => s + a.sqft, 0), [engineAreas]);
 
+  // Sqft per system, biggest first: [0] is the DOMINANT system (what the
+  // estimate reports as ITS system, what the comps panel keys off).
+  const systemsBySqft = useMemo(() => {
+    const bySys = new Map<string, number>();
+    for (const a of engineAreas) bySys.set(a.system_type_id, (bySys.get(a.system_type_id) ?? 0) + a.sqft);
+    return [...bySys.entries()]
+      .map(([systemId, sqft]) => ({ systemId, sqft }))
+      .sort((x, y) => y.sqft - x.sqft);
+  }, [engineAreas]);
+  const dominantSystemId = systemsBySqft[0]?.systemId ?? areas[0]?.systemTypeId ?? fallbackSystemId;
+  const dominantSystem = systemTypes.find((s) => s.id === dominantSystemId);
+  const mixedSystems = systemsBySqft.length > 1;
+
   const pricing: PricingResult | null = useMemo(() => {
-    if (!systemTypeId || !salesperson || !engineAreas.length) return null;
+    if (!salesperson || !engineAreas.length) return null;
     if (mvb !== 'none' && !mvbProduct) return null; // surfaced as mvbMissing below
     return computeEstimatePricing({
       areas: engineAreas,
       productsById,
       // Standalone MVB: no system recipe prices (empty slot map), but the
       // areas keep their system_type_id so labor % and target GP still come
-      // from the selected system. The MVB line is added by the engine.
+      // from the selected systems. The MVB line is added by the engine.
       recipeSlotsBySystemType: mvb === 'standalone' ? {} : recipeSlotsBySystemType,
       systemTypes,
       laborRate: config.laborRate,
@@ -258,7 +315,7 @@ export default function EstimatorScreen({
       standaloneMvb: mvb !== 'none',
       standaloneMvbProductId: mvb !== 'none' ? mvbProduct?.id ?? null : null,
     } as Parameters<typeof computeEstimatePricing>[0]);
-  }, [engineAreas, systemTypeId, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvb, mvbProduct]);
+  }, [engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvb, mvbProduct]);
 
   const err = pricing?.error ?? null;
   const hasPrice = !!pricing && !err && pricing.price != null;
@@ -277,6 +334,7 @@ export default function EstimatorScreen({
     setDiscInput('');
   }, [basePrice]);
 
+  // The system portion's sell price. Add-on lines price separately on top.
   const finalSell: number | null = useMemo(() => {
     if (basePrice == null) return null;
     if (priceOverride === 'sell') {
@@ -297,13 +355,52 @@ export default function EstimatorScreen({
   );
   const discounted = basePrice != null && finalSell != null && Math.abs(finalSell - basePrice) >= 0.5;
 
-  // GP threshold: the system's target_gp_pct when set, else the estimator
-  // config default. (Every prod system currently has NULL target_gp_pct, so
-  // the config default is the live threshold until Dylan sets per-system ones.)
-  const targetGpPctResolved =
-    systemType?.target_gp_pct != null ? Number(systemType.target_gp_pct) : config.targetGpPct;
+  // ---- Add-on / one-off line money -----------------------------------------
+  // Optional lines are EXCLUDED from the total and from GP until the customer
+  // selects them (public page, prompt 16); the rep sees both numbers. GP per
+  // line = total - qty*cost - commission, so a costed add-on cannot inflate GP.
+  const addonMoneyItems = useMemo(
+    () =>
+      addonForms.map((f) => {
+        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+        const unitPrice = Number(f.unitPrice) || 0;
+        return {
+          total: r2(qty * unitPrice),
+          qty,
+          unit_cost: Number(f.unitCost) || 0,
+          is_optional: f.optional,
+          selected_by_customer: false,
+        };
+      }),
+    [addonForms],
+  );
+  const addonsBaseTotal = useMemo(() => lineItemsTotal(addonMoneyItems), [addonMoneyItems]);
+  const addonsAllTotal = useMemo(() => lineItemsTotal(addonMoneyItems, { withAllOptions: true }), [addonMoneyItems]);
+  const hasOptionalAddons = addonForms.some((f) => f.optional);
+
+  const totalPrice = finalSell != null ? r2(finalSell + addonsBaseTotal) : null;
+  const totalAllOptions = finalSell != null ? r2(finalSell + addonsAllTotal) : null;
+  const addonGp = useMemo(
+    () => lineItemsGp(addonMoneyItems, config.standardCommissionPct),
+    [addonMoneyItems, config.standardCommissionPct],
+  );
+  const combinedGpDollars = adjusted && adjusted.gpDollars != null ? r2(adjusted.gpDollars + addonGp) : null;
+  const combinedGpPct = combinedGpDollars != null && totalPrice != null && totalPrice > 0 ? combinedGpDollars / totalPrice : null;
+  const combinedCommission = adjusted && adjusted.commissionDollars != null
+    ? r2(adjusted.commissionDollars + (config.standardCommissionPct / 100) * addonsBaseTotal)
+    : null;
+  const combinedGpPerHour = combinedGpDollars != null && adjusted?.budgetedHours != null && adjusted.budgetedHours > 0
+    ? r2(combinedGpDollars / adjusted.budgetedHours)
+    : null;
+
+  // GP threshold: the sqft-weighted target across the areas' systems (the
+  // engine computes it; a naive mean would let a small high-target area drag
+  // the warning). Falls back to the config default before pricing exists.
+  const targetGpPctResolved = pricing && !err && pricing.targetGpPct != null
+    ? Number(pricing.targetGpPct)
+    : (dominantSystem?.target_gp_pct != null ? Number(dominantSystem.target_gp_pct) : config.targetGpPct);
   const gpBelowTarget =
-    adjusted?.gpPct != null && adjusted.gpPct * 100 < targetGpPctResolved - 0.05;
+    combinedGpPct != null && combinedGpPct * 100 < targetGpPctResolved - 0.05;
 
   const onSellInput = (v: string) => {
     const cleaned = v.replace(/[^0-9.]/g, '');
@@ -337,22 +434,32 @@ export default function EstimatorScreen({
     return () => { alive = false; };
   }, []);
 
+  // Comps key off the DOMINANT system. When the estimate spans systems the
+  // panel says so instead of pretending the comps cover the whole job.
   const comps: CompsResult | null = useMemo(() => {
-    if (!compCandidates || !systemTypeId || !(totalSqft > 0)) return null;
-    return buildComps({ candidates: compCandidates, systemTypeId, sqft: totalSqft, now: new Date() });
-  }, [compCandidates, systemTypeId, totalSqft]);
-  const compsLabel = comps ? compsRuleLabel(comps, systemType?.name ?? null) : '';
+    if (!compCandidates || !dominantSystemId || !(totalSqft > 0)) return null;
+    return buildComps({ candidates: compCandidates, systemTypeId: dominantSystemId, sqft: totalSqft, now: new Date() });
+  }, [compCandidates, dominantSystemId, totalSqft]);
+  const compsLabel = comps ? compsRuleLabel(comps, dominantSystem?.name ?? null) : '';
+  const dominantSqft = systemsBySqft[0]?.sqft ?? 0;
+  const mixedCompsNote = mixedSystems
+    ? `This estimate spans ${systemsBySqft.length} systems; comps cover the dominant one (${dominantSystem?.name ?? 'unknown'}, ${Math.round(dominantSqft).toLocaleString()} of ${Math.round(totalSqft).toLocaleString()} sqft).`
+    : '';
 
   // ---- AI recommendation: automatic once system + sqft are present ---------
   // Debounced (900ms) so sqft keystrokes do not each fire a model call. Keyed
-  // on (system, sqft, MVB), the regeneration rule; the cached read on a
+  // on (mvb + each system's sqft), the regeneration rule; the cached read on a
   // reopened estimate's row short-circuits the call entirely.
-  const inputsKey = `${systemTypeId}|${Math.round(totalSqft)}|${mvb}`;
+  const inputsKey = useMemo(
+    () => [mvb, ...systemsBySqft.map((g) => `${g.systemId}:${Math.round(g.sqft)}`).sort()].join('|'),
+    [mvb, systemsBySqft],
+  );
   const [ai, setAi] = useState<{ key: string; status: 'loading' | 'ready' | 'error'; rec?: AiRecommendation; err?: string } | null>(null);
   const editingSnapshot = editing?.pricingSnapshot ?? null;
+  const aiLeadId = editing?.leadId ?? leadLink?.id ?? null;
 
   useEffect(() => {
-    if (!hasPrice || !(totalSqft > 0) || !systemTypeId || basePrice == null) return;
+    if (!hasPrice || !(totalSqft > 0) || !dominantSystemId || basePrice == null) return;
     if (ai && ai.key === inputsKey && ai.status !== 'error') return;
     // Reopened estimate, unchanged inputs: serve the read that priced it.
     if (editingSnapshot && editingSnapshot.inputs_key === inputsKey && editingSnapshot.ai) {
@@ -369,8 +476,11 @@ export default function EstimatorScreen({
           : { rule: 'none', rule_label: 'comps unavailable', sample_size: 0, median_ppsf: null, rows: [] };
         const rec = await fetchAiRecommendation({
           estimate_id: editing?.id ?? null,
+          lead_id: aiLeadId,
           inputs_key: inputsKey,
-          system_type_name: systemType?.name ?? 'Unknown system',
+          system_type_name: mixedSystems
+            ? `${dominantSystem?.name ?? 'Unknown system'} (dominant; estimate spans ${systemsBySqft.length} systems)`
+            : dominantSystem?.name ?? 'Unknown system',
           sqft: totalSqft,
           mvb,
           calc_price: basePrice,
@@ -403,7 +513,7 @@ export default function EstimatorScreen({
   }, [online, refreshPending]);
   useEffect(() => {
     setSaveState('idle');
-  }, [areas, systemTypeId, salespersonId, intake, mvb, customer, finalSell]);
+  }, [areas, salespersonId, intake, mvb, customer, finalSell, addonForms]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -412,17 +522,55 @@ export default function EstimatorScreen({
       prev.map((a, idx) => (idx === i ? { ...a, slotValues: { ...a.slotValues, [slotId]: value } } : a)),
     );
   const addArea = () =>
-    setAreas((prev) => [...prev, { name: `Area ${prev.length + 1}`, sqft: '', slotValues: defaultSlotValues(systemTypeId) }]);
+    setAreas((prev) => {
+      // New areas inherit the previous area's system (a second garage bay is
+      // likelier than a system switch; one tap changes it either way).
+      const sysId = prev[prev.length - 1]?.systemTypeId ?? fallbackSystemId;
+      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, slotValues: defaultSlotValues(sysId) }];
+    });
   const removeArea = (i: number) => setAreas((prev) => prev.filter((_, idx) => idx !== i));
 
-  const onSystemChange = (sysId: string) => {
-    setSystemTypeId(sysId);
-    // New system, new slot set: re-seed every area with the new defaults.
-    setAreas((prev) => prev.map((a) => ({ ...a, slotValues: defaultSlotValues(sysId) })));
+  const onAreaSystemChange = (i: number, sysId: string) => {
+    // New system, new slot set: re-seed THIS area with the new defaults.
+    setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, systemTypeId: sysId, slotValues: defaultSlotValues(sysId) } : a)));
   };
 
+  // ---- Add-on handlers ------------------------------------------------------
+  // The picker is filtered to the areas' systems plus the any-system add-ons.
+  const areaSystemIds = useMemo(() => new Set(areas.map((a) => a.systemTypeId).filter(Boolean)), [areas]);
+  const availableAddons = useMemo(
+    () => addonCatalog.filter((a) => a.system_type_id == null || areaSystemIds.has(a.system_type_id)),
+    [addonCatalog, areaSystemIds],
+  );
+  const addAddonFromCatalog = (addonId: string) => {
+    const a = availableAddons.find((x) => x.id === addonId);
+    if (!a) return;
+    setAddonForms((prev) => [
+      ...prev,
+      {
+        key: uuid(),
+        addonId: a.id,
+        label: a.name,
+        description: a.description ?? '',
+        qty: '1',
+        unitPrice: String(a.default_price ?? 0),
+        unitCost: String(a.default_cost ?? 0),
+        optional: a.is_optional_default,
+      },
+    ]);
+  };
+  const addOneOff = () =>
+    setAddonForms((prev) => [
+      ...prev,
+      { key: uuid(), addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', optional: false },
+    ]);
+  const setAddonForm = (key: string, patch: Partial<AddonForm>) =>
+    setAddonForms((prev) => prev.map((f) => (f.key === key ? { ...f, ...patch } : f)));
+  const removeAddonForm = (key: string) => setAddonForms((prev) => prev.filter((f) => f.key !== key));
+
   const mvbMissing = mvb !== 'none' && !mvbProduct;
-  const canSave = !!salesperson && hasPrice && !mvbMissing && saveState !== 'saving';
+  const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
+  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
@@ -430,14 +578,14 @@ export default function EstimatorScreen({
   const flakeColorFromPicks = useMemo(() => {
     if (mvb === 'standalone') return null;
     for (const a of areas) {
-      for (const s of visibleSlots) {
+      for (const s of slotsFor(a.systemTypeId)) {
         if (!SWATCH_TYPES.has(s.material_type) || kindOf(s) !== 'product') continue;
         const v = a.slotValues[s.id];
         if (v && productsById[v]) return productsById[v].color || productsById[v].name;
       }
     }
     return null;
-  }, [areas, visibleSlots, productsById, mvb]);
+  }, [areas, slotsFor, productsById, mvb]);
 
   const postToParent = useCallback((msg: Record<string, unknown>) => {
     // Same-origin by construction (the dashboard and /estimator/ share a host);
@@ -445,8 +593,40 @@ export default function EstimatorScreen({
     try { window.parent?.postMessage(msg, window.location.origin); } catch { /* not framed */ }
   }, []);
 
+  // The full page's Back button: return to wherever the rep came from when it
+  // was a same-origin page (a full-screen estimator that dead-ends was the
+  // complaint), else land on the dashboard root.
+  const goBack = useCallback(() => {
+    try {
+      const ref = document.referrer ? new URL(document.referrer) : null;
+      if (ref && ref.origin === window.location.origin && window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+    } catch { /* malformed referrer */ }
+    window.location.href = '/';
+  }, []);
+
+  // Fire the AI scope writer after a save. FREE regeneration only while no
+  // human has edited the scope; an edited scope is marked stale by the save
+  // itself (markScopeStale) and regenerating then requires the explicit click
+  // on the estimate page. Best-effort: the estimate page has a Generate button
+  // for anything missed here, and offline saves generate later by design.
+  const triggerScope = useCallback(async (estimateId: string) => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return;
+      await fetch('/.netlify/functions/pec-estimate-scope', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ estimate_id: estimateId }),
+      });
+    } catch { /* the estimate page's Generate button covers this */ }
+  }, []);
+
   const onSave = useCallback(async () => {
-    if (!salesperson || !pricing || !hasPrice || finalSell == null) return;
+    if (!salesperson || !pricing || !hasPrice || finalSell == null || totalPrice == null) return;
     if (editing && !online) {
       setSaveState('error');
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
@@ -455,38 +635,37 @@ export default function EstimatorScreen({
     setSaveState('saving');
     setSaveError('');
     try {
-      const areaInputs: AreaInput[] = areas
-        .filter((a) => Number(a.sqft) > 0)
-        .map((a) => {
-          const d = deriveProducts(a.slotValues);
-          const materials: AreaMaterialInput[] = visibleSlots
-            .filter((s) => a.slotValues[s.id])
-            .map((s) => {
-              const k = kindOf(s);
-              const v = a.slotValues[s.id];
-              return {
-                recipe_slot_id: s.id,
-                slot_label: s.label ?? null,
-                slot_kind: s.slot_kind ?? 'product',
-                material_type: s.material_type,
-                product_id: k === 'product' ? v : null,
-                choice_value: k === 'choice' ? v : null,
-                text_value: k === 'text' ? v : null,
-                pick_index: 0,
-                order_index: s.order_index,
-              };
-            });
-          return {
-            name: a.name || 'Area',
-            sqft: Number(a.sqft) || 0,
-            systemTypeId,
-            flakeProductId: d.flake,
-            basecoatProductId: d.basecoat,
-            topcoatProductId: d.topcoat,
-            answers: a.slotValues,
-            materials,
-          };
-        });
+      const areaInputs: AreaInput[] = pricedAreas.map((a) => {
+        const d = deriveProducts(a.slotValues, a.systemTypeId);
+        const areaSlots = slotsFor(a.systemTypeId);
+        const materials: AreaMaterialInput[] = areaSlots
+          .filter((s) => a.slotValues[s.id])
+          .map((s) => {
+            const k = kindOf(s);
+            const v = a.slotValues[s.id];
+            return {
+              recipe_slot_id: s.id,
+              slot_label: s.label ?? null,
+              slot_kind: s.slot_kind ?? 'product',
+              material_type: s.material_type,
+              product_id: k === 'product' ? v : null,
+              choice_value: k === 'choice' ? v : null,
+              text_value: k === 'text' ? v : null,
+              pick_index: 0,
+              order_index: s.order_index,
+            };
+          });
+        return {
+          name: a.name || 'Area',
+          sqft: Number(a.sqft) || 0,
+          systemTypeId: a.systemTypeId,
+          flakeProductId: d.flake,
+          basecoatProductId: d.basecoat,
+          topcoatProductId: d.topcoat,
+          answers: a.slotValues,
+          materials,
+        };
+      });
 
       const intakePayload: Record<string, unknown> = {
         gate_code: intake.gate_code || null,
@@ -501,31 +680,90 @@ export default function EstimatorScreen({
         discount_pct: discounted && adjusted ? adjusted.discountPct : null,
       };
 
-      const sell: SellOverride | null =
-        discounted && adjusted && adjusted.sellPrice != null ? (adjusted as SellOverride) : null;
-
-      // One line item for the whole quoted job; optional upsell lines are
-      // added on the estimate page after the fact (decision 14).
-      const nowIso = new Date().toISOString();
-      const sysName = systemType?.name ?? 'Floor coating';
-      const lineItems: LineItem[] = [
-        {
-          id: uuid(),
-          label:
-            mvb === 'standalone'
-              ? 'Moisture vapor barrier (MVB)'
-              : `${sysName} floor coating system`,
-          description:
-            `${Math.round(totalSqft)} sqft` +
-            (mvb === 'addon' ? ', includes moisture vapor barrier (MVB)' : ''),
+      // ---- Line items: one per AREA (its share of the system sell price),
+      // then the add-ons and one-offs. Areas' amounts are allocated from each
+      // area's own solo cost-plus solve, so a big garage carries more of the
+      // price than a small patio and the parts sum EXACTLY to the sell price.
+      const lineItems: LineItemInput[] = [];
+      if (mvb === 'standalone') {
+        lineItems.push({
+          addonId: null,
+          areaIndex: null,
+          label: 'Moisture vapor barrier (MVB)',
+          description: `${Math.round(totalSqft)} sqft`,
           qty: 1,
-          unit_price: finalSell,
+          unitPrice: finalSell,
+          unitCost: r2(Number(pricing.materialsCost) || 0),
           total: finalSell,
-          optional: false,
-          selected_by_customer: true,
-          created_at: nowIso,
-        },
-      ];
+          isOptional: false,
+          selectedByCustomer: true,
+          sortOrder: 0,
+        });
+      } else {
+        const soloByArea = engineAreas.map((a) => {
+          const solo = computeEstimatePricing({
+            areas: [a],
+            productsById,
+            recipeSlotsBySystemType,
+            systemTypes,
+            laborRate: config.laborRate,
+            commissionPct: config.standardCommissionPct,
+            targetGpPct: config.targetGpPct,
+            priceIncrement: 1,
+            charmThreshold: 0,
+            charmBand: 0,
+          } as Parameters<typeof computeEstimatePricing>[0]);
+          return solo && !solo.error ? solo : null;
+        });
+        const weights = soloByArea.map((s, i) => (s && s.priceRaw ? s.priceRaw : engineAreas[i].sqft));
+        const parts = allocateProportionally(finalSell, weights);
+        engineAreas.forEach((a, i) => {
+          const sysName = systemTypes.find((s) => s.id === a.system_type_id)?.name ?? 'Floor coating';
+          lineItems.push({
+            addonId: null,
+            areaIndex: i,
+            label: engineAreas.length > 1 ? `${a.name}: ${sysName} floor coating system` : `${sysName} floor coating system`,
+            description:
+              `${Math.round(a.sqft)} sqft` +
+              (mvb === 'addon' ? ', includes moisture vapor barrier (MVB)' : ''),
+            qty: 1,
+            unitPrice: parts[i],
+            unitCost: r2(Number(soloByArea[i]?.materialsCost) || 0),
+            total: parts[i],
+            isOptional: false,
+            selectedByCustomer: true,
+            sortOrder: i,
+          });
+        });
+      }
+      let sort = lineItems.length;
+      for (const f of addonForms) {
+        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+        const unitPrice = Number(f.unitPrice) || 0;
+        lineItems.push({
+          addonId: f.addonId,
+          areaIndex: null,
+          label: f.label.trim(),
+          description: f.description.trim() || null,
+          qty,
+          unitPrice,
+          unitCost: Number(f.unitCost) || 0,
+          total: r2(qty * unitPrice),
+          isOptional: f.optional,
+          selectedByCustomer: false,
+          sortOrder: sort++,
+        });
+      }
+
+      const totals: EstimateTotals = {
+        price: totalPrice,
+        gpDollars: combinedGpDollars,
+        gpPct: combinedGpPct,
+        gpPerHour: combinedGpPerHour,
+        laborBudget: adjusted ? adjusted.laborDollars : null,
+        commissionDollars: combinedCommission,
+        budgetedHours: adjusted ? adjusted.budgetedHours : null,
+      };
 
       const pricingSnapshot: Record<string, unknown> = {
         inputs_key: inputsKey,
@@ -548,14 +786,15 @@ export default function EstimatorScreen({
         ai: ai?.status === 'ready' && ai.key === inputsKey && ai.rec ? { ...ai.rec, inputs_key: inputsKey } : null,
       };
 
-      // Edit-in-place: rewrite the child areas (delete then re-enqueue; the
-      // materials rows cascade). Online-only, checked above.
-      if (editing) await deleteEstimateAreas(editing.id);
+      // Edit-in-place: rewrite the child rows (line items first, then areas;
+      // the materials rows cascade). Online-only, checked above.
+      if (editing) await deleteEstimateChildren(editing.id);
 
+      const scopeWasEdited = !!editing?.scopeEditedAt;
       const { id } = await saveEstimateOffline({
         estimateId: editing?.id ?? null,
         status: editing?.status ?? 'draft',
-        systemTypeId,
+        systemTypeId: dominantSystemId,
         salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
         intake: intakePayload,
         customer: {
@@ -570,9 +809,10 @@ export default function EstimatorScreen({
         pricingSnapshot,
         areas: areaInputs,
         pricing,
-        sell,
+        totals,
         createdBy: editing?.createdBy ?? createdBy,
         leadId: editing?.leadId ?? leadLink?.id ?? null,
+        markScopeStale: scopeWasEdited,
       });
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
@@ -583,6 +823,10 @@ export default function EstimatorScreen({
             syncedNumber = (data as { estimate_number: number | null } | null)?.estimate_number ?? null;
           } catch { /* the number arrives when the outbox drains */ }
         }
+        // Auto-write the customer scope: on first save (scope null) and on any
+        // re-save while no human has edited it. An edited scope was marked
+        // stale above and is NEVER regenerated without the explicit click.
+        if (!scopeWasEdited) triggerScope(id);
       }
       await refreshPending();
       setSavedOffline(!navigator.onLine);
@@ -596,7 +840,7 @@ export default function EstimatorScreen({
       setSaveState('error');
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [salesperson, pricing, hasPrice, finalSell, editing, online, areas, visibleSlots, deriveProducts, systemTypeId, intake, basePrice, discounted, adjusted, systemType, mvb, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent]);
+  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, mvb, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: keyof typeof customer, v: string) => setCustomer((p) => ({ ...p, [k]: v }));
@@ -626,15 +870,18 @@ export default function EstimatorScreen({
             {pending > 0 && ` · ${pending} to sync`}
             {catalogFromCache && ' · cached catalog'}
           </span>
-          {/* Inside the dashboard's iframe modal the Dashboard link is redundant
-              (and navigating INSIDE the iframe would strand the user); a Close
-              button that messages the parent replaces it. */}
+          {/* Inside the dashboard's iframe modal a Back/Dashboard control is
+              redundant (and navigating INSIDE the iframe would strand the
+              user); a Close button that messages the parent replaces it. The
+              full page gets a real Back that returns where the rep came from. */}
           {embed ? (
             <button type="button" className="back as-btn" onClick={() => postToParent({ type: 'pec-estimator-close' })}>
               Close
             </button>
           ) : (
-            <a className="back" href="/">Dashboard</a>
+            <button type="button" className="back as-btn" onClick={goBack}>
+              ← Back
+            </button>
           )}
         </div>
       </header>
@@ -660,15 +907,6 @@ export default function EstimatorScreen({
                   <option key={s.id} value={s.id}>
                     {s.name} ({s.commission_pct ?? 0}% commission)
                   </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="field">
-              <span>System</span>
-              <select value={systemTypeId} onChange={(e) => onSystemChange(e.target.value)}>
-                {systemTypes.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </label>
@@ -699,10 +937,23 @@ export default function EstimatorScreen({
 
           <section className="card">
             <div className="areas-head"><span>Areas</span><button type="button" className="link" onClick={addArea}>+ Add area</button></div>
+            {/* Each area picks its own system: a garage plus a patio plus stem
+                walls is ONE estimate now. Pricing weights every area's own
+                system; the dominant (most sqft) system is what reports. */}
             {areas.map((a, i) => (
               <div className="area" key={i}>
                 <div className="area-top">
                   <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Area name" />
+                  <select
+                    className="area-system"
+                    value={a.systemTypeId}
+                    onChange={(e) => onAreaSystemChange(i, e.target.value)}
+                    aria-label={`System for ${a.name || `Area ${i + 1}`}`}
+                  >
+                    {systemTypes.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
                   <input
                     className="area-sqft"
                     inputMode="decimal"
@@ -716,28 +967,82 @@ export default function EstimatorScreen({
             ))}
           </section>
 
+          <section className="card">
+            <div className="areas-head">
+              <span>Add-ons</span>
+              <button type="button" className="link" onClick={addOneOff}>+ One-off line</button>
+            </div>
+            <label className="field">
+              <span>Add from catalog</span>
+              <select
+                value=""
+                onChange={(e) => { if (e.target.value) addAddonFromCatalog(e.target.value); }}
+              >
+                <option value="">Pick an add-on…</option>
+                {availableAddons.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}{a.default_price > 0 ? ` (${money2(a.default_price)}/${a.unit})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {addonForms.length === 0 && (
+              <p className="hint">Stem walls, joint filling, upgrades, drive time. Optional items stay OUT of the total until the customer picks them.</p>
+            )}
+            {addonForms.map((f) => (
+              <div className="addon-row" key={f.key}>
+                <div className="addon-main">
+                  {f.addonId ? (
+                    <span className="addon-label">{f.label}</span>
+                  ) : (
+                    <input className="addon-label-input" value={f.label} placeholder="One-off item name" onChange={(e) => setAddonForm(f.key, { label: e.target.value })} />
+                  )}
+                  {!f.addonId && <span className="oneoff-badge" title="Not in the catalog. If this keeps getting typed, promote it to the add-on catalog.">one-off</span>}
+                  <button type="button" className="x" aria-label={`Remove ${f.label || 'line'}`} onClick={() => removeAddonForm(f.key)}>×</button>
+                </div>
+                {!f.addonId && (
+                  <input className="addon-desc" value={f.description} placeholder="Description (customer sees this)" onChange={(e) => setAddonForm(f.key, { description: e.target.value })} />
+                )}
+                <div className="addon-nums">
+                  <label className="field"><span>Qty</span><input inputMode="decimal" value={f.qty} onChange={(e) => setAddonForm(f.key, { qty: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                  <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => setAddonForm(f.key, { unitPrice: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                  <label className="field"><span>Cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                  <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, { optional: e.target.checked })} /><span>Optional (customer picks)</span></label>
+                  <span className="addon-total">{money2(r2((Number(f.qty) > 0 ? Number(f.qty) : 1) * (Number(f.unitPrice) || 0)))}</span>
+                </div>
+                {Number(f.unitPrice) > 0 && !(Number(f.unitCost) > 0) && (
+                  <p className="warn addon-warn">No cost on this line: it books as pure margin and inflates GP until a cost is set{f.addonId ? ' (set a default in the Catalog)' : ''}.</p>
+                )}
+              </div>
+            ))}
+          </section>
+
           {/* Everything below is OPTIONAL and collapsed: a rep who never opens
               it still gets a correct price off the recipe defaults. */}
           <details className="card more-detail">
             <summary>More detail <span className="muted">(products, colors, work order)</span></summary>
-            {visibleSlots.length > 0 && areas.map((a, i) => (
-              <div className="area" key={i}>
-                {areas.length > 1 && <div className="area-label">{a.name || `Area ${i + 1}`}</div>}
-                <div className="slots">
-                  {visibleSlots.map((s) => (
-                    <label className="field" key={s.id}>
-                      <span>{s.label || s.material_type}{s.required ? ' *' : ''}</span>
-                      <SlotControl
-                        slot={s}
-                        value={a.slotValues[s.id] ?? ''}
-                        products={productsByType[s.material_type] ?? []}
-                        onChange={(v) => setSlot(i, s.id, v)}
-                      />
-                    </label>
-                  ))}
+            {mvb !== 'standalone' && areas.map((a, i) => {
+              const areaSlots = slotsFor(a.systemTypeId);
+              if (!areaSlots.length) return null;
+              return (
+                <div className="area" key={i}>
+                  {areas.length > 1 && <div className="area-label">{a.name || `Area ${i + 1}`} <span className="muted">({systemTypes.find((s) => s.id === a.systemTypeId)?.name ?? ''})</span></div>}
+                  <div className="slots">
+                    {areaSlots.map((s) => (
+                      <label className="field" key={s.id}>
+                        <span>{s.label || s.material_type}{s.required ? ' *' : ''}</span>
+                        <SlotControl
+                          slot={s}
+                          value={a.slotValues[s.id] ?? ''}
+                          products={productsByType[s.material_type] ?? []}
+                          onChange={(v) => setSlot(i, s.id, v)}
+                        />
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
             {mvb !== 'standalone' && (
               <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
             )}
@@ -770,12 +1075,19 @@ export default function EstimatorScreen({
             {err && <p className="error">{ERROR_COPY[err] ?? err}</p>}
             {hasPrice && pricing && adjusted && (
               <>
-                <div className="price">{money(finalSell)}</div>
-                {discounted && (
-                  <p className="hint">calculated {money(basePrice)}{adjusted.discountPct != null ? ` · ${adjusted.discountPct.toFixed(1)}% discount` : ''}</p>
+                <div className="price">{money(totalPrice)}</div>
+                {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
+                  <p className="hint">with every optional item: {money(totalAllOptions)}</p>
+                )}
+                {(discounted || addonsBaseTotal > 0) && (
+                  <p className="hint">
+                    system {money(finalSell)}
+                    {discounted ? ` (calculated ${money(basePrice)}${adjusted.discountPct != null ? `, ${adjusted.discountPct.toFixed(1)}% discount` : ''})` : ''}
+                    {addonsBaseTotal > 0 ? ` + add-ons ${money(addonsBaseTotal)}` : ''}
+                  </p>
                 )}
                 <div className="sell-row">
-                  <label className="field"><span>Sell price $</span>
+                  <label className="field"><span>Sell price $ (system)</span>
                     <input inputMode="decimal" value={sellInput} placeholder={basePrice != null ? String(basePrice) : ''} onChange={(e) => onSellInput(e.target.value)} />
                   </label>
                   <label className="field"><span>Discount %</span>
@@ -783,14 +1095,14 @@ export default function EstimatorScreen({
                   </label>
                 </div>
                 <dl className="metrics">
-                  <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(adjusted.gpDollars)} ({pct(adjusted.gpPct)})</dd></div>
-                  <div><dt>GP / hour</dt><dd>{money2(adjusted.gpPerHour)}</dd></div>
-                  <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(adjusted.commissionDollars)}</dd></div>
+                  <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
+                  <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
+                  <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
                   <div><dt>Budgeted hours</dt><dd>{adjusted.budgetedHours?.toFixed(1) ?? '--'}</dd></div>
                   {!config.hideMaterialQty && <div><dt>Materials</dt><dd>{money2(pricing.materialsCost)}</dd></div>}
                 </dl>
                 {gpBelowTarget && (
-                  <p className="warn gp-warn">GP is below the {targetGpPctResolved}% target for this system. Saving still works; the number is just red on purpose.</p>
+                  <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (sqft-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
                 )}
                 {pricing.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
                   <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
@@ -801,7 +1113,7 @@ export default function EstimatorScreen({
                     {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
                   </button>
                   {saveState === 'saved' && (
-                    <span className="save-note ok">{savedOffline ? 'Saved offline · will sync when online' : 'Saved & synced'}</span>
+                    <span className="save-note ok">{savedOffline ? 'Saved offline · will sync when online · scope writes itself once connected (or from the estimate page)' : 'Saved & synced'}</span>
                   )}
                   {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
                 </div>
@@ -826,6 +1138,7 @@ export default function EstimatorScreen({
                   )}
                 </div>
                 <p className="comps-rule">{compsLabel}</p>
+                {mixedCompsNote && <p className="warn">{mixedCompsNote}</p>}
                 <div className="comps-table-wrap">
                   <table className="comps-table">
                     <thead><tr><th>Customer</th><th>Sqft</th><th>Price</th><th>$/sqft</th><th>GP%</th></tr></thead>
@@ -856,6 +1169,12 @@ export default function EstimatorScreen({
               <>
                 <div className="ai-range">{money(ai.rec.recommended_low)} to {money(ai.rec.recommended_high)}</div>
                 <p className="ai-why">{ai.rec.why}</p>
+                {ai.rec.history_available && ai.rec.intent_read && (
+                  <p className="ai-why"><strong>Customer signal:</strong> {ai.rec.intent_read}</p>
+                )}
+                {ai.rec.history_available === false && (
+                  <p className="hint">No call or text history on file for this customer.</p>
+                )}
                 <p className="calcver">The AI never sets the price; you do.</p>
               </>
             )}
