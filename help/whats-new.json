@@ -1,5 +1,38 @@
 [
   {
+    "id": "estimate-preview",
+    "date": "2026-07-13",
+    "title": "Preview an estimate before you send it",
+    "summary": "The estimate page has a Preview button that shows the exact page the customer will get, including the scope, the line items, and the optional add-ons, without sending anything. It opens in a window over the dashboard, the accept and decline buttons are shown disabled, and a PREVIEW banner runs across the top so there is no confusing it with the real thing. Nothing is sent and the customer link stays private.",
+    "howto": [
+      "Open an estimate and click Preview.",
+      "Look it over the way the customer will see it. Close the window when you are done.",
+      "When it looks right, use Send to customer to actually send it."
+    ]
+  },
+  {
+    "id": "estimate-scope-blanks",
+    "date": "2026-07-13",
+    "title": "The estimator asks about blanks in the scope",
+    "summary": "Some of the scope templates have blanks in them (for example the area a coating is going on, or the project duration). The estimator now asks you to fill those in while you are on site, in a Finish the scope section, and the answers drop straight into the customer's scope of work. If you saved quickly and skipped them, the estimate page shows the same questions so you can finish at the desk. If a blank is still there when you go to send, you get a clear warning first, because a customer should never read the word BLANK in a document they are signing.",
+    "howto": [
+      "In the estimator, fill in anything under Finish the scope before you save.",
+      "On the estimate page, use the Finish the scope card to answer anything left, then the scope rewrites itself.",
+      "If you try to send with a blank still in the scope, confirm the warning only if you really mean to."
+    ]
+  },
+  {
+    "id": "estimate-duplicate-warning",
+    "date": "2026-07-13",
+    "title": "A heads-up before you start a second estimate on a lead",
+    "summary": "If a lead already has an open estimate, Start estimate now asks before creating another one, so a lead does not quietly end up with three. It lists the open estimates with their number, status, and price; you can open one of those, or create a new one anyway if that is what you meant to do. Estimates that were declined or lost do not trigger the warning, since re-estimating after a no is normal.",
+    "howto": [
+      "Click Start estimate on a lead as usual.",
+      "If it already has an open estimate, pick Open to jump to it, or Create new anyway to keep going.",
+      "The lead's Estimates section shows the count so you can see it before you click."
+    ]
+  },
+  {
     "id": "estimator-multi-system-areas",
     "date": "2026-07-13",
     "title": "One estimate can cover a garage, a patio, and more, each its own system",
