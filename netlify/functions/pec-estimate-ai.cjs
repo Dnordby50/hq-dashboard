@@ -16,6 +16,20 @@
 // paragraph of why; the rep decides. When there are zero comps it must SAY it
 // is pricing without comparables instead of inventing confidence.
 //
+// INTENT SIGNAL (2026-07-13): when the estimate hangs off a lead (lead_id in
+// the body), the customer's Quo (OpenPhone) history is read as intent signal:
+// 'call' lead_events (the pec-openphone-sync writer), pec_call_log rows (the
+// pec-webhook-quo call events, matched by the lead's phone), and the SMS
+// thread in pec_sms_log (same webhook; matched by phone). Any intent claim
+// must cite a specific quote from a transcript or text so the read is
+// auditable instead of vibes. HONESTY REQUIREMENT: pec-openphone-sync has
+// never successfully returned data from the live API (2026-07-11 Cowork log),
+// so every source is assumed possibly EMPTY; with no history the response
+// carries history_available=false (computed SERVER-SIDE, never model-claimed)
+// and intent_read is forced null, so the panel says "no call history on file"
+// instead of the model inferring intent from silence. A history-read failure
+// never breaks the price read.
+//
 // Caching: when estimate_id is present (reopening a saved estimate), a stored
 // pricing_snapshot whose inputs_key matches is served without a model call, so
 // reopening never re-bills. A fresh result is merged back onto the row. The
@@ -60,15 +74,17 @@ const SYSTEM_PROMPT = `You are the pricing analyst for Prescott Epoxy Company (P
 - If the comps sample is empty, say plainly that you are pricing WITHOUT comparables and lean on the calculator price and target margin only.
 - If the comps sample is small or was widened (the rule label says so), name that limitation.
 - The calculator price is engineered to hit the target gross profit; recommending below it means recommending margin give-up, so justify it or do not do it.
+- COMMUNICATION HISTORY, when present, is intent signal only (urgency, budget language, competing quotes, timeline, who decides). Every intent claim MUST include a short verbatim quote from a transcript or text to back it, so the read is auditable. When the history section says there is none, set intent_read to null and draw NO conclusions from the silence.
 - You NEVER set the price; the salesperson decides.
 Respond with ONLY a JSON object, no markdown fences, exactly these keys:
 {
   "recommended_low": <integer dollars, bottom of the sell range>,
   "recommended_high": <integer dollars, top of the sell range>,
-  "why": "one short paragraph (3-5 sentences) explaining the range against the comps' $/sqft, the calculator price, and the target GP, including any sample-size caveat"
+  "why": "one short paragraph (3-5 sentences) explaining the range against the comps' $/sqft, the calculator price, and the target GP, including any sample-size caveat",
+  "intent_read": "2-4 sentences on the customer's intent, each claim backed by a verbatim quote from the calls/texts" OR null when there is no communication history
 }`;
 
-function buildUserPrompt(b) {
+function buildUserPrompt(b, history) {
   const lines = [];
   lines.push('ESTIMATE IN PROGRESS:');
   lines.push(JSON.stringify({
@@ -90,7 +106,71 @@ function buildUserPrompt(b) {
       actual_gp_pct: r.gp_pct != null ? Number((Number(r.gp_pct) * 100).toFixed(1)) : null,
     })),
   }));
+  lines.push('');
+  if (history && history.available) {
+    lines.push('COMMUNICATION HISTORY (Quo calls and texts with this customer, newest first):');
+    lines.push(JSON.stringify(history.items));
+  } else {
+    lines.push('COMMUNICATION HISTORY: none. NO CALL OR TEXT HISTORY IS ON FILE for this customer. Set intent_read to null and infer nothing from the silence.');
+  }
   return lines.join('\n');
+}
+
+const clip = (s, n) => {
+  const str = String(s == null ? '' : s);
+  return str.length > n ? str.slice(0, n) + ' …[truncated]' : str;
+};
+
+// Read the lead's Quo history from the three places the existing integrations
+// land data (NO new integration): 'call' lead_events (pec-openphone-sync),
+// pec_call_log (pec-webhook-quo call events, matched by the lead's phone), and
+// pec_sms_log (same webhook, the SMS thread). Every source is best-effort and
+// assumed possibly empty; a failure here must never break the price read.
+async function loadQuoHistory(leadId) {
+  const none = { available: false, items: [] };
+  if (!leadId) return none;
+  const items = [];
+  let phoneTail = '';
+  try {
+    const leads = await sb('GET', `/leads?id=eq.${encodeURIComponent(leadId)}&select=phone&limit=1`);
+    phoneTail = (Array.isArray(leads) && leads[0] && leads[0].phone ? String(leads[0].phone) : '').replace(/\D/g, '').slice(-10);
+  } catch (_) { /* phone-matched sources just skip */ }
+
+  try {
+    const evts = await sb('GET', `/lead_events?lead_id=eq.${encodeURIComponent(leadId)}&event_type=eq.call&select=created_at,payload&order=created_at.desc&limit=10`);
+    for (const e of (Array.isArray(evts) ? evts : [])) {
+      items.push({ kind: 'call', at: e.created_at, detail: clip(JSON.stringify(e.payload || {}), 3000) });
+    }
+  } catch (_) { /* empty is the expected state; the sync has never returned live data */ }
+
+  if (phoneTail) {
+    const orFilter = `or=(from_number.like.*${phoneTail},to_number.like.*${phoneTail})`;
+    try {
+      const calls = await sb('GET', `/pec_call_log?${orFilter}&select=direction,occurred_at,duration_seconds,summary,next_steps,transcript&order=occurred_at.desc&limit=10`);
+      for (const c of (Array.isArray(calls) ? calls : [])) {
+        const turns = Array.isArray(c.transcript)
+          ? c.transcript.map((t) => `${(t && (t.identifier || t.speaker || t.userId)) || 'speaker'}: ${(t && (t.content || t.text)) || ''}`).join('\n')
+          : null;
+        items.push({
+          kind: 'call',
+          at: c.occurred_at,
+          direction: c.direction,
+          duration_seconds: c.duration_seconds,
+          summary: c.summary ? clip(c.summary, 1500) : null,
+          next_steps: c.next_steps ? clip(c.next_steps, 500) : null,
+          transcript: turns ? clip(turns, 4000) : null,
+        });
+      }
+    } catch (_) { /* best effort */ }
+    try {
+      const texts = await sb('GET', `/pec_sms_log?${orFilter}&select=direction,created_at,body&order=created_at.desc&limit=50`);
+      for (const t of (Array.isArray(texts) ? texts : [])) {
+        items.push({ kind: 'text', at: t.created_at, direction: t.direction, body: clip(t.body, 800) });
+      }
+    } catch (_) { /* best effort */ }
+  }
+
+  return items.length ? { available: true, items } : none;
 }
 
 // Pull the model's prose out of a Messages API response.
@@ -124,7 +204,8 @@ function parseRecommendation(text) {
     throw new Error('recommendation missing a valid low/high range');
   }
   if (typeof obj.why !== 'string' || !obj.why.trim()) throw new Error('recommendation missing why');
-  return { recommended_low: Math.round(low), recommended_high: Math.round(high), why: obj.why.trim() };
+  const intent = typeof obj.intent_read === 'string' && obj.intent_read.trim() ? obj.intent_read.trim() : null;
+  return { recommended_low: Math.round(low), recommended_high: Math.round(high), why: obj.why.trim(), intent_read: intent };
 }
 
 exports.handler = async (event) => {
@@ -169,6 +250,9 @@ exports.handler = async (event) => {
 
     if (!ANTHROPIC_API_KEY) return jc(503, { success: false, error: 'ANTHROPIC_API_KEY not configured' });
 
+    // Quo history as intent signal (best-effort; empty is normal and honest).
+    const history = await loadQuoHistory(body.lead_id || null).catch(() => ({ available: false, items: [] }));
+
     // 25s abort, one second under Netlify's 26s kill, so a slow model returns
     // a clean 500 instead of a lambda timeout (pec-metrics-ai pattern).
     const ctrl = new AbortController();
@@ -187,7 +271,7 @@ exports.handler = async (event) => {
           model: MODEL,
           max_tokens: 1000,
           system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: buildUserPrompt(body) }],
+          messages: [{ role: 'user', content: buildUserPrompt(body, history) }],
         }),
       });
       if (!res.ok) {
@@ -200,6 +284,11 @@ exports.handler = async (event) => {
     }
 
     const recommendation = parseRecommendation(textFromMessage(out));
+    // history_available is a SERVER fact, never a model claim, and with no
+    // history the intent read is forced null so silence can never become
+    // invented intent no matter what the model returned.
+    recommendation.history_available = history.available;
+    if (!history.available) recommendation.intent_read = null;
     recommendation.model = MODEL;
     recommendation.generated_at = new Date().toISOString();
     recommendation.inputs_key = inputsKey || null;
