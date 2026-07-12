@@ -90,6 +90,27 @@ function buildUserPrompt(lead, events, estimates) {
   return lines.join('\n');
 }
 
+// Pull the model's prose out of a Messages API response.
+// Do NOT assume content[0] is the text block: the API can return other block
+// types (thinking, tool_use, redacted_thinking) FIRST, in which case
+// content[0].text is undefined and any downstream JSON.parse dies on an empty
+// string ("Unexpected end of JSON input", the live prod failure on
+// 2026-07-11). Join every text block instead, and if there are none, throw an
+// error that names what we actually got so the next reader is not guessing.
+function textFromMessage(out) {
+  const blocks = (out && Array.isArray(out.content)) ? out.content : [];
+  const text = blocks
+    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+  if (!text) {
+    const types = blocks.map((b) => (b && b.type) || 'unknown').join(',') || 'none';
+    throw new Error(`no text block in model response (stop_reason=${out && out.stop_reason}, blocks=[${types}])`);
+  }
+  return text;
+}
+
 // Strip accidental markdown fences and parse.
 function parseAnalysis(text) {
   const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
@@ -139,7 +160,7 @@ exports.handler = async (event) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1500,
+        max_tokens: 2000,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: buildUserPrompt(lead, events, estimates) }],
       }),
@@ -149,7 +170,7 @@ exports.handler = async (event) => {
       throw new Error(`Anthropic API ${res.status}: ${text.slice(0, 500)}`);
     }
     const out = await res.json();
-    const analysis = parseAnalysis(out.content && out.content[0] && out.content[0].text);
+    const analysis = parseAnalysis(textFromMessage(out));
     analysis.model = MODEL;
     analysis.generated_at = new Date().toISOString();
 

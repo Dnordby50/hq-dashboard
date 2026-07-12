@@ -9,6 +9,7 @@ import {
 } from '../../lib/calculator';
 import { useOnline } from '../../lib/useOnline';
 import { saveEstimateOffline, type AreaInput, type AreaMaterialInput } from '../../offline/estimates';
+import type { LeadLink } from '../../lib/lead';
 import { listOps } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
 
@@ -73,10 +74,12 @@ export default function EstimatorScreen({
   catalog,
   createdBy,
   catalogFromCache,
+  leadLink,
 }: {
   catalog: Catalog;
   createdBy: string | null;
   catalogFromCache: boolean;
+  leadLink: LeadLink | null;
 }) {
   const { systemTypes, productsById, recipeSlotsBySystemType, salespeople, config } = catalog;
   const online = useOnline();
@@ -246,6 +249,7 @@ export default function EstimatorScreen({
         areas: areaInputs,
         pricing,
         createdBy,
+        leadId: leadLink?.id ?? null,
       });
       if (navigator.onLine) await drainOutbox().catch(() => {});
       await refreshPending();
@@ -253,14 +257,23 @@ export default function EstimatorScreen({
     } catch {
       setSaveState('error');
     }
-  }, [salesperson, pricing, hasPrice, areas, visibleSlots, deriveProducts, systemTypeId, intake, createdBy, refreshPending]);
+  }, [salesperson, pricing, hasPrice, areas, visibleSlots, deriveProducts, systemTypeId, intake, createdBy, leadLink, refreshPending]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
 
   return (
     <div className="screen">
       <header className="topbar">
-        <div className="brand">PEC Estimator <span className="beta">beta</span></div>
+        <div className="brand">
+          PEC Estimator <span className="beta">beta</span>
+          {/* Visible proof the deep link took. Without it, "attached to the lead"
+              is invisible state and the rep cannot tell a good link from a bad one. */}
+          {leadLink && (
+            <span className="lead-chip" title={`This estimate will attach to lead ${leadLink.id}`}>
+              Lead: {leadLink.name || 'linked'}
+            </span>
+          )}
+        </div>
         <div className="status">
           <span className={online ? 'dot online' : 'dot offline'} title={online ? 'Online' : 'Offline'} />
           <span className="status-text">

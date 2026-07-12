@@ -171,8 +171,19 @@ exports.handler = async (event) => {
       throw new Error(`Anthropic API ${res.status}: ${text.slice(0, 500)}`);
     }
     const out = await res.json();
-    const text = String((out.content && out.content[0] && out.content[0].text) || '').trim();
-    if (!text) throw new Error('empty insight from the model');
+    // Same trap pec-lead-ai hit live on 2026-07-11: content[0] is not
+    // guaranteed to be the text block (thinking / tool_use blocks can come
+    // first), so join every text block instead of indexing block zero.
+    const blocks = Array.isArray(out.content) ? out.content : [];
+    const text = blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
+      .trim();
+    if (!text) {
+      const types = blocks.map((b) => (b && b.type) || 'unknown').join(',') || 'none';
+      throw new Error(`empty insight from the model (stop_reason=${out.stop_reason}, blocks=[${types}])`);
+    }
 
     const insight = { text, generated_at: new Date().toISOString(), model: MODEL };
     // Cache write: PATCH the existing row (we already know from cachedRows

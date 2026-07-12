@@ -34,6 +34,9 @@ export type SaveEstimateArgs = {
   areas: AreaInput[];
   pricing: PricingResult;
   createdBy: string | null;
+  // Set when the estimator was opened from a lead (/estimator/?lead_id=<uuid>).
+  // Null for a walk-up estimate with no lead behind it.
+  leadId: string | null;
 };
 
 // Persist an estimate offline: write a local copy of the parent first (durable +
@@ -48,6 +51,9 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   const estimateRow = {
     id: estimateId,
     system_type_id: args.systemTypeId,
+    // Carries through the outbox unchanged, so an estimate written offline at a
+    // job site still lands attached to its lead when the phone gets signal.
+    lead_id: args.leadId ?? null,
     status: 'draft',
     intake: {
       ...args.intake,

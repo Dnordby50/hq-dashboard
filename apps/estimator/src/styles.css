@@ -46,6 +46,18 @@ body { background: #f1f5f9; color: var(--ink); }
   margin-left: 0.4rem;
   vertical-align: middle;
 }
+/* Shown only when the estimator was opened from a lead (/estimator/?lead_id=). */
+.lead-chip {
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  white-space: nowrap;
+}
 .topbar .back { color: #cbd5e1; text-decoration: none; font-size: 0.85rem; }
 .topbar .back:hover { color: #fff; }
 .status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #cbd5e1; }

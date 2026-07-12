@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-lead-link",
+    "date": "2026-07-11",
+    "title": "Start estimate now carries the lead with it",
+    "summary": "Hitting Start estimate on a lead opens the estimator already tied to that lead, so the estimate shows up on the lead's page and counts in the lead's value instead of floating loose.",
+    "howto": [
+      "Open a lead from the Leads board and click Start estimate.",
+      "Look for the Lead chip next to the PEC Estimator title, it names the lead the estimate will attach to.",
+      "Build and save as usual. An estimate saved offline still attaches once the phone gets signal."
+    ]
+  },
+  {
     "id": "lead-detail-ai-panel",
     "date": "2026-07-11",
     "title": "Click a lead for its full story plus an AI game plan",

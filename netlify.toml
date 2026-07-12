@@ -27,8 +27,9 @@
 [functions."pec-auto-progress"]
   schedule = "0 13 * * *"
 
-# OpenPhone call/transcript pull onto leads (as 'call' lead_events). Idles
-# with a 200 until OPENPHONE_API_KEY is set in the Netlify env (Dylan).
+# OpenPhone (now Quo) call/transcript pull onto leads (as 'call' lead_events).
+# Uses the QUO_API_KEY already in the env (same key pec-send-sms uses against the
+# same api.openphone.com base); no separate OPENPHONE_API_KEY is required.
 # Every 15 minutes; the call-id dedupe makes overlapping runs harmless.
 [functions."pec-openphone-sync"]
   schedule = "*/15 * * * *"

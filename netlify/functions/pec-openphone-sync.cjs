@@ -16,13 +16,18 @@
 //      events before insert, so a rewound or overlapping cursor re-inserts
 //      nothing. The cursor is a fast-forward hint, the call id is the truth.
 //
-// Missing OPENPHONE_API_KEY exits 200 with a note (Dylan handoff) so the
-// schedule can ship before the key exists. Per-call try/catch like
-// pec-auto-progress: one bad call never kills the sweep.
+// KEY (corrected 2026-07-11, Cowork): this does NOT need a new env var.
+// OpenPhone is now branded Quo, and the key for this exact API already lives in
+// Netlify as QUO_API_KEY, where pec-send-sms.cjs uses it against the SAME base
+// (api.openphone.com/v1) with the SAME raw-key Authorization header. So
+// QUO_API_KEY is the primary and OPENPHONE_API_KEY is only a fallback, kept so
+// a separately-scoped key can be swapped in later without a code change.
+// Neither set exits 200 with a note, so the schedule stays harmless.
+// Per-call try/catch like pec-auto-progress: one bad call never kills the sweep.
 
 const { sb, json } = require('./_pec-supabase.cjs');
 
-const OPENPHONE_API_KEY = process.env.OPENPHONE_API_KEY;
+const OPENPHONE_API_KEY = process.env.QUO_API_KEY || process.env.OPENPHONE_API_KEY;
 const CURSOR_KEY = 'openphone_sync_cursor';
 const OVERLAP_MS = 5 * 60 * 1000;
 const MAX_PAGES = 5; // 5 x 50 calls per sweep; the 15-minute cadence catches up
@@ -48,7 +53,7 @@ async function op(path) {
 
 exports.handler = async () => {
   if (!OPENPHONE_API_KEY) {
-    return json(200, { ok: true, skipped: true, note: 'OPENPHONE_API_KEY not set; sync idle (Dylan handoff)' });
+    return json(200, { ok: true, skipped: true, note: 'no QUO_API_KEY / OPENPHONE_API_KEY; sync idle' });
   }
   try {
     // Cursor (with overlap) -> createdAfter for the calls list.

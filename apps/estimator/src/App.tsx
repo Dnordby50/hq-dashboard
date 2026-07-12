@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { getCachedCatalog, loadCatalog, type Catalog } from './lib/catalog';
 import { drainOutbox } from './offline/sync';
+import { leadIdFromUrl, loadLeadLink, type LeadLink } from './lib/lead';
 import EstimatorScreen from './features/estimator/EstimatorScreen';
 
 type State =
   | { phase: 'loading' }
   | { phase: 'signed-out' }
   | { phase: 'error'; message: string }
-  | { phase: 'ready'; catalog: Catalog; createdBy: string | null; fromCache: boolean };
+  | { phase: 'ready'; catalog: Catalog; createdBy: string | null; fromCache: boolean; leadLink: LeadLink | null };
 
 export default function App() {
   const [state, setState] = useState<State>({ phase: 'loading' });
@@ -43,8 +44,13 @@ export default function App() {
           return;
         }
       }
+      // The dashboard's lead detail "Start estimate" button lands here as
+      // /estimator/?lead_id=<uuid>. Resolving the name is best effort (see
+      // lib/lead.ts); a failed lookup still attaches the estimate to the lead.
+      const leadLink = await loadLeadLink(leadIdFromUrl());
+
       if (!alive || !catalog) return;
-      setState({ phase: 'ready', catalog, createdBy, fromCache });
+      setState({ phase: 'ready', catalog, createdBy, fromCache, leadLink });
 
       // Best-effort: push anything queued from a previous offline session.
       if (navigator.onLine) drainOutbox().catch(() => {});
@@ -74,7 +80,14 @@ export default function App() {
         </p>
       </Centered>
     );
-  return <EstimatorScreen catalog={state.catalog} createdBy={state.createdBy} catalogFromCache={state.fromCache} />;
+  return (
+    <EstimatorScreen
+      catalog={state.catalog}
+      createdBy={state.createdBy}
+      catalogFromCache={state.fromCache}
+      leadLink={state.leadLink}
+    />
+  );
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
