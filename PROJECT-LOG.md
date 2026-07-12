@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-13 12:20 MST] Cowork: 15b smoke test PASSED against prod, and found that the comps GP% column is not gross profit
+By: Cowork
+Changed: claude-code-prompt-15c-scope-questions-duplicates-preview.md (new), PROJECT-LOG.md. No app code touched. Test data written to prod and cleaned up (below).
+
+SMOKE TEST, run against the live deploy (e5eb85b) with the webhook secret and the Supabase MCP. Built a real two-system estimate in prod (EST-102027: Standard Flake garage 600 sqft + Quartz patio 400 sqft, a Stem Walls optional add-on line, intake stem_walls true and coat_past_garage false) and drove the REAL functions.
+PASSED:
+- Scope writer (pec-estimate-scope): generated per-line scope for all three line items (1995 / 1313 / 270 chars). Resolved the placeholders from the estimate data exactly as designed: "Concrete past garage door is not included" (coat_past_garage false) and "Stem walls are included" (intake true). Every exclusion survived verbatim, including "Does not include cracks wider than 1/8 inch, or spalls deeper than 1/4 inch or larger than 3 inches in diameter".
+- NEVER-OVERWRITE: hand-edited the scope in the DB, set scope_edited_at, then asked for a regenerate. Got 409 {"needs_confirm":true} and the hand-edited sentence was still there afterward, untouched. This is the guarantee that matters most in 15b and it holds.
+- Public estimate page: 404 on the REAL public_token while sent_at is null (private-until-sent), and 404 on a bogus token.
+- Estimator UI: thin form as specified (customer, salesperson, MVB none/add-on/MVB-only, per-area system select, add-on catalog, Back button). Comps panel rendered "Median $5.93/sqft, $3,557 at 600 sqft, 10 jobs, same system (Standard Flake), 450 to 750 sqft, last 12 months", which matches the database exactly (independent SQL count: 10 in-band).
+- pec-estimate-ai correctly rejects a call with no comps/sqft/calc_price (comps are computed client-side in the canonical production/comps.js and passed in, by design, so the model reasons over exactly what the rep is looking at).
+Test data cleanup: EST-102027 soft-deleted (deleted_at set). NOT deleted, and Dylan says he will handle them: EST-102026 and EST-102028, both on the "Cowork Smoke Test" lead, plus one orphan pre-numbering draft from 2026-06-22.
+
+THE FINDING (this is the important part): the Comparable jobs panel is showing 82 to 94% GROSS PROFIT on real completed jobs, and it is not gross profit. Of 34 pec_prod_job_costing rows, 31 carry salary_wages_cost, ZERO carry any materials cost, and ZERO carry commission_cost. So actualGpPct (production/comps.js:41) computes (price - labor) / price. It nulls GP only when EVERY bucket is zero, so a wages-only row passes the guard and renders as GP. The calculator targets 52%. A rep reading "comparable jobs run 89% GP" concludes there is a 35-point cushion to discount into. There is not one. The code is doing what it was told; the costing DATA is 90% empty, and the guard is too weak to notice.
+Dylan's call (2026-07-13): keep the number visible, he is backfilling the costing data himself. Registered, and prompt 15c honors it. Two code changes go in anyway: (a) actualGpPct sums BOTH materials_ordered_cost AND materials_used_cost, which is invisible at $0 but DOUBLE-COUNTS materials the moment he backfills both, so his data fix would produce a new wrong number; it now takes used, else ordered, never both. (b) A completeness note next to the number ("0 of 10 comps have materials costed") so it stops reading as gospel in the meantime.
+
+ALSO RAISED BY DYLAN, folded into 15c: the scope writer leaves the templates' literal "BLANK" placeholders verbatim (correct, it must never invent scope) but never ASKS anyone to fill them, so a BLANK can ride to a customer; and one lead accumulated three estimates because nothing guards Start estimate (reproduced on the Cowork smoke-test lead, no customer data involved). Plus a new ask: preview the customer-facing estimate before sending.
+Why: 15b shipped a pricing brain, and a pricing brain that reports a 30-point-too-high margin is worse than no pricing brain. Everything else in 15b did what it said.
+Files touched: claude-code-prompt-15c-scope-questions-duplicates-preview.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 15c (Dylan has it).
+Handoff to Cowork: None.
+Handoff to Dylan:
+1. Backfill pec_prod_job_costing: materials and commission are empty on every row. Until then the comps GP% reads roughly 30 points too high. Code cannot invent numbers that are not there.
+2. Delete the two smoke-test estimates (EST-102026, EST-102028) and the "Cowork Smoke Test" lead when convenient, or say the word and Cowork will soft-delete them.
+3. Price the add-ons (still $0 from the 15b seeds) and write the scope snippets for Drive Time and Upgraded Flake Color.
+
+---
+
 ## [2026-07-13 04:30 MST] Claude Code: build prompt 15b shipped, multi-system estimates + the add-on catalog + AI-written scope
 By: Claude Code
 Changed: supabase/migrations/2026-07-13_estimate_addons_scope.sql (new, APPLIED to prod), production/calculator.js, production/calculator.test.js, production/estimate15b.test.js (new), netlify/functions/pec-estimate-scope.cjs (new), netlify/functions/pec-estimate-ai.cjs, netlify/functions/pec-public-estimate.cjs, apps/estimator/src/* (calculator/catalog/ai/estimateLoad libs, offline estimates/outbox, EstimatorScreen, types, styles), index.html, package.json, help/whats-new.json, PROJECT-LOG.md. Commits: 7a5f633 (migration), b8cafe1 (engine), 3903b12 (estimator app), 52da70d (scope + Quo functions), cc764bc (dashboard + public page line items as rows), 7d23bea (harness + What's New), c9e2cdd (add-on catalog UI), plus this docs commit. Built on 33be35c (confirmed on main before starting). Read prompt 15's PROJECT-LOG entries first; no conflicts with its judgment calls.
