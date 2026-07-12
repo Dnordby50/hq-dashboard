@@ -137,6 +137,24 @@
   status = 200
   force = true
 
+# Public customer-facing estimate (same token pattern as /pay). /e/<token>
+# renders the estimate for review + sign; the link is inert (404) until the
+# dashboard's Send action stamps estimates.sent_at.
+[[redirects]]
+  from = "/e/*"
+  to = "/.netlify/functions/pec-public-estimate?token=:splat"
+  status = 200
+  force = true
+
+# The estimate page's three actions (accept and sign / request changes /
+# reject). Same function; the HTTP method distinguishes render (GET) from
+# action (POST), mirroring the change-order pattern below.
+[[redirects]]
+  from = "/api/estimate/action"
+  to = "/.netlify/functions/pec-public-estimate"
+  status = 200
+  force = true
+
 # Public change-order approval page (same token pattern as /pay), plus its
 # signing POST. Both land on pec-public-change-order; the HTTP method
 # distinguishes render (GET) from sign (POST).
