@@ -140,3 +140,62 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 .metrics dt { color: var(--muted); font-size: 0.85rem; margin: 0; }
 .metrics dd { margin: 0; font-weight: 600; }
 .calcver { color: var(--muted); font-size: 0.7rem; text-align: right; margin: 0; }
+
+/* ---- Thin-estimator additions (2026-07-12 build) ------------------------- */
+
+.right { display: flex; flex-direction: column; gap: 1rem; }
+
+.cust-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.cust-grid .field { margin-bottom: 0; }
+@media (max-width: 520px) { .cust-grid { grid-template-columns: 1fr; } }
+
+/* MVB tri-state control: off / add-on / standalone. */
+.mvb-seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 0.5rem; overflow: hidden; }
+.seg {
+  flex: 1;
+  background: #fff;
+  border: none;
+  border-right: 1px solid var(--line);
+  padding: 0.55rem 0.4rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  color: var(--ink);
+}
+.seg:last-child { border-right: none; }
+.seg.active { background: var(--accent); color: #fff; font-weight: 700; }
+
+/* Collapsed by default: a rep who never opens it still gets a correct price
+   off the recipe defaults. */
+.more-detail > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+  list-style: revert;
+}
+.more-detail > summary .muted { font-weight: 400; }
+.more-detail[open] > summary { margin-bottom: 0.7rem; }
+.area-label { font-size: 0.8rem; font-weight: 700; color: var(--muted); margin-bottom: 0.3rem; }
+
+.sell-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+.sell-row .field { margin-bottom: 0; }
+.gp-red { color: var(--bad) !important; }
+.gp-warn { border-color: #fecaca; background: #fef2f2; color: var(--bad); }
+
+.comps-median { font-size: 1.15rem; font-weight: 800; }
+.comps-rule { color: var(--muted); font-size: 0.78rem; margin: 0.2rem 0 0.6rem; }
+.comps-table-wrap { max-height: 16rem; overflow-y: auto; }
+.comps-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.comps-table th {
+  text-align: left; color: var(--muted); font-weight: 600; font-size: 0.7rem;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line); padding: 0.25rem 0.4rem 0.25rem 0;
+  position: sticky; top: 0; background: var(--panel);
+}
+.comps-table td { border-bottom: 1px solid var(--line); padding: 0.35rem 0.4rem 0.35rem 0; white-space: nowrap; }
+.comps-table td:first-child { white-space: normal; }
+
+.ai-range { font-size: 1.15rem; font-weight: 800; }
+.ai-why { font-size: 0.88rem; line-height: 1.45; margin: 0.4rem 0; }
+
+/* The embed Close control reuses the .back link look on a real button. */
+.back.as-btn { background: none; border: none; cursor: pointer; font-family: inherit; }

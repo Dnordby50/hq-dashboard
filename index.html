@@ -22231,7 +22231,7 @@ function _appendPlaceholderLines(lines, areaPlans) {
 // call this so estimated materials + hours are identical (Dylan's rule). Areas
 // are normalized to flake + basecoat picks ONLY (topcoat dropped, so the slot
 // default fills it, matching renderBudget); FULL slot set incl. editor_hidden.
-function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], revenue = 0, laborRate = 0 }) {
+function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], revenue = 0, laborRate = 0, standaloneMvb = false, standaloneMvbProductId = null }) {
   const planAreas = (areas || []).map((a) => {
     const sqftNum = Number(a.sqft);
     return {
@@ -22245,7 +22245,7 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
   let materialLines = [];
   let planError = null;
   try {
-    materialLines = computeMaterialPlan({ areas: planAreas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake }).lines;
+    materialLines = computeMaterialPlan({ areas: planAreas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, standaloneMvb, standaloneMvbProductId }).lines;
   } catch (err) { planError = err && err.message ? err.message : String(err); }
   const materialsBudget = materialLines.reduce((s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0), 0);
   const primarySystem = planAreas[0] ? (systemTypes || []).find((s) => s.id === planAreas[0].system_type_id) : null;
@@ -22263,7 +22263,7 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
 // PERCENTS. Rounds price UP to priceIncrement so realized GP never drops below
 // target. Guard: divisor <= 0 returns an error, never divides. CALC_VERSION must
 // match the canonical file (a test asserts it).
-const CALC_VERSION = '2026-06-21.3';
+const CALC_VERSION = '2026-07-12.1';
 function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charmBand = 0 } = {}) {
   const inc = Number(increment) > 0 ? Number(increment) : 1;
   let price = Math.round(Number(priceRaw) / inc) * inc;
@@ -22275,9 +22275,9 @@ function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charm
   }
   return price;
 }
-function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], laborRate = 0, commissionPct = 0, actualCommissionPct = null, targetGpPct = 50, fixedAddons = 0, priceIncrement = 5, charmThreshold = 1000, charmBand = 250 }) {
+function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake = {}, systemTypes = [], laborRate = 0, commissionPct = 0, actualCommissionPct = null, targetGpPct = 50, fixedAddons = 0, priceIncrement = 5, charmThreshold = 1000, charmBand = 250, standaloneMvb = false, standaloneMvbProductId = null }) {
   const _r2 = (n) => Math.round(n * 100) / 100;
-  const base = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate });
+  const base = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate, standaloneMvb, standaloneMvbProductId });
   if (base.planError) return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   if (base.laborPct == null) return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const M = Number(base.materialsBudget) || 0;
@@ -22295,7 +22295,7 @@ function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, 
   if (!(divisor > 0)) return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const priceRaw = (M + F) / divisor;
   const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
-  const atPrice = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: price, laborRate });
+  const atPrice = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: price, laborRate, standaloneMvb, standaloneMvbProductId });
   const commissionDollars = _r2(commFrac * price);
   const laborDollars = _r2(laborFrac * price);
   const gpDollars = _r2(price - (M + laborDollars + commissionDollars + F));

@@ -6,6 +6,7 @@ import {
   computeJobEstimate as _computeJobEstimate,
   computeMaterialPlan as _computeMaterialPlan,
   roundEstimatePrice as _roundEstimatePrice,
+  applySellPrice as _applySellPrice,
   CALC_VERSION as _CALC_VERSION,
 } from '../../../../production/calculator.js';
 
@@ -68,13 +69,19 @@ export type PricingInput = {
   priceIncrement?: number;
   charmThreshold?: number;
   charmBand?: number;
+  // MVB: 'addon' passes true with the real slot map; 'standalone' passes true
+  // with recipeSlotsBySystemType {} so only the MVB line prices.
+  standaloneMvb?: boolean;
+  standaloneMvbProductId?: string | null;
 };
 
 export type PricingResult = ReturnType<typeof _computeEstimatePricing>;
+export type SellPriceResult = ReturnType<typeof _applySellPrice>;
 
 export const computeEstimatePricing = (input: PricingInput): PricingResult =>
   _computeEstimatePricing(input);
 export const computeJobEstimate = _computeJobEstimate;
 export const computeMaterialPlan = _computeMaterialPlan;
 export const roundEstimatePrice = _roundEstimatePrice;
+export const applySellPrice = _applySellPrice;
 export const CALC_VERSION: string = _CALC_VERSION;

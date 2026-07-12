@@ -48,4 +48,58 @@ declare module '*/production/calculator.js' {
     priceRaw: number,
     opts?: { increment?: number; charmThreshold?: number; charmBand?: number },
   ): number;
+  export function applySellPrice(
+    pricing: unknown,
+    sellPrice: number,
+  ): {
+    sellPrice: number | null;
+    discountPct: number | null;
+    laborDollars: number | null;
+    commissionDollars: number | null;
+    gpDollars: number | null;
+    gpPct: number | null;
+    budgetedHours: number | null;
+    gpPerHour: number | null;
+  };
+}
+
+// Ambient declaration for the canonical comps engine (repo-root
+// production/comps.js), same one-copy-of-the-math posture as the calculator.
+declare module '*/production/comps.js' {
+  export function parseSqft(text: unknown): number | null;
+  export function median(nums: Array<number | null>): number | null;
+  export function actualGpPct(price: unknown, costing: unknown): number | null;
+  export function joinCompsSources(jobs: unknown[], prodJobs: unknown[], costings: unknown[]): Array<{
+    id: string;
+    customer_name: string | null;
+    system_type_id: string | null;
+    completed_date: string | null;
+    sqft: number | null;
+    price: number | null;
+    ppsf: number | null;
+    gp_pct: number | null;
+  }>;
+  export function buildComps(input: {
+    candidates: unknown[];
+    systemTypeId: string | null;
+    sqft: number | null;
+    now: Date | number;
+  }): {
+    rule: string;
+    sample_size: number;
+    exact_count: number;
+    median_ppsf: number | null;
+    rows: Array<{
+      id: string;
+      customer_name: string | null;
+      system_type_id: string | null;
+      completed_date: string | null;
+      sqft: number | null;
+      price: number | null;
+      ppsf: number | null;
+      gp_pct: number | null;
+    }>;
+    target_sqft: number | null;
+  };
+  export function compsRuleLabel(comps: unknown, systemName?: string | null): string;
 }

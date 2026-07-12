@@ -27,7 +27,7 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-06-21.3';
+export const CALC_VERSION = '2026-07-12.1';
 
 /**
  * Round a raw cost-plus price to a clean, sell-able number.
@@ -181,6 +181,11 @@ export function computeMaterialPlan({
  * @param {Array}  input.systemTypes  rows with { id, labor_budget_pct }
  * @param {number} input.revenue   the FRONT-END job price (public.jobs.price)
  * @param {number} input.laborRate default_labor_hourly_rate
+ * @param {boolean} input.standaloneMvb  add the MVB product across total sqft
+ *   (passthrough to computeMaterialPlan; see its MVB comment). For an MVB-ONLY
+ *   estimate, callers pass recipeSlotsBySystemType: {} so no system recipe
+ *   prices, while the areas keep their system_type_id for the labor % lookup.
+ * @param {string|null} input.standaloneMvbProductId
  * @returns {{ materialLines, materialsBudget, laborPct, laborBudget, budgetedHours }}
  */
 export function computeJobEstimate({
@@ -191,6 +196,8 @@ export function computeJobEstimate({
   systemTypes = [],
   revenue = 0,
   laborRate = 0,
+  standaloneMvb = false,
+  standaloneMvbProductId = null,
 }) {
   // Strip everything but the estimate-relevant fields. Dropping topcoat_product_id
   // is deliberate: the front-end Budget card never passes it, so the topcoat
@@ -215,6 +222,8 @@ export function computeJobEstimate({
       productsById,
       recipeSlotsBySystemType,
       defaultBasecoatByFlake,
+      standaloneMvb,
+      standaloneMvbProductId,
     }).lines;
   } catch (err) {
     planError = err && err.message ? err.message : String(err);
@@ -306,11 +315,13 @@ export function computeEstimatePricing({
   priceIncrement = 5,
   charmThreshold = 1000,
   charmBand = 250,
+  standaloneMvb = false,
+  standaloneMvbProductId = null,
 }) {
   // Pass 1: materials cost M is independent of revenue, so price at revenue:0.
   const base = computeJobEstimate({
     areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
-    systemTypes, revenue: 0, laborRate,
+    systemTypes, revenue: 0, laborRate, standaloneMvb, standaloneMvbProductId,
   });
   if (base.planError) {
     return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
@@ -347,7 +358,7 @@ export function computeEstimatePricing({
   // Pass 2: feed the rounded price back for labor budget + budgeted hours.
   const atPrice = computeJobEstimate({
     areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
-    systemTypes, revenue: price, laborRate,
+    systemTypes, revenue: price, laborRate, standaloneMvb, standaloneMvbProductId,
   });
 
   // Recompute money buckets at the ROUNDED price so display is internally
@@ -403,6 +414,45 @@ export function computeEstimatePricing({
     calcVersion: CALC_VERSION,
     error: null,
   };
+}
+
+/**
+ * Re-derive the money buckets at a rep-chosen SELL price (free-typed price or
+ * discount percent). The engine's computeEstimatePricing solves for the price
+ * that HITS the target GP; this answers the follow-up "and what happens to GP
+ * if I sell it for X instead". Same bucket math as computeEstimatePricing's
+ * pass 2 (labor and commission are fractions OF revenue, materials and fixed
+ * add-ons are not), so the two can never disagree at sellPrice === price.
+ *
+ * Estimator-only export: index.html never calls this, so it has NO inline
+ * mirror (the mirror rule covers functions the dashboard inlines).
+ *
+ * @param {Object} pricing  a successful computeEstimatePricing result
+ * @param {number} sellPrice  the rep's chosen price
+ * @returns {{ sellPrice, discountPct, laborDollars, commissionDollars,
+ *   gpDollars, gpPct, budgetedHours, gpPerHour }}
+ */
+export function applySellPrice(pricing, sellPrice) {
+  const sell = Number(sellPrice);
+  const base = Number(pricing && pricing.price);
+  const laborFrac = (Number(pricing && pricing.laborPct) || 0) / 100;
+  const commFrac = (Number(pricing && pricing.standardCommissionPct) || 0) / 100;
+  const M = Number(pricing && pricing.materialsCost) || 0;
+  const F = Number(pricing && pricing.fixedAddons) || 0;
+  if (!(sell > 0)) {
+    return { sellPrice: null, discountPct: null, laborDollars: null, commissionDollars: null, gpDollars: null, gpPct: null, budgetedHours: null, gpPerHour: null };
+  }
+  const laborDollars = round2(laborFrac * sell);
+  const commissionDollars = round2(commFrac * sell);
+  const gpDollars = round2(sell - (M + laborDollars + commissionDollars + F));
+  const gpPct = gpDollars / sell;
+  // Budgeted hours scale linearly with the labor budget (labor% x price / rate),
+  // so hours at the sell price are base hours x (sell / base price).
+  const baseHours = pricing && pricing.budgetedHours != null ? Number(pricing.budgetedHours) : null;
+  const budgetedHours = baseHours != null && base > 0 ? round2(baseHours * (sell / base)) : null;
+  const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
+  const discountPct = base > 0 ? round2((1 - sell / base) * 100) : null;
+  return { sellPrice: sell, discountPct, laborDollars, commissionDollars, gpDollars, gpPct, budgetedHours, gpPerHour };
 }
 
 /**
