@@ -22913,7 +22913,7 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
 // PERCENTS. Rounds price UP to priceIncrement so realized GP never drops below
 // target. Guard: divisor <= 0 returns an error, never divides. CALC_VERSION must
 // match the canonical file (a test asserts it).
-const CALC_VERSION = '2026-07-12.1';
+const CALC_VERSION = '2026-07-13.1';
 function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charmBand = 0 } = {}) {
   const inc = Number(increment) > 0 ? Number(increment) : 1;
   let price = Math.round(Number(priceRaw) / inc) * inc;
@@ -22929,28 +22929,55 @@ function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, 
   const _r2 = (n) => Math.round(n * 100) / 100;
   const base = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: 0, laborRate, standaloneMvb, standaloneMvbProductId });
   if (base.planError) return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
-  if (base.laborPct == null) return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const M = Number(base.materialsBudget) || 0;
   const F = Number(fixedAddons) || 0;
-  // Target GP can be overridden per system. Commission used for PRICING is the
-  // STANDARD house rate (commissionPct), NOT the assigned rep, so the quote is
+  // Multi-system estimates (2026-07-13): labor % and target GP are the
+  // SQFT-WEIGHTED averages of the areas' own systems (per-system target
+  // override wins over the passed global, per area). Sqft-weighted on purpose:
+  // a naive mean would let a small high-target area drag the whole estimate.
+  // Commission used for PRICING is the STANDARD house rate, so the quote is
   // identical regardless of who is assigned.
-  const primary = (areas && areas[0]) ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id) : null;
-  const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
   const standardComm = Number(commissionPct) || 0;
-  const laborFrac = Number(base.laborPct) / 100;
+  const systemById = new Map((systemTypes || []).map((s) => [s.id, s]));
+  let weightSum = 0, laborWeighted = 0, gpWeighted = 0;
+  let laborMissing = (areas || []).length === 0;
+  for (const a of areas || []) {
+    const sys = systemById.get(a.system_type_id);
+    if (!sys || sys.labor_budget_pct == null) { laborMissing = true; break; }
+    const w = Number(a.sqft) > 0 ? Number(a.sqft) : 0;
+    const sysTarget = sys.target_gp_pct != null ? Number(sys.target_gp_pct) : Number(targetGpPct);
+    weightSum += w;
+    laborWeighted += w * Number(sys.labor_budget_pct);
+    gpWeighted += w * sysTarget;
+  }
+  if (laborMissing) return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  if (!(weightSum > 0)) {
+    const n = (areas || []).length;
+    for (const a of areas || []) {
+      const sys = systemById.get(a.system_type_id);
+      laborWeighted += Number(sys.labor_budget_pct) / n;
+      gpWeighted += (sys.target_gp_pct != null ? Number(sys.target_gp_pct) : Number(targetGpPct)) / n;
+    }
+    weightSum = 1;
+  }
+  const laborPctWeighted = laborWeighted / weightSum;
+  const targetGp = gpWeighted / weightSum;
+  const laborFrac = laborPctWeighted / 100;
   const commFrac = standardComm / 100;
   const gpFrac = targetGp / 100;
   const divisor = 1 - laborFrac - commFrac - gpFrac;
   if (!(divisor > 0)) return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   const priceRaw = (M + F) / divisor;
   const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
-  const atPrice = computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, systemTypes, revenue: price, laborRate, standaloneMvb, standaloneMvbProductId });
   const commissionDollars = _r2(commFrac * price);
   const laborDollars = _r2(laborFrac * price);
   const gpDollars = _r2(price - (M + laborDollars + commissionDollars + F));
   const gpPct = price > 0 ? gpDollars / price : null;
-  const budgetedHours = atPrice.budgetedHours;
+  // Labor budget + hours from the WEIGHTED labor fraction (a primary-system
+  // pick would be wrong on a mixed-system estimate).
+  const laborBudget = laborFrac * price;
+  const rate = Number(laborRate) || 0;
+  const budgetedHours = rate > 0 ? laborBudget / rate : null;
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? _r2(gpDollars / budgetedHours) : null;
   const actualComm = actualCommissionPct == null ? standardComm : (Number(actualCommissionPct) || 0);
   const commissionPayout = _r2((actualComm / 100) * price);
@@ -22958,7 +22985,7 @@ function computeEstimatePricing({ areas, productsById, recipeSlotsBySystemType, 
   const realizedGp = _r2(gpDollars + gpVariance);
   const realizedGpPct = price > 0 ? realizedGp / price : null;
   const materialsMissingCost = (base.materialLines || []).filter((l) => l.unit_cost_snapshot == null).map((l) => l.product_name);
-  return { price, priceRaw: _r2(priceRaw), materialsCost: M, fixedAddons: F, laborPct: Number(base.laborPct), laborBudget: atPrice.laborBudget, laborDollars, commissionPct: standardComm, standardCommissionPct: standardComm, actualCommissionPct: actualComm, commissionDollars, commissionPayout, gpVariance, targetGpPct: targetGp, gpDollars, gpPct, realizedGp, realizedGpPct, gpPerHour, budgetedHours, materialLines: base.materialLines, materialsMissingCost, divisor, calcVersion: CALC_VERSION, error: null };
+  return { price, priceRaw: _r2(priceRaw), materialsCost: M, fixedAddons: F, laborPct: laborPctWeighted, laborBudget, laborDollars, commissionPct: standardComm, standardCommissionPct: standardComm, actualCommissionPct: actualComm, commissionDollars, commissionPayout, gpVariance, targetGpPct: targetGp, gpDollars, gpPct, realizedGp, realizedGpPct, gpPerHour, budgetedHours, materialLines: base.materialLines, materialsMissingCost, divisor, calcVersion: CALC_VERSION, error: null };
 }
 // Bridge the calculator to the first <script type="module"> block (the CRM
 // app). slotHtml / renderBudget / renderWorkOrder live there and call these,

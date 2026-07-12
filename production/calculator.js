@@ -27,7 +27,7 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-07-12.1';
+export const CALC_VERSION = '2026-07-13.1';
 
 /**
  * Round a raw cost-plus price to a clean, sell-able number.
@@ -264,17 +264,21 @@ export function computeJobEstimate({
  *   => R = (M + F) / (1 - laborFrac - commFrac - targetGpFrac)
  *
  * Steps:
- *   1. Pass 1 at revenue:0 gets M (materialsBudget is revenue-independent) and
- *      laborPct from the primary system.
- *   2. Resolve targetGP% and commission% (per-system override on the primary
- *      system wins over the passed global). All three rates are PERCENTS.
+ *   1. Pass 1 at revenue:0 gets M (materialsBudget is revenue-independent);
+ *      materials were always per-area (each area prices with its own system's
+ *      recipe via recipeSlotsBySystemType[area.system_type_id]).
+ *   2. Resolve laborPct and targetGP% as the SQFT-WEIGHTED averages of the
+ *      areas' systems (multi-system estimates, 2026-07-13; each system's own
+ *      target_gp_pct override wins over the passed global, per area). All
+ *      three rates are PERCENTS. A single-system estimate weights to that
+ *      system's own numbers, identical to the old primary-system pick.
  *   3. divisor = 1 - laborFrac - commFrac - targetGpFrac. If divisor <= 0 the
  *      target is mathematically impossible: return an error, never divide.
  *   4. priceRaw = (M + F) / divisor; round UP to priceIncrement so rounding
  *      never drops realized GP below target.
- *   5. Pass 2 at the rounded price gets laborBudget + budgetedHours, then
- *      recompute the money buckets at the rounded price so the displayed GP$,
- *      GP%, commission$ all agree with the shown price.
+ *   5. Recompute the money buckets at the rounded price so the displayed GP$,
+ *      GP%, commission$, labor budget, and budgeted hours all agree with the
+ *      shown price (hours = weightedLabor% x price / laborRate).
  *
  * Commission is a STANDARD budgeted house expense baked into the price, so the
  * customer's quote is identical no matter which salesperson is assigned. The
@@ -326,24 +330,52 @@ export function computeEstimatePricing({
   if (base.planError) {
     return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   }
-  if (base.laborPct == null) {
-    // No primary system / no labor_budget_pct: cannot solve cost-plus on labor.
-    return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
-  }
 
   const M = Number(base.materialsBudget) || 0;
   const F = Number(fixedAddons) || 0;
 
-  // Target GP can be overridden per system. Commission used for PRICING is the
-  // STANDARD house rate (commissionPct), NOT the assigned rep's rate, so the
-  // customer quote is identical regardless of who is assigned.
-  const primary = (areas && areas[0])
-    ? (systemTypes || []).find((s) => s.id === areas[0].system_type_id)
-    : null;
-  const targetGp = primary && primary.target_gp_pct != null ? Number(primary.target_gp_pct) : Number(targetGpPct);
+  // Multi-system estimates (2026-07-13): each area carries its OWN system, so
+  // labor % and target GP are the SQFT-WEIGHTED averages of the areas' systems
+  // (per-system target_gp_pct override wins over the passed global, per area).
+  // Sqft-weighted on purpose: a naive mean would let a small high-target area
+  // drag the whole estimate's target (and the GP-red warning) around. With one
+  // weighted divisor, the realized GP% at the solved price is exactly the
+  // weighted target. A single-system estimate weights to that system's own
+  // numbers, so prompt-15 estimates price byte-identically.
   const standardComm = Number(commissionPct) || 0;
+  const systemById = new Map((systemTypes || []).map((s) => [s.id, s]));
+  let weightSum = 0;
+  let laborWeighted = 0;
+  let gpWeighted = 0;
+  let laborMissing = (areas || []).length === 0;
+  for (const a of areas || []) {
+    const sys = systemById.get(a.system_type_id);
+    if (!sys || sys.labor_budget_pct == null) { laborMissing = true; break; }
+    // Equal weights when no area has sqft yet (all-zero estimates still error
+    // helpfully instead of dividing by zero).
+    const w = Number(a.sqft) > 0 ? Number(a.sqft) : 0;
+    const sysTarget = sys.target_gp_pct != null ? Number(sys.target_gp_pct) : Number(targetGpPct);
+    weightSum += w;
+    laborWeighted += w * Number(sys.labor_budget_pct);
+    gpWeighted += w * sysTarget;
+  }
+  if (laborMissing) {
+    // An area's system is missing labor_budget_pct: cannot solve cost-plus.
+    return { error: 'NO_LABOR_PCT', materialLines: base.materialLines, calcVersion: CALC_VERSION };
+  }
+  if (!(weightSum > 0)) {
+    const n = (areas || []).length;
+    for (const a of areas || []) {
+      const sys = systemById.get(a.system_type_id);
+      laborWeighted += Number(sys.labor_budget_pct) / n;
+      gpWeighted += (sys.target_gp_pct != null ? Number(sys.target_gp_pct) : Number(targetGpPct)) / n;
+    }
+    weightSum = 1;
+  }
+  const laborPctWeighted = laborWeighted / weightSum;
+  const targetGp = gpWeighted / weightSum;
 
-  const laborFrac = Number(base.laborPct) / 100;
+  const laborFrac = laborPctWeighted / 100;
   const commFrac = standardComm / 100;
   const gpFrac = targetGp / 100;
   const divisor = 1 - laborFrac - commFrac - gpFrac;
@@ -355,12 +387,6 @@ export function computeEstimatePricing({
   const priceRaw = (M + F) / divisor;
   const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
 
-  // Pass 2: feed the rounded price back for labor budget + budgeted hours.
-  const atPrice = computeJobEstimate({
-    areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
-    systemTypes, revenue: price, laborRate, standaloneMvb, standaloneMvbProductId,
-  });
-
   // Recompute money buckets at the ROUNDED price so display is internally
   // consistent (same bucket set as computeCostingRow: materials, labor,
   // commission, plus fixed add-ons; other buckets are 0 at estimate time). The
@@ -370,7 +396,11 @@ export function computeEstimatePricing({
   const laborDollars = round2(laborFrac * price);
   const gpDollars = round2(price - (M + laborDollars + commissionDollars + F));
   const gpPct = price > 0 ? gpDollars / price : null;
-  const budgetedHours = atPrice.budgetedHours;
+  // Labor budget + hours from the WEIGHTED labor fraction (computeJobEstimate's
+  // primary-system laborPct would be wrong on a mixed-system estimate).
+  const laborBudget = laborFrac * price;
+  const rate = Number(laborRate) || 0;
+  const budgetedHours = rate > 0 ? laborBudget / rate : null;
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
 
   // The assigned rep's ACTUAL rate drives payout + GP variance only (never price).
@@ -392,8 +422,8 @@ export function computeEstimatePricing({
     priceRaw: round2(priceRaw),
     materialsCost: M,
     fixedAddons: F,
-    laborPct: Number(base.laborPct),
-    laborBudget: atPrice.laborBudget,
+    laborPct: laborPctWeighted,
+    laborBudget,
     laborDollars,
     commissionPct: standardComm,
     standardCommissionPct: standardComm,
@@ -453,6 +483,69 @@ export function applySellPrice(pricing, sellPrice) {
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
   const discountPct = base > 0 ? round2((1 - sell / base) * 100) : null;
   return { sellPrice: sell, discountPct, laborDollars, commissionDollars, gpDollars, gpPct, budgetedHours, gpPerHour };
+}
+
+/**
+ * The ONE optional-item money rule, shared by the estimator, the estimate
+ * page, and the public customer page: a line with is_optional=true is EXCLUDED
+ * from the total until selected_by_customer=true. `withAllOptions` answers the
+ * rep's other question ("and if they take everything?"). Tolerates both the
+ * row shape (is_optional) and the legacy jsonb shape (optional).
+ *
+ * @param {Array} items  estimate_line_items rows (or legacy jsonb items)
+ * @returns {number} sum of counted items' totals
+ */
+export function lineItemsTotal(items, { withAllOptions = false } = {}) {
+  return (Array.isArray(items) ? items : []).reduce((sum, li) => {
+    if (!li) return sum;
+    const optional = li.is_optional === true || li.optional === true;
+    if (optional && !li.selected_by_customer && !withAllOptions) return sum;
+    const t = Number(li.total);
+    return sum + (Number.isFinite(t) ? t : 0);
+  }, 0);
+}
+
+/**
+ * Gross-profit contribution of add-on / one-off line items, counted with the
+ * same optional rule as lineItemsTotal. Per counted line:
+ *   gp = total - qty*unit_cost - standardComm% * total
+ * Commission applies because the house commission is a percent of ALL revenue;
+ * labor is assumed inside unit_cost (an add-on's cost is its all-in cost).
+ * A line with revenue and NO cost contributes its full margin, which is
+ * exactly how a costless add-on inflates GP; the catalog's default_cost exists
+ * so that stops happening the moment Dylan prices it.
+ */
+export function lineItemsGp(items, standardCommissionPct = 0, { withAllOptions = false } = {}) {
+  const commFrac = (Number(standardCommissionPct) || 0) / 100;
+  return round2((Array.isArray(items) ? items : []).reduce((sum, li) => {
+    if (!li) return sum;
+    const optional = li.is_optional === true || li.optional === true;
+    if (optional && !li.selected_by_customer && !withAllOptions) return sum;
+    const t = Number(li.total) || 0;
+    const qty = Number.isFinite(Number(li.qty)) && Number(li.qty) > 0 ? Number(li.qty) : 1;
+    const cost = Number(li.unit_cost) || 0;
+    return sum + (t - qty * cost - commFrac * t);
+  }, 0));
+}
+
+/**
+ * Split one total across weights so the parts sum EXACTLY to the total (the
+ * last positive weight absorbs the rounding remainder). Used to allocate the
+ * estimate's system sell price across its per-area line items, so the customer
+ * page's line amounts always add up to the signed number. Zero/negative
+ * weights get 0; an all-zero weight set puts everything on the first part.
+ */
+export function allocateProportionally(total, weights) {
+  const t = Number(total) || 0;
+  const ws = (Array.isArray(weights) ? weights : []).map((w) => (Number(w) > 0 ? Number(w) : 0));
+  const wSum = ws.reduce((s, w) => s + w, 0);
+  if (!ws.length) return [];
+  if (!(wSum > 0)) return ws.map((_, i) => (i === 0 ? round2(t) : 0));
+  const parts = ws.map((w) => round2((t * w) / wSum));
+  const lastIdx = ws.reduce((best, w, i) => (w > 0 ? i : best), 0);
+  const drift = round2(t - parts.reduce((s, p) => s + p, 0));
+  parts[lastIdx] = round2(parts[lastIdx] + drift);
+  return parts;
 }
 
 /**

@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally } from './calculator.js';
 
 let passed = 0;
 let failed = 0;
@@ -794,6 +794,100 @@ assertThrows(() => {
   assertEq(r.materialsCost, 1442.57, 'reference job: M = 1442.57 (kits rounded up)');
   assertEq(r.price, 5345, 'reference job: 1000 sqft flake at 52% GP = $5,345 (price-sheet anchor)');
   assertEq(Math.abs(r.gpPct - 0.52) < 0.005, true, 'reference job: budgeted GP within half a point of 52%');
+}
+
+// --- Multi-system estimates (2026-07-13): per-area system + weighted rates ---
+// Two areas, two systems: the garage prices off the flake recipe, the patio
+// off the quartz recipe, and labor % / target GP are the sqft-weighted
+// averages of the two systems (NOT areas[0]'s system, NOT a naive mean).
+{
+  const products = {
+    fbc: { id: 'fbc', name: 'Flake Base',   material_type: 'Basecoat', spread_rate: 100, kit_size: 1, unit_cost: 100 },
+    qbc: { id: 'qbc', name: 'Quartz Base',  material_type: 'Basecoat', spread_rate: 100, kit_size: 1, unit_cost: 200 },
+  };
+  const slots = {
+    flake:  [{ id: 'f1', order_index: 1, material_type: 'Basecoat', default_product_id: 'fbc', required: true }],
+    quartz: [{ id: 'q1', order_index: 1, material_type: 'Basecoat', default_product_id: 'qbc', required: true }],
+  };
+  const systems = [
+    { id: 'flake',  labor_budget_pct: 15, target_gp_pct: 52 },
+    { id: 'quartz', labor_budget_pct: 25, target_gp_pct: null }, // null -> global 50
+  ];
+  const r = computeEstimatePricing({
+    areas: [
+      { id: 'g', name: 'Garage', sqft: 600, system_type_id: 'flake' },
+      { id: 'p', name: 'Patio',  sqft: 200, system_type_id: 'quartz' },
+    ],
+    productsById: products, recipeSlotsBySystemType: slots, defaultBasecoatByFlake: {},
+    systemTypes: systems, laborRate: 50, commissionPct: 6, targetGpPct: 50,
+    charmThreshold: 0, charmBand: 0, priceIncrement: 1,
+  });
+  assertEq(r.error, null, 'mixed systems: prices clean');
+  // Each area used its OWN recipe: 6 flake-base kits @100 + 2 quartz-base @200.
+  assertEq(r.materialsCost, 600 / 100 * 100 + 200 / 100 * 200, 'mixed systems: each area priced with its own recipe (M = 600 + 400)');
+  // Weighted labor = (600*15 + 200*25)/800 = 17.5; weighted GP = (600*52 + 200*50)/800 = 51.5.
+  assertEq(r.laborPct, 17.5, 'mixed systems: labor % is the sqft-weighted average');
+  assertEq(r.targetGpPct, 51.5, 'mixed systems: target GP is the sqft-weighted average');
+  // Solve: 1000 / (1 - .175 - .06 - .515) = 1000 / .25 = 4000.
+  assertEq(r.price, 4000, 'mixed systems: closed form solves on the weighted divisor');
+  assertEq(Math.abs(r.gpPct - 0.515) < 1e-9, true, 'mixed systems: realized GP equals the weighted target');
+  // Hours come from the weighted labor budget: .175 * 4000 / 50 = 14.
+  assertEq(r.budgetedHours, 14, 'mixed systems: budgeted hours use the weighted labor fraction');
+
+  // A single-system estimate still prices exactly as before (regression: the
+  // 1000 sqft flake anchor above already pins this; here the weighted path
+  // degenerates to the one system's own numbers).
+  const solo = computeEstimatePricing({
+    areas: [{ id: 'g', name: 'Garage', sqft: 600, system_type_id: 'flake' }],
+    productsById: products, recipeSlotsBySystemType: slots, defaultBasecoatByFlake: {},
+    systemTypes: systems, laborRate: 50, commissionPct: 6, targetGpPct: 50,
+    charmThreshold: 0, charmBand: 0, priceIncrement: 1,
+  });
+  assertEq(solo.laborPct, 15, 'single system: weighted labor degenerates to the system value');
+  assertEq(solo.targetGpPct, 52, 'single system: weighted target degenerates to the system value');
+
+  // ANY area whose system is missing labor_budget_pct blocks the solve (the
+  // old code only checked areas[0]'s system).
+  const noLabor = computeEstimatePricing({
+    areas: [
+      { id: 'g', name: 'Garage', sqft: 600, system_type_id: 'flake' },
+      { id: 'x', name: 'Patio',  sqft: 200, system_type_id: 'nolabor' },
+    ],
+    productsById: products, recipeSlotsBySystemType: { ...slots, nolabor: slots.quartz },
+    defaultBasecoatByFlake: {},
+    systemTypes: [...systems, { id: 'nolabor', labor_budget_pct: null }],
+    laborRate: 50, commissionPct: 6, targetGpPct: 50,
+  });
+  assertEq(noLabor.error, 'NO_LABOR_PCT', 'mixed systems: any area missing labor % blocks the solve');
+}
+
+// --- Line-item money rules (add-ons / one-offs) -------------------------------
+{
+  const items = [
+    { id: '1', label: 'Stem walls',  qty: 40, unit_price: 10, unit_cost: 4, total: 400, is_optional: true,  selected_by_customer: false },
+    { id: '2', label: 'Drive time',  qty: 2,  unit_price: 75, unit_cost: 50, total: 150, is_optional: false, selected_by_customer: false },
+    { id: '3', label: 'No-cost upsell', qty: 1, unit_price: 300, unit_cost: 0, total: 300, is_optional: false, selected_by_customer: false },
+  ];
+  assertEq(lineItemsTotal(items), 450, 'optional add-on EXCLUDED from the total until selected');
+  assertEq(lineItemsTotal(items, { withAllOptions: true }), 850, 'all-options total includes the unselected optional');
+  const selected = items.map((li) => (li.id === '1' ? { ...li, selected_by_customer: true } : li));
+  assertEq(lineItemsTotal(selected), 850, 'selecting the optional moves it into the total');
+  // GP at 6% commission: drive time 150 - 100 - 9 = 41; no-cost 300 - 0 - 18 =
+  // 282 (a costless add-on inflates GP, which is the catalog-cost argument).
+  assertEq(lineItemsGp(items, 6), 323, 'line GP counts only included lines, net of cost and commission');
+  const costed = items.map((li) => (li.id === '3' ? { ...li, unit_cost: 120 } : li));
+  assertEq(lineItemsGp(costed, 6), 203, 'setting the add-on cost pulls GP down (no more inflation)');
+  assertEq(lineItemsGp(selected, 6), 323 + (400 - 160 - 24), 'selected optional contributes its GP too');
+  // Legacy jsonb shape (optional key) still honors the exclusion rule.
+  assertEq(lineItemsTotal([{ optional: true, selected_by_customer: false, total: 99 }]), 0, 'legacy jsonb optional shape still excluded');
+}
+
+// --- allocateProportionally: parts always sum exactly to the total -----------
+{
+  assertEq(allocateProportionally(100, [1, 1, 1]), [33.33, 33.33, 33.34], 'allocation: last positive weight absorbs the rounding remainder');
+  assertEq(allocateProportionally(5345, [600, 200]).reduce((s, p) => s + p, 0), 5345, 'allocation: sums exactly to the total');
+  assertEq(allocateProportionally(500, [0, 0]), [500, 0], 'allocation: all-zero weights put everything on the first part');
+  assertEq(allocateProportionally(500, [300, 0]), [500, 0], 'allocation: zero-weight parts get nothing');
 }
 
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
