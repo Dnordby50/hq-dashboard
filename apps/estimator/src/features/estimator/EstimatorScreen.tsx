@@ -24,7 +24,7 @@ import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
-import { buildComps, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
+import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
 import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
 import { supabase } from '../../lib/supabase';
 import { uuid } from '../../offline/uuid';
@@ -441,6 +441,7 @@ export default function EstimatorScreen({
     return buildComps({ candidates: compCandidates, systemTypeId: dominantSystemId, sqft: totalSqft, now: new Date() });
   }, [compCandidates, dominantSystemId, totalSqft]);
   const compsLabel = comps ? compsRuleLabel(comps, dominantSystem?.name ?? null) : '';
+  const compsCaveat = comps ? compsGpCaveat(comps) : null;
   const dominantSqft = systemsBySqft[0]?.sqft ?? 0;
   const mixedCompsNote = mixedSystems
     ? `This estimate spans ${systemsBySqft.length} systems; comps cover the dominant one (${dominantSystem?.name ?? 'unknown'}, ${Math.round(dominantSqft).toLocaleString()} of ${Math.round(totalSqft).toLocaleString()} sqft).`
@@ -773,6 +774,11 @@ export default function EstimatorScreen({
               rule_label: compsLabel,
               sample_size: comps.sample_size,
               median_ppsf: comps.median_ppsf,
+              // Persisted so the estimate page shows the SAME GP% caveat the
+              // rep saw at pricing time without re-fetching the costing rows.
+              complete_count: comps.complete_count,
+              gp_pct_count: comps.gp_pct_count,
+              gp_caveat: compsCaveat,
               rows: comps.rows.map((r) => ({
                 customer_name: r.customer_name,
                 completed_date: r.completed_date,
@@ -780,6 +786,7 @@ export default function EstimatorScreen({
                 price: r.price,
                 ppsf: r.ppsf,
                 gp_pct: r.gp_pct,
+                gp_complete: r.gp_complete,
               })),
             }
           : null,
@@ -1155,6 +1162,7 @@ export default function EstimatorScreen({
                     </tbody>
                   </table>
                 </div>
+                {compsCaveat && <p className="hint" style={{ marginTop: 6 }}>{compsCaveat}.</p>}
               </>
             )}
           </section>

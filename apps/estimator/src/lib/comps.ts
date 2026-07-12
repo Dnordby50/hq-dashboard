@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import {
   buildComps as _buildComps,
   compsRuleLabel as _compsRuleLabel,
+  compsGpCaveat as _compsGpCaveat,
   joinCompsSources,
 } from '../../../../production/comps.js';
 
@@ -19,6 +20,7 @@ export type CompsResult = ReturnType<typeof _buildComps>;
 
 export const buildComps = _buildComps;
 export const compsRuleLabel = _compsRuleLabel;
+export const compsGpCaveat: (comps: CompsResult) => string | null = _compsGpCaveat;
 
 export async function loadCompCandidates(): Promise<CompCandidate[]> {
   const [jobsRes, prodRes, costRes] = await Promise.all([

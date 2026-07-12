@@ -72,6 +72,8 @@ declare module '*/production/comps.js' {
   export function parseSqft(text: unknown): number | null;
   export function median(nums: Array<number | null>): number | null;
   export function actualGpPct(price: unknown, costing: unknown): number | null;
+  export function costingMaterials(costing: unknown): number;
+  export function costingComplete(costing: unknown): boolean;
   export function joinCompsSources(jobs: unknown[], prodJobs: unknown[], costings: unknown[]): Array<{
     id: string;
     customer_name: string | null;
@@ -81,6 +83,7 @@ declare module '*/production/comps.js' {
     price: number | null;
     ppsf: number | null;
     gp_pct: number | null;
+    gp_complete: boolean;
   }>;
   export function buildComps(input: {
     candidates: unknown[];
@@ -91,6 +94,8 @@ declare module '*/production/comps.js' {
     rule: string;
     sample_size: number;
     exact_count: number;
+    complete_count: number;
+    gp_pct_count: number;
     median_ppsf: number | null;
     rows: Array<{
       id: string;
@@ -101,8 +106,10 @@ declare module '*/production/comps.js' {
       price: number | null;
       ppsf: number | null;
       gp_pct: number | null;
+      gp_complete: boolean;
     }>;
     target_sqft: number | null;
   };
   export function compsRuleLabel(comps: unknown, systemName?: string | null): string;
+  export function compsGpCaveat(comps: unknown): string | null;
 }

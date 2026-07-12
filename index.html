@@ -17175,7 +17175,18 @@ async function renderEstimateDetail(estimateId) {
                   <td style="text-align:right">${r.ppsf != null ? '$' + Number(r.ppsf).toFixed(2) : '--'}</td>
                   <td style="text-align:right">${r.gp_pct != null ? (Number(r.gp_pct) * 100).toFixed(0) + '%' : '--'}</td>
                 </tr>`).join('')}</tbody>
-              </table></div>` : ''}
+              </table></div>
+              ${(() => {
+                // Prefer the caveat stored at pricing time; fall back to
+                // recomputing from the snapshot rows for estimates saved before
+                // 15c (gp_complete per row was not stored then, so count what
+                // has a GP% at all and say materials completeness is unknown).
+                if (snapComps.gp_caveat) return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">${esc(snapComps.gp_caveat)}.</div>`;
+                const withGp = snapComps.rows.filter(r => r.gp_pct != null);
+                if (!withGp.length) return '';
+                const complete = snapComps.rows.filter(r => r.gp_complete === true).length;
+                return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">GP% from job costing; ${complete} of ${snapComps.rows.length} comps have materials costed.</div>`;
+              })()}` : ''}
           ` : '<div style="color:var(--muted);font-size:.82rem">No comps snapshot on this estimate.</div>'}
           <div style="border-top:1px solid var(--rd-line,var(--border));margin-top:12px;padding-top:12px">
             ${snapAi ? `

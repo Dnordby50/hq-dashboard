@@ -35,20 +35,46 @@ export function median(nums) {
   return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
 }
 
+// Materials cost from a costing row, counted ONCE. materials_ordered_cost and
+// materials_used_cost are two views of the SAME spend (what was ordered vs what
+// actually went down), NOT two separate buckets: summing both double-counts
+// materials. Prefer the USED figure once it is populated (it is the truer
+// number), else fall back to ORDERED. Today both are $0 on every prod row, so
+// this is invisible; the day Dylan backfills, this is what keeps every comp
+// from silently understating GP by a full materials load (2026-07-13, 15c).
+export function costingMaterials(costing) {
+  if (!costing) return 0;
+  const used = Number(costing.materials_used_cost) || 0;
+  const ordered = Number(costing.materials_ordered_cost) || 0;
+  return used > 0 ? used : ordered;
+}
+
 // Actual GP fraction from a costing row: (price - all cost buckets) / price.
 // null when there is no costing row, no positive price, or the row's costs sum
 // to zero (an untouched costing row would otherwise read as a 100% GP job).
+// Materials are counted once (costingMaterials); the other buckets are summed
+// as-is.
 export function actualGpPct(price, costing) {
   const p = Number(price);
   if (!costing || !(p > 0)) return null;
-  const buckets = [
-    'materials_ordered_cost', 'materials_used_cost', 'equipment_rental_cost',
-    'salary_wages_cost', 'subcontractor_cost', 'misc_cost', 'bonus_cost',
-    'commission_cost',
+  const otherBuckets = [
+    'equipment_rental_cost', 'salary_wages_cost', 'subcontractor_cost',
+    'misc_cost', 'bonus_cost', 'commission_cost',
   ];
-  const total = buckets.reduce((s, k) => s + (Number(costing[k]) || 0), 0);
+  const total = costingMaterials(costing) + otherBuckets.reduce((s, k) => s + (Number(costing[k]) || 0), 0);
   if (!(total > 0)) return null;
   return (p - total) / p;
+}
+
+// Whether a costing row is COMPLETE enough for its GP% to be trustworthy:
+// both a positive materials cost AND a positive labor (salary/wages) cost. A
+// wages-only row (31 of 34 prod rows today) computes (price - labor) / price
+// and reads ~30 points too high, so the panel counts completeness next to the
+// number instead of presenting it as gospel. NOT a suppression: Dylan chose to
+// keep the number visible and backfill the data himself.
+export function costingComplete(costing) {
+  if (!costing) return false;
+  return costingMaterials(costing) > 0 && (Number(costing.salary_wages_cost) || 0) > 0;
 }
 
 // Join the three sources into comp candidates. Kept here (not in UI code) so
@@ -76,6 +102,10 @@ export function joinCompsSources(jobs, prodJobs, costings) {
       price,
       ppsf: sqft != null && price != null ? price / sqft : null,
       gp_pct: actualGpPct(price, costing),
+      // Carried so the panel can say "N of M comps have materials costed"
+      // without re-fetching the costing rows. True only when both materials
+      // and labor are present, so a wages-only row does not read as complete.
+      gp_complete: costingComplete(costing),
     };
   });
 }
@@ -134,10 +164,23 @@ export function buildComps({ candidates, systemTypeId, sqft, now }) {
     rule: rows.length ? chosen.rule : 'none',
     sample_size: rows.length,
     exact_count: exactCount,
+    // How many of the shown comps have COMPLETE costing (materials AND labor),
+    // so the panel can qualify the GP% column honestly. gp_pct_count is how
+    // many have any GP% at all (a positive cost total). complete <= gp_pct.
+    complete_count: rows.filter((r) => r.gp_complete).length,
+    gp_pct_count: rows.filter((r) => r.gp_pct != null).length,
     median_ppsf: median(rows.map((r) => r.ppsf)),
     rows,
     target_sqft: target,
   };
+}
+
+// One honest sentence about how trustworthy the GP% column is, shown under the
+// comps table on both surfaces. null when no comp carries a GP% at all (the
+// column is empty, so there is nothing to caveat).
+export function compsGpCaveat(comps) {
+  if (!comps || !(comps.sample_size > 0) || !(comps.gp_pct_count > 0)) return null;
+  return `GP% from job costing; ${comps.complete_count} of ${comps.sample_size} comps have materials costed`;
 }
 
 // Honest, human-readable statement of which rule produced the set. This string

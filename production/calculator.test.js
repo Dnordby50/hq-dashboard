@@ -4,6 +4,7 @@
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
 import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally } from './calculator.js';
+import { actualGpPct, costingMaterials, costingComplete, joinCompsSources, buildComps, compsGpCaveat } from './comps.js';
 
 let passed = 0;
 let failed = 0;
@@ -888,6 +889,58 @@ assertThrows(() => {
   assertEq(allocateProportionally(5345, [600, 200]).reduce((s, p) => s + p, 0), 5345, 'allocation: sums exactly to the total');
   assertEq(allocateProportionally(500, [0, 0]), [500, 0], 'allocation: all-zero weights put everything on the first part');
   assertEq(allocateProportionally(500, [300, 0]), [500, 0], 'allocation: zero-weight parts get nothing');
+}
+
+// --- Comps GP% math (15c): materials counted ONCE + completeness note --------
+{
+  // The regression that would appear the DAY Dylan backfills: with both
+  // materials_ordered_cost AND materials_used_cost populated, the old code
+  // summed both and understated GP. Now materials count once (used wins).
+  const price = 10000;
+  const bothMaterials = { materials_ordered_cost: 2000, materials_used_cost: 2500, salary_wages_cost: 1500 };
+  // used(2500) + labor(1500) = 4000 -> GP = (10000-4000)/10000 = 0.60.
+  assertEq(actualGpPct(price, bothMaterials), 0.6, 'materials counted ONCE (used wins over ordered), not summed');
+  assertEq(costingMaterials(bothMaterials), 2500, 'costingMaterials prefers used when > 0');
+  assertEq(costingMaterials({ materials_ordered_cost: 2000, materials_used_cost: 0 }), 2000, 'costingMaterials falls back to ordered when used is 0');
+
+  // The prod reality today: wages only, no materials. GP still computes (Dylan
+  // chose to keep the number), but it is NOT complete.
+  const wagesOnly = { salary_wages_cost: 1000 };
+  assertEq(actualGpPct(price, wagesOnly), 0.9, 'wages-only row still yields a (too-high) GP, not null');
+  assertEq(costingComplete(wagesOnly), false, 'wages-only row is NOT complete (no materials)');
+  assertEq(costingComplete(bothMaterials), true, 'materials + labor row IS complete');
+  assertEq(costingComplete({ materials_used_cost: 500 }), false, 'materials-only row is NOT complete (no labor)');
+  assertEq(actualGpPct(price, { equipment_rental_cost: 0 }), null, 'an all-zero costing row yields null (no false 100% GP)');
+  assertEq(actualGpPct(price, null), null, 'no costing row yields null');
+}
+
+// --- Comps completeness note counts materials AND labor ----------------------
+{
+  const now = Date.parse('2026-07-13');
+  const day = (d) => new Date(now - d * 86400000).toISOString();
+  const jobs = [
+    { id: 'j1', customer_name: 'A', system_type_id: 'flake', sqft: '600', price: 6000, completed_date: day(10), dripjobs_deal_id: 'd1' },
+    { id: 'j2', customer_name: 'B', system_type_id: 'flake', sqft: '650', price: 6500, completed_date: day(20), dripjobs_deal_id: 'd2' },
+    { id: 'j3', customer_name: 'C', system_type_id: 'flake', sqft: '700', price: 7000, completed_date: day(30), dripjobs_deal_id: 'd3' },
+  ];
+  const prodJobs = [ { id: 'p1', dripjobs_deal_id: 'd1' }, { id: 'p2', dripjobs_deal_id: 'd2' }, { id: 'p3', dripjobs_deal_id: 'd3' } ];
+  const costings = [
+    { job_id: 'p1', materials_used_cost: 1000, salary_wages_cost: 900 }, // complete
+    { job_id: 'p2', salary_wages_cost: 800 },                            // wages only
+    // p3: no costing row at all
+  ];
+  const candidates = joinCompsSources(jobs, prodJobs, costings);
+  assertEq(candidates.find(c => c.id === 'j1').gp_complete, true, 'j1 complete (materials + labor)');
+  assertEq(candidates.find(c => c.id === 'j2').gp_complete, false, 'j2 not complete (wages only)');
+  assertEq(candidates.find(c => c.id === 'j3').gp_complete, false, 'j3 not complete (no costing)');
+  const comps = buildComps({ candidates, systemTypeId: 'flake', sqft: 650, now });
+  assertEq(comps.sample_size, 3, 'all three flake jobs are comps');
+  assertEq(comps.complete_count, 1, 'exactly one comp has complete costing');
+  assertEq(comps.gp_pct_count, 2, 'two comps have any GP% (j3 has no costing)');
+  assertEq(compsGpCaveat(comps), 'GP% from job costing; 1 of 3 comps have materials costed', 'caveat names the completeness honestly');
+  // No GP% at all -> no caveat (nothing to qualify).
+  const noCost = buildComps({ candidates: joinCompsSources(jobs, [], []), systemTypeId: 'flake', sqft: 650, now });
+  assertEq(compsGpCaveat(noCost), null, 'no caveat when no comp carries a GP%');
 }
 
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
