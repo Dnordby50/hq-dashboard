@@ -1,0 +1,476 @@
+// Harness for build prompt 15b's serverless + offline pieces. Drives the REAL
+// functions (pec-estimate-scope.cjs, pec-estimate-ai.cjs) with _pec-supabase
+// swapped for an in-memory PostgREST subset through the require cache and
+// global.fetch captured, and the REAL apps/estimator offline TS bundled by
+// esbuild with only IndexedDB + the outbox enqueue stubbed. No reimplementations.
+//
+// Run: `node production/estimate15b.test.js` (wired into `npm test`).
+
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+import assert from 'assert';
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FN_DIR = path.join(__dirname, '..', 'netlify', 'functions');
+
+let passed = 0, failed = 0;
+function ok(cond, label) {
+  if (cond) { passed++; console.log(`  ok   ${label}`); }
+  else { failed++; console.error(`  FAIL ${label}`); }
+}
+async function section(name, fn) {
+  console.log(`\n# ${name}`);
+  try { await fn(); }
+  catch (e) { failed++; console.error(`  FAIL ${name} threw: ${e && e.stack || e}`); }
+}
+
+// ---------------------------------------------------------------------------
+// In-memory PostgREST subset. Only the filters the two functions actually use:
+// id=eq / estimate_id=eq / lead_id=eq / event_type=eq, id=in.(...),
+// or=(from_number.like.*NNN,to_number.like.*NNN). Enough to drive the real sb()
+// callers; a general parser would be more than these paths need.
+// ---------------------------------------------------------------------------
+function makeMockSb(db) {
+  const parseTable = (p) => p.replace(/^\//, '').split('?')[0];
+  const decode = (v) => decodeURIComponent(v);
+
+  function matches(row, p) {
+    const query = p.split('?')[1] || '';
+    for (const clause of query.split('&')) {
+      // COL=eq.VALUE (column-generic; only for real columns, skips
+      // select/order/limit and the compound in./is./or forms handled below)
+      const eqM = clause.match(/^([a-z_]+)=eq\.(.+)$/);
+      if (eqM && !['select', 'order', 'limit', 'or'].includes(eqM[1])) {
+        if (String(row[eqM[1]]) !== decode(eqM[2])) return false;
+        continue;
+      }
+      // COL=in.(a,b,c) (column-generic)
+      const inM = clause.match(/^([a-z_]+)=in\.\(([^)]*)\)/);
+      if (inM) {
+        const vals = inM[2].split(',').map((v) => decode(v));
+        if (!vals.includes(String(row[inM[1]]))) return false;
+        continue;
+      }
+      // COL=is.null
+      const isNullM = clause.match(/^([a-z_]+)=is\.null$/);
+      if (isNullM) {
+        if (row[isNullM[1]] != null) return false;
+        continue;
+      }
+      // or=(from_number.like.*TAIL,to_number.like.*TAIL)
+      const orM = clause.match(/^or=\((.*)\)$/);
+      if (orM) {
+        const tails = [...orM[1].matchAll(/(from_number|to_number)\.like\.\*([0-9]+)/g)];
+        const anyHit = tails.some(([, col, tail]) =>
+          String(row[col] || '').replace(/\D/g, '').includes(tail));
+        if (!anyHit) return false;
+      }
+    }
+    return true;
+  }
+
+  return async function sb(method, p, payload) {
+    const table = parseTable(p);
+    db[table] = db[table] || [];
+    if (method === 'GET') {
+      let rows = db[table].filter((r) => matches(r, p));
+      const limitM = p.match(/[?&]limit=(\d+)/);
+      if (limitM) rows = rows.slice(0, Number(limitM[1]));
+      return rows.map((r) => ({ ...r }));
+    }
+    if (method === 'PATCH') {
+      const hit = db[table].filter((r) => matches(r, p));
+      for (const r of hit) Object.assign(r, payload);
+      return hit.map((r) => ({ ...r }));
+    }
+    if (method === 'POST') {
+      const rows = Array.isArray(payload) ? payload : [payload];
+      for (const r of rows) db[table].push({ ...r });
+      return rows.map((r) => ({ ...r }));
+    }
+    throw new Error(`mock sb: unhandled ${method} ${p}`);
+  };
+}
+
+// Load a function module fresh with a mocked _pec-supabase in the require cache.
+function loadFn(file, sbImpl, extra = {}) {
+  const supPath = require.resolve(path.join(FN_DIR, '_pec-supabase.cjs'));
+  const real = require(supPath);
+  // badSecret false = the webhook-secret auth path passes, so the handler skips
+  // the getUser() fetch (our fetch stub answers the model, not /auth/v1/user).
+  require.cache[supPath] = {
+    id: supPath, filename: supPath, loaded: true, exports: { ...real, sb: sbImpl, badSecret: () => false, ...extra },
+  };
+  const fnPath = require.resolve(path.join(FN_DIR, file));
+  delete require.cache[fnPath];
+  const mod = require(fnPath);
+  return mod;
+}
+
+const bearerEvent = (body) => ({
+  httpMethod: 'POST',
+  headers: { authorization: 'Bearer good-token' },
+  body: JSON.stringify(body),
+});
+
+// A model response shaped like the Anthropic Messages API, with a thinking
+// block FIRST (the 613245a trap: content[0] is not the text block).
+function modelResponse(obj) {
+  return {
+    ok: true,
+    json: async () => ({
+      stop_reason: 'end_turn',
+      content: [
+        { type: 'thinking', thinking: 'considering' },
+        { type: 'text', text: JSON.stringify(obj) },
+      ],
+    }),
+  };
+}
+
+process.env.ANTHROPIC_API_KEY = 'test-key';
+process.env.SUPABASE_URL = 'https://example.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'svc';
+
+// ===========================================================================
+// pec-estimate-scope.cjs
+// ===========================================================================
+const SYS_FLAKE = 'sys-flake';
+const flakeTemplate = [
+  'Scope of work for 100% flake broadcast',
+  '- Concrete past garage door is/is not  included',
+  '- Stem walls are/are not included',
+].join('\n');
+
+function scopeDb({ stemWallsIntake = false, coatPast = false, scopeEditedAt = null, addonSnippet, stemAddon = false } = {}) {
+  const lines = [
+    { id: 'li-area', estimate_id: 'e1', addon_id: null, estimate_area_id: 'ar1', label: 'Garage: Standard Flake floor coating system', description: null, is_optional: false, selected_by_customer: false, sort_order: 0 },
+  ];
+  if (addonSnippet !== undefined) {
+    lines.push({ id: 'li-addon', estimate_id: 'e1', addon_id: 'ad1', estimate_area_id: null, label: 'Filling Control Joints', description: null, is_optional: false, selected_by_customer: false, sort_order: 1 });
+  }
+  if (stemAddon) {
+    lines.push({ id: 'li-stem', estimate_id: 'e1', addon_id: 'ad-stem', estimate_area_id: null, label: 'Stem Walls', description: null, is_optional: false, selected_by_customer: false, sort_order: 2 });
+  }
+  return {
+    estimates: [{ id: 'e1', mvb: 'none', flake_color: null, intake: { stem_walls: stemWallsIntake, coat_past_garage: coatPast }, scope_of_work: scopeEditedAt ? 'HAND EDITED TEXT' : null, scope_edited_at: scopeEditedAt, estimate_number: 102026 }],
+    estimate_areas: [{ id: 'ar1', estimate_id: 'e1', name: 'Garage', sqft: 600, system_type_id: SYS_FLAKE, sort_order: 0 }],
+    estimate_line_items: lines,
+    pec_prod_system_types: [{ id: SYS_FLAKE, name: 'Standard Flake', scope_template: flakeTemplate, scope_template_mvb: null }],
+    pec_prod_addons: [
+      { id: 'ad1', name: 'Filling Control Joints', scope_snippet: addonSnippet ?? '' },
+      { id: 'ad-stem', name: 'Stem Walls', scope_snippet: 'Stem wall prep and coating.' },
+    ],
+    leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [],
+  };
+}
+
+await section('scope: stem walls resolved BOTH ways from the estimate data', async () => {
+  // The model is told the facts; here we assert the FACTS the function computes
+  // and passes are correct, by capturing the user prompt sent to the model and
+  // echoing a resolved template back. We simulate the model doing substitution.
+  for (const stem of [true, false]) {
+    const db = scopeDb({ stemWallsIntake: stem });
+    let capturedPrompt = '';
+    global.fetch = async (url, opts) => {
+      const b = JSON.parse(opts.body);
+      capturedPrompt = b.messages[0].content;
+      const resolved = flakeTemplate.replace('Stem walls are/are not included', stem ? 'Stem walls are included' : 'Stem walls are not included');
+      return modelResponse({ lines: [{ line_item_id: 'li-area', scope: resolved }] });
+    };
+    const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+    const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+    const body = JSON.parse(res.body);
+    ok(res.statusCode === 200 && body.generated === true, `stem=${stem}: generates 200`);
+    // The function must have told the model the correct fact.
+    ok(capturedPrompt.includes(`"stem_walls_included": ${stem}`), `stem=${stem}: fact passed to model`);
+    // The written line description carries the resolved (not the placeholder) text.
+    const line = db.estimate_line_items.find((l) => l.id === 'li-area');
+    ok(line.description && line.description.includes(stem ? 'Stem walls are included' : 'Stem walls are not included'), `stem=${stem}: resolved text written to the line`);
+    ok(!line.description.includes('are/are not'), `stem=${stem}: placeholder is gone`);
+    ok(db.estimates[0].scope_of_work && db.estimates[0].scope_stale === false, `stem=${stem}: document assembled, not stale`);
+  }
+});
+
+await section('scope: a stem-walls ADD-ON on the estimate also counts as included', async () => {
+  const db = scopeDb({ stemWallsIntake: false, stemAddon: true });
+  let capturedPrompt = '';
+  global.fetch = async (url, opts) => {
+    capturedPrompt = JSON.parse(opts.body).messages[0].content;
+    return modelResponse({ lines: [
+      { line_item_id: 'li-area', scope: 'area scope' },
+      { line_item_id: 'li-stem', scope: 'stem scope' },
+    ] });
+  };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  ok(res.statusCode === 200, 'generates 200 with a stem-walls add-on line');
+  ok(capturedPrompt.includes('"stem_walls_included": true'), 'a live Stem Walls add-on line flips the fact to true even when intake says false');
+});
+
+await section('scope: NEVER overwrite a hand-edited scope without the explicit click', async () => {
+  const db = scopeDb({ scopeEditedAt: '2026-07-13T00:00:00Z' });
+  let called = 0;
+  global.fetch = async () => { called++; return modelResponse({ lines: [{ line_item_id: 'li-area', scope: 'x' }] }); };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' })); // no force
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 409 && body.needs_confirm === true, 'edited scope + no force -> 409 needs_confirm');
+  ok(called === 0, 'the model was NOT called (no overwrite attempted)');
+  ok(db.estimates[0].scope_of_work === 'HAND EDITED TEXT', 'the human text is untouched');
+
+  // Regeneration requires the explicit force=true click.
+  const res2 = await mod.handler(bearerEvent({ estimate_id: 'e1', force: true }));
+  ok(res2.statusCode === 200, 'force=true regenerates');
+  ok(called === 1, 'the model ran exactly once under force');
+  ok(db.estimates[0].scope_edited_at === null, 'regenerating clears scope_edited_at (machine text again)');
+  ok(db.estimates[0].scope_of_work !== 'HAND EDITED TEXT', 'the document was replaced under the explicit click');
+});
+
+await section('scope: an add-on with an EMPTY snippet is skipped, not invented', async () => {
+  const db = scopeDb({ addonSnippet: '' }); // Filling Control Joints line, empty snippet
+  global.fetch = async () => modelResponse({ lines: [{ line_item_id: 'li-area', scope: 'area scope' }] });
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.generated === true, 'still generates for the area line');
+  ok(body.skipped.some((s) => s.id === 'li-addon' && /snippet/.test(s.reason)), 'the empty-snippet add-on is reported skipped, not fabricated');
+  ok(db.estimate_line_items.find((l) => l.id === 'li-addon').description == null, 'the empty-snippet add-on line gets no invented description');
+});
+
+// ===========================================================================
+// pec-estimate-ai.cjs: Quo history as intent signal + the empty-history honesty
+// ===========================================================================
+const aiBody = (leadId) => ({
+  estimate_id: null, lead_id: leadId, inputs_key: 'k1',
+  system_type_name: 'Standard Flake', sqft: 600, mvb: 'none',
+  calc_price: 5000, target_gp_pct: 52,
+  comps: { rule: 'none', rule_label: 'no comps', sample_size: 0, median_ppsf: null, rows: [] },
+});
+
+await section('AI price read: EMPTY Quo history -> "no history", intent never invented', async () => {
+  const db = { estimates: [], leads: [{ id: 'lead1', phone: '9285551234' }], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  let capturedPrompt = '';
+  // Even if the model tries to invent intent, the server forces it to null.
+  global.fetch = async (url, opts) => {
+    capturedPrompt = JSON.parse(opts.body).messages[0].content;
+    return modelResponse({ recommended_low: 4800, recommended_high: 5200, why: 'no comps; leaning on the calculator', intent_read: 'they seem eager' });
+  };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(aiBody('lead1')));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.success, 'price read returns 200');
+  ok(body.recommendation.history_available === false, 'history_available is false (server fact)');
+  ok(body.recommendation.intent_read === null, 'intent_read forced null despite the model returning text');
+  ok(/NO CALL OR TEXT HISTORY IS ON FILE/.test(capturedPrompt), 'the prompt tells the model there is no history');
+});
+
+await section('AI price read: real Quo texts + a transcript feed the intent read', async () => {
+  const db = {
+    estimates: [],
+    leads: [{ id: 'lead1', phone: '(928) 555-1234' }],
+    lead_events: [],
+    pec_call_log: [{ from_number: '+19285551234', to_number: '+19285550000', direction: 'in', occurred_at: '2026-07-10T00:00:00Z', duration_seconds: 120, summary: 'Customer wants it done before a party', next_steps: null, transcript: [{ identifier: 'cust', content: 'I need this before Saturday' }] }],
+    pec_sms_log: [{ from_number: '9285551234', to_number: '9285550000', direction: 'in', created_at: '2026-07-11T00:00:00Z', body: 'Whats your best price?' }],
+  };
+  let capturedPrompt = '';
+  global.fetch = async (url, opts) => {
+    capturedPrompt = JSON.parse(opts.body).messages[0].content;
+    return modelResponse({ recommended_low: 5000, recommended_high: 5500, why: 'urgent job', intent_read: 'Urgent: "I need this before Saturday".' });
+  };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(aiBody('lead1')));
+  const body = JSON.parse(res.body);
+  ok(body.recommendation.history_available === true, 'history_available true when calls/texts exist');
+  ok(body.recommendation.intent_read && /Saturday/.test(body.recommendation.intent_read), 'the intent read survives when history is present');
+  ok(capturedPrompt.includes('I need this before Saturday') && capturedPrompt.includes('Whats your best price?'), 'both the transcript and the text reached the model');
+});
+
+await section('AI price read: no lead_id -> history read is a no-op, never breaks the read', async () => {
+  const db = { estimates: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  global.fetch = async () => modelResponse({ recommended_low: 4800, recommended_high: 5200, why: 'x', intent_read: null });
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(aiBody(null)));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.recommendation.history_available === false, 'walk-up (no lead) still prices, no history');
+});
+
+// ===========================================================================
+// pec-public-estimate.cjs: optional line item EXCLUDED until the customer ticks
+// it, and the signed selection freezes onto the ROWS (not a jsonb replace).
+// ===========================================================================
+await section('public page: optional add-on excluded until ticked; accept freezes it onto the rows', async () => {
+  const TOKEN = '11111111-2222-4333-8444-555555555555';
+  function freshDb() {
+    return {
+      estimates: [{
+        id: 'pe1', public_token: TOKEN, sent_at: '2026-07-13T00:00:00Z', status: 'sent',
+        deleted_at: null, mvb: 'none', flake_color: null, intake: { salesperson_name: 'Aron' },
+        system_type_id: 'sys-flake', customer_name: 'Jane', customer_email: 'jane@example.com',
+        customer_address: '1 Main', estimate_number: 102026, price: null, brand: 'prescott-epoxy', lead_id: null,
+        scope_of_work: null,
+      }],
+      estimate_areas: [{ id: 'ar1', estimate_id: 'pe1', name: 'Garage', sqft: 600, system_type_id: 'sys-flake', sort_order: 0 }],
+      estimate_line_items: [
+        { id: 'req1', estimate_id: 'pe1', label: 'Standard Flake floor coating system', description: 'the scope', qty: 1, unit_price: 4200, total: 4200, is_optional: false, selected_by_customer: true, sort_order: 0 },
+        { id: 'opt1', estimate_id: 'pe1', label: 'Stem Walls', description: null, qty: 1, unit_price: 350, total: 350, is_optional: true, selected_by_customer: false, sort_order: 1 },
+      ],
+      pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake' }],
+      pec_brand_identity: [], pec_email_senders: [], customers: [], jobs: [], timeline_stages: [],
+      job_areas: [], pec_prod_jobs: [], pec_prod_areas: [], leads: [], lead_events: [],
+    };
+  }
+
+  // The render shows the base total EXCLUDING the unticked optional.
+  {
+    const db = freshDb();
+    global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+    ok(res.statusCode === 200, 'sent estimate renders 200');
+    ok(res.body.includes('$4,200.00') && !res.body.includes('>$4,550.00<'), 'hero total excludes the unticked optional');
+    ok(/Stem Walls/.test(res.body), 'the optional item is listed as tickable');
+  }
+
+  // Accept WITHOUT ticking: signs for the base total only.
+  {
+    const db = freshDb();
+    global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Jane Doe', selected_optional_ids: [] }) });
+    ok(res.statusCode === 200, 'accept (nothing ticked) succeeds');
+    ok(db.estimates[0].price === 4200, 'signed for the base total, optional excluded');
+    ok(db.estimate_line_items.find((l) => l.id === 'opt1').selected_by_customer === false, 'the untouched optional stays unselected on its row');
+  }
+
+  // Accept WITH the optional ticked: freezes onto the row, price includes it.
+  {
+    const db = freshDb();
+    global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Jane Doe', selected_optional_ids: ['opt1'] }) });
+    ok(res.statusCode === 200, 'accept (optional ticked) succeeds');
+    ok(db.estimate_line_items.find((l) => l.id === 'opt1').selected_by_customer === true, 'the ticked optional is frozen selected ON THE ROW (not a jsonb write)');
+    ok(db.estimates[0].price === 4550, 'signed total includes the ticked optional (4200 + 350)');
+    ok(db.estimates[0].status === 'accepted' && db.estimates[0].signed_name === 'Jane Doe', 'the estimate is signed');
+    ok(db.jobs.length === 1 && db.pec_prod_jobs.length === 1, 'the job was created in both tables');
+    // The job's invoice line items include the ticked optional (it is now included).
+    const jobLines = db.jobs[0].line_items || [];
+    ok(jobLines.some((l) => l.name === 'Stem Walls'), 'the ticked optional flows into the job line items');
+  }
+});
+
+// ===========================================================================
+// Offline save: areas + add-ons ride the outbox in FK order and drain complete.
+// Drives the REAL apps/estimator saveEstimateOffline + drainOutbox, bundled by
+// esbuild with IndexedDB and supabase stubbed.
+// ===========================================================================
+await section('offline save: areas + add-on line items land complete when the outbox drains', async () => {
+  const esbuild = require(path.join(__dirname, '..', 'apps', 'estimator', 'node_modules', 'esbuild'));
+
+  // In-memory IndexedDB + supabase stubs, injected by rewriting the two lib
+  // imports to virtual modules. The REAL offline code (estimates.ts, outbox.ts,
+  // sync.ts) runs unchanged.
+  const entry = `
+    import { saveEstimateOffline } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'estimates.ts'))};
+    import { drainOutbox } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'sync.ts'))};
+    import { listOps } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'offline', 'outbox.ts'))};
+    globalThis.__run = async (args) => {
+      const { id } = await saveEstimateOffline(args);
+      const queued = (await listOps()).map(o => ({ table: o.table, row: o.row }));
+      const drain = await drainOutbox();
+      return { id, queued, drain, uploaded: globalThis.__uploads };
+    };
+  `;
+
+  // Virtual stubs for the offline layer's own deps.
+  const stubPlugin = {
+    name: 'stubs',
+    setup(build) {
+      build.onResolve({ filter: /idb$/ }, () => ({ path: 'stub-idb', namespace: 'stub' }));
+      build.onResolve({ filter: /lib\/supabase$/ }, () => ({ path: 'stub-supa', namespace: 'stub' }));
+      build.onResolve({ filter: /offline\/uuid$/ }, () => ({ path: 'stub-uuid', namespace: 'stub' }));
+      build.onLoad({ filter: /.*/, namespace: 'stub' }, (a) => {
+        if (a.path === 'stub-idb') return { contents: `
+          const store = { estimates: {}, outbox: {}, catalog: {} };
+          export async function idbPut(s, v, key){ store[s] = store[s]||{}; store[s][key ?? v.opId ?? v.id] = v; }
+          export async function idbGet(s, k){ return (store[s]||{})[k]; }
+          export async function idbGetAll(s){ return Object.values(store[s]||{}); }
+          export async function idbDelete(s, k){ delete (store[s]||{})[k]; }
+        `, loader: 'js' };
+        if (a.path === 'stub-supa') return { contents: `
+          globalThis.__uploads = globalThis.__uploads || [];
+          export const supabase = {
+            from(table){ return { upsert: async (row) => { globalThis.__uploads.push({ table, id: row.id }); return { error: null }; } }; },
+          };
+        `, loader: 'js' };
+        if (a.path === 'stub-uuid') return { contents: `let n=0; export function uuid(){ return 'uuid-'+(++n); }`, loader: 'js' };
+      });
+    },
+  };
+
+  const built = await esbuild.build({
+    stdin: { contents: entry, resolveDir: __dirname, loader: 'ts' },
+    bundle: true, format: 'cjs', write: false, platform: 'node', plugins: [stubPlugin],
+    external: [],
+  });
+  const code = built.outputFiles[0].text;
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'globalThis', code)(mod, mod.exports, globalThis);
+
+  const args = {
+    estimateId: null, status: 'draft', systemTypeId: 'sys-flake',
+    salesperson: { id: 'sp1', name: 'Aron', commission_pct: 6 },
+    intake: { gate_code: '1234' },
+    customer: { name: 'Jane', phone: null, email: null, address: null },
+    mvb: 'none', flakeColor: null,
+    lineItems: [
+      { addonId: null, areaIndex: 0, label: 'Garage: Standard Flake floor coating system', description: '600 sqft', qty: 1, unitPrice: 3000, unitCost: 900, total: 3000, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
+      { addonId: null, areaIndex: 1, label: 'Patio: Quartz floor coating system', description: '200 sqft', qty: 1, unitPrice: 2000, unitCost: 800, total: 2000, isOptional: false, selectedByCustomer: true, sortOrder: 1 },
+      { addonId: 'ad-stem', areaIndex: null, label: 'Stem Walls', description: null, qty: 40, unitPrice: 10, unitCost: 4, total: 400, isOptional: true, selectedByCustomer: false, sortOrder: 2 },
+    ],
+    pricingSnapshot: null,
+    areas: [
+      { name: 'Garage', sqft: 600, systemTypeId: 'sys-flake', flakeProductId: null, basecoatProductId: null, topcoatProductId: null, answers: {}, materials: [] },
+      { name: 'Patio', sqft: 200, systemTypeId: 'sys-quartz', flakeProductId: null, basecoatProductId: null, topcoatProductId: null, answers: {}, materials: [] },
+    ],
+    pricing: { materialsCost: 1700, fixedAddons: 0, laborPct: 17.5, commissionPct: 6, targetGpPct: 51.5, calcVersion: '2026-07-13.1', materialLines: [] },
+    totals: { price: 5000, gpDollars: 2000, gpPct: 0.4, gpPerHour: null, laborBudget: null, commissionDollars: null, budgetedHours: null },
+    createdBy: 'user1', leadId: 'lead1',
+  };
+
+  const out = await globalThis.__run(args);
+  const tables = out.queued.map((q) => q.table);
+  // FK order: the estimate first, then areas, then the line items (which FK the
+  // areas). No child may precede its parent.
+  ok(tables[0] === 'estimates', 'the estimate is enqueued first');
+  const firstArea = tables.indexOf('estimate_areas');
+  const firstLine = tables.indexOf('estimate_line_items');
+  ok(firstArea > 0 && firstLine > firstArea, 'areas enqueue before line items (FK order)');
+  ok(tables.filter((t) => t === 'estimate_areas').length === 2, 'both areas enqueued');
+  ok(tables.filter((t) => t === 'estimate_line_items').length === 3, 'all three line items enqueued');
+
+  // The two system lines resolved their areaIndex to REAL minted area ids.
+  const lineRows = out.queued.filter((q) => q.table === 'estimate_line_items').map((q) => q.row);
+  const areaRows = out.queued.filter((q) => q.table === 'estimate_areas').map((q) => q.row);
+  const areaIds = new Set(areaRows.map((r) => r.id));
+  const garageLine = lineRows.find((r) => r.label.startsWith('Garage'));
+  const patioLine = lineRows.find((r) => r.label.startsWith('Patio'));
+  const stemLine = lineRows.find((r) => r.label === 'Stem Walls');
+  ok(garageLine && areaIds.has(garageLine.estimate_area_id), 'garage line bound to a real area id');
+  ok(patioLine && garageLine.estimate_area_id !== patioLine.estimate_area_id, 'each system line bound to its OWN area');
+  ok(stemLine && stemLine.estimate_area_id == null && stemLine.addon_id === 'ad-stem', 'the add-on line has no area, keeps its addon_id');
+  ok(stemLine.is_optional === true && stemLine.unit_cost === 4, 'the add-on line carries optional + a unit cost (GP honesty)');
+
+  // Draining uploads everything; the estimate lands before its children.
+  ok(out.drain.synced === out.queued.length && out.drain.failed === 0, 'the whole outbox drains clean');
+  const upTables = out.uploaded.map((u) => u.table);
+  ok(upTables.indexOf('estimates') < upTables.indexOf('estimate_areas'), 'upload order keeps the estimate before its areas');
+  ok(upTables.filter((t) => t === 'estimate_line_items').length === 3, 'all three line items uploaded');
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);

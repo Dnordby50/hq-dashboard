@@ -1,5 +1,38 @@
 [
   {
+    "id": "estimator-multi-system-areas",
+    "date": "2026-07-13",
+    "title": "One estimate can cover a garage, a patio, and more, each its own system",
+    "summary": "Every area on an estimate now picks its own system, so a flake garage plus a quartz patio is a single estimate and a single price. Each area is priced with its own recipe, and the gross profit target is the square-foot-weighted average of the systems in play, so a small high-margin area does not drag the whole number. The comps panel keys off the biggest system and tells you when the estimate spans more than one.",
+    "howto": [
+      "In the estimator, each area row has its own System dropdown next to its square footage. Change it per area.",
+      "Add as many areas as the job has; the price, gross profit, and hours roll up from all of them.",
+      "When an estimate spans systems, the Comparable jobs panel says which system the comps cover."
+    ]
+  },
+  {
+    "id": "estimator-addons-catalog",
+    "date": "2026-07-13",
+    "title": "Add-ons come from a catalog and carry a real cost",
+    "summary": "An Add-ons section in the estimator lets you drop in stem walls, joint filling, upgrades, or drive time from a catalog, with the price and cost prefilled and still editable. Because every add-on carries a cost, gross profit stays honest even when you pile on upsells. Optional add-ons stay out of the total until the customer picks them, and you can see both the base price and the price if they take everything. A free-typed one-off line is still there for whatever the catalog does not have.",
+    "howto": [
+      "In the estimator's Add-ons section, pick from the catalog or click One-off line to type your own.",
+      "Set the price and cost; tick Optional for anything the customer chooses on their end.",
+      "The price box shows the base total and, when there are optional items, the total if every one is taken."
+    ]
+  },
+  {
+    "id": "estimate-auto-scope",
+    "date": "2026-07-13",
+    "title": "Estimates write their own scope of work",
+    "summary": "Every estimate now assembles a customer-facing scope of work from your real templates, filling in the square footage, the areas, and whether stem walls and past-the-garage are included from the estimate itself. It never rewrites your exclusions or cure-time language, only substitutes the job's details. It writes itself on save, and you can Edit the text by hand: once you do, it is never overwritten without your explicit Regenerate click, and if the estimate changes afterward it tells you the scope is out of date.",
+    "howto": [
+      "Save an estimate and the Scope of work card fills in automatically (needs a connection; offline saves generate once you reconnect).",
+      "Click Edit text to adjust wording by hand. After that, the AI never replaces your words unless you click Regenerate and confirm.",
+      "If you change the estimate after editing the scope, a note tells you it is out of date so you can Regenerate when ready."
+    ]
+  },
+  {
     "id": "estimator-system-only-pricing",
     "date": "2026-07-12",
     "title": "Estimator prices with just the system and square footage",
