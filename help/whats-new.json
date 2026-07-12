@@ -18,7 +18,8 @@
     "howto": [
       "In the estimator's Add-ons section, pick from the catalog or click One-off line to type your own.",
       "Set the price and cost; tick Optional for anything the customer chooses on their end.",
-      "The price box shows the base total and, when there are optional items, the total if every one is taken."
+      "The price box shows the base total and, when there are optional items, the total if every one is taken.",
+      "Manage the catalog in Price & Material Catalog under the new Add-ons tab: set each one's price, cost, unit, and the scope paragraph it adds to the customer's scope of work."
     ]
   },
   {

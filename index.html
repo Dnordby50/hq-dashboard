@@ -23393,20 +23393,23 @@ function _mergeAcrossAreas(areaPlans) {
     // invalidateRefCache lives in Module 2; reach it via window (guarded so a
     // load-order race can never re-throw and kill the catalog view).
     window.invalidateRefCache && window.invalidateRefCache();
-    const [p, s, r, c] = await Promise.all([
+    const [p, s, r, c, a] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
       supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
       supabase.from('pec_prod_color_pairings').select('*'),
+      supabase.from('pec_prod_addons').select('*').order('sort_order').order('name'),
     ]);
     if (p.error) console.error('[prod] products:', p.error);
     if (s.error) console.error('[prod] system_types:', s.error);
     if (r.error) console.error('[prod] recipe_slots:', r.error);
     if (c.error) console.error('[prod] color_pairings:', c.error);
+    if (a.error) console.error('[prod] addons:', a.error);
     state.products = p.data || [];
     state.systemTypes = s.data || [];
     state.recipeSlots = r.data || [];
     state.colorPairings = c.data || [];
+    state.addons = a.data || [];
     // Calculated material lines depend on the catalog; invalidate them.
     state._calcCache = new Map();
   }
@@ -24809,6 +24812,7 @@ function _mergeAcrossAreas(areaPlans) {
       <nav class="pec-subnav" style="margin:0 0 16px">
         <button data-cat-tab="products"       ${state.catalogTab==='products'?'class="active"':''}>Products</button>
         <button data-cat-tab="system_types"   ${state.catalogTab==='system_types'?'class="active"':''}>System Types</button>
+        <button data-cat-tab="addons"         ${state.catalogTab==='addons'?'class="active"':''}>Add-ons</button>
         <button data-cat-tab="color_pairings" ${state.catalogTab==='color_pairings'?'class="active"':''}>Color Pairings</button>
       </nav>
       <div id="prodCatalogBody"></div>
@@ -24816,7 +24820,112 @@ function _mergeAcrossAreas(areaPlans) {
     r.querySelectorAll('[data-cat-tab]').forEach(b => b.addEventListener('click', () => { state.catalogTab = b.dataset.catTab; renderCatalog(r); }));
     if (state.catalogTab === 'products')       renderProducts($('prodCatalogBody'));
     if (state.catalogTab === 'system_types')   renderSystemTypes($('prodCatalogBody'));
+    if (state.catalogTab === 'addons')         renderAddons($('prodCatalogBody'));
     if (state.catalogTab === 'color_pairings') renderColorPairings($('prodCatalogBody'));
+  }
+
+  // Add-on catalog (pec_prod_addons): the upsell items a rep drops onto an
+  // estimate, with a price AND a cost so GP stays honest. Dylan manages the
+  // rows here; the estimator reads them. scope_snippet is the paragraph the AI
+  // scope writer appends to the customer scope when the add-on is on the job.
+  function renderAddons(host) {
+    const addons = (state.addons || []).slice();
+    const sysById = indexById(state.systemTypes);
+    const money = n => (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+    host.innerHTML = `
+      <div class="pec-toolbar"><button class="pec-btn primary" id="prodAddAddonBtn">+ Add add-on</button></div>
+      <div style="font-size:.72rem;color:var(--muted);margin:0 0 10px">These appear in the estimator's Add-ons picker. Set a real cost on each so gross profit stays honest when a rep stacks upsells. The scope snippet is the paragraph that gets added to the customer's scope of work when this add-on is on the estimate.</div>
+      <div class="pec-table-wrap"><table class="pec-table">
+        <thead><tr><th>Name</th><th>Unit</th><th style="text-align:right">Price</th><th style="text-align:right">Cost</th><th>Optional</th><th>System</th><th>Scope</th><th>Active</th><th></th></tr></thead>
+        <tbody>${addons.length ? addons.map(a => `
+          <tr>
+            <td><strong>${esc(a.name)}</strong>${a.description ? `<div style="color:var(--muted);font-size:.72rem">${esc(a.description)}</div>` : ''}</td>
+            <td>${esc(a.unit)}</td>
+            <td style="text-align:right">${money(a.default_price)}</td>
+            <td style="text-align:right${!(Number(a.default_cost) > 0) ? ';color:#b45309;font-weight:600' : ''}">${money(a.default_cost)}${!(Number(a.default_cost) > 0) ? ' ⚠' : ''}</td>
+            <td>${a.is_optional_default ? 'Yes' : 'No'}</td>
+            <td>${a.system_type_id ? esc((sysById[a.system_type_id] || {}).name || '?') : 'Any'}</td>
+            <td>${a.scope_snippet && String(a.scope_snippet).trim() ? '✓' : '<span style="color:#b45309" title="No scope language yet; the AI scope writer skips this add-on until you add one">none ⚠</span>'}</td>
+            <td>${a.active ? 'Yes' : '<span style="color:var(--muted)">No</span>'}</td>
+            <td><button class="pec-btn sm" data-edit-addon="${esc(a.id)}">Edit</button></td>
+          </tr>`).join('') : '<tr class="nohover"><td colspan="9" class="pec-empty">No add-ons yet. Click + Add add-on.</td></tr>'}
+        </tbody>
+      </table></div>
+    `;
+    $('prodAddAddonBtn').addEventListener('click', () => openAddonModal(null));
+    host.querySelectorAll('[data-edit-addon]').forEach(b => b.addEventListener('click', () => openAddonModal(b.dataset.editAddon)));
+  }
+
+  function openAddonModal(addonId) {
+    const existing = addonId ? (state.addons || []).find(a => a.id === addonId) : null;
+    const a = existing ? { ...existing } : { name: '', description: '', unit: 'each', default_price: 0, default_cost: 0, is_optional_default: true, scope_snippet: '', system_type_id: null, active: true, sort_order: (state.addons || []).length };
+    const unitOpt = u => ['each', 'sqft', 'lf', 'hour'].map(x => `<option value="${x}" ${a.unit === x ? 'selected' : ''}>${x}</option>`).join('');
+    const sysOpt = window.sortSystemTypes(state.systemTypes).map(s => `<option value="${esc(s.id)}" ${a.system_type_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+    $('prodModalRoot').innerHTML = `
+      <div class="pec-modal-bg" id="prodAddonBg">
+        <div class="pec-modal">
+          <h3>${existing ? 'Edit' : 'New'} add-on</h3>
+          <div class="pec-field"><label>Name</label><input id="adName" value="${esc(a.name)}"></div>
+          <div class="pec-field"><label>Description</label><input id="adDesc" value="${esc(a.description || '')}"></div>
+          <div class="pec-row-3">
+            <div class="pec-field"><label>Unit</label><select id="adUnit">${unitOpt()}</select></div>
+            <div class="pec-field"><label>Price $</label><input id="adPrice" inputmode="decimal" value="${esc(a.default_price)}"></div>
+            <div class="pec-field"><label>Cost $</label><input id="adCost" inputmode="decimal" value="${esc(a.default_cost)}"></div>
+          </div>
+          <div class="pec-row-3">
+            <div class="pec-field"><label>Optional by default</label><select id="adOpt"><option value="true" ${a.is_optional_default?'selected':''}>Yes</option><option value="false" ${!a.is_optional_default?'selected':''}>No</option></select></div>
+            <div class="pec-field"><label>System</label><select id="adSys"><option value="">Any system</option>${sysOpt}</select></div>
+            <div class="pec-field"><label>Active</label><select id="adActive"><option value="true" ${a.active?'selected':''}>Yes</option><option value="false" ${!a.active?'selected':''}>No</option></select></div>
+          </div>
+          <div class="pec-field"><label>Scope snippet <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(added to the customer scope; leave blank if none yet)</span></label><textarea id="adScope" rows="4">${esc(a.scope_snippet || '')}</textarea></div>
+          <div class="pec-modal-actions">
+            ${existing ? '<button class="pec-btn ghost danger" id="adDelete" style="margin-right:auto">Delete</button>' : ''}
+            <button class="pec-btn ghost" id="adCancel">Cancel</button>
+            <button class="pec-btn primary" id="adSave">Save</button>
+          </div>
+        </div>
+      </div>`;
+    const close = () => { $('prodModalRoot').innerHTML = ''; };
+    $('adCancel').addEventListener('click', close);
+    $('prodAddonBg').addEventListener('click', e => { if (e.target.id === 'prodAddonBg') close(); });
+    $('adSave').addEventListener('click', async () => {
+      const name = $('adName').value.trim();
+      if (!name) { alert('Name is required.'); return; }
+      const row = {
+        name,
+        description: $('adDesc').value.trim() || null,
+        unit: $('adUnit').value,
+        default_price: Number($('adPrice').value.replace(/[^0-9.]/g, '')) || 0,
+        default_cost: Number($('adCost').value.replace(/[^0-9.]/g, '')) || 0,
+        is_optional_default: $('adOpt').value === 'true',
+        system_type_id: $('adSys').value || null,
+        active: $('adActive').value === 'true',
+        scope_snippet: $('adScope').value.trim() || '',
+      };
+      const btn = $('adSave'); btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const q = existing
+          ? supabase.from('pec_prod_addons').update(row).eq('id', existing.id)
+          : supabase.from('pec_prod_addons').insert({ ...row, sort_order: a.sort_order });
+        const { error } = await q;
+        if (error) throw error;
+        close();
+        await loadCatalog(); render();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save';
+        alert('Could not save the add-on: ' + (err.message || err));
+      }
+    });
+    const del = $('adDelete');
+    if (del) del.addEventListener('click', async () => {
+      if (!confirm('Delete this add-on? Estimates that already used it keep their line items; only the catalog entry is removed.')) return;
+      try {
+        const { error } = await supabase.from('pec_prod_addons').delete().eq('id', existing.id);
+        if (error) throw error;
+        close();
+        await loadCatalog(); render();
+      } catch (err) { alert('Could not delete: ' + (err.message || err)); }
+    });
   }
 
   function renderProducts(host) {
