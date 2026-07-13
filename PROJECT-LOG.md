@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-12 14:10 MST] Cowork: build prompt 17 written (archive estimates, per-area MVB, 2% sundries, pricing logic + manual override, price per sqft)
+By: Cowork
+Changed: claude-code-prompt-17-estimate-controls.md (new), PROJECT-LOG.md. No app code touched, no prod data touched.
+
+Dylan brought five asks in a Cowork session. Ran a 12-question dig before writing anything, because three of the five collide with decisions already locked in 15b/15c (MVB is estimate-level state that also swaps the scope template; the calculator solves ONE weighted cost-plus price for the whole estimate, so sundries and a manual price both have to be told where they sit relative to that solve).
+
+DYLAN'S DECISIONS, all locked and written into the prompt:
+1. ARCHIVE: soft-delete only (estimates.deleted_at, which already exists), any status, any staff. Archived estimates leave the list, 404 the public link, drop out of comps and metrics, are ignored by the 15c duplicate guard, and are restorable from an Archived filter. No hard delete anywhere.
+2. MVB: moves from the estimate to the AREA. Per-area checkbox, defaulted OFF, and it is a COST ADDER on that area (MVB material at that area's sqft, priced through the normal solve), not a separate line and not a surcharge. The scope template choice (scope_template vs scope_template_mvb) becomes per LINE. estimates.mvb is retired: migrate the data, freeze the column. Flagged as a judgment call for Claude Code: the old mvb='standalone' MVB-only job is a job TYPE, not a per-area modifier, so it needs a representation that keeps existing standalone estimates pricing identically.
+3. SUNDRIES: 2% of TOTAL JOB COST (materials + add-ons + labor + commission) as an INTERNAL cost bucket, on every estimate. Rate configurable in the catalog, default 2%. Customer sees the total price only, no breakdown, ever. Since labor and commission are fractions of revenue this is circular, so the prompt carries the closed form (divisor = 1 - (L + C)(1 + s) - g, numerator (M + F)(1 + s)) rather than leaving Claude Code to iterate or, worse, apply 2% to the price and quietly miss the margin. sundries_pct = 0 must reproduce today's exact price; that is the required regression assertion.
+4. PRICING LOGIC + OVERRIDE: an internal panel under the sell price showing $/sqft, the full cost stack, and one plain-English sentence of how the price was reached (including when the charm-pricing rule fired, which is the one place realized GP legitimately dips under target). Override is on the TOTAL SELL PRICE and REUSES the existing applySellPrice + allocateProportionally, not a second path. Guardrails: live realized GP%, a REQUIRED reason note, and a configurable floor GP% (default 40) that warns on a hard confirm but does not block. Persist calc_price alongside price, plus the reason, who, and when.
+5. PRICE PER SQFT: contract revenue / total sqft, sqft taken from the estimate's areas and falling back to the existing comps.js parseSqft for legacy jobs, dash when unknown. Sortable column on the Jobs tab, on the job detail, and in metrics as average AND median by system plus a monthly trend. Jobs with no sqft are excluded from the averages and the exclusion count is stated (the 15c completeness-caveat principle). Overridden prices are INCLUDED: a discount is what the job actually sold for and that is the number that needs to be visible.
+
+Why this shape: the fifth item and the third item both exist because the pricing brain is currently reporting margins it has not earned. 15c already established that the comps GP% reads roughly 30 points high because job costing has no materials. Sundries is a second, smaller version of the same disease (a real cost that no estimate books), and $/sqft is the sanity check that makes both visible on a per-job basis.
+
+Files touched: claude-code-prompt-17-estimate-controls.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 17 (Dylan has it).
+Handoff to Cowork: None.
+Handoff to Dylan:
+1. Hand claude-code-prompt-17-estimate-controls.md to Claude Code. It is self-contained.
+2. Expect the estimate price anchor to MOVE when sundries ships (about 2% of cost). That is intended, not a regression. The prompt requires the old and new anchor numbers to be logged rather than quietly re-baselined.
+3. Two follow-ups the prompt deliberately leaves out of scope: pec_prod_job_costing has no sundries bucket, so estimated sundries and actual sundries will not be comparable until one exists; and the materials backfill is still outstanding, so comps GP% still reads high.
+
 ## [2026-07-14 00:30 MST] Claude Code: commission is now a rate-derived cost on job costing (auto going forward + Aron's completed jobs backfilled)
 By: Claude Code
 Changed: supabase/migrations/2026-07-14_job_costing_commission.sql (new, APPLIED to prod), index.html, production/calculator.test.js, PROJECT-LOG.md. Plan approved by Dylan in plan mode (auto-derived + locked; basis = full contract revenue).

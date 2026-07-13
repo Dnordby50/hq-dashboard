@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TopCoat sidebar nav reorg - mockup (NOT wired into the app)</title>
+<!--
+  PART B MOCKUP, plan only. This is a throwaway design artifact, NOT app code.
+  It is not linked from index.html and changes nothing in the live CRM. It
+  exists so Dylan can click the proposed "collapsible groups" sidebar before
+  approving the pattern. Every view shown below is a real view from #pecSubnav.
+
+  Update (Dylan review): Overview is now pinned (never collapses), and the lower
+  groups are a SINGLE-OPEN accordion (opening one closes the others) so the list
+  can never overflow the rail and cut views off. The active item also scrolls
+  itself into view.
+-->
+<style>
+  :root{
+    --rd-shell:#fff; --rd-ink:#0f1420; --rd-ink-2:#3a4253; --rd-muted:#7a8499;
+    --rd-dim:#9aa3b2; --rd-soft:#f3f4f7; --rd-line:#e7e9ef; --rd-accent:#ff6a13;
+    --rd-accent-ink:#fff; --rd-accent-ring:rgba(255,106,19,.30);
+    --rd-accent-hero:#1d2330; --rd-accent-hero-2:#0e1320;
+    --bg:#eef0f4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--rd-ink);padding:28px}
+  .wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:260px 1fr;gap:22px;align-items:start}
+
+  /* ---- Sidebar (mirrors index.html #rdSidebar, a 3-band flex column) ---- */
+  .sidebar{
+    background:var(--rd-shell);border-radius:22px;padding:22px 16px;
+    box-shadow:0 10px 30px rgba(20,30,60,.08);
+    display:flex;flex-direction:column;gap:16px;
+    height:calc(100vh - 56px);max-height:760px;overflow:hidden;
+  }
+  .logo{display:flex;align-items:center;gap:10px;padding:2px 8px 0;flex-shrink:0}
+  .logo-mark{width:38px;height:38px;border-radius:11px;background:var(--rd-accent);color:#fff;display:grid;place-items:center;font-weight:800;letter-spacing:-.5px}
+  .logo-name{font-weight:800;font-size:17px;letter-spacing:-.3px}
+  .logo-sub{font-size:11px;color:var(--rd-muted);text-transform:uppercase;letter-spacing:.4px}
+
+  /* Pinned Overview band: always visible, never collapses, sits above the
+     scroll region (its own flex child so it never scrolls away). */
+  .pinned{flex-shrink:0;display:flex;flex-direction:column;gap:2px}
+
+  .nav-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding-right:2px}
+  .nav-scroll::-webkit-scrollbar{width:9px}
+  .nav-scroll::-webkit-scrollbar-thumb{background:#cfd3db;border-radius:999px}
+  .nav-scroll::-webkit-scrollbar-thumb:hover{background:#b9bec9}
+
+  .grp-label{padding:12px 12px 6px;font-size:10.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--rd-muted)}
+
+  /* Group header toggle */
+  .grp{
+    all:unset;display:flex;align-items:center;justify-content:space-between;
+    cursor:pointer;padding:11px 12px;border-radius:10px;
+    font-size:10.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--rd-muted);
+  }
+  .grp:hover{background:var(--rd-soft);color:var(--rd-ink)}
+  .grp .right{display:flex;align-items:center;gap:6px}
+  .grp .chev{transition:transform .18s ease;flex:0 0 auto}
+  .grp[aria-expanded="false"] .chev{transform:rotate(-90deg)}
+  .grp .grp-dot{display:none;width:6px;height:6px;border-radius:50%;background:var(--rd-accent)}
+  /* a collapsed group that contains the active view shows a dot so you still see where you are */
+  .grp.has-active[aria-expanded="false"] .grp-dot{display:inline-block}
+
+  .grp-items{display:flex;flex-direction:column;gap:2px;padding:2px 0 8px}
+  .grp[aria-expanded="false"] + .grp-items{display:none}
+
+  .item{
+    all:unset;display:flex;align-items:center;gap:11px;cursor:pointer;
+    padding:10px 14px;border-radius:10px;font-size:14px;font-weight:500;color:var(--rd-ink-2);
+    position:relative;
+  }
+  .item:hover{background:var(--rd-soft);color:var(--rd-ink)}
+  .item.active{background:var(--rd-accent);color:var(--rd-accent-ink);box-shadow:0 6px 14px var(--rd-accent-ring)}
+  .item .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.45;flex:0 0 auto}
+  .item.active .dot{opacity:1}
+  .badge{margin-left:auto;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--rd-dim);border:1px solid var(--rd-line);border-radius:6px;padding:1px 5px}
+  .item.active .badge{color:#fff;border-color:rgba(255,255,255,.5)}
+
+  /* Daily flow promo, pinned bottom (matches the Part A fix) */
+  .promo{flex-shrink:0;background:linear-gradient(160deg,var(--rd-accent-hero),var(--rd-accent-hero-2));color:#fff;border-radius:18px;padding:16px}
+  .promo-eyebrow{font-size:9.5px;letter-spacing:1.6px;text-transform:uppercase;opacity:.65}
+  .promo-title{font-weight:700;font-size:15px;margin-top:5px}
+  .promo-sub{font-size:11.5px;opacity:.7;margin-top:3px}
+  .promo-btn{margin-top:13px;background:var(--rd-accent);color:#fff;border:none;border-radius:999px;padding:8px 18px;font-size:13px;font-weight:600;cursor:pointer}
+
+  /* ---- Right side: explainer ---- */
+  .panel{background:#fff;border-radius:22px;padding:26px 30px;box-shadow:0 10px 30px rgba(20,30,60,.08)}
+  .panel h1{font-size:22px;margin:0 0 4px}
+  .panel .sub{color:var(--rd-muted);font-size:13px;margin-bottom:18px}
+  .panel h2{font-size:14px;text-transform:uppercase;letter-spacing:1px;color:var(--rd-muted);margin:22px 0 8px}
+  .panel p{font-size:14px;line-height:1.6;color:var(--rd-ink-2);margin:8px 0}
+  .panel li{font-size:14px;line-height:1.6;color:var(--rd-ink-2)}
+  .pill{display:inline-block;background:var(--rd-soft);border:1px solid var(--rd-line);border-radius:999px;padding:3px 10px;font-size:12px;margin:2px 4px 2px 0}
+  .rec{background:#fff7f2;border:1px solid #ffd9c2;border-radius:14px;padding:14px 16px;margin-top:6px}
+  .rec b{color:var(--rd-accent)}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rd-line);vertical-align:top}
+  th{color:var(--rd-muted);font-weight:600;text-transform:uppercase;font-size:11px;letter-spacing:.6px}
+  .hint{font-size:12px;color:var(--rd-dim);margin-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== PROPOSED SIDEBAR ===================== -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">TC</div>
+      <div>
+        <div class="logo-name">TopCoat</div>
+        <div class="logo-sub">PEC CRM</div>
+      </div>
+    </div>
+
+    <!-- Overview is PINNED: always visible, never collapses. -->
+    <div class="pinned">
+      <div class="grp-label">Overview</div>
+      <button class="item active"><span class="dot"></span>Dashboard</button>
+      <button class="item"><span class="dot"></span>Metrics</button>
+    </div>
+
+    <div class="nav-scroll" id="navScroll">
+      <!-- Single-open accordion. Groups + views are the REAL views from
+           #pecSubnav (index.html:1920-1944). -->
+
+      <button class="grp" aria-expanded="false">Sales <span class="right"><span class="grp-dot"></span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
+      <div class="grp-items">
+        <button class="item"><span class="dot"></span>Jobs</button>
+        <button class="item"><span class="dot"></span>Customers</button>
+        <button class="item"><span class="dot"></span>Jobs pipeline</button>
+        <button class="item"><span class="dot"></span>Estimator <span class="badge">Beta</span></button>
+      </div>
+
+      <button class="grp" aria-expanded="false">Production <span class="right"><span class="grp-dot"></span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
+      <div class="grp-items">
+        <button class="item"><span class="dot"></span>Ordering</button>
+        <button class="item"><span class="dot"></span>Job Schedule</button>
+        <button class="item"><span class="dot"></span>Next Day Schedule</button>
+      </div>
+
+      <button class="grp" aria-expanded="false">Finance <span class="right"><span class="grp-dot"></span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
+      <div class="grp-items">
+        <button class="item"><span class="dot"></span>Invoicing</button>
+        <button class="item"><span class="dot"></span>Job Costing <span class="badge">Admin</span></button>
+        <button class="item"><span class="dot"></span>Bonus Report <span class="badge">Admin</span></button>
+        <button class="item"><span class="dot"></span>Commission <span class="badge">Admin</span></button>
+      </div>
+
+      <button class="grp" aria-expanded="false">Admin <span class="right"><span class="grp-dot"></span><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></span></button>
+      <div class="grp-items">
+        <button class="item"><span class="dot"></span>Price &amp; Material Catalog <span class="badge">Admin</span></button>
+        <button class="item"><span class="dot"></span>DripJobs Sync Health <span class="badge">Admin</span></button>
+        <button class="item"><span class="dot"></span>Settings <span class="badge">Admin</span></button>
+        <button class="item"><span class="dot"></span>Help</button>
+      </div>
+    </div>
+
+    <div class="promo">
+      <div class="promo-eyebrow">Daily flow</div>
+      <div class="promo-title">Cockpit</div>
+      <div class="promo-sub">Dashboard, Execution, and JARVIS in one place.</div>
+      <button class="promo-btn">Open Cockpit</button>
+    </div>
+  </aside>
+
+  <!-- ===================== EXPLAINER ===================== -->
+  <section class="panel">
+    <h1>Sidebar nav reorg - proposal</h1>
+    <div class="sub">Overview is pinned at the top. Click a group header (Sales, Production, Finance, Admin) to open it; opening one closes the others, so the list never overflows. This file is a mockup only and is not wired into the live CRM.</div>
+
+    <h2>Recommendation</h2>
+    <div class="rec">
+      <b>Collapsible groups (single-open accordion), one bar, with Overview pinned.</b> Overview (Dashboard, Metrics) is always visible since it is home. The other sections (Sales, Production, Finance, Admin) are toggles, and only one is open at a time, so the visible list stays short no matter how many views exist. The group holding your current view opens automatically, the selected item scrolls into view, and a collapsed group that contains the active view shows a small orange dot so you never lose your place.
+    </div>
+    <p style="margin-top:12px">Why this one for this codebase, not a flyout or a deep tree:</p>
+    <ul>
+      <li>The groups <b>already exist</b>. <span class="pill">#pecSubnav</span> emits the section headers (<span class="pill">.pec-subnav-group</span>) and the sidebar already clones them in as labels. We are turning labels that are already there into toggles, not inventing a structure.</li>
+      <li>It stays in <b>one rail</b>, so it does not add a floating panel that has to manage its own positioning, outside-click close, Escape key, and z-index against the two modal roots and the bell panel (a known gotcha area in this app).</li>
+      <li>The active-state mirroring (index.html:4577 keeps the sidebar button in sync with <span class="pill">switchView</span>) <b>keeps working untouched</b>: the mirror buttons still exist in the DOM, they are just hidden inside a collapsed group, so the observer still toggles <span class="pill">.active</span> on them.</li>
+    </ul>
+
+    <h2>The views, regrouped (all real, from #pecSubnav)</h2>
+    <table>
+      <tr><th>Group</th><th>Views</th></tr>
+      <tr><td>Overview (pinned)</td><td>Dashboard, Metrics</td></tr>
+      <tr><td>Sales</td><td>Jobs, Customers, Jobs pipeline, Estimator (beta, owner-only)</td></tr>
+      <tr><td>Production</td><td>Ordering, Job Schedule, Next Day Schedule</td></tr>
+      <tr><td>Finance</td><td>Invoicing, Job Costing*, Bonus Report*, Commission*</td></tr>
+      <tr><td>Admin</td><td>Price &amp; Material Catalog*, DripJobs Sync Health*, Settings*, Help</td></tr>
+    </table>
+    <div class="hint">* admin-only today (<span class="pill">.pec-role-admin</span>). Role visibility is unchanged: a hidden view simply does not render in its group, and a group with no visible views can hide its own header.</div>
+
+    <h2>The options I compared</h2>
+    <table>
+      <tr><th>Pattern</th><th>Cost</th><th>Trade-off</th></tr>
+      <tr><td><b>Collapsible groups</b> (recommended)</td><td>Low</td><td>Builds on the existing clone + group headers. One bar, no overlay machinery. Single-open + auto-expand keeps the active view findable and never overflows.</td></tr>
+      <tr><td>Right-side flyout</td><td>High</td><td>Best for very deep nav, but adds a floating panel (positioning, outside-click, Escape, z-index vs the modal roots / bell) and a second active-state concept (which top-level group is lit). Overkill for ~17 items.</td></tr>
+      <tr><td>Inline dropdown / tree</td><td>Low-Med</td><td>Functionally the same as collapsible groups at our depth (group, then views). Extra indentation buys nothing until views gain their own sub-views.</td></tr>
+    </table>
+
+    <div class="hint">Next step: if you like this, approve "collapsible groups" and I will wire it into index.html (pin Overview, turn the cloned <span class="pill">.rd-crm-group</span> labels into single-open toggles, remember the open group in localStorage, auto-expand the active group). Nothing is changed in the app until you approve. If you would rather have several groups open at once instead of single-open, say so and I will switch it.</div>
+  </section>
+</div>
+
+<script>
+  // Mockup-only interactivity. None of this touches the real app.
+  const navScroll = document.getElementById('navScroll');
+
+  function refreshGroupDots(){
+    document.querySelectorAll('.nav-scroll .grp').forEach(g=>{
+      const items=g.nextElementSibling;
+      const hasActive=items && items.querySelector('.item.active');
+      g.classList.toggle('has-active', !!hasActive);
+    });
+  }
+
+  // Single-open accordion: opening a group collapses the others.
+  function openGroup(header, open){
+    document.querySelectorAll('.nav-scroll .grp').forEach(g=>{
+      g.setAttribute('aria-expanded', (g===header && open) ? 'true' : 'false');
+    });
+  }
+
+  document.querySelectorAll('.nav-scroll .grp').forEach(g=>{
+    g.addEventListener('click', ()=>{
+      const isOpen=g.getAttribute('aria-expanded')==='true';
+      openGroup(g, !isOpen);
+    });
+  });
+
+  document.querySelectorAll('.item').forEach(it=>{
+    it.addEventListener('click', ()=>{
+      document.querySelectorAll('.item').forEach(x=>x.classList.remove('active'));
+      it.classList.add('active');
+      // If the item lives in an accordion group, open that group (single-open)
+      // and scroll it into view so the selection is never cut off.
+      const items=it.closest('.grp-items');
+      if(items){
+        openGroup(items.previousElementSibling, true);
+        setTimeout(()=>it.scrollIntoView({block:'nearest'}), 0);
+      }
+      refreshGroupDots();
+    });
+  });
+
+  refreshGroupDots();
+</script>
+</body>
+</html>
