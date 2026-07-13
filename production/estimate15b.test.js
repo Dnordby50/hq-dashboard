@@ -309,6 +309,61 @@ await section('scope BLANK: a template with NO blank produces no questions', asy
   ok(db.estimates[0].scope_questions.length === 0, 'no questions stored');
 });
 
+// --- Per-line MVB scope template (build 17) ----------------------------------
+// A line whose AREA has mvb=true uses the system's scope_template_mvb; an area
+// without it uses scope_template. The server rule mirrors the estimator's, so a
+// two-area estimate can carry both templates.
+await section('scope: the MVB template is chosen PER LINE from the area flag', async () => {
+  const STD = 'STANDARD FLAKE SCOPE (2 day system)';
+  const MVB = 'MOISTURE VAPOR BARRIER REQUIRED (3 day system)';
+  const db = {
+    estimates: [{ id: 'e1', mvb: 'none', flake_color: null, intake: {}, scope_of_work: null, scope_edited_at: null, scope_answers: {}, estimate_number: 102026 }],
+    estimate_areas: [
+      { id: 'ar-g', estimate_id: 'e1', name: 'Garage', sqft: 600, system_type_id: 'sys-flake', mvb: true, sort_order: 0 },
+      { id: 'ar-p', estimate_id: 'e1', name: 'Patio', sqft: 200, system_type_id: 'sys-flake', mvb: false, sort_order: 1 },
+    ],
+    estimate_line_items: [
+      { id: 'li-g', estimate_id: 'e1', addon_id: null, estimate_area_id: 'ar-g', label: 'Garage: Standard Flake', description: null, is_optional: false, selected_by_customer: false, sort_order: 0 },
+      { id: 'li-p', estimate_id: 'e1', addon_id: null, estimate_area_id: 'ar-p', label: 'Patio: Standard Flake', description: null, is_optional: false, selected_by_customer: false, sort_order: 1 },
+    ],
+    pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake', scope_template: STD, scope_template_mvb: MVB }],
+    pec_prod_addons: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [],
+  };
+  let captured = '';
+  global.fetch = async (url, opts) => {
+    captured = JSON.parse(opts.body).messages[0].content;
+    // Echo each target's template back as its scope.
+    const targets = JSON.parse(captured.split('LINE ITEMS TO ASSEMBLE')[1].match(/\[[\s\S]*\]/)[0]);
+    return modelResponse({ lines: targets.map((t) => ({ line_item_id: t.line_item_id, scope: t.template })) });
+  };
+  const mod = loadFn('pec-estimate-scope.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ estimate_id: 'e1' }));
+  ok(res.statusCode === 200, 'generates 200');
+  // Mirror the client rule to prove the server matches it.
+  const clientTpl = (area, sys) => (area.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
+  const sys = db.pec_prod_system_types[0];
+  const garage = db.estimate_line_items.find((l) => l.id === 'li-g');
+  const patio = db.estimate_line_items.find((l) => l.id === 'li-p');
+  ok(garage.description === MVB && garage.description === clientTpl({ mvb: true }, sys), 'the MVB area uses scope_template_mvb (server == client rule)');
+  ok(patio.description === STD && patio.description === clientTpl({ mvb: false }, sys), 'the non-MVB area uses the standard template');
+});
+
+// --- Archived estimate: the public route refuses it --------------------------
+await section('archived: the public + preview routes 404 a deleted estimate', async () => {
+  const TOKEN = '44444444-5555-4666-8777-888888888888';
+  const AID = '55555555-6666-4777-8888-999999999999';
+  const db = {
+    estimates: [{ id: AID, public_token: TOKEN, sent_at: '2026-07-15T00:00:00Z', status: 'sent', deleted_at: '2026-07-15T01:00:00Z', mvb: 'none', system_type_id: 'sys-flake', customer_name: 'Jane', estimate_number: 102030, brand: 'prescott-epoxy', price: 4000 }],
+    estimate_areas: [], estimate_line_items: [], pec_prod_system_types: [], pec_brand_identity: [], pec_email_senders: [],
+  };
+  global.fetch = async (url) => (String(url).includes('/auth/v1/user') ? { ok: true, json: async () => ({ id: 'staff' }) } : { ok: true, text: async () => '', json: async () => ({}) });
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const pub = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+  ok(pub.statusCode === 404, 'the public token route 404s an archived estimate');
+  const prev = await mod.handler({ httpMethod: 'GET', headers: { authorization: 'Bearer good' }, queryStringParameters: { preview: AID } });
+  ok(prev.statusCode === 404, 'the staff preview route 404s an archived estimate too');
+});
+
 // ===========================================================================
 // pec-estimate-ai.cjs: Quo history as intent signal + the empty-history honesty
 // ===========================================================================
@@ -520,6 +575,43 @@ await section('preview: identical body to the public route, no send, no token', 
   const draftMod = loadFn('pec-public-estimate.cjs', makeMockSb(draftDb));
   const draftRes = await draftMod.handler({ httpMethod: 'GET', headers: { authorization: 'Bearer good' }, queryStringParameters: { preview: PVID } });
   ok(draftRes.statusCode === 200 && /Estimate EST-102026/.test(draftRes.body), 'preview renders an UNSENT draft (the public route would 404 it)');
+});
+
+// ===========================================================================
+// Price per sqft on jobs (build 17): the REAL jobEffectiveSqft rule from
+// index.html; a null/dash with no sqft, and null jobs excluded from averages.
+// ===========================================================================
+await section('price per sqft: no sqft -> dash, excluded from the by-system average', async () => {
+  const { readFileSync } = require('fs');
+  const html = readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const m = html.match(/function jobEffectiveSqft[\s\S]*?\n}/);
+  ok(!!m, 'jobEffectiveSqft is defined in index.html');
+  // eslint-disable-next-line no-new-func
+  const jobEffectiveSqft = new Function(`${m[0]}; return jobEffectiveSqft;`)();
+
+  // The $/sqft rule the Jobs table + costing panel use.
+  const ppsf = (j) => {
+    const eff = jobEffectiveSqft(j.sqft, (j.areas || []).map((a) => a.sqft));
+    return eff > 0 && Number(j.price) > 0 ? Number(j.price) / eff : null;
+  };
+  ok(jobEffectiveSqft(null, []) === 0, 'no manual sqft + no areas = 0 sqft');
+  ok(jobEffectiveSqft(850, [{ sqft: 100 }]) === 850, 'manual sqft wins over the areas sum');
+  ok(jobEffectiveSqft(0, [300, 200]) === 500, 'no manual sqft falls back to the areas sum');
+  ok(ppsf({ price: 4000, sqft: null, areas: [] }) === null, 'a job with no sqft yields null $/sqft (a dash, never a fabricated number)');
+  ok(Math.abs(ppsf({ price: 4000, areas: [{ sqft: 800 }] }) - 5) < 1e-9, 'a job with areas yields price / sqft');
+
+  // By-system average excludes null-sqft jobs and reports the exclusion count
+  // (mirrors the metrics rule: only push when eff>0 && price>0).
+  const jobs = [
+    { price: 4000, areas: [{ sqft: 800 }] }, // $5.00
+    { price: 6000, areas: [{ sqft: 1000 }] }, // $6.00
+    { price: 5000, sqft: null, areas: [] },   // no sqft -> excluded
+  ];
+  const counted = jobs.map(ppsf).filter((p) => p != null);
+  const excluded = jobs.length - counted.length;
+  const avg = counted.reduce((s, p) => s + p, 0) / counted.length;
+  ok(counted.length === 2 && excluded === 1, 'the no-sqft job is excluded, not counted as zero');
+  ok(Math.abs(avg - 5.5) < 1e-9, 'the average is over the 2 costed jobs, not dragged to 0 by the excluded one');
 });
 
 // ===========================================================================
