@@ -23,6 +23,7 @@ export type AreaInput = {
   flakeProductId: string | null;
   basecoatProductId: string | null;
   topcoatProductId: string | null;
+  mvb: boolean; // per-area moisture vapor barrier (build 17)
   answers: Record<string, string>; // raw slotId -> value (audit / re-open)
   materials: AreaMaterialInput[];
 };
@@ -74,7 +75,6 @@ export type SaveEstimateArgs = {
   salesperson: { id: string; name: string; commission_pct: number };
   intake: Record<string, unknown>; // work-order fields
   customer: { name: string | null; phone: string | null; email: string | null; address: string | null };
-  mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
   // Rep's answers to the templates' BLANK placeholders, keyed by context hash
   // (15c). The scope writer substitutes these before the model call.
@@ -84,6 +84,10 @@ export type SaveEstimateArgs = {
   areas: AreaInput[];
   pricing: PricingResult;
   totals: EstimateTotals;
+  // The engine's computed price (calc_price) and the manual-override provenance
+  // (build 17). calcPrice keeps the math; totals.price is what actually sells.
+  calcPrice: number | null;
+  priceOverride: { reason: string; by: string | null } | null;
   createdBy: string | null;
   // Set when the estimator was opened from a lead (/estimator/?lead_id=<uuid>).
   // Null for a walk-up estimate with no lead behind it.
@@ -127,7 +131,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     customer_phone: args.customer.phone,
     customer_email: args.customer.email,
     customer_address: args.customer.address,
-    mvb: args.mvb,
+    // estimates.mvb is FROZEN (build 17): MVB is per-area now. Always 'none'.
+    mvb: 'none',
     flake_color: args.flakeColor,
     scope_answers: args.scopeAnswers || {},
     pricing_snapshot: args.pricingSnapshot as unknown,
@@ -136,6 +141,12 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     labor_pct: p.laborPct ?? null,
     commission_pct: p.commissionPct ?? null,
     target_gp_pct: p.targetGpPct ?? null,
+    // calc_price is the engine number; price is what actually sells (override
+    // or not). price_override_* is the provenance when a human moved the number.
+    calc_price: args.calcPrice,
+    price_override_reason: args.priceOverride ? args.priceOverride.reason : null,
+    price_overridden_by: args.priceOverride ? args.priceOverride.by : null,
+    price_overridden_at: args.priceOverride ? now : null,
     price: t.price,
     gp_dollars: t.gpDollars,
     gp_pct: t.gpPct,
@@ -172,6 +183,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       flake_product_id: a.flakeProductId,
       basecoat_product_id: a.basecoatProductId,
       topcoat_product_id: a.topcoatProductId,
+      mvb: a.mvb === true,
       answers: a.answers,
       sort_order: i,
     };

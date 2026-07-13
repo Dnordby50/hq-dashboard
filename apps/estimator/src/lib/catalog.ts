@@ -30,6 +30,8 @@ export type PricingConfig = {
   priceIncrement: number;
   charmThreshold: number;
   charmBand: number;
+  sundriesPct: number; // estimator_sundries_pct: sundries + disposables as % of total cost (build 17)
+  floorGpPct: number;  // estimator_floor_gp_pct: GP% floor below which an override warns (build 17)
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
 };
@@ -84,6 +86,8 @@ export async function loadCatalog(): Promise<Catalog> {
         'estimator_charm_band',
         'estimator_hide_material_qty',
         'estimator_default_commission_pct',
+        'estimator_sundries_pct',
+        'estimator_floor_gp_pct',
       ]),
   ]);
 
@@ -115,6 +119,8 @@ export async function loadCatalog(): Promise<Catalog> {
     priceIncrement: num('estimator_price_increment', 5),
     charmThreshold: num('estimator_charm_threshold', 1000),
     charmBand: num('estimator_charm_band', 250),
+    sundriesPct: num('estimator_sundries_pct', 2),
+    floorGpPct: num('estimator_floor_gp_pct', 40),
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&

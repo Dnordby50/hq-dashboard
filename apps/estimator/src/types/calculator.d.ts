@@ -22,6 +22,8 @@ declare module '*/production/calculator.js' {
     priceRaw?: number;
     materialsCost?: number;
     fixedAddons?: number;
+    sundriesPct?: number;
+    sundriesDollars?: number;
     laborPct?: number;
     laborBudget?: number | null;
     laborDollars?: number;
@@ -59,6 +61,7 @@ declare module '*/production/calculator.js' {
     discountPct: number | null;
     laborDollars: number | null;
     commissionDollars: number | null;
+    sundriesDollars: number | null;
     gpDollars: number | null;
     gpPct: number | null;
     budgetedHours: number | null;

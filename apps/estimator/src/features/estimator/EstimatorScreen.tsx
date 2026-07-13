@@ -6,6 +6,7 @@ import {
   computeEstimatePricing,
   lineItemsGp,
   lineItemsTotal,
+  roundEstimatePrice,
   type Area,
   type PricingResult,
   type Product,
@@ -30,8 +31,10 @@ import { supabase } from '../../lib/supabase';
 import { uuid } from '../../offline/uuid';
 import { openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
 
-type AreaForm = { name: string; sqft: string; systemTypeId: string; slotValues: Record<string, string> };
-type Mvb = 'none' | 'addon' | 'standalone';
+type AreaForm = { name: string; sqft: string; systemTypeId: string; mvb: boolean; slotValues: Record<string, string> };
+// MVB Only is a system type (build 17): an area on it is an MVB-only job, so
+// the per-area MVB checkbox is redundant there and is hidden.
+const MVB_ONLY_SYSTEM_NAME = 'MVB Only';
 type Intake = {
   gate_code: string;
   coat_past_garage: boolean;
@@ -172,7 +175,6 @@ export default function EstimatorScreen({
     if (fromEdit && salespeople.some((s) => s.id === fromEdit)) return fromEdit;
     return salespeople[0]?.id ?? '';
   });
-  const [mvb, setMvb] = useState<Mvb>(editing?.mvb ?? 'none');
   const [customer, setCustomer] = useState(() => ({
     name: editing?.customer.name ?? leadLink?.name ?? '',
     phone: editing?.customer.phone ?? leadLink?.phone ?? '',
@@ -192,9 +194,10 @@ export default function EstimatorScreen({
           name: a.name,
           sqft: a.sqft,
           systemTypeId: a.systemTypeId ?? fallbackSystemId,
+          mvb: a.mvb === true,
           slotValues: a.slotValues,
         }))
-      : [{ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }],
+      : [{ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }],
   );
   const [addonForms, setAddonForms] = useState<AddonForm[]>(() =>
     (editing?.addonLines ?? []).map((li) => ({
@@ -224,13 +227,14 @@ export default function EstimatorScreen({
   );
 
   // A system's slots, ordered, with internal (editor_hidden) body coats removed.
-  // A standalone-MVB estimate has no system recipe, so no slots to pick.
   const slotsFor = useCallback(
     (sysId: string): RecipeSlot[] =>
-      mvb === 'standalone'
-        ? []
-        : (recipeSlotsBySystemType[sysId] ?? []).filter((s) => !s.editor_hidden),
-    [recipeSlotsBySystemType, mvb],
+      (recipeSlotsBySystemType[sysId] ?? []).filter((s) => !s.editor_hidden),
+    [recipeSlotsBySystemType],
+  );
+  const isMvbOnlySystem = useCallback(
+    (sysId: string) => systemTypes.find((s) => s.id === sysId)?.name === MVB_ONLY_SYSTEM_NAME,
+    [systemTypes],
   );
 
   const productsByType = useMemo(() => {
@@ -277,6 +281,7 @@ export default function EstimatorScreen({
           flake_product_id: d.flake,
           basecoat_product_id: d.basecoat,
           topcoat_product_id: d.topcoat,
+          mvb: a.mvb === true,
         };
       }),
     [pricedAreas, deriveProducts],
@@ -296,20 +301,17 @@ export default function EstimatorScreen({
   const dominantSystem = systemTypes.find((s) => s.id === dominantSystemId);
   const mixedSystems = systemsBySqft.length > 1;
 
-  // BLANK placeholder questions (15c): scan the chosen systems' templates (the
-  // MVB variant when the estimate carries a barrier) and the selected add-ons'
-  // snippets for the literal word BLANK, ask the rep here in the garage where
-  // they actually know the answer. Only OPEN (unanswered) ones show. Standalone
-  // MVB uses no system template, so no system BLANKs there.
+  // BLANK placeholder questions (15c): scan each area's chosen template (its
+  // system's MVB variant when THAT AREA has a moisture barrier, build 17) plus
+  // the selected add-ons' snippets for the literal word BLANK. Only OPEN
+  // (unanswered) ones show.
   const scopeQuestions: ScopeQuestion[] = useMemo(() => {
     const sources: Array<{ text: string; contextLabel: string }> = [];
-    if (mvb !== 'standalone') {
-      for (const g of systemsBySqft) {
-        const sys = systemTypes.find((s) => s.id === g.systemId);
-        if (!sys) continue;
-        const tpl = (mvb !== 'none' && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
-        if (tpl) sources.push({ text: tpl, contextLabel: sys.name });
-      }
+    for (const a of pricedAreas) {
+      const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+      if (!sys) continue;
+      const tpl = (a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
+      if (tpl) sources.push({ text: tpl, contextLabel: sys.name });
     }
     for (const f of addonForms) {
       if (!f.addonId) continue; // one-offs have no template
@@ -317,19 +319,20 @@ export default function EstimatorScreen({
       if (cat && cat.scope_snippet && cat.scope_snippet.trim()) sources.push({ text: cat.scope_snippet, contextLabel: cat.name });
     }
     return scopeOpenQuestions(sources, scopeAnswers);
-  }, [systemsBySqft, systemTypes, mvb, addonForms, addonCatalog, scopeAnswers]);
+  }, [pricedAreas, systemTypes, addonForms, addonCatalog, scopeAnswers]);
   const setScopeAnswer = (key: string, value: string) => setScopeAnswers((prev) => ({ ...prev, [key]: value }));
+
+  // Any area wants MVB but the catalog is missing the MVB product.
+  const anyAreaMvb = useMemo(() => engineAreas.some((a) => a.mvb === true), [engineAreas]);
+  const mvbMissing = anyAreaMvb && !mvbProduct;
 
   const pricing: PricingResult | null = useMemo(() => {
     if (!salesperson || !engineAreas.length) return null;
-    if (mvb !== 'none' && !mvbProduct) return null; // surfaced as mvbMissing below
+    if (mvbMissing) return null; // surfaced below
     return computeEstimatePricing({
       areas: engineAreas,
       productsById,
-      // Standalone MVB: no system recipe prices (empty slot map), but the
-      // areas keep their system_type_id so labor % and target GP still come
-      // from the selected systems. The MVB line is added by the engine.
-      recipeSlotsBySystemType: mvb === 'standalone' ? {} : recipeSlotsBySystemType,
+      recipeSlotsBySystemType,
       systemTypes,
       laborRate: config.laborRate,
       // PRICING uses the standard house rate; the rep's actual rate only affects
@@ -340,10 +343,11 @@ export default function EstimatorScreen({
       priceIncrement: config.priceIncrement,
       charmThreshold: config.charmThreshold,
       charmBand: config.charmBand,
-      standaloneMvb: mvb !== 'none',
-      standaloneMvbProductId: mvb !== 'none' ? mvbProduct?.id ?? null : null,
+      sundriesPct: config.sundriesPct,
+      // Per-area MVB adds this product at each mvb=true area's sqft.
+      mvbProductId: mvbProduct?.id ?? null,
     } as Parameters<typeof computeEstimatePricing>[0]);
-  }, [engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvb, mvbProduct]);
+  }, [engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvbProduct, mvbMissing]);
 
   const err = pricing?.error ?? null;
   const hasPrice = !!pricing && !err && pricing.price != null;
@@ -353,6 +357,9 @@ export default function EstimatorScreen({
   const [sellInput, setSellInput] = useState('');
   const [discInput, setDiscInput] = useState('');
   const [priceOverride, setPriceOverride] = useState<null | 'sell' | 'disc'>(null);
+  // Build 17: overriding the total sell price requires a reason (the paper
+  // trail for who is discounting and why). Prefilled from a reopened override.
+  const [overrideReason, setOverrideReason] = useState<string>(() => editing?.priceOverrideReason ?? '');
 
   // A structural change to the price (system, sqft, MVB, products) resets any
   // manual override: the old discount was negotiated against the old number.
@@ -430,6 +437,24 @@ export default function EstimatorScreen({
   const gpBelowTarget =
     combinedGpPct != null && combinedGpPct * 100 < targetGpPctResolved - 0.05;
 
+  // ---- Pricing-logic panel values (INTERNAL only, never on the public page) --
+  const pricePerSqft = totalPrice != null && totalSqft > 0 ? totalPrice / totalSqft : null;
+  // Add-on material/labor cost (included lines only), for the cost stack.
+  const addonCost = useMemo(
+    () => r2(addonMoneyItems.reduce((sum, li) => (li.is_optional ? sum : sum + li.qty * li.unit_cost), 0)),
+    [addonMoneyItems],
+  );
+  // The engine cost stack at the engine price (M + F + labor + commission + sundries).
+  const engineCost = pricing && !err
+    ? r2((pricing.materialsCost ?? 0) + (pricing.fixedAddons ?? 0) + (pricing.laborDollars ?? 0) + (pricing.commissionDollars ?? 0) + (pricing.sundriesDollars ?? 0))
+    : null;
+  // Did charm-pricing fire? Compare the shipped price to what plain rounding
+  // (no charm) would have produced from the same raw price.
+  const charmFired = pricing && !err && pricing.priceRaw != null && basePrice != null &&
+    roundEstimatePrice(pricing.priceRaw, { increment: config.priceIncrement, charmThreshold: 0, charmBand: 0 }) !== basePrice;
+  // Floor GP: below it a save asks a hard confirm (warns, does not block).
+  const belowFloor = combinedGpPct != null && combinedGpPct * 100 < config.floorGpPct - 0.05;
+
   const onSellInput = (v: string) => {
     const cleaned = v.replace(/[^0-9.]/g, '');
     setSellInput(cleaned);
@@ -479,9 +504,10 @@ export default function EstimatorScreen({
   // Debounced (900ms) so sqft keystrokes do not each fire a model call. Keyed
   // on (mvb + each system's sqft), the regeneration rule; the cached read on a
   // reopened estimate's row short-circuits the call entirely.
+  const mvbSqft = useMemo(() => engineAreas.filter((a) => a.mvb).reduce((s, a) => s + a.sqft, 0), [engineAreas]);
   const inputsKey = useMemo(
-    () => [mvb, ...systemsBySqft.map((g) => `${g.systemId}:${Math.round(g.sqft)}`).sort()].join('|'),
-    [mvb, systemsBySqft],
+    () => [`mvb:${Math.round(mvbSqft)}`, ...systemsBySqft.map((g) => `${g.systemId}:${Math.round(g.sqft)}`).sort()].join('|'),
+    [mvbSqft, systemsBySqft],
   );
   const [ai, setAi] = useState<{ key: string; status: 'loading' | 'ready' | 'error'; rec?: AiRecommendation; err?: string } | null>(null);
   const editingSnapshot = editing?.pricingSnapshot ?? null;
@@ -511,7 +537,7 @@ export default function EstimatorScreen({
             ? `${dominantSystem?.name ?? 'Unknown system'} (dominant; estimate spans ${systemsBySqft.length} systems)`
             : dominantSystem?.name ?? 'Unknown system',
           sqft: totalSqft,
-          mvb,
+          mvb: anyAreaMvb ? 'addon' : 'none',
           calc_price: basePrice,
           target_gp_pct: targetGpPctResolved,
           comps: compsPayload,
@@ -542,7 +568,7 @@ export default function EstimatorScreen({
   }, [online, refreshPending]);
   useEffect(() => {
     setSaveState('idle');
-  }, [areas, salespersonId, intake, mvb, customer, finalSell, addonForms, scopeAnswers]);
+  }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -555,7 +581,7 @@ export default function EstimatorScreen({
       // New areas inherit the previous area's system (a second garage bay is
       // likelier than a system switch; one tap changes it either way).
       const sysId = prev[prev.length - 1]?.systemTypeId ?? fallbackSystemId;
-      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, slotValues: defaultSlotValues(sysId) }];
+      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId) }];
     });
   const removeArea = (i: number) => setAreas((prev) => prev.filter((_, idx) => idx !== i));
 
@@ -597,15 +623,15 @@ export default function EstimatorScreen({
     setAddonForms((prev) => prev.map((f) => (f.key === key ? { ...f, ...patch } : f)));
   const removeAddonForm = (key: string) => setAddonForms((prev) => prev.filter((f) => f.key !== key));
 
-  const mvbMissing = mvb !== 'none' && !mvbProduct;
   const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
-  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && saveState !== 'saving';
+  // An override (system sell price moved off the engine price) needs a reason.
+  const overrideNeedsReason = discounted && !overrideReason.trim();
+  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && !overrideNeedsReason && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
   // the estimate page can fill it in later.
   const flakeColorFromPicks = useMemo(() => {
-    if (mvb === 'standalone') return null;
     for (const a of areas) {
       for (const s of slotsFor(a.systemTypeId)) {
         if (!SWATCH_TYPES.has(s.material_type) || kindOf(s) !== 'product') continue;
@@ -614,7 +640,7 @@ export default function EstimatorScreen({
       }
     }
     return null;
-  }, [areas, slotsFor, productsById, mvb]);
+  }, [areas, slotsFor, productsById]);
 
   const postToParent = useCallback((msg: Record<string, unknown>) => {
     // Same-origin by construction (the dashboard and /estimator/ share a host);
@@ -661,6 +687,11 @@ export default function EstimatorScreen({
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
       return;
     }
+    // Floor-GP guard (build 17): warn, do not block. Same philosophy as the 15c
+    // BLANK-scope send gate.
+    if (belowFloor && !window.confirm(`Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor. Save this estimate anyway?`)) {
+      return;
+    }
     setSaveState('saving');
     setSaveError('');
     try {
@@ -691,6 +722,7 @@ export default function EstimatorScreen({
           flakeProductId: d.flake,
           basecoatProductId: d.basecoat,
           topcoatProductId: d.topcoat,
+          mvb: a.mvb === true,
           answers: a.slotValues,
           materials,
         };
@@ -714,21 +746,7 @@ export default function EstimatorScreen({
       // area's own solo cost-plus solve, so a big garage carries more of the
       // price than a small patio and the parts sum EXACTLY to the sell price.
       const lineItems: LineItemInput[] = [];
-      if (mvb === 'standalone') {
-        lineItems.push({
-          addonId: null,
-          areaIndex: null,
-          label: 'Moisture vapor barrier (MVB)',
-          description: `${Math.round(totalSqft)} sqft`,
-          qty: 1,
-          unitPrice: finalSell,
-          unitCost: r2(Number(pricing.materialsCost) || 0),
-          total: finalSell,
-          isOptional: false,
-          selectedByCustomer: true,
-          sortOrder: 0,
-        });
-      } else {
+      {
         const soloByArea = engineAreas.map((a) => {
           const solo = computeEstimatePricing({
             areas: [a],
@@ -741,20 +759,24 @@ export default function EstimatorScreen({
             priceIncrement: 1,
             charmThreshold: 0,
             charmBand: 0,
+            sundriesPct: config.sundriesPct,
+            mvbProductId: mvbProduct?.id ?? null,
           } as Parameters<typeof computeEstimatePricing>[0]);
           return solo && !solo.error ? solo : null;
         });
         const weights = soloByArea.map((s, i) => (s && s.priceRaw ? s.priceRaw : engineAreas[i].sqft));
         const parts = allocateProportionally(finalSell, weights);
         engineAreas.forEach((a, i) => {
-          const sysName = systemTypes.find((s) => s.id === a.system_type_id)?.name ?? 'Floor coating';
+          const sys = systemTypes.find((s) => s.id === a.system_type_id);
+          const sysName = sys?.name ?? 'Floor coating';
+          const isMvbOnly = sys?.name === MVB_ONLY_SYSTEM_NAME;
           lineItems.push({
             addonId: null,
             areaIndex: i,
-            label: engineAreas.length > 1 ? `${a.name}: ${sysName} floor coating system` : `${sysName} floor coating system`,
+            label: engineAreas.length > 1 ? `${a.name}: ${sysName}` : (isMvbOnly ? sysName : `${sysName} floor coating system`),
             description:
               `${Math.round(a.sqft)} sqft` +
-              (mvb === 'addon' ? ', includes moisture vapor barrier (MVB)' : ''),
+              (a.mvb && !isMvbOnly ? ', includes moisture vapor barrier (MVB)' : ''),
             qty: 1,
             unitPrice: parts[i],
             unitCost: r2(Number(soloByArea[i]?.materialsCost) || 0),
@@ -838,7 +860,6 @@ export default function EstimatorScreen({
           email: customer.email.trim() || null,
           address: customer.address.trim() || null,
         },
-        mvb,
         flakeColor: editing?.flakeColor ?? flakeColorFromPicks,
         scopeAnswers,
         lineItems,
@@ -846,6 +867,10 @@ export default function EstimatorScreen({
         areas: areaInputs,
         pricing,
         totals,
+        // Provenance: the engine price, and the override reason/who when the rep
+        // moved the system sell price off it.
+        calcPrice: basePrice,
+        priceOverride: discounted ? { reason: overrideReason.trim(), by: createdBy } : null,
         createdBy: editing?.createdBy ?? createdBy,
         leadId: editing?.leadId ?? leadLink?.id ?? null,
         markScopeStale: scopeWasEdited,
@@ -876,7 +901,7 @@ export default function EstimatorScreen({
       setSaveState('error');
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, mvb, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
+  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: keyof typeof customer, v: string) => setCustomer((p) => ({ ...p, [k]: v }));
@@ -947,27 +972,8 @@ export default function EstimatorScreen({
               </select>
             </label>
 
-            <div className="field">
-              <span>Moisture vapor barrier (MVB)</span>
-              <div className="mvb-seg" role="group" aria-label="MVB">
-                {([
-                  ['none', 'None'],
-                  ['addon', 'Add-on'],
-                  ['standalone', 'MVB only'],
-                ] as [Mvb, string][]).map(([val, label]) => (
-                  <button
-                    key={val}
-                    type="button"
-                    className={mvb === val ? 'seg active' : 'seg'}
-                    onClick={() => setMvb(val)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
             {mvbMissing && (
-              <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so MVB cannot be priced. Restore it (Price &amp; Material Catalog) or set MVB back to None.</p>
+              <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it (Price &amp; Material Catalog) or uncheck MVB on the areas.</p>
             )}
           </section>
 
@@ -999,6 +1005,14 @@ export default function EstimatorScreen({
                   />
                   {areas.length > 1 && <button type="button" className="x" aria-label="Remove area" onClick={() => removeArea(i)}>×</button>}
                 </div>
+                {/* Per-area MVB (build 17), default OFF. Hidden on an MVB Only
+                    area, whose system already IS the barrier. */}
+                {!isMvbOnlySystem(a.systemTypeId) && (
+                  <label className="check area-mvb">
+                    <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
+                    <span>Add moisture vapor barrier (MVB) to this area</span>
+                  </label>
+                )}
               </div>
             ))}
           </section>
@@ -1074,7 +1088,7 @@ export default function EstimatorScreen({
               it still gets a correct price off the recipe defaults. */}
           <details className="card more-detail">
             <summary>More detail <span className="muted">(products, colors, work order)</span></summary>
-            {mvb !== 'standalone' && areas.map((a, i) => {
+            {areas.map((a, i) => {
               const areaSlots = slotsFor(a.systemTypeId);
               if (!areaSlots.length) return null;
               return (
@@ -1096,9 +1110,7 @@ export default function EstimatorScreen({
                 </div>
               );
             })}
-            {mvb !== 'standalone' && (
-              <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
-            )}
+            <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
             <div className="areas-head" style={{ marginTop: 10 }}><span>Work order</span></div>
             <div className="wo-grid">
               <label className="field"><span>Gate code</span><input value={intake.gate_code} onChange={(e) => setIntakeField('gate_code', e.target.value)} /></label>
@@ -1139,6 +1151,10 @@ export default function EstimatorScreen({
                     {addonsBaseTotal > 0 ? ` + add-ons ${money(addonsBaseTotal)}` : ''}
                   </p>
                 )}
+                {/* $/sqft: the number Dylan wants at a glance. INTERNAL. */}
+                {pricePerSqft != null && (
+                  <div className="ppsf-line">{money2(pricePerSqft)}<span className="muted"> / sqft</span></div>
+                )}
                 <div className="sell-row">
                   <label className="field"><span>Sell price $ (system)</span>
                     <input inputMode="decimal" value={sellInput} placeholder={basePrice != null ? String(basePrice) : ''} onChange={(e) => onSellInput(e.target.value)} />
@@ -1147,15 +1163,35 @@ export default function EstimatorScreen({
                     <input inputMode="decimal" value={discInput} placeholder="0" onChange={(e) => onDiscInput(e.target.value)} />
                   </label>
                 </div>
+                {/* Override reason: required to save when the price was moved. */}
+                {discounted && (
+                  <label className="field override-reason">
+                    <span>Why the price was changed{overrideNeedsReason ? ' (required)' : ''}</span>
+                    <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="problem customer, large sqft, competitor match…" />
+                  </label>
+                )}
+                {overrideNeedsReason && <p className="warn">A reason is required to save a changed price.</p>}
                 <dl className="metrics">
                   <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
+                  <div><dt>Target GP</dt><dd>{Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}%</dd></div>
                   <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
+                  <div><dt>Materials</dt><dd>{money2(pricing.materialsCost)}</dd></div>
+                  <div><dt>Labor ({pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%)</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
+                  <div><dt>Sundries ({Number(pricing.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
                   <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
-                  <div><dt>Budgeted hours</dt><dd>{adjusted.budgetedHours?.toFixed(1) ?? '--'}</dd></div>
-                  {!config.hideMaterialQty && <div><dt>Materials</dt><dd>{money2(pricing.materialsCost)}</dd></div>}
+                  {addonCost > 0 && <div><dt>Add-on cost</dt><dd>{money2(addonCost)}</dd></div>}
                 </dl>
+                {/* How the price was reached, in one plain-English line. */}
+                <p className="derivation">
+                  {engineCost != null && basePrice != null
+                    ? `cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(basePrice)}${mixedSystems ? `, weighted across ${systemsBySqft.length} systems` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`
+                    : ''}
+                </p>
                 {gpBelowTarget && (
                   <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (sqft-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
+                )}
+                {belowFloor && (
+                  <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Saving asks you to confirm.</p>
                 )}
                 {pricing.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
                   <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>

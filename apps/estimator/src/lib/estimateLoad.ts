@@ -37,7 +37,8 @@ export type LoadedEstimate = {
   scopeEditedAt: string | null;
   hasScope: boolean;
   scopeAnswers: Record<string, string>;
-  areas: Array<{ name: string; sqft: string; systemTypeId: string | null; slotValues: Record<string, string> }>;
+  priceOverrideReason: string | null;
+  areas: Array<{ name: string; sqft: string; systemTypeId: string | null; mvb: boolean; slotValues: Record<string, string> }>;
   addonLines: LoadedAddonLine[];
 };
 
@@ -45,13 +46,13 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   const [estRes, areasRes, linesRes] = await Promise.all([
     supabase
       .from('estimates')
-      .select('id,estimate_number,status,system_type_id,mvb,flake_color,lead_id,created_by,customer_name,customer_phone,customer_email,customer_address,intake,pricing_snapshot,scope_edited_at,scope_of_work,scope_answers')
+      .select('id,estimate_number,status,system_type_id,mvb,flake_color,lead_id,created_by,customer_name,customer_phone,customer_email,customer_address,intake,pricing_snapshot,scope_edited_at,scope_of_work,scope_answers,price_override_reason')
       .eq('id', id)
       .is('deleted_at', null)
       .maybeSingle(),
     supabase
       .from('estimate_areas')
-      .select('name,sqft,system_type_id,answers,sort_order')
+      .select('name,sqft,system_type_id,mvb,answers,sort_order')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
     supabase
@@ -64,11 +65,12 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   if (!estRes.data) return null;
   const e = estRes.data as Record<string, unknown>;
   const areas = ((areasRes.error ? [] : areasRes.data) ?? []).map((a) => {
-    const row = a as { name: string | null; sqft: number | null; system_type_id: string | null; answers: Record<string, string> | null };
+    const row = a as { name: string | null; sqft: number | null; system_type_id: string | null; mvb: boolean | null; answers: Record<string, string> | null };
     return {
       name: row.name || 'Main',
       sqft: row.sqft != null ? String(row.sqft) : '',
       systemTypeId: row.system_type_id ?? null,
+      mvb: row.mvb === true,
       slotValues: row.answers ?? {},
     };
   });
@@ -108,7 +110,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     scopeEditedAt: (e.scope_edited_at as string | null) ?? null,
     hasScope: e.scope_of_work != null && String(e.scope_of_work).trim() !== '',
     scopeAnswers: (e.scope_answers && typeof e.scope_answers === 'object' ? e.scope_answers : {}) as Record<string, string>,
-    areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, slotValues: {} }],
+    priceOverrideReason: (e.price_override_reason as string | null) ?? null,
+    areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, mvb: false, slotValues: {} }],
     addonLines,
   };
 }

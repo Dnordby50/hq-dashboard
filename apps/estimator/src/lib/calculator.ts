@@ -24,6 +24,7 @@ export type Area = {
   topcoat_product_id?: string | null;
   basecoat_cure_speed?: string | null;
   topcoat_cure_speed?: string | null;
+  mvb?: boolean;
 };
 
 export type Product = {
@@ -74,10 +75,10 @@ export type PricingInput = {
   priceIncrement?: number;
   charmThreshold?: number;
   charmBand?: number;
-  // MVB: 'addon' passes true with the real slot map; 'standalone' passes true
-  // with recipeSlotsBySystemType {} so only the MVB line prices.
-  standaloneMvb?: boolean;
-  standaloneMvbProductId?: string | null;
+  sundriesPct?: number; // sundries + disposables as % of total cost (build 17)
+  // MVB is per-area (build 17): each area with mvb=true adds this product at its
+  // own sqft. An MVB-only job is a normal area on the "MVB Only" system.
+  mvbProductId?: string | null;
 };
 
 export type PricingResult = ReturnType<typeof _computeEstimatePricing>;

@@ -126,6 +126,16 @@ select, input {
   .area-top .area-system { grid-column: 1 / -1; }
 }
 
+/* Per-area MVB checkbox */
+.area-mvb { margin-top: 0.5rem; font-size: 0.85rem; }
+.area-mvb input { width: 1rem; height: 1rem; }
+
+/* Pricing-logic panel (internal only) */
+.ppsf-line { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.01em; }
+.ppsf-line .muted { font-size: 0.9rem; font-weight: 400; }
+.override-reason { margin-top: 0.4rem; }
+.derivation { color: var(--muted); font-size: 0.78rem; line-height: 1.4; margin: 0.2rem 0 0; }
+
 /* Add-on / one-off lines */
 .addon-row { border: 1px solid var(--line); border-radius: 0.6rem; padding: 0.7rem; margin-bottom: 0.7rem; }
 .addon-main { display: flex; align-items: center; gap: 0.5rem; }
