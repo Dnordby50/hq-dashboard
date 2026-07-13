@@ -7967,7 +7967,7 @@ async function renderJobs() {
   const root = $('pecViewRoot');
   const from = (state.jobsPage - 1) * PAGE;
   let q = supabase.from('jobs')
-    .select('id,customer_id,type,address,status,confirmed,price,created_at,customers(name,company),job_areas(system_type_id,order_index)', { count: 'exact' })
+    .select('id,customer_id,type,address,status,confirmed,price,sqft,created_at,customers(name,company),job_areas(system_type_id,order_index,sqft)', { count: 'exact' })
     .is('archived_at', null)
     .order('created_at', { ascending: false })
     .range(from, from + PAGE - 1);
@@ -8003,6 +8003,26 @@ async function renderJobs() {
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
   const sysOptions = sortSystemTypes(sysRes.data || []).filter(s => s.active !== false);
 
+  // $/sqft (build 17): price / effective sqft (manual jobs.sqft wins, else the
+  // areas sum; jobEffectiveSqft is the ONE shared rule). Dash when no sqft; an
+  // override-discounted price is INCLUDED (it is what the job actually sold for).
+  const jobPpsf = (j) => {
+    const eff = jobEffectiveSqft(j.sqft, (j.job_areas || []).map(a => a.sqft));
+    return eff > 0 && Number(j.price) > 0 ? Number(j.price) / eff : null;
+  };
+  // Sortable $/sqft column: click the header to sort the loaded page (nulls
+  // sink), so an outlier is one click away.
+  if (state.jobsSort === 'ppsf_desc' || state.jobsSort === 'ppsf_asc') {
+    const dir = state.jobsSort === 'ppsf_asc' ? 1 : -1;
+    jobs = jobs.slice().sort((a, b) => {
+      const pa = jobPpsf(a), pb = jobPpsf(b);
+      if (pa == null && pb == null) return 0;
+      if (pa == null) return 1; // nulls always last
+      if (pb == null) return -1;
+      return (pa - pb) * dir;
+    });
+  }
+
   root.innerHTML = `
     <div class="pec-toolbar">
       <select id="pecJobStatus"><option value="">All statuses</option>
@@ -8019,16 +8039,17 @@ async function renderJobs() {
     </div>
     <div class="pec-card">
       <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Price</th><th>Created</th></tr></thead>
-        <tbody>${jobs.map(j => `
+        <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Price</th><th id="pecJobsPpsfSort" style="text-align:right;cursor:pointer;white-space:nowrap" title="Click to sort by price per square foot (this page)">$/sqft ${state.jobsSort === 'ppsf_desc' ? '▼' : state.jobsSort === 'ppsf_asc' ? '▲' : '↕'}</th><th>Created</th></tr></thead>
+        <tbody>${jobs.map(j => { const ppsf = jobPpsf(j); return `
           <tr data-job-id="${j.id}">
             <td>${esc(j.customers?.name || '—')}</td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
             <td><span class="pec-badge ${j.status || ''}">${esc((j.status || '').replace('_',' ')) || '—'}</span></td>
             <td>${fmtMoney(j.price)}</td>
+            <td style="text-align:right">${ppsf != null ? '$' + ppsf.toFixed(2) : '—'}</td>
             <td>${fmtDate(j.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No jobs</td></tr>'}</tbody>
+          </tr>`; }).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No jobs</td></tr>'}</tbody>
       </table>
       ${renderPagination(state.jobsPage, state.jobsTotal, p => { state.jobsPage = p; renderJobs(); })}
     </div>
@@ -8057,6 +8078,12 @@ async function renderJobs() {
     el.addEventListener('change', () => { state.jobsFilter[k.toLowerCase()] = el.value; state.jobsPage = 1; renderJobs(); });
   });
   $('pecJobNew').addEventListener('click', () => { console.log('[crm] pecJobNew click'); openNewJobForm(); });
+  const ppsfSort = $('pecJobsPpsfSort');
+  if (ppsfSort) ppsfSort.addEventListener('click', () => {
+    // desc -> asc -> off (back to created order).
+    state.jobsSort = state.jobsSort === 'ppsf_desc' ? 'ppsf_asc' : state.jobsSort === 'ppsf_asc' ? null : 'ppsf_desc';
+    renderJobs();
+  });
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
     tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
   );
@@ -10429,9 +10456,16 @@ async function renderMetrics() {
       let best = -1;
       for (const a of (extra.job_areas || [])) { const s = Number(a.sqft) || 0; if (a.system_type_id && s > best) { best = s; sysId = a.system_type_id; } }
     }
-    const g = (dpsfBySystem[sysNameById[sysId] || 'No system'] ||= { sum: 0, n: 0 });
-    g.sum += dpsf; g.n++;
+    const g = (dpsfBySystem[sysNameById[sysId] || 'No system'] ||= { sum: 0, n: 0, vals: [] });
+    g.sum += dpsf; g.n++; g.vals.push(dpsf);
   }
+  // Median $/sqft per system: one weird $18/sqft job should not move the number.
+  const dpsfMedian = (vals) => {
+    const xs = vals.slice().sort((a, b) => a - b);
+    if (!xs.length) return 0;
+    const mid = Math.floor(xs.length / 2);
+    return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
+  };
   const dpsfMonthly = months.map((mo, i) => dpsfMonthN[i] ? dpsfMonthSum[i] / dpsfMonthN[i] : 0);
   const dpsfMonthIds = months.map((mo) => regDrill(jobsDrill(
     `${mo.label}: sold jobs with $/sqft`,
@@ -10542,8 +10576,8 @@ async function renderMetrics() {
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Price per sq ft (sold jobs, by month)</div>
         <div class="pec-m-chart-wrap">${invBarChart(dpsfMonthly, months, dpsfMonthIds, v => v > 0 ? '$' + v.toFixed(1) : '')}</div>
         <div style="color:var(--muted);font-size:.68rem;margin-top:6px">$/sqft available for ${dpsfJobs.length} of ${soldForSqft.length} sold job${soldForSqft.length === 1 ? '' : 's'} in these months. Backfill the Sqft field on the job page to raise coverage.</div>
-        ${dpsfSystemRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>System</th><th style="text-align:right">Avg $/sqft</th><th style="text-align:right">Jobs</th></tr></thead><tbody>
-          ${dpsfSystemRows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">$${(g.sum / g.n).toFixed(2)}</td><td style="text-align:right">${g.n}</td></tr>`).join('')}
+        ${dpsfSystemRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>System</th><th style="text-align:right">Avg $/sqft</th><th style="text-align:right">Median $/sqft</th><th style="text-align:right">Jobs</th></tr></thead><tbody>
+          ${dpsfSystemRows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">$${(g.sum / g.n).toFixed(2)}</td><td style="text-align:right">$${dpsfMedian(g.vals).toFixed(2)}</td><td style="text-align:right">${g.n}</td></tr>`).join('')}
         </tbody></table>` : ''}
       </div>
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Speed to lead (created to first contact)</div>
@@ -21521,6 +21555,20 @@ async function renderUnifiedJob(jobId) {
                data-table='job' routes to saveJobField -> pec_prod_jobs.revenue,
                then refreshUnifiedTotals recomputes GP / Total Var live. -->
           ${moneyInput('Revenue', 'revenue', 'job', job.revenue)}
+          ${(() => {
+            // $/sqft (build 17): contract revenue / the job's total area sqft.
+            // Dash when no sqft (never a fabricated number). Overridden prices
+            // are included (it is what the job sold for). System = dominant area.
+            const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+            const rev = Number(job.revenue) || 0;
+            let domSys = null, best = -1;
+            for (const a of areas) { const q = Number(a.sqft) || 0; if (a.system_type_id && q > best) { best = q; domSys = a.system_type_id; } }
+            const domName = domSys ? ((state.systemTypes || []).find(s => s.id === domSys) || {}).name || '' : '';
+            const val = totalSqft > 0 && rev > 0
+              ? `$${(rev / totalSqft).toFixed(2)}<span style="color:var(--muted);font-size:.65rem"> · ${Math.round(totalSqft).toLocaleString()} sqft${domName ? ' · ' + esc(domName) : ''}</span>`
+              : '<span style="color:var(--muted)">— (no sqft on file)</span>';
+            return derivedField('$ / sqft', val, '', 'ppsf-box');
+          })()}
           <div class="pec-field"><label>Callback</label>
             <select class="cost-text" data-cost="callback" data-table="job" data-bool="true">
               <option value=""     ${job.callback == null   ? 'selected' : ''}>—</option>
