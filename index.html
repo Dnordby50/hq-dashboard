@@ -16976,13 +16976,16 @@ async function renderEstimates() {
   if (state.openEstimateId) return renderEstimateDetail(state.openEstimateId);
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimates…</div>';
+  // Archived toggle (build 17): the default view excludes archived rows; the
+  // toggle flips to archived-only (deleted_at not null) with a Restore action.
+  const showArchived = !!state.estimatesShowArchived;
   let res;
   try {
-    res = await withFreshSession(() => supabase.from('estimates')
-      .select('id,estimate_number,status,price,gp_pct,mvb,created_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft),pec_prod_system_types(name)')
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(500), { label: 'renderEstimates' });
+    let qb = supabase.from('estimates')
+      .select('id,estimate_number,status,price,calc_price,price_override_reason,gp_pct,created_at,deleted_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft,mvb,system_type_id),pec_prod_system_types(name)');
+    // The one place we DELIBERATELY read archived rows.
+    qb = showArchived ? qb.not('deleted_at', 'is', null) : qb.is('deleted_at', null);
+    res = await withFreshSession(() => qb.order('created_at', { ascending: false }).limit(500), { label: 'renderEstimates' });
   } catch (e) { res = { error: e }; }
   if (res.error) {
     root.innerHTML = `<div class="pec-empty">${esc(res.error.message || String(res.error))}</div>`;
@@ -16995,28 +16998,40 @@ async function renderEstimates() {
     const rows = all.filter(est => estimateMatchesSearch(est, q));
     const body = rows.map(est => {
       const sqft = estimateSqft(est);
-      const sys = est.pec_prod_system_types && est.pec_prod_system_types.name
-        ? est.pec_prod_system_types.name
-        : (est.mvb === 'standalone' ? 'MVB only' : '');
+      const areasArr = Array.isArray(est.estimate_areas) ? est.estimate_areas : [];
+      const anyMvb = areasArr.some(a => a && a.mvb === true);
+      const sys = est.pec_prod_system_types && est.pec_prod_system_types.name ? est.pec_prod_system_types.name : '';
+      const overridden = est.calc_price != null && est.price != null && Math.abs(Number(est.calc_price) - Number(est.price)) >= 0.5;
       return `<tr data-est-id="${esc(est.id)}" style="cursor:pointer">
-        <td style="white-space:nowrap"><strong>${esc(estNumberLabel(est))}</strong></td>
+        <td style="white-space:nowrap"><strong>${esc(estNumberLabel(est))}</strong>${overridden ? ' <span title="Price manually overridden" style="color:#b45309;font-size:.7rem">◆ override</span>' : ''}</td>
         <td>${esc(est.customer_name || '(no name)')}</td>
-        <td>${esc(sys)}${est.mvb === 'addon' ? ' <span style="color:var(--muted);font-size:.7rem">+MVB</span>' : ''}</td>
+        <td>${esc(sys)}${anyMvb ? ' <span style="color:var(--muted);font-size:.7rem">+MVB</span>' : ''}</td>
         <td style="text-align:right">${sqft > 0 ? Math.round(sqft).toLocaleString() : '--'}</td>
         <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}</td>
         <td style="text-align:right">${est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : '--'}</td>
         <td>${estStatusChip(est.status)}</td>
         <td style="white-space:nowrap;color:var(--muted)">${esc(fmtRelativeTime(est.created_at))}</td>
+        ${showArchived ? `<td><button class="pec-btn ghost sm est-restore" data-est-id="${esc(est.id)}">Restore</button></td>` : ''}
       </tr>`;
     }).join('');
     const tableHost = $('pecEstListHost');
     if (!tableHost) return;
     tableHost.innerHTML = rows.length ? `
       <div class="pec-table-wrap"><table class="pec-table">
-        <thead><tr><th>Number</th><th>Customer</th><th>System</th><th style="text-align:right">Sqft</th><th style="text-align:right">Price</th><th style="text-align:right">GP%</th><th>Status</th><th>Age</th></tr></thead>
+        <thead><tr><th>Number</th><th>Customer</th><th>System</th><th style="text-align:right">Sqft</th><th style="text-align:right">Price</th><th style="text-align:right">GP%</th><th>Status</th><th>Age</th>${showArchived ? '<th></th>' : ''}</tr></thead>
         <tbody>${body}</tbody>
       </table></div>`
-      : `<div class="pec-empty">${q ? 'No estimates match that search.' : 'No estimates yet. Start one from a lead, or the New estimate button above.'}</div>`;
+      : `<div class="pec-empty">${q ? 'No estimates match that search.' : (showArchived ? 'No archived estimates.' : 'No estimates yet. Start one from a lead, or the New estimate button above.')}</div>`;
+    // Restore stops on the row (do not open the detail).
+    tableHost.querySelectorAll('.est-restore').forEach(btn => btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ deleted_at: null, deleted_by: null }).eq('id', btn.dataset.estId), { label: 'estimate-restore' });
+        if (upd.error) throw upd.error;
+        showToast('Estimate restored', { ttl: 2500 });
+        renderEstimates();
+      } catch (err) { showToast('Restore failed: ' + esc(err.message || err), { ttl: 5000 }); }
+    }));
     tableHost.querySelectorAll('tr[data-est-id]').forEach(tr => tr.addEventListener('click', () => {
       state.openEstimateId = tr.dataset.estId;
       renderEstimateDetail(tr.dataset.estId);
@@ -17026,12 +17041,17 @@ async function renderEstimates() {
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
       <input id="pecEstSearch" type="search" placeholder="Search number, customer, phone, address…" value="${esc(state.estimatesSearch || '')}" style="flex:1;min-width:220px;max-width:420px">
-      <button class="pec-btn sm primary" id="pecEstNew">+ New estimate</button>
+      <div style="display:flex;gap:8px">
+        <button class="pec-btn sm ${showArchived ? 'primary' : 'ghost'}" id="pecEstArchivedToggle">${showArchived ? '← Active estimates' : 'Archived'}</button>
+        ${showArchived ? '' : '<button class="pec-btn sm primary" id="pecEstNew">+ New estimate</button>'}
+      </div>
     </div>
     <div id="pecEstListHost"></div>
   `;
   $('pecEstSearch').addEventListener('input', e => { state.estimatesSearch = e.target.value; draw(); });
-  $('pecEstNew').addEventListener('click', () => openEstimatorModal());
+  $('pecEstArchivedToggle').addEventListener('click', () => { state.estimatesShowArchived = !showArchived; renderEstimates(); });
+  const newBtn = $('pecEstNew');
+  if (newBtn) newBtn.addEventListener('click', () => openEstimatorModal());
   draw();
 }
 
@@ -17043,8 +17063,10 @@ async function renderEstimateDetail(estimateId) {
   let res;
   try {
     res = await withFreshSession(() => supabase.from('estimates')
-      .select('*,estimate_areas(name,sqft,sort_order,system_type_id),estimate_line_items(*),pec_prod_system_types(name),leads(full_name)')
-      .eq('id', estimateId).is('deleted_at', null).maybeSingle(), { label: 'renderEstimateDetail' });
+      .select('*,estimate_areas(name,sqft,sort_order,system_type_id,mvb),estimate_line_items(*),pec_prod_system_types(name),leads(full_name)')
+      .eq('id', estimateId).maybeSingle(), { label: 'renderEstimateDetail' });
+      // NOTE: deleted_at is NOT filtered here on purpose: viewing an archived
+      // estimate's detail (to restore it, or read it) must work.
   } catch (e) { res = { error: e }; }
   if (res.error || !res.data) {
     root.innerHTML = backBar + `<div class="pec-empty">${res.error
@@ -17070,12 +17092,23 @@ async function renderEstimateDetail(estimateId) {
   const snapshot = est.pricing_snapshot || {};
   const snapComps = snapshot.comps || null;
   const snapAi = snapshot.ai || null;
-  const mvbLabel = est.mvb === 'standalone' ? 'MVB only (standalone job)' : est.mvb === 'addon' ? 'Add-on to the system' : 'None';
+  // MVB is per-area now (build 17): label from the areas, not the frozen column.
+  const mvbAreas = (est.estimate_areas || []).filter(a => a && a.mvb === true).map(a => a.name || 'Area');
+  const mvbLabel = mvbAreas.length ? `On ${mvbAreas.join(', ')}` : 'None';
+  const isArchived = est.deleted_at != null;
 
   const gpPctTxt = est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : null;
-  const discountTxt = intake.discount_pct != null && Number(intake.discount_pct) > 0
-    ? `${Number(intake.discount_pct).toFixed(1)}% discount off ${fmtMoney(intake.base_price)}`
-    : null;
+  // Manual price override (build 17): calc_price is the engine number, price is
+  // what sells. INTERNAL only; the customer page shows the sold price alone.
+  const overridden = est.calc_price != null && est.price != null && Math.abs(Number(est.calc_price) - Number(est.price)) >= 0.5;
+  const overrideDelta = overridden ? Number(est.price) - Number(est.calc_price) : 0;
+  const detailSqft = sqft;
+  const ppsfTxt = detailSqft > 0 && est.price != null ? fmtMoney(Number(est.price) / detailSqft) + '/sqft' : null;
+  const discountTxt = overridden
+    ? `overridden from ${fmtMoney(est.calc_price)} (${overrideDelta < 0 ? '' : '+'}${fmtMoney(overrideDelta)})`
+    : (intake.discount_pct != null && Number(intake.discount_pct) > 0
+      ? `${Number(intake.discount_pct).toFixed(1)}% discount off ${fmtMoney(intake.base_price)}`
+      : null);
 
   const detailRow = (label, val) => val == null || val === '' ? '' :
     `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${esc(label)}</span><div style="font-size:.86rem">${val}</div></div>`;
@@ -17123,11 +17156,15 @@ async function renderEstimateDetail(estimateId) {
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
         <button class="pec-btn sm ghost" id="estCopyLink" ${est.sent_at ? '' : 'disabled title="The link is private (404) until the estimate is sent. Send it first."'}>Copy link</button>
+        ${isArchived
+          ? '<button class="pec-btn sm primary" id="estRestore">Restore</button>'
+          : '<button class="pec-btn sm ghost danger" id="estArchive" title="Soft-delete: hides it from the list and 404s the public link. Restorable from the Archived filter.">Archive</button>'}
         ${['draft', 'sent', 'change_requested'].includes(est.status)
           ? `<button class="pec-btn sm primary" id="estSend">${est.sent_at ? 'Re-send to customer' : 'Send to customer'}</button>`
           : `<button class="pec-btn sm primary" disabled title="This estimate is ${esc(est.status)}; it can no longer be sent.">Send to customer</button>`}
       </div>
     </div>
+    ${isArchived ? `<div style="background:rgba(100,116,139,.12);border:1px solid rgba(100,116,139,.4);border-radius:8px;padding:10px 12px;font-size:.84rem;margin-bottom:10px"><strong>This estimate is archived.</strong> Its public link is inactive. Restore it to make it active again.</div>` : ''}
     <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
       <div>
         <div class="pec-card">
@@ -17141,7 +17178,9 @@ async function renderEstimateDetail(estimateId) {
             </div>
             <div style="text-align:right">
               <div style="font-size:1.5rem;font-weight:800">${fmtMoney(est.price)}</div>
+              ${ppsfTxt ? `<div style="font-weight:700;font-size:.9rem">${ppsfTxt}</div>` : ''}
               <div style="color:var(--muted);font-size:.78rem">${gpPctTxt ? `GP ${gpPctTxt}` : ''}${discountTxt ? ` · ${discountTxt}` : ''}</div>
+              ${overridden && est.price_override_reason ? `<div style="color:#b45309;font-size:.72rem;margin-top:2px" title="Manual price override">◆ ${esc(est.price_override_reason)}</div>` : ''}
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;margin-top:12px">
@@ -17149,7 +17188,7 @@ async function renderEstimateDetail(estimateId) {
             ${detailRow('Phone', est.customer_phone ? `<a href="tel:${esc(est.customer_phone)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_phone)}</a>` : null)}
             ${detailRow('Email', est.customer_email ? `<a href="mailto:${esc(est.customer_email)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_email)}</a>` : null)}
             ${detailRow('Address', est.customer_address ? esc(est.customer_address) : null)}
-            ${detailRow('System', esc(sysName || (est.mvb === 'standalone' ? 'MVB only' : 'Unknown')))}
+            ${detailRow('System', esc(sysName || 'Unknown'))}
             ${detailRow('Sqft', sqft > 0 ? Math.round(sqft).toLocaleString() : null)}
             ${detailRow('MVB', esc(mvbLabel))}
             ${detailRow('Salesperson', intake.salesperson_name ? esc(intake.salesperson_name) : null)}
@@ -17253,6 +17292,27 @@ async function renderEstimateDetail(estimateId) {
             ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
             ${est.public_token ? `<div style="color:var(--muted);font-size:.7rem;margin-top:8px;word-break:break-all">${esc(location.origin + '/e/' + est.public_token)}</div>` : ''}
           `}
+        </div>
+        <div class="pec-card">
+          <h3>Pricing logic</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;font-size:.82rem">
+            ${detailRow('Calculated price', est.calc_price != null ? fmtMoney(est.calc_price) : '(not recorded)')}
+            ${detailRow('Sold price', fmtMoney(est.price))}
+            ${overridden ? detailRow('Override', `<span style="color:#b45309">${overrideDelta < 0 ? '' : '+'}${fmtMoney(overrideDelta)}</span>`) : ''}
+            ${ppsfTxt ? detailRow('$ / sqft', ppsfTxt) : ''}
+            ${detailRow('Materials', est.materials_cost != null ? fmtMoney(est.materials_cost) : null)}
+            ${detailRow('Labor budget', est.labor_budget != null ? fmtMoney(est.labor_budget) + (est.budgeted_hours != null ? ` · ${Number(est.budgeted_hours).toFixed(1)}h` : '') : null)}
+            ${detailRow('Commission', est.commission_dollars != null ? fmtMoney(est.commission_dollars) : null)}
+            ${detailRow('Gross profit', est.gp_dollars != null ? fmtMoney(est.gp_dollars) + (gpPctTxt ? ` (${gpPctTxt})` : '') : null)}
+            ${detailRow('Target GP', est.target_gp_pct != null ? Number(est.target_gp_pct).toFixed(1).replace(/\.0$/, '') + '%' : null)}
+            ${detailRow('GP / hour', est.gp_per_hour != null ? fmtMoney(est.gp_per_hour) : null)}
+          </div>
+          ${overridden ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:10px;font-size:.8rem">
+            <div style="color:#b45309;font-weight:600">Price manually overridden</div>
+            ${est.price_override_reason ? `<div style="margin-top:2px">Reason: ${esc(est.price_override_reason)}</div>` : ''}
+            ${est.price_overridden_at ? `<div style="color:var(--muted);font-size:.72rem;margin-top:2px">${esc(new Date(est.price_overridden_at).toLocaleString())}</div>` : ''}
+          </div>` : ''}
+          <div style="color:var(--muted);font-size:.68rem;margin-top:8px">Estimates include a 2% sundries and disposables cost baked into the price. Internal only; the customer sees the total.</div>
         </div>
         <div class="pec-card">
           <h3>Pricing intelligence</h3>
@@ -17374,6 +17434,34 @@ async function renderEstimateDetail(estimateId) {
   ));
   const lostBtn = $('estMarkLost');
   if (lostBtn) lostBtn.addEventListener('click', () => setStatus({ status: 'lost' }, 'Mark this estimate lost?'));
+
+  // Archive (soft-delete, any status, any staff). An accepted estimate warns
+  // HARD that the downstream JOB is not touched. Never a hard-delete, never a
+  // cascade.
+  const archiveBtn = $('estArchive');
+  if (archiveBtn) archiveBtn.addEventListener('click', async () => {
+    const msg = est.status === 'accepted'
+      ? 'ARCHIVE THIS ACCEPTED ESTIMATE?\n\nThe JOB created from it is NOT archived and stays on the Jobs page and the Job Schedule. This only hides the estimate and disables its public link. Continue?'
+      : 'Archive this estimate? It leaves the list and its public link stops working. You can restore it from the Archived filter.';
+    if (!confirm(msg)) return;
+    try {
+      const by = (state.session && state.session.user && state.session.user.id) || null;
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ deleted_at: new Date().toISOString(), deleted_by: by }).eq('id', est.id), { label: 'estimate-archive' });
+      if (upd.error) throw upd.error;
+      showToast(`Estimate ${esc(estNumberLabel(est))} archived`, { ttl: 3000 });
+      state.openEstimateId = null;
+      renderEstimates();
+    } catch (err) { showToast('Archive failed: ' + esc(err.message || err), { ttl: 5000 }); }
+  });
+  const restoreBtn = $('estRestore');
+  if (restoreBtn) restoreBtn.addEventListener('click', async () => {
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ deleted_at: null, deleted_by: null }).eq('id', est.id), { label: 'estimate-restore' });
+      if (upd.error) throw upd.error;
+      showToast('Estimate restored', { ttl: 2500 });
+      renderEstimateDetail(est.id);
+    } catch (err) { showToast('Restore failed: ' + esc(err.message || err), { ttl: 5000 }); }
+  });
 
   $('estFlakeSave').addEventListener('click', async () => {
     const btn = $('estFlakeSave');
