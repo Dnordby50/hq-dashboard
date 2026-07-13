@@ -1,5 +1,60 @@
 [
   {
+    "id": "estimate-archive",
+    "date": "2026-07-15",
+    "title": "Archive an estimate (and restore it)",
+    "summary": "An estimate you no longer want can be archived from its page: it leaves the list and its customer link stops working. Archiving is a soft delete, so nothing is really gone. Open the Archived filter on the Estimates list to see archived ones and restore any of them. Archiving an accepted estimate does NOT touch the job it created; the job stays on the Jobs page and the schedule.",
+    "howto": [
+      "Open an estimate and click Archive. Confirm the prompt (it warns if a job already exists).",
+      "To bring one back, open Estimates, click Archived, and hit Restore on the row.",
+      "A restored estimate comes back whole, with its areas, line items, and scope."
+    ]
+  },
+  {
+    "id": "estimate-mvb-per-area",
+    "date": "2026-07-15",
+    "title": "Moisture vapor barrier is now per area",
+    "summary": "The moisture vapor barrier used to be one switch for the whole estimate, which was wrong when only one area needs it. Now each area has its own MVB checkbox, defaulted off. Check it on the garage and leave it off the patio, and only the garage carries the barrier's cost and gets the moisture-barrier scope language. An MVB-only job is just an area on the new MVB Only system.",
+    "howto": [
+      "In the estimator, tick Add moisture vapor barrier on each area that needs one.",
+      "The price and the scope update for just those areas.",
+      "For an MVB-only job with no coating, pick the MVB Only system on the area."
+    ]
+  },
+  {
+    "id": "estimate-pricing-logic",
+    "date": "2026-07-15",
+    "title": "See how the price was reached, and adjust it",
+    "summary": "The estimator now shows the work behind the number: the price per square foot up top, the full cost stack (materials, labor and hours, sundries, add-ons, commission, gross profit), and a plain-English line explaining how the price was calculated, including when charm-pricing nudged it under a round number. You can override the total sell price by typing a new number; the gross profit updates live and turns red below target. A reason is required to save a changed price, and going below the gross-profit floor asks you to confirm.",
+    "howto": [
+      "Look under the price for $/sqft, the cost breakdown, and the one-line explanation.",
+      "To change the price, type a new Sell price; the gross profit updates as you type.",
+      "Enter a reason for the change (required), and confirm if it drops below the floor."
+    ]
+  },
+  {
+    "id": "estimate-sundries",
+    "date": "2026-07-15",
+    "title": "Estimates now include a 2% sundries and disposables cost",
+    "summary": "Every estimate now bakes in a 2% sundries and disposables cost (tape, blades, plastic, mixing sticks, grinder consumables) on top of materials, labor, and commission, so the price covers the small stuff that used to be invisible. This changes every price by roughly 2% of its cost. The rate is adjustable in Price & Material Catalog. The customer still sees one total price, exactly as before.",
+    "howto": [
+      "Nothing to do; new estimates include it automatically.",
+      "To change the rate, edit the sundries percent in Price & Material Catalog.",
+      "It shows as its own line in the internal cost breakdown; the customer never sees it."
+    ]
+  },
+  {
+    "id": "jobs-price-per-sqft",
+    "date": "2026-07-15",
+    "title": "Price per square foot on jobs",
+    "summary": "Jobs now show price per square foot so an outlier is easy to spot. The Jobs list has a sortable $/sqft column, the job costing panel shows $/sqft next to revenue with the square footage and system behind it, and Metrics breaks $/sqft down by system (average and median) and over time. A job with no square footage on file shows a dash and is left out of the averages, with the count of excluded jobs shown.",
+    "howto": [
+      "On the Jobs tab, click the $/sqft column header to sort by it.",
+      "Open a job's costing to see its $/sqft with the sqft and system it is based on.",
+      "In Metrics, check the by-system average and median and the monthly trend."
+    ]
+  },
+  {
     "id": "estimate-preview",
     "date": "2026-07-13",
     "title": "Preview an estimate before you send it",
