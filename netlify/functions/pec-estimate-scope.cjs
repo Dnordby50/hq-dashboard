@@ -130,7 +130,7 @@ exports.handler = async (event) => {
     }
 
     const [areas, lines] = await Promise.all([
-      sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,system_type_id,sort_order&order=sort_order.asc`),
+      sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,system_type_id,mvb,sort_order&order=sort_order.asc`),
       sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,is_optional,selected_by_customer,sort_order&order=sort_order.asc`),
     ]);
     if (!Array.isArray(lines) || !lines.length) {
@@ -164,8 +164,9 @@ exports.handler = async (event) => {
       stem_walls_included: intake.stem_walls === true || stemWallsViaAddon,
       concrete_past_garage_included: intake.coat_past_garage === true,
       flake_color: est.flake_color || null, // null = not chosen yet: leave any color slot alone
-      moisture_vapor_barrier: est.mvb || 'none',
-      areas: (areas || []).map((a) => ({ name: a.name, sqft: Number(a.sqft) || 0 })),
+      // MVB is per-area now (build 17); the fact lists which areas carry one.
+      moisture_vapor_barrier_areas: (areas || []).filter((a) => a.mvb === true).map((a) => a.name),
+      areas: (areas || []).map((a) => ({ name: a.name, sqft: Number(a.sqft) || 0, mvb: a.mvb === true })),
     };
 
     // ---- Which lines get model-assembled scope:
@@ -189,8 +190,11 @@ exports.handler = async (event) => {
       if (li.estimate_area_id) {
         const area = areaById.get(li.estimate_area_id);
         const sys = area ? systemById.get(area.system_type_id) : null;
+        // Per-line MVB template (build 17): the MVB variant when THIS AREA has a
+        // moisture barrier, else the standard template. Mirrors the estimator's
+        // per-area choice so client and server agree.
         const rawTemplate = sys
-          ? ((est.mvb && est.mvb !== 'none' && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template)
+          ? ((area && area.mvb === true && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template)
           : null;
         if (rawTemplate) {
           const contextLabel = sys ? sys.name : null;
