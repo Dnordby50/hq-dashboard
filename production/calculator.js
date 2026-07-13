@@ -27,7 +27,7 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-07-13.1';
+export const CALC_VERSION = '2026-07-15.1';
 
 /**
  * Round a raw cost-plus price to a clean, sell-able number.
@@ -102,8 +102,7 @@ export function computeMaterialPlan({
   productsById,
   recipeSlotsBySystemType,
   defaultBasecoatByFlake = {},
-  standaloneMvb = false,
-  standaloneMvbProductId = null,
+  mvbProductId = null,
 }) {
   if (!Array.isArray(areas)) {
     throw new CalculatorError('areas must be an array', 'INVALID_INPUT');
@@ -112,46 +111,18 @@ export function computeMaterialPlan({
   const areaPlans = [];
 
   for (const area of areas) {
+    // Per-area MVB (2026-07-15): a moisture vapor barrier is now a COST ADDER
+    // on the area that has it, not a job-level mode. Each mvb=true area adds the
+    // MVB product at ITS OWN sqft; mergeAcrossAreas then sums two MVB areas into
+    // ONE material line (by product_id), which is the point of the merge. An
+    // MVB-only job needs no special path: its area's system is "MVB Only" whose
+    // recipe already IS the MVB product, so the guard below avoids doubling it.
     areaPlans.push(planForArea(area, {
       productsById,
       recipeSlotsBySystemType,
       defaultBasecoatByFlake,
+      mvbProductId,
     }));
-  }
-
-  // Job-level standalone MVB: one extra synthetic area whose only "slot" is
-  // the MVB product, applied to total sqft across all real areas. Folded into
-  // mergeAcrossAreas so it shows up as a single line in the order. Does not
-  // override the in-Metallic-system MVB; that one comes from the recipe.
-  if (standaloneMvb && standaloneMvbProductId) {
-    const product = productsById[standaloneMvbProductId];
-    if (!product) {
-      throw new CalculatorError(
-        `Standalone MVB product ${standaloneMvbProductId} not found in catalog`,
-        'PRODUCT_NOT_FOUND'
-      );
-    }
-    const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-    if (totalSqft > 0) {
-      areaPlans.push({
-        area: { id: '_standalone_mvb', name: 'Standalone MVB', sqft: totalSqft },
-        lines: [{
-          area_id: null,
-          area_name: 'Standalone MVB',
-          order_index: -1, // sorts to top of the order
-          material_type: product.material_type,
-          product_id: product.id,
-          product_name: product.name,
-          supplier: product.supplier || null,
-          color: product.color || null,
-          spread_rate: Number(product.spread_rate),
-          kit_size: Number(product.kit_size),
-          unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
-          sqft: totalSqft,
-          cure_speed: null,
-        }],
-      });
-    }
   }
 
   const lines = mergeAcrossAreas(areaPlans, productsById);
@@ -181,11 +152,8 @@ export function computeMaterialPlan({
  * @param {Array}  input.systemTypes  rows with { id, labor_budget_pct }
  * @param {number} input.revenue   the FRONT-END job price (public.jobs.price)
  * @param {number} input.laborRate default_labor_hourly_rate
- * @param {boolean} input.standaloneMvb  add the MVB product across total sqft
- *   (passthrough to computeMaterialPlan; see its MVB comment). For an MVB-ONLY
- *   estimate, callers pass recipeSlotsBySystemType: {} so no system recipe
- *   prices, while the areas keep their system_type_id for the labor % lookup.
- * @param {string|null} input.standaloneMvbProductId
+ * @param {string|null} input.mvbProductId  the catalog MVB product; each area
+ *   with mvb=true adds it at that area's sqft (passthrough to computeMaterialPlan).
  * @returns {{ materialLines, materialsBudget, laborPct, laborBudget, budgetedHours }}
  */
 export function computeJobEstimate({
@@ -196,12 +164,12 @@ export function computeJobEstimate({
   systemTypes = [],
   revenue = 0,
   laborRate = 0,
-  standaloneMvb = false,
-  standaloneMvbProductId = null,
+  mvbProductId = null,
 }) {
   // Strip everything but the estimate-relevant fields. Dropping topcoat_product_id
   // is deliberate: the front-end Budget card never passes it, so the topcoat
-  // slot default is used in both places.
+  // slot default is used in both places. `mvb` rides along so the per-area MVB
+  // adder (computeMaterialPlan) fires for the areas that have it.
   const planAreas = (areas || []).map((a) => {
     const sqftNum = Number(a.sqft);
     return {
@@ -211,6 +179,7 @@ export function computeJobEstimate({
       system_type_id: a.system_type_id,
       flake_product_id: a.flake_product_id || null,
       basecoat_product_id: a.basecoat_product_id || null,
+      mvb: a.mvb === true,
     };
   });
 
@@ -222,8 +191,7 @@ export function computeJobEstimate({
       productsById,
       recipeSlotsBySystemType,
       defaultBasecoatByFlake,
-      standaloneMvb,
-      standaloneMvbProductId,
+      mvbProductId,
     }).lines;
   } catch (err) {
     planError = err && err.message ? err.message : String(err);
@@ -319,13 +287,13 @@ export function computeEstimatePricing({
   priceIncrement = 5,
   charmThreshold = 1000,
   charmBand = 250,
-  standaloneMvb = false,
-  standaloneMvbProductId = null,
+  sundriesPct = 0,
+  mvbProductId = null,
 }) {
   // Pass 1: materials cost M is independent of revenue, so price at revenue:0.
   const base = computeJobEstimate({
     areas, productsById, recipeSlotsBySystemType, defaultBasecoatByFlake,
-    systemTypes, revenue: 0, laborRate, standaloneMvb, standaloneMvbProductId,
+    systemTypes, revenue: 0, laborRate, mvbProductId,
   });
   if (base.planError) {
     return { error: base.planError, materialLines: base.materialLines, calcVersion: CALC_VERSION };
@@ -375,26 +343,36 @@ export function computeEstimatePricing({
   const laborPctWeighted = laborWeighted / weightSum;
   const targetGp = gpWeighted / weightSum;
 
+  // Sundries + disposables (2026-07-15): tape, blades, plastic, mixing sticks,
+  // grinder consumables. A COST at `s` of TOTAL job cost (materials + fixed
+  // add-ons + labor + commission), baked into the price, never a customer line.
+  // Labor and commission are fractions of revenue, so sundries is circular; the
+  // closed form (no iteration): with L,C,g,s fractions,
+  //   P[1 - (L+C)(1+s) - g] = (M+F)(1+s)  =>  P = (M+F)(1+s) / divisor.
+  // Setting s=0 collapses to the pre-build-17 divisor and price EXACTLY.
+  const s = Number(sundriesPct) / 100 || 0;
   const laborFrac = laborPctWeighted / 100;
   const commFrac = standardComm / 100;
   const gpFrac = targetGp / 100;
-  const divisor = 1 - laborFrac - commFrac - gpFrac;
+  const divisor = 1 - (laborFrac + commFrac) * (1 + s) - gpFrac;
   if (!(divisor > 0)) {
-    // labor + commission + target margin consume >= 100% of revenue: impossible.
+    // labor + commission (grossed up for sundries) + target margin consume
+    // >= 100% of revenue: impossible.
     return { error: 'TARGET_UNREACHABLE', divisor, materialLines: base.materialLines, calcVersion: CALC_VERSION };
   }
 
-  const priceRaw = (M + F) / divisor;
+  const priceRaw = (M + F) * (1 + s) / divisor;
   const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
 
   // Recompute money buckets at the ROUNDED price so display is internally
   // consistent (same bucket set as computeCostingRow: materials, labor,
-  // commission, plus fixed add-ons; other buckets are 0 at estimate time). The
-  // commission bucket here is the STANDARD (budgeted) commission, so gpDollars is
-  // the BUDGETED gross profit the quote is built to hit.
+  // commission, sundries, plus fixed add-ons). The commission bucket here is the
+  // STANDARD (budgeted) commission, so gpDollars is the BUDGETED gross profit
+  // the quote is built to hit.
   const commissionDollars = round2(commFrac * price);
   const laborDollars = round2(laborFrac * price);
-  const gpDollars = round2(price - (M + laborDollars + commissionDollars + F));
+  const sundriesDollars = round2(s * (M + F + laborDollars + commissionDollars));
+  const gpDollars = round2(price - (M + laborDollars + commissionDollars + F + sundriesDollars));
   const gpPct = price > 0 ? gpDollars / price : null;
   // Labor budget + hours from the WEIGHTED labor fraction (computeJobEstimate's
   // primary-system laborPct would be wrong on a mixed-system estimate).
@@ -422,6 +400,8 @@ export function computeEstimatePricing({
     priceRaw: round2(priceRaw),
     materialsCost: M,
     fixedAddons: F,
+    sundriesPct: Number(sundriesPct) || 0,
+    sundriesDollars,
     laborPct: laborPctWeighted,
     laborBudget,
     laborDollars,
@@ -467,14 +447,18 @@ export function applySellPrice(pricing, sellPrice) {
   const base = Number(pricing && pricing.price);
   const laborFrac = (Number(pricing && pricing.laborPct) || 0) / 100;
   const commFrac = (Number(pricing && pricing.standardCommissionPct) || 0) / 100;
+  const s = (Number(pricing && pricing.sundriesPct) || 0) / 100;
   const M = Number(pricing && pricing.materialsCost) || 0;
   const F = Number(pricing && pricing.fixedAddons) || 0;
   if (!(sell > 0)) {
-    return { sellPrice: null, discountPct: null, laborDollars: null, commissionDollars: null, gpDollars: null, gpPct: null, budgetedHours: null, gpPerHour: null };
+    return { sellPrice: null, discountPct: null, laborDollars: null, commissionDollars: null, sundriesDollars: null, gpDollars: null, gpPct: null, budgetedHours: null, gpPerHour: null };
   }
   const laborDollars = round2(laborFrac * sell);
   const commissionDollars = round2(commFrac * sell);
-  const gpDollars = round2(sell - (M + laborDollars + commissionDollars + F));
+  // Sundries counts at the SELL price too, or an override reports a GP that is
+  // s of cost too high (exactly the 15c comps class of bug).
+  const sundriesDollars = round2(s * (M + F + laborDollars + commissionDollars));
+  const gpDollars = round2(sell - (M + laborDollars + commissionDollars + F + sundriesDollars));
   const gpPct = gpDollars / sell;
   // Budgeted hours scale linearly with the labor budget (labor% x price / rate),
   // so hours at the sell price are base hours x (sell / base price).
@@ -482,7 +466,7 @@ export function applySellPrice(pricing, sellPrice) {
   const budgetedHours = baseHours != null && base > 0 ? round2(baseHours * (sell / base)) : null;
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
   const discountPct = base > 0 ? round2((1 - sell / base) * 100) : null;
-  return { sellPrice: sell, discountPct, laborDollars, commissionDollars, gpDollars, gpPct, budgetedHours, gpPerHour };
+  return { sellPrice: sell, discountPct, laborDollars, commissionDollars, sundriesDollars, gpDollars, gpPct, budgetedHours, gpPerHour };
 }
 
 /**
@@ -626,7 +610,7 @@ function appendPlaceholderLines(lines, areaPlans) {
 }
 
 function planForArea(area, ctx) {
-  const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake } = ctx;
+  const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, mvbProductId } = ctx;
 
   const sqft = Number(area.sqft);
   if (!Number.isFinite(sqft) || sqft < 0) {
@@ -771,6 +755,52 @@ function planForArea(area, ctx) {
       _tint_packs: packs,
       _tint_attach_to: t.attach_to || null,
     });
+  }
+
+  // Per-area MVB adder: a moisture vapor barrier applied UNDER this area's
+  // coating, at this area's sqft. order_index -1 sorts it to the top of the work
+  // order (it goes down first). Skipped when the area's recipe already includes
+  // the MVB product (the "MVB Only" system), so the two never double up.
+  if (area.mvb === true && mvbProductId && sqft > 0) {
+    const already = slotLines.some((l) => l.product_id === mvbProductId);
+    if (!already) {
+      const product = productsById[mvbProductId];
+      if (!product) {
+        throw new CalculatorError(
+          `Area "${area.name || area.id}": MVB product ${mvbProductId} not found in catalog`,
+          'PRODUCT_NOT_FOUND'
+        );
+      }
+      const spread = Number(product.spread_rate);
+      const kit = Number(product.kit_size);
+      if (!Number.isFinite(spread) || spread <= 0) {
+        throw new CalculatorError(
+          `MVB product "${product.name}" has invalid spread_rate (${product.spread_rate}); fix it in the Catalog before pricing`,
+          'INVALID_SPREAD_RATE'
+        );
+      }
+      if (!Number.isFinite(kit) || kit <= 0) {
+        throw new CalculatorError(
+          `MVB product "${product.name}" has invalid kit_size (${product.kit_size}); fix it in the Catalog before pricing`,
+          'INVALID_KIT_SIZE'
+        );
+      }
+      slotLines.push({
+        area_id: area.id || null,
+        area_name: area.name || null,
+        order_index: -1,
+        material_type: product.material_type,
+        product_id: product.id,
+        product_name: product.name,
+        supplier: product.supplier || null,
+        color: product.color || null,
+        spread_rate: spread,
+        kit_size: kit,
+        unit_cost: product.unit_cost == null ? null : Number(product.unit_cost),
+        sqft,
+        cure_speed: null,
+      });
+    }
   }
 
   return { area, lines: slotLines, placeholders };

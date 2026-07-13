@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally } from './calculator.js';
 import { actualGpPct, costingMaterials, costingComplete, joinCompsSources, buildComps, compsGpCaveat } from './comps.js';
 
 let passed = 0;
@@ -311,40 +311,50 @@ assertThrows(() => {
   assertEq(pig.qty_needed, Math.ceil(480 / 240 / 1), 'Metallic Pigment qty = ceil(480/240/1) = 2');
 }
 
-// --- Standalone MVB: one extra line at total sqft / 100 / 3 ----------------
+// --- Per-area MVB (2026-07-15): MVB on one of two areas adds MVB for THAT ---
+// area's sqft only; two MVB areas merge into ONE material line ---------------
 {
   const productsByIdMvb = {
     ...productsById,
-    mvbStd: { id: 'mvbStd', name: 'Simiron MVB - Standalone', material_type: 'Basecoat', supplier: 'Simiron', color: 'Clear', spread_rate: 100, kit_size: 3, unit_cost: null },
+    mvbStd: { id: 'mvbStd', name: 'Simiron MVB - Standalone', material_type: 'Basecoat', supplier: 'Simiron', color: 'Clear', spread_rate: 100, kit_size: 3, unit_cost: 50 },
   };
-  const plan = computeMaterialPlan({
+  // MVB on the garage (300 sqft) only, NOT the patio (300 sqft).
+  const oneArea = computeMaterialPlan({
     areas: [
-      { id: 'a1', name: 'Garage A', sqft: 300, system_type_id: 'std', flake_product_id: 'flake' },
-      { id: 'a2', name: 'Garage B', sqft: 300, system_type_id: 'std', flake_product_id: 'flake' },
+      { id: 'a1', name: 'Garage', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', mvb: true },
+      { id: 'a2', name: 'Patio', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', mvb: false },
     ],
-    productsById: productsByIdMvb,
-    recipeSlotsBySystemType,
-    defaultBasecoatByFlake,
-    standaloneMvb: true,
-    standaloneMvbProductId: 'mvbStd',
+    productsById: productsByIdMvb, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    mvbProductId: 'mvbStd',
   });
-  const mvbLine = plan.lines.find(l => l.product_id === 'mvbStd');
-  assertEq(!!mvbLine, true, 'Standalone MVB produces an extra line');
-  assertEq(mvbLine.qty_needed, Math.ceil(600 / 100 / 3), 'Standalone MVB qty over 600 sqft = 2 kits');
-  assertEq(mvbLine.product_name, 'Simiron MVB - Standalone', 'Standalone MVB line carries the right product name');
+  const mvbLine1 = oneArea.lines.find(l => l.product_id === 'mvbStd');
+  assertEq(!!mvbLine1, true, 'per-area MVB: an mvb=true area produces an MVB line');
+  assertEq(mvbLine1.sqft_total, 300, 'per-area MVB: MVB material covers only the mvb=true area sqft (300, not 600)');
+  assertEq(mvbLine1.qty_needed, Math.ceil(300 / 100 / 3), 'per-area MVB: qty over 300 sqft = 1 kit');
+
+  // MVB on BOTH areas: one summed line at 600 sqft (mergeAcrossAreas by product).
+  const bothAreas = computeMaterialPlan({
+    areas: [
+      { id: 'a1', name: 'Garage', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', mvb: true },
+      { id: 'a2', name: 'Patio', sqft: 300, system_type_id: 'std', flake_product_id: 'flake', mvb: true },
+    ],
+    productsById: productsByIdMvb, recipeSlotsBySystemType, defaultBasecoatByFlake,
+    mvbProductId: 'mvbStd',
+  });
+  const mvbLines = bothAreas.lines.filter(l => l.product_id === 'mvbStd');
+  assertEq(mvbLines.length, 1, 'per-area MVB: two MVB areas merge into ONE material line');
+  assertEq(mvbLines[0].sqft_total, 600, 'per-area MVB: the merged MVB line covers both areas (600 sqft)');
+  assertEq(mvbLines[0].qty_needed, Math.ceil(600 / 100 / 3), 'per-area MVB: merged qty over 600 sqft = 2 kits');
 }
 
-// --- Standalone MVB off: no extra line --------------------------------------
+// --- Per-area MVB off: no MVB line -----------------------------------------
 {
   const plan = computeMaterialPlan({
-    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }],
-    productsById,
-    recipeSlotsBySystemType,
-    defaultBasecoatByFlake,
-    standaloneMvb: false,
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake', mvb: false }],
+    productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, mvbProductId: 'mvb',
   });
-  const hasMvbLine = plan.lines.some(l => /MVB/.test(l.product_name));
-  assertEq(hasMvbLine, false, 'standaloneMvb=false produces no MVB line');
+  const hasMvbLine = plan.lines.some(l => /MVB/i.test(l.product_name || ''));
+  assertEq(hasMvbLine, false, 'per-area MVB off produces no MVB line');
 }
 
 // --- Cure speed: 1100 SL basecoat stamps from area.basecoat_cure_speed -----
@@ -793,8 +803,62 @@ assertThrows(() => {
   });
   assertEq(r.error, null, 'reference job: prices clean');
   assertEq(r.materialsCost, 1442.57, 'reference job: M = 1442.57 (kits rounded up)');
-  assertEq(r.price, 5345, 'reference job: 1000 sqft flake at 52% GP = $5,345 (price-sheet anchor)');
+  // sundriesPct defaults to 0 here, so this stays the pre-build-17 anchor.
+  assertEq(r.price, 5345, 'reference job: 1000 sqft flake at 52% GP, no sundries = $5,345 (price-sheet anchor)');
   assertEq(Math.abs(r.gpPct - 0.52) < 0.005, true, 'reference job: budgeted GP within half a point of 52%');
+}
+
+// --- Sundries (2026-07-15, build 17): 2% of total job cost, closed form ------
+// The anchor MOVES once sundries is live (it should: the job now carries a cost
+// it did not before). OLD price (no sundries): $5,345. NEW price (2% sundries):
+// see the assertion below. sundries=0 must reproduce the old price EXACTLY (the
+// regression guard), and realized GP at the solved price still equals target.
+{
+  const prodProducts = {
+    bc:  { id: 'bc',  name: 'Simiron 1100 SL - Light Gray',   material_type: 'Basecoat', spread_rate: 150, kit_size: 3, unit_cost: 144.27 },
+    fl:  { id: 'fl',  name: 'Standard Flake (color TBD)',     material_type: 'Flake',    spread_rate: 325, kit_size: 1, unit_cost: 87.44 },
+    tc:  { id: 'tc',  name: 'Simiron Polyaspartic 2gal Kit',  material_type: 'Topcoat',  spread_rate: 120, kit_size: 2, unit_cost: 132 },
+  };
+  const prodSlots = { flake: [
+    { id: 'p1', order_index: 1, material_type: 'Basecoat', default_product_id: 'bc', required: true },
+    { id: 'p2', order_index: 2, material_type: 'Flake',    default_product_id: 'fl', required: true },
+    { id: 'p3', order_index: 3, material_type: 'Topcoat',  default_product_id: 'tc', required: true },
+  ] };
+  const args = (sundriesPct) => ({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 1000, system_type_id: 'flake' }],
+    productsById: prodProducts, recipeSlotsBySystemType: prodSlots, defaultBasecoatByFlake: {},
+    systemTypes: [{ id: 'flake', labor_budget_pct: 15, target_gp_pct: 52 }],
+    laborRate: 50, commissionPct: 6, targetGpPct: 50, sundriesPct,
+  });
+  // Regression: sundries=0 reproduces the pre-build-17 price EXACTLY.
+  const at0 = computeEstimatePricing(args(0));
+  assertEq(at0.price, 5345, 'sundries=0 reproduces today\'s exact price ($5,345), the regression guard');
+  assertEq(at0.sundriesDollars, 0, 'sundries=0 books no sundries cost');
+
+  // Live: sundries=2 moves the anchor up. divisor = 1 - (.15+.06)(1.02) - .52 =
+  // 0.2658; priceRaw = 1442.57*1.02/0.2658 = 5535.82 -> nearest $5 = $5,535.
+  const at2 = computeEstimatePricing(args(2));
+  assertEq(at2.price, 5535, 'sundries=2%: 1000 sqft flake anchor moves $5,345 -> $5,535');
+  assertEq(at2.sundriesDollars > 0, true, 'sundries=2%: a sundries cost is booked');
+  // Realized GP at the solved price still lands on the 52% target (rounding up
+  // keeps it at/above target).
+  assertEq(Math.abs(at2.gpPct - 0.52) < 0.005, true, 'sundries=2%: realized GP still equals the weighted target');
+  // The GP dollars net out sundries: price - (M + labor + comm + F + sundries).
+  const recomputed = at2.price - (at2.materialsCost + at2.laborDollars + at2.commissionDollars + at2.fixedAddons + at2.sundriesDollars);
+  assertEq(Math.abs(recomputed - at2.gpDollars) < 0.01, true, 'sundries=2%: gpDollars subtracts the sundries bucket');
+
+  // applySellPrice counts sundries at the rep's chosen price (else GP reads 2%
+  // of cost too high, the 15c comps class of bug).
+  const adj = applySellPrice(at2, 5000);
+  assertEq(adj.sundriesDollars > 0, true, 'applySellPrice books sundries at the override price');
+  const sExpected = 0.02 * (at2.materialsCost + at2.fixedAddons + adj.laborDollars + adj.commissionDollars);
+  assertEq(Math.abs(adj.sundriesDollars - Math.round(sExpected * 100) / 100) < 0.01, true, 'applySellPrice sundries = 2% of (M+F+labor+comm) at the sell price');
+  const adjGp = 5000 - (at2.materialsCost + adj.laborDollars + adj.commissionDollars + at2.fixedAddons + adj.sundriesDollars);
+  assertEq(Math.abs(adjGp - adj.gpDollars) < 0.01, true, 'applySellPrice GP nets out sundries');
+
+  // divisor <= 0 still errors (labor+comm grossed for sundries + target >= 100%).
+  const unreachable = computeEstimatePricing({ ...args(2), systemTypes: [{ id: 'flake', labor_budget_pct: 40, target_gp_pct: 55 }] });
+  assertEq(unreachable.error, 'TARGET_UNREACHABLE', 'sundries: an impossible target still returns TARGET_UNREACHABLE');
 }
 
 // --- Multi-system estimates (2026-07-13): per-area system + weighted rates ---
