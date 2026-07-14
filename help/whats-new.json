@@ -1,5 +1,38 @@
 [
   {
+    "id": "job-system-required",
+    "date": "2026-07-14",
+    "title": "Jobs now carry their system, and the calendar colors them automatically",
+    "summary": "When a customer accepts an estimate, the job now keeps the system (or systems) from that estimate, so it shows its color on the Job Schedule and can pull materials and per-system numbers right away, with no re-typing. Jobs that came straight from DripJobs never had a system, so scheduling one now asks you to pick a system before you can save. The + Add Job form asks the same way. This is the fix for the schedule system dropdown that used to open blank.",
+    "howto": [
+      "Schedule a job as usual; if it has no system yet, pick one in the System type box before saving.",
+      "In + Add Job, choose a System type (it creates the job's first area for you).",
+      "Estimator jobs already carry their system, so their color shows on the calendar on their own."
+    ]
+  },
+  {
+    "id": "schedule-picker-current-month",
+    "date": "2026-07-14",
+    "title": "The schedule day picker opens on this month",
+    "summary": "When you open a scheduled job to change its days, the calendar now opens on the current month instead of the job's first scheduled day. For a job that spans two months (say late June into July) that means you land where you are actually working. If the job has days in another month, a line at the top of the picker names them and jumps you there in one tap, so nothing looks lost.",
+    "howto": [
+      "Open a scheduled job; the day picker starts on this month.",
+      "If a line at the top says days are in another month, tap it to jump to them.",
+      "Use the arrows to move between months as before."
+    ]
+  },
+  {
+    "id": "week-revenue-breakdown",
+    "date": "2026-07-14",
+    "title": "Click a week's revenue to see how it adds up",
+    "summary": "The revenue shown next to each week on the Job Schedule is prorated: a job's price is split evenly across its scheduled days, so a job that runs into two weeks shows part of its price in each. Click the week revenue (or tap it on a phone) to open a breakdown that lists each job, its contract price, how many of its days fall in that week, and the slice that adds to the total. Touch-up callbacks are listed as left out, since they are no charge. It is scheduled contract revenue, not cash collected and not profit.",
+    "howto": [
+      "On the Job Schedule 3-week view, click a week's revenue number.",
+      "Read each job's contract, its days this week over its total days, and the slice.",
+      "Press Escape or click away to close it."
+    ]
+  },
+  {
     "id": "nav-icon-rail",
     "date": "2026-07-17",
     "title": "New left menu: fewer items, grouped into flyouts",
