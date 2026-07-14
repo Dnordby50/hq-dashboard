@@ -2369,13 +2369,10 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="leads">Leads</button>
           <button data-pec-view="estimates">Estimates</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
-          <!-- Opens the estimator PWA in an iframe MODAL over the dashboard
-               (walk-up estimates with no lead). Hidden by default;
-               wireEstimatorNav() reveals it only for emails in
-               settings.estimator_allowed_emails (defaults to the owner only),
-               so the beta stays visible to just Dylan until he adds others to
-               that one setting. -->
-          <button id="pecEstimatorNav" style="display:none">Estimator (Beta)</button>
+          <!-- The standalone Estimator rail item was removed in build 18: the
+               estimator is reached from Leads > Start estimate and the
+               Estimates list > New estimate. settings.estimator_allowed_emails
+               only ever gated this beta button and is now unused. -->
           <div class="pec-subnav-group">Production</div>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
@@ -4995,11 +4992,7 @@ if (document.readyState === 'loading') {
     const crmNav = document.getElementById('pecSubnav');
     const crmButtons = [];
     if (crmNav) {
-      // #pecEstimatorNav is included even though it has no data-pec-view: it is a
-      // full-page link (to /estimator/), not a switchView view, but it must still
-      // be mirrored into the visible sidebar and ride the same display-sync
-      // observer below so wireEstimatorNav()'s async reveal reaches the real rail.
-      Array.from(crmNav.querySelectorAll('button[data-pec-view], #pecEstimatorNav, .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
+      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
         // #pecSubnav is the hidden source of truth; the sidebar is a clone. Carry
         // the section dividers across in document order so they render here too.
         if (srcBtn.classList.contains('pec-subnav-divider')) {
@@ -6465,58 +6458,17 @@ function renderAuthUI() {
   setNav('catalog', can('can_edit_catalog'));
   setNav('costing', can('can_view_job_costing'));
   setNav('commission', can('can_view_commission'));
-  wireEstimatorNav();
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
   refreshBell();
 }
 
-// Show + wire the Estimator (Beta) launch button. Visibility is controlled by a
-// single allowlist setting, public.settings.estimator_allowed_emails:
-//   - missing/empty -> only the owner (ESTIMATOR_OWNER_EMAIL) sees it
-//   - 'all' / '*' / 'everyone' -> every signed-in staffer sees it
-//   - otherwise -> a comma/space/semicolon-separated list of emails
-// So it ships hidden-to-everyone-but-Dylan with zero setup, and "turn it on for
-// others later" is just editing that one setting in Settings. The data itself is
-// admin-only via RLS regardless. The button opens the estimator MODAL (walk-up
-// estimate, no lead behind it); the PWA itself still lives at /estimator/.
-const ESTIMATOR_OWNER_EMAIL = 'dylan@prescottepoxy.com';
-let _estimatorNavWired = false;
-async function wireEstimatorNav() {
-  const btn = document.getElementById('pecEstimatorNav');
-  if (!btn) return;
-  if (!_estimatorNavWired) {
-    btn.addEventListener('click', () => { openEstimatorModal(); });
-    _estimatorNavWired = true;
-  }
-  let show = false;
-  let email = '';
-  let allow = '';
-  try {
-    // The authenticated LOGIN email is authoritative (admin_users.email can be a
-    // different address). Fall back to the profile email only if the session has
-    // none.
-    try {
-      const { data } = await supabase.auth.getSession();
-      email = String((data && data.session && data.session.user && data.session.user.email) || '').trim().toLowerCase();
-    } catch (_) { /* fall through */ }
-    if (!email) email = String((state.adminUser && state.adminUser.email) || '').trim().toLowerCase();
-    if (email) {
-      try {
-        const { data } = await supabase.from('settings').select('value').eq('key', 'estimator_allowed_emails').maybeSingle();
-        allow = data && data.value != null ? String(data.value).trim() : '';
-      } catch (_) { /* setting missing -> fall through to owner default */ }
-      if (!allow) allow = ESTIMATOR_OWNER_EMAIL;          // default: owner only
-      const lower = allow.toLowerCase();
-      if (lower === 'all' || lower === '*' || lower === 'everyone') show = true;
-      else show = lower.split(/[\s,;]+/).filter(Boolean).includes(email);
-    }
-  } catch (_) { show = false; }
-  // Diagnostic so a hidden button is debuggable from the console without code access.
-  try { console.info('[estimator] nav gate', { email, allow, show }); } catch (_) {}
-  btn.style.display = show ? '' : 'none';
-}
+// The standalone Estimator (Beta) rail button and its wireEstimatorNav()
+// allowlist gate were removed in build 18. The estimator is reached from Leads
+// > Start estimate and the Estimates list > New estimate (both unconditional).
+// settings.estimator_allowed_emails only ever gated that one button and is now
+// an unused row (harmless; nothing reads it).
 
 // ---- Estimator iframe modal ------------------------------------------------
 // The estimator PWA stays exactly as it is architecturally (offline outbox,
