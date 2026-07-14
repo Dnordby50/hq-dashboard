@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-13 18:10 MST] Cowork: build prompt 20 written (system flows onto the job, picker defaults to current month, weekly revenue breakdown)
+By: Cowork
+Changed: claude-code-prompt-20-system-on-jobs.md (new), PROJECT-LOG.md. No app code touched, no prod data touched, no migration run.
+
+Dylan brought three schedule items. Ran an 11-question dig. The headline: HIS FRAMING OF ITEM 1 WAS WRONG AND THE REAL BUG IS BIGGER. He asked to "auto populate the job type dropdown on the job schedule modal from the system on the estimate." Recon found:
+
+1. The "+ Add Job" modal (openAddJobModal, index.html:19891) has NO system or job-type dropdown at all. The dropdown he means is #schedSystem in openScheduleModal (19486), the + Schedule flow for pending jobs.
+2. That dropdown ALREADY prefills, from areas[0].system_type_id (19355). It reads blank because there is nothing to read.
+3. pec_prod_jobs has NO system column and NO job_type column (verified across every migration touching the table). A job's system lives ONLY in pec_prod_areas.
+4. And pec-webhook-proposal-accepted.cjs (:147-158) creates the job row with NO AREAS. So a DripJobs-accepted job has no system, ever, until a human picks one. Already a known gap: docs/job-schedule-future-todos.md:69.
+5. Which means the damage is much wider than a dropdown: the calendar color band falls back to indigo (18827), recipes/materials cannot be built (recipe_slots are keyed by system_type_id, 11197-11213), and per-system $/sqft metrics (10633-10641) plus the costing dominant-system chip (22018-22030) have nothing to attribute the job to. Prefilling the dropdown would have PAPERED OVER all of that.
+
+DYLAN'S DECISIONS, locked into the prompt:
+1. Fix the SOURCE: copy the estimate's areas (system, sqft, per-area MVB) into pec_prod_areas at acceptance. The dropdown then prefills on its own and every downstream reader starts working. Never overwrite existing areas (a human's on-site change is the newer truth). Idempotent, so a webhook retry cannot double-insert.
+2. Multi-system jobs (Flake garage + Quartz patio) copy ALL areas; the single dropdown shows the DOMINANT system (most sqft). That rule already exists in THREE places (estimator dominantSystemId, metrics, costing panel) and the prompt requires reuse or unification, not a fourth copy. It deliberately disagrees with the calendar band and job badge, which use areas[0]; Claude Code must decide and JUSTIFY, because two unexplained rules is the actual smell.
+3. System becomes REQUIRED to schedule (a job with no estimate cannot be scheduled without picking one) and required on the manual + Add Job modal, which had the same hole from the other side (it also writes jobs with no areas). Dylan REJECTED guessing the system from proposal text: a wrong guess is worse than a blank.
+4. NO BACKFILL of the existing area-less jobs in prod. Dylan's call: they get a system the moment someone schedules them.
+5. Day picker: seed pickerMonth to the CURRENT month, not the job's first scheduled day (19369). His clarification is the whole point: a job spanning late June into July opens the picker on JUNE, which is the past. Guard added for the regression this creates (a September job opened in July would show none of its selected days): a jump line naming the out-of-month days.
+6. Weekly revenue breakdown: the calendar's week revenue is PRORATED (weekRevenue at 18841: contract x days-this-week / total-scheduled-days, skipping touch-up callbacks), which is why he cannot reconcile it. Clicking the number expands a per-job panel showing customer, contract price, days-this-week / total-days, and the slice, with a footer that sums to the header and an exclusions line. REVENUE ONLY, no GP: the log already records that pec_prod_job_costing has materials on ZERO of 34 jobs, so a GP figure here would read about 30 points high. The panel must be a VIEW of weekRevenue, not a second implementation, because a breakdown that can disagree with the number it explains is worse than none.
+
+Files touched: claude-code-prompt-20-system-on-jobs.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 20 (Dylan has it).
+Handoff to Cowork: None yet. If an estimate-acceptance door turns out to be configured in the DripJobs UI rather than in this repo, prompt 20 instructs Claude Code to return it as a Cowork handoff.
+Handoff to Dylan:
+1. Hand claude-code-prompt-20-system-on-jobs.md to Claude Code. It is self-contained.
+2. Expect jobs to START SHOWING systems, colors, and materials where they previously showed nothing. That is the fix working, not a regression.
+3. Expect scheduling to BLOCK on a missing system. That is deliberate and it is the only thing that keeps the data honest for jobs that never touched the estimator.
+
 ## [2026-07-14 14:20 MST] Build 19: left rail reworked into an icon-per-group rail with flyout submenus
 By: Claude Code
 Changed: index.html (the #pecSubnav clone/render step + rail CSS), help/whats-new.json, PROJECT-LOG.md. Navigation only; no view's behavior changed, every route preserved.
