@@ -872,6 +872,71 @@ body { padding: 18px; min-height: 100vh; }
 #rdSidebarNav .rd-crm-group { margin-top: 16px; padding: 16px 12px 6px; border-top: 1px solid var(--rd-line); font-size: 10.5px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: var(--rd-ink-2); }
 #rdSidebarNav .rd-crm-group:first-child { margin-top: 0; padding-top: 4px; border-top: none; }
 
+/* ---------- Build 19: icon-per-group rail + flyout submenus ---------- */
+.rd-crm-rail { display: flex; flex-direction: column; gap: 2px; }
+.rd-crm-raillist { display: flex; flex-direction: column; gap: 2px; }
+.rd-crm-gwrap { position: relative; }
+.rd-crm-gwrap--pinned { margin-top: auto; }
+.rd-crm-gbtn {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 11px 14px; border-radius: 10px;
+  font-size: 14px; font-weight: 500; color: var(--rd-ink-2);
+  cursor: pointer; position: relative; transition: background .15s, color .15s;
+}
+.rd-crm-gbtn:hover, .rd-crm-gwrap--open > .rd-crm-gbtn { background: var(--rd-soft); color: var(--rd-ink); }
+.rd-crm-gbtn .rd-ico { width: 18px; height: 18px; flex: 0 0 18px; opacity: .85; }
+.rd-crm-gbtn.active .rd-ico { opacity: 1; }
+.rd-crm-glabel { flex: 1 1 auto; min-width: 0; }
+.rd-crm-caret { color: var(--rd-dim); font-size: 16px; line-height: 1; transition: transform .15s; }
+/* The active view's group stays marked on the rail even with every flyout closed. */
+.rd-crm-gbtn.active { background: var(--rd-accent); color: var(--rd-accent-ink); box-shadow: 0 6px 14px var(--rd-accent-ring); }
+.rd-crm-gbtn.active .rd-crm-caret { color: var(--rd-accent-ink); }
+.rd-crm-gbtn.active::before { content: ""; position: absolute; left: -16px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rd-accent); }
+/* Flyout: position:fixed on desktop so it escapes #rdSidebar's overflow:hidden;
+   JS sets left/top from the group button's rect. */
+.rd-crm-flyout {
+  position: fixed; z-index: 3000; min-width: 214px;
+  background: var(--rd-shell, #fff); border: 1px solid var(--rd-line);
+  border-radius: 12px; box-shadow: 0 18px 44px rgba(8,10,18,.22);
+  padding: 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.rd-crm-flyout[hidden] { display: none; }
+.rd-crm-flyhead { font-size: 10.5px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: var(--rd-ink-2); padding: 6px 10px 4px; }
+.rd-crm-flydiv { font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--rd-dim); padding: 9px 10px 3px; margin-top: 5px; border-top: 1px solid var(--rd-line); }
+.rd-crm-item {
+  all: unset; box-sizing: border-box; display: block; width: 100%;
+  padding: 9px 12px; border-radius: 8px; font-size: 14px; color: var(--rd-ink-2); cursor: pointer;
+}
+.rd-crm-item:hover, .rd-crm-item:focus-visible { background: var(--rd-soft); color: var(--rd-ink); outline: 2px solid var(--rd-accent); outline-offset: -2px; }
+.rd-crm-item.active { background: var(--rd-accent); color: var(--rd-accent-ink); }
+/* Mobile hamburger hidden on desktop. */
+.rd-crm-burger { display: none; }
+
+/* Phone: the sidebar already collapses full-width (<=980px). Collapse the rail
+   into a hamburger drawer; flyouts become inline accordions (position:static),
+   so nothing pops off-screen or fights the schedule mobile layouts from build 18. */
+@media (max-width: 980px) {
+  .rd-crm-burger {
+    all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px;
+    width: 100%; padding: 11px 14px; border-radius: 10px; cursor: pointer;
+    font-size: 14px; font-weight: 600; color: var(--rd-ink);
+    background: var(--rd-soft); margin-bottom: 6px;
+  }
+  .rd-crm-burger svg { width: 20px; height: 20px; }
+  .rd-crm-raillist { display: none; }
+  .rd-crm-rail--mopen .rd-crm-raillist { display: flex; }
+  .rd-crm-gwrap--pinned { margin-top: 0; }
+  .rd-crm-caret { margin-left: auto; }
+  .rd-crm-gwrap--open > .rd-crm-gbtn .rd-crm-caret { transform: rotate(90deg); }
+  .rd-crm-flyout {
+    position: static !important; left: auto !important; top: auto !important;
+    min-width: 0; box-shadow: none; border: none; border-radius: 0;
+    padding: 2px 0 6px 14px; margin: 2px 0 2px 14px;
+    border-left: 2px solid var(--rd-line);
+  }
+  .rd-crm-flyhead { display: none; }
+}
+
 /* Sidebar promo card */
 .rd-promo {
   margin-top: auto;
@@ -4996,66 +5061,223 @@ if (document.readyState === 'loading') {
     // the CRM shell is showing) and then forwards to the source pecSubnav
     // button so the existing delegated handler at index.html:8178 calls
     // switchView(view) unchanged.
+    // Build 19: the flat 19-button clone became an ICON-PER-GROUP rail with
+    // flyout submenus. #pecSubnav stays the hidden source of truth (option a):
+    // the router, admin gate, page title, popstate sync and delegated handler
+    // all still read it, so we rewrite ONLY this render step. Each group is one
+    // rail row (icon + label + caret); clicking/hovering it opens a flyout of
+    // that group's destinations, and each flyout item forwards to its source
+    // button exactly as the old mirror buttons did.
     const crmNav = document.getElementById('pecSubnav');
-    const crmButtons = [];
+    // One consistent inline-SVG set (no new dependency). Keyed by group label.
+    const RAIL_ICONS = {
+      Overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
+      Sales: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 5-6"/></svg>',
+      Production: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+      Finance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9a2.5 2.5 0 0 0-2.5-1.5c-1.5 0-2.5.8-2.5 2s1 1.7 2.5 2 2.5.8 2.5 2-1 2-2.5 2A2.5 2.5 0 0 1 9.5 15M12 6v1.5M12 16.5V18"/></svg>',
+      Admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5z"/></svg>',
+      Help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17"/></svg>',
+    };
+    // Build 19 renames (routes unchanged; labels only, per Dylan's sign-off).
+    const RAIL_RELABEL = { catalog: 'Pricing', nextday: 'Next Day' };
+    // Reports/diagnostics subordinated under a divider INSIDE their group flyout.
+    const RAIL_SECTION = { 'crew-bonus': 'Reports', commission: 'Reports', 'dripjobs-sync-health': 'Diagnostics' };
+    // Utility items lifted out of their markup group into their own pinned rail
+    // row at the bottom (Help is a universal utility, not part of Admin).
+    const RAIL_PIN = { docs: 'Help' };
+
+    // Parse #pecSubnav (in document order) into groups of source buttons.
+    const railGroups = [];
     if (crmNav) {
-      Array.from(crmNav.querySelectorAll('button[data-pec-view], .pec-subnav-divider, .pec-subnav-group')).forEach(srcBtn => {
-        // #pecSubnav is the hidden source of truth; the sidebar is a clone. Carry
-        // the section dividers across in document order so they render here too.
-        if (srcBtn.classList.contains('pec-subnav-divider')) {
-          const div = document.createElement('div');
-          div.className = 'rd-crm-divider';
-          navHost.appendChild(div);
-          return;
+      let cur = null;
+      Array.from(crmNav.children).forEach(node => {
+        if (node.classList && node.classList.contains('pec-subnav-group')) {
+          cur = { label: node.textContent.trim(), items: [], pinned: false };
+          railGroups.push(cur);
+        } else if (node.matches && node.matches('button[data-pec-view]')) {
+          if (RAIL_PIN[node.dataset.pecView]) return; // pinned rows added below
+          if (cur) cur.items.push(node);
         }
-        // Section header labels (Overview / Sales / Production / Finance / Admin).
-        if (srcBtn.classList.contains('pec-subnav-group')) {
-          const lbl = document.createElement('div');
-          lbl.className = 'rd-crm-group';
-          lbl.textContent = srcBtn.textContent.trim();
-          navHost.appendChild(lbl);
-          return;
-        }
-        const sidebarBtn = document.createElement('button');
-        sidebarBtn.className = 'tab-btn rd-crm-btn';
-        if (srcBtn.dataset.pecView) sidebarBtn.dataset.pecView = srcBtn.dataset.pecView;
-        if (srcBtn.classList.contains('pec-role-admin')) sidebarBtn.classList.add('pec-role-admin');
-        if (srcBtn.classList.contains('active')) sidebarBtn.classList.add('active');
-        // Mirror the source's role/capability visibility (renderAuthUI sets
-        // style.display on the source buttons); the observer below keeps it live.
-        sidebarBtn.style.display = srcBtn.style.display;
-        sidebarBtn.innerHTML = '<span>' + srcBtn.textContent.trim() + '</span>';
-        sidebarBtn.addEventListener('click', () => {
-          // Make sure the CRM tab-content is active so the view actually shows.
-          const crmTabContent = document.getElementById('tab-prescott-crm');
-          if (crmTabContent && !crmTabContent.classList.contains('active') && topCoatBtn) topCoatBtn.click();
-          // Forward to the source button so #pecSubnav's delegated handler runs.
-          srcBtn.click();
-          // Active state on the sidebar: clear all CRM mirror buttons, set this one.
-          navHost.querySelectorAll('.rd-crm-btn').forEach(b => b.classList.remove('active'));
-          sidebarBtn.classList.add('active');
-        });
-        navHost.appendChild(sidebarBtn);
-        crmButtons.push({ src: srcBtn, mirror: sidebarBtn });
+      });
+      Object.keys(RAIL_PIN).forEach(view => {
+        const src = crmNav.querySelector(`button[data-pec-view="${view}"]`);
+        if (src) railGroups.push({ label: RAIL_PIN[view], items: [src], pinned: true });
       });
     }
-    // Sync sidebar active state when switchView toggles #pecSubnav buttons
-    // (e.g. user navigated via deep link or programmatic switchView call).
-    if (crmNav) {
-      const crmObs = new MutationObserver(() => {
-        crmButtons.forEach(({ src, mirror }) => {
-          mirror.classList.toggle('active', src.classList.contains('active'));
-          // Keep role/capability visibility in sync: renderAuthUI/setNav toggle
-          // style.display on the source buttons (e.g. Job Costing hidden for a
-          // non-admin), so mirror it onto the cloned sidebar button.
-          mirror.style.display = src.style.display;
-        });
-        // Also refresh the page title since the active CRM view may have
-        // changed without the parent .tab-content's class changing (which is
-        // what the other MutationObserver watches).
-        try { refreshTitle(); } catch {}
+
+    const railPairs = [];   // { src, item, group } for active/visibility sync
+    const railGroupEls = []; // { def, wrap, gbtn, fly }
+    let railOpen = null, railCloseTimer = null;
+    const rail = document.createElement('div');
+    rail.className = 'rd-crm-rail';
+
+    // Mobile-only hamburger (CSS shows it below 980px); toggles the whole rail.
+    const burger = document.createElement('button');
+    burger.type = 'button';
+    burger.className = 'rd-crm-burger';
+    burger.setAttribute('aria-label', 'Navigation menu');
+    burger.setAttribute('aria-expanded', 'false');
+    burger.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg><span>Menu</span>';
+    burger.addEventListener('click', () => {
+      const open = rail.classList.toggle('rd-crm-rail--mopen');
+      burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (!open) railCloseAll();
+    });
+    rail.appendChild(burger);
+
+    const railList = document.createElement('div');
+    railList.className = 'rd-crm-raillist';
+    rail.appendChild(railList);
+
+    const railDesktop = () => !(window.matchMedia && window.matchMedia('(max-width:980px)').matches);
+    function railPosition(g) {
+      // Desktop flyout is position:fixed (escapes the sidebar's overflow:hidden);
+      // mobile flyout is a static inline accordion, so skip JS positioning there.
+      if (!railDesktop()) { g.fly.style.left = ''; g.fly.style.top = ''; return; }
+      const r = g.gbtn.getBoundingClientRect();
+      g.fly.style.left = Math.round(r.right) + 'px';
+      g.fly.style.top = Math.round(r.top) + 'px';
+      const h = g.fly.offsetHeight;
+      const maxTop = window.innerHeight - h - 10;
+      if (r.top > maxTop) g.fly.style.top = Math.max(10, maxTop) + 'px';
+    }
+    function railCloseAll() {
+      railGroupEls.forEach(g => {
+        g.fly.hidden = true;
+        g.gbtn.setAttribute('aria-expanded', 'false');
+        g.wrap.classList.remove('rd-crm-gwrap--open');
       });
+      railOpen = null;
+    }
+    function railOpenGroup(g) {
+      if (railCloseTimer) { clearTimeout(railCloseTimer); railCloseTimer = null; }
+      if (railOpen && railOpen !== g) railCloseAll();
+      g.fly.hidden = false;
+      g.gbtn.setAttribute('aria-expanded', 'true');
+      g.wrap.classList.add('rd-crm-gwrap--open');
+      railOpen = g;
+      railPosition(g);
+    }
+
+    railGroups.forEach(def => {
+      const wrap = document.createElement('div');
+      wrap.className = 'rd-crm-gwrap' + (def.pinned ? ' rd-crm-gwrap--pinned' : '');
+      const gbtn = document.createElement('button');
+      gbtn.type = 'button';
+      gbtn.className = 'rd-crm-gbtn';
+      gbtn.setAttribute('aria-haspopup', 'true');
+      gbtn.setAttribute('aria-expanded', 'false');
+      gbtn.setAttribute('aria-label', def.label);
+      gbtn.title = def.label;
+      gbtn.innerHTML = '<span class="rd-ico">' + (RAIL_ICONS[def.label] || '') + '</span><span class="rd-crm-glabel">' + def.label + '</span><span class="rd-crm-caret" aria-hidden="true">›</span>';
+      const fly = document.createElement('div');
+      fly.className = 'rd-crm-flyout';
+      fly.setAttribute('role', 'menu');
+      fly.setAttribute('aria-label', def.label);
+      fly.hidden = true;
+      const fh = document.createElement('div');
+      fh.className = 'rd-crm-flyhead';
+      fh.textContent = def.label;
+      fly.appendChild(fh);
+      // Primary destinations first, then subordinated sections (Reports /
+      // Diagnostics) LAST regardless of their order in the source markup, so a
+      // primary item after a report in #pecSubnav (e.g. Settings after Sync
+      // Health) never falls under the wrong divider.
+      const ordered = def.items.slice().sort((a, b) => {
+        const sa = RAIL_SECTION[a.dataset.pecView] ? 1 : 0;
+        const sb = RAIL_SECTION[b.dataset.pecView] ? 1 : 0;
+        return sa - sb; // stable: primaries keep order, sectioned sink to the end
+      });
+      let sectionShown = null;
+      ordered.forEach(src => {
+        const view = src.dataset.pecView;
+        const section = RAIL_SECTION[view] || null;
+        if (section && section !== sectionShown) {
+          const d = document.createElement('div');
+          d.className = 'rd-crm-flydiv';
+          d.textContent = section;
+          fly.appendChild(d);
+          sectionShown = section;
+        }
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'rd-crm-item';
+        item.setAttribute('role', 'menuitem');
+        item.dataset.pecView = view;
+        if (src.classList.contains('pec-role-admin')) item.classList.add('pec-role-admin');
+        item.textContent = RAIL_RELABEL[view] || src.textContent.trim();
+        item.style.display = src.style.display; // mirror initial visibility
+        item.addEventListener('click', () => {
+          const crmTabContent = document.getElementById('tab-prescott-crm');
+          if (crmTabContent && !crmTabContent.classList.contains('active') && topCoatBtn) topCoatBtn.click();
+          src.click(); // forwards to #pecSubnav's delegated handler -> switchView
+          railCloseAll();
+          rail.classList.remove('rd-crm-rail--mopen');
+          burger.setAttribute('aria-expanded', 'false');
+        });
+        fly.appendChild(item);
+        railPairs.push({ src, item });
+      });
+      const g = { def, wrap, gbtn, fly };
+      railGroupEls.push(g);
+
+      gbtn.addEventListener('click', () => { if (railOpen === g) railCloseAll(); else railOpenGroup(g); });
+      // Hover-open only where hover is real (desktop pointer); touch uses click.
+      if (window.matchMedia && window.matchMedia('(hover:hover) and (pointer:fine)').matches) {
+        wrap.addEventListener('mouseenter', () => { if (railDesktop()) railOpenGroup(g); });
+        wrap.addEventListener('mouseleave', () => { if (railDesktop() && railOpen === g) { railCloseTimer = setTimeout(railCloseAll, 160); } });
+      }
+      // Keyboard: Enter/Space/Down opens and focuses the first item; arrows move
+      // within the flyout; Escape closes and returns focus to the rail icon.
+      const items = () => Array.from(fly.querySelectorAll('.rd-crm-item')).filter(el => el.style.display !== 'none');
+      gbtn.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { e.preventDefault(); railOpenGroup(g); const it = items()[0]; if (it) it.focus(); }
+        else if (e.key === 'Escape') railCloseAll();
+      });
+      fly.addEventListener('keydown', e => {
+        const list = items(); const i = list.indexOf(document.activeElement);
+        if (e.key === 'ArrowDown') { e.preventDefault(); (list[i + 1] || list[0]).focus(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); if (i <= 0) gbtn.focus(); else list[i - 1].focus(); }
+        else if (e.key === 'Home') { e.preventDefault(); if (list[0]) list[0].focus(); }
+        else if (e.key === 'End') { e.preventDefault(); if (list.length) list[list.length - 1].focus(); }
+        else if (e.key === 'Escape') { e.preventDefault(); railCloseAll(); gbtn.focus(); }
+      });
+
+      wrap.appendChild(gbtn);
+      wrap.appendChild(fly);
+      railList.appendChild(wrap);
+    });
+    navHost.appendChild(rail);
+
+    // Close on outside click; reposition the open desktop flyout on resize; and
+    // close it when the nav scrolls (fixed flyout would otherwise detach visually).
+    document.addEventListener('click', e => { if (railOpen && !rail.contains(e.target) && !railOpen.fly.contains(e.target)) railCloseAll(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && railOpen) railCloseAll(); });
+    window.addEventListener('resize', () => { if (railOpen) railPosition(railOpen); });
+    const navScroll = sidebar.querySelector('.rd-nav-scroll');
+    if (navScroll) navScroll.addEventListener('scroll', () => { if (railOpen && railDesktop()) railCloseAll(); });
+
+    // Sync active state + admin visibility from the source buttons. renderAuthUI
+    // toggles class 'active' and style.display on #pecSubnav buttons; mirror both
+    // onto the flyout items, mark the owning group's rail icon active, and hide a
+    // group whose every item is hidden (so a non-admin never sees an empty flyout).
+    function railSync() {
+      railPairs.forEach(({ src, item }) => {
+        item.classList.toggle('active', src.classList.contains('active'));
+        item.style.display = src.style.display;
+      });
+      railGroupEls.forEach(g => {
+        const mine = railPairs.filter(p => g.fly.contains(p.item));
+        const anyVisible = mine.some(p => p.src.style.display !== 'none');
+        g.wrap.style.display = anyVisible ? '' : 'none';
+        g.gbtn.classList.toggle('active', mine.some(p => p.src.classList.contains('active')));
+      });
+      try { refreshTitle(); } catch {}
+    }
+    if (crmNav) {
+      const crmObs = new MutationObserver(railSync);
       crmObs.observe(crmNav, { subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+      railSync();
     }
     // Legacy ownerButtons array kept for empObs visibility logic below; with
     // Phase 3, nothing routes through ownerButtons in normal usage. The
