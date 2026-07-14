@@ -17877,12 +17877,12 @@ async function renderNextDay() {
 
   // Three slots per crew: AM (first), PM (second), and Extra (overflow / a 3rd
   // smaller job). Extra uses time_slot 'EXTRA' (migration 2026-06-07_schedule_time_slot_extra.sql).
-  const headerRow = `<div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:6px;font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:var(--rd-muted,#6b7280)">
+  const headerRow = `<div class="nextday-headrow">
       <div>Crew</div><div>First</div><div>Second</div><div>Third</div>
     </div>`;
   const crewRows = crews.length ? crews.map(c => `
-    <div style="display:grid;grid-template-columns:140px 1fr 1fr 1fr;gap:8px;margin-bottom:8px;align-items:start">
-      <div style="font-weight:600;padding-top:10px">${esc(c.name)}</div>
+    <div class="nextday-crewrow">
+      <div class="nextday-crewname">${esc(c.name)}</div>
       ${cell(c, 'AM')}
       ${cell(c, 'PM')}
       ${cell(c, 'EXTRA')}
@@ -17962,12 +17962,12 @@ async function renderNextDay() {
         <button type="button" class="pec-btn sm" id="nextDayAddTask" style="margin-left:auto">+ Add Task</button>
         <button type="button" class="pec-btn sm" id="nextDayPrint">Print run sheet</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 240px;gap:16px;align-items:start">
-        <div>
+      <div class="nextday-board">
+        <div class="nextday-crewlist">
           ${headerRow}
           ${crewRows}
         </div>
-        <div class="nextday-cell" data-crew="" data-slot="" style="background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px">
+        <div class="nextday-cell nextday-noslot" data-crew="" data-slot="" style="background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px">
           <strong style="font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">No slot yet · ${unslotted.length + unslottedTasks.length}</strong>
           <div style="font-size:.7rem;color:var(--rd-muted,#6b7280);margin:4px 0 8px">Scheduled this day, slot not set. Drag into a crew slot. Drop here to clear a slot.</div>
           ${(unslotted.length || unslottedTasks.length) ? unslotted.map(cardHtml).join('') + unslottedTasks.map(taskCardHtml).join('') : `<div class="pec-empty" style="font-size:.75rem">All assigned</div>`}
@@ -18170,8 +18170,8 @@ async function renderSchedule() {
 
   root.innerHTML = `
     <div class="pec-sched-grid">
-      <aside>
-        <h3 style="margin:0 0 10px;font-size:1rem">Pending Jobs <span style="color:var(--muted);font-weight:400">· ${pending.length}</span></h3>
+      <details class="pec-sched-aside-details" open>
+        <summary class="pec-sched-aside-sum">Pending Jobs <span style="color:var(--muted);font-weight:400">· ${pending.length}</span></summary>
         <div class="pec-sched-pending" id="pecSchedPending">
           ${pending.length === 0 ? '<div class="pec-empty" style="padding:20px 8px">No pending jobs. New jobs from accepted DripJobs estimates land here automatically.</div>' : pending.map(j => {
             const sys = areaSystem(j);
@@ -18191,7 +18191,7 @@ async function renderSchedule() {
             </div>`;
           }).join('')}
         </div>
-      </aside>
+      </details>
       <main>
         <div class="pec-sched-toolbar">
           <!-- Nav cluster: prev / today / next, the period label, then the
@@ -18523,15 +18523,12 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     </div>`;
   };
 
-  // WEEK mode: a single week laid out as a per-crew run sheet. One column per
-  // day; within each day the jobs are grouped by crew and ordered by slot
-  // (First/Second/Third, then unslotted), so a day reads as a clear run sheet.
-  if (state.scheduleMode === 'week') {
-    const slotOrder = { AM: 0, PM: 1, EXTRA: 2 };
-    const wStart = startOfWeek(anchor);
-    const wDays = Array.from({ length: 7 }, (_, i) => addDays(wStart, i));
-    periodEl.textContent = `Week of ${wStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${wDays[6].toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
-    const dayCols = wDays.map(d => {
+  // One day rendered as a STACKED CARD: date header, holiday / day-off, tasks,
+  // then crew sections. Used by WEEK mode's day columns AND the phone day-list
+  // for the 3-week view (the spanning desktop grid uses grid-column spans that
+  // CSS cannot reflow into a single column, so mobile reuses this per-day card).
+  const slotOrder = { AM: 0, PM: 1, EXTRA: 2 };
+  const dayCardHtml = (d) => {
       const iso = isoDate(d);
       const entries = state.scheduleDays.filter(sd => sd.scheduled_date === iso);
       const byCrew = new Map();
@@ -18589,15 +18586,22 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       const holHtml = hol ? holidayCellHtml(hol) : '';
       const dayOff = daysOffByDate[iso] || [];
       const dayOffHtml = dayOff.length ? `<div style="margin-bottom:6px">${dayOff.map(dayOffChipHtml).join('')}</div>` : '';
-      return `<div class="${hol ? 'is-holiday' : ''}" style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,var(--border));border-radius:10px;padding:8px;min-height:560px">
+      return `<div class="pec-cal-daycard ${hol ? 'is-holiday' : ''}">
         <div class="${sameDay(d, today) ? 'today' : ''}" style="font-weight:700;font-size:.78rem;margin-bottom:8px;${sameDay(d, today) ? 'color:var(--rd-accent,#D8531C)' : ''}">${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.getDate()}</div>
         ${holHtml}
         ${dayOffHtml}
         ${tasksHtml}
         ${crewSections || (hol ? '' : '<div class="pec-empty" style="font-size:.72rem;padding:8px 4px">No jobs</div>')}
       </div>`;
-    }).join('');
-    host.innerHTML = `<div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:start">${dayCols}</div>`;
+  };
+
+  // WEEK mode: one week as a per-crew run sheet, one column per day.
+  if (state.scheduleMode === 'week') {
+    const wStart = startOfWeek(anchor);
+    const wDays = Array.from({ length: 7 }, (_, i) => addDays(wStart, i));
+    periodEl.textContent = `Week of ${wStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${wDays[6].toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    const dayCols = wDays.map(dayCardHtml).join('');
+    host.innerHTML = `<div class="pec-cal-daycols">${dayCols}</div>`;
     host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
     wireTaskClicks(host);
     return;
@@ -18614,6 +18618,23 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   });
   const firstDay = weeks[0].days[0], lastDay = weeks[2].days[6];
   periodEl.textContent = `Week of ${firstDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${lastDay.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+  // PHONE: the spanning 7-column grid with multi-day event bars cannot reflow
+  // to one column via CSS (bars are positioned by explicit grid-column spans),
+  // so on a narrow screen the 3-week view renders as a vertical DAY LIST reusing
+  // the same per-day card (dayCardHtml) and the same in-memory arrays. This is
+  // the ONE JS branch in item 3; everything else is CSS. Each week's revenue
+  // heads its group so the pro-rated tally stays visible.
+  if (window.matchMedia && window.matchMedia('(max-width:720px)').matches) {
+    host.innerHTML = `<div class="pec-cal-daylist">${weeks.map(w => `
+      <div class="pec-cal-daylist-weekhead">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} <span>${fmtMoney(weekRevenue(w.days))}</span></div>
+      ${w.days.map(dayCardHtml).join('')}
+    `).join('')}</div>`;
+    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    wireTaskClicks(host);
+    return;
+  }
+
   host.innerHTML = `
     <div class="pec-cal-month">
       <div class="pec-cal-month-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}<div class="day-h pec-cal-revhead">Revenue</div></div>
@@ -23123,6 +23144,18 @@ if (portalToken) {
   /* Job Schedule */
   .pec-sched-grid { display:grid; grid-template-columns: 280px 1fr; gap:16px; align-items:start }
   @media (max-width:900px){ .pec-sched-grid { grid-template-columns: 1fr } }
+  /* Pending Jobs aside is a <details>: a plain header on desktop (open, not
+     toggleable), a collapsible section on phones where it stacks above the list. */
+  .pec-sched-aside-sum { font-size:1rem; font-weight:600; margin:0 0 10px; list-style:none; cursor:default }
+  .pec-sched-aside-sum::-webkit-details-marker { display:none }
+  .pec-sched-aside-sum::marker { content:"" }
+  @media (max-width:720px){
+    .pec-sched-aside-details { border:1px solid var(--rd-line,var(--border)); border-radius:10px; padding:8px 10px; margin-bottom:6px }
+    .pec-sched-aside-sum { cursor:pointer; margin:0; display:flex; align-items:center; gap:6px }
+    .pec-sched-aside-sum::before { content:"\25B8"; transition:transform .15s; color:var(--muted) }
+    .pec-sched-aside-details[open] .pec-sched-aside-sum::before { transform:rotate(90deg) }
+    .pec-sched-aside-details[open] .pec-sched-pending { margin-top:8px }
+  }
   .pec-sched-pending { display:flex; flex-direction:column; gap:8px; max-height:75vh; overflow-y:auto; padding-right:4px }
   .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:default }
   .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
@@ -23137,6 +23170,38 @@ if (portalToken) {
   .pec-sched-addmenu { position:absolute; right:0; top:calc(100% + 4px); z-index:40; min-width:150px; display:flex; flex-direction:column; gap:2px; padding:6px; background:var(--rd-card,#fff); border:1px solid var(--rd-line,var(--border)); border-radius:10px; box-shadow:0 8px 24px rgba(16,24,40,.14) }
   .pec-sched-addmenu[hidden] { display:none }
   .pec-sched-addmenu .pec-btn { justify-content:flex-start; text-align:left }
+  /* Next Day board (grids moved out of inline so a media query can restructure) */
+  .nextday-board { display:grid; grid-template-columns:1fr 240px; gap:16px; align-items:start }
+  .nextday-headrow { display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:8px; margin-bottom:6px; font-size:.7rem; text-transform:uppercase; letter-spacing:.5px; color:var(--rd-muted,#6b7280) }
+  .nextday-crewrow { display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:8px; margin-bottom:8px; align-items:start }
+  .nextday-crewname { font-weight:600; padding-top:10px }
+  /* Phone: crews stack, the No slot yet panel jumps to the TOP (it needs
+     action), the column header disappears, and each slot cell labels itself. */
+  @media (max-width:720px) {
+    .nextday-board { grid-template-columns:1fr; gap:12px }
+    .nextday-noslot { order:-1 }
+    .nextday-headrow { display:none }
+    .nextday-crewrow { grid-template-columns:1fr; gap:6px; margin-bottom:18px }
+    .nextday-crewname { position:sticky; top:0; z-index:3; padding:8px 10px; margin:0 -2px; background:var(--rd-card,var(--card,#fff)); border-bottom:1px solid var(--rd-line,var(--border)); font-size:1rem }
+    .nextday-cell[data-slot="AM"]::before,
+    .nextday-cell[data-slot="PM"]::before,
+    .nextday-cell[data-slot="EXTRA"]::before { display:block; font-size:.62rem; text-transform:uppercase; letter-spacing:.5px; color:var(--rd-muted,#6b7280); margin-bottom:3px }
+    .nextday-cell[data-slot="AM"]::before { content:"First" }
+    .nextday-cell[data-slot="PM"]::before { content:"Second" }
+    .nextday-cell[data-slot="EXTRA"]::before { content:"Third" }
+  }
+  /* Calendar day cards (WEEK mode columns; also the phone 3-week day list) */
+  .pec-cal-daycols { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:8px; align-items:start }
+  .pec-cal-daycard { background:var(--rd-card,#fff); border:1px solid var(--rd-line,var(--border)); border-radius:10px; padding:8px; min-height:560px }
+  .pec-cal-daylist { display:flex; flex-direction:column; gap:8px }
+  .pec-cal-daylist .pec-cal-daycard { min-height:0 }
+  .pec-cal-daylist-weekhead { display:flex; justify-content:space-between; align-items:baseline; font-weight:700; font-size:.82rem; margin:12px 2px 2px; padding-top:10px; border-top:1px solid var(--rd-line,var(--border)) }
+  .pec-cal-daylist-weekhead:first-child { border-top:none; padding-top:0; margin-top:0 }
+  .pec-cal-daylist-weekhead span { color:var(--rd-accent,var(--accent)); font-size:.9rem }
+  @media (max-width:720px) {
+    .pec-cal-daycols { grid-template-columns:1fr }
+    .pec-cal-daycols .pec-cal-daycard { min-height:0 }
+  }
   .pec-cal-month { border:1px solid var(--rd-line, var(--border)); border-radius:8px; padding:8px; background:var(--rd-card, var(--s1)) }
   .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)) 150px; gap:1px; margin-bottom:8px; padding-left:0 }
   .pec-cal-month-head .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
