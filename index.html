@@ -18859,21 +18859,59 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   // contribute 0 (fallback prevents divide-by-zero). Uses the same
   // totalDaysByJob denominator the per-bar labels use, so the bars in a week
   // sum to this sidebar total (within rounding).
-  const weekRevenue = (weekDays) => {
+  // ONE computation feeds both the header figure AND the click-to-expand
+  // breakdown panel, so the panel can never disagree with the number it
+  // explains. Per job touching the week: contract revenue * (days this week /
+  // total scheduled days). Touch-up callbacks are no-charge and are collected
+  // into `excluded` (shown on the panel's exclusions line), never in the total.
+  const weekRevenueRows = (weekDays) => {
     const weekIsos = new Set(weekDays.map(isoDate));
     const daysInWeekByJob = {};
     for (const d of state.scheduleDays) {
       if (weekIsos.has(d.scheduled_date)) daysInWeekByJob[d.job_id] = (daysInWeekByJob[d.job_id] || 0) + 1;
     }
+    const rows = [], excluded = [];
     let total = 0;
     for (const [jobId, daysInWeek] of Object.entries(daysInWeekByJob)) {
       const job = state.prodJobs.find(j => j.id === jobId);
-      if (!job || job.is_callback) continue; // touch-up callbacks are no-charge, never in revenue
-      const rev = Number(job.revenue || 0);
+      if (!job) continue;
       const totalDays = totalDaysByJob[jobId] || 1;
-      total += rev * (daysInWeek / totalDays);
+      if (job.is_callback) { excluded.push({ job, daysInWeek, totalDays, reason: 'touch-up callback (no charge)' }); continue; }
+      const rev = Number(job.revenue || 0);
+      const slice = rev * (daysInWeek / totalDays);
+      total += slice;
+      rows.push({ job, rev, daysInWeek, totalDays, slice });
     }
-    return total;
+    rows.sort((a, b) => b.slice - a.slice);
+    return { rows, excluded, total };
+  };
+  const weekRevenue = (weekDays) => weekRevenueRows(weekDays).total;
+
+  // The breakdown panel: a VIEW of weekRevenueRows, so its footer is the same
+  // number as the header by construction. Cents throughout so the rows sum
+  // EXACTLY to the footer; a small note flags that the calendar column itself
+  // rounds to whole dollars. Revenue only, never GP (job costing has materials
+  // on zero jobs, so any GP here would read ~30 points high).
+  const usd2 = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const weekRevPanelHtml = (weekDays) => {
+    const { rows, excluded, total } = weekRevenueRows(weekDays);
+    const rowsHtml = rows.length ? rows.map(r => `
+        <div class="pec-weekrev-row">
+          <span class="wr-cust">${esc(r.job.customer_name || '(no name)')}</span>
+          <span class="wr-calc">${usd2(r.rev)} &times; ${r.daysInWeek}/${r.totalDays} day${r.totalDays === 1 ? '' : 's'}</span>
+          <span class="wr-slice">${usd2(r.slice)}</span>
+        </div>`).join('')
+      : '<div class="pec-weekrev-empty">No scheduled contract revenue this week.</div>';
+    const exclHtml = excluded.length
+      ? `<div class="pec-weekrev-excl"><strong>Left out:</strong> ${excluded.map(e => esc((e.job.customer_name || '(no name)') + ': ' + e.reason)).join('; ')}</div>`
+      : '';
+    return `<div class="pec-weekrev-panel">
+        <div class="pec-weekrev-head">Scheduled contract revenue, prorated by day</div>
+        ${rowsHtml}
+        <div class="pec-weekrev-foot"><span>Week total</span><span>${usd2(total)}</span></div>
+        ${exclHtml}
+        <div class="pec-weekrev-note">Not cash collected and not gross profit. Each job's contract is split evenly across its scheduled days; this week gets the days that fall inside it. The calendar column rounds to whole dollars.</div>
+      </div>`;
   };
 
   // Each calendar week is rendered as its own CSS Grid (7 columns × N rows).
@@ -19099,11 +19137,13 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   // the ONE JS branch in item 3; everything else is CSS. Each week's revenue
   // heads its group so the pro-rated tally stays visible.
   if (window.matchMedia && window.matchMedia('(max-width:720px)').matches) {
-    host.innerHTML = `<div class="pec-cal-daylist">${weeks.map(w => `
-      <div class="pec-cal-daylist-weekhead">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} <span>${fmtMoney(weekRevenue(w.days))}</span></div>
+    host.innerHTML = `<div class="pec-cal-daylist">${weeks.map((w, wi) => `
+      <div class="pec-cal-daylist-weekhead" data-weekrev="${wi}" role="button" tabindex="0" aria-expanded="false" title="Tap for the revenue breakdown">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} <span>${fmtMoney(weekRevenue(w.days))} &#9662;</span></div>
+      <div class="pec-cal-weekrev-host" data-weekrev-panel="${wi}" hidden>${weekRevPanelHtml(w.days)}</div>
       ${w.days.map(dayCardHtml).join('')}
     `).join('')}</div>`;
     host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    wireWeekRevPanels(host);
     wireTaskClicks(host);
     return;
   }
@@ -19111,20 +19151,75 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   host.innerHTML = `
     <div class="pec-cal-month">
       <div class="pec-cal-month-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}<div class="day-h pec-cal-revhead">Revenue</div></div>
-      ${weeks.map(w => `
-        <div class="pec-cal-week-row">
-          ${renderWeekGrid(w.days)}
-          <div class="pec-cal-week-rev">
-            <div class="rev-label">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
-            <div class="rev-amount">${fmtMoney(weekRevenue(w.days))}</div>
+      ${weeks.map((w, wi) => `
+        <div class="pec-cal-week-block">
+          <div class="pec-cal-week-row">
+            ${renderWeekGrid(w.days)}
+            <div class="pec-cal-week-rev" data-weekrev="${wi}" role="button" tabindex="0" aria-expanded="false" title="Show how this week's revenue is calculated">
+              <div class="rev-label">Week of ${w.days[0].toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+              <div class="rev-amount">${fmtMoney(weekRevenue(w.days))}</div>
+              <div class="rev-hint">click for breakdown &#9662;</div>
+            </div>
           </div>
+          <div class="pec-cal-weekrev-host" data-weekrev-panel="${wi}" hidden>${weekRevPanelHtml(w.days)}</div>
         </div>
       `).join('')}
     </div>
   `;
 
   host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+  wireWeekRevPanels(host);
   wireTaskClicks(host);
+}
+
+// Click-to-expand for the calendar's week revenue figure (desktop 3-week rev
+// column AND the mobile day-list week head), so the prorated number reconciles
+// VISIBLY. Not a hover tooltip: hover is dead on a phone. Each trigger carries
+// data-weekrev="<i>" and its panel data-weekrev-panel="<i>". Only one panel is
+// open at a time; the outside-click + Escape listeners live ONLY while a panel
+// is open (attached on open, removed on close) so re-rendering the schedule
+// leaves no leaked document listeners. This is a popover, not a modal, so the
+// two-modal-root lifecycle does not apply.
+function wireWeekRevPanels(host) {
+  const triggers = Array.from(host.querySelectorAll('[data-weekrev]'));
+  if (!triggers.length) return;
+  const panelFor = (i) => host.querySelector(`[data-weekrev-panel="${i}"]`);
+  let docHandlers = null;
+  const detach = () => {
+    if (!docHandlers) return;
+    document.removeEventListener('click', docHandlers.click, true);
+    document.removeEventListener('keydown', docHandlers.key);
+    docHandlers = null;
+  };
+  const closeAll = () => {
+    triggers.forEach(t => { const p = panelFor(t.dataset.weekrev); if (p) p.hidden = true; t.setAttribute('aria-expanded', 'false'); });
+    detach();
+  };
+  const openOne = (t) => {
+    closeAll();
+    const p = panelFor(t.dataset.weekrev); if (!p) return;
+    p.hidden = false;
+    t.setAttribute('aria-expanded', 'true');
+    const idx = t.dataset.weekrev;
+    docHandlers = {
+      // Capture phase so an outside click closes even if it lands on a calendar
+      // bar (whose own handler stops propagation). A click on THIS trigger or
+      // its panel is left for their own handlers.
+      click: (e) => { if (!e.target.closest(`[data-weekrev-panel="${idx}"]`) && !e.target.closest(`[data-weekrev="${idx}"]`)) closeAll(); },
+      key: (e) => { if (e.key === 'Escape') closeAll(); },
+    };
+    document.addEventListener('click', docHandlers.click, true);
+    document.addEventListener('keydown', docHandlers.key);
+  };
+  triggers.forEach(t => {
+    const toggle = (e) => {
+      e.stopPropagation();
+      const p = panelFor(t.dataset.weekrev); if (!p) return;
+      if (p.hidden) openOne(t); else closeAll();
+    };
+    t.addEventListener('click', toggle);
+    t.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } });
+  });
 }
 
 // ============================================================
@@ -23783,11 +23878,38 @@ if (portalToken) {
   .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)) 150px; gap:1px; margin-bottom:8px; padding-left:0 }
   .pec-cal-month-head .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
   .pec-cal-revhead { text-align:left !important; padding-left:12px !important }
+  /* Each week is a block: the 7-day grid + rev cell row, then a full-width
+     revenue breakdown panel that expands below it. The block owns the
+     between-week spacing (the inner row is always its :last-child, so its own
+     margin collapses to 0). */
+  .pec-cal-week-block { margin-bottom:8px }
+  .pec-cal-week-block:last-child { margin-bottom:0 }
   .pec-cal-week-row { display:grid; grid-template-columns: 1fr 150px; gap:8px; margin-bottom:8px; align-items:stretch }
   .pec-cal-week-row:last-child { margin-bottom:0 }
-  .pec-cal-week-rev { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:10px 14px; background:var(--rd-soft, var(--s2)); border:1px solid var(--rd-line, var(--border)); border-radius:6px }
+  .pec-cal-week-rev { display:flex; flex-direction:column; justify-content:center; align-items:flex-start; padding:10px 14px; background:var(--rd-soft, var(--s2)); border:1px solid var(--rd-line, var(--border)); border-radius:6px; cursor:pointer }
+  .pec-cal-week-rev:hover { border-color:var(--rd-accent, var(--accent)) }
+  .pec-cal-week-rev[aria-expanded="true"] { border-color:var(--rd-accent, var(--accent)); box-shadow: inset 0 0 0 1px var(--rd-accent, var(--accent)) }
   .pec-cal-week-rev .rev-label { font-size:.65rem; letter-spacing:1px; text-transform:uppercase; color:var(--muted); margin-bottom:4px }
   .pec-cal-week-rev .rev-amount { font-size:1.15rem; font-weight:700; font-variant-numeric:tabular-nums; color:var(--rd-ink, #0f172a) }
+  .pec-cal-week-rev .rev-hint { font-size:.6rem; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); margin-top:5px }
+  /* Week revenue breakdown panel (Task 3): a VIEW of weekRevenueRows. */
+  .pec-cal-daylist-weekhead { cursor:pointer }
+  .pec-cal-daylist-weekhead[aria-expanded="true"] span { text-decoration:underline }
+  .pec-cal-weekrev-host { margin:6px 2px 8px }
+  .pec-weekrev-panel { border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s1)); padding:12px 14px; font-size:.8rem; color:var(--rd-ink, var(--text)) }
+  .pec-weekrev-head { font-size:.62rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:8px; font-weight:600 }
+  .pec-weekrev-row { display:grid; grid-template-columns: 1fr auto auto; gap:12px; align-items:baseline; padding:5px 0; border-bottom:1px solid var(--rd-line, var(--border)) }
+  .pec-weekrev-row .wr-cust { font-weight:600 }
+  .pec-weekrev-row .wr-calc { color:var(--muted); font-variant-numeric:tabular-nums; font-size:.74rem; white-space:nowrap }
+  .pec-weekrev-row .wr-slice { font-weight:700; font-variant-numeric:tabular-nums; text-align:right; min-width:82px }
+  .pec-weekrev-foot { display:flex; justify-content:space-between; align-items:baseline; margin-top:10px; padding-top:8px; border-top:2px solid var(--rd-line, var(--border)); font-weight:800; font-variant-numeric:tabular-nums }
+  .pec-weekrev-excl { margin-top:10px; font-size:.74rem; color:var(--muted); line-height:1.45 }
+  .pec-weekrev-note { margin-top:10px; font-size:.7rem; color:var(--muted); line-height:1.5 }
+  .pec-weekrev-empty { color:var(--muted); padding:6px 0 }
+  @media (max-width:720px) {
+    .pec-weekrev-row { grid-template-columns: 1fr auto; row-gap:2px }
+    .pec-weekrev-row .wr-calc { grid-column:1 / -1; order:3 }
+  }
   .pec-cal-week-grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:1px; background:var(--rd-line, var(--border)); border:1px solid var(--rd-line, var(--border)); border-radius:6px; overflow:hidden; min-height:140px }
   .pec-cal-week-grid .day-c { background:var(--rd-card, var(--s1)); padding:6px 0; position:relative; display:flex; flex-direction:column }
   .pec-cal-week-grid .day-c.today { box-shadow: inset 0 0 0 2px var(--rd-accent, var(--accent)); background: color-mix(in srgb, var(--rd-accent, var(--accent)) 6%, var(--rd-card, var(--s1))) }
