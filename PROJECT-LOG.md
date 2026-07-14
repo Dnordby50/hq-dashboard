@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-14 14:20 MST] Build 19: left rail reworked into an icon-per-group rail with flyout submenus
+By: Claude Code
+Changed: index.html (the #pecSubnav clone/render step + rail CSS), help/whats-new.json, PROJECT-LOG.md. Navigation only; no view's behavior changed, every route preserved.
+
+THE AUDIT (done first, presented in chat, signed off before any code):
+Classified all 19 current rail items (Estimator already removed in build 18) as destinations (a place you go and work, earns a slot) vs actions/reports (generate and leave, candidates to nest). Destinations: Dashboard, Jobs, Customers, Messages, Leads, Estimates, Pipeline, Ordering, Job Schedule, Next Day, Invoicing, Job Costing, Pricing (catalog), Settings, Help. Reports/diagnostics to subordinate: Metrics (weak, kept in Overview), Bonus Report, Commission, DripJobs Sync Health.
+VERIFIED Ordering is LIVE, not retired: it routes into the production module (prodSwitchView -> prod 'jobs' view, index.html:26277) which is the per-job material-ordering screen, and it force-refreshes pec_prod_jobs on entry. The retired artifact in the 2026-07-09 log was the Google Order Sheet automation, a different thing. Ordering keeps its slot.
+
+WHAT DYLAN SIGNED OFF ON (via a 4-question decision prompt):
+1. Rail granularity: one icon per GROUP (six group rows: Overview, Sales, Production, Finance, Admin, plus Help pinned), each opening a flyout of that group's destinations. Not one icon per destination.
+2. Demotion depth: SUBORDINATE the reports inside their group's flyout (a small Reports / Diagnostics divider), NOT nest them as new tabs inside other views. This keeps it navigation-only: Bonus Report + Commission appear under a Reports divider in the Finance flyout, DripJobs Sync Health under a Diagnostics divider in the Admin flyout. Their routes (switchView('crew-bonus'), 'commission', 'dripjobs-sync-health') are untouched.
+3. Renames (labels only, routes unchanged): Price & Material Catalog -> Pricing, Next Day Schedule -> Next Day. He did NOT take Jobs pipeline -> Pipeline, so that label stays.
+4. Mobile: hamburger drawer with inline accordion submenus.
+
+CLONE ARCHITECTURE: took OPTION (a), keep #pecSubnav as the hidden source of truth and rewrite only the clone/render step. Reason: six other places read #pecSubnav's DOM or its buttons' class/style (the router's delegated handler at 23314, the admin gate at 6458-6467, the page-title logic at 5115, the popstate active sync at 6823, plus the two MutationObservers). Option (b), a data-driven nav config, would have meant touching all of them for zero user-visible gain and a much larger regression surface. (a) is the safe, correct call. The new render walks #pecSubnav into groups, emits the rail + flyouts, and a single MutationObserver (railSync) mirrors each source button's active class and style.display onto the flyout items, marks the owning group's rail icon active, and hides a group whose every item is display:none (so a non-admin never sees an empty Admin flyout). Admin gating is thus preserved byte-for-byte: renderAuthUI still toggles display on the SAME source buttons; the rail just reflects it.
+
+HOVER VS CLICK: open on CLICK/TAP as the baseline (works on touch), with hover-open added ONLY where the device reports (hover:hover) and (pointer:fine) (desktop pointer). Flyout closes on outside click, Escape, and selecting an item. Full keyboard: rail icons are tabbable, Enter/Space/Down opens and focuses the first item, Up/Down/Home/End move within the flyout, Escape closes and returns focus to the group icon.
+
+DESKTOP CLIPPING GOTCHA + FIX: #rdSidebar is overflow:hidden (intentional, to keep the promo card pinned), which would clip a flyout rendered inside it. The flyout is position:fixed (JS sets left/top from the group button's rect), and no ancestor has transform/filter/will-change, so a fixed descendant escapes the ancestor's overflow and is not clipped. It closes when the nav scrolls (a fixed flyout would otherwise visually detach) and repositions on resize. On phone the same element becomes a static inline accordion (position:static via the <=980px media query), so nothing pops off-screen and it does not fight build 18's schedule mobile layouts.
+
+SCOPE NOTE / one deviation worth stating: the CRM nav is not a standalone rail, it is a section of the larger shared HQ sidebar (244px, with logo, user card, and the Daily-flow promo). Rather than gut that shared chrome into a 56px icon strip (out of scope and risky), each group is an icon + label row that expands a flyout. That delivers exactly what Dylan approved (six group entries, flyout submenus, subordinated reports, active-group marking, hamburger on mobile) while leaving the shared sidebar chrome intact. The functional model is identical to the approved thin-rail preview; only the group rows keep their text labels.
+Why: Dylan's three complaints (too many items visible, group headers reading as noise, wrong things top-level) all trace to the flat 19-button clone. Six collapsible groups cut what is visible at once, turn the group headers into real interactive structure, and push the reports/diagnostic a click down without losing them.
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md
+Next steps: Deploy and run the smoke list below. If Dylan later wants Bonus/Commission as true tabs inside Job Costing, that is a separate view change, not navigation.
+Handoff to Cowork: None.
+Handoff to Dylan: Smoke-test list is in the chat message. Key checks: all 15 destinations reachable, admin gating intact (log in as a non-admin and confirm the Admin group icon is gone, not an empty flyout), deep links (a bookmarked ?view / a job link) land and highlight the right group, keyboard nav works, and the rail is usable at 390px.
+
+---
+
 ## [2026-07-13 18:30 MST] Build 18: four contained UI fixes shipped (estimator rail button, schedule toolbar, mobile schedules, phone matching + unified Messages inbox)
 By: Claude Code
 Changed: Delivered all four items of build prompt 18 (prompt 19, the nav rework, was deliberately NOT touched). One commit per item.

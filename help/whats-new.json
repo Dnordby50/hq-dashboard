@@ -1,5 +1,16 @@
 [
   {
+    "id": "nav-icon-rail",
+    "date": "2026-07-17",
+    "title": "New left menu: fewer items, grouped into flyouts",
+    "summary": "The left menu was a long list of every screen. It is now six groups (Overview, Sales, Production, Finance, Admin, and Help). Click a group and a small submenu opens with the screens inside it. Nothing was removed, just tidied: Bonus Report and Commission now live under Finance (in a Reports section), DripJobs Sync Health lives under Admin (in a Diagnostics section), Price & Material Catalog is now called Pricing, and Next Day Schedule is now called Next Day. On a phone, tap the Menu button to open the groups. Every old bookmark and link still works.",
+    "howto": [
+      "Click a group like Sales or Finance to open its submenu, then pick a screen.",
+      "Find Bonus Report and Commission under Finance; find Sync Health under Admin.",
+      "On a phone, tap Menu, then tap a group to expand it."
+    ]
+  },
+  {
     "id": "messages-unified-inbox",
     "date": "2026-07-16",
     "title": "Messages now shows calls and texts together",
