@@ -19379,18 +19379,19 @@ function openScheduleModal(jobId) {
   const sys = domSysId ? sysById[domSysId] : null;
   const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
 
-  // The picker month is the one containing the first scheduled day, else the
-  // job's install_date (which the DripJobs appointment-set webhook populates),
-  // else today. When the job has install_date but no schedule rows yet,
-  // pre-select that date so the PM only confirms instead of re-typing.
-  const seedDate = existingDays[0]
-    ? parseISO(existingDays[0].scheduled_date)
-    : (job.install_date ? parseISO(job.install_date) : new Date());
+  // The picker opens on the CURRENT month, not the job's first scheduled day.
+  // A job that runs late June into July used to open on JUNE (the past), which
+  // is not where the PM is working. The already-selected days are unchanged;
+  // any that fall outside the current month are surfaced by a jump line at the
+  // top of the picker (below), so they never look like they vanished. The
+  // install_date pre-select (a job with an appointment but no schedule rows yet)
+  // is preserved so the PM only confirms instead of re-typing.
+  const nowMonth = new Date();
   const draft = {
     selectedDates: existingDays.length
       ? existingDays.map(d => d.scheduled_date)
       : (job.install_date ? [job.install_date] : []),
-    pickerMonth: new Date(seedDate.getFullYear(), seedDate.getMonth(), 1),
+    pickerMonth: new Date(nowMonth.getFullYear(), nowMonth.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
     time_slot: existingDays[0]?.time_slot || '',
     estimated_hours: job.estimated_hours || '',
@@ -19443,7 +19444,27 @@ function openScheduleModal(jobId) {
       return sorted.indexOf(iso) + 1;
     };
     const segs = segmentsFor(draft.selectedDates);
+    // Out-of-month guard: now that the picker opens on the current month, a job
+    // scheduled in a different month would show none of its selected days, which
+    // reads as "the days vanished". Name them at the top with a one-tap jump.
+    // The selected days are untouched; the line just makes them legible.
+    const curY = draft.pickerMonth.getFullYear(), curM = draft.pickerMonth.getMonth();
+    const outByMonth = {};
+    for (const iso of draft.selectedDates) {
+      const dd = parseISO(iso);
+      if (dd.getFullYear() === curY && dd.getMonth() === curM) continue;
+      const key = dd.getFullYear() + '-' + dd.getMonth();
+      (outByMonth[key] ||= { y: dd.getFullYear(), m: dd.getMonth(), n: 0 }).n++;
+    }
+    const outEntries = Object.values(outByMonth).sort((a, b) => (a.y - b.y) || (a.m - b.m));
+    const thisYear = new Date().getFullYear();
+    const monthName = (y, m) => new Date(y, m, 1).toLocaleDateString(undefined, { month: 'long', ...(y !== thisYear ? { year: 'numeric' } : {}) });
+    const outLine = outEntries.length ? `<div style="margin-bottom:8px;padding:8px 10px;border:1px solid color-mix(in srgb, var(--accent,#D8531C) 45%, transparent);border-radius:6px;background:color-mix(in srgb, var(--accent,#D8531C) 10%, transparent);font-size:.75rem;display:flex;flex-wrap:wrap;align-items:center;gap:8px">
+        <span>Selected days not on this month:</span>
+        ${outEntries.map(e => `<button type="button" class="pec-btn sm" data-jump-month="${e.y}-${e.m}">${e.n} day${e.n === 1 ? '' : 's'} in ${esc(monthName(e.y, e.m))} &rsaquo;</button>`).join('')}
+      </div>` : '';
     modal.querySelector('#schedDayGrid').innerHTML = `
+      ${outLine}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <button type="button" class="pec-btn sm ghost" id="schedPickerPrev">‹</button>
         <div style="flex:1;text-align:center;font-weight:600;font-size:.85rem">${monthLabel}</div>
@@ -19475,6 +19496,11 @@ function openScheduleModal(jobId) {
       draft.pickerMonth = new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth() + 1, 1);
       renderBody(modal);
     });
+    modal.querySelectorAll('[data-jump-month]').forEach(b => b.addEventListener('click', () => {
+      const [y, m] = b.dataset.jumpMonth.split('-').map(Number);
+      draft.pickerMonth = new Date(y, m, 1);
+      renderBody(modal);
+    }));
     modal.querySelectorAll('[data-pick]').forEach(c => c.addEventListener('click', () => {
       const iso = c.dataset.pick;
       const i = draft.selectedDates.indexOf(iso);
