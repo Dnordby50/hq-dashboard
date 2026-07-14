@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-13 18:30 MST] Build 18: four contained UI fixes shipped (estimator rail button, schedule toolbar, mobile schedules, phone matching + unified Messages inbox)
+By: Claude Code
+Changed: Delivered all four items of build prompt 18 (prompt 19, the nav rework, was deliberately NOT touched). One commit per item.
+
+WHAT SHIPPED, item by item:
+
+1. ESTIMATOR RAIL BUTTON REMOVED (commit e83b9ac). Deleted the standalone Estimator (Beta) rail button, its entry in the subnav clone selector, and the whole wireEstimatorNav() function plus ESTIMATOR_OWNER_EMAIL. The two real entry points are untouched: Leads > Start estimate and the Estimates list > New estimate.
+   DECISION on settings.estimator_allowed_emails: left DEAD, not ported. It was read by exactly one place, wireEstimatorNav, which gated only the button we removed. The remaining entry points were never gated by it (they are reachable by anyone who can open a lead or the Estimates list), so porting the allowlist onto them would ADD a restriction that never existed, not preserve one. The setting row can stay in the DB harmlessly; nothing reads it now. Not user-visible (the button was allowlist-gated to a beta audience), so no What's New entry.
+
+2. SCHEDULE TOOLBAR REGROUPED (commit ed297dd). Nav cluster (back / Today / forward + period label) on the left, Week and 3 weeks segmented control immediately beside it (no more margin-left:auto shoving them apart), and one + Add popover on the far right with Add Job first, then Add Task, Holiday, Day Off. Reused the four existing handlers (pecSchedAddJob / pecSchedAddTask / pecSchedHoliday / pecSchedDayOff), did not fork the modals. Popover closes on outside click (capture listener) and Escape, both attached only while open. Kept localStorage pec_sched_mode. Trimmed .pec-sched-period min-width from 200px to 0.
+
+3. MOBILE SCHEDULE CARD LAYOUTS (commit bfac3d1). Purpose-built stacked layouts below max-width:720px, not a horizontal-scroll wrapper. Next Day: crews stack, crew headings sticky, full-width job cards, the No slot yet panel forced to the TOP (order:-1), slot cells self-label First/Second/Third from data-slot. Job Schedule: the 7-column calendar becomes a vertical day list, Pending Jobs became a <details> collapsible that is open and non-collapsible on desktop, collapsible on phone.
+   CSS-only vs JS-branch: Week mode and Next Day are CSS-only (moved the inline grids onto classes so the media query can override them). The 3-week calendar needed ONE matchMedia JS branch because its event bars use grid-column spans that CSS alone cannot reflow into a single column; that branch reuses the same dayCardHtml the desktop path builds, so the two do not drift. Logged here per the prompt's "log if JS-branched" instruction.
+
+4. PHONE MATCHING + UNIFIED MESSAGES INBOX (commits 180fef0 for 4a/4b, 4df7aa8 for 4c/4d).
+   4a/4b MIGRATION (supabase/migrations/2026-07-16_quo_phone_norm.sql), APPLIED TO PROD from this session via MCP: added a STORED generated column phone_norm (strip non-digits, take last 10, NULL under 10 digits) plus a btree index on both customers and leads. Verified after apply: 2 columns present, 2 indexes present. The webhook (netlify/functions/pec-webhook-quo.cjs, IN-REPO, no Cowork handoff needed) now matches inbound on phone_norm=eq.<tail> and only accepts a UNIQUE hit (limit 2, require exactly one), so a number owned by two customers stays unmatched rather than guessing. Backfill stamped customer_id on unmatched call/text rows whose other-number normalized to exactly one customer.
+   BACKFILL COUNTS (matched the pre-run prediction exactly): 9 pec_call_log rows matched (55 -> 64 matched calls), 0 pec_sms_log rows (the unmatched texters are leads/strangers, not customers), 0 ambiguous. After the backfill 35 texts and 180 calls remain unmatched because those numbers are genuinely not customers; those are exactly the rows the new inbox now surfaces as clickable.
+   4c/4d MESSAGES INBOX (index.html): renderMessages is now a unified activity inbox. Extracted the job-detail merge loop into a shared helper qoMergeFeedHtml(smsRows, callRows, ctx) and pointed both mountJobComms and the new thread at it, so there is one merge, not two. loadMessageConvos fetches both tables (400 each), groups by normalized number (qoPhoneKey / qoOtherNumber), and resolves names three ways: customers by stamped id, customers by phone_norm (catches a match the webhook missed), then leads by phone_norm for a display name + "Lead" marker only (never a customer link). All / Texts / Calls filter chips re-filter the list in memory. EVERY row is clickable, including an unknown number: the thread reuses qoMergeFeedHtml with a reply box (pecSendSms; matched threads log against customer_id, unmatched send to the raw number via to_number). Unmatched threads add Attach to customer (a search-and-pick modal that stamps customer_id on every text and call row whose from/to matches any raw format seen for the number, each write wrapped in withDeadline, so the history retroactively appears on the customer profile) and Create lead (opens the new-lead modal with the phone prefilled; does NOT auto-create, per Dylan's rejection of auto-leads).
+
+VERIFICATION: npm test green (100 passed, 0 failed). All 8 JavaScript script blocks in index.html pass node --check (the only flagged block is the type="importmap" JSON, which is data, not JS). Em-dash scan of every added line across index.html and whats-new.json: 0. Three What's New entries added (messages-unified-inbox, schedule-toolbar-tidy, schedule-mobile-cards); the estimator removal got none by the judgment above.
+Why: Item 4 was the only money-losing one (a texting customer landing in a dead Unknown row is a lost lead with no recovery path); the other three were contained annoyances that could ride the same build. The nav rework was split into prompt 19 so a regression there stays attributable.
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-16_quo_phone_norm.sql, netlify/functions/pec-webhook-quo.cjs, PROJECT-LOG.md
+Next steps: Push. Then prompt 19 (nav rework) can start once 18 is deployed and verified. A future estimator cleanup could drop the now-dead settings.estimator_allowed_emails row.
+Handoff to Cowork: None (migration applied and webhook edited from this session).
+Handoff to Dylan: Smoke-test list below. The webhook change deploys with the next Netlify publish; new inbound activity will match on arrival once it is live.
+
+---
+
 ## [2026-07-13 16:45 MST] Cowork: build prompts 18 and 19 written (four UI fixes, then the nav rework), split deliberately
 By: Cowork
 Changed: claude-code-prompt-18-ui-fixes.md (new), claude-code-prompt-19-nav-rework.md (new), PROJECT-LOG.md. No app code touched, no prod data touched, no migration run.

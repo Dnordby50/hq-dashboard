@@ -1,5 +1,38 @@
 [
   {
+    "id": "messages-unified-inbox",
+    "date": "2026-07-16",
+    "title": "Messages now shows calls and texts together",
+    "summary": "The Messages tab is one inbox that merges texts and call logs into a single conversation per phone number, newest first. Use the All, Texts, and Calls chips to filter. Every conversation is clickable, even a number that is not yet a customer: open it to see the full back-and-forth and reply right there. On an unknown number you can Attach to customer (which files all of that number's texts and calls under the customer you pick) or Create lead (which starts a new lead with the phone already filled in).",
+    "howto": [
+      "Open Messages and use All, Texts, or Calls to filter the list.",
+      "Click any conversation to see its full history and send a reply.",
+      "On an unknown number, click Attach to customer or Create lead."
+    ]
+  },
+  {
+    "id": "schedule-toolbar-tidy",
+    "date": "2026-07-16",
+    "title": "Cleaner Job Schedule toolbar",
+    "summary": "The Job Schedule toolbar is reorganized so the controls sit together and read left to right: the Today and back/forward arrows with the date range on the left, the Week and 3 weeks buttons right next to them, and a single + Add button on the far right. The + Add button opens a short menu with Add Job, Add Task, Holiday, and Day Off, so the four buttons that used to be spread across the bar are now in one place.",
+    "howto": [
+      "Use the arrows or Today to move the date range, then Week or 3 weeks to change the span.",
+      "Click + Add on the right for Add Job, Add Task, Holiday, or Day Off.",
+      "Click away or press Escape to close the Add menu."
+    ]
+  },
+  {
+    "id": "schedule-mobile-cards",
+    "date": "2026-07-16",
+    "title": "Next Day and Job Schedule now fit your phone",
+    "summary": "On a phone, the Next Day Schedule and the Job Schedule no longer make you scroll sideways. Next Day stacks each crew with a heading that sticks as you scroll, shows full-width job cards, and floats any not-yet-scheduled work to the top so it is the first thing you see. The Job Schedule turns the seven-column calendar into a simple top-to-bottom list of days, with Pending Jobs in a section you can tap to open or collapse. On a computer both screens look exactly as before.",
+    "howto": [
+      "Open Next Day Schedule or Job Schedule on your phone; no more sideways scrolling.",
+      "On Next Day, jobs with no slot yet sit at the top of the list.",
+      "On the Job Schedule, tap the Pending Jobs header to open or collapse it."
+    ]
+  },
+  {
     "id": "estimate-archive",
     "date": "2026-07-15",
     "title": "Archive an estimate (and restore it)",
