@@ -18194,19 +18194,29 @@ async function renderSchedule() {
       </aside>
       <main>
         <div class="pec-sched-toolbar">
+          <!-- Nav cluster: prev / today / next, the period label, then the
+               Week / 3 weeks segmented control right beside them (build 18). -->
           <button class="pec-btn sm" id="pecSchedPrev">‹</button>
           <button class="pec-btn sm" id="pecSchedToday">Today</button>
           <button class="pec-btn sm" id="pecSchedNext">›</button>
           <span class="pec-sched-period" id="pecSchedPeriod"></span>
-          <span style="margin-left:auto"></span>
-          <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden;margin-right:8px">
+          <div class="pec-sched-modeseg">
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'primary' : 'ghost'}" id="pecSchedModeWeek" style="border:none;border-radius:0">Week</button>
             <button class="pec-btn sm ${state.scheduleMode === 'week' ? 'ghost' : 'primary'}" id="pecSchedMode3" style="border:none;border-radius:0">3 weeks</button>
           </div>
-          <button class="pec-btn" id="pecSchedHoliday" style="margin-right:8px">+ Holiday</button>
-          <button class="pec-btn" id="pecSchedDayOff" style="margin-right:8px">+ Day Off</button>
-          <button class="pec-btn" id="pecSchedAddTask" style="margin-right:8px">+ Add Task</button>
-          <button class="pec-btn primary" id="pecSchedAddJob">+ Add Job</button>
+          <span style="margin-left:auto"></span>
+          <!-- The four add flows collapse into one + Add popover (Add Job is the
+               common action, so it is first). The four buttons keep their IDs so
+               the existing handlers bind unchanged. -->
+          <div class="pec-sched-addwrap">
+            <button class="pec-btn primary" id="pecSchedAddMenuBtn" aria-haspopup="true" aria-expanded="false">+ Add ▾</button>
+            <div class="pec-sched-addmenu" id="pecSchedAddMenu" role="menu" hidden>
+              <button class="pec-btn ghost" id="pecSchedAddJob" role="menuitem">Add Job</button>
+              <button class="pec-btn ghost" id="pecSchedAddTask" role="menuitem">Add Task</button>
+              <button class="pec-btn ghost" id="pecSchedHoliday" role="menuitem">Holiday</button>
+              <button class="pec-btn ghost" id="pecSchedDayOff" role="menuitem">Day Off</button>
+            </div>
+          </div>
         </div>
         <div id="pecSchedCalendar"></div>
       </main>
@@ -18229,6 +18239,31 @@ async function renderSchedule() {
   const setSchedMode = (m) => { state.scheduleMode = m; try { localStorage.setItem('pec_sched_mode', m); } catch (_) {} renderSchedule(); };
   $('pecSchedModeWeek').addEventListener('click', () => setSchedMode('week'));
   $('pecSchedMode3').addEventListener('click', () => setSchedMode('3weeks'));
+
+  // + Add popover (not a modal: a lightweight menu). Closes on outside click and
+  // Escape; the document listeners are attached only while open and removed on
+  // close, so nothing leaks across renderSchedule re-renders.
+  const addMenuBtn = $('pecSchedAddMenuBtn');
+  const addMenu = $('pecSchedAddMenu');
+  if (addMenuBtn && addMenu) {
+    const onDocClick = (e) => { if (!e.target.closest('.pec-sched-addwrap')) closeAddMenu(); };
+    const onKey = (e) => { if (e.key === 'Escape') { closeAddMenu(); addMenuBtn.focus(); } };
+    function closeAddMenu() {
+      addMenu.hidden = true;
+      addMenuBtn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('keydown', onKey);
+    }
+    function openAddMenu() {
+      addMenu.hidden = false;
+      addMenuBtn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('keydown', onKey);
+    }
+    addMenuBtn.addEventListener('click', (e) => { e.stopPropagation(); if (addMenu.hidden) openAddMenu(); else closeAddMenu(); });
+    // Any menu item click closes the menu (the item's own handler opens its modal).
+    addMenu.addEventListener('click', (e) => { if (e.target.closest('button')) closeAddMenu(); });
+  }
   root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
   // Remove a job from the Pending list only (a mistake fix). Sets
   // pending_hidden_at; the job stays on the Ordering page with all data intact.
@@ -23093,7 +23128,15 @@ if (portalToken) {
   .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
   .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
   .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
-  .pec-sched-period { font-weight:600; font-size:.95rem; min-width:200px; text-align:center }
+  /* Trimmed min-width (was 200px, which forced the toolbar to wrap early);
+     the label sizes to its content and only wraps when it truly must. */
+  .pec-sched-period { font-weight:600; font-size:.95rem; min-width:0; text-align:center; white-space:nowrap; padding:0 4px }
+  .pec-sched-modeseg { display:inline-flex; border:1px solid var(--rd-line,var(--border)); border-radius:8px; overflow:hidden }
+  /* + Add popover: anchored to its button, above the calendar. */
+  .pec-sched-addwrap { position:relative; display:inline-block }
+  .pec-sched-addmenu { position:absolute; right:0; top:calc(100% + 4px); z-index:40; min-width:150px; display:flex; flex-direction:column; gap:2px; padding:6px; background:var(--rd-card,#fff); border:1px solid var(--rd-line,var(--border)); border-radius:10px; box-shadow:0 8px 24px rgba(16,24,40,.14) }
+  .pec-sched-addmenu[hidden] { display:none }
+  .pec-sched-addmenu .pec-btn { justify-content:flex-start; text-align:left }
   .pec-cal-month { border:1px solid var(--rd-line, var(--border)); border-radius:8px; padding:8px; background:var(--rd-card, var(--s1)) }
   .pec-cal-month-head { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)) 150px; gap:1px; margin-bottom:8px; padding-left:0 }
   .pec-cal-month-head .day-h { background:var(--rd-soft, var(--s2)); font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--muted); padding:6px; text-align:center; font-weight:600 }
