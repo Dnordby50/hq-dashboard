@@ -570,7 +570,7 @@ async function loadEstimateById(id) {
 
 async function loadAreas(estimateId) {
   try {
-    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=name,sqft,sort_order,system_type_id,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed&order=sort_order.asc`);
+    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -852,6 +852,10 @@ async function ensureJobCreated(est) {
         name: a.name || 'Area',
         sqft: a.sqft != null ? a.sqft : null,
         system_type_id: a.system_type_id || null,
+        // Per-area moisture vapor barrier (build 17): carry the flag so the job
+        // costs and orders the MVB the estimate priced, and so the standalone_mvb
+        // job flag and the area flag stay consistent.
+        mvb: !!a.mvb,
         flake_product_id: a.flake_product_id || null,
         basecoat_product_id: a.basecoat_product_id || null,
         topcoat_product_id: a.topcoat_product_id || null,

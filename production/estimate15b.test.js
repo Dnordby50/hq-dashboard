@@ -487,6 +487,45 @@ await section('public page: optional add-on excluded until ticked; accept freeze
 });
 
 // ===========================================================================
+// Accept copies the estimate's areas onto the job (build 20): system, sqft,
+// order_index, AND the per-area mvb flag, so the job carries its system(s)
+// from acceptance and downstream (calendar color, materials, per-system
+// metrics) has something to attribute to. Multi-system estimates copy ALL
+// areas, one pec_prod_areas row each.
+// ===========================================================================
+await section('accept: estimate areas (incl. per-area mvb) copy onto pec_prod_areas', async () => {
+  const TOKEN = '99999999-2222-4333-8444-555555555555';
+  const db = {
+    estimates: [{
+      id: 'ma1', public_token: TOKEN, sent_at: '2026-07-14T00:00:00Z', status: 'sent',
+      deleted_at: null, mvb: 'none', flake_color: null, intake: { salesperson_name: 'Aron' },
+      system_type_id: 'sys-flake', customer_name: 'Multi Area', customer_email: 'multi@example.com',
+      customer_address: '7 Oak', estimate_number: 102040, price: 9000, brand: 'prescott-epoxy', lead_id: null,
+      scope_of_work: null,
+    }],
+    estimate_areas: [
+      { id: 'ar-g', estimate_id: 'ma1', name: 'Garage', sqft: 600, system_type_id: 'sys-flake', mvb: true, sort_order: 0 },
+      { id: 'ar-p', estimate_id: 'ma1', name: 'Patio', sqft: 200, system_type_id: 'sys-quartz', mvb: false, sort_order: 1 },
+    ],
+    estimate_line_items: [
+      { id: 'req1', estimate_id: 'ma1', label: 'Standard Flake', description: 's', qty: 1, unit_price: 9000, total: 9000, is_optional: false, selected_by_customer: true, sort_order: 0 },
+    ],
+    pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake' }, { id: 'sys-quartz', name: 'Quartz' }],
+    pec_brand_identity: [], pec_email_senders: [], customers: [], jobs: [], timeline_stages: [],
+    job_areas: [], pec_prod_jobs: [], pec_prod_areas: [], leads: [], lead_events: [],
+  };
+  global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Multi Area' }) });
+  ok(res.statusCode === 200, 'accept succeeds');
+  ok(db.pec_prod_areas.length === 2, 'BOTH estimate areas copied onto pec_prod_areas (multi-system job)');
+  const garage = db.pec_prod_areas.find((a) => a.order_index === 0);
+  const patio = db.pec_prod_areas.find((a) => a.order_index === 1);
+  ok(garage && garage.system_type_id === 'sys-flake' && Number(garage.sqft) === 600 && garage.mvb === true, 'garage: system, sqft, order_index, and mvb=true all carried');
+  ok(patio && patio.system_type_id === 'sys-quartz' && patio.mvb === false, 'patio: its OWN system copied, mvb=false');
+});
+
+// ===========================================================================
 // Estimate preview (15c): the staff preview renders the SAME page as the
 // public route (one renderer, no drift) while leaving sent_at null + status
 // unchanged and never exposing the public token.

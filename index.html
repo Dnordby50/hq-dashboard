@@ -6439,18 +6439,43 @@ function activityPhrase(row) {
   return `${esc(row.action)} ${esc(JSON.stringify(a))}`;
 }
 
-// First area's system_type_id by lowest order_index. Used to render the
-// system-derived job badge in place of the legacy jobs.type column.
-const firstAreaSystemId = (areas) => {
+// A job's system: the system_type_id whose areas cover the most TOTAL square
+// footage. A system split across two areas is summed (a Flake garage + Flake
+// patio counts as all-Flake), matching the estimator's dominantSystemId in
+// apps/estimator/src/features/estimator/EstimatorScreen.tsx. Ties, and the very
+// common all-zero-sqft case (schedule-origin "Main" areas are sqft 0), fall
+// back to the FIRST area by order_index, so a single-area or schedule-origin
+// job resolves to exactly the system the old "areas[0]" rule gave. Areas with
+// no system_type_id are ignored; returns null when no area carries a system.
+// THIS IS THE ONE RULE for "what system is this job" everywhere it is asked:
+// the badge, the calendar color band, the schedule dropdown, the per-system
+// $/sqft metrics, and the costing chip. Keeping a single answer is what makes
+// the job's color, materials, and metrics agree with the estimate it came from.
+const dominantSystemId = (areas) => {
   if (!Array.isArray(areas) || !areas.length) return null;
-  return [...areas].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))[0]?.system_type_id || null;
+  const ordered = [...areas].sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+  const sqftBySys = new Map();
+  const firstSeen = [];
+  for (const a of ordered) {
+    if (!a || !a.system_type_id) continue;
+    if (!sqftBySys.has(a.system_type_id)) firstSeen.push(a.system_type_id);
+    sqftBySys.set(a.system_type_id, (sqftBySys.get(a.system_type_id) || 0) + (Number(a.sqft) || 0));
+  }
+  // firstSeen is in order_index order, so a strict > keeps the earliest area's
+  // system on a sqft tie (including the all-zero schedule-origin case).
+  let best = null, bestSqft = -1;
+  for (const id of firstSeen) {
+    const q = sqftBySys.get(id);
+    if (q > bestSqft) { bestSqft = q; best = id; }
+  }
+  return best;
 };
 
 // Render the job "type" badge. Pass the array of job_areas joined on the row
 // plus a sysById lookup (id -> {name, color}). Falls back to a neutral dash
 // badge when the job has no areas yet.
 const systemBadgeHtml = (areas, sysById) => {
-  const sid = firstAreaSystemId(areas);
+  const sid = dominantSystemId(areas);
   const sys = sid ? sysById?.[sid] : null;
   if (!sys) return '<span class="pec-badge system empty">—</span>';
   const color = sys.color || '#818cf8';
@@ -8178,7 +8203,7 @@ async function renderJobs() {
   const archivedTotal = archivedRes.error ? 0 : (archivedRes.count ?? archivedJobs.length);
   let jobs = data || [];
   if (state.jobsFilter.company) jobs = jobs.filter(j => j.customers?.company === state.jobsFilter.company);
-  if (state.jobsFilter.system) jobs = jobs.filter(j => firstAreaSystemId(j.job_areas) === state.jobsFilter.system);
+  if (state.jobsFilter.system) jobs = jobs.filter(j => dominantSystemId(j.job_areas) === state.jobsFilter.system);
   state.jobs = jobs;
   state.jobsTotal = count || 0;
   const sysById = Object.fromEntries((sysRes.data || []).map(s => [s.id, s]));
@@ -10630,13 +10655,9 @@ async function renderMetrics() {
     dpsfJobs.push({ j, dpsf });
     const mi = monthIdx[String(j.signed_date).slice(0, 7)];
     dpsfMonthSum[mi] += dpsf; dpsfMonthN[mi]++;
-    // System attribution: the job's own system_type_id wins; else the area
-    // holding the most sqft decides.
-    let sysId = extra.system_type_id || null;
-    if (!sysId) {
-      let best = -1;
-      for (const a of (extra.job_areas || [])) { const s = Number(a.sqft) || 0; if (a.system_type_id && s > best) { best = s; sysId = a.system_type_id; } }
-    }
+    // System attribution: the job's own system_type_id wins; else the dominant
+    // system (most total sqft) decides, via the one shared dominantSystemId.
+    let sysId = extra.system_type_id || dominantSystemId(extra.job_areas || []);
     const g = (dpsfBySystem[sysNameById[sysId] || 'No system'] ||= { sum: 0, n: 0, vals: [] });
     g.sum += dpsf; g.n++; g.vals.push(dpsf);
   }
@@ -18596,8 +18617,8 @@ async function renderSchedule() {
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
   const areaSystem = (job) => {
-    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
-    return areas[0] ? sysById[areas[0].system_type_id] : null;
+    const id = dominantSystemId(state.productAreasByJob[job.id] || []);
+    return id ? sysById[id] : null;
   };
   const sumSqft = (job) => (state.productAreasByJob[job.id] || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
 
@@ -19352,7 +19373,10 @@ function openScheduleModal(jobId) {
   const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
-  const sys = areas[0] ? sysById[areas[0].system_type_id] : null;
+  // The dropdown reports the DOMINANT system (most sqft), the same rule the
+  // badge and calendar band use, so a multi-area job reads consistently.
+  const domSysId = dominantSystemId(areas);
+  const sys = domSysId ? sysById[domSysId] : null;
   const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
 
   // The picker month is the one containing the first scheduled day, else the
@@ -19483,12 +19507,14 @@ function openScheduleModal(jobId) {
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">System type</div>
         <div style="margin-top:6px">
-          <select id="schedSystem" style="width:100%">
+          <select id="schedSystem" style="width:100%" ${areas.length > 1 ? 'disabled' : ''}>
             <option value="">${sys ? 'Keep current system' : 'Pick a system'}</option>
             ${sortSystemTypes(state.systemTypes).filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}" ${sys && sys.id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
           </select>
         </div>
-        ${sys
+        ${areas.length > 1
+          ? `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">This job has ${areas.length} areas. Showing the dominant system <span class="pec-color-dot" style="background:${esc((sys && sys.color) || '#888')}"></span>${esc(sys ? sys.name : '')} (most sqft). Edit each area's system in Ordering.</div>`
+          : sys
           ? `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">Current: <span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}. Change here to add another area in Ordering later.</div>`
           : `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">Pick a system to create a default "Main" area on save so this job can carry material lines from the Unified Job page later.</div>`}
       </div>
@@ -19585,6 +19611,15 @@ function openScheduleModal(jobId) {
           revenue = (draft.revenue === '' || draft.revenue == null) ? null : Number(draft.revenue);
           if (!(revenue > 0)) return errEl.textContent = 'This job has no revenue yet. Enter it in the Revenue field above (or in Job Costing) before scheduling; scheduled jobs must carry revenue.';
           if (!(revenue <= 100000)) return errEl.textContent = 'Revenue must be $100,000 or less.';
+          // System is REQUIRED to schedule. A DripJobs job that never went
+          // through the estimator has no areas and nothing to prefill, so we
+          // force the pick at the one moment a human is already looking at the
+          // job. Blank here would quietly break the calendar color, materials,
+          // and per-system metrics downstream. The job has a system if it
+          // already carries an area (sys, the dominant) OR the user just picked
+          // one. Touch-up callbacks are exempt (no-charge warranty visits that
+          // inherit their context from the original job's notes).
+          if (!sys && !draft.system_type_id) return errEl.textContent = 'Pick a system type before scheduling. It sets the job\'s calendar color and lets materials and per-system metrics attribute this job.';
         }
         // Snapshot the job state BEFORE save so Undo (in scheduleSaveToast) can
         // revert. Capture only the fields the save handler mutates.
@@ -19664,18 +19699,20 @@ function openScheduleModal(jobId) {
             ins = await supabase.from('pec_prod_job_schedule_days').insert(rows.map(({ time_slot, ...r }) => r)); // pre-migration fallback
           }
           if (ins.error) { await revertJob(); return errEl.textContent = ins.error.message; }
-          // Persist the system pick. Two cases:
+          // Persist the system pick. Three cases:
           //  - No area yet: insert a default "Main" area so this job can carry
           //    material lines authored later from the Unified Job page. sqft=0
           //    is valid per the pec_prod_areas.sqft check (>= 0).
-          //  - Area already exists and the system changed: update it in place.
-          //    The old code only handled the first case, so re-picking the
-          //    system on a job that already had an area was silently dropped
-          //    and looked like "the change didn't save" until a page refresh.
-          // WHY safe to overwrite: schedule-origin areas are sqft 0 with no
-          // recipe picks. An area that already carries Ordering picks/material
-          // lines would keep those tied to the old system -- acceptable here
-          // since the schedule only ever creates the bare "Main" area.
+          //  - Exactly ONE (schedule-origin) area and the system changed: update
+          //    it in place, so re-picking the system actually saves.
+          //  - MULTIPLE areas (an estimator job): the dropdown is display-only
+          //    (it shows the DOMINANT system). Systems on a multi-area job are
+          //    edited per area in Ordering, so the schedule NEVER writes here.
+          //    Without this guard, a seeded dominant that is not areas[0] would
+          //    clobber areas[0]'s system on a plain Save.
+          // WHY safe to overwrite the single case: schedule-origin areas are
+          // sqft 0 with no recipe picks. The schedule only ever creates the bare
+          // "Main" area, so there are no Ordering picks tied to the old system.
           if (draft.system_type_id) {
             if (!areas.length) {
               const areaIns = await supabase.from('pec_prod_areas').insert({
@@ -19686,7 +19723,7 @@ function openScheduleModal(jobId) {
                 order_index: 0,
               });
               if (areaIns.error) return errEl.textContent = 'Area create failed: ' + areaIns.error.message;
-            } else if (areas[0].system_type_id !== draft.system_type_id) {
+            } else if (areas.length === 1 && areas[0].system_type_id !== draft.system_type_id) {
               const areaUpd = await supabase.from('pec_prod_areas')
                 .update({ system_type_id: draft.system_type_id })
                 .eq('id', areas[0].id);
@@ -19911,6 +19948,12 @@ function openAddJobModal() {
     // the existing validation + insert keep working unchanged. Seed two blank rows.
     lineItems: [{ name: '', price: '' }, { name: '', price: '' }],
     crew_id: '',
+    // System is REQUIRED for a new job (and for scheduling an existing job that
+    // has no area yet): it is written as the job's default "Main" pec_prod_area
+    // on save, so the job carries its calendar color, materials, and metrics
+    // from the moment it lands. Hidden when the linked existing job already has
+    // areas (its system is the newer truth and is never overwritten).
+    system_type_id: '',
     selectedDates: [],
     pickerMonth: new Date(today.getFullYear(), today.getMonth(), 1),
     scope: '',
@@ -20026,6 +20069,17 @@ function openAddJobModal() {
         </div>
       </div>
 
+      <div class="pec-card" id="addJobSystemCard" style="padding:14px;margin:0 0 12px">
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">System type <span style="color:var(--accent,#D8531C)">*</span></div>
+        <div class="pec-field">
+          <select id="addJobSystem">
+            <option value="">Pick a system…</option>
+            ${sortSystemTypes(state.systemTypes).filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div id="addJobSystemNote" style="font-size:.7rem;color:var(--muted);margin-top:6px">Sets the job's calendar color and lets materials and per-system metrics attribute this job. A default "Main" area is created on save.</div>
+      </div>
+
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Crew</div>
         <div class="pec-field">
@@ -20110,8 +20164,23 @@ function openAddJobModal() {
       const quoteEl = modal.querySelector('#addJobQuote');
       const scopeEl = modal.querySelector('#addJobScope');
       const crewEl = modal.querySelector('#addJobCrew');
+      const systemCard = modal.querySelector('#addJobSystemCard');
+      const systemSel = modal.querySelector('#addJobSystem');
+      const systemNote = modal.querySelector('#addJobSystemNote');
       const errEl = modal.querySelector('#addJobError');
       const dupWarnEl = modal.querySelector('#addJobDupWarn');
+      // The linked existing job's areas, if any. A job that already carries a
+      // system keeps it (never overwritten), so the picker is hidden for it;
+      // an area-less existing job (a DripJobs import) needs the pick, same as a
+      // brand-new job. Shared by the card toggle and the save-time validation.
+      const addJobExistingAreas = () => draft.existing_job_id ? (state.productAreasByJob[draft.existing_job_id] || []) : [];
+      const updateSystemCard = () => {
+        if (addJobExistingAreas().length) { systemCard.style.display = 'none'; return; }
+        systemCard.style.display = '';
+        systemNote.textContent = draft.existing_job_id
+          ? 'This job has no system yet. Pick one so it carries its calendar color, materials, and metrics. A default "Main" area is created on save.'
+          : 'Sets the job\'s calendar color and lets materials and per-system metrics attribute this job. A default "Main" area is created on save.';
+      };
       // One explicit "Add anyway" arms this for the CURRENT customer pick
       // only; changing the customer re-arms the duplicate guard below.
       let dupOverride = false;
@@ -20215,6 +20284,7 @@ function openAddJobModal() {
           linkedNote.style.display = 'none';
           reschedPriceBox.style.display = 'none';
           draft.reschedule_needs_revenue = false;
+          updateSystemCard();
           return;
         }
         const j = (state.prodJobs || []).find(j => j.id === id);
@@ -20240,6 +20310,7 @@ function openAddJobModal() {
         draft.reschedule_needs_revenue = !hasRev;
         reschedPriceBox.style.display = hasRev ? 'none' : '';
         if (!hasRev) { draft.revenue = ''; reschedPriceEl.value = ''; }
+        updateSystemCard();
       };
 
       queryEl.addEventListener('input', e => { draft.customer_query = e.target.value; renderResults(); });
@@ -20250,6 +20321,8 @@ function openAddJobModal() {
       quoteEl.addEventListener('input', e => { draft.quote_number = e.target.value; });
       scopeEl.addEventListener('input', e => { draft.scope = e.target.value; });
       crewEl.addEventListener('change', e => { draft.crew_id = e.target.value; });
+      systemSel.addEventListener('change', e => { draft.system_type_id = e.target.value; });
+      updateSystemCard();
 
       modal.querySelector('#addJobSave').addEventListener('click', async () => {
         errEl.textContent = '';
@@ -20270,6 +20343,11 @@ function openAddJobModal() {
         } else if (draft.reschedule_needs_revenue) {
           if (!Number.isFinite(revenueNum) || revenueNum <= 0) return errEl.textContent = 'This job has no price yet. Enter the job total before scheduling.';
         }
+        // System is REQUIRED unless the linked existing job already carries one
+        // (which is never overwritten). Same gate as the schedule modal: no job
+        // reaches the calendar without a system to color, cost, and attribute it.
+        const hasExistingAreas = addJobExistingAreas().length > 0;
+        if (!hasExistingAreas && !draft.system_type_id) return errEl.textContent = 'Pick a system type. Scheduling needs a system so the job carries its calendar color, materials, and per-system metrics.';
 
         // DUPLICATE GUARD (the Steve Bruns lesson, merged by Cowork
         // 2026-07-02): a new manual job for a customer name that already has
@@ -20389,6 +20467,28 @@ function openAddJobModal() {
               try { await withFreshWrite(() => supabase.from('pec_prod_jobs').delete().eq('id', jobId), { label: 'addjob-rollback' }); } catch (_) {}
             }
             throw dayIns.error;
+          }
+
+          // Default "Main" area from the picked system, mirroring the schedule
+          // modal (index.html openScheduleModal): sqft 0 is valid per the
+          // pec_prod_areas.sqft check (>= 0). Only when the job has no area yet
+          // (new job, or an area-less existing job being scheduled); an existing
+          // area is the newer truth and is never overwritten. Best-effort: the
+          // job + days already saved, so a failure here is recoverable from the
+          // schedule modal rather than a reason to fail the whole save.
+          if (draft.system_type_id && !hasExistingAreas) {
+            try {
+              const areaIns = await supabase.from('pec_prod_areas').insert({
+                job_id: jobId,
+                system_type_id: draft.system_type_id,
+                name: 'Main',
+                sqft: 0,
+                order_index: 0,
+              });
+              if (areaIns.error) console.error('[pec] add job: default area insert failed (non-fatal):', areaIns.error);
+            } catch (areaErr) {
+              console.error('[pec] add job: default area insert threw (non-fatal):', areaErr);
+            }
           }
 
           // Calendar -> CRM status. No-op for the new manual-job path (deal id
@@ -22021,8 +22121,7 @@ async function renderUnifiedJob(jobId) {
             // are included (it is what the job sold for). System = dominant area.
             const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
             const rev = Number(job.revenue) || 0;
-            let domSys = null, best = -1;
-            for (const a of areas) { const q = Number(a.sqft) || 0; if (a.system_type_id && q > best) { best = q; domSys = a.system_type_id; } }
+            const domSys = dominantSystemId(areas);
             const domName = domSys ? ((state.systemTypes || []).find(s => s.id === domSys) || {}).name || '' : '';
             const val = totalSqft > 0 && rev > 0
               ? `$${(rev / totalSqft).toFixed(2)}<span style="color:var(--muted);font-size:.65rem"> · ${Math.round(totalSqft).toLocaleString()} sqft${domName ? ' · ' + esc(domName) : ''}</span>`
@@ -22659,8 +22758,8 @@ async function renderJobCosting() {
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
   const costByJob = Object.fromEntries(state.costing.map(c => [c.job_id, c]));
   const areaSystem = (job) => {
-    const areas = (state.productAreasByJob[job.id] || []).slice().sort((a,b) => (a.order_index||0) - (b.order_index||0));
-    if (areas[0]) return sysById[areas[0].system_type_id];
+    const id = dominantSystemId(state.productAreasByJob[job.id] || []);
+    if (id) return sysById[id];
     // Same CRM-card fallback as Completed Job Costing for bridged jobs with an
     // empty pec_prod_areas stub, so the System column never shows a false "—".
     const fid = (state.systemIdByJob || {})[job.id];
