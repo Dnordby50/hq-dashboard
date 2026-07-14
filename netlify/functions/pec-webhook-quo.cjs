@@ -110,19 +110,18 @@ function parseInbound(payload) {
   };
 }
 
-// Match a customer by phone. Customers store phone in varied formats, so we
-// match on the normalized E.164 AND the bare 10-digit tail as a fallback,
-// re-normalizing candidates so a partial digit-run can't false-match. Shared
-// by the message path and the call path so both attribute identically.
+// Match a customer by phone on the INDEXED normalized column (customers.
+// phone_norm, the 2026-07-16 migration): strip non-digits, take the last 10
+// digits, look it up. Format-independent (the old `phone LIKE %tail%` missed a
+// customer stored as "(928) 555-1234"). Returns null when zero OR more than one
+// customer owns the number (ambiguous is a manual attach decision, never a
+// guess). Shared by the message and call paths so both attribute identically.
 async function matchCustomerByPhone(e164) {
   if (!e164) return null;
-  const exact = await sb('GET', `/customers?phone=eq.${encodeURIComponent(e164)}&select=id,sms_opt_out&limit=1`);
-  if (Array.isArray(exact) && exact[0]) return exact[0];
   const tail = e164.replace(/\D/g, '').slice(-10);
-  // PostgREST: phone contains the 10-digit tail (handles (928) 555-1234 etc.)
-  const fuzzy = await sb('GET', `/customers?phone=like.*${encodeURIComponent(tail)}*&select=id,phone,sms_opt_out&limit=2`);
-  if (Array.isArray(fuzzy)) return fuzzy.find(c => toE164(c.phone) === e164) || null;
-  return null;
+  if (tail.length < 10) return null;
+  const rows = await sb('GET', `/customers?phone_norm=eq.${encodeURIComponent(tail)}&select=id,sms_opt_out&limit=2`);
+  return (Array.isArray(rows) && rows.length === 1) ? rows[0] : null;
 }
 
 // Brand from OUR workspace number (the pec_sms_senders map, same as texting).
