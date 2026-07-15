@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { splitLegacyAddress, splitLegacyName, type CustomerForm } from './customer';
 
 // Edit-in-place loader: the estimate page's Edit button reopens the estimator
 // as ?estimate_id=<uuid>, and this pulls the row + its areas + its line items
@@ -29,7 +30,10 @@ export type LoadedEstimate = {
   flakeColor: string | null;
   leadId: string | null;
   createdBy: string | null;
-  customer: { name: string | null; phone: string | null; email: string | null; address: string | null };
+  // Ready-to-edit split shape (build 23): mapped from the split columns when
+  // present, else derived from the combined customer_name/customer_address so
+  // a legacy row still fills the form.
+  customer: CustomerForm;
   intake: Record<string, unknown>;
   pricingSnapshot: Record<string, unknown> | null;
   // Non-null means a human edited the scope text: a re-save must MARK IT STALE
@@ -42,11 +46,47 @@ export type LoadedEstimate = {
   addonLines: LoadedAddonLine[];
 };
 
+// Split columns win; a row without them (saved before the migration/backfill)
+// falls back to the same naive split the SQL backfill uses, so the form is
+// never empty for a named customer. The toggle restores from the stored
+// boolean, with "has a company" as the tiebreaker so the two never disagree.
+function loadCustomer(e: Record<string, unknown>): CustomerForm {
+  const s = (k: string) => {
+    const v = e[k];
+    return v == null ? '' : String(v);
+  };
+  const legacyName = splitLegacyName((e.customer_name as string | null) ?? null);
+  const hasSplitName = !!(s('customer_first_name') || s('customer_last_name') || s('customer_company'));
+  const hasSplitAddress = !!(
+    s('customer_address1') || s('customer_address2') || s('customer_city') || s('customer_state') || s('customer_zip')
+  );
+  const company = s('customer_company');
+  return {
+    isCommercial: e.customer_is_commercial === true || company.trim() !== '',
+    firstName: hasSplitName ? s('customer_first_name') : legacyName.firstName,
+    lastName: hasSplitName ? s('customer_last_name') : legacyName.lastName,
+    company,
+    phone: s('customer_phone'),
+    email: s('customer_email'),
+    address1: hasSplitAddress
+      ? s('customer_address1')
+      : splitLegacyAddress((e.customer_address as string | null) ?? null).address1,
+    address2: s('customer_address2'),
+    city: s('customer_city'),
+    state: s('customer_state'),
+    zip: s('customer_zip'),
+  };
+}
+
 export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | null> {
   const [estRes, areasRes, linesRes] = await Promise.all([
     supabase
       .from('estimates')
-      .select('id,estimate_number,status,system_type_id,mvb,flake_color,lead_id,created_by,customer_name,customer_phone,customer_email,customer_address,intake,pricing_snapshot,scope_edited_at,scope_of_work,scope_answers,price_override_reason')
+      // select('*') on purpose (build 23): the split customer columns arrive
+      // by migration, and an explicit list would 400 the whole edit load on a
+      // database the migration has not reached yet. Same forward-compat
+      // pattern the dashboard uses for pec_prod_job_bonuses.
+      .select('*')
       .eq('id', id)
       .is('deleted_at', null)
       .maybeSingle(),
@@ -99,12 +139,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     flakeColor: (e.flake_color as string | null) ?? null,
     leadId: (e.lead_id as string | null) ?? null,
     createdBy: (e.created_by as string | null) ?? null,
-    customer: {
-      name: (e.customer_name as string | null) ?? null,
-      phone: (e.customer_phone as string | null) ?? null,
-      email: (e.customer_email as string | null) ?? null,
-      address: (e.customer_address as string | null) ?? null,
-    },
+    customer: loadCustomer(e),
     intake: (e.intake as Record<string, unknown>) ?? {},
     pricingSnapshot: (e.pricing_snapshot as Record<string, unknown> | null) ?? null,
     scopeEditedAt: (e.scope_edited_at as string | null) ?? null,

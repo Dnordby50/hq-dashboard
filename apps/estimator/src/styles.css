@@ -177,6 +177,61 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 .cust-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
 .cust-grid .field { margin-bottom: 0; }
 @media (max-width: 520px) { .cust-grid { grid-template-columns: 1fr; } }
+/* Company / Address 1 / Address 2 span the full card width. */
+.cust-wide { grid-column: 1 / -1; }
+/* City + State + Zip share one row; state and zip are short. */
+.cust-csz { grid-column: 1 / -1; display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 0.6rem; }
+
+/* Residential / Commercial segmented toggle (build 23). */
+.cust-type { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.cust-type button {
+  background: #fff;
+  border: none;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+}
+.cust-type button.on { background: var(--accent); color: #fff; }
+
+/* Address 1 autocomplete: plain input + an absolutely positioned pick list.
+   The wrapper lives inside the .field flex column, so the input keeps the
+   exact styling of its siblings. */
+.addr-ac { position: relative; display: flex; flex-direction: column; }
+.addr-ac input { width: 100%; }
+.addr-ac-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin-top: 2px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
+  overflow: hidden;
+}
+.addr-ac-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+.addr-ac-item:last-child { border-bottom: none; }
+.addr-ac-item:hover { background: #f1f5f9; }
+.addr-ac-main { font-weight: 600; }
+.addr-ac-sec { font-size: 0.75rem; color: var(--muted); }
 
 /* MVB tri-state control: off / add-on / standalone. */
 .mvb-seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 0.5rem; overflow: hidden; }

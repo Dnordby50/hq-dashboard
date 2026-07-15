@@ -2,6 +2,7 @@ import { idbPut } from './idb';
 import { enqueue } from './outbox';
 import { uuid } from './uuid';
 import type { PricingResult } from '../lib/calculator';
+import { composeCustomerAddress, composeCustomerName, type CustomerForm } from '../lib/customer';
 
 // One per-area material/answer row (mirrors public.estimate_area_materials).
 export type AreaMaterialInput = {
@@ -74,7 +75,10 @@ export type SaveEstimateArgs = {
   systemTypeId: string;
   salesperson: { id: string; name: string; commission_pct: number };
   intake: Record<string, unknown>; // work-order fields
-  customer: { name: string | null; phone: string | null; email: string | null; address: string | null };
+  // Split shape (build 23). The combined customer_name / customer_address
+  // columns are composed HERE on every save (including offline ones), so the
+  // safety-net values always ride the outbox with the split fields.
+  customer: CustomerForm;
   flakeColor: string | null;
   // Rep's answers to the templates' BLANK placeholders, keyed by context hash
   // (15c). The scope writer substitutes these before the model call.
@@ -127,10 +131,23 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       salesperson_id: args.salesperson.id,
       salesperson_name: args.salesperson.name,
     },
-    customer_name: args.customer.name,
-    customer_phone: args.customer.phone,
-    customer_email: args.customer.email,
-    customer_address: args.customer.address,
+    // Combined columns first (composed safety net), then the split truth.
+    // customer_is_commercial is always a real boolean from the toggle; the
+    // backfill leaves it null, which is how backfilled rows stay tellable
+    // apart from rows a rep actually saved.
+    customer_name: composeCustomerName(args.customer),
+    customer_phone: args.customer.phone.trim() || null,
+    customer_email: args.customer.email.trim() || null,
+    customer_address: composeCustomerAddress(args.customer),
+    customer_first_name: args.customer.firstName.trim() || null,
+    customer_last_name: args.customer.lastName.trim() || null,
+    customer_company: args.customer.company.trim() || null,
+    customer_is_commercial: args.customer.isCommercial || !!args.customer.company.trim(),
+    customer_address1: args.customer.address1.trim() || null,
+    customer_address2: args.customer.address2.trim() || null,
+    customer_city: args.customer.city.trim() || null,
+    customer_state: args.customer.state.trim() || null,
+    customer_zip: args.customer.zip.trim() || null,
     // estimates.mvb is FROZEN (build 17): MVB is per-area now. Always 'none'.
     mvb: 'none',
     flake_color: args.flakeColor,

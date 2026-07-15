@@ -21,6 +21,8 @@ import {
   type LineItemInput,
 } from '../../offline/estimates';
 import type { LeadLink } from '../../lib/lead';
+import { emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/customer';
+import AddressAutocomplete from './AddressAutocomplete';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps } from '../../offline/outbox';
@@ -175,12 +177,25 @@ export default function EstimatorScreen({
     if (fromEdit && salespeople.some((s) => s.id === fromEdit)) return fromEdit;
     return salespeople[0]?.id ?? '';
   });
-  const [customer, setCustomer] = useState(() => ({
-    name: editing?.customer.name ?? leadLink?.name ?? '',
-    phone: editing?.customer.phone ?? leadLink?.phone ?? '',
-    email: editing?.customer.email ?? leadLink?.email ?? '',
-    address: editing?.customer.address ?? leadLink?.address ?? '',
-  }));
+  // Split customer shape (build 23): Residential/Commercial toggle, split
+  // name / company, split address. Prefill priority: the estimate being
+  // edited (estimateLoad already mapped split columns, with legacy fallback),
+  // then the lead link (leads store the address split already; full_name gets
+  // the same naive first/rest split the backfill uses).
+  const [customer, setCustomer] = useState<CustomerForm>(() => {
+    if (editing) return editing.customer;
+    if (!leadLink) return emptyCustomer;
+    return {
+      ...emptyCustomer,
+      ...splitLegacyName(leadLink.name),
+      phone: leadLink.phone ?? '',
+      email: leadLink.email ?? '',
+      address1: leadLink.address1 ?? '',
+      city: leadLink.city ?? '',
+      state: leadLink.state ?? '',
+      zip: leadLink.zip ?? '',
+    };
+  });
   const [intake, setIntake] = useState<Intake>(() =>
     editing ? intakeFromLoaded(editing.intake) : emptyIntake,
   );
@@ -626,7 +641,11 @@ export default function EstimatorScreen({
   const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
   // An override (system sell price moved off the engine price) needs a reason.
   const overrideNeedsReason = discounted && !overrideReason.trim();
-  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && !overrideNeedsReason && saveState !== 'saving';
+  // Identity gate (build 23): a commercial estimate needs its company, a
+  // residential one a last name. Deliberately nothing else; the address is
+  // never a gate (a rep standing in the driveway knows where they are).
+  const customerIncomplete = customer.isCommercial ? !customer.company.trim() : !customer.lastName.trim();
+  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && !overrideNeedsReason && !customerIncomplete && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
@@ -854,12 +873,10 @@ export default function EstimatorScreen({
         systemTypeId: dominantSystemId,
         salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
         intake: intakePayload,
-        customer: {
-          name: customer.name.trim() || null,
-          phone: customer.phone.trim() || null,
-          email: customer.email.trim() || null,
-          address: customer.address.trim() || null,
-        },
+        // Split shape straight through; saveEstimateOffline trims, composes
+        // the combined customer_name/customer_address safety nets, and writes
+        // both alongside the split columns.
+        customer,
         flakeColor: editing?.flakeColor ?? flakeColorFromPicks,
         scopeAnswers,
         lineItems,
@@ -904,7 +921,16 @@ export default function EstimatorScreen({
   }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
-  const setCustomerField = (k: keyof typeof customer, v: string) => setCustomer((p) => ({ ...p, [k]: v }));
+  const setCustomerField = (k: Exclude<keyof CustomerForm, 'isCommercial'>, v: string) =>
+    setCustomer((p) => ({ ...p, [k]: v }));
+  // "Commercial" IS "has a company name" (Dylan's definition), so the toggle
+  // and the field must never disagree: switching to Residential clears the
+  // company (visible and retypeable), and the company input only exists in
+  // the Commercial view, so a non-empty company always means commercial.
+  const setCommercial = (isCommercial: boolean) =>
+    setCustomer((p) =>
+      p.isCommercial === isCommercial ? p : { ...p, isCommercial, company: isCommercial ? p.company : '' },
+    );
 
   return (
     <div className="screen">
@@ -950,12 +976,58 @@ export default function EstimatorScreen({
       <main className="cols">
         <div className="left">
           <section className="card inputs">
-            <div className="areas-head"><span>Customer</span></div>
+            <div className="areas-head">
+              <span>Customer</span>
+              {/* Residential = first + last name; Commercial = company
+                  (required) + optional contact person. One fact, two views. */}
+              <div className="cust-type" role="group" aria-label="Customer type">
+                <button type="button" className={customer.isCommercial ? '' : 'on'} onClick={() => setCommercial(false)}>Residential</button>
+                <button type="button" className={customer.isCommercial ? 'on' : ''} onClick={() => setCommercial(true)}>Commercial</button>
+              </div>
+            </div>
             <div className="cust-grid">
-              <label className="field"><span>Name</span><input value={customer.name} onChange={(e) => setCustomerField('name', e.target.value)} placeholder="Customer name" /></label>
+              {customer.isCommercial ? (
+                <>
+                  <label className="field cust-wide"><span>Company name{customer.company.trim() ? '' : ' (required)'}</span><input value={customer.company} onChange={(e) => setCustomerField('company', e.target.value)} placeholder="Business name" /></label>
+                  <label className="field"><span>Contact first name</span><input value={customer.firstName} onChange={(e) => setCustomerField('firstName', e.target.value)} placeholder="Optional" /></label>
+                  <label className="field"><span>Contact last name</span><input value={customer.lastName} onChange={(e) => setCustomerField('lastName', e.target.value)} placeholder="Optional" /></label>
+                </>
+              ) : (
+                <>
+                  <label className="field"><span>First name</span><input value={customer.firstName} onChange={(e) => setCustomerField('firstName', e.target.value)} /></label>
+                  <label className="field"><span>Last name{customer.lastName.trim() ? '' : ' (required)'}</span><input value={customer.lastName} onChange={(e) => setCustomerField('lastName', e.target.value)} /></label>
+                </>
+              )}
               <label className="field"><span>Phone</span><input value={customer.phone} onChange={(e) => setCustomerField('phone', e.target.value)} inputMode="tel" /></label>
               <label className="field"><span>Email</span><input value={customer.email} onChange={(e) => setCustomerField('email', e.target.value)} inputMode="email" /></label>
-              <label className="field"><span>Address</span><input value={customer.address} onChange={(e) => setCustomerField('address', e.target.value)} /></label>
+              <label className="field cust-wide"><span>Address 1</span>
+                <AddressAutocomplete
+                  value={customer.address1}
+                  onChange={(v) => setCustomerField('address1', v)}
+                  // A pick replaces the whole location: city/state/zip take the
+                  // resolved values outright (stale leftovers from a previous
+                  // address would be worse than a blank), while Address 2 only
+                  // updates when the pick itself carries a unit, so a typed
+                  // suite number survives. Everything stays hand-editable.
+                  onResolve={(r) =>
+                    setCustomer((p) => ({
+                      ...p,
+                      address1: r.address1 || p.address1,
+                      address2: r.address2 || p.address2,
+                      city: r.city,
+                      state: r.state,
+                      zip: r.zip,
+                    }))
+                  }
+                  placeholder="Street address"
+                />
+              </label>
+              <label className="field cust-wide"><span>Address 2</span><input value={customer.address2} onChange={(e) => setCustomerField('address2', e.target.value)} placeholder="Suite / unit (optional)" /></label>
+              <div className="cust-csz">
+                <label className="field"><span>City</span><input value={customer.city} onChange={(e) => setCustomerField('city', e.target.value)} /></label>
+                <label className="field"><span>State</span><input value={customer.state} onChange={(e) => setCustomerField('state', e.target.value)} placeholder="AZ" /></label>
+                <label className="field"><span>Zip</span><input value={customer.zip} onChange={(e) => setCustomerField('zip', e.target.value)} inputMode="numeric" /></label>
+              </div>
             </div>
           </section>
 
@@ -1197,6 +1269,9 @@ export default function EstimatorScreen({
                   <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
                 )}
                 <p className="calcver">engine {pricing.calcVersion}</p>
+                {customerIncomplete && (
+                  <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
+                )}
                 <div className="save-row">
                   <button type="button" className="save" disabled={!canSave} onClick={onSave}>
                     {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}

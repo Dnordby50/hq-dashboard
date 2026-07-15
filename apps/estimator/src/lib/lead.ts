@@ -12,12 +12,18 @@ import { supabase } from './supabase';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Address stays SPLIT here (build 23): leads already store address/city/
+// state/zip separately, and the estimator's customer form is split now too,
+// so pre-joining would only force a lossy re-parse on the other side.
 export type LeadLink = {
   id: string;
   name: string | null;
   phone: string | null;
   email: string | null;
-  address: string | null;
+  address1: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
 };
 
 export function leadIdFromUrl(search: string = window.location.search): string | null {
@@ -48,7 +54,7 @@ export function estimateIdFromUrl(search: string = window.location.search): stri
 // estimate still attaches to the lead.
 export async function loadLeadLink(id: string | null): Promise<LeadLink | null> {
   if (!id) return null;
-  const empty: LeadLink = { id, name: null, phone: null, email: null, address: null };
+  const empty: LeadLink = { id, name: null, phone: null, email: null, address1: null, city: null, state: null, zip: null };
   try {
     const { data, error } = await supabase
       .from('leads')
@@ -65,7 +71,10 @@ export async function loadLeadLink(id: string | null): Promise<LeadLink | null> 
       name: d.full_name ?? null,
       phone: d.phone ?? null,
       email: d.email ?? null,
-      address: [d.address, d.city, d.state, d.zip].filter(Boolean).join(', ') || null,
+      address1: d.address ?? null,
+      city: d.city ?? null,
+      state: d.state ?? null,
+      zip: d.zip ?? null,
     };
   } catch {
     return empty;
