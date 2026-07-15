@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-13 19:40 MST] Cowork: build prompt 21 written (rail flyout z-index, pending job card modal, pending panel height)
+By: Cowork
+Changed: claude-code-prompt-21-schedule-pending.md (new), PROJECT-LOG.md. No app code touched, no prod data touched.
+
+Dylan brought three Job Schedule page issues. Ran a 10-question dig. Recon nailed the first one to an exact root cause rather than a guess.
+
+RECON:
+1. Z-INDEX: the build-19 rail flyout (.rd-crm-flyout, z-index:3000) renders BEHIND the pending cards. Cause is NOT a low z-index. #rdSidebar is position:sticky (index.html ~793) with no z-index, and sticky always creates a stacking context, so the flyout's 3000 is TRAPPED inside the sidebar and only outranks the sidebar's own children. The sidebar precedes #rdMain in the DOM, so any positioned element in main paints over the whole sidebar subtree; each pending card carries an inline position:relative (~18654), which is exactly that. Calendar event bars (z-index:2) and holidays (z-index:3) are the same latent hazard. The NUMBER is correct; the trapped context is the bug.
+2. Pending cards (~18654-18664) show the customer name as plain non-clickable text; only + Schedule and the x remove button do anything.
+3. Height: .pec-sched-grid has align-items:start (~23817) which sizes each column to its content, and .pec-sched-pending has a hard max-height:75vh (~23831) that is viewport-relative and unrelated to the calendar. Together they stop the panel from ever relating to the calendar height.
+
+DYLAN'S DECISIONS:
+1. Fix the z-index by PORTALING the flyout to document.body (it is already position:fixed), NOT by giving the sidebar a z-index. Chosen deliberately: portaling fixes the whole CLASS of bug (any positioned element in main) rather than this one instance, and hoisting the entire sidebar subtree is a bigger blast radius than the flyout needs. Ship this FIRST, own commit, because the flyout is the primary nav and this is a live defect.
+2. Clicking a pending card opens a NEW read-only job card modal, not a reuse of openScheduleModal (that is the scheduler; a quick look should not be one input from rescheduling) or openCostingDetail (editable, admin-shaped). Whole card clickable, + Schedule and x keep their own handlers with stopPropagation. Card shows: system + sqft + est hours, scope/notes (not on the card today), sales team + status + reschedule history, plus the existing identity block. A + Schedule button on the card preserves the path to the scheduler.
+3. Panel height reconciled to ONE rule from his two answers (hug when short, match-and-scroll when tall): max-height = calendar height, natural height = content. Delivered via the grid stretch + flex-1/min-height:0/overflow-y:auto pattern, CSS-only preferred, ResizeObserver only as a fallback if pure CSS cannot do "cap at calendar, hug when short". Desktop two-column only; both mobile collapses untouched.
+
+WHY THIS SHAPE: item 1 is a real bug on the critical nav path and is tiny, so it ships first and alone to be bisectable. Items 2 and 3 are pending-panel enhancements that can iterate without holding up the nav fix. Kept as prompt 21, separate from prompt 20 (system-on-jobs), so a CSS/UI regression here is not tangled with that data work.
+
+Files touched: claude-code-prompt-21-schedule-pending.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 21 (Dylan has it).
+Handoff to Cowork: None.
+Handoff to Dylan:
+1. Hand claude-code-prompt-21-schedule-pending.md to Claude Code. It is self-contained.
+2. Expect three commits: the flyout portal first (shippable on its own), then the pending card modal, then the panel height.
+
 ## [2026-07-14 17:30 MST] Build 20: system flows onto the job, schedule picker defaults to the current month, weekly revenue shows its math
 By: Claude Code
 Changed: Delivered all three items of build prompt 20. One commit per item (33c1307 item 1, 80bc65e item 2, 9d4c636 item 3), plus this docs commit. Touched index.html, netlify/functions/pec-public-estimate.cjs, production/estimate15b.test.js, help/whats-new.json.
