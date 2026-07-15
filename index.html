@@ -892,8 +892,10 @@ body { padding: 18px; min-height: 100vh; }
 .rd-crm-gbtn.active { background: var(--rd-accent); color: var(--rd-accent-ink); box-shadow: 0 6px 14px var(--rd-accent-ring); }
 .rd-crm-gbtn.active .rd-crm-caret { color: var(--rd-accent-ink); }
 .rd-crm-gbtn.active::before { content: ""; position: absolute; left: -16px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--rd-accent); }
-/* Flyout: position:fixed on desktop so it escapes #rdSidebar's overflow:hidden;
-   JS sets left/top from the group button's rect. */
+/* Flyout: position:fixed on desktop and PORTALED to <body> on open (see
+   railOpenGroup) so it escapes both #rdSidebar's overflow:hidden AND the sidebar's
+   sticky stacking context that would otherwise trap its z-index; JS sets left/top
+   from the group button's rect. */
 .rd-crm-flyout {
   position: fixed; z-index: 3000; min-width: 214px;
   background: var(--rd-shell, #fff); border: 1px solid var(--rd-line);
@@ -5146,12 +5148,32 @@ if (document.readyState === 'loading') {
         g.fly.hidden = true;
         g.gbtn.setAttribute('aria-expanded', 'false');
         g.wrap.classList.remove('rd-crm-gwrap--open');
+        // Un-portal on close: a desktop flyout portaled to <body> (see
+        // railOpenGroup) returns to its group wrapper, so no detached node is ever
+        // left orphaned on <body> and the mobile inline-accordion (which needs the
+        // flyout inside its wrap) keeps working. Idempotent: no-op if already home.
+        if (g.fly.parentElement !== g.wrap) g.wrap.appendChild(g.fly);
       });
       railOpen = null;
     }
     function railOpenGroup(g) {
       if (railCloseTimer) { clearTimeout(railCloseTimer); railCloseTimer = null; }
       if (railOpen && railOpen !== g) railCloseAll();
+      // PORTAL the flyout out of the sidebar on desktop. #rdSidebar is
+      // position:sticky (a stacking context) with no z-index, which TRAPPED the
+      // flyout's z-index:3000 inside the sidebar subtree, so any positioned element
+      // in #rdMain (the schedule pending cards carry inline position:relative, the
+      // calendar event bars z-index:2, holidays z-index:3) painted over it. As a
+      // position:fixed element on <body> the z-index competes at the ROOT, above
+      // everything in main and below modals (10000). Its coordinates are already
+      // viewport-relative (railPosition reads getBoundingClientRect), so the move
+      // does not shift it. Mobile keeps the flyout inline in its wrap so the
+      // static accordion still renders under the group icon.
+      if (railDesktop()) {
+        if (g.fly.parentElement !== document.body) document.body.appendChild(g.fly);
+      } else if (g.fly.parentElement !== g.wrap) {
+        g.wrap.appendChild(g.fly);
+      }
       g.fly.hidden = false;
       g.gbtn.setAttribute('aria-expanded', 'true');
       g.wrap.classList.add('rd-crm-gwrap--open');
