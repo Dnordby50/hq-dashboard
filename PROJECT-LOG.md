@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-14 21:40 MST] Cowork: build prompt 22 written (bonus approval dialog, send-back notes)
+By: Cowork
+Changed: claude-code-prompt-22-bonus-approval-sendback.md (new), PROJECT-LOG.md. No app code touched, no prod data touched, no migration run.
+
+Dylan brought two Job Costing items. Ran a 12-question dig. Recon first, so the prompt builds on what exists instead of duplicating it.
+
+RECON (the headline: MOST of feature 1 already exists):
+1. The crew bonus already AUTO-CALCULATES (computeCrewBonus, index.html ~21294) and renders a per-member "Bonus to pay (crew pool)" box on the costing detail (~22004, ~22172-22299). On Finalize (~22897-22937) those exact amounts commit to the pec_prod_job_bonuses ledger. So "auto calculate" and "suggest" were already shipped.
+2. The Bonus Report (~13909) already MIRRORS Commission: a "Pending payout" list with checkboxes and a "Mark selected paid" bulk button (~14066-14103) that pays multiple jobs/members at once, plus pay-period range and payroll batches. Finalized bonuses land there automatically. Dylan's ask for "a pending bonuses area, pay multiple jobs at once, like commission" ALREADY EXISTS; he did not realize it. So NO new pending area is being built.
+3. Send back (#costingSendBackBtn ~22881-22888) currently just clears the submitted stamps with a confirm(), no note.
+4. Slack: SLACK_OFFICE_WEBHOOK is server-side only (Netlify), posts to #epoxysales via best-effort fetch in three existing functions. There is NO bot token and NO per-user DM path, so a send-back Slack notification is a CHANNEL post, not a DM to the submitter. Flagged to Dylan.
+5. Bell notifications go through a SECURITY DEFINER RPC (log_costing_submitted, 2026-06-27 migration) because client JS cannot insert into pec_notifications (RLS).
+
+DYLAN'S DECISIONS, locked into the prompt:
+FEATURE A (send back with a note): note REQUIRED, entered in a proper modal textarea, FULL HISTORY kept (new table pec_prod_costing_sendbacks), submitter notified THREE ways (banner on the costing job + bell RPC + #epoxysales Slack post).
+FEATURE B (bonus approval): the missing piece is an explicit approve-WITH-EDIT step, not a new area. Finalize IS the approval (one button). Clicking Finalize opens a dialog listing each crew member with an EDITABLE amount pre-filled to the suggestion; the pool FLOATS (pool = sum of the amounts, no re-split). FULL AUDIT TRAIL: new columns suggested_amount, approved_by, approved_at on pec_prod_job_bonuses store original suggested vs approved vs who. The approved amount continues into the EXISTING Bonus Report pending payout. Suggested pool also shown in the "Submitted for review" queue before opening.
+
+WHY THIS SHAPE: send back is smaller and independent, so it ships first and alone (bisectable). Two idempotent migrations (one per feature), NOT applied from the Claude Code session per the do-not-touch-prod rule; Cowork applies them. Preserved the existing math, subcontracted-zero rule, and idempotent delete-then-insert so nothing double-records.
+
+Files touched: claude-code-prompt-22-bonus-approval-sendback.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 22 (Dylan has it).
+Handoff to Cowork: none yet. Prompt 22 ends with a Cowork handoff to apply both 2026-07-14 migrations to PROD once Claude Code ships.
+Handoff to Dylan:
+1. Hand claude-code-prompt-22-bonus-approval-sendback.md to Claude Code. It is self-contained.
+2. Expect two commits (send back notes, then bonus approval dialog) plus two migrations for Cowork to apply.
+3. Decide later if you want a true Slack DM to the submitter instead of a #epoxysales channel post (that needs a bot token + her Slack id, not built here).
+
+---
+
 ## [2026-07-14 20:45 MST] Build 21: rail flyout portaled to body, pending job card modal, pending panel caps at the calendar height
 By: Claude Code
 Changed: Delivered all three items of build prompt 21. Four commits (91e755d flyout portal, 336b45a its hover follow-up, 06cd3a6 pending card modal, b5b3913 pending panel height), plus this docs commit. Touched index.html and help/whats-new.json. No prod data, no migration, no functions.
