@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-split-customer-fields",
+    "date": "2026-07-15",
+    "title": "Estimator: separate name, company, and address fields",
+    "summary": "The estimator's customer card now starts with a Residential or Commercial choice. Residential asks for a first and last name; Commercial asks for the company name (required) plus an optional contact person. The address is now real fields (Address 1, Address 2, City, State, Zip), and once a Google key is configured, typing in Address 1 suggests real addresses and fills the city, state, and zip for you. Everything stays editable by hand, and the estimator still works fully offline. Commercial estimates show the company name on the customer's proposal page and carry it onto the customer record when they accept.",
+    "howto": [
+      "Open the estimator and pick Residential or Commercial at the top of the Customer card.",
+      "For a business, type the company name; add a contact person if you have one.",
+      "Start typing the street in Address 1 and pick a suggestion to fill city, state, and zip, or just type them in."
+    ]
+  },
+  {
     "id": "bonus-approve-per-member",
     "date": "2026-07-14",
     "title": "Approve each crew member's bonus when you finalize",
