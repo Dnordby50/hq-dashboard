@@ -35,6 +35,36 @@ Dylan: "metrics are the whole point of our own CRM." Wish-list for a dedicated M
 
 ---
 
+## [2026-07-15 MST] Cowork: build prompt 23 written (estimator customer/company/address fields, phase 1 of 3)
+By: Cowork
+Changed: claude-code-prompt-23-estimator-customer-fields.md (new), PROJECT-LOG.md. No app code, no prod data, no migration run.
+
+Dylan asked to "fine tune the estimating side." Ran recon on the estimator (a separate React/TS PWA in apps/estimator/src, built to /estimator/) plus a 12-question multiple-choice dig, then wrote a phased plan and the phase-1 build prompt.
+
+RECON (headline: some of what Dylan asked for already half-exists):
+1. The estimator captures customer as a single combined name and single combined address (EstimatorScreen.tsx:178-183, JSX :955-958), saved to estimates as customer_name/phone/email/customer_address (offline/estimates.ts:77,130-133), reloaded the same way (estimateLoad.ts:32,49,102-106).
+2. The leads table ALREADY splits address (address,city,state,zip) and has full_name (lead.ts:52,60-70), so the split is half-built upstream.
+3. pec_prod_jobs ALREADY has a customer_company column (index.html:9580), so pushing company through to the accepted job is an existing target.
+4. There is NO Google Maps/Places key in the repo yet; adding one needs the CLAUDE.md rule-7 treatment (referrer + API restriction + netlify.toml omit list).
+5. An AI proposal writer ALREADY exists: pec-estimate-scope auto-writes the customer scope after each save (triggerScope, EstimatorScreen.tsx:670-690) using system-type scope templates + the "Finish the scope" answers. Dylan's "have AI build the proposal as we go" is therefore a MOVE (background-after-save to live-in-module + editable), not net-new. Flagged to Dylan; it becomes phase 3.
+6. The current ai.ts is a PRICE-RANGE recommender (comps + Quo call history), separate from the scope writer. Left untouched.
+
+DYLAN'S DECISIONS (locked into the prompt): name model is a Residential/Commercial toggle (residential = first+last, commercial = company required + optional contact), "commercial" defined as "has a company"; address split into Address 1, Address 2, City, State, Zip; Google autocomplete on Address 1 fills street+city+state+zip, every field still editable; downstream readers reworked to use split fields BUT customer_name/customer_address kept auto-composed as a safety net (Cowork's amendment to his "rework all downstream" pick, near-free insurance against a missed reader); conservative reversible backfill that never overwrites the original combined values (Cowork's amendment to his "best-effort backfill" pick, since names/addresses parse messily).
+
+PHASING (Cowork's suggestion, which Dylan accepted): phase 1 customer/company/address + Google autocomplete (this prompt); phase 2 custom estimate mode (separate toggle, manual price with optional calculator, AI polishes typed text); phase 3 live in-module AI proposal writer (auto first time, then manual regenerate). Phases 2-3 depend on the field shape phase 1 lands, so their prompts are written after phase 1 ships.
+
+Why this shape: the customer-identity change touches the estimator UI, the estimates schema, offline save, reload, the public-estimate proposal page, the PDF, and the estimate list, so it is its own bisectable phase. Two idempotent migrations (add columns, then backfill) written but NOT applied from a Cowork prompt-writing pass; Claude Code writes them, Cowork applies them.
+
+Files touched: claude-code-prompt-23-estimator-customer-fields.md, PROJECT-LOG.md.
+Next steps: Dylan hands prompt 23 to Claude Code. It ends with a Cowork handoff to apply both 2026-07-15 migrations + run the backfill, and a key-setup handoff.
+Handoff to Cowork: none yet. Prompt 23 ends with the migration/backfill apply handoff for after Claude Code ships.
+Handoff to Dylan:
+1. Hand claude-code-prompt-23-estimator-customer-fields.md to Claude Code. It is self-contained.
+2. To enable Google address autocomplete you (or Cowork) will need a restricted Google Maps/Places browser key set as VITE_GOOGLE_MAPS_KEY and added to netlify.toml; the estimator works typed-by-hand without it.
+3. When phase 1 is live, tell Cowork and I will write the phase 2 (custom estimate mode) prompt.
+
+---
+
 ## [2026-07-14 22:55 MST] Cowork: verified SLACK_OFFICE_WEBHOOK is NOT set in Netlify prod
 By: Cowork
 Changed: No repo code, no prod data. Ran the open item from the 22:35 entry (confirm SLACK_OFFICE_WEBHOOK). Result: the variable is NOT configured in Netlify.
