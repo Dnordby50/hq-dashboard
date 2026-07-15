@@ -889,5 +889,115 @@ await section('offline save: areas + add-on line items land complete when the ou
   ok(upTables.filter((t) => t === 'estimate_line_items').length === 3, 'all three line items uploaded');
 });
 
+// ===========================================================================
+// Custom estimate mode (build 24): a save with NO areas and NO engine pricing
+// persists the typed scope + price, composes the standard downstream columns
+// (price, scope_of_work), and protects the typed text from the AI scope
+// writer via scope_edited_at. Reuses the __run harness built above.
+// ===========================================================================
+await section('offline save: custom mode persists typed scope/price and composes the standard columns', async () => {
+  const args = {
+    estimateId: null, status: 'draft',
+    systemTypeId: null, // a custom estimate has no system
+    salesperson: { id: 'sp1', name: 'Aron', commission_pct: 6 },
+    intake: { gate_code: null },
+    customer: { isCommercial: true, firstName: 'Wile', lastName: 'Coyote', company: 'Acme LLC', phone: '', email: '', address1: '9 Desert Rd', address2: '', city: 'Prescott', state: 'AZ', zip: '86301' },
+    mvb: 'none', flakeColor: null,
+    scopeAnswers: {},
+    isCustom: true,
+    customScope: 'Grind and reseal the loading dock apron. Excludes crack repair over 1/4 inch.',
+    customPrice: 2500,
+    lineItems: [
+      { addonId: null, areaIndex: null, label: 'Custom scope of work', description: 'Grind and reseal the loading dock apron. Excludes crack repair over 1/4 inch.', qty: 1, unitPrice: 2500, unitCost: 0, total: 2500, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
+      { addonId: 'ad-drive', areaIndex: null, label: 'Drive Time', description: null, qty: 1, unitPrice: 150, unitCost: 60, total: 150, isOptional: false, selectedByCustomer: false, sortOrder: 1 },
+    ],
+    pricingSnapshot: null,
+    areas: [],
+    pricing: null, // no engine ran; the engine columns must land null, not throw
+    totals: { price: 2650, gpDollars: null, gpPct: null, gpPerHour: null, laborBudget: null, commissionDollars: 132.5, budgetedHours: null },
+    calcPrice: null, priceOverride: null,
+    createdBy: 'user1', leadId: null,
+  };
+
+  const out = await globalThis.__run(args);
+  const estRow = out.queued.find((q) => q.table === 'estimates').row;
+
+  ok(estRow.is_custom === true, 'is_custom persisted true');
+  ok(estRow.custom_scope === args.customScope, 'custom_scope persisted verbatim');
+  ok(estRow.custom_price === 2500, 'custom_price persisted');
+  // Composition: the standard columns downstream readers use.
+  ok(estRow.price === 2650, 'estimates.price composed as custom price + included add-ons');
+  ok(estRow.scope_of_work === args.customScope, 'custom_scope composed into scope_of_work (what accept copies to jobs.scope)');
+  ok(typeof estRow.scope_edited_at === 'string' && estRow.scope_edited_at.length > 0, 'scope_edited_at stamped: the never-overwrite rule protects the typed text from a regenerate');
+  ok(estRow.scope_stale === false, 'a fresh custom save is never scope-stale');
+  // No engine: its snapshot columns are null, not garbage.
+  ok(estRow.calc_price === null && estRow.materials_cost === null && estRow.calc_version === null && estRow.system_type_id === null, 'engine columns and system land null when no engine ran');
+
+  const tables = out.queued.map((q) => q.table);
+  ok(!tables.includes('estimate_areas'), 'a custom estimate enqueues NO area rows');
+  const lineRows = out.queued.filter((q) => q.table === 'estimate_line_items').map((q) => q.row);
+  ok(lineRows.length === 2, 'the composed custom line plus the add-on line are enqueued');
+  const customLine = lineRows.find((r) => r.label === 'Custom scope of work');
+  ok(customLine && customLine.total === 2500 && customLine.description === args.customScope, 'the custom line carries the typed price + scope so the proposal/PDF render a row');
+  ok(out.drain.failed === 0, 'the custom save drains clean');
+});
+
+// ===========================================================================
+// Custom line round-trip guard: loadEstimateForEdit must NOT surface the
+// composed custom line as a one-off add-on (it is regenerated from
+// custom_scope/custom_price on save, like system lines are from areas).
+// ===========================================================================
+await section('edit load: the composed custom line does not round-trip into the add-on forms', async () => {
+  const esbuild = require(path.join(__dirname, '..', 'apps', 'estimator', 'node_modules', 'esbuild'));
+  const estRow = {
+    id: 'est-custom-1', status: 'draft', system_type_id: null,
+    is_custom: true, custom_scope: 'Reseal the dock.', custom_price: 2500,
+    customer_last_name: 'Coyote', customer_company: 'Acme LLC', customer_is_commercial: true,
+  };
+  const lineRows = [
+    { addon_id: null, estimate_area_id: null, label: 'Custom scope of work', description: 'Reseal the dock.', qty: 1, unit_price: 2500, unit_cost: 0, total: 2500, is_optional: false, selected_by_customer: true, sort_order: 0 },
+    { addon_id: 'ad-drive', estimate_area_id: null, label: 'Drive Time', description: null, qty: 1, unit_price: 150, unit_cost: 60, total: 150, is_optional: false, selected_by_customer: false, sort_order: 1 },
+  ];
+  const entry = `
+    import { loadEstimateForEdit } from ${JSON.stringify(path.join(__dirname, '..', 'apps', 'estimator', 'src', 'lib', 'estimateLoad.ts'))};
+    globalThis.__load = (id) => loadEstimateForEdit(id);
+  `;
+  const stubPlugin = {
+    name: 'stubs',
+    setup(build) {
+      // estimateLoad imports './supabase' (sibling), not 'lib/supabase'.
+      build.onResolve({ filter: /^\.\/supabase$|lib\/supabase$/ }, () => ({ path: 'stub-supa', namespace: 'stub' }));
+      build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: `
+        const est = ${JSON.stringify(estRow)};
+        const lines = ${JSON.stringify(lineRows)};
+        function chain(result) {
+          const c = {
+            eq: () => c, is: () => c, order: () => c,
+            maybeSingle: async () => ({ data: result === 'est' ? est : null, error: null }),
+            then: (res) => res({ data: result === 'lines' ? lines : [], error: null }),
+          };
+          return c;
+        }
+        export const supabase = {
+          from(table) {
+            return { select: () => chain(table === 'estimates' ? 'est' : table === 'estimate_line_items' ? 'lines' : 'areas') };
+          },
+        };
+      `, loader: 'js' }));
+    },
+  };
+  const built = await esbuild.build({
+    stdin: { contents: entry, resolveDir: __dirname, loader: 'ts' },
+    bundle: true, format: 'cjs', write: false, platform: 'node', plugins: [stubPlugin],
+  });
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'globalThis', built.outputFiles[0].text)(mod, mod.exports, globalThis);
+  const loaded = await globalThis.__load('est-custom-1');
+
+  ok(loaded.isCustom === true, 'is_custom maps to isCustom');
+  ok(loaded.customScope === 'Reseal the dock.' && loaded.customPrice === '2500', 'custom scope + price restore as form values');
+  ok(loaded.addonLines.length === 1 && loaded.addonLines[0].label === 'Drive Time', 'the composed custom line is filtered out; the real add-on survives');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -29,6 +29,14 @@ export type AreaInput = {
   materials: AreaMaterialInput[];
 };
 
+// The one line item a CUSTOM estimate always carries (build 24): it holds the
+// typed price + scope so the public proposal page and the PDF render a row
+// with zero special-casing. The label doubles as the discriminator the edit
+// loader uses to keep this line OUT of the add-on forms (it is regenerated
+// from custom_scope/custom_price on every save, like system lines are from
+// areas), so it must stay in sync with estimateLoad.ts.
+export const CUSTOM_LINE_LABEL = 'Custom scope of work';
+
 // One estimate line item, written as a ROW to public.estimate_line_items
 // (2026-07-13; the jsonb estimates.line_items is legacy-frozen). is_optional
 // lines are EXCLUDED from the total until selected_by_customer. areaIndex
@@ -71,8 +79,10 @@ export type SaveEstimateArgs = {
   // draft. New estimates pass 'draft'.
   status: string;
   // The DOMINANT area's system (most sqft) for reporting; every area prices
-  // with its own system via estimate_areas.system_type_id.
-  systemTypeId: string;
+  // with its own system via estimate_areas.system_type_id. Null on a custom
+  // estimate (build 24): there is no system, and writing one would be a lie
+  // the metrics attribute revenue to.
+  systemTypeId: string | null;
   salesperson: { id: string; name: string; commission_pct: number };
   intake: Record<string, unknown>; // work-order fields
   // Split shape (build 23). The combined customer_name / customer_address
@@ -86,8 +96,19 @@ export type SaveEstimateArgs = {
   lineItems: LineItemInput[];
   pricingSnapshot: Record<string, unknown> | null; // comps + AI read that priced it
   areas: AreaInput[];
-  pricing: PricingResult;
+  // Null on a custom estimate (build 24): no engine ran, so there is no
+  // engine snapshot to write. The engine columns land null on the row.
+  pricing: PricingResult | null;
   totals: EstimateTotals;
+  // Custom estimate mode (build 24). When isCustom, customScope/customPrice
+  // are the typed truth AND compose the standard downstream columns:
+  // custom_price is already inside totals.price (the caller adds the add-on
+  // lines) and custom_scope is written to scope_of_work directly, with
+  // scope_edited_at stamped so the AI scope writer's never-overwrite rule
+  // protects the typed text from a regenerate.
+  isCustom?: boolean;
+  customScope?: string | null;
+  customPrice?: number | null;
   // The engine's computed price (calc_price) and the manual-override provenance
   // (build 17). calcPrice keeps the math; totals.price is what actually sells.
   calcPrice: number | null;
@@ -116,8 +137,11 @@ export type SaveEstimateArgs = {
 export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id: string }> {
   const estimateId = args.estimateId || uuid();
   const now = new Date().toISOString();
-  const p = args.pricing;
+  const p = args.pricing; // null on a custom estimate: engine columns land null
   const t = args.totals;
+  const isCustom = args.isCustom === true;
+  const customScope = isCustom ? (args.customScope ?? '').trim() || null : null;
+  const customPrice = isCustom ? args.customPrice ?? null : null;
 
   const estimateRow: Record<string, unknown> = {
     id: estimateId,
@@ -153,11 +177,16 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     flake_color: args.flakeColor,
     scope_answers: args.scopeAnswers || {},
     pricing_snapshot: args.pricingSnapshot as unknown,
-    materials_cost: p.materialsCost ?? null,
-    fixed_addons: p.fixedAddons ?? 0,
-    labor_pct: p.laborPct ?? null,
-    commission_pct: p.commissionPct ?? null,
-    target_gp_pct: p.targetGpPct ?? null,
+    // Custom mode (build 24): the flag and the typed truth. Written on EVERY
+    // save (null when standard) so toggling custom off clears them.
+    is_custom: isCustom,
+    custom_scope: customScope,
+    custom_price: customPrice,
+    materials_cost: p?.materialsCost ?? null,
+    fixed_addons: p?.fixedAddons ?? 0,
+    labor_pct: p?.laborPct ?? null,
+    commission_pct: p?.commissionPct ?? null,
+    target_gp_pct: p?.targetGpPct ?? null,
     // calc_price is the engine number; price is what actually sells (override
     // or not). price_override_* is the provenance when a human moved the number.
     calc_price: args.calcPrice,
@@ -171,8 +200,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     labor_budget: t.laborBudget,
     commission_dollars: t.commissionDollars,
     budgeted_hours: t.budgetedHours,
-    material_plan: (p.materialLines ?? null) as unknown,
-    calc_version: p.calcVersion,
+    material_plan: (p?.materialLines ?? null) as unknown,
+    calc_version: p?.calcVersion ?? null,
     created_by: args.createdBy,
     client_updated_at: now,
     rev: 0,
@@ -181,6 +210,17 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   // shows the Regenerate banner. Deliberately NOT written otherwise, so the
   // upsert leaves the column alone on ordinary saves.
   if (args.markScopeStale) estimateRow.scope_stale = true;
+  // Custom estimate: the typed scope IS the customer-facing scope of work, so
+  // it composes into scope_of_work (the column accept copies to jobs.scope)
+  // and scope_edited_at is stamped, which is the existing never-overwrite
+  // lock: pec-estimate-scope refuses to regenerate over a human's text
+  // without force, so a Generate click cannot clobber what Dylan typed.
+  // Standard saves leave all scope columns alone (the server writes them).
+  if (isCustom) {
+    estimateRow.scope_of_work = customScope;
+    estimateRow.scope_edited_at = now;
+    estimateRow.scope_stale = false;
+  }
 
   await idbPut('estimates', estimateRow);
   await enqueue({ table: 'estimates', id: estimateId, row: estimateRow, client_updated_at: now });

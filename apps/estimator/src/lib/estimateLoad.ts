@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { splitLegacyAddress, splitLegacyName, type CustomerForm } from './customer';
+import { CUSTOM_LINE_LABEL } from '../offline/estimates';
 
 // Edit-in-place loader: the estimate page's Edit button reopens the estimator
 // as ?estimate_id=<uuid>, and this pulls the row + its areas + its line items
@@ -44,6 +45,12 @@ export type LoadedEstimate = {
   priceOverrideReason: string | null;
   areas: Array<{ name: string; sqft: string; systemTypeId: string | null; mvb: boolean; slotValues: Record<string, string> }>;
   addonLines: LoadedAddonLine[];
+  // Custom estimate mode (build 24). customScope/customPrice are the
+  // ready-to-edit form values (customPrice as an input string, same shape as
+  // areas.sqft); both empty on a standard estimate.
+  isCustom: boolean;
+  customScope: string;
+  customPrice: string;
 };
 
 // Split columns win; a row without them (saved before the migration/backfill)
@@ -117,9 +124,14 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   // Only add-on / one-off lines round-trip into the form; area/system lines
   // (estimate_area_id set, or no addon_id and not optional with an area) are
   // regenerated from the areas at save time. The discriminator: a line bound
-  // to an area is a system line; everything else is add-on or one-off.
+  // to an area is a system line; everything else is add-on or one-off. On a
+  // custom estimate the composed price+scope line (CUSTOM_LINE_LABEL) is
+  // likewise regenerated from custom_scope/custom_price at save time, so it
+  // must not round-trip as a one-off either.
+  const isCustom = e.is_custom === true;
   const addonLines: LoadedAddonLine[] = (((linesRes.error ? [] : linesRes.data) ?? []) as Array<Record<string, unknown>>)
     .filter((li) => li.estimate_area_id == null && !(li.addon_id == null && String(li.label || '').endsWith('floor coating system')) && String(li.label || '') !== 'Moisture vapor barrier (MVB)')
+    .filter((li) => !(isCustom && li.addon_id == null && String(li.label || '') === CUSTOM_LINE_LABEL))
     .map((li) => ({
       addonId: (li.addon_id as string | null) ?? null,
       label: String(li.label || ''),
@@ -148,6 +160,9 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     priceOverrideReason: (e.price_override_reason as string | null) ?? null,
     areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, mvb: false, slotValues: {} }],
     addonLines,
+    isCustom,
+    customScope: e.custom_scope != null ? String(e.custom_scope) : '',
+    customPrice: e.custom_price != null ? String(e.custom_price) : '',
   };
 }
 
