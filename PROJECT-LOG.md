@@ -4,6 +4,49 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-15 MST] Catalog: added "Polycoat" as a material_type category
+By: Claude Code
+Changed: index.html (four spots), help/whats-new.json. One commit. No migration: material_type is free text in the DB (the recipe-slot list already carries Densifier and Guard with no enum or CHECK constraint behind them), so a new category is purely a front-end enumeration change.
+
+The four index.html spots, all "insert Polycoat after Sealer" so the ordering reads the same everywhere:
+1. Product modal dropdown (pmType, ~26531): Polycoat is now pickable when creating or editing a product. The Basecoat "Epoxy Products" label special-case is untouched; Polycoat displays as its own name.
+2. Recipe-slot dropdown (rsType, ~26914): a system's recipe slot can now be typed Polycoat, which is what lets the Polycoat system actually pull Polycoat products. Without this one, products could exist but never wire into the recipe.
+3. renderProducts sectionOrder (~26414): without membership here, Polycoat products would fall into the catch-all "Other" bucket; now they get their own labeled, sorted, collapsible section.
+4. renderProducts sectionLabel (~26419): plain label "Polycoat" (other entries pluralize or rename; this one reads correctly as-is).
+
+Deliberately untouched: unitFor (~26440) defaults to gallons for anything that is not Flake/Quartz/Metallic Pigment/Tint Pack, which is correct for a liquid deck coating, so Polycoat inherits per-gallon with no code. Also untouched per the prompt's guardrails: the swatch sets (Polycoat is not a color swatch), all Basecoat special-casing, the estimator app, and all recipe/costing math.
+
+Sibling fact so nobody looks for it in code: Dylan is adding the Polycoat SYSTEM TYPE himself via Catalog, System Types, + Add system type (that flow is already self-service), so no system-type row is created here.
+
+What's New id added: polycoat-material-category (help/whats-new.json, newest first).
+Verified: node JSON.parse on whats-new.json, npm test (119 passed, 0 failed; nothing here touches the engine, this just proves no accidental breakage).
+Why: Dylan is standing up the Polycoat waterproof deck system; Cowork's recon (previous entry) split the ask into the self-service system type (Dylan) and this hardcoded category list (code).
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Dylan pushes to deploy, then adds the Polycoat system type and its products via the Catalog UI.
+Handoff to Cowork: none (front-end only, no prod data touched).
+Handoff to Dylan: after deploy, add the Polycoat system type (Catalog, System Types, + Add system type) and create the Polycoat products (+ Add product, Material type Polycoat), then wire the system's recipe slots to material type Polycoat.
+
+---
+
+## [2026-07-15 13:44 MST] Cowork: applied both build-23 estimator migrations to PROD (verified)
+By: Cowork
+Changed: No repo code, no prod data columns beyond the additive/backfill work below. Ran tasks 1 and 2 of the build-23 phase-1 handoff (from the 2026-07-15 Claude Code entry): applied both 2026-07-15 estimator migrations to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration, in the required order (columns first, backfill second). Both returned success. Google Maps key (task 3) NOT done yet, pending Dylan's call on who drives his Google Cloud + Netlify accounts (see Handoff to Dylan).
+
+1. 2026-07-15_estimate_customer_fields.sql (additive, idempotent): added the 9 split columns to public.estimates. Pre-check showed the 4 originals only. Post-check (select column_name from information_schema.columns where table_name='estimates' and column_name like 'customer_%') returns 13 columns: customer_address, customer_address1, customer_address2, customer_city, customer_company, customer_email, customer_first_name, customer_is_commercial, customer_last_name, customer_name, customer_phone, customer_state, customer_zip. Originals (customer_name, customer_address, customer_phone, customer_email) untouched.
+
+2. 2026-07-15_estimate_customer_backfill.sql (idempotent, only fills null split fields, never touches the combined originals). Verify query before and after (with_first, with_addr1, total):
+   BEFORE: with_first=0, with_addr1=0, total=4.
+   AFTER:  with_first=3, with_addr1=1, total=4.
+   So of 4 existing estimates, 3 had a name to split and 1 had a comma-parseable address. customer_company and customer_is_commercial left null on backfilled rows by design (Dylan spot-checks and flips real commercial customers by editing the estimate).
+
+Why: build-23 phase-1 Cowork handoff. Applying the columns BEFORE Dylan's deploy push is required because the estimator writes the new columns on save; a deploy that beat the migration would queue outbox saves with unknown-column errors until it landed. Task 1 is now confirmed, so the deploy push is safe.
+Files touched: PROJECT-LOG.md only (the two migration files were authored by Claude Code in the prior session; Cowork only ran them).
+Next steps: Google Maps key (task 3) still open; autocomplete stays dark until it lands, but the estimator works typed-by-hand without it, so it can trail the deploy.
+Handoff to Cowork: none.
+Handoff to Dylan:
+1. Deploy push is safe now that task 1 (columns) is confirmed. Tasks 2 (backfill, done) and 3 (key) do not block the push.
+2. Google Maps key (task 3) needs a decision: it requires creating a restricted browser key in YOUR Google Cloud Console (enable Maps JavaScript API + Places API (New), restrict by HTTP referrer to https://prescottepoxy.netlify.app/* and to those two APIs only), setting VITE_GOOGLE_MAPS_KEY in Netlify, appending the key value to SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES in netlify.toml in the same change, then redeploying. Tell Cowork whether to drive your Google Cloud + Netlify accounts via the browser (you logged in, Cowork clicks) or whether you will create the key and hand Cowork just the value to wire into netlify.toml. Guardrail either way: the referrer + API restrictions must be ON before the key value lands in netlify.toml (never commit an unrestricted key).
+
 ## [2026-07-15 MST] Cowork: wrote Claude Code prompt to add "Polycoat" material category (recon + prompt, no app code touched)
 By: Cowork
 Changed: claude-code-prompt-polycoat-material-category.md (new), PROJECT-LOG.md. No index.html change, no prod data, no migration.
@@ -88,6 +131,25 @@ Dylan: "metrics are the whole point of our own CRM." Wish-list for a dedicated M
 1. Hand claude-code-prompt-23-nav-slots-archive-bonus-summary.md to Claude Code. It is self-contained.
 2. Expect three commits (nav, archive, bonus summary) plus one migration (archived_at) for Cowork to apply after Claude Code ships.
 3. When ready to expand what Metrics SHOWS, say so and I will write that as its own build prompt from the wish-list above.
+
+---
+
+## [2026-07-15 MST] Cowork: build prompts 24 and 25 written (estimator custom mode, live AI scope; phases 2 and 3)
+By: Cowork
+Changed: claude-code-prompt-24-estimator-custom-mode.md (new), claude-code-prompt-25-estimator-live-ai-scope.md (new), PROJECT-LOG.md. No app code, no prod data, no migration run.
+
+Dylan asked to see the phase 2 and 3 prompts up front (rather than waiting for phase 1 to land). Wrote both. Extra recon this pass: read pec-estimate-scope.cjs (the existing AI scope writer: assembly + substitution from Dylan's VERBATIM system-type templates, never freehand authorship; writes estimates.scope_of_work + line-item descriptions; never-overwrite rule via scope_edited_at, force=true to regenerate) and the estimator's manual-price mechanism (priceOverride 'sell'/'disc', sellInput, finalSell at EstimatorScreen.tsx:368-400, which currently requires a calculated base price).
+
+PROMPT 24 (PHASE 2, custom estimate mode): a separate Standard/Custom toggle at the top of the estimator (not a system-type option); Custom hides areas + scope questions, shows a free-text scope box and a manual price input, keeps customer/salesperson/add-ons. Manual price does NOT route through the material engine (new custom_price, decoupled from hasPrice/finalSell so custom mode never divides by a null pricing). canSave in custom mode = customer + custom_price>0, no areas required. Save composes standard downstream columns (price/total + scope_of_work) so the list, PDF, and accept-to-job need no special-casing. Optional "Polish with AI" button (custom-only) cleans Dylan's typed text, POLISH not authorship (preserve meaning/exclusions/dollar figures verbatim), never auto-fires, revertible. One additive migration (is_custom, custom_scope, custom_price), written not applied.
+
+PROMPT 25 (PHASE 3, live AI proposal): the key recon point, repeated for Dylan, is that the AI writer ALREADY exists and already runs (pec-estimate-scope, post-save background via triggerScope at EstimatorScreen.tsx:670-690; edited/regenerated on the estimate detail page ~index.html:17960-18125). Phase 3 MOVES it into the estimator as a live, editable panel, it does not build a new writer. Trigger is auto-first (reuse the existing triggerScope on first save once system type + answers are present), then a manual "Regenerate" button (force=true, same call the estimate page uses), NOT keystroke auto-regenerate (Dylan rejected that: cost + clobbering edits). Preserves the assembly-not-authorship contract and the never-overwrite/force rule. Offline falls back to local template preview. No migration expected (reuses scope_of_work/scope_edited_at/scope_answers).
+
+CAVEAT recorded: prompts 24 and 25 are drafted against phase 1's PLANNED field/shape names and line numbers. They must be run in order (23, then 24, then 25) and Cowork should do a quick sync pass on 24 and 25 after each prior phase actually lands, since the save/reload paths shift.
+
+Files touched: claude-code-prompt-24-estimator-custom-mode.md, claude-code-prompt-25-estimator-live-ai-scope.md, PROJECT-LOG.md.
+Next steps: run phase 1 (prompt 23) first. Then Cowork syncs prompt 24 to the landed shape; run it; then sync + run prompt 25.
+Handoff to Cowork: after prompt 23 ships, re-check prompts 24/25 line numbers + column names before handing them to Claude Code.
+Handoff to Dylan: prompts 23, 24, 25 are all written and in the repo root. Run them in order; do not hand 24 or 25 to Claude Code until the prior phase is live, since they build on its fields.
 
 ---
 
