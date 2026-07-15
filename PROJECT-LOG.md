@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-14 22:35 MST] Cowork: applied both build-22 migrations to PROD (verified)
+By: Cowork
+Changed: No repo code. Ran the Build 22 Handoff to Cowork: applied both 2026-07-14 migrations to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd, ACTIVE_HEALTHY) via the Supabase MCP apply_migration. Both returned success.
+
+1. 2026-07-14_costing_sendback_notes.sql: created public.pec_prod_costing_sendbacks (id, job_id FK to pec_prod_jobs ON DELETE CASCADE, note, sent_back_by, created_at) + job_id index, enabled RLS with the staff-only policy pec_prod_costing_sendbacks_staff (is_admin_staff()), and created the SECURITY DEFINER RPC log_costing_sent_back(text, text) granted to authenticated.
+2. 2026-07-14_bonus_approval_audit.sql: added three columns to public.pec_prod_job_bonuses (suggested_amount numeric, approved_by text, approved_at timestamptz). Additive, no RLS change.
+
+VERIFIED (one select, all acceptance criteria met):
+- pec_prod_costing_sendbacks columns: id, job_id, note, sent_back_by, created_at (5).
+- log_costing_sent_back: present (1).
+- policy pec_prod_costing_sendbacks_staff: present (1).
+- pec_prod_job_bonuses audit columns: approved_at, approved_by, suggested_amount (3).
+
+Effect: the send-back-with-reason banner, history thread, and bell now persist (the client degraded gracefully to empty before this); finalize now records suggested vs approved vs approver on each bonus row. Both were forward-compatible on the client, so deploy order does not matter.
+
+Why: Dylan said "apply migration."
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 table + index + RLS + policy + 1 RPC; 3 columns; all idempotent/additive).
+Next steps: Dylan pushes to deploy (index.html + the new pec-notify-costing-sendback function), then runs the Build 22 "Handoff to Dylan" smoke.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: One open item I cannot verify from here, SLACK_OFFICE_WEBHOOK in Netlify (Site settings, Environment variables). It should already exist from the invoice/stripe/estimate paths; if it is missing the send-back still works (the function no-ops the Slack post and returns 200), only the #epoxysales message is skipped. Confirm it is set, or add it, so the Slack notification fires.
+
+---
+
 ## [2026-07-14 22:10 MST] Build 22: send a costing back with a required reason, and approve each crew member's bonus on finalize
 By: Claude Code
 Changed: Delivered both features of build prompt 22. One commit per feature (059c286 Feature A send-back notes, 2e10455 Feature B bonus approval), plus this docs commit. Touched index.html, help/whats-new.json, two new migrations, one new Netlify function. Two migrations were WRITTEN and committed but NOT applied to prod (do-not-touch-prod rule); they are a Cowork handoff below.
