@@ -18673,7 +18673,7 @@ async function renderSchedule() {
             const owed = owedDays(j);
             // Flagged cards keep the amber badge instead of the x remove
             // button: hiding a job that still owes days would strand them.
-            return `<div class="pec-sched-pcard" style="position:relative">
+            return `<div class="pec-sched-pcard" data-open-pcard="${esc(j.id)}" role="button" tabindex="0" aria-label="View details for ${esc(j.customer_name)}" style="position:relative">
               ${owed ? '' : `<button data-hide-pending="${esc(j.id)}" title="Remove from Pending list" aria-label="Remove from Pending list" style="position:absolute;top:4px;right:4px;border:none;background:transparent;color:var(--muted);font-size:1.15rem;line-height:1;cursor:pointer;padding:2px 6px">×</button>`}
               <h4>${esc(j.customer_name)}</h4>
               ${owed ? `<div style="margin:2px 0 4px">
@@ -18759,11 +18759,20 @@ async function renderSchedule() {
     // Any menu item click closes the menu (the item's own handler opens its modal).
     addMenu.addEventListener('click', (e) => { if (e.target.closest('button')) closeAddMenu(); });
   }
-  root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', () => openScheduleModal(b.dataset.scheduleJob)));
+  // The whole pending card opens a read-only quick-look modal. The two inner
+  // buttons (+ Schedule, x remove) stopPropagation so they do not ALSO open the
+  // card; the card itself is a role=button and opens on Enter/Space too.
+  root.querySelectorAll('[data-open-pcard]').forEach(card => {
+    const open = () => openPendingJobCard(card.dataset.openPcard);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
+  root.querySelectorAll('[data-schedule-job]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); openScheduleModal(b.dataset.scheduleJob); }));
   // Remove a job from the Pending list only (a mistake fix). Sets
   // pending_hidden_at; the job stays on the Ordering page with all data intact.
   // Best-effort write: tolerates the column not existing yet (pre-migration).
-  root.querySelectorAll('[data-hide-pending]').forEach(b => b.addEventListener('click', async () => {
+  root.querySelectorAll('[data-hide-pending]').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
     const id = b.dataset.hidePending;
     if (!confirm('Remove this job from the Pending list? It stays on the Ordering page.')) return;
     b.disabled = true;
@@ -19484,6 +19493,74 @@ async function addTouchupCallback(prodJob) {
   await loadScheduleData(); // refresh state.prodJobs + scheduleDays so the new row is schedulable
   showToast('Touch-up callback created. Pick the day, crew, and time slot to schedule it.');
   openScheduleModal(newId);
+}
+
+// Read-only "quick look" job card, opened by clicking a Pending Jobs card. This is
+// deliberately a FRESH modal, not openScheduleModal (that IS the scheduler; a
+// glance should not be one input away from rescheduling) and not openCostingDetail
+// (cost-focused, editable margins, admin-shaped). Nothing here edits or persists;
+// the only action is + Schedule, which closes and hands off to the scheduler. Uses
+// openModal / #pecModalRoot per the two-modal-root rule (helper-driven modal).
+function openPendingJobCard(jobId) {
+  const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
+  const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
+  const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  // Dominant system (most sqft), the same rule the badge / calendar band / schedule
+  // dropdown use, so the quick look names the same system as everywhere else.
+  const domId = dominantSystemId(areas);
+  const sys = domId ? sysById[domId] : null;
+  const sqft = areas.reduce((s, a) => s + Number(a.sqft || 0), 0);
+  const owed = Number(job.reschedule_days_owed) > 0 ? Number(job.reschedule_days_owed) : 0;
+  const statusLabel = job.status ? String(job.status).replace(/_/g, ' ') : '';
+  // Scope/notes: pec_prod_jobs.notes already holds the estimate scope of work
+  // (estimator jobs, pec-public-estimate.cjs) or the DripJobs scope (webhook jobs),
+  // copied in at job creation. There is no estimate_id FK on pec_prod_jobs to fetch
+  // a separate scope from, so notes IS the scope. Section omitted cleanly if empty.
+  const scope = (job.notes || '').trim();
+
+  const dash = '<span style="color:var(--muted)">—</span>';
+  const row = (label, valueHtml) => `<div style="display:flex;gap:12px;padding:7px 0;border-top:1px solid var(--rd-line,var(--border))">
+      <div style="flex:0 0 118px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">${esc(label)}</div>
+      <div style="flex:1;font-size:.85rem;color:var(--ink)">${valueHtml}</div>
+    </div>`;
+  const systemHtml = sys
+    ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}`
+    : '<span style="color:var(--muted)">No system yet</span>';
+  const rescheduleHtml = `<span style="display:inline-block;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:color-mix(in srgb, #f59e0b 16%, transparent);color:#b45309;border:1px solid color-mix(in srgb, #f59e0b 45%, transparent);border-radius:999px;padding:2px 8px">Reschedule · ${owed} day${owed === 1 ? '' : 's'} owed</span>${job.rescheduled_from ? `<div style="font-size:.72rem;color:var(--muted);margin-top:4px">was scheduled for ${esc(fmtDate(job.rescheduled_from))}</div>` : ''}`;
+
+  const html = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+      <div>
+        <h3 style="margin:0;font-size:1.1rem">${esc(job.customer_name || 'Job')}</h3>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:2px">${esc(job.address || 'No address')}</div>
+      </div>
+      <button type="button" class="pec-btn ghost sm" onclick="window.pecCloseModal()" aria-label="Close">✕</button>
+    </div>
+    <div style="margin:12px 0 2px">
+      ${row('Proposal', job.proposal_number ? esc(job.proposal_number) : dash)}
+      ${row('Revenue', job.revenue != null ? fmtMoney(job.revenue) : dash)}
+      ${row('System', systemHtml)}
+      ${row('Total sqft', sqft ? sqft.toLocaleString() + ' sqft' : dash)}
+      ${row('Est. hours', job.estimated_hours ? esc(job.estimated_hours) + ' hrs' : dash)}
+      ${row('Sales team', job.sales_team ? esc(job.sales_team) : dash)}
+      ${row('Status', statusLabel ? esc(statusLabel) : dash)}
+      ${owed ? row('Reschedule', rescheduleHtml) : ''}
+    </div>
+    ${scope ? `<div style="margin-top:12px">
+      <div style="font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:6px">Scope / notes</div>
+      <div class="notes-box" style="white-space:pre-wrap;font-size:.85rem;max-height:220px;overflow-y:auto">${esc(scope)}</div>
+    </div>` : ''}
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+      <button type="button" class="pec-btn primary" data-pcard-schedule>+ Schedule</button>
+    </div>
+  `;
+  openModal(html, { onMount: (modal) => {
+    // The one action: close the read-only card and hand off to the scheduler, so
+    // the path from look to schedule survives without being one stray input away.
+    const sb = modal.querySelector('[data-pcard-schedule]');
+    if (sb) sb.addEventListener('click', () => { closeModal(); openScheduleModal(jobId); });
+  } });
 }
 
 function openScheduleModal(jobId) {
@@ -23851,7 +23928,8 @@ if (portalToken) {
     .pec-sched-aside-details[open] .pec-sched-pending { margin-top:8px }
   }
   .pec-sched-pending { display:flex; flex-direction:column; gap:8px; max-height:75vh; overflow-y:auto; padding-right:4px }
-  .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:default }
+  .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:pointer; transition:border-color .12s, box-shadow .12s }
+  .pec-sched-pcard:hover, .pec-sched-pcard:focus-visible { border-color:var(--accent, #D8531C); box-shadow:0 2px 10px rgba(8,10,18,.10); outline:none }
   .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
   .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
   .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }

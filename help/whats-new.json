@@ -1,5 +1,16 @@
 [
   {
+    "id": "pending-job-quick-look",
+    "date": "2026-07-14",
+    "title": "Click a pending job to see its details",
+    "summary": "On the Job Schedule, the cards under Pending Jobs are now clickable. Click one (anywhere on the card) to open a quick, read-only look at the job: customer and address, proposal number and revenue, the system with its color, total square footage and estimated hours, the scope or notes, plus the sales team, status, and any reschedule owed. It is view-only, so nothing can be changed by accident. The + Schedule button on the card opens the scheduler as before, and the small x still removes the job from the list.",
+    "howto": [
+      "On the Job Schedule, click a card under Pending Jobs to open its details.",
+      "Read the job over; nothing here changes the job.",
+      "Use + Schedule from the card (or inside the details) when you are ready to schedule it."
+    ]
+  },
+  {
     "id": "job-system-required",
     "date": "2026-07-14",
     "title": "Jobs now carry their system, and the calendar colors them automatically",
