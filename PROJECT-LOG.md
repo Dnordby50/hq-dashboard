@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-15 MST] Cowork: wrote Claude Code prompt to add "Polycoat" material category (recon + prompt, no app code touched)
+By: Cowork
+Changed: claude-code-prompt-polycoat-material-category.md (new), PROJECT-LOG.md. No index.html change, no prod data, no migration.
+
+Dylan asked to "add a product type Polycoat in materials" and make it "editable by me so I don't have to ask you." Recon first, then a 2-question dig. The ask splits into two concepts that live in different places:
+
+RECON (headline: "product type" is two different things, and only one is code):
+1. Polycoat the SYSTEM (the waterproof deck system Dylan sells) lives in pec_prod_system_types and is ALREADY self-service via Catalog, System Types, + Add system type (openSystemTypeModal, index.html ~26798). Dylan chose to add this himself so he controls the pricing levers (labor budget %, materials budget %, target GP %) that drive estimator quotes. No code, no row created by Cowork.
+2. Polycoat the material CATEGORY (so its products group and its recipe slots can pull Polycoat-typed materials) is the material_type field, whose value list is HARDCODED in index.html in four spots. material_type is free text (the recipe-slot list already carries Densifier and Guard, which are not in the product list or sectionOrder), so there is NO enum/CHECK constraint and NO migration is needed.
+
+DYLAN'S DECISIONS: (a) for the category, "just add Polycoat" to the hardcoded list rather than build a full manage-your-own-categories subsystem (Cowork recommended this; categories change maybe once or twice a year, so a management UI is more maintenance than value); (b) he adds the Polycoat system type himself via the existing button.
+
+THE FOUR SPOTS the prompt tells Claude Code to touch (all index.html, all "insert Polycoat after Sealer"): product modal dropdown pmType (~26531), recipe-slot dropdown rsType (~26914), renderProducts sectionOrder (~26414), renderProducts sectionLabel (~26415). Plus a What's New entry (standing rule 9, user-facing). unitFor (~26440) defaults to gallons for non-swatch types, correct for a liquid deck coating, so it is deliberately left alone. Skipping any of the four would half-wire it: dropping the recipe-slot spot means Polycoat products can be created but never wired into the Polycoat system's recipe; dropping sectionOrder/sectionLabel dumps Polycoat products into the catch-all "Other" bucket (~26435).
+
+Why this shape: front-end enumeration only, no schema, so it is a small bisectable index.html change Claude Code runs directly. Cowork's role here was recon + writing the self-contained prompt, not editing app code.
+
+Files touched: claude-code-prompt-polycoat-material-category.md, PROJECT-LOG.md.
+Next steps: Dylan hands claude-code-prompt-polycoat-material-category.md to Claude Code (it is self-contained). Separately, Dylan adds the Polycoat system type via Catalog, System Types, + Add system type.
+Handoff to Cowork: none.
+Handoff to Dylan:
+1. Hand claude-code-prompt-polycoat-material-category.md to Claude Code.
+2. Add the Polycoat system type yourself: Catalog, System Types, + Add system type. Set requires-flake / requires-basecoat, calendar color, and the labor / materials / target-GP percentages (those numbers drive what the estimator quotes, so they are yours to set).
+
+---
+
 ## [2026-07-15 MST] Build 23 phase 1: estimator split customer/company/address + Google address autocomplete
 By: Claude Code
 Changed: Delivered all of build prompt 23 phase 1 (estimator customer restructure). Three feature commits (7a52047 migrations, 02a8afe estimator UI, 49020ad downstream readers) plus this docs commit. Touched apps/estimator/src (EstimatorScreen, lead.ts, estimateLoad.ts, offline/estimates.ts, styles.css, new customer.ts / places.ts / AddressAutocomplete.tsx), netlify/functions/pec-public-estimate.cjs, index.html (one detail row), production/estimate15b.test.js, help/whats-new.json, two new migrations. Migrations WRITTEN but NOT applied (do-not-touch-prod); Cowork handoff below. 119 tests pass, estimator builds clean, node --check clean.
