@@ -17672,7 +17672,12 @@ async function renderEstimateDetail(estimateId) {
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;margin-top:12px">
-            ${detailRow('Customer', esc(est.customer_name || '(no name)'))}
+            ${/* Commercial estimate (build 23): company bold, contact under it.
+                 Falls back to the composed customer_name, so rows from before
+                 the split columns (or before the migration) render unchanged. */''}
+            ${detailRow('Customer', est.customer_company
+              ? `<strong>${esc(est.customer_company)}</strong>${(est.customer_first_name || est.customer_last_name) ? `<div style="color:var(--muted);font-size:.78rem">${esc([est.customer_first_name, est.customer_last_name].filter(Boolean).join(' '))}</div>` : ''}`
+              : esc(est.customer_name || '(no name)'))}
             ${detailRow('Phone', est.customer_phone ? `<a href="tel:${esc(est.customer_phone)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_phone)}</a>` : null)}
             ${detailRow('Email', est.customer_email ? `<a href="mailto:${esc(est.customer_email)}" style="color:var(--rd-accent,var(--accent))">${esc(est.customer_email)}</a>` : null)}
             ${detailRow('Address', est.customer_address ? esc(est.customer_address) : null)}

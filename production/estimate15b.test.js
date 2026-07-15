@@ -487,6 +487,84 @@ await section('public page: optional add-on excluded until ticked; accept freeze
 });
 
 // ===========================================================================
+// Split customer identity (build 23): a commercial estimate renders company
+// bold with the contact + split address under it, and accepting passes the
+// split identity through to customers.first_name/last_name/company_name
+// (company_name is the customer's BUSINESS; customers.company stays the
+// brand). A pre-split row (composed columns only) must render unchanged.
+// ===========================================================================
+await section('public page + accept: commercial company renders and flows to the customer row', async () => {
+  const TOKEN = '77777777-2222-4333-8444-555555555555';
+  const db = {
+    estimates: [{
+      id: 'co1', public_token: TOKEN, sent_at: '2026-07-15T00:00:00Z', status: 'sent',
+      deleted_at: null, mvb: 'none', flake_color: null, intake: { salesperson_name: 'Aron' },
+      system_type_id: 'sys-flake', estimate_number: 102050, price: 8000, brand: 'prescott-epoxy', lead_id: null,
+      scope_of_work: null,
+      customer_name: 'Acme Coatings LLC (Wile Coyote)', customer_email: 'wile@acme.example',
+      customer_address: '9 Desert Rd, Prescott, AZ 86301',
+      customer_first_name: 'Wile', customer_last_name: 'Coyote', customer_company: 'Acme Coatings LLC',
+      customer_is_commercial: true, customer_address1: '9 Desert Rd', customer_address2: null,
+      customer_city: 'Prescott', customer_state: 'AZ', customer_zip: '86301',
+    }],
+    estimate_areas: [{ id: 'ar1', estimate_id: 'co1', name: 'Shop', sqft: 900, system_type_id: 'sys-flake', sort_order: 0 }],
+    estimate_line_items: [
+      { id: 'req1', estimate_id: 'co1', label: 'Standard Flake floor coating system', description: 's', qty: 1, unit_price: 8000, total: 8000, is_optional: false, selected_by_customer: true, sort_order: 0 },
+    ],
+    pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake' }],
+    pec_brand_identity: [], pec_email_senders: [], customers: [], jobs: [], timeline_stages: [],
+    job_areas: [], pec_prod_jobs: [], pec_prod_areas: [], leads: [], lead_events: [],
+  };
+  global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+  {
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+    ok(res.statusCode === 200, 'commercial estimate renders 200');
+    ok(res.body.includes('<div style="font-weight:700">Acme Coatings LLC</div>'), 'Prepared for leads with the company, bold');
+    ok(res.body.includes('Attn: Wile Coyote'), 'the contact person shows under the company');
+    ok(res.body.includes('9 Desert Rd, Prescott, AZ, 86301'), 'the address renders from the split fields');
+  }
+  {
+    const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+    const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'accept', name: 'Wile Coyote' }) });
+    ok(res.statusCode === 200, 'accept succeeds');
+    const cust = db.customers[0];
+    ok(cust && cust.company_name === 'Acme Coatings LLC' && cust.first_name === 'Wile' && cust.last_name === 'Coyote', 'split identity lands on the customer row');
+    ok(cust.company === 'prescott-epoxy', 'customers.company stays the BRAND, untouched by the business name');
+    ok(db.pec_prod_jobs[0] && db.pec_prod_jobs[0].customer_name === 'Acme Coatings LLC (Wile Coyote)', 'the schedule job carries the composed name (company + contact)');
+  }
+});
+
+// ===========================================================================
+// Pre-split row: only the composed columns exist (backfill not run, or an old
+// offline save). The Prepared for block must fall back to them verbatim.
+// ===========================================================================
+await section('public page: pre-split row falls back to the composed columns', async () => {
+  const TOKEN = '66666666-2222-4333-8444-555555555555';
+  const db = {
+    estimates: [{
+      id: 'old1', public_token: TOKEN, sent_at: '2026-07-15T00:00:00Z', status: 'sent',
+      deleted_at: null, mvb: 'none', flake_color: null, intake: { salesperson_name: 'Aron' },
+      system_type_id: 'sys-flake', estimate_number: 102051, price: 5000, brand: 'prescott-epoxy', lead_id: null,
+      scope_of_work: null, customer_name: 'Jane Legacy', customer_address: '1 Old Rd, Prescott AZ',
+    }],
+    estimate_areas: [{ id: 'ar1', estimate_id: 'old1', name: 'Garage', sqft: 500, system_type_id: 'sys-flake', sort_order: 0 }],
+    estimate_line_items: [
+      { id: 'req1', estimate_id: 'old1', label: 'Standard Flake floor coating system', description: 's', qty: 1, unit_price: 5000, total: 5000, is_optional: false, selected_by_customer: true, sort_order: 0 },
+    ],
+    pec_prod_system_types: [{ id: 'sys-flake', name: 'Standard Flake' }],
+    pec_brand_identity: [], pec_email_senders: [], customers: [], jobs: [], timeline_stages: [],
+    job_areas: [], pec_prod_jobs: [], pec_prod_areas: [], leads: [], lead_events: [],
+  };
+  global.fetch = async () => ({ ok: true, text: async () => '', json: async () => ({}) });
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'GET', headers: {}, queryStringParameters: { token: TOKEN }, path: `/e/${TOKEN}` });
+  ok(res.statusCode === 200, 'legacy estimate renders 200');
+  ok(res.body.includes('<div style="font-weight:700">Jane Legacy</div>'), 'composed name renders bold, unchanged');
+  ok(res.body.includes('1 Old Rd, Prescott AZ') && !res.body.includes('Attn:'), 'composed address renders; no phantom contact line');
+});
+
+// ===========================================================================
 // Accept copies the estimate's areas onto the job (build 20): system, sqft,
 // order_index, AND the per-area mvb flag, so the job carries its system(s)
 // from acceptance and downstream (calendar color, materials, per-system
@@ -754,7 +832,9 @@ await section('offline save: areas + add-on line items land complete when the ou
     estimateId: null, status: 'draft', systemTypeId: 'sys-flake',
     salesperson: { id: 'sp1', name: 'Aron', commission_pct: 6 },
     intake: { gate_code: '1234' },
-    customer: { name: 'Jane', phone: null, email: null, address: null },
+    // Split shape (build 23): saveEstimateOffline composes the combined
+    // customer_name/customer_address safety-net columns from these.
+    customer: { isCommercial: false, firstName: 'Jane', lastName: 'Doe', company: '', phone: '', email: '', address1: '1 Main St', address2: '', city: 'Prescott', state: 'AZ', zip: '86301' },
     mvb: 'none', flakeColor: null,
     lineItems: [
       { addonId: null, areaIndex: 0, label: 'Garage: Standard Flake floor coating system', description: '600 sqft', qty: 1, unitPrice: 3000, unitCost: 900, total: 3000, isOptional: false, selectedByCustomer: true, sortOrder: 0 },
@@ -793,6 +873,14 @@ await section('offline save: areas + add-on line items land complete when the ou
   ok(patioLine && garageLine.estimate_area_id !== patioLine.estimate_area_id, 'each system line bound to its OWN area');
   ok(stemLine && stemLine.estimate_area_id == null && stemLine.addon_id === 'ad-stem', 'the add-on line has no area, keeps its addon_id');
   ok(stemLine.is_optional === true && stemLine.unit_cost === 4, 'the add-on line carries optional + a unit cost (GP honesty)');
+
+  // The split customer fields persist AND the combined safety-net columns are
+  // composed on the same row, so an offline save carries both.
+  const estRow = out.queued.find((q) => q.table === 'estimates').row;
+  ok(estRow.customer_first_name === 'Jane' && estRow.customer_last_name === 'Doe', 'split name persisted');
+  ok(estRow.customer_is_commercial === false && estRow.customer_company === null, 'residential: no company, toggle stored false');
+  ok(estRow.customer_name === 'Jane Doe', 'customer_name composed from the split name');
+  ok(estRow.customer_address === '1 Main St, Prescott, AZ, 86301', 'customer_address composed from the split address');
 
   // Draining uploads everything; the estimate lands before its children.
   ok(out.drain.synced === out.queued.length && out.drain.failed === 0, 'the whole outbox drains clean');

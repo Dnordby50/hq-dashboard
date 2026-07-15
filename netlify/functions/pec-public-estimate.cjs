@@ -256,6 +256,27 @@ function stateForStatus(est) {
   return { live: true, banner: '' };
 }
 
+// Split-first customer identity (build 23): prefer the split columns the
+// estimator now writes, fall back to the composed customer_name /
+// customer_address safety nets (which every save keeps current, so a row
+// from before the split still renders). Commercial = has a company name.
+function customerDisplay(est) {
+  const t = (v) => (v == null ? '' : String(v).trim());
+  const company = t(est.customer_company);
+  const contact = [t(est.customer_first_name), t(est.customer_last_name)].filter(Boolean).join(' ');
+  const splitAddress = [
+    t(est.customer_address1), t(est.customer_address2),
+    t(est.customer_city), t(est.customer_state), t(est.customer_zip),
+  ].filter(Boolean).join(', ');
+  return {
+    company: company || null,
+    contact: contact || null,
+    // The bold "Prepared for" line: the company when commercial, else the person.
+    name: company || contact || t(est.customer_name) || null,
+    address: splitAddress || t(est.customer_address) || null,
+  };
+}
+
 function estimatePage(est, brand, sysName, totalSqft, opts) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const biz = b.business_name || 'Prescott Epoxy Company';
@@ -263,6 +284,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
   const state = stateForStatus(est);
+  const who = customerDisplay(est);
   // PREVIEW MODE (15c): staff sees the EXACT customer page from this same
   // renderer, but nothing is live. interactive gates the client script + the
   // enabled controls, so a preview carries NO public token and NO working
@@ -415,7 +437,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
       </div>
       <div class="pad">
         <div class="grid2">
-          <div><span class="lbl">Prepared for</span><div style="font-weight:700">${esc(est.customer_name || '')}</div>${est.customer_address ? `<div style="color:#4b5563;margin-top:2px">${esc(est.customer_address)}</div>` : ''}</div>
+          <div><span class="lbl">Prepared for</span><div style="font-weight:700">${esc(who.name || '')}</div>${who.company && who.contact ? `<div style="color:#4b5563;margin-top:2px">Attn: ${esc(who.contact)}</div>` : ''}${who.address ? `<div style="color:#4b5563;margin-top:2px">${esc(who.address)}</div>` : ''}</div>
           <div><span class="lbl">Estimate</span><div style="color:#4b5563">${esc(invNoTxt)}${est.sent_at ? ' &middot; sent ' + esc(fmtStamp(est.sent_at)) : ''}</div></div>
         </div>
         <div class="eyebrow">Scope of work</div>
@@ -717,6 +739,16 @@ async function ensureJobCreated(est) {
   // -- Customer: reuse by email, then by exact name + company (the manual-job
   // rule), then by this path's own deterministic id; create only when all
   // three miss. A retry always lands on the same row.
+  //
+  // Split identity pass-through (build 23): customers already has
+  // first_name / last_name / company_name (2026-05-04; company_name is the
+  // customer's BUSINESS, customers.company stays the brand). Fill them from
+  // the estimate's split columns, only when the estimate has values, so an
+  // estimate saved before the split never blanks an existing customer.
+  const splitIdentity = {};
+  if (est.customer_first_name) splitIdentity.first_name = est.customer_first_name;
+  if (est.customer_last_name) splitIdentity.last_name = est.customer_last_name;
+  if (est.customer_company) splitIdentity.company_name = est.customer_company;
   let customer = null;
   if (est.customer_email) {
     const found = await sb('GET', `/customers?email=eq.${encodeURIComponent(est.customer_email)}&select=*&limit=1`);
@@ -724,6 +756,7 @@ async function ensureJobCreated(est) {
       const updated = await sb('PATCH', `/customers?id=eq.${found[0].id}`, {
         name: est.customer_name || found[0].name,
         phone: est.customer_phone || found[0].phone,
+        ...splitIdentity,
       }, true);
       customer = updated[0];
     }
@@ -745,6 +778,7 @@ async function ensureJobCreated(est) {
       email: est.customer_email || null,
       phone: est.customer_phone || null,
       company: 'prescott-epoxy',
+      ...splitIdentity,
     }, true);
     customer = created[0];
   }
