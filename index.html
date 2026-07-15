@@ -21952,6 +21952,18 @@ async function renderUnifiedJob(jobId) {
       (bbPunchesByKey[key] ||= []).push({ start: e.started_at, end: e.ended_at });
     }
   } catch (err) { bbError = err && err.message ? err.message : String(err); }
+  // Send-back history (Feature A). Newest first. Degrades to [] if the table is not
+  // live yet (same graceful pattern as pec_prod_tasks), so a pre-migration job page
+  // never errors; the banner + history simply do not render until the migration runs.
+  let sendbacks = [];
+  try {
+    const sbRes = await withFreshSession(() => supabase
+      .from('pec_prod_costing_sendbacks')
+      .select('note, sent_back_by, created_at')
+      .eq('job_id', jobId)
+      .order('created_at', { ascending: false }), { label: 'costing-sendbacks' });
+    if (!sbRes.error) sendbacks = sbRes.data || [];
+  } catch (_) { /* table not live yet */ }
   const memberByIdAll = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
   const bonusMemberLookup = (key) => {
     if (key.startsWith('bb:')) return { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null };
@@ -22311,8 +22323,28 @@ async function renderUnifiedJob(jobId) {
   const costFinalized = !!job.costing_finalized_at;
   const costSubmitted = !!job.costing_submitted_at && !costFinalized;
   const submittedLine = `Submitted for review${job.costing_submitted_by ? ' by ' + esc(job.costing_submitted_by) : ''} on ${esc(fmtStamp(job.costing_submitted_at))}`;
+  // Send-back banner + history (Feature A). Shown to submitter and reviewer alike on
+  // a NON-finalized job that has send-back reasons, so the submitter sees WHY it came
+  // back. The latest note is a prominent banner; the full thread is a collapsible.
+  const fmtStampTime = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const sendbackHtml = (!costFinalized && sendbacks.length) ? `
+        <div style="background:color-mix(in srgb,#f59e0b 12%,transparent);border:1px solid color-mix(in srgb,#f59e0b 45%,transparent);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div style="font-weight:700;color:#b45309;font-size:.8rem;text-transform:uppercase;letter-spacing:.5px">Sent back for edits</div>
+          <div style="margin-top:4px;font-size:.9rem;white-space:pre-wrap">${esc(sendbacks[0].note)}</div>
+          <div style="margin-top:4px;font-size:.7rem;color:var(--muted)">${esc(sendbacks[0].sent_back_by || 'Reviewer')} · ${esc(fmtStampTime(sendbacks[0].created_at))}</div>
+          ${sendbacks.length > 1 ? `<details style="margin-top:8px">
+            <summary style="cursor:pointer;font-size:.72rem;color:var(--muted)">Send-back history (${sendbacks.length})</summary>
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
+              ${sendbacks.map(s => `<div style="border-left:2px solid color-mix(in srgb,#f59e0b 45%,transparent);padding-left:8px">
+                <div style="font-size:.82rem;white-space:pre-wrap">${esc(s.note)}</div>
+                <div style="font-size:.68rem;color:var(--muted)">${esc(s.sent_back_by || 'Reviewer')} · ${esc(fmtStampTime(s.created_at))}</div>
+              </div>`).join('')}
+            </div>
+          </details>` : ''}
+        </div>` : '';
   const finalizeCardHtml = `
       <div class="pec-card" id="sec-finalize">
+        ${sendbackHtml}
         ${costFinalized
           ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                <span style="color:var(--rd-success,#16a34a);font-weight:600">✓ Job costing finalized by ${esc(job.costing_finalized_by || 'Admin')} on ${esc(fmtStamp(job.costing_finalized_at))}</span>
@@ -22877,14 +22909,57 @@ async function renderUnifiedJob(jobId) {
     try { await supabase.rpc('log_costing_submitted', { p_customer: job.customer_name || '' }); } catch (_) { /* RPC may not be live yet */ }
     renderUnifiedJob(jobId);
   });
-  // Send back (admin): clears the submitted stamps so the submitter can edit again.
+  // Send back (reviewer): a REQUIRED reason is entered in a modal, recorded to the
+  // send-back history, then the submitted stamps clear so the submitter can edit
+  // again. The submitter sees the reason three ways: the on-job banner (above), a
+  // bell notification (log_costing_sent_back RPC), and a #epoxysales Slack post.
   const sendBackBtn = root.querySelector('#costingSendBackBtn');
-  if (sendBackBtn) sendBackBtn.addEventListener('click', async () => {
+  if (sendBackBtn) sendBackBtn.addEventListener('click', () => {
     if (!canFinalizeCosting()) { showToast('Only the costing reviewer can send costing back.', { ttl: 4000 }); return; }
-    if (!confirm('Send this job costing back to the submitter for edits?')) return;
-    await saveJobField(jobId, 'costing_submitted_at', null, sendBackBtn);
-    await saveJobField(jobId, 'costing_submitted_by', null, sendBackBtn);
-    renderUnifiedJob(jobId);
+    openModal(`
+      <h3 style="margin:0 0 4px">Send costing back</h3>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Explain what needs fixing. The submitter sees this as a banner on the job, a bell notification, and a message in #epoxysales. A reason is required.</div>
+      <div class="pec-field"><label>Reason</label><textarea id="sendBackNote" rows="4" style="width:100%" placeholder="What needs to change before this can be finalized?"></textarea></div>
+      <div id="sendBackErr" style="color:#dc2626;font-size:.8rem;min-height:1em;margin-bottom:6px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="sendBackConfirm" disabled>Send back</button>
+      </div>
+    `, { onMount: (modal) => {
+      const ta = modal.querySelector('#sendBackNote');
+      const confirmBtn = modal.querySelector('#sendBackConfirm');
+      const errEl = modal.querySelector('#sendBackErr');
+      ta.addEventListener('input', () => { confirmBtn.disabled = ta.value.trim() === ''; });
+      ta.focus();
+      confirmBtn.addEventListener('click', async () => {
+        const note = ta.value.trim();
+        if (!note) { confirmBtn.disabled = true; return; }
+        errEl.textContent = '';
+        confirmBtn.disabled = true; confirmBtn.textContent = 'Sending…';
+        const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
+        // 1) Record the reason FIRST. If this fails the send-back aborts (the note
+        //    is required and the history is the point), so nothing half-happens.
+        try {
+          const ins = await withFreshWrite(() => supabase.from('pec_prod_costing_sendbacks')
+            .insert({ job_id: jobId, note, sent_back_by: by }), { label: 'costing-sendback' });
+          if (ins.error) throw ins.error;
+        } catch (err) {
+          confirmBtn.disabled = false; confirmBtn.textContent = 'Send back';
+          errEl.textContent = 'Could not send back: ' + (err?.message || err);
+          return;
+        }
+        // 2) Clear the submitted stamps (the original send-back behavior).
+        await saveJobField(jobId, 'costing_submitted_at', null);
+        await saveJobField(jobId, 'costing_submitted_by', null);
+        // 3) Bell notification (best-effort; RPC may not be live pre-migration).
+        try { await supabase.rpc('log_costing_sent_back', { p_customer: job.customer_name || '', p_note: note }); } catch (_) { /* RPC may not be live yet */ }
+        // 4) Slack #epoxysales (best-effort; a Slack failure never blocks send-back).
+        try { await fetch('/.netlify/functions/pec-notify-costing-sendback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer: job.customer_name || '', sentBackBy: by, note }) }); } catch (_) { /* best-effort */ }
+        // 5) Close the dialog and re-render the job.
+        closeModal();
+        renderUnifiedJob(jobId);
+      });
+    } });
   });
   // Withdraw (submitter): clears the submitted stamps and unlocks the editors.
   const withdrawBtn = root.querySelector('#costingWithdrawBtn');

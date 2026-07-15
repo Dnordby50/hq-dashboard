@@ -1,5 +1,16 @@
 [
   {
+    "id": "costing-send-back-reason",
+    "date": "2026-07-14",
+    "title": "Send a job costing back with a reason",
+    "summary": "When you send a submitted job costing back to the person who submitted it, you now type a short reason for why. The reason is required. The submitter sees it three ways: a banner right on the job, a bell notification, and a message in the #epoxysales Slack channel. Every reason is kept as a history on the job, so if it goes back and forth you can read the whole thread.",
+    "howto": [
+      "On a submitted job costing, click Send back and type what needs fixing.",
+      "The submitter gets a banner on the job, a bell, and a Slack note.",
+      "Open Send-back history on the job to read every reason with who and when."
+    ]
+  },
+  {
     "id": "pending-panel-fits-calendar",
     "date": "2026-07-14",
     "title": "The Pending Jobs panel now fits the calendar",
