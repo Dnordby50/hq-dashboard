@@ -4,6 +4,53 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-15 11:20 MST] Cowork: build prompt 23 written (standalone Settings/Metrics slots, archive employees, per-employee bonus summary)
+By: Cowork
+Changed: claude-code-prompt-23-nav-slots-archive-bonus-summary.md (new), PROJECT-LOG.md. No app code touched, no prod data touched, no migration run.
+
+Dylan brought three items (own rail slots for Settings + Metrics, a per-employee per-pay-period bonus summary, and archiving former employees). Ran a 12-question multiple-choice dig. Recon FIRST (Explore pass over index.html), because two of the three asks are mostly-existing.
+
+RECON (headlines that reframed the asks):
+1. Settings AND Metrics ALREADY EXIST as nav views (settings route to renderSettings 14384; metrics route to renderMetrics 10162). They are just buried inside group flyouts (Settings under Admin, Metrics under Overview). So "deserves its own slot" is a promotion to a top-level pinned rail icon, not a new view. The rail is generated from hidden nav id=pecSubnav (2435-2464) and built at 5060-5320; RAIL_PIN (~5089) already pins docs to a bottom row and is the lever.
+2. pec_prod_crew_members ALREADY has an active checkbox (Settings Team Members card, 14500-14528) and active already filters the bonus/costing dropdowns (19431, 21940, 22258). No archived field exists yet. archived_at timestamptz is the app's existing convention (jobs/customers, 8219-8221).
+3. Bonus Report (renderBonusReport 13909-14185) ALREADY groups by pay period then crew member (Payroll tab), via commissionPeriod (~13545). The per-employee handout is new on top of that. Shared helpers to reuse: effectiveLaborBudget (build 22) and computeCrewBonus (~21291). Known identity gap: metrics/callbacks key on pec_prod_jobs.crew_lead (free text) while bonuses key on crew_member_id; flagged in the prompt so callbacks are not mis-attributed.
+
+DYLAN'S DECISIONS, locked into the prompt:
+FEATURE 1 (nav): Settings and Metrics become their OWN standalone rail icons, pinned at the BOTTOM near Help, REMOVED from their group flyouts (no duplication). Access unchanged (Settings admin-only, Metrics as-is). Nav placement only, no view-content change. Metrics CONTENT expansion is explicitly deferred to a later build (wish-list captured below).
+FEATURE 2 (archive): a dedicated Archive action separate from the active checkbox; archived people move to a collapsed "Archived" section with Restore. New nullable column archived_at on pec_prod_crew_members (migration written, NOT applied, Cowork handoff). Hides ONLY from the Settings team list and the new bonus-summary picker; bonus/costing dropdowns stay active-filtered; ALL history preserved.
+FEATURE 3 (per-employee bonus summary): a third tab in Bonus Report (not a new nav slot). Employee + pay-period pickers (picker excludes archived). Labor-savings bonus only. Shows won jobs (name, hours, job-level budget vs actual, bonus $), a per-job standard-wage vs wage+bonus effective-rate comparison, a trend strip (bonus direction + production over recent periods), and a "learned" section (over-budget jobs + defensibly-attributed callbacks). Printable one-page handout via print CSS.
+
+WHY THIS SHAPE: nav ships first and alone (smallest, no migration, bisectable), archive second (one additive column), summary last (largest, reuses ledger + shared helpers, no new math). One migration only (Feature 2), idempotent, applied by Cowork per the do-not-touch-prod rule. Every feature is user-facing so each gets a What's New entry.
+
+Files touched: claude-code-prompt-23-nav-slots-archive-bonus-summary.md, PROJECT-LOG.md.
+Next steps: Claude Code runs prompt 23 (Dylan has it). Prompt 23 ends with a Cowork handoff to apply the archived_at migration once Claude Code ships.
+
+## Metrics expansion (next build, captured so it is not lost)
+Dylan: "metrics are the whole point of our own CRM." Wish-list for a dedicated Metrics-view expansion (NOT built in prompt 23): per-employee performance (bonus earned, avg savings pct, callback rate, effective hourly rate over time), company-wide bonus/savings trend over time, and sales/conversion (lead-source conversion, close rate, revenue vs target, pipeline health). Note the crew_lead vs crew_member_id identity reconciliation will need solving for per-employee metrics.
+
+## Handoff to Dylan
+1. Hand claude-code-prompt-23-nav-slots-archive-bonus-summary.md to Claude Code. It is self-contained.
+2. Expect three commits (nav, archive, bonus summary) plus one migration (archived_at) for Cowork to apply after Claude Code ships.
+3. When ready to expand what Metrics SHOWS, say so and I will write that as its own build prompt from the wish-list above.
+
+---
+
+## [2026-07-14 22:55 MST] Cowork: verified SLACK_OFFICE_WEBHOOK is NOT set in Netlify prod
+By: Cowork
+Changed: No repo code, no prod data. Ran the open item from the 22:35 entry (confirm SLACK_OFFICE_WEBHOOK). Result: the variable is NOT configured in Netlify.
+
+METHOD: POSTed a clearly-labeled test payload to the live function https://prescottepoxy.netlify.app/.netlify/functions/pec-notify-costing-sendback. Response HTTP 200 with body {"ok":true,"slacked":false,"reason":"no-webhook"}. The 'no-webhook' reason is returned only when process.env.SLACK_OFFICE_WEBHOOK is falsy (function line 41). No message posted to #epoxysales (slacked:false), so nothing to clean up. This also confirms Build 22 is DEPLOYED (the new function responded, not a 404).
+
+IMPLICATION (broader than send-back): with the variable unset, ALL SLACK_OFFICE_WEBHOOK posts are silently no-op'ing, not just costing send-backs. That includes pec-invoice-intent.cjs (offline-pay notice), pec-stripe-webhook.cjs (ACH failure alert), and pec-public-estimate.cjs (estimate accepted/changed/declined). A prior search of #epoxysales found zero app-webhook messages ever, only Zapier (the separate DripJobs proposal integration) and humans, consistent with the variable never having been set.
+
+Why: Dylan said "check the slack webhook" then "test".
+Files touched: PROJECT-LOG.md only.
+Next steps: none from Cowork.
+Handoff to Cowork: none.
+Handoff to Dylan: To turn on the #epoxysales posts (send-back AND the pre-existing invoice/ACH/estimate ones), create a Slack incoming webhook bound to #epoxysales (Slack, api.slack.com/apps, your app, Incoming Webhooks, Add New Webhook to Workspace, pick #epoxysales) and set its URL as SLACK_OFFICE_WEBHOOK in Netlify (Site settings, Environment variables), then trigger a redeploy so the functions pick it up. Everything works without it (the posts just skip); this only enables the Slack broadcast. Say the word and I can re-run the same test to confirm once it is set.
+
+---
+
 ## [2026-07-14 22:35 MST] Cowork: applied both build-22 migrations to PROD (verified)
 By: Cowork
 Changed: No repo code. Ran the Build 22 Handoff to Cowork: applied both 2026-07-14 migrations to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd, ACTIVE_HEALTHY) via the Supabase MCP apply_migration. Both returned success.
