@@ -1,5 +1,16 @@
 [
   {
+    "id": "polycoat-material-category",
+    "date": "2026-07-15",
+    "title": "New material category: Polycoat",
+    "summary": "The Price and Material Catalog now has a Polycoat category for the new waterproof deck system's materials. Polycoat products get their own section in the catalog, and a system's recipe slots can pull Polycoat products, so the Polycoat system can be wired up end to end. Pricing works like the other liquid categories (per gallon).",
+    "howto": [
+      "Open the Price and Material Catalog and click + Add product.",
+      "Pick Polycoat as the Material type and save; it appears under the new Polycoat section.",
+      "To use it in a system, edit the system's recipe slot and choose Polycoat as the material type."
+    ]
+  },
+  {
     "id": "estimator-split-customer-fields",
     "date": "2026-07-15",
     "title": "Estimator: separate name, company, and address fields",

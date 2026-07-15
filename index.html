@@ -26411,11 +26411,12 @@ function _mergeAcrossAreas(areaPlans) {
     // (Flake Materials, Quartz Colors, Basecoats, ...). Within each section
     // sort by color first, then name, so flake/quartz colors are alphabetical
     // by their visible color label.
-    const sectionOrder = ['Flake', 'Quartz', 'Metallic Pigment', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Tint Pack', 'Extra'];
+    const sectionOrder = ['Flake', 'Quartz', 'Metallic Pigment', 'Basecoat', 'Topcoat', 'Stain', 'Sealer', 'Polycoat', 'Tint Pack', 'Extra'];
     const sectionLabel = {
       Flake: 'Flake Materials', Quartz: 'Quartz Colors',
       'Metallic Pigment': 'Metallic Pigments', Basecoat: 'Epoxy Products',
       Topcoat: 'Topcoats', Stain: 'Stains', Sealer: 'Sealers',
+      Polycoat: 'Polycoat',
       'Tint Pack': 'Tint Packs', Extra: 'Extras',
     };
     // Basecoats sort strictly by product NAME A-Z (Dylan wants them always
@@ -26528,7 +26529,7 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Material type</label>
-              <select id="pmType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t === 'Basecoat' ? 'Epoxy Products' : t}</option>`).join('')}</select>
+              <select id="pmType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Polycoat','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===p.material_type?'selected':''}>${t === 'Basecoat' ? 'Epoxy Products' : t}</option>`).join('')}</select>
             </div>
             <div class="pec-field"><label>Manufacturer</label>
               <input id="pmManufacturer" list="pmManufacturerList" value="${esc(p.manufacturer || '')}" placeholder="Pick or add a new one">
@@ -26911,7 +26912,7 @@ function _mergeAcrossAreas(areaPlans) {
             <input id="rsLabel" value="${esc(slot.label || '')}" placeholder="defaults to the material type">
           </div>
           <div class="pec-field"><label>Material type</label>
-            <select id="rsType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Densifier','Guard','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
+            <select id="rsType">${['Basecoat','Flake','Quartz','Metallic Pigment','Topcoat','Stain','Sealer','Polycoat','Densifier','Guard','Tint Pack','Extra'].map(t => `<option value="${t}" ${t===slot.material_type?'selected':''}>${t}</option>`).join('')}</select>
           </div>
           <div class="pec-row-3" id="rsMultiRow">
             <div class="pec-field"><label>Min picks</label><input id="rsMin" type="number" min="0" step="1" value="${esc(slot.min_select ?? 1)}"></div>
