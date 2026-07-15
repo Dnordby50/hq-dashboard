@@ -1,5 +1,16 @@
 [
   {
+    "id": "pending-panel-fits-calendar",
+    "date": "2026-07-14",
+    "title": "The Pending Jobs panel now fits the calendar",
+    "summary": "On the Job Schedule, the Pending Jobs panel used to have a fixed height that cut a short calendar off or ran long on a tall one. Now it sizes to the calendar beside it: when there are only a few pending jobs the panel stays short, and when there are many the panel matches the calendar's height and the list scrolls inside itself, so the page no longer grows a second scrollbar. Switching between Week and 3 weeks adjusts it automatically.",
+    "howto": [
+      "Open the Job Schedule; the Pending Jobs panel lines up with the calendar height.",
+      "With many pending jobs, scroll inside the panel to see them all.",
+      "Toggle Week and 3 weeks; the panel resizes to match."
+    ]
+  },
+  {
     "id": "pending-job-quick-look",
     "date": "2026-07-14",
     "title": "Click a pending job to see its details",

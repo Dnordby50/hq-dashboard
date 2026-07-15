@@ -18626,6 +18626,11 @@ async function renderNextDay() {
   });
 }
 
+// Live refs for the pending-panel height sync (Task 3). Kept at module scope so a
+// re-render can tear the previous ones down before wiring new ones (no listener /
+// observer accumulation across the many renderSchedule re-runs).
+let _schedPendingRO = null, _schedPendingResize = null;
+
 async function renderSchedule() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty">Loading schedule…</div>';
@@ -18788,6 +18793,50 @@ async function renderSchedule() {
   }));
 
   renderScheduleCalendar(sysById, crewById, areaSystem);
+
+  // Task 3: cap the Pending panel at the CALENDAR's height so it hugs its content
+  // when short and scrolls internally when taller, with no second page scrollbar.
+  // Chosen over pure CSS grid-stretch deliberately: the grid's single auto row
+  // sizes to the TALLER of the two columns, so a long pending list (many jobs, a
+  // short 1-week calendar) would drive the row taller than the calendar and the
+  // cap would never engage. There is no declarative way to say "row height = the
+  // calendar column only", so we measure it. max-height on the list gives the exact
+  // rule with zero grid changes (smallest blast radius): content < cap -> hugs;
+  // content > cap -> scrolls inside. Desktop two-column only; mobile clears the cap.
+  const grid = root.querySelector('.pec-sched-grid');
+  const mainCol = grid && grid.querySelector(':scope > main');
+  const aside = grid && grid.querySelector(':scope > .pec-sched-aside-details');
+  const summaryEl = aside && aside.querySelector('.pec-sched-aside-sum');
+  const pendingEl = $('pecSchedPending');
+  if (_schedPendingRO) { _schedPendingRO.disconnect(); _schedPendingRO = null; }
+  if (_schedPendingResize) { window.removeEventListener('resize', _schedPendingResize); _schedPendingResize = null; }
+  if (mainCol && aside && summaryEl && pendingEl) {
+    const syncSchedPendingHeight = () => {
+      // Two-column desktop only. The layout collapses to one column at <=900px
+      // (grid-template-columns:1fr), so below that the cap makes no sense: clear it
+      // and let the list flow in the stacked / <details> mobile layout untouched.
+      if (!(window.matchMedia && window.matchMedia('(min-width:901px)').matches)) {
+        pendingEl.style.maxHeight = '';
+        return;
+      }
+      const rowH = mainCol.getBoundingClientRect().height;
+      // Space above the list inside the aside (the "Pending Jobs" summary + its
+      // margin): measured from the DOM so it stays right if the header changes.
+      const above = pendingEl.getBoundingClientRect().top - aside.getBoundingClientRect().top;
+      pendingEl.style.maxHeight = Math.max(120, Math.round(rowH - above)) + 'px';
+    };
+    syncSchedPendingHeight();
+    // The calendar height changes on the Week vs 3 weeks toggle (which re-renders,
+    // re-running this) and on any late reflow (fonts, wrapping); a ResizeObserver on
+    // the calendar column recomputes without a re-render. Window resize also catches
+    // crossing the 900px breakpoint (where the observer's height may not change).
+    if (window.ResizeObserver) {
+      _schedPendingRO = new ResizeObserver(syncSchedPendingHeight);
+      _schedPendingRO.observe(mainCol);
+    }
+    _schedPendingResize = syncSchedPendingHeight;
+    window.addEventListener('resize', _schedPendingResize);
+  }
 }
 
 function renderScheduleCalendar(sysById, crewById, areaSystem) {
@@ -23927,7 +23976,13 @@ if (portalToken) {
     .pec-sched-aside-details[open] .pec-sched-aside-sum::before { transform:rotate(90deg) }
     .pec-sched-aside-details[open] .pec-sched-pending { margin-top:8px }
   }
-  .pec-sched-pending { display:flex; flex-direction:column; gap:8px; max-height:75vh; overflow-y:auto; padding-right:4px }
+  /* No fixed max-height: the desktop two-column layout caps this at the CALENDAR's
+     height via JS (syncSchedPendingHeight in renderSchedule) so the list hugs its
+     content when short and scrolls internally when taller than the calendar. The
+     old max-height:75vh was viewport-relative and unrelated to the calendar (it
+     truncated a short 1-week calendar and overshot a tall 3-week one). On mobile
+     the JS clears the cap, so the list flows naturally in the collapsed layout. */
+  .pec-sched-pending { display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:4px }
   .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:pointer; transition:border-color .12s, box-shadow .12s }
   .pec-sched-pcard:hover, .pec-sched-pcard:focus-visible { border-color:var(--accent, #D8531C); box-shadow:0 2px 10px rgba(8,10,18,.10); outline:none }
   .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
