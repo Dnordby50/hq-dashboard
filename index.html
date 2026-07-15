@@ -5248,6 +5248,13 @@ if (document.readyState === 'loading') {
       if (window.matchMedia && window.matchMedia('(hover:hover) and (pointer:fine)').matches) {
         wrap.addEventListener('mouseenter', () => { if (railDesktop()) railOpenGroup(g); });
         wrap.addEventListener('mouseleave', () => { if (railDesktop() && railOpen === g) { railCloseTimer = setTimeout(railCloseAll, 160); } });
+        // The flyout is portaled to <body> on desktop (railOpenGroup), so it is no
+        // longer inside wrap: moving the pointer from the rail icon onto the flyout
+        // fires mouseleave on wrap and would arm the close timer. Mirror the hover
+        // guard on the flyout itself so hovering it cancels the close, and leaving
+        // it re-arms the close, exactly as when it lived inside wrap.
+        fly.addEventListener('mouseenter', () => { if (railCloseTimer) { clearTimeout(railCloseTimer); railCloseTimer = null; } });
+        fly.addEventListener('mouseleave', () => { if (railDesktop() && railOpen === g) { railCloseTimer = setTimeout(railCloseAll, 160); } });
       }
       // Keyboard: Enter/Space/Down opens and focuses the first item; arrows move
       // within the flyout; Escape closes and returns focus to the rail icon.
