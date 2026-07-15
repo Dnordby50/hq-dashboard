@@ -1,5 +1,16 @@
 [
   {
+    "id": "bonus-approve-per-member",
+    "date": "2026-07-14",
+    "title": "Approve each crew member's bonus when you finalize",
+    "summary": "Finalizing a job costing now opens an approval step. It lists each crew member with the suggested bonus already filled in, and you can change any amount before it is recorded. The crew pool total updates live as you edit, and it is simply the sum of what you approve (there is no re-split). What gets recorded keeps a full trail: the originally suggested amount, the approved amount, and who approved it. The suggested pool also shows next to each job in the Submitted for review list, so you can see it before opening the job.",
+    "howto": [
+      "On a submitted job, click Finalize Job Costing to open the approval step.",
+      "Adjust any crew member's amount; watch the crew pool total update.",
+      "Click Approve and Finalize; the Bonus Report pending payout shows the approved numbers."
+    ]
+  },
+  {
     "id": "costing-send-back-reason",
     "date": "2026-07-14",
     "title": "Send a job costing back with a reason",

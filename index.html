@@ -20938,7 +20938,11 @@ async function loadCostingData() {
     // migration lands, without 400ing before it does. Needed for the bonus math.
     supabase.from('pec_prod_crew_members').select('*').order('name'),
     supabase.from('pec_prod_material_lines').select('id,job_id,product_id,product_name,material_type,supplier,color,qty_needed,order_qty,unit_cost_snapshot,line_cost,ordered,delivered,cure_speed,actual_used_qty,order_index'),
-    supabase.from('pec_prod_job_bonuses').select('id,job_id,crew_member_id,crew_member_name,hours_actual,amount,note').order('created_at'),
+    // select('*') (not an explicit list) so the approval-audit columns
+    // (suggested_amount, approved_by, approved_at) are read once the 2026-07-14
+    // migration lands, without 400ing before it does. The finalized Bonus (recorded)
+    // recap reads them to show approved vs originally suggested.
+    supabase.from('pec_prod_job_bonuses').select('*').order('created_at'),
     // Same hourly rate the front-end Budget card reads, so estimated hours match.
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
     // Manual per-member hours that drive the bonus while BusyBusy is offline. A
@@ -21320,6 +21324,25 @@ function computeCrewBonus(laborBudget, hoursByKey, memberLookup, defaultRate) {
   const pool = savings != null ? Math.max(0, savings) * CREW_BONUS_FRACTION : null;
   for (const m of members) m.bonus = (pool != null && totalHours > 0) ? pool * (m.hours / totalHours) : 0;
   return { members, totalHours, totalOtHours, actualLabor: hasActuals ? actualLabor : null, laborBudget: lb, savings, pool, hasActuals };
+}
+
+// Effective labor budget for a job's crew bonus: the real estimate labor budget,
+// else the system type's labor_budget_pct of revenue, else DEFAULT_LABOR_BUDGET_PCT
+// of revenue. Extracted so the costing detail's Bonus Payout box and the costing
+// queue's suggested-pool preview compute the SAME budget and can never disagree.
+// Returns { budget, estimated, estPct }: budget null when there is no estimate AND
+// no revenue to base a fallback on.
+function effectiveLaborBudget(job, sys) {
+  const est = (state.estimateByJob || {})[job.id] || {};
+  const real = est.laborBudget == null ? null : Number(est.laborBudget);
+  if (real != null) return { budget: real, estimated: false, estPct: null };
+  const rev = Number(job.revenue || 0);
+  if (rev > 0) {
+    const sysPct = (sys && sys.labor_budget_pct != null) ? Number(sys.labor_budget_pct) : null;
+    const estPct = (sysPct != null && sysPct > 0) ? sysPct : DEFAULT_LABOR_BUDGET_PCT;
+    return { budget: rev * (estPct / 100), estimated: true, estPct };
+  }
+  return { budget: null, estimated: false, estPct: null };
 }
 
 // SUPERSEDED by renderBonusReport (the crew-bonus nav route now points there).
@@ -21971,25 +21994,16 @@ async function renderUnifiedJob(jobId) {
     return { name: m?.name || 'Team member', wage: m?.hourly_wage ?? null };
   };
   const jobEst = (state.estimateByJob || {})[jobId] || {};
-  const realLaborBudget = jobEst.laborBudget == null ? null : Number(jobEst.laborBudget);
-  // Labor-budget fallback. A job without a computed estimate has laborBudget null, so
-  // the pool used to read "no labor budget" and the bonus never auto-calculated. Fall
-  // back to (a) the system type's labor_budget_pct of revenue, else (b) the 20%
-  // default, so a budget is always available once revenue is set. laborBudgetEstimated
-  // drives a muted "estimated" note next to the figure so it is not mistaken for the
-  // real estimate. The bonus math downstream is identical; only the budget source changes.
-  let jobLaborBudget = realLaborBudget;
-  let laborBudgetEstimated = false;
-  let laborBudgetEstPct = null;
-  if (jobLaborBudget == null) {
-    const jobRevenueForBudget = Number(job.revenue || 0);
-    if (jobRevenueForBudget > 0) {
-      const sysPct = (sys && sys.labor_budget_pct != null) ? Number(sys.labor_budget_pct) : null;
-      laborBudgetEstPct = (sysPct != null && sysPct > 0) ? sysPct : DEFAULT_LABOR_BUDGET_PCT;
-      jobLaborBudget = jobRevenueForBudget * (laborBudgetEstPct / 100);
-      laborBudgetEstimated = true;
-    }
-  }
+  // Labor-budget fallback, now via the shared effectiveLaborBudget so the Bonus
+  // Payout box and the costing-queue preview compute the same budget. A job without
+  // a computed estimate falls back to the system type's labor_budget_pct of revenue,
+  // else the 20% default, so a budget is always available once revenue is set.
+  // laborBudgetEstimated drives a muted "estimated" note so it is not mistaken for
+  // the real estimate. The bonus math downstream is identical; only the source changes.
+  const _elb = effectiveLaborBudget(job, sys);
+  const jobLaborBudget = _elb.budget;
+  const laborBudgetEstimated = _elb.estimated;
+  const laborBudgetEstPct = _elb.estPct;
   const jobLaborPct = jobEst.laborPct != null ? Number(jobEst.laborPct) : (sys && sys.labor_budget_pct != null ? Number(sys.labor_budget_pct) : null);
   const defaultLaborRate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
   // Manual per-member hours for this job (entered in the editor below). They drive
@@ -22303,14 +22317,30 @@ async function renderUnifiedJob(jobId) {
   // Read-only crew-bonus recap (Phase 4.4): shown on a finalized job so looking
   // up a past job later shows what the crew earned. Same per-member numbers as
   // the Bonus Payout box (recomputed from the shared helper).
+  // On a finalized job the RECORDED ledger rows are the truth (they were approved,
+  // possibly with edits), so the recap reads them, not the live recompute: the
+  // approved amount per member, the originally suggested amount when it differs, and
+  // who approved. Falls back to the live pool for a job finalized before this feature
+  // (or one with no savings), where there are no recorded 'Labor-savings bonus' rows.
+  const lsRecapRows = bonuses.filter(b => b.note === 'Labor-savings bonus');
+  const recapApprover = (lsRecapRows.find(b => b.approved_by) || {}).approved_by || null;
+  const recordedPool = lsRecapRows.reduce((s, b) => s + Number(b.amount || 0), 0);
   const bonusRecapHtml = isSubbed
     ? `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: $0, skipped (subcontracted job).</div>`
-    : (bonusCalc.hasActuals && bonusCalc.pool != null)
+    : lsRecapRows.length
       ? `<div style="margin-top:10px;font-size:.8rem">
-         <strong>Crew bonus pool: ${bonusCalc.pool > 0 ? fmtMoneyOrDash(bonusCalc.pool) : '$0 (no savings)'}</strong>
-         ${bonusCalc.pool > 0 ? `<div style="color:var(--muted);margin-top:2px">${bonusCalc.members.filter(m => m.bonus > 0).map(m => esc(m.name) + ': ' + fmtMoneyOrDash(m.bonus)).join(' · ')}</div>` : ''}
+         <strong>Crew bonus pool: ${recordedPool > 0 ? fmtMoneyOrDash(recordedPool) : '$0'}</strong>
+         <div style="color:var(--muted);margin-top:2px">${lsRecapRows.map(b => {
+           const appr = Number(b.amount || 0);
+           const sugg = b.suggested_amount == null ? null : Number(b.suggested_amount);
+           const differs = sugg != null && Math.round(sugg * 100) !== Math.round(appr * 100);
+           return esc(b.crew_member_name || 'Crew') + ': ' + fmtMoneyOrDash(appr) + (differs ? ` <span style="color:var(--rd-warn,#b45309)">(suggested ${fmtMoneyOrDash(sugg)})</span>` : '');
+         }).join(' · ')}</div>
+         ${recapApprover ? `<div style="color:var(--muted);margin-top:2px">Approved by ${esc(recapApprover)}</div>` : ''}
        </div>`
-      : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
+      : (bonusCalc.hasActuals && bonusCalc.pool != null)
+        ? `<div style="margin-top:10px;font-size:.8rem"><strong>Crew bonus pool: ${bonusCalc.pool > 0 ? fmtMoneyOrDash(bonusCalc.pool) : '$0 (no savings)'}</strong></div>`
+        : `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: awaiting hours.</div>`;
 
   // Submit-for-review approval step. Lifecycle is read off the two stamps (no
   // enum): draft -> submitted (awaiting review) -> finalized. Finalize (and the
@@ -22969,46 +22999,110 @@ async function renderUnifiedJob(jobId) {
     await saveJobField(jobId, 'costing_submitted_by', null, withdrawBtn);
     renderUnifiedJob(jobId);
   });
+  // Finalize IS the approval (Feature B). Clicking Finalize opens a dialog listing
+  // each mapped crew member with an EDITABLE bonus (pre-filled to the suggestion),
+  // a live "Crew pool" total that FLOATS (just the sum of the inputs, no re-split),
+  // and an audit trail (suggested vs approved vs who). Everything AFTER approval is
+  // the existing finalize sequence, so one button still does the whole thing.
   const finalizeBtn = root.querySelector('#costingFinalizeBtn');
-  if (finalizeBtn) finalizeBtn.addEventListener('click', async () => {
+  if (finalizeBtn) finalizeBtn.addEventListener('click', () => {
     if (!canFinalizeCosting()) { showToast('Only the costing reviewer can finalize job costing.', { ttl: 4000 }); return; }
-    if (!confirm('Are you sure you want to finalize job costing for this job?')) return;
-    finalizeBtn.disabled = true; finalizeBtn.textContent = 'Finalizing…';
-    const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
-    await saveJobField(jobId, 'costing_finalized_by', by, finalizeBtn);
-    await saveJobField(jobId, 'costing_finalized_at', new Date().toISOString(), finalizeBtn);
-    // Part 2: commit the computed per-member bonus into the pec_prod_job_bonuses
-    // ledger (the same ledger the Bonus Report reads) ONLY on finalize, so the
-    // office reviews the suggested bonus first. Delete-then-insert this job's
-    // labor-savings rows so re-finalizing never duplicates; the partial unique
-    // index is the DB backstop. Unmapped BusyBusy members (bb: keys, no crew_id)
-    // are skipped: they cannot be paid. Uses the same bonusCalc that drove the box.
-    try {
-      const NOTE = 'Labor-savings bonus';
-      // A SUBCONTRACTED job records ZERO crew bonus at finalize (prompt 10): the
-      // delete below still clears the calc's OWN auto rows (note filter only),
-      // so a job flagged after an earlier finalize wipes its stale suggestion
-      // instead of paying it, while hand-entered bonus rows (crew lead, ad hoc)
-      // are never touched and the Bonus Report gets no pending line. bonusCalc
-      // already computes zero bonuses for flagged jobs (null budget); the
-      // explicit guard also covers a stale render-time closure.
-      const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').delete().eq('job_id', jobId).eq('note', NOTE), { label: 'bonus-ledger-del' });
-      if (del.error) throw del.error;
-      const ledgerRows = (job.subcontracted ? [] : bonusCalc.members)
-        .filter(m => m.bonus > 0 && m.key && !m.key.startsWith('bb:'))
-        .map(m => ({ job_id: jobId, crew_member_id: m.key, crew_member_name: m.name, hours_actual: m.hours, amount: Math.round(m.bonus * 100) / 100, note: NOTE }));
-      if (ledgerRows.length) {
-        const ins = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(ledgerRows), { label: 'bonus-ledger-ins' });
-        if (ins.error) throw ins.error;
+    const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
+    // Mapped members are payable (real crew_member_id); bb: members cannot be paid.
+    const mappedMembers   = (isSubbed || !bonusCalc.hasActuals) ? [] : bonusCalc.members.filter(m => m.key && !m.key.startsWith('bb:'));
+    const unmappedMembers = (isSubbed || !bonusCalc.hasActuals) ? [] : bonusCalc.members.filter(m => m.key &&  m.key.startsWith('bb:'));
+
+    // The existing finalize sequence, but the inserted rows now carry the EDITED
+    // amount plus the audit columns. Delete-then-insert keeps re-finalizing safe.
+    const doFinalize = async (approvedRows, dialogBtn) => {
+      if (dialogBtn) { dialogBtn.disabled = true; dialogBtn.textContent = 'Finalizing…'; }
+      const by = state.adminUser?.name || state.adminUser?.email || 'Admin';
+      const approvedAt = new Date().toISOString();
+      await saveJobField(jobId, 'costing_finalized_by', by);
+      await saveJobField(jobId, 'costing_finalized_at', approvedAt);
+      try {
+        const NOTE = 'Labor-savings bonus';
+        // Subcontracted / no-hours jobs pass approvedRows = [] (zero bonus recorded);
+        // the delete still clears any stale auto suggestion. Hand-entered rows (crew
+        // lead, ad hoc) use different notes and are never touched.
+        const del = await withFreshWriteRetry(() => supabase.from('pec_prod_job_bonuses').delete().eq('job_id', jobId).eq('note', NOTE), { label: 'bonus-ledger-del' });
+        if (del.error) throw del.error;
+        const ledgerRows = approvedRows
+          .filter(m => m.approved > 0 && m.key && !m.key.startsWith('bb:'))
+          .map(m => ({ job_id: jobId, crew_member_id: m.key, crew_member_name: m.name, hours_actual: m.hours, amount: m.approved, note: NOTE, suggested_amount: m.suggested, approved_by: by, approved_at: approvedAt }));
+        if (ledgerRows.length) {
+          // Insert WITH the audit columns; if the 2026-07-14 migration has not landed
+          // the columns are missing, so retry once with the base columns (finalize's
+          // core behavior must never break on a pre-migration deploy). Mirrors the
+          // preMigration retry used for pec_prod_tasks.
+          let ins = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(ledgerRows), { label: 'bonus-ledger-ins' });
+          if (ins.error && /suggested_amount|approved_by|approved_at/i.test(ins.error.message || '')) {
+            const baseRows = ledgerRows.map(({ suggested_amount, approved_by, approved_at, ...base }) => base);
+            ins = await withFreshWrite(() => supabase.from('pec_prod_job_bonuses').insert(baseRows), { label: 'bonus-ledger-ins-base' });
+          }
+          if (ins.error) throw ins.error;
+        }
+      } catch (err) {
+        showToast('Costing finalized, but recording the crew bonus to the ledger failed: ' + (err && err.message ? err.message : err), { ttl: 7000 });
       }
-    } catch (err) {
-      showToast('Costing finalized, but recording the crew bonus to the ledger failed: ' + (err && err.message ? err.message : err), { ttl: 7000 });
-    }
-    // Clear the submitted stamps so a finalized job is not also flagged "submitted"
-    // (it would otherwise linger in the Submitted-for-review queue).
-    await saveJobField(jobId, 'costing_submitted_at', null);
-    await saveJobField(jobId, 'costing_submitted_by', null);
-    renderUnifiedJob(jobId);
+      // Clear the submitted stamps so a finalized job is not also flagged "submitted".
+      await saveJobField(jobId, 'costing_submitted_at', null);
+      await saveJobField(jobId, 'costing_submitted_by', null);
+      closeModal();
+      renderUnifiedJob(jobId);
+    };
+
+    const memberRowsHtml = mappedMembers.map(m => `
+      <tr class="nohover">
+        <td><strong>${esc(m.name)}</strong></td>
+        <td style="text-align:right">${fmtNum(m.hours)}</td>
+        <td style="text-align:right;color:var(--muted)">${fmtMoneyOrDash(round2(m.bonus))}</td>
+        <td style="text-align:right"><input class="prod-num" type="number" min="0" step="0.01" data-appr-key="${esc(m.key)}" data-appr-name="${esc(m.name)}" data-appr-hours="${esc(m.hours)}" data-appr-suggested="${esc(round2(m.bonus))}" value="${esc(round2(m.bonus))}" style="width:110px;text-align:right"></td>
+      </tr>`).join('');
+    const unmappedRowsHtml = unmappedMembers.map(m => `
+      <tr class="nohover" style="opacity:.6">
+        <td>${esc(m.name)}</td>
+        <td style="text-align:right">${fmtNum(m.hours)}</td>
+        <td colspan="2" style="color:var(--muted);font-size:.72rem">not linked to a crew member, cannot be paid</td>
+      </tr>`).join('');
+    const bodyHtml = isSubbed
+      ? `<div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;font-size:.85rem;color:var(--muted)">Subcontracted job, no crew bonus recorded. Finalizing records zero crew bonus and clears any stale suggestion.</div>`
+      : !bonusCalc.hasActuals
+        ? `<div style="background:var(--bg-soft);border-radius:8px;padding:12px 14px;font-size:.85rem;color:var(--muted)">No crew hours yet, no bonus. Finalizing records zero crew bonus.</div>`
+        : `<div style="font-size:.78rem;color:var(--muted);margin-bottom:8px">Review and adjust each crew member's bonus. The pool is the sum of the amounts you approve; there is no re-split.</div>
+           <div class="pec-table-wrap"><table class="pec-table" style="font-size:.8rem">
+             <thead><tr><th>Team member</th><th style="text-align:right">Hours</th><th style="text-align:right">Suggested</th><th style="text-align:right">Approved $</th></tr></thead>
+             <tbody>${memberRowsHtml}${unmappedRowsHtml}</tbody>
+             <tfoot><tr class="nohover" style="font-weight:600"><td colspan="3" style="text-align:right">Crew pool</td><td style="text-align:right"><span id="apprPoolTotal">${fmtMoneyOrDash(mappedMembers.reduce((s, m) => s + round2(m.bonus), 0))}</span></td></tr></tfoot>
+           </table></div>`;
+
+    openModal(`
+      <h3 style="margin:0 0 4px">Approve crew bonus &amp; finalize</h3>
+      <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Finalizing records the approved bonus into the Bonus Report (pending payout) and moves this job to Completed Job Costing.</div>
+      ${bodyHtml}
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="bonusApproveBtn">Approve &amp; Finalize</button>
+      </div>
+    `, { onMount: (modal) => {
+      const poolEl = modal.querySelector('#apprPoolTotal');
+      const inputs = Array.from(modal.querySelectorAll('input[data-appr-key]'));
+      const recomputePool = () => {
+        const total = inputs.reduce((s, inp) => s + (Number(inp.value) || 0), 0);
+        if (poolEl) poolEl.textContent = fmtMoneyOrDash(round2(total));
+      };
+      inputs.forEach(inp => inp.addEventListener('input', recomputePool));
+      modal.querySelector('#bonusApproveBtn').addEventListener('click', (e) => {
+        const approvedRows = inputs.map(inp => ({
+          key: inp.dataset.apprKey,
+          name: inp.dataset.apprName,
+          hours: Number(inp.dataset.apprHours) || 0,
+          approved: round2(inp.value),
+          suggested: round2(inp.dataset.apprSuggested),
+        }));
+        doFinalize(approvedRows, e.currentTarget);
+      });
+    } });
   });
   const unfinalizeBtn = root.querySelector('#costingUnfinalizeBtn');
   if (unfinalizeBtn) unfinalizeBtn.addEventListener('click', async () => {
@@ -23181,6 +23275,41 @@ async function renderJobCosting() {
   const submittedReview = (state.prodJobs || [])
     .filter(j => !j.archived_at && !!j.costing_submitted_at && !costingIsFinalized(j))
     .slice().sort((a, b) => String(b.costing_submitted_at || '').localeCompare(String(a.costing_submitted_at || '')));
+  // Suggested crew bonus pool per submitted job (read-only preview, Feature B). ONE
+  // hours query for just the submitted set (not every job), then the SHARED
+  // effectiveLaborBudget + computeCrewBonus, so this preview can never disagree with
+  // the costing detail's Bonus Payout box. Subcontracted -> "no bonus"; a job with no
+  // BusyBusy AND no manual hours -> awaiting (a dash). BusyBusy wins over manual, the
+  // same source rule the detail uses.
+  const bonusPoolBySubmitted = {};
+  if (submittedReview.length) {
+    const rate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
+    const memberByIdAll = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
+    const lookup = (key) => key.startsWith('bb:') ? { name: '', wage: null } : { name: memberByIdAll[key]?.name || '', wage: memberByIdAll[key]?.hourly_wage ?? null };
+    const hoursByJobKey = {};
+    try {
+      const res = await withFreshSession(() => supabase.from('pec_prod_busybusy_time_entries').select('*').in('job_id', submittedReview.map(j => j.id)), { label: 'costing-queue-hours' });
+      if (!res.error) for (const e of (res.data || [])) {
+        if (e.deleted_at) continue;
+        const h = Number(e.hours || 0); if (!(h > 0)) continue;
+        const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
+        const cur = ((hoursByJobKey[e.job_id] ||= {})[key] ||= { total: 0, ot: 0 });
+        cur.total += h; cur.ot += Number(e.ot_hours || 0) || 0;
+      }
+    } catch (_) { /* hours table not live yet -> every job awaiting */ }
+    for (const j of submittedReview) {
+      if (j.subcontracted) { bonusPoolBySubmitted[j.id] = { subbed: true }; continue; }
+      let hoursByKey = hoursByJobKey[j.id];
+      if (!hoursByKey || !Object.keys(hoursByKey).length) {
+        const manual = (state.manualLaborByJob?.[j.id] || []).filter(m => m.crew_member_id);
+        if (manual.length) { hoursByKey = {}; for (const m of manual) { const cur = (hoursByKey[m.crew_member_id] ||= { total: 0, ot: 0 }); cur.total += Number(m.hours || 0); cur.ot += Number(m.ot_hours || 0); } }
+      }
+      if (!hoursByKey || !Object.keys(hoursByKey).length) { bonusPoolBySubmitted[j.id] = { awaiting: true }; continue; }
+      const eff = effectiveLaborBudget(j, areaSystem(j));
+      const calc = computeCrewBonus(eff.budget, hoursByKey, lookup, rate);
+      bonusPoolBySubmitted[j.id] = { pool: calc.pool, hasActuals: calc.hasActuals };
+    }
+  }
   // Always render this card (no length gate) so the review queue is discoverable
   // even when empty. With 0 submitted jobs it shows a muted empty-state row; the
   // count chip is omitted at 0. Shown to all roles, always (not role-gated).
@@ -23190,10 +23319,18 @@ async function renderJobCosting() {
       <div style="display:flex;flex-direction:column;gap:6px">
         ${submittedReview.length ? submittedReview.map(j => {
           const sys = areaSystem(j);
+          // Suggested crew bonus pool preview (read-only). Dash when awaiting hours.
+          const bp = bonusPoolBySubmitted[j.id] || {};
+          const poolLabel = bp.subbed
+            ? 'No crew bonus (subcontracted)'
+            : (bp.awaiting || !bp.hasActuals || bp.pool == null)
+              ? 'Bonus —'
+              : 'Bonus ' + fmtMoneyOrDash(bp.pool || 0);
           return `<div data-pending-cost="${esc(j.id)}" style="display:flex;gap:10px;align-items:center;cursor:pointer;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text))">
             <span style="flex:1;font-weight:600">${esc(j.customer_name || '(no name)')}</span>
             <span style="color:var(--rd-muted,var(--muted));font-size:.78rem">${esc(j.address || '')}</span>
             ${sys ? `<span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${esc(sys.name)}</span>` : ''}
+            <span style="color:var(--rd-muted,var(--muted));font-size:.72rem" title="Suggested crew bonus pool">${esc(poolLabel)}</span>
             <span style="color:var(--rd-muted,var(--muted));font-size:.72rem">${j.costing_submitted_by ? 'by ' + esc(j.costing_submitted_by) + ' · ' : ''}${esc(fmtStamp(j.costing_submitted_at))}</span>
             ${j.subcontracted ? '<span class="pec-badge" style="--pec-badge-bg:#64748b">Subcontracted</span>' : ''}
             <span class="pec-badge" style="--pec-badge-bg:#d8531c">Awaiting review</span>
