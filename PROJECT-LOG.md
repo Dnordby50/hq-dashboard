@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Cowork: dig + wrote Claude Code prompts 27, 28, 29 (clickable notifications, personal to-dos, estimator zip fix); teed up People-model as its own phased build
+By: Cowork
+Changed: No repo app code, no DB changes, no prod writes. Ran read-only recon (index.html bell/settings/nav/view-routing, apps/estimator customer card + styles.css) then a 17-question multiple-choice dig with Dylan across his five items. Wrote three self-contained Claude Code build prompts, saved them to the repo, and delivered all three to Dylan in chat.
+
+DYLAN'S FIVE ITEMS AND WHERE THEY LANDED:
+1. Clickable notifications (job costing sent back to Anne should click through to the costing) -> prompt 27.
+2. Personal to-dos in the left column -> prompt 28.
+3. Team-member birthdays (mandatory, reminder) -> folded INTO the People-model build (below), not a standalone prompt.
+4. Condense team members / users / permissions -> reframed (see below), becomes the People-model build.
+5. Estimator zip code off-screen (reported mid-dig) -> prompt 29.
+
+KEY RECON FINDINGS THAT RESHAPED THE ASK:
+- Item 4 is partly already done. A prior build merged the old Team page and User Permissions page into Settings > Users (index.html:14712-14717, 11042). What is still scattered is that people live in four tables for four jobs: admin_users/user_permissions (logins + capabilities), pec_sales_team_members (commission), pec_prod_crews (grouping), pec_prod_crew_members (hourly wage + BusyBusy hour sync). Those feed load-bearing math (crew bonus labor, sales commission, auth), so condensing into one is a data-model decision, not cleanup.
+- Item 1 has a real wrinkle, already documented in code (index.html:23019-23021): pec_notifications.job_id FKs public.jobs, but job costing lives on pec_prod_jobs, so the costing RPCs (log_costing_submitted / log_costing_sent_back) intentionally store NO job link. Making Anne's notification clickable needs a routing target on the row, not just a UI tweak. The costing view already opens one job via state.openUnifiedJobId + switchView('costing') (index.html:14202, 19946).
+- Item 5 root cause: the base select/input rule (apps/estimator/src/styles.css:108) sets no width, and .cust-csz grid items lack min-width:0, so the input overflows its track on the desktop two-column .cols layout (styles.css:95-96). Desktop-only because the phone card is full width.
+
+DECISIONS LOCKED WITH DYLAN:
+- Notifications: ALL types deep-link; costing notifications land on the costing view for that job; delivery stays the bell badge (no realtime pop-up).
+- To-dos: EVERY user gets their own PRIVATE list (owner-only RLS, admins cannot see others'); nav item + dedicated view; simple checklist (text, check, delete); DB-backed and device-synced.
+- People model: Dylan wants ONE person = one record with role labels/permissions (Admin, Sales, Crew), NOT four tables. Roles a person can hold: Login/User, Sales rep, Crew member (Crews stay a separate grouping). Phased + reversible migration. This absorbs birthdays: ONE birthday field per person (month/day only, no year), mandatory on new adds plus a backfill nag on existing, reminder shown as an admin dashboard banner AND in everyone's bell at 7 days out. Dedup matters, which is the whole point of the single record.
+- Packaging: ship the three small prompts now; the People model gets its own dedicated dig and phased build next (it touches costing, commission, auth, and BusyBusy sync, so it does not ride with the small stuff).
+
+Why: project workflow is for Cowork to interview and write the Claude Code prompt, not to touch CRM code.
+Files touched: claude-code-prompt-27-clickable-notifications.md (new), claude-code-prompt-28-personal-todos.md (new), claude-code-prompt-29-estimator-zip-offscreen.md (new), PROJECT-LOG.md.
+Next steps: Dylan pastes 27, 28, 29 into Claude Code (each is self-contained; 27 and 28 write migrations that hand to Cowork before deploy; 29 is CSS only, no migration). Then Dylan and Cowork run the People-model dedicated dig.
+
+## Handoff to Dylan
+Paste prompts 27, 28, and 29 into Claude Code in any order (they do not depend on each other). 27 and 28 each add a migration that Claude Code will hand to Cowork to apply to prod before you deploy; 29 is a pure CSS fix with nothing to apply. Birthdays and the settings cleanup are intentionally NOT in these three: they merge into the single People-model build, which is next up for its own question round. Say the word and Cowork will start that dig.
+
+
 ## [2026-07-16 MST] Build 26: last-sent column fixed (phantom created_at column, not RLS) + Communication history panel on the invoice page
 By: Claude Code
 Changed: Delivered both parts of claude-code-prompt-26. Two feature commits, b967671 (Part A read fix) and 9e26286 (Part B panel + What's New), plus this docs commit. Touched index.html and help/whats-new.json only. NO migration and NO prod DB change: the leading RLS hypothesis turned out to be wrong, the fix is pure client code. Both test suites pass (187 calculator, 142 estimate), all 8 inline script blocks parse clean, whats-new.json validates.
