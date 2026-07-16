@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Cowork: scoped batch change-order approval (prompt 31 written)
+By: Cowork
+Changed: Wrote claude-code-prompt-31-batch-change-order-approval.md to the repo root. No code changes; this is a scoping and prompt-authoring task. Dylan's feedback: "If there are multiple change orders, bunch them together so they can get sent for approval all at once." Dug in with 12 multiple-choice questions before writing the prompt.
+
+LOCKED DECISIONS (all Dylan): (1) batch triggers automatically at 2+ pending COs; a single pending CO keeps today's per-CO flow untouched. (2) At 2+ pending, batch is the ONLY send path (per-CO Email/Text/Copy/View collapse to one batch link). (3) Only pending unsigned COs are signed. (4) One STABLE approval link per job, live: a CO added after the link was sent auto-appears on the same link. (5) Combined page stacks each pending CO as its own section with one shared signature and a grand total. (6) Each CO shows its own total AND a summed grand total. (7) Already-signed COs show as read-only "already approved" context, not part of the new signature. (8) One signature approves all pending COs. (9) One batch signature record holds the signature plus a snapshot of signed CO ids; each CO links to it via a batch_id FK and flips to signed (new table + migration, not folded onto each CO row). (10) Scope guardrail: approval and signature delivery only, billing still hits at save, native signature, no new vendor.
+
+KEY DESIGN NOTE for Claude Code: the signed set is captured AT SIGN TIME (not send time) because the link is live, so the sign POST reads currently-pending COs, records their ids, and flips exactly those. Verify-then-insert on the signature write, no blind retry (payment-path discipline).
+
+Why: Dylan's feedback on the change-order approval flow; scoped by Cowork 2026-07-16.
+Files touched: claude-code-prompt-31-batch-change-order-approval.md (new), PROJECT-LOG.md.
+Next steps: Claude Code executes prompt 31 (index.html card + public batch page + new batch signatures table migration + What's New entry). Migration applied by Cowork after, per the prompt's Handoff to Cowork.
+Handoff to Cowork: None yet (activates when Claude Code ships prompt 31 and hands off the migration).
+Handoff to Dylan: Review prompt 31; hand it to Claude Code when ready.
+
+---
+
 ## [2026-07-16 MST] Next Day: split a job across two crews (simultaneous, "2 teams")
 By: Claude Code
 Changed: Delivered claude-code-prompt-30. Feature commit 1498e8a (index.html, help/whats-new.json, plus the prompt file), this docs commit. Also landed 7dd7e25 first: Cowork's 2026-07-16 polycoat migration + log entry were sitting STAGED but uncommitted (their entry says "committed locally"; git lock trouble, see _git_locks_to_delete/), so I completed that commit separately before mine to keep the two changes from mixing.
