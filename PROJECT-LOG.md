@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-15 MST] Cowork: applied build-24 estimator custom-mode migration to PROD (verified); end-to-end check pending deploy
+By: Cowork
+Changed: No repo code, no prod data rows. Ran task 1 of the build-24 phase-2 Cowork handoff (from the 2026-07-15 Claude Code entry): applied supabase/migrations/2026-07-16_estimate_custom_mode.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS Dylan's deploy: the estimator save writes is_custom/custom_scope/custom_price on EVERY estimate (custom or not), so applying the columns before the deploy goes live prevents outbox saves from queuing with unknown-column errors.
+
+MIGRATION: three additive, idempotent columns on public.estimates (is_custom boolean default false, custom_scope text, custom_price numeric). Nothing else touched; no backfill exists or is needed (absent/false is_custom = standard estimate).
+
+VERIFIED (one select): select column_name, data_type from information_schema.columns where table_name='estimates' and column_name in ('is_custom','custom_scope','custom_price') returned 3 rows: custom_price (numeric), custom_scope (text), is_custom (boolean).
+
+TASK 2 NOT YET DONE (pending Dylan's push). The end-to-end custom-estimate check (toggle Custom, type scope + price, save with no areas, reopen, confirm list price + blank System column, proposal Preview renders the "Custom scope of work" line, accept-to-job carries the typed scope/price) requires the new estimator build to be LIVE. Dylan waits on task 1 (now done), then pushes. I will run task 2 against https://prescottepoxy.netlify.app/estimator/ once he confirms the deploy is live, using a clearly-named test customer and cleaning up any job I accept. I will NOT regenerate the scope from the estimate page (a forced regenerate replaces the typed text by design).
+
+Why: build-24 phase-2 Cowork handoff, task 1.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (3 additive columns on estimates, idempotent).
+Next steps: Dylan pushes the deploy; then Cowork runs the end-to-end verify (task 2) and reports the render result.
+Handoff to Cowork: run task 2 after Dylan confirms the deploy is live.
+Handoff to Dylan: task 1 is done, your push is safe. Push the deploy, then tell me it is live and I will run the end-to-end custom-estimate check.
+
+---
+
 ## [2026-07-15 MST] Build 24 phase 2: estimator custom estimate mode (typed scope + price, optional AI polish)
 By: Claude Code
 Changed: Delivered all of build prompt 24 phase 2 (custom estimate mode). Two feature commits (f3469fd schema + save/reload, 4e92498 custom-mode UI + polish endpoint) plus this docs commit. Touched apps/estimator/src (EstimatorScreen, offline/estimates.ts, lib/estimateLoad.ts, styles.css), new netlify/functions/pec-estimate-custom-polish.cjs, production/estimate15b.test.js, help/whats-new.json, one new migration. Migration WRITTEN but NOT applied (do-not-touch-prod); Cowork handoff below. 134 tests pass (119 before, 15 new assertions in 2 new sections), estimator builds clean (tsc + vite), node --check clean.
