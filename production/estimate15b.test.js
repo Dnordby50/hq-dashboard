@@ -952,6 +952,7 @@ await section('edit load: the composed custom line does not round-trip into the 
   const estRow = {
     id: 'est-custom-1', status: 'draft', system_type_id: null,
     is_custom: true, custom_scope: 'Reseal the dock.', custom_price: 2500,
+    scope_of_work: 'Reseal the dock.', scope_stale: true,
     customer_last_name: 'Coyote', customer_company: 'Acme LLC', customer_is_commercial: true,
   };
   const lineRows = [
@@ -997,6 +998,59 @@ await section('edit load: the composed custom line does not round-trip into the 
   ok(loaded.isCustom === true, 'is_custom maps to isCustom');
   ok(loaded.customScope === 'Reseal the dock.' && loaded.customPrice === '2500', 'custom scope + price restore as form values');
   ok(loaded.addonLines.length === 1 && loaded.addonLines[0].label === 'Drive Time', 'the composed custom line is filtered out; the real add-on survives');
+  // Build 25: the live proposal panel needs the saved document + stale flag.
+  ok(loaded.scopeOfWork === 'Reseal the dock.' && loaded.scopeStale === true, 'the saved scope document + stale flag load for the live panel');
+});
+
+// ===========================================================================
+// Live proposal panel (build 25): a STANDARD save carrying an edited proposal
+// writes the text with the hand-edited stamp (the same never-overwrite lock
+// custom mode and the estimate page's Save text use); a standard save without
+// one leaves every scope column alone (the server owns them); markScopeStale
+// only ever flips the flag. Reuses the __run harness built above.
+// ===========================================================================
+await section('offline save: an edited live proposal rides the save under the hand-edited lock', async () => {
+  const mk = (extra) => ({
+    estimateId: null, status: 'draft', systemTypeId: 'sys-flake',
+    salesperson: { id: 'sp1', name: 'Aron', commission_pct: 6 },
+    intake: {},
+    customer: { isCommercial: false, firstName: 'Jane', lastName: 'Doe', company: '', phone: '', email: '', address1: '', address2: '', city: '', state: '', zip: '' },
+    flakeColor: null, scopeAnswers: {}, lineItems: [], pricingSnapshot: null, areas: [],
+    pricing: null,
+    totals: { price: 5000, gpDollars: null, gpPct: null, gpPerHour: null, laborBudget: null, commissionDollars: null, budgetedHours: null },
+    calcPrice: null, priceOverride: null, createdBy: 'user1', leadId: null,
+    ...extra,
+  });
+
+  // Edited proposal: text + scope_edited_at land together, stale clears.
+  let out = await globalThis.__run(mk({ editedScope: '## Garage\n\nDylan reworded this line.' }));
+  let est = out.queued.find((q) => q.table === 'estimates').row;
+  ok(est.scope_of_work === '## Garage\n\nDylan reworded this line.', 'the edited proposal composes into scope_of_work');
+  ok(typeof est.scope_edited_at === 'string' && est.scope_edited_at.length > 0, 'scope_edited_at stamped: the never-overwrite rule now protects the edited text');
+  ok(est.scope_stale === false, 'a save that carries the edited text is not stale');
+
+  // No edit: the scope columns are absent from the upsert entirely, so the
+  // on-conflict update cannot touch what the server wrote.
+  out = await globalThis.__run(mk({}));
+  est = out.queued.find((q) => q.table === 'estimates').row;
+  ok(!('scope_of_work' in est) && !('scope_edited_at' in est) && !('scope_stale' in est), 'a standard save without an edit leaves every scope column alone');
+
+  // Stale-only: the estimate changed under an existing document; only the
+  // flag flips, the text is never written from here.
+  out = await globalThis.__run(mk({ markScopeStale: true }));
+  est = out.queued.find((q) => q.table === 'estimates').row;
+  ok(est.scope_stale === true && !('scope_of_work' in est) && !('scope_edited_at' in est), 'markScopeStale flips only the flag');
+
+  // An edit WINS over a simultaneous stale flag: the carried text is current
+  // by definition, so it can never land pre-marked stale.
+  out = await globalThis.__run(mk({ editedScope: 'Dylan words.', markScopeStale: true }));
+  est = out.queued.find((q) => q.table === 'estimates').row;
+  ok(est.scope_stale === false && est.scope_of_work === 'Dylan words.', 'an edited save is never stale even if the caller also flags it');
+
+  // A whitespace-only "edit" is no edit: nothing scope-shaped is written.
+  out = await globalThis.__run(mk({ editedScope: '   \n ' }));
+  est = out.queued.find((q) => q.table === 'estimates').row;
+  ok(!('scope_of_work' in est) && !('scope_edited_at' in est), 'a whitespace-only edit does not blank the saved scope');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

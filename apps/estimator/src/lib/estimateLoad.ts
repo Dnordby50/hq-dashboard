@@ -41,6 +41,11 @@ export type LoadedEstimate = {
   // instead of regenerating (the never-silently-overwrite rule).
   scopeEditedAt: string | null;
   hasScope: boolean;
+  // The saved proposal document itself + its stale flag, for the estimator's
+  // live proposal panel (build 25). hasScope stays the cheap boolean readers
+  // already use; scopeOfWork is the full assembled markdown (null when empty).
+  scopeOfWork: string | null;
+  scopeStale: boolean;
   scopeAnswers: Record<string, string>;
   priceOverrideReason: string | null;
   areas: Array<{ name: string; sqft: string; systemTypeId: string | null; mvb: boolean; slotValues: Record<string, string> }>;
@@ -156,6 +161,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     pricingSnapshot: (e.pricing_snapshot as Record<string, unknown> | null) ?? null,
     scopeEditedAt: (e.scope_edited_at as string | null) ?? null,
     hasScope: e.scope_of_work != null && String(e.scope_of_work).trim() !== '',
+    scopeOfWork: e.scope_of_work != null && String(e.scope_of_work).trim() !== '' ? String(e.scope_of_work) : null,
+    scopeStale: e.scope_stale === true,
     scopeAnswers: (e.scope_answers && typeof e.scope_answers === 'object' ? e.scope_answers : {}) as Record<string, string>,
     priceOverrideReason: (e.price_override_reason as string | null) ?? null,
     areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, mvb: false, slotValues: {} }],

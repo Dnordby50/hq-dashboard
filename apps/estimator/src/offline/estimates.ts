@@ -121,6 +121,12 @@ export type SaveEstimateArgs = {
   // set): the save marks the scope stale instead of regenerating, so the UI can
   // offer the explicit Regenerate click. Never set on new estimates.
   markScopeStale?: boolean;
+  // Live proposal panel, STANDARD mode (build 25): the rep edited the
+  // assembled proposal text right in the estimator, so the edited document
+  // rides this save. Written with the hand-edited stamp (scope_edited_at) so
+  // the server's never-overwrite rule protects it, the same lock custom mode
+  // uses. Null (the usual case) leaves every scope column alone.
+  editedScope?: string | null;
 };
 
 // Persist an estimate offline: write a local copy of the parent first (durable +
@@ -210,6 +216,15 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
   // shows the Regenerate banner. Deliberately NOT written otherwise, so the
   // upsert leaves the column alone on ordinary saves.
   if (args.markScopeStale) estimateRow.scope_stale = true;
+  // Live proposal panel (build 25): a hand-edited proposal from the estimator
+  // IS the scope now. Text + scope_edited_at land together and stale clears
+  // (the carried text is current by definition), exactly like the estimate
+  // page's Save text. Wins over markScopeStale if a caller ever sets both.
+  if (!isCustom && typeof args.editedScope === 'string' && args.editedScope.trim()) {
+    estimateRow.scope_of_work = args.editedScope;
+    estimateRow.scope_edited_at = now;
+    estimateRow.scope_stale = false;
+  }
   // Custom estimate: the typed scope IS the customer-facing scope of work, so
   // it composes into scope_of_work (the column accept copies to jobs.scope)
   // and scope_edited_at is stamped, which is the existing never-overwrite
