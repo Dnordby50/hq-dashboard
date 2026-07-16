@@ -4,6 +4,18 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 09:00] Cowork: ACH live test settled and verified (PASS)
+By: Cowork
+Changed: No repo code. Ran the prompt-11 handoff task 2, verification of the $1.00 ACH live-test payment on test invoice ACH-TEST-1 (job 63c361be-498c-4055-98c9-1cef1f7480cc), via two read-only Supabase MCP queries against project "HQ Dashboard" (zdfpzmmrgotynrwkeakd).
+Why: ACH settles in 3 to 5 business days after the 2026-07-09 Stripe Checkout test, so this run confirms the webhook settlement path (pending row to pec_payments row) works end to end in prod.
+Result: PASS. The pec_stripe_pending row (id b2153152-02ba-4df5-bb90-14d3cac0d0d8, payment_intent pi_3TrV6085aAKLOAgM1o5y0PuH, kind balance, amount 1) is status 'succeeded' with resolved_at 2026-07-16 12:29:55 UTC. Exactly one pec_payments row exists (id e86ed7b4-c9e6-4857-8099-4a50c0b53fce, amount 1.00, method 'stripe', reference pi_3TrV6085aAKLOAgM1o5y0PuH matching the pending payment_intent, received_date 2026-07-16, recorded_by 'Stripe'). All PASS criteria met (one payment row, correct amount/method/reference/date, pending row succeeded with resolved_at set).
+Files touched: PROJECT-LOG.md only. No external systems modified (read-only verification).
+Next steps: Test rows can be cleaned up once Dylan gives the go-ahead (see Handoff to Dylan).
+Handoff to Cowork: None (prompt-11 task 2 closed).
+Handoff to Dylan: ACH is verified working in prod. When you are ready, Cowork can delete the test data with your go-ahead: job 63c361be-498c-4055-98c9-1cef1f7480cc, its customer "ACH TEST (Dylan, delete after settle)", the pec_payments test row (e86ed7b4-c9e6-4857-8099-4a50c0b53fce), and the pec_stripe_pending row (b2153152-02ba-4df5-bb90-14d3cac0d0d8).
+
+---
+
 ## [2026-07-16 MST] Estimator: Zip field no longer renders off-screen on desktop
 By: Claude Code
 Changed: Delivered claude-code-prompt-29. One commit, fbb71ee, a 2-property CSS fix in apps/estimator/src/styles.css. Build passes (tsc plus vite).
