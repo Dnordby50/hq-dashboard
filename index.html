@@ -2436,6 +2436,12 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <div class="pec-subnav-group">Overview</div>
           <button data-pec-view="dashboard" class="active">Dashboard</button>
           <button data-pec-view="metrics">Metrics</button>
+          <!-- Personal, private per-user checklist (build 28). Deliberately NO
+               pec-role-admin class and no capability gate: every signed-in
+               user has their own list, and the DB's owner-only RLS is the
+               actual privacy boundary. Lives in Overview because the build-19
+               rail renders every destination inside a group flyout. -->
+          <button data-pec-view="todos">To-dos</button>
           <div class="pec-subnav-group">Sales</div>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="customers">Customers</button>
@@ -7203,6 +7209,7 @@ function switchView(v) {
       'completed-costing': () => { state.costingTab = 'completed'; return renderJobCosting(); },
       'crew-bonus': renderBonusReport,
       'dripjobs-sync-health': renderDripJobsSyncHealth,
+      todos: renderTodos,
       settings: renderSettings,
     })[v] || renderDashboard;
     try {
@@ -11058,6 +11065,131 @@ function openMetricsDrill(id) {
   });
 }
 
+// ---- Personal to-dos (build 28) --------------------------------------------
+// Each user's PRIVATE checklist, backed by pec_user_todos. The privacy
+// boundary is the table's owner-only RLS (all four verbs scoped to the
+// signed-in auth.uid() mapped through admin_users, same shape as
+// user_permissions), so even an admin's session cannot read another user's
+// rows; the client filter on admin_user_id is just belt-and-suspenders.
+// Because the list is read fresh on every view entry, it follows the user
+// across devices with no offline outbox (unlike the estimator: losing a
+// to-do to a network blip costs a retap, not a sale). Every mutation
+// re-enters renderTodos so the DB stays the single source of truth.
+// Deliberately skipped (noted per the prompt): the open-count nav badge. The
+// build-19 rail hides destinations inside flyouts, so a live badge would need
+// its own query on every auth render plus new railSync plumbing for a number
+// the user sees anyway the moment the view opens. Not worth it this build.
+async function renderTodos() {
+  const root = $('pecViewRoot');
+  const me = state.adminUser && state.adminUser.id;
+  if (!me) { root.innerHTML = '<div class="pec-empty">Sign in to see your to-dos.</div>'; return; }
+  let res;
+  try {
+    res = await withFreshSession(() => supabase
+      .from('pec_user_todos')
+      .select('id,body,done,created_at,done_at')
+      .eq('admin_user_id', me)
+      .order('created_at', { ascending: false }), { label: 'renderTodos' });
+  } catch (e) { res = { error: e }; }
+  if (state.view !== 'todos') return; // user navigated away mid-read
+  if (res.error) {
+    // Graceful degrade: pre-migration (table missing) and a transient wedge
+    // both land here. supabase-js returns the error IN-BAND (build-26 lesson),
+    // so log it explicitly; never let the shell break.
+    console.warn('[todos] load failed:', (res.error && res.error.message) || res.error);
+    root.innerHTML = '<div class="pec-empty">Couldn\'t load your to-dos. Hit Refresh in a moment.</div>';
+    return;
+  }
+  const items = res.data || [];
+  const open = items.filter(t => !t.done);
+  const done = items.filter(t => t.done);
+  // Newest-first within each section; open items on top, completed struck
+  // through below a divider. No drag reorder (creation order by decision).
+  const row = t => `
+    <div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border)">
+      <input type="checkbox" data-todo-toggle="${t.id}" ${t.done ? 'checked' : ''} style="width:16px;height:16px;flex:none;cursor:pointer">
+      <span style="flex:1;font-size:.85rem;overflow-wrap:anywhere${t.done ? ';text-decoration:line-through;color:var(--muted)' : ''}">${esc(t.body)}</span>
+      <button type="button" class="pec-btn sm ghost danger" data-todo-del="${t.id}" title="Delete" aria-label="Delete to-do">&times;</button>
+    </div>`;
+  root.innerHTML = `<div class="pec-card" style="max-width:680px">
+    <h3>My to-dos</h3>
+    <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">Private to you (nobody else can see this list, including admins) and synced across your devices.</div>
+    <form id="todoAddForm" style="display:flex;gap:8px;margin-bottom:14px">
+      <input id="todoAddInput" type="text" maxlength="500" placeholder="Add a to-do&hellip;" autocomplete="off" style="flex:1">
+      <button type="submit" class="pec-btn primary" id="todoAddBtn">Add</button>
+    </form>
+    ${items.length === 0 ? '<div class="pec-empty">No to-dos yet. Add one above.</div>' : `
+      <div>${open.map(row).join('') || '<div style="color:var(--muted);font-size:.8rem;padding:6px 2px">All done. Nothing open.</div>'}</div>
+      ${done.length ? `
+        <div style="color:var(--muted);font-size:.68rem;letter-spacing:1px;text-transform:uppercase;margin:16px 0 4px">Completed</div>
+        <div>${done.map(row).join('')}</div>` : ''}`}
+  </div>`;
+  // After any successful mutation, re-enter the view (only if still on it).
+  const rerender = () => { if (state.view === 'todos') renderTodos(); };
+  $('todoAddForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('todoAddInput');
+    const body = (input.value || '').trim();
+    if (!body) return;
+    const btn = $('todoAddBtn');
+    btn.disabled = true;
+    try {
+      // Plain withFreshWrite, NOT withFreshWriteRetry: an insert is an
+      // accumulating write, and a blind retry after a timeout could add the
+      // same to-do twice if the first request actually landed (the standing
+      // rule from the payment path applies here too, just with lower stakes).
+      const wres = await withFreshWrite(() => supabase
+        .from('pec_user_todos')
+        .insert({ admin_user_id: me, body }), { label: 'todo-add' });
+      if (wres && wres.error) throw wres.error;
+      rerender();
+    } catch (err) {
+      console.warn('[todos] add failed:', (err && err.message) || err);
+      showToast(isSessionStale(err) ? 'Session was stale. Please try adding it again.' : 'Couldn\'t add the to-do. Please try again.');
+      btn.disabled = false;
+    }
+  });
+  root.querySelectorAll('[data-todo-toggle]').forEach(cb => cb.addEventListener('change', async () => {
+    const id = cb.dataset.todoToggle;
+    const nowDone = cb.checked;
+    cb.disabled = true;
+    try {
+      // Idempotent full-value update (same values on a re-run), so the
+      // recover-and-retry wrapper is safe here. done_at stamps on check and
+      // clears on uncheck. The .eq('admin_user_id', me) is redundant under
+      // RLS but keeps the query self-describing.
+      const wres = await withFreshWriteRetry(() => supabase
+        .from('pec_user_todos')
+        .update({ done: nowDone, done_at: nowDone ? new Date().toISOString() : null })
+        .eq('id', id).eq('admin_user_id', me), { label: 'todo-toggle' });
+      if (wres && wres.error) throw wres.error;
+      rerender();
+    } catch (err) {
+      console.warn('[todos] toggle failed:', (err && err.message) || err);
+      cb.checked = !nowDone; // revert the optimistic tick
+      cb.disabled = false;
+      showToast('Couldn\'t update the to-do. Please try again.');
+    }
+  }));
+  root.querySelectorAll('[data-todo-del]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.todoDel;
+    btn.disabled = true;
+    try {
+      // Delete is idempotent (a retried delete of a gone row is a no-op), so
+      // withFreshWriteRetry is safe.
+      const wres = await withFreshWriteRetry(() => supabase
+        .from('pec_user_todos')
+        .delete().eq('id', id).eq('admin_user_id', me), { label: 'todo-delete' });
+      if (wres && wres.error) throw wres.error;
+      rerender();
+    } catch (err) {
+      console.warn('[todos] delete failed:', (err && err.message) || err);
+      btn.disabled = false;
+      showToast('Couldn\'t delete the to-do. Please try again.');
+    }
+  }));
+}
+
 function renderInvoicingDocs() {
   const root = $('pecViewRoot');
   root.innerHTML = `<div class="pec-card">
@@ -11072,6 +11204,7 @@ function renderInvoicingDocs() {
     <ul>
       <li><strong>Dashboard</strong>: the top-level snapshot of the business and the landing view.</li>
       <li><strong>Metrics</strong>: KPI and performance numbers over time (revenue, deposits, jobs sold/completed, AR aging).</li>
+      <li><strong>To-dos</strong>: your own private checklist. Nobody else can see it (not even admins), and it syncs across your devices.</li>
       <li><strong>Customers</strong>: the customer list and contact records; create, edit, and delete customers.</li>
       <li><strong>Jobs</strong>: the job list backed by public.jobs/customers; open a job for its full detail, pricing, and status.</li>
       <li><strong>Ordering</strong>: production-side material ordering for booked jobs (part of the Price &amp; Material Catalog module).</li>

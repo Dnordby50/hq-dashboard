@@ -1,5 +1,16 @@
 [
   {
+    "id": "personal-todos",
+    "date": "2026-07-16",
+    "title": "Your own private To-dos list",
+    "summary": "There is a new To-dos item in the left menu (under Overview). It is a simple personal checklist: type an item, check it off when done, delete it when you no longer need it. Every person gets their own list, and it is completely private: nobody else can see it, not even admins. Because it is saved to your account, the same list shows up on any device you sign in from.",
+    "howto": [
+      "Hover Overview in the left menu and click To-dos.",
+      "Type in the box at the top and hit Add (or press Enter) to create an item.",
+      "Check the box to mark an item done (it moves to the Completed section below), or hit the x to delete it."
+    ]
+  },
+  {
     "id": "clickable-bell-notifications",
     "date": "2026-07-16",
     "title": "Bell notifications now click through to what they are about",
