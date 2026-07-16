@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Build 28: personal To-dos (private per-user checklist in the left nav)
+By: Claude Code
+Changed: Delivered claude-code-prompt-28. Two commits: 1f58375 (new migration, WRITTEN not applied) and d7c7f3f (nav + view + What's New), plus this docs commit. Touched index.html, help/whats-new.json, and ONE new migration supabase/migrations/2026-07-16_personal_todos.sql. Both suites pass (187 calculator, 142 estimate), all inline script blocks parse clean, whats-new.json validates, no em dashes in the new text.
+
+THE SHAPE. New table pec_user_todos (id, admin_user_id FK admin_users on delete cascade, body, done, created_at, done_at) with RLS ON and OWNER-ONLY policies for all four verbs, mirroring exactly how user_permissions and pec_whats_new_acks map the signed-in auth.uid() to the admin_users row. There is deliberately NO admin-wide policy: an admin signed into the app sees only their own list, same as everyone else. The UPDATE policy carries both using AND with check so a user cannot re-home a row to another user. The client filter .eq('admin_user_id', me) is belt-and-suspenders; the RLS is the actual privacy boundary.
+
+THE VIEW. A To-dos button joins the Overview flyout in #pecSubnav (the prompt said "top-level Menu group"; since build 19 the sidebar is an icon-per-group rail where EVERY destination lives inside a group flyout, Overview is the top group and the closest faithful mapping, and the page title picks up "To-dos" automatically from the active button text). No pec-role-admin class and no capability gate, so every signed-in user sees it. switchView routes todos -> renderTodos. The view reads the current user's rows on entry (withFreshSession, newest first), renders open items on top and completed ones struck through under a Completed divider, and re-enters renderTodos after every successful mutation so the DB stays the single source of truth. Empty state: "No to-dos yet. Add one above." A failed read degrades to a short "Couldn't load your to-dos" note and never breaks the shell (which also covers the deploy-before-migration window). In-band PostgREST errors are checked on every read AND write, the build-26 lesson.
+
+WRITE-WRAPPER CHOICE (one deliberate deviation from the prompt): the prompt said withFreshWriteRetry for writes, but an INSERT is an accumulating write, and the standing rule from the payment path (CLAUDE.md gotchas) is that a blind recover-and-retry can double-record if the first request actually landed. So Add uses plain withFreshWrite (bounded, no retry, clean toast on a stale session), while toggle (full-value update to the same values) and delete (re-deleting a gone row is a no-op) are idempotent and use withFreshWriteRetry as the prompt asked. A duplicate to-do would be low stakes, but the codebase rule exists precisely so nobody has to re-derive the stakes per call site.
+
+BADGE: skipped, per the prompt's "only if trivial" clause. It is not trivial here: the rail hides destinations inside flyouts, so a live open-count badge would need its own pec_user_todos query on every auth render plus new railSync plumbing, for a number the user sees the moment the view opens.
+
+RLS VERIFICATION NOTE (prompt acceptance): a service-role query (Supabase Studio SQL editor, MCP tools) BYPASSES RLS and sees every user's rows, so seeing all rows there proves nothing about privacy. The real check is two AUTHENTICATED sessions: user A adds items, user B opens To-dos and must see none of them, and vice versa. This note also lives in the migration's footer comment for Cowork.
+
+Why: Dylan wants a personal to-do list; scoped by Cowork 2026-07-16 (prompt 28, decisions: every user private, nav item + dedicated view, simple checklist, DB-backed and synced, no due dates or reminders).
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-16_personal_todos.sql (new, NOT applied), PROJECT-LOG.md.
+Next steps: Cowork applies the migration, then Dylan deploys and runs the isolation check.
+
+## Handoff to Cowork
+1. Apply supabase/migrations/2026-07-16_personal_todos.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd), commit 1f58375 on main. Additive and idempotent: one new table (pec_user_todos), one index, RLS enabled, four owner-only policies. It touches NOTHING existing (no other tables, no RPCs, no existing policies).
+2. Verify: `select policyname, cmd from pg_policies where tablename = 'pec_user_todos' order by cmd;` expect exactly 4 rows (put_delete_own DELETE, put_insert_own INSERT, put_select_own SELECT, put_update_own UPDATE). And `select relrowsecurity from pg_class where relname = 'pec_user_todos';` expect t. More verify queries are in the migration footer.
+3. Privacy caveat for your log entry: your SQL editor runs as service role and bypasses RLS, so you WILL see every user's rows there; that is expected and not a leak. The authenticated isolation check is Dylan's step below.
+4. Report back to Dylan so he deploys. Deploy order does not matter for safety (the client degrades to a "couldn't load" note if the table is missing), but the feature only works once BOTH are live.
+
+## Handoff to Dylan
+There is a new To-dos item in the left menu: hover Overview and click To-dos. It is a simple checklist (add, check off, delete), private to each person (nobody else can see your list, not even admins), and because it is saved to your account the same list appears on any device you sign in from. Cowork must apply the migration before it works; until then the view shows a "couldn't load" note. Once Cowork confirms and you deploy, run the isolation check: sign in as yourself and add a couple of items, then sign in as another user (or have Anne open it) and confirm their To-dos view shows none of your items and you see none of theirs. Also reload on your phone or another computer as yourself and confirm the same list appears.
+
+---
+
 ## [2026-07-16 MST] Build 27: bell notifications are clickable and route to their source (costing notifications land on the job's costing view)
 By: Claude Code
 Changed: Delivered claude-code-prompt-27. Two commits: 05c4608 (new migration, WRITTEN not applied) and 29ddd8e (client routing + What's New), plus this docs commit. Touched index.html, help/whats-new.json, and ONE new migration supabase/migrations/2026-07-16_notification_targets.sql. Both suites pass (187 calculator, 142 estimate), all 8 inline script blocks parse clean, no em dashes in the new text.
