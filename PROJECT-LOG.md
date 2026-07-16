@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Estimator: Zip field no longer renders off-screen on desktop
+By: Claude Code
+Changed: Delivered claude-code-prompt-29. One commit, fbb71ee, a 2-property CSS fix in apps/estimator/src/styles.css. Build passes (tsc plus vite).
+
+ROOT CAUSE (how it works, for future reference): the estimator's base `select, input` rule set no width, so every text input kept the browser's intrinsic default width (roughly 20 characters, about 150px). CSS grid items default to `min-width: auto`, which means a grid track cannot shrink below its content's intrinsic width. On desktop the customer card is only half the viewport (`.cols` goes two-column at 760px), so the City / State / Zip row (`.cust-csz`, tracks 2fr 1fr 1fr) needed three ~150px minimums plus gaps, more than the card had. The row overflowed rightward and Zip was pushed past the card edge. On a phone the card is full width, so the three minimums fit, which is exactly why Dylan saw it on desktop only.
+
+THE FIX: `width: 100%` on the base `select, input` rule (inputs now fill their field instead of asserting an intrinsic width, matching what `.custom-scope` and `.addr-ac input` already did), and `min-width: 0` on `.field` (so any field inside a grid row can shrink below its input's intrinsic width). Applied to `.field` generally rather than only `.cust-csz .field` because `width: 100%` now applies to inputs in every grid row (.slots, .wo-grid, .addon-nums, .area-top), and they all share the same intrinsic-minimum failure mode. The checkbox overrides (`.area-mvb input`, `.check input`) are later and more specific, so checkboxes keep their fixed 1rem size.
+
+VERIFIED IN BROWSER (static fixture with the real built CSS and the exact customer-card markup, measured with getBoundingClientRect): at desktop width the old CSS put Zip's right edge 101px past the card edge; with the fix, every input row (.cust-csz, .area-top, .slots, .wo-grid, .addon-nums) sits fully inside its card at both desktop and 390px phone width, with no horizontal page scroll. No dashboard What's New entry: this changelog is for index.html, and the estimator is a separate app.
+
+Why: Dylan reported the Zip field rendering partly off-screen on desktop; scoped by Cowork 2026-07-16 (prompt 29).
+Files touched: apps/estimator/src/styles.css, PROJECT-LOG.md
+Next steps: Deploy as usual; the estimator build output regenerates on deploy (repo-root /estimator is gitignored).
+Handoff to Cowork: None
+Handoff to Dylan: None. After the next deploy, open the estimator on your desktop browser and confirm City / State / Zip all sit inside the customer card.
+
+---
+
 ## [2026-07-16 MST] Cowork: applied build-28 personal-todos migration to PROD (verified, deploy unblocked)
 By: Cowork
 Changed: No repo code. Ran the build-28 Cowork handoff (from the 2026-07-16 Build 28 Claude Code entry): applied supabase/migrations/2026-07-16_personal_todos.sql (commit 1f58375) to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS the To-dos feature: the deployed client degrades to a "Couldn't load your to-dos" note until the table exists, so the table + RLS must be live for the nav item to work.
