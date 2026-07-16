@@ -4,6 +4,22 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Cowork: applied flake default-basecoat migration to PROD (backfill verified, 20 flakes)
+By: Cowork
+Changed: No repo code, no destructive prod data. Ran the Catalog-reorg Cowork handoff (from the 2026-07-16 Claude Code entry): applied supabase/migrations/2026-07-16_flake_default_basecoat.sql (commit 7db4bf5) to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS Dylan's deploy: the new product modal reads default_basecoat_product_id, so the column must exist before the build goes live.
+
+MIGRATION: additive + idempotent. Added public.pec_prod_products.default_basecoat_product_id (uuid, FK to pec_prod_products, on delete set null), then backfilled it from pec_prod_color_pairings where is_default = true. Per the handoff guardrails, did NOT drop pec_prod_color_pairings and did NOT touch requires_flake_color / requires_basecoat_color (both left dead on purpose for reversibility).
+
+VERIFIED (task 2): select count(*) from pec_prod_products where default_basecoat_product_id is not null returned 20, matching the audit (20 flakes with one clean default pairing; the 3 placeholder flakes stay null on purpose).
+
+Why: Catalog-reorg Cowork handoff, migration apply + backfill verify.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 additive column + backfill of 20 rows, idempotent).
+Next steps: Dylan pushes the deploy. Optionally he can set a default basecoat on the 3 placeholder flakes so they auto-fill too.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: your push is safe. After deploy, optionally set basecoats on the 3 placeholder flakes (Simiron Special Flake 40lb - Carbon, Simiron Special Flake 40lb (Standard), Standard Flake (color TBD)) via the product modal's Default basecoat dropdown so they auto-fill on the estimator too.
+
+---
+
 ## [2026-07-16 MST] Price & Material Catalog reorg: pairings move onto the flake, required basecoat, collapsible System Types, requires flags removed
 By: Claude Code
 Changed: Delivered all of claude-code-prompt-catalog-reorg.md in one build (Dylan's choice: one build, not phased). One feature commit (7db4bf5) plus this docs commit. Touched index.html, production/calculator.js, production/calculator.test.js, help/whats-new.json, and one NEW migration (supabase/migrations/2026-07-16_flake_default_basecoat.sql) which is WRITTEN but NOT applied (Cowork handoff below, and the deploy order matters). 187 calculator tests pass (179 before, 8 new), 142 estimate tests pass, every inline script block in index.html parses clean. The estimator app (apps/estimator) needed zero changes: it never read the pairings table.
