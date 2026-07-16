@@ -4,6 +4,39 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Build 27: bell notifications are clickable and route to their source (costing notifications land on the job's costing view)
+By: Claude Code
+Changed: Delivered claude-code-prompt-27. Two commits: 05c4608 (new migration, WRITTEN not applied) and 29ddd8e (client routing + What's New), plus this docs commit. Touched index.html, help/whats-new.json, and ONE new migration supabase/migrations/2026-07-16_notification_targets.sql. Both suites pass (187 calculator, 142 estimate), all 8 inline script blocks parse clean, no em dashes in the new text.
+
+THE SHAPE. A notification row can now say WHERE a click lands, not just carry a public.jobs id: two new columns on pec_notifications, target_view ('jobs' | 'costing' | 'invoicing') and target_id (the id to open in that view). Why target_id has NO foreign key: which table it references depends on target_view (costing ids live on pec_prod_jobs, jobs/invoicing ids on public.jobs), and one FK cannot point at two tables; a dangling id just renders the view's normal not-found state. The old job_id column and every old row keep working untouched.
+
+WHY COSTING WAS NEVER CLICKABLE (the root of Anne's complaint): pec_notifications.job_id FKs public.jobs, but costing jobs are pec_prod_jobs rows (the parallel table, see CLAUDE.md). The costing RPCs left the link off ON PURPOSE because there was no column that could legally hold a pec_prod_jobs id. target_view/target_id is that column pair. log_costing_submitted and log_costing_sent_back gain p_job_id (default null) and write target_view='costing'; signature changes, so the migration DROPS the old single-overload functions first (create-or-replace would have left an ambiguous overload PostgREST refuses to dispatch; confirmed live that exactly one overload of each exists today).
+
+CLIENT ROUTING. One resolver, notifTarget(n), decides per row: explicit target wins (costing -> openUnifiedJobId + switchView('costing'), invoicing -> openInvoiceJobId, jobs -> openJobId), legacy job_id falls back to today's job-card behavior, anything unresolvable renders as plain text. Permission rule: a costing target only resolves for users holding can_view_job_costing (the same capability that shows the nav button), so a user without it sees the sent-back text but cannot tap into a blocked view. The pointer cursor and nav data attributes now key on the resolved target, not on job_id.
+
+DEPLOY ORDER CANNOT BREAK IT (both directions, the build-26 lesson applied): if the client deploys before the migration, loadNotifications retries with the legacy column list when the target columns 400 the select (a missing column fails the WHOLE PostgREST query, in-band, no throw), and both costing callers retry the RPC with the legacy argument shape, so the bell stays lit and no notification is lost. If the migration lands first, the old deployed client calls the new functions through their p_job_id default. Still, apply the migration first; only then do new rows carry targets.
+
+PRODUCER AUDIT (which types route where, and why):
+- costing_submitted / costing_sent_back: target_view='costing' via the updated RPCs. The whole point of the build.
+- payment_edited: was completely non-clickable (it never wrote job_id despite having p_job_id in scope); now writes target_view='invoicing' so the click opens the invoice, which is where payments live. payment_deleted: same invoicing target added, and it keeps writing job_id so old clients still get the legacy job-card click.
+- portal_view / colors_confirmed / colors_collision: DELIBERATELY untouched. They already write job_id, and the job card is their sensible destination, which the legacy path already serves. Redefining portal_set_area_colors would mean copying its 100+ line collision function for zero behavior change (drift risk for nothing).
+- customer_deleted: DELIBERATELY text-only. The customer is gone; there is nowhere sensible to land.
+Delivery is unchanged per Dylan's decision 3: badge only, no realtime toast.
+
+Why: Dylan's report that Anne cannot click a costing send-back notification; scoped by Cowork 2026-07-16 (prompt 27, entry below).
+Files touched: index.html, help/whats-new.json, supabase/migrations/2026-07-16_notification_targets.sql (new, NOT applied), PROJECT-LOG.md.
+Next steps: Cowork applies the migration, then Dylan deploys and tests below.
+
+## Handoff to Cowork
+1. Apply supabase/migrations/2026-07-16_notification_targets.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd), commit 05c4608 on main. Additive and idempotent: adds pec_notifications.target_view/target_id, drops and recreates the two costing RPCs with a defaulted p_job_id (old clients keep working), and redefines the two payment log RPCs to add an invoicing target. It does NOT touch job_id, existing rows, RLS, or the portal RPCs.
+2. Verify: `select column_name from information_schema.columns where table_schema='public' and table_name='pec_notifications' and column_name in ('target_view','target_id');` expect 2 rows. And `select proname, pg_get_function_identity_arguments(p.oid) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname='public' and proname in ('log_costing_submitted','log_costing_sent_back');` expect exactly 2 rows, args `p_customer text, p_job_id uuid` and `p_customer text, p_note text, p_job_id uuid` (no old overloads left).
+3. Report back to Dylan so he deploys. The deployed client tolerates either order, but new notifications only become clickable once BOTH the migration and the deploy are live.
+
+## Handoff to Dylan
+Plain English on why this was never clickable: the notifications table can only hold links to the Jobs table, but job costing lives in a separate production-jobs table, so the costing notifications were written with no link at all, on purpose, rather than a broken one. This build gives notifications a second kind of link that says both which VIEW to open and which id to open there, and teaches the bell to follow it. After Cowork confirms the migration and you deploy: send a test costing back (or have Anne submit one), open the bell, and click the new item; it should mark itself read and land directly on that job's costing page with the send-back banner. Also try an older notification (a portal view or color confirmation); it should still open the job card like before. Anyone without Job Costing access sees the costing item as plain text instead of a link, by design.
+
+---
+
 ## [2026-07-16 MST] Cowork: dig + wrote Claude Code prompts 27, 28, 29 (clickable notifications, personal to-dos, estimator zip fix); teed up People-model as its own phased build
 By: Cowork
 Changed: No repo app code, no DB changes, no prod writes. Ran read-only recon (index.html bell/settings/nav/view-routing, apps/estimator customer card + styles.css) then a 17-question multiple-choice dig with Dylan across his five items. Wrote three self-contained Claude Code build prompts, saved them to the repo, and delivered all three to Dylan in chat.
