@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Cowork: applied build-27 notification-targets migration to PROD (verified, deploy unblocked)
+By: Cowork
+Changed: No repo code. Ran the build-27 Cowork handoff (from the 2026-07-16 Build 27 Claude Code entry): applied supabase/migrations/2026-07-16_notification_targets.sql (commit 05c4608) to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS Dylan's deploy: the client reads/writes target_view/target_id and the costing RPCs now take p_job_id, so the columns and new signatures must exist before the build goes live.
+
+PRE-CHECK (read-only, before touching prod, per do-not-touch-prod discipline): confirmed the migration's stated assumption held live. target_view/target_id did not exist yet (first application), and each costing RPC had exactly ONE overload (log_costing_submitted(text), log_costing_sent_back(text, text)), so the drop-then-create swaps them cleanly with no ambiguous overload left for PostgREST. log_payment_edited(uuid, numeric, numeric) and log_payment_deleted(uuid, numeric) matched their expected signatures, so create-or-replace was safe.
+
+MIGRATION: additive + idempotent, one transaction. Added pec_notifications.target_view (text) and target_id (uuid, deliberately no FK since the referenced table depends on target_view). Dropped and recreated log_costing_submitted and log_costing_sent_back with a defaulted p_job_id (old-shape callers still work) writing target_view='costing'. Redefined log_payment_edited and log_payment_deleted to write target_view='invoicing'. Did NOT touch pec_notifications.job_id, existing rows, RLS policies, or the portal RPCs (portal_log_view, portal_set_area_colors), per the handoff guardrails.
+
+VERIFIED (tasks 2 and 3):
+- pec_notifications columns query returned 2 rows: target_id, target_view.
+- pg_proc query returned exactly 2 rows and no stale overloads: log_costing_submitted(p_customer text, p_job_id uuid) and log_costing_sent_back(p_customer text, p_note text, p_job_id uuid).
+
+Why: build-27 Cowork handoff, migration apply + verify.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (2 additive columns + 4 RPC redefinitions, idempotent).
+Next steps: Dylan deploys. After deploy, send a test costing back and confirm the bell item clicks through to that job's costing view.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: your deploy is safe and unblocked. After it is live, send a job costing back on a test job and confirm the bell notification clicks straight through to that job's costing view, and that older notifications still open their job card.
+
+---
+
 ## [2026-07-16 MST] Build 28: personal To-dos (private per-user checklist in the left nav)
 By: Claude Code
 Changed: Delivered claude-code-prompt-28. Two commits: 1f58375 (new migration, WRITTEN not applied) and d7c7f3f (nav + view + What's New), plus this docs commit. Touched index.html, help/whats-new.json, and ONE new migration supabase/migrations/2026-07-16_personal_todos.sql. Both suites pass (187 calculator, 142 estimate), all inline script blocks parse clean, whats-new.json validates, no em dashes in the new text.
