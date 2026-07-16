@@ -14,6 +14,7 @@ import {
 } from '../../lib/calculator';
 import { useOnline } from '../../lib/useOnline';
 import {
+  CUSTOM_LINE_LABEL,
   saveEstimateOffline,
   type AreaInput,
   type AreaMaterialInput,
@@ -229,6 +230,20 @@ export default function EstimatorScreen({
   // Rep's answers to the templates' BLANK placeholders, keyed by the context
   // hash production/scope.cjs computes (same keys the server uses).
   const [scopeAnswers, setScopeAnswers] = useState<Record<string, string>>(() => editing?.scopeAnswers ?? {});
+  // ---- Custom estimate mode (build 24): the WHOLE estimate goes custom -----
+  // One-off jobs the shop does not do often: Dylan types the scope and the
+  // price himself; areas and the material engine are off. The toggle is
+  // NON-destructive: area/answer state persists hidden, so flipping back to
+  // Standard restores exactly what was there (that is also how the engine
+  // stays optionally usable: price in Standard, then switch).
+  const [isCustom, setIsCustom] = useState<boolean>(() => editing?.isCustom === true);
+  const [customScope, setCustomScope] = useState<string>(() => editing?.customScope ?? '');
+  const [customPriceInput, setCustomPriceInput] = useState<string>(() => editing?.customPrice ?? '');
+  // "Polish with AI" undo: the pre-polish text, kept until reverted or
+  // re-polished, so the button is never a one-way door.
+  const [prePolish, setPrePolish] = useState<string | null>(null);
+  const [polishBusy, setPolishBusy] = useState(false);
+  const [polishError, setPolishError] = useState('');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
@@ -342,6 +357,10 @@ export default function EstimatorScreen({
   const mvbMissing = anyAreaMvb && !mvbProduct;
 
   const pricing: PricingResult | null = useMemo(() => {
+    // Custom mode: the engine is fully dormant. Everything downstream of
+    // `pricing` (hasPrice, finalSell, GP, the AI read) branches off this one
+    // null instead of each guarding isCustom separately.
+    if (isCustom) return null;
     if (!salesperson || !engineAreas.length) return null;
     if (mvbMissing) return null; // surfaced below
     return computeEstimatePricing({
@@ -362,7 +381,7 @@ export default function EstimatorScreen({
       // Per-area MVB adds this product at each mvb=true area's sqft.
       mvbProductId: mvbProduct?.id ?? null,
     } as Parameters<typeof computeEstimatePricing>[0]);
-  }, [engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvbProduct, mvbMissing]);
+  }, [isCustom, engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvbProduct, mvbMissing]);
 
   const err = pricing?.error ?? null;
   const hasPrice = !!pricing && !err && pricing.price != null;
@@ -428,8 +447,20 @@ export default function EstimatorScreen({
   const addonsAllTotal = useMemo(() => lineItemsTotal(addonMoneyItems, { withAllOptions: true }), [addonMoneyItems]);
   const hasOptionalAddons = addonForms.some((f) => f.optional);
 
-  const totalPrice = finalSell != null ? r2(finalSell + addonsBaseTotal) : null;
-  const totalAllOptions = finalSell != null ? r2(finalSell + addonsAllTotal) : null;
+  // ---- Custom price (build 24): typed directly, NEVER through the engine ---
+  const customPrice = useMemo(() => {
+    const n = Number(customPriceInput);
+    return Number.isFinite(n) && n > 0 ? r2(n) : null;
+  }, [customPriceInput]);
+  // The system-portion sell price: the typed number in custom mode, else the
+  // engine/override number. Add-on lines price on top of either.
+  const sellPrice = isCustom ? customPrice : finalSell;
+  const totalPrice = sellPrice != null ? r2(sellPrice + addonsBaseTotal) : null;
+  const totalAllOptions = sellPrice != null ? r2(sellPrice + addonsAllTotal) : null;
+  // Custom mode: commission is well-defined (standard pct of the total), but
+  // GP is NOT (there is no cost basis for the custom work), so GP shows as
+  // not-applicable instead of a made-up number, and never blocks the save.
+  const customCommission = isCustom && totalPrice != null ? r2((config.standardCommissionPct / 100) * totalPrice) : null;
   const addonGp = useMemo(
     () => lineItemsGp(addonMoneyItems, config.standardCommissionPct),
     [addonMoneyItems, config.standardCommissionPct],
@@ -583,7 +614,7 @@ export default function EstimatorScreen({
   }, [online, refreshPending]);
   useEffect(() => {
     setSaveState('idle');
-  }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason]);
+  }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -645,7 +676,12 @@ export default function EstimatorScreen({
   // residential one a last name. Deliberately nothing else; the address is
   // never a gate (a rep standing in the driveway knows where they are).
   const customerIncomplete = customer.isCommercial ? !customer.company.trim() : !customer.lastName.trim();
-  const canSave = !!salesperson && hasPrice && !mvbMissing && !addonsIncomplete && !overrideNeedsReason && !customerIncomplete && saveState !== 'saving';
+  // Custom mode gates on customer + a typed price > 0, nothing else: no
+  // areas, no materials, no calculated price. Standard mode is unchanged.
+  const canSave = !!salesperson && !addonsIncomplete && !customerIncomplete && saveState !== 'saving' &&
+    (isCustom
+      ? customPrice != null
+      : hasPrice && !mvbMissing && !overrideNeedsReason);
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
@@ -699,8 +735,45 @@ export default function EstimatorScreen({
     } catch { /* the estimate page's Generate button covers this */ }
   }, []);
 
+  // "Polish with AI" (custom mode only): cleans the typed scope into proposal
+  // language. POLISH, not authorship: the endpoint's contract preserves
+  // meaning, exclusions, and dollar figures verbatim and invents nothing. It
+  // never fires automatically, and the pre-polish text is kept for undo.
+  const polishScope = useCallback(async () => {
+    const text = customScope.trim();
+    if (!text || polishBusy) return;
+    setPolishBusy(true);
+    setPolishError('');
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('Sign in to use polish.');
+      const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Polish failed (${res.status})`);
+      setPrePolish(customScope);
+      setCustomScope(String(out.polished));
+    } catch (e) {
+      setPolishError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPolishBusy(false);
+    }
+  }, [customScope, polishBusy]);
+  const revertPolish = useCallback(() => {
+    if (prePolish == null) return;
+    setCustomScope(prePolish);
+    setPrePolish(null);
+  }, [prePolish]);
+
   const onSave = useCallback(async () => {
-    if (!salesperson || !pricing || !hasPrice || finalSell == null || totalPrice == null) return;
+    // sellPrice non-null covers both modes: the typed custom price, or the
+    // engine/override price. The engine snapshot is only required in standard.
+    if (!salesperson || sellPrice == null || totalPrice == null) return;
+    if (!isCustom && (!pricing || !hasPrice)) return;
     if (editing && !online) {
       setSaveState('error');
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
@@ -714,7 +787,10 @@ export default function EstimatorScreen({
     setSaveState('saving');
     setSaveError('');
     try {
-      const areaInputs: AreaInput[] = pricedAreas.map((a) => {
+      // A custom estimate persists NO area rows: any hidden area state stays
+      // in the form (the toggle is non-destructive) but never lands in the
+      // database, so the proposal shows only the composed custom line.
+      const areaInputs: AreaInput[] = isCustom ? [] : pricedAreas.map((a) => {
         const d = deriveProducts(a.slotValues, a.systemTypeId);
         const areaSlots = slotsFor(a.systemTypeId);
         const materials: AreaMaterialInput[] = areaSlots
@@ -764,8 +840,25 @@ export default function EstimatorScreen({
       // then the add-ons and one-offs. Areas' amounts are allocated from each
       // area's own solo cost-plus solve, so a big garage carries more of the
       // price than a small patio and the parts sum EXACTLY to the sell price.
+      // Custom mode instead composes ONE line carrying the typed price +
+      // scope, so the proposal page and the PDF render a row with zero
+      // special-casing (the edit loader filters it back out by label).
       const lineItems: LineItemInput[] = [];
-      {
+      if (isCustom) {
+        lineItems.push({
+          addonId: null,
+          areaIndex: null,
+          label: CUSTOM_LINE_LABEL,
+          description: customScope.trim() || null,
+          qty: 1,
+          unitPrice: sellPrice,
+          unitCost: 0,
+          total: sellPrice,
+          isOptional: false,
+          selectedByCustomer: true,
+          sortOrder: 0,
+        });
+      } else {
         const soloByArea = engineAreas.map((a) => {
           const solo = computeEstimatePricing({
             areas: [a],
@@ -784,7 +877,7 @@ export default function EstimatorScreen({
           return solo && !solo.error ? solo : null;
         });
         const weights = soloByArea.map((s, i) => (s && s.priceRaw ? s.priceRaw : engineAreas[i].sqft));
-        const parts = allocateProportionally(finalSell, weights);
+        const parts = allocateProportionally(sellPrice, weights);
         engineAreas.forEach((a, i) => {
           const sys = systemTypes.find((s) => s.id === a.system_type_id);
           const sysName = sys?.name ?? 'Floor coating';
@@ -825,17 +918,30 @@ export default function EstimatorScreen({
         });
       }
 
-      const totals: EstimateTotals = {
-        price: totalPrice,
-        gpDollars: combinedGpDollars,
-        gpPct: combinedGpPct,
-        gpPerHour: combinedGpPerHour,
-        laborBudget: adjusted ? adjusted.laborDollars : null,
-        commissionDollars: combinedCommission,
-        budgetedHours: adjusted ? adjusted.budgetedHours : null,
-      };
+      // Custom totals: the typed price sells; commission is standard pct of
+      // the total; GP has no cost basis, so it stays honestly null (shown as
+      // not-applicable, never a blocker).
+      const totals: EstimateTotals = isCustom
+        ? {
+            price: totalPrice,
+            gpDollars: null,
+            gpPct: null,
+            gpPerHour: null,
+            laborBudget: null,
+            commissionDollars: customCommission,
+            budgetedHours: null,
+          }
+        : {
+            price: totalPrice,
+            gpDollars: combinedGpDollars,
+            gpPct: combinedGpPct,
+            gpPerHour: combinedGpPerHour,
+            laborBudget: adjusted ? adjusted.laborDollars : null,
+            commissionDollars: combinedCommission,
+            budgetedHours: adjusted ? adjusted.budgetedHours : null,
+          };
 
-      const pricingSnapshot: Record<string, unknown> = {
+      const pricingSnapshot: Record<string, unknown> | null = isCustom ? null : {
         inputs_key: inputsKey,
         comps: comps
           ? {
@@ -870,14 +976,16 @@ export default function EstimatorScreen({
       const { id } = await saveEstimateOffline({
         estimateId: editing?.id ?? null,
         status: editing?.status ?? 'draft',
-        systemTypeId: dominantSystemId,
+        // A custom estimate has no system; writing the dominant one would be
+        // a lie the metrics attribute revenue to.
+        systemTypeId: isCustom ? null : dominantSystemId,
         salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
         intake: intakePayload,
         // Split shape straight through; saveEstimateOffline trims, composes
         // the combined customer_name/customer_address safety nets, and writes
         // both alongside the split columns.
         customer,
-        flakeColor: editing?.flakeColor ?? flakeColorFromPicks,
+        flakeColor: isCustom ? null : editing?.flakeColor ?? flakeColorFromPicks,
         scopeAnswers,
         lineItems,
         pricingSnapshot,
@@ -885,12 +993,18 @@ export default function EstimatorScreen({
         pricing,
         totals,
         // Provenance: the engine price, and the override reason/who when the rep
-        // moved the system sell price off it.
+        // moved the system sell price off it. Both null in custom mode: the
+        // typed price is not an override of anything.
         calcPrice: basePrice,
         priceOverride: discounted ? { reason: overrideReason.trim(), by: createdBy } : null,
         createdBy: editing?.createdBy ?? createdBy,
         leadId: editing?.leadId ?? leadLink?.id ?? null,
-        markScopeStale: scopeWasEdited,
+        // Custom saves write the scope themselves (with scope_edited_at); the
+        // stale flag is a standard-path concept.
+        markScopeStale: isCustom ? false : scopeWasEdited,
+        isCustom,
+        customScope: isCustom ? customScope : null,
+        customPrice: isCustom ? sellPrice : null,
       });
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
@@ -904,7 +1018,9 @@ export default function EstimatorScreen({
         // Auto-write the customer scope: on first save (scope null) and on any
         // re-save while no human has edited it. An edited scope was marked
         // stale above and is NEVER regenerated without the explicit click.
-        if (!scopeWasEdited) triggerScope(id);
+        // Custom estimates NEVER trigger it: the typed text IS the scope, and
+        // the template writer would replace it with add-on snippets.
+        if (!isCustom && !scopeWasEdited) triggerScope(id);
       }
       await refreshPending();
       setSavedOffline(!navigator.onLine);
@@ -918,7 +1034,7 @@ export default function EstimatorScreen({
       setSaveState('error');
       setSaveError(e instanceof Error ? e.message : String(e));
     }
-  }, [salesperson, pricing, hasPrice, finalSell, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope, isCustom, customScope, customCommission]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: Exclude<keyof CustomerForm, 'isCommercial'>, v: string) =>
@@ -975,6 +1091,23 @@ export default function EstimatorScreen({
 
       <main className="cols">
         <div className="left">
+          {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
+              system type: Custom turns the whole estimate into typed scope +
+              typed price for one-off work. Non-destructive: hidden area and
+              answer state survives a toggle round-trip. */}
+          <section className="card inputs">
+            <div className="areas-head">
+              <span>Estimate type</span>
+              <div className="cust-type" role="group" aria-label="Estimate type">
+                <button type="button" className={isCustom ? '' : 'on'} onClick={() => setIsCustom(false)}>Standard</button>
+                <button type="button" className={isCustom ? 'on' : ''} onClick={() => setIsCustom(true)}>Custom</button>
+              </div>
+            </div>
+            {isCustom && (
+              <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
+            )}
+          </section>
+
           <section className="card inputs">
             <div className="areas-head">
               <span>Customer</span>
@@ -1044,12 +1177,41 @@ export default function EstimatorScreen({
               </select>
             </label>
 
-            {mvbMissing && (
+            {!isCustom && mvbMissing && (
               <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it (Price &amp; Material Catalog) or uncheck MVB on the areas.</p>
             )}
           </section>
 
-          <section className="card">
+          {/* Custom mode: the typed scope replaces the areas/systems flow.
+              The textarea is the customer-facing proposal text; Polish is
+              optional, never automatic, and always undoable. */}
+          {isCustom && (
+            <section className="card">
+              <div className="areas-head">
+                <span>Scope of work</span>
+                <span className="scope-actions">
+                  {prePolish != null && (
+                    <button type="button" className="link" onClick={revertPolish}>Undo polish</button>
+                  )}
+                  <button type="button" className="link" onClick={polishScope} disabled={polishBusy || !online || !customScope.trim()}>
+                    {polishBusy ? 'Polishing…' : 'Polish with AI'}
+                  </button>
+                </span>
+              </div>
+              <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Polish (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
+              <textarea
+                className="custom-scope"
+                rows={10}
+                value={customScope}
+                onChange={(e) => setCustomScope(e.target.value)}
+                placeholder="Describe the work: prep, what gets coated, what is excluded…"
+              />
+              {polishError && <p className="warn">Polish failed: {polishError}</p>}
+              {!online && <p className="hint">Polish needs a connection; your typed text saves fine without it.</p>}
+            </section>
+          )}
+
+          {!isCustom && <section className="card">
             <div className="areas-head"><span>Areas</span><button type="button" className="link" onClick={addArea}>+ Add area</button></div>
             {/* Each area picks its own system: a garage plus a patio plus stem
                 walls is ONE estimate now. Pricing weights every area's own
@@ -1087,7 +1249,7 @@ export default function EstimatorScreen({
                 )}
               </div>
             ))}
-          </section>
+          </section>}
 
           <section className="card">
             <div className="areas-head">
@@ -1139,7 +1301,8 @@ export default function EstimatorScreen({
             ))}
           </section>
 
-          {scopeQuestions.length > 0 && (
+          {/* Template-driven, so they do not apply to a custom estimate. */}
+          {!isCustom && scopeQuestions.length > 0 && (
             <section className="card scope-questions">
               <div className="areas-head"><span>Finish the scope</span></div>
               <p className="hint">Your template leaves these blanks for the customer. Fill them in now while you are on site; anything left blank shows up as the word BLANK in the scope they sign.</p>
@@ -1157,8 +1320,9 @@ export default function EstimatorScreen({
           )}
 
           {/* Everything below is OPTIONAL and collapsed: a rep who never opens
-              it still gets a correct price off the recipe defaults. */}
-          <details className="card more-detail">
+              it still gets a correct price off the recipe defaults. Hidden in
+              custom mode (it is all recipe/area detail). */}
+          {!isCustom && <details className="card more-detail">
             <summary>More detail <span className="muted">(products, colors, work order)</span></summary>
             {areas.map((a, i) => {
               const areaSlots = slotsFor(a.systemTypeId);
@@ -1202,13 +1366,46 @@ export default function EstimatorScreen({
               <label className="check"><input type="checkbox" checked={intake.stem_walls} onChange={(e) => setIntakeField('stem_walls', e.target.checked)} /><span>Stem walls</span></label>
             </div>
             <label className="field"><span>Special notes</span><textarea rows={2} value={intake.special_notes} onChange={(e) => setIntakeField('special_notes', e.target.value)} /></label>
-          </details>
+          </details>}
         </div>
 
         <div className="right">
           <section className="card result" aria-live="polite">
             {!salesperson && <p className="hint">Pick a salesperson to price the job.</p>}
-            {salesperson && !hasPrice && !err && !mvbMissing && <p className="hint">Enter the square footage to price the job.</p>}
+            {/* Custom mode: the typed price IS the sell price. No engine, no
+                GP basis, no blockers beyond customer + price. */}
+            {isCustom && salesperson && (
+              <>
+                <div className="price">{money(totalPrice)}</div>
+                {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
+                  <p className="hint">with every optional item: {money(totalAllOptions)}</p>
+                )}
+                {sellPrice != null && addonsBaseTotal > 0 && (
+                  <p className="hint">custom work {money(sellPrice)} + add-ons {money(addonsBaseTotal)}</p>
+                )}
+                <label className="field"><span>Price $ (you set it{customPrice == null ? ', required' : ''})</span>
+                  <input inputMode="decimal" value={customPriceInput} placeholder="0" onChange={(e) => setCustomPriceInput(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
+                <dl className="metrics">
+                  <div><dt>Commission (standard {config.standardCommissionPct}%)</dt><dd>{money2(customCommission)}</dd></div>
+                  <div><dt>Gross profit</dt><dd>--</dd></div>
+                </dl>
+                <p className="hint">Custom estimate: the price is typed, not calculated, so GP has no cost basis and is not shown. Commission is the standard {config.standardCommissionPct}% of the total.</p>
+                {customerIncomplete && (
+                  <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
+                )}
+                <div className="save-row">
+                  <button type="button" className="save" disabled={!canSave} onClick={onSave}>
+                    {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
+                  </button>
+                  {saveState === 'saved' && (
+                    <span className="save-note ok">{savedOffline ? 'Saved offline · will sync when online' : 'Saved & synced'}</span>
+                  )}
+                  {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
+                </div>
+              </>
+            )}
+            {!isCustom && salesperson && !hasPrice && !err && !mvbMissing && <p className="hint">Enter the square footage to price the job.</p>}
             {err && <p className="error">{ERROR_COPY[err] ?? err}</p>}
             {hasPrice && pricing && adjusted && (
               <>
@@ -1285,7 +1482,9 @@ export default function EstimatorScreen({
             )}
           </section>
 
-          <section className="card comps">
+          {/* Comps and the AI price read key off system + sqft, which a custom
+              estimate does not have; hidden rather than pretending. */}
+          {!isCustom && <section className="card comps">
             <div className="areas-head"><span>Comparable jobs</span></div>
             {!(totalSqft > 0) && <p className="hint">Comps appear once the square footage is set.</p>}
             {totalSqft > 0 && compsFailed && (
@@ -1322,9 +1521,9 @@ export default function EstimatorScreen({
                 {compsCaveat && <p className="hint" style={{ marginTop: 6 }}>{compsCaveat}.</p>}
               </>
             )}
-          </section>
+          </section>}
 
-          <section className="card ai-panel">
+          {!isCustom && <section className="card ai-panel">
             <div className="areas-head"><span>AI price read</span></div>
             {!(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
             {totalSqft > 0 && hasPrice && !online && ai?.status !== 'ready' && <p className="hint">Needs a connection; the calculated price and comps stand on their own.</p>}
@@ -1343,7 +1542,7 @@ export default function EstimatorScreen({
                 <p className="calcver">The AI never sets the price; you do.</p>
               </>
             )}
-          </section>
+          </section>}
         </div>
       </main>
     </div>

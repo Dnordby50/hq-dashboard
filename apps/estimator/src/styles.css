@@ -195,6 +195,13 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 }
 .cust-type button.on { background: var(--accent); color: #fff; }
 
+/* Custom estimate mode (build 24): the Standard/Custom switch reuses
+   .cust-type. The typed scope box fills its card; the head's Polish/Undo
+   actions sit together on the right. */
+.custom-scope { width: 100%; box-sizing: border-box; min-height: 12rem; line-height: 1.45; }
+.scope-actions { display: flex; gap: 0.9rem; align-items: center; }
+.scope-actions .link:disabled { opacity: 0.45; cursor: default; }
+
 /* Address 1 autocomplete: plain input + an absolutely positioned pick list.
    The wrapper lives inside the .field flex column, so the input keeps the
    exact styling of its siblings. */
