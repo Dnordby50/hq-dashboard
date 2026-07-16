@@ -6093,9 +6093,21 @@ function cachedSystemTypes() {
 // portal RPCs; the bell only reads and marks rows read.
 function fmtNotifTime(s) { try { return s ? new Date(s).toLocaleString() : ''; } catch (_) { return ''; } }
 function loadNotifications() {
-  return cachedRef('notifs', () => supabase.from('pec_notifications')
-    .select('id,type,job_id,body,priority,created_at,read_at')
-    .order('created_at', { ascending: false }).limit(30), { ttlMs: 30000 });
+  return cachedRef('notifs', async () => {
+    // target_view/target_id are the click destinations (2026-07-16 migration).
+    // Asking PostgREST for a column that does not exist fails the WHOLE query
+    // (the build-26 lesson), so if the migration is not applied yet, retry
+    // with the legacy column list instead of letting the bell go dark.
+    let r = await supabase.from('pec_notifications')
+      .select('id,type,job_id,body,priority,created_at,read_at,target_view,target_id')
+      .order('created_at', { ascending: false }).limit(30);
+    if (r.error && /target_view|target_id/.test(r.error.message || '')) {
+      r = await supabase.from('pec_notifications')
+        .select('id,type,job_id,body,priority,created_at,read_at')
+        .order('created_at', { ascending: false }).limit(30);
+    }
+    return r;
+  }, { ttlMs: 30000 });
 }
 async function refreshBell() {
   const wrap = document.getElementById('pecBell'); if (!wrap) return;
@@ -6112,6 +6124,21 @@ async function refreshBell() {
   }
   renderBellPanel(rows);
 }
+// Where a notification click should land, or null for plain text. Precedence:
+// an explicit target_view/target_id wins; a legacy job_id (rows from before
+// the 2026-07-16 targets migration, plus the portal RPCs, which keep writing
+// it on purpose) falls back to the job card. A costing target only resolves
+// for users who hold can_view_job_costing (mirrors the setNav gating), so a
+// tap can never dump someone on a blocked view; an unknown target_view stays
+// text-only rather than guessing.
+function notifTarget(n) {
+  if (n.target_view && n.target_id) {
+    if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
+    if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
+    return null;
+  }
+  return n.job_id ? { view: 'jobs', id: n.job_id } : null;
+}
 function renderBellPanel(rows) {
   const panel = document.getElementById('pecBellPanel'); if (!panel) return;
   if (!rows.length) { panel.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:.82rem">No notifications yet.</div>'; return; }
@@ -6121,10 +6148,13 @@ function renderBellPanel(rows) {
        <strong style="font-size:.85rem">Notifications</strong>
        ${hasUnread ? '<button class="pec-btn ghost sm" id="pecBellReadAll">Mark all read</button>' : ''}
      </div>` +
-    rows.map(n => `<div data-notif="${esc(n.id)}" ${n.job_id ? `data-job="${esc(n.job_id)}"` : ''} style="padding:10px 12px;border-bottom:1px solid var(--rd-line, var(--border));${n.job_id ? 'cursor:pointer;' : ''}background:${n.read_at ? 'transparent' : 'var(--rd-soft, rgba(216,83,28,.07))'}">
+    rows.map(n => {
+      const t = notifTarget(n);
+      return `<div data-notif="${esc(n.id)}" ${t ? `data-nav-view="${esc(t.view)}" data-nav-id="${esc(t.id)}"` : ''} style="padding:10px 12px;border-bottom:1px solid var(--rd-line, var(--border));${t ? 'cursor:pointer;' : ''}background:${n.read_at ? 'transparent' : 'var(--rd-soft, rgba(216,83,28,.07))'}">
         <div style="font-size:.8rem;line-height:1.4">${n.priority === 'high' ? '<span style="color:#dc2626;font-weight:700">! </span>' : ''}${esc(n.body || n.type)}</div>
         <div style="font-size:.68rem;color:var(--muted);margin-top:3px">${esc(fmtNotifTime(n.created_at))}</div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   const readAll = document.getElementById('pecBellReadAll');
   if (readAll) readAll.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -6133,10 +6163,22 @@ function renderBellPanel(rows) {
     invalidateRefCache('notifs'); refreshBell();
   });
   panel.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('click', async () => {
-    const id = el.getAttribute('data-notif'), jobId = el.getAttribute('data-job');
+    const id = el.getAttribute('data-notif');
+    const navView = el.getAttribute('data-nav-view'), navId = el.getAttribute('data-nav-id');
     try { await supabase.from('pec_notifications').update({ read_at: new Date().toISOString() }).eq('id', id).is('read_at', null); } catch (_) {}
     invalidateRefCache('notifs');
-    if (jobId) { state.view = 'jobs'; state.openJobId = jobId; panel.style.display = 'none'; switchView('jobs'); }
+    // Route by the resolved target (notifTarget already gated permissions at
+    // render time; a row without one is plain text and has no nav attrs).
+    // Each view opens its detail page through its own state key: costing ->
+    // renderUnifiedJob, invoicing -> renderJobInvoice, jobs -> the job card.
+    if (navView && navId) {
+      state.view = navView;
+      if (navView === 'costing') state.openUnifiedJobId = navId;
+      else if (navView === 'invoicing') state.openInvoiceJobId = navId;
+      else state.openJobId = navId;
+      panel.style.display = 'none';
+      switchView(navView);
+    }
     refreshBell();
   }));
 }
@@ -23016,10 +23058,16 @@ async function renderUnifiedJob(jobId) {
     const by = state.adminUser?.name || state.adminUser?.email || 'Staff';
     await saveJobField(jobId, 'costing_submitted_by', by, submitBtn);
     await saveJobField(jobId, 'costing_submitted_at', new Date().toISOString(), submitBtn);
-    // Best-effort bell notification to admins. job_id is omitted on purpose:
-    // pec_notifications.job_id FKs public.jobs, but this is a pec_prod_jobs id, so
-    // the body names the customer instead. RPC may not be live pre-migration.
-    try { await supabase.rpc('log_costing_submitted', { p_customer: job.customer_name || '' }); } catch (_) { /* RPC may not be live yet */ }
+    // Best-effort bell notification to admins. job_id (FK to public.jobs) stays
+    // omitted on purpose: this is a pec_prod_jobs id, so it rides p_job_id into
+    // target_view='costing'/target_id instead and the bell click lands on this
+    // job's costing view. If the targets migration is not applied yet the old
+    // RPC has no p_job_id and errors IN-BAND (rpc does not throw on that), so
+    // retry with the legacy shape rather than silently losing the bell item.
+    try {
+      const r = await supabase.rpc('log_costing_submitted', { p_customer: job.customer_name || '', p_job_id: jobId });
+      if (r && r.error) await supabase.rpc('log_costing_submitted', { p_customer: job.customer_name || '' });
+    } catch (_) { /* RPC may not be live yet */ }
     renderUnifiedJob(jobId);
   });
   // Send back (reviewer): a REQUIRED reason is entered in a modal, recorded to the
@@ -23065,7 +23113,13 @@ async function renderUnifiedJob(jobId) {
         await saveJobField(jobId, 'costing_submitted_at', null);
         await saveJobField(jobId, 'costing_submitted_by', null);
         // 3) Bell notification (best-effort; RPC may not be live pre-migration).
-        try { await supabase.rpc('log_costing_sent_back', { p_customer: job.customer_name || '', p_note: note }); } catch (_) { /* RPC may not be live yet */ }
+        //    p_job_id (pec_prod_jobs id) makes the bell item click through to
+        //    this job's costing view; legacy-shape retry if the targets
+        //    migration is not applied yet, same as the submit path.
+        try {
+          const r = await supabase.rpc('log_costing_sent_back', { p_customer: job.customer_name || '', p_note: note, p_job_id: jobId });
+          if (r && r.error) await supabase.rpc('log_costing_sent_back', { p_customer: job.customer_name || '', p_note: note });
+        } catch (_) { /* RPC may not be live yet */ }
         // 4) Slack #epoxysales (best-effort; a Slack failure never blocks send-back).
         try { await fetch('/.netlify/functions/pec-notify-costing-sendback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer: job.customer_name || '', sentBackBy: by, note }) }); } catch (_) { /* best-effort */ }
         // 5) Close the dialog and re-render the job.

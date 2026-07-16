@@ -1,5 +1,16 @@
 [
   {
+    "id": "clickable-bell-notifications",
+    "date": "2026-07-16",
+    "title": "Bell notifications now click through to what they are about",
+    "summary": "Notifications in the bell menu are now clickable links, not just text. Job costing notifications (submitted for review, sent back) open that exact job's costing page, payment edited or deleted notifications open the invoice, and customer portal notifications open the job card. If a notification has nowhere sensible to go (like a deleted customer), it stays plain text. Costing links only appear for people with Job Costing access.",
+    "howto": [
+      "Open the bell in the top bar and click any notification; it marks itself read and takes you to the job, invoice, or costing page it is about.",
+      "If a costing was sent back to you, clicking that notification lands you right on that job's costing view with the reason banner.",
+      "Notifications without a pointer cursor are informational only and have no page to open."
+    ]
+  },
+  {
     "id": "invoice-communication-history",
     "date": "2026-07-16",
     "title": "Invoicing: last-sent dates fixed, plus a Communication history on every invoice",
