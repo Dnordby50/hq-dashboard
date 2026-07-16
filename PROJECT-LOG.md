@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Cowork: applied build-28 personal-todos migration to PROD (verified, deploy unblocked)
+By: Cowork
+Changed: No repo code. Ran the build-28 Cowork handoff (from the 2026-07-16 Build 28 Claude Code entry): applied supabase/migrations/2026-07-16_personal_todos.sql (commit 1f58375) to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS the To-dos feature: the deployed client degrades to a "Couldn't load your to-dos" note until the table exists, so the table + RLS must be live for the nav item to work.
+
+PRE-CHECK (read-only, before touching prod): pec_user_todos did not exist yet (first application) and the FK target admin_users was present.
+
+MIGRATION: additive + idempotent, one transaction. Created public.pec_user_todos (id uuid pk, admin_user_id uuid not null FK admin_users on delete cascade, body text, done boolean default false, created_at, done_at), an index on admin_user_id, enabled RLS, and four OWNER-ONLY policies (each drop-if-exists then create) mapping auth.uid() to admin_users.id: put_select_own, put_insert_own, put_update_own (using + with check, so a toggle cannot re-home a row to another user), put_delete_own. References admin_users only; touched no other table, policy, or RPC.
+
+VERIFIED (task 2, outputs captured):
+- select relrowsecurity from pg_class where relname='pec_user_todos' returned t (RLS enabled).
+- select policyname, cmd from pg_policies where tablename='pec_user_todos' order by cmd returned exactly 4 rows: put_delete_own DELETE, put_insert_own INSERT, put_select_own SELECT, put_update_own UPDATE.
+- Extra sanity: row_count 0 (starts empty); FK def = FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE.
+
+PRIVACY NOTE: the Supabase MCP / SQL editor runs as service role and BYPASSES RLS, so once users add items this session would see every row. That is expected, not a leak. The real isolation proof is two authenticated app sessions (Dylan runs the A/B check after deploy).
+
+Why: build-28 Cowork handoff, migration apply + verify.
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 new table + index + RLS + 4 policies, idempotent).
+Next steps: Dylan deploys, then runs the A/B isolation check from the build-28 Handoff to Dylan.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: your deploy is unblocked. After it is live, run the A/B check: sign in as user A and add a to-do, sign in as user B and open To-dos, confirm B sees none of A's items and vice versa (and that an admin who is not A also cannot see A's list).
+
+---
+
 ## [2026-07-16 MST] Cowork: applied build-27 notification-targets migration to PROD (verified, deploy unblocked)
 By: Cowork
 Changed: No repo code. Ran the build-27 Cowork handoff (from the 2026-07-16 Build 27 Claude Code entry): applied supabase/migrations/2026-07-16_notification_targets.sql (commit 05c4608) to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS Dylan's deploy: the client reads/writes target_view/target_id and the costing RPCs now take p_job_id, so the columns and new signatures must exist before the build goes live.
