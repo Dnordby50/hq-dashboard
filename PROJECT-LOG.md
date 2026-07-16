@@ -32,6 +32,30 @@ None new for this build (no migration). After Dylan confirms the deploy is live,
 
 ---
 
+## [2026-07-16 MST] Cowork: recon + wrote Claude Code prompt for Price & Material Catalog reorg (no app code touched)
+By: Cowork
+Changed: claude-code-prompt-catalog-reorg.md (new), PROJECT-LOG.md. No index.html change, no prod data written, no migration applied. Ran read-only prod SELECTs only (audit).
+
+Dylan: "price and material catalog is super messy." Cowork read the catalog code (renderCatalog ~26288, renderProducts, openProductModal, renderSystemTypes, openSystemTypeModal, renderColorPairings, and the estimator color-gating ~25656-25661) then ran a 12-question multiple-choice dig. Locked decisions:
+1. Color pairings fold ONTO the flake product as a single "Default basecoat" field; the standalone Color Pairings tab is retired. One basecoat per flake (Dylan confirmed flakes pair 1:1).
+2. Basecoat is REQUIRED to save a flake (block save). "Special Order Flake" exempt; existing flakes grandfathered (enforced on add/edit only).
+3. System Types renders COLLAPSED by default (name + active + pricing % summary), click to expand recipe slots. Pricing % editable only in the Edit modal.
+4. Remove the "Requires flake / Requires basecoat" toggles entirely; required colors DERIVE FROM RECIPE SLOTS (flake slot -> flake, quartz slot -> quartz, pigment slot -> pigment, basecoat slot -> basecoat). Dylan's words: "if we are selecting that type of system of course it will be required."
+5. Estimator UX identical for reps; the flake basecoat auto-fill just reads the new location. Quartz UNCHANGED (manual per-job basecoat pick; too many quartz colors to pair). Flake only for now.
+6. One build, all together (not phased).
+
+AUDIT (read-only, so the prompt builds against reality): 23 real flakes, 20 have a clean single default pairing that backfills 1:1, 3 are placeholders to grandfather (Simiron Special Carbon, Simiron Special Standard, Standard Flake color TBD). The estimator ALREADY derives pickers from slots (sysHasSlot) with the requires_* flags only as a legacy OR fallback, so removing the flags is a fallback removal not a rewrite. Only behavior divergence from dropping flags is the INACTIVE "Grind and Seal - Urethane" (flag basecoat=Y, zero slots) losing its basecoat picker, which is irrelevant while inactive. Stale requires_flake_color=Y on Quartz and Metallic is already ignored by slot logic; removal cleans a latent bug.
+
+The prompt tells Claude Code to WRITE (not apply) supabase/migrations/2026-07-16_flake_default_basecoat.sql (additive column default_basecoat_product_id on pec_prod_products + idempotent backfill from is_default pairings; does NOT drop the pairings table or the requires_* columns, both left dead-but-reversible). Then: required-basecoat field on the flake product modal, retire the pairings tab (nav down to 3 tabs), repoint the estimator defaultBasecoatByFlake to the flake column, remove the requires toggles + drop the estimator OR fallbacks, collapse-to-expand System Types, a What's New entry, and tests.
+
+Why this shape: front-end reorg plus one additive migration, matching how the estimator already reads slots. Cowork's role was recon + the self-contained prompt, not editing app code.
+Files touched: claude-code-prompt-catalog-reorg.md, PROJECT-LOG.md.
+Next steps: Dylan hands claude-code-prompt-catalog-reorg.md to Claude Code (self-contained). Claude Code writes the code + migration and hands the migration back to Cowork to apply before deploy.
+Handoff to Cowork: after Claude Code ships, apply 2026-07-16_flake_default_basecoat.sql to PROD (zdfpzmmrgotynrwkeakd) BEFORE Dylan deploys; expect the backfill to fill 20 flake rows.
+Handoff to Dylan: hand the prompt file to Claude Code. After it ships and Cowork applies the migration, deploy; optionally assign basecoats to the 3 placeholder flakes so they auto-fill too.
+
+---
+
 ## [2026-07-15 MST] Cowork: applied build-24 estimator custom-mode migration to PROD (verified); end-to-end check pending deploy
 By: Cowork
 Changed: No repo code, no prod data rows. Ran task 1 of the build-24 phase-2 Cowork handoff (from the 2026-07-15 Claude Code entry): applied supabase/migrations/2026-07-16_estimate_custom_mode.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. Returned success. This UNBLOCKS Dylan's deploy: the estimator save writes is_custom/custom_scope/custom_price on EVERY estimate (custom or not), so applying the columns before the deploy goes live prevents outbox saves from queuing with unknown-column errors.
