@@ -1,5 +1,16 @@
 [
   {
+    "id": "catalog-flake-basecoat-and-system-cleanup",
+    "date": "2026-07-16",
+    "title": "Simpler Price & Material Catalog",
+    "summary": "The catalog is easier to read and manage. Each flake color now carries its own default basecoat right on the product (the separate Color Pairings tab is gone), and every flake requires one so estimates always auto-fill the right basecoat. System Types now shows a compact one-line summary per system (name, active, and the pricing percentages); click a system to see its full recipe. The old Requires flake and Requires basecoat switches are gone too: a system's recipe slots now decide which color pickers appear.",
+    "howto": [
+      "To set a flake's basecoat, open the Catalog, click the flake under Flake Materials, and pick its Default basecoat in the product window.",
+      "On the System Types tab, click any system's row to expand its recipe slots; click again to collapse it.",
+      "Nothing changes for reps: picking a flake on an estimate still fills in its basecoat automatically."
+    ]
+  },
+  {
     "id": "estimator-live-proposal",
     "date": "2026-07-15",
     "title": "Estimator: the proposal now builds live as you estimate",

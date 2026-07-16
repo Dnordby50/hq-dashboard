@@ -9016,12 +9016,11 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
     let job, systems = [], productById = {}, fullSlotsBySystem = {}, defaultBasecoatByFlake = {}, settingsMap = {};
     let coCount = 0, areaModeAvailable = true;
     try {
-      const [jobRes, sysRes, prodRes, slotRes, pairRes, setRes] = await withFreshSession(() => Promise.all([
+      const [jobRes, sysRes, prodRes, slotRes, setRes] = await withFreshSession(() => Promise.all([
         supabase.from('jobs').select('id,price,line_items,finalized,customer_id,dripjobs_deal_id,address,customers(name,company,email,phone)').eq('id', jobId).single(),
         cachedSystemTypes(),
         cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
         cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
-        cachedRef('pair', () => supabase.from('pec_prod_color_pairings').select('*')),
         supabase.from('settings').select('key,value').in('key', ['estimator_target_gp_pct','estimator_default_commission_pct','estimator_price_increment','estimator_charm_threshold','estimator_charm_band','default_labor_hourly_rate']),
       ]), { label: 'change-order-modal' });
       if (jobRes.error) throw jobRes.error;
@@ -9030,7 +9029,7 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
       productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
       for (const s of (slotRes.data || [])) (fullSlotsBySystem[s.system_type_id] ||= []).push(s);
       for (const k in fullSlotsBySystem) fullSlotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-      for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+      defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
       for (const r of (setRes.data || [])) settingsMap[r.key] = r.value;
       // CO count doubles as the migration probe: pre-migration the
       // is_change_order filter 400s and AREA mode is disabled with a note
@@ -11214,7 +11213,7 @@ function scheduleLabelFromState(s) {
   return label;
 }
 async function renderWorkOrder(ctx) {
-  const { job, areasFromState, systemTypes, productById, colorPairings, recipeSlots, defaultLaborRate } = ctx;
+  const { job, areasFromState, systemTypes, productById, recipeSlots, defaultLaborRate } = ctx;
   // Resolve the matching pec_prod_jobs row for install date + crew, plus
   // the crew name (separate table). Misses are silent: the work order
   // just shows blank for those fields, exactly like the paper sheet.
@@ -11266,8 +11265,7 @@ async function renderWorkOrder(ctx) {
       topcoat_cure_speed: a.topcoat_cure_speed || null,
     };
   });
-  const defaultBasecoatByFlake = {};
-  for (const cp of (colorPairings || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+  const defaultBasecoatByFlake = window.flakeBasecoatDefaults(Object.values(productById || {}));
   let lines = [];
   try {
     const plan = window.computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
@@ -11517,14 +11515,13 @@ async function renderJobDetailInner(id) {
   // details by click time (the click opens the print window synchronously).
   fetchBrandIdentity().catch(() => {});
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
-  const [jobRes, sysRes, areasRes, prodRes, pairRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
+  const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
       .select('*,customers(id,name,first_name,last_name,company_name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
     cachedSystemTypes(),
     supabase.from('job_areas').select('*').eq('job_id', id).order('order_index'),
     cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
-    cachedRef('pair', () => supabase.from('pec_prod_color_pairings').select('*')),
     cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
   ]), { label: 'renderJobDetail' });
@@ -11591,7 +11588,6 @@ async function renderJobDetailInner(id) {
   const colorsUrgent = !job.colors_confirmed && installDaysUntil != null && installDaysUntil <= 14;
   const systemTypes = sysRes.data || [];
   const products = prodRes.data || [];
-  const colorPairings = pairRes.data || [];
   const recipeSlots = slotRes.data || [];
   const defaultLaborRate = Number(settingsRes?.data?.value) > 0 ? Number(settingsRes.data.value) : 35;
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
@@ -11609,9 +11605,9 @@ async function renderJobDetailInner(id) {
   }
   for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
 
-  // Default coordinating basecoat per flake color, from the catalog pairings.
-  const defaultBasecoatByFlake = {};
-  for (const cp of colorPairings) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+  // Default coordinating basecoat per flake color, from the flake product's
+  // default_basecoat_product_id (the catalog's Default basecoat field).
+  const defaultBasecoatByFlake = window.flakeBasecoatDefaults(products);
   const productById = {}; for (const p of products) productById[p.id] = p;
   // Color-chip material types render as a swatch grid; everything else as a
   // dropdown. Special Order placeholders are not real pickable products.
@@ -12012,7 +12008,7 @@ async function renderJobDetailInner(id) {
   $('pecJobViewPortal')?.addEventListener('click', () => window.open(portalLink + '&staff=1', '_blank', 'noopener'));
   $('pecJobPrintWO').addEventListener('click', () => renderWorkOrder({
     job, areasFromState: () => areas, systemTypes, products, productById,
-    colorPairings, recipeSlots, defaultLaborRate,
+    recipeSlots, defaultLaborRate,
   }));
   // Pipeline card "Work Order" button navigates here with this flag set, then
   // fires the exact same work-order flow once the area draft is built. Reuses
@@ -12085,11 +12081,12 @@ async function renderJobDetailInner(id) {
   const pickFor = (a, sid) => (a.picks[sid] ||= blankPick());
   const autofillBasecoat = (a) => {
     // After a flake/quartz/metallic pick, set the system's basecoat slot to
-    // the paired default from pec_prod_color_pairings. ALWAYS overwrites so
-    // changing flake color re-pairs the basecoat; the operator can still
-    // manually pick a different basecoat from the slot dropdown after. The
-    // pairing is the catalog default rule per Dylan: "when flake color is
-    // selected, default to whatever the rule is in material catalog."
+    // the flake product's default basecoat (default_basecoat_product_id, set
+    // in the catalog's product modal). ALWAYS overwrites so changing flake
+    // color re-pairs the basecoat; the operator can still manually pick a
+    // different basecoat from the slot dropdown after. The default is the
+    // catalog rule per Dylan: "when flake color is selected, default to
+    // whatever the rule is in material catalog."
     const slots = slotsBySystem[a.system_type_id] || [];
     const bc = slots.find(s => s.material_type === 'Basecoat' && (s.slot_kind || 'product') === 'product');
     if (!bc) return;
@@ -21047,11 +21044,10 @@ async function loadCostingData() {
       // Phase 1: costing inputs + a LIGHTWEIGHT CRM identity for every
       // non-archived job (id, deal, price, address, name; no areas, so cheap,
       // the same all-jobs read runScheduleStatusSync already does).
-      const [fullAreasRes, prodRes, slotRes, pairRes, crmIdentRes] = await withFreshSession(() => Promise.all([
+      const [fullAreasRes, prodRes, slotRes, crmIdentRes] = await withFreshSession(() => Promise.all([
         areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
         supabase.from('pec_prod_products').select('*'),
         supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
-        supabase.from('pec_prod_color_pairings').select('*'),
         supabase.from('jobs').select('id,dripjobs_deal_id,price,status,address,customers(name)').is('archived_at', null),
       ]), { label: 'loadCostingData:estimate' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
@@ -21066,8 +21062,7 @@ async function loadCostingData() {
       const slotsBySystem = {};
       for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
       for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-      const defaultBasecoatByFlake = {};
-      for (const cp of (pairRes.data || [])) if (cp.is_default) defaultBasecoatByFlake[cp.flake_product_id] = cp.basecoat_product_id;
+      const defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
       const areasByJob = {};
       for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
       // Deal + name|address indexes of CRM job identities (first row wins).
@@ -24612,6 +24607,30 @@ window.roundEstimatePrice = roundEstimatePrice;
 window.CALC_VERSION = CALC_VERSION;
 window.jobNameAddrKey = jobNameAddrKey;
 window.resolveCrmForProdJob = resolveCrmForProdJob;
+// Mirror of production/calculator.js flakeBasecoatDefaults. The default
+// basecoat per flake lives ON the flake product (default_basecoat_product_id,
+// 2026-07-16 catalog reorg); pec_prod_color_pairings is retired (table kept
+// in the DB, dead, for reversibility). Every consumer builds the map through
+// this one function so the source can never drift per call site.
+function flakeBasecoatDefaults(products) {
+  const out = {};
+  for (const p of (products || [])) {
+    if (p && p.material_type === 'Flake' && p.default_basecoat_product_id) out[p.id] = p.default_basecoat_product_id;
+  }
+  return out;
+}
+window.flakeBasecoatDefaults = flakeBasecoatDefaults;
+// Mirror of production/calculator.js flakeProductSaveError: a Flake product
+// MUST carry a default basecoat, except the "Special Order Flake" placeholder
+// (per-job pick by design). Returns the error string or null. Existing flakes
+// are grandfathered implicitly: this only runs on save.
+function flakeProductSaveError(payload) {
+  if (!payload || payload.material_type !== 'Flake') return null;
+  if (payload.name === 'Special Order Flake') return null;
+  if (payload.default_basecoat_product_id) return null;
+  return 'Pick a default basecoat for this flake color.';
+}
+window.flakeProductSaveError = flakeProductSaveError;
 // Canonical picks-to-plan mapping for CRM job card areas (job_areas rows,
 // each with an embedded `materials` array of job_area_materials rows). The
 // job card is the SOURCE OF TRUTH for what a bridged job needs, so Ordering
@@ -24817,7 +24836,8 @@ function _mergeAcrossAreas(areaPlans) {
     view: 'jobs', // 'jobs' | 'new-job' | 'catalog'
     catalogTab: 'products',
     catalogOpen: {}, // material_type -> open?; absent = collapsed (all sections start collapsed)
-    products: [], systemTypes: [], recipeSlots: [], colorPairings: [],
+    products: [], systemTypes: [], recipeSlots: [],
+    expandedSystemTypes: new Set(), // system type ids expanded on the System Types tab; empty = all collapsed
     jobs: [],
     jobFilter: { status: '' },
     activeJob: null,
@@ -24854,9 +24874,7 @@ function _mergeAcrossAreas(areaPlans) {
     return out;
   }
   function defaultBasecoatByFlake() {
-    const out = {};
-    for (const cp of state.colorPairings) if (cp.is_default) out[cp.flake_product_id] = cp.basecoat_product_id;
-    return out;
+    return window.flakeBasecoatDefaults(state.products);
   }
   function productsByMaterialType(t, opts = {}) {
     return state.products
@@ -24871,22 +24889,19 @@ function _mergeAcrossAreas(areaPlans) {
     // invalidateRefCache lives in Module 2; reach it via window (guarded so a
     // load-order race can never re-throw and kill the catalog view).
     window.invalidateRefCache && window.invalidateRefCache();
-    const [p, s, r, c, a] = await Promise.all([
+    const [p, s, r, a] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
       supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
-      supabase.from('pec_prod_color_pairings').select('*'),
       supabase.from('pec_prod_addons').select('*').order('sort_order').order('name'),
     ]);
     if (p.error) console.error('[prod] products:', p.error);
     if (s.error) console.error('[prod] system_types:', s.error);
     if (r.error) console.error('[prod] recipe_slots:', r.error);
-    if (c.error) console.error('[prod] color_pairings:', c.error);
     if (a.error) console.error('[prod] addons:', a.error);
     state.products = p.data || [];
     state.systemTypes = s.data || [];
     state.recipeSlots = r.data || [];
-    state.colorPairings = c.data || [];
     state.addons = a.data || [];
     // Calculated material lines depend on the catalog; invalidate them.
     state._calcCache = new Map();
@@ -25655,10 +25670,12 @@ function _mergeAcrossAreas(areaPlans) {
       const sys = state.systemTypes.find(s => s.id === a.system_type_id);
       const showQuartz   = sysHasSlot(sys, 'Quartz');
       const showPigment  = sysHasSlot(sys, 'Metallic Pigment');
-      // Flake picker hides when Quartz or Metallic Pigment is the picked-color
-      // slot, even if the legacy requires_flake_color flag is true.
-      const showFlake    = !showQuartz && !showPigment && (sysHasSlot(sys, 'Flake') || (sys && sys.requires_flake_color));
-      const showBase     = !!(sys && (sys.requires_basecoat_color || sysHasSlot(sys, 'Basecoat')));
+      // Recipe slots are the single source of truth for which color pickers a
+      // system shows (a Flake slot means the system needs a flake, and so on);
+      // the legacy requires_* flags are gone (2026-07-16). Flake still hides
+      // when Quartz or Metallic Pigment is the picked-color slot.
+      const showFlake    = !showQuartz && !showPigment && sysHasSlot(sys, 'Flake');
+      const showBase     = sysHasSlot(sys, 'Basecoat');
       const showTopcoat  = sysHasSlot(sys, 'Topcoat');
       const showColorPicker = showFlake || showQuartz || showPigment;
       const showTints    = showBase || showTopcoat;
@@ -26290,12 +26307,15 @@ function _mergeAcrossAreas(areaPlans) {
 
   // -------------------- Material Catalog (admin/pm) --------------------
   function renderCatalog(r) {
+    // The Color Pairings tab is retired (2026-07-16): the default basecoat now
+    // lives on the flake product itself. Fall back so a stale saved tab value
+    // can never render a dead tab.
+    if (state.catalogTab === 'color_pairings') state.catalogTab = 'products';
     r.innerHTML = `
       <nav class="pec-subnav" style="margin:0 0 16px">
         <button data-cat-tab="products"       ${state.catalogTab==='products'?'class="active"':''}>Products</button>
         <button data-cat-tab="system_types"   ${state.catalogTab==='system_types'?'class="active"':''}>System Types</button>
         <button data-cat-tab="addons"         ${state.catalogTab==='addons'?'class="active"':''}>Add-ons</button>
-        <button data-cat-tab="color_pairings" ${state.catalogTab==='color_pairings'?'class="active"':''}>Color Pairings</button>
       </nav>
       <div id="prodCatalogBody"></div>
     `;
@@ -26303,7 +26323,6 @@ function _mergeAcrossAreas(areaPlans) {
     if (state.catalogTab === 'products')       renderProducts($('prodCatalogBody'));
     if (state.catalogTab === 'system_types')   renderSystemTypes($('prodCatalogBody'));
     if (state.catalogTab === 'addons')         renderAddons($('prodCatalogBody'));
-    if (state.catalogTab === 'color_pairings') renderColorPairings($('prodCatalogBody'));
   }
 
   // Add-on catalog (pec_prod_addons): the upsell items a rep drops onto an
@@ -26520,7 +26539,15 @@ function _mergeAcrossAreas(areaPlans) {
       modalRoot.innerHTML = '';
     }
     const existing = productId ? state.products.find(p => p.id === productId) : null;
-    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '' };
+    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '', default_basecoat_product_id: null };
+    // Default basecoat options for a Flake product: active basecoats, minus
+    // Special Order placeholders. If the flake's saved basecoat has since gone
+    // inactive it's appended anyway so an edit doesn't silently drop it.
+    const basecoatChoices = productsByMaterialType('Basecoat').filter(b => !/^Special Order/i.test(b.name));
+    if (p.default_basecoat_product_id && !basecoatChoices.some(b => b.id === p.default_basecoat_product_id)) {
+      const cur = state.products.find(x => x.id === p.default_basecoat_product_id);
+      if (cur) basecoatChoices.push(cur);
+    }
     // Distinct values across the catalog feed the datalist autocomplete on the
     // supplier + manufacturer fields. Typing a new value just adds it on save.
     const distinct = (key) => Array.from(new Set(state.products.map(x => x[key]).filter(Boolean))).sort();
@@ -26547,6 +26574,13 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-row-2">
             <div class="pec-field"><label>Color</label><input id="pmColor" value="${esc(p.color || '')}"></div>
             <div class="pec-field"><label>Spread rate (sqft per gal/box)</label><input id="pmSpread" type="number" min="0" step="0.01" value="${esc(p.spread_rate)}"></div>
+          </div>
+          <div class="pec-field" id="pmBasecoatField" style="${p.material_type === 'Flake' ? '' : 'display:none'}">
+            <label>Default basecoat <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">auto-fills on the estimate when this flake is picked</span></label>
+            <select id="pmBasecoat">
+              <option value="">Pick a basecoat…</option>
+              ${basecoatChoices.map(b => `<option value="${esc(b.id)}" ${b.id === p.default_basecoat_product_id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}
+            </select>
           </div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Kit size</label><input id="pmKit" type="number" min="0" step="0.01" value="${esc(p.kit_size)}"></div>
@@ -26576,6 +26610,12 @@ function _mergeAcrossAreas(areaPlans) {
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('pmCancel').addEventListener('click', closer);
     $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
+    // The Default basecoat field only applies to Flake products; keep its
+    // visibility live as the material type changes so a mid-edit type switch
+    // shows/hides it without a re-render.
+    $('pmType').addEventListener('change', () => {
+      $('pmBasecoatField').style.display = $('pmType').value === 'Flake' ? '' : 'none';
+    });
     const imgEl = $('pmImage');
     if (imgEl) imgEl.addEventListener('input', () => {
       const url = imgEl.value.trim();
@@ -26604,10 +26644,15 @@ function _mergeAcrossAreas(areaPlans) {
         image_url: $('pmImage').value.trim() || null,
         active: $('pmActive').value === 'true',
         notes: $('pmNotes').value || null,
+        default_basecoat_product_id: $('pmType').value === 'Flake' ? ($('pmBasecoat').value || null) : null,
       };
       if (!payload.name)             { reenable(); return errEl.textContent = 'Name is required.'; }
       if (!(payload.spread_rate > 0)){ reenable(); return errEl.textContent = 'Spread rate must be > 0.'; }
       if (!(payload.kit_size > 0))   { reenable(); return errEl.textContent = 'Kit size must be > 0.'; }
+      // Flakes must carry a default basecoat (Special Order Flake exempt);
+      // canonical rule + test live in production/calculator.js.
+      const basecoatErr = window.flakeProductSaveError(payload);
+      if (basecoatErr)               { reenable(); return errEl.textContent = basecoatErr; }
       const isInsert = !existing;
       const trimmedName = payload.name; // already trimmed above
       // Post-close refresh chain, wrapped so a downstream throw (loadCatalog
@@ -26702,25 +26747,16 @@ function _mergeAcrossAreas(areaPlans) {
   function renderSystemTypes(host) {
     const slotsBySys = recipeSlotsBySystemType();
     const productById = indexById(state.products);
-    host.innerHTML = `
-      <div class="pec-toolbar">
-        <button class="pec-btn primary" id="prodAddSystemBtn">+ Add system type</button>
-      </div>
-      <div style="font-size:.72rem;color:var(--muted);margin:0 0 10px">Drag the &#9776; handle to reorder. The order here sets the order systems appear in the job and schedule pickers, so put the most-used ones at the top.</div>
-      ${window.sortSystemTypes(state.systemTypes).map(s => `
-        <div class="pec-card" data-sys-id="${esc(s.id)}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
-            <div style="display:flex;align-items:flex-start;gap:10px;min-width:0">
-              <span class="sys-drag-handle" draggable="true" title="Drag to reorder" style="cursor:grab;color:var(--muted);font-size:1.1rem;line-height:1.2;user-select:none;padding:2px 2px 0">&#9776;</span>
-              <div>
-              <h3 style="margin:0">${esc(s.name)} ${s.active?'':'<span style="color:var(--muted);font-size:.7rem">(inactive)</span>'}</h3>
-              <div style="color:var(--muted);font-size:.75rem">${esc(s.description || '')}</div>
-              <div style="color:var(--muted);font-size:.7rem">Requires flake: ${s.requires_flake_color?'yes':'no'} · requires basecoat: ${s.requires_basecoat_color?'yes':'no'}</div>
-              </div>
-            </div>
-            <button class="pec-btn sm" data-edit-system="${esc(s.id)}">Edit</button>
-          </div>
-          <table class="pec-table" style="margin-top:12px">
+    // Every system renders COLLAPSED by default: one compact row with the name,
+    // active status, and a read-only pricing summary. Clicking the row expands
+    // its recipe-slots table. Expanded ids live in state.expandedSystemTypes (a
+    // Set, memory only) so a re-render after a slot edit keeps the row open.
+    // Pricing % stays editable ONLY in the Edit modal; the summary is display.
+    const pct = (v) => (v == null || v === '') ? '—' : Number(v) + '%';
+    const expanded = state.expandedSystemTypes;
+    const expandedSection = (s) => `
+          <div style="color:var(--muted);font-size:.75rem;margin:8px 0 0 26px">${esc(s.description || '')}</div>
+          <table class="pec-table" style="margin-top:10px">
             <thead><tr><th>#</th><th>Slot</th><th>Kind</th><th>Default / options</th><th>Required</th><th></th></tr></thead>
             <tbody>
               ${(slotsBySys[s.id] || []).map(slot => {
@@ -26745,12 +26781,41 @@ function _mergeAcrossAreas(areaPlans) {
                 </tr>`; }).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No recipe slots yet.</td></tr>'}
             </tbody>
           </table>
-          <div style="margin-top:10px"><button class="pec-btn sm" data-add-slot="${esc(s.id)}">+ Add slot</button></div>
+          <div style="margin-top:10px"><button class="pec-btn sm" data-add-slot="${esc(s.id)}">+ Add slot</button></div>`;
+    host.innerHTML = `
+      <div class="pec-toolbar">
+        <button class="pec-btn primary" id="prodAddSystemBtn">+ Add system type</button>
+      </div>
+      <div style="font-size:.72rem;color:var(--muted);margin:0 0 10px">Click a system to see its recipe. Drag the &#9776; handle to reorder; the order here sets the order systems appear in the job and schedule pickers, so put the most-used ones at the top.</div>
+      ${window.sortSystemTypes(state.systemTypes).map(s => {
+        const isOpen = expanded.has(s.id);
+        return `
+        <div class="pec-card" data-sys-id="${esc(s.id)}" style="padding-top:10px;padding-bottom:10px">
+          <div data-sys-toggle="${esc(s.id)}" style="display:flex;align-items:center;gap:10px;cursor:pointer;min-width:0">
+            <span class="sys-drag-handle" draggable="true" title="Drag to reorder" style="cursor:grab;color:var(--muted);font-size:1.1rem;line-height:1.2;user-select:none;padding:2px 2px 0">&#9776;</span>
+            <span style="color:var(--muted);font-size:.7rem;width:12px">${isOpen ? '&#9660;' : '&#9654;'}</span>
+            <h3 style="margin:0;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</h3>
+            ${s.active ? '' : '<span style="color:var(--muted);font-size:.7rem;flex:none">(inactive)</span>'}
+            <span style="margin-left:auto;color:var(--muted);font-size:.72rem;font-variant-numeric:tabular-nums;white-space:nowrap">Target GP ${pct(s.target_gp_pct)} · Labor ${pct(s.labor_budget_pct)} · Materials ${pct(s.materials_budget_pct)}</span>
+            <button class="pec-btn sm" data-edit-system="${esc(s.id)}" style="flex:none">Edit</button>
+          </div>
+          ${isOpen ? expandedSection(s) : ''}
         </div>
-      `).join('') || '<div class="pec-empty">No system types yet. Click + Add system type.</div>'}
+      `; }).join('') || '<div class="pec-empty">No system types yet. Click + Add system type.</div>'}
     `;
     $('prodAddSystemBtn').addEventListener('click', () => openSystemTypeModal(null));
     host.querySelectorAll('[data-edit-system]').forEach(b => b.addEventListener('click', () => openSystemTypeModal(b.dataset.editSystem)));
+    // Row click toggles expansion. The drag handle and the Edit button live
+    // inside the same header row, so their clicks are excluded here: Edit
+    // should open the modal without also toggling, and a click that starts a
+    // drag should never flip the row open.
+    host.querySelectorAll('[data-sys-toggle]').forEach(row => row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-edit-system]') || e.target.closest('.sys-drag-handle')) return;
+      const id = row.dataset.sysToggle;
+      if (state.expandedSystemTypes.has(id)) state.expandedSystemTypes.delete(id);
+      else state.expandedSystemTypes.add(id);
+      renderSystemTypes(host);
+    }));
     host.querySelectorAll('[data-add-slot]').forEach(b => b.addEventListener('click', () => openRecipeSlotModal(b.dataset.addSlot, null)));
     host.querySelectorAll('[data-edit-slot]').forEach(b => b.addEventListener('click', () => {
       const slot = state.recipeSlots.find(x => x.id === b.dataset.editSlot);
@@ -26802,27 +26867,21 @@ function _mergeAcrossAreas(areaPlans) {
 
   function openSystemTypeModal(systemId) {
     const existing = systemId ? state.systemTypes.find(s => s.id === systemId) : null;
-    const s = existing ? { ...existing } : { name: '', description: '', requires_flake_color: true, requires_basecoat_color: true, active: true, color: '#7c3aed', notes: '' };
+    const s = existing ? { ...existing } : { name: '', description: '', active: true, color: '#7c3aed', notes: '' };
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodSModalBg">
         <div class="pec-modal">
           <h3>${existing ? 'Edit' : 'New'} system type</h3>
           <div class="pec-field"><label>Name</label><input id="smName" value="${esc(s.name)}"></div>
           <div class="pec-field"><label>Description</label><input id="smDesc" value="${esc(s.description || '')}"></div>
-          <div class="pec-row-3">
-            <div class="pec-field"><label>Requires flake</label>
-              <select id="smReqFlake"><option value="true" ${s.requires_flake_color?'selected':''}>Yes</option><option value="false" ${!s.requires_flake_color?'selected':''}>No</option></select>
-            </div>
-            <div class="pec-field"><label>Requires basecoat</label>
-              <select id="smReqBase"><option value="true" ${s.requires_basecoat_color?'selected':''}>Yes</option><option value="false" ${!s.requires_basecoat_color?'selected':''}>No</option></select>
-            </div>
+          <div class="pec-row-2">
             <div class="pec-field"><label>Active</label>
               <select id="smActive"><option value="true" ${s.active?'selected':''}>Yes</option><option value="false" ${!s.active?'selected':''}>No</option></select>
             </div>
-          </div>
-          <div class="pec-field">
-            <label>Calendar color <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">shown as the band on Job Schedule events</span></label>
-            <input id="smColor" type="color" value="${esc(s.color || '#7c3aed')}" style="width:80px;height:36px;padding:2px;cursor:pointer">
+            <div class="pec-field">
+              <label>Calendar color <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">shown as the band on Job Schedule events</span></label>
+              <input id="smColor" type="color" value="${esc(s.color || '#7c3aed')}" style="width:80px;height:36px;padding:2px;cursor:pointer">
+            </div>
           </div>
           <div class="pec-row-3">
             <div class="pec-field">
@@ -26859,8 +26918,6 @@ function _mergeAcrossAreas(areaPlans) {
       const payload = {
         name: $('smName').value.trim(),
         description: $('smDesc').value || null,
-        requires_flake_color: $('smReqFlake').value === 'true',
-        requires_basecoat_color: $('smReqBase').value === 'true',
         active: $('smActive').value === 'true',
         color: $('smColor').value || null,
         labor_budget_pct: laborPctRaw === '' ? null : Number(laborPctRaw),
@@ -26999,109 +27056,6 @@ function _mergeAcrossAreas(areaPlans) {
   function nextSlotIndex(systemId) {
     const sibs = state.recipeSlots.filter(s => s.system_type_id === systemId);
     return sibs.length ? Math.max(...sibs.map(s => s.order_index)) + 1 : 1;
-  }
-
-  function renderColorPairings(host) {
-    // Drop Special Order placeholders from the pairing pickers — they're for
-    // one-off custom-color jobs, not for default basecoat lookups.
-    const isSpecial = (p) => p.name === 'Special Order Flake' || p.name === 'Special Order Quartz';
-    const flakes = productsByMaterialType('Flake', { includeInactive: true }).filter(p => !isSpecial(p));
-    const basecoats = productsByMaterialType('Basecoat', { includeInactive: true });
-    const productById = indexById(state.products);
-    host.innerHTML = `
-      <div class="pec-toolbar">
-        <button class="pec-btn primary" id="prodAddPairBtn">+ Add pairing</button>
-      </div>
-      <div class="pec-card">
-        <table class="pec-table">
-          <thead><tr><th>Flake</th><th>Default basecoat</th><th>Default?</th><th>Notes</th><th></th></tr></thead>
-          <tbody>
-            ${state.colorPairings.map(cp => {
-              const f = productById[cp.flake_product_id]; const b = productById[cp.basecoat_product_id];
-              return `<tr class="nohover">
-                <td>${esc(f ? f.name : 'unknown flake')}</td>
-                <td>${esc(b ? b.name : 'unknown basecoat')}</td>
-                <td>${cp.is_default ? 'Yes' : 'No'}</td>
-                <td>${esc(cp.notes || '')}</td>
-                <td>
-                  ${!cp.is_default ? `<button class="pec-btn sm ghost" data-make-default="${esc(cp.id)}">Make default</button>` : ''}
-                  <button class="pec-btn sm danger" data-del-pair="${esc(cp.id)}">Delete</button>
-                </td>
-              </tr>`;
-            }).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No pairings yet.</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-    `;
-    const addPairBtn = $('prodAddPairBtn');
-    if (!addPairBtn) {
-      console.error('[prod] prodAddPairBtn missing from DOM after render');
-    } else {
-      addPairBtn.addEventListener('click', () => {
-        console.log('[prod] Add pairing click; flakes:', flakes.length, 'basecoats:', basecoats.length);
-        openPairingModal(flakes, basecoats);
-      });
-    }
-    host.querySelectorAll('[data-make-default]').forEach(b => b.addEventListener('click', async () => {
-      const cp = state.colorPairings.find(x => x.id === b.dataset.makeDefault); if (!cp) return;
-      await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', cp.flake_product_id);
-      const { error } = await supabase.from('pec_prod_color_pairings').update({ is_default: true }).eq('id', cp.id);
-      if (error) return alert(error.message);
-      await loadCatalog(); render();
-    }));
-    host.querySelectorAll('[data-del-pair]').forEach(b => b.addEventListener('click', async () => {
-      if (!confirm('Delete this pairing?')) return;
-      const { error } = await supabase.from('pec_prod_color_pairings').delete().eq('id', b.dataset.delPair);
-      if (error) return alert(error.message);
-      await loadCatalog(); render();
-    }));
-  }
-
-  function openPairingModal(flakes, basecoats) {
-    $('prodModalRoot').innerHTML = `
-      <div class="pec-modal-bg" id="prodCpBg">
-        <div class="pec-modal">
-          <h3>New color pairing</h3>
-          <div class="pec-row-2">
-            <div class="pec-field"><label>Flake</label>
-              <select id="cpFlake"><option value="">Pick a flake…</option>${flakes.map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('')}</select>
-            </div>
-            <div class="pec-field"><label>Basecoat</label>
-              <select id="cpBase"><option value="">Pick a basecoat…</option>${basecoats.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('')}</select>
-            </div>
-          </div>
-          <div class="pec-row-2">
-            <div class="pec-field"><label>Make default for this flake</label>
-              <select id="cpDefault"><option value="true">Yes</option><option value="false" selected>No</option></select>
-            </div>
-            <div class="pec-field"><label>Notes</label><input id="cpNotes"></div>
-          </div>
-          <div class="pec-modal-actions">
-            <span style="flex:1"></span>
-            <button class="pec-btn ghost" id="cpCancel">Cancel</button>
-            <button class="pec-btn primary" id="cpSave">Add pairing</button>
-          </div>
-          <div class="prod-msg-err" id="cpError"></div>
-        </div>
-      </div>
-    `;
-    const closer = () => { $('prodModalRoot').innerHTML = ''; };
-    $('cpCancel').addEventListener('click', closer);
-    $('prodCpBg').addEventListener('click', (e) => { if (e.target.id === 'prodCpBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
-    $('cpSave').addEventListener('click', async () => {
-      const errEl = $('cpError'); errEl.textContent = '';
-      const flake = $('cpFlake').value, base = $('cpBase').value;
-      if (!flake || !base) return errEl.textContent = 'Pick both a flake and a basecoat.';
-      const isDefault = $('cpDefault').value === 'true';
-      try {
-        if (isDefault) await supabase.from('pec_prod_color_pairings').update({ is_default: false }).eq('flake_product_id', flake);
-        const { error } = await supabase.from('pec_prod_color_pairings').insert({ flake_product_id: flake, basecoat_product_id: base, is_default: isDefault, notes: $('cpNotes').value || null });
-        if (error) return errEl.textContent = error.message;
-      } catch (err) {
-        return errEl.textContent = 'Save failed: ' + err.message;
-      }
-      closer(); await loadCatalog(); render();
-    });
   }
 
   // -------------------- Boot (driven by CRM tab handoff) --------------------

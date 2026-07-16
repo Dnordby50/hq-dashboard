@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally, flakeBasecoatDefaults, flakeProductSaveError } from './calculator.js';
 import { actualGpPct, costingMaterials, costingComplete, joinCompsSources, buildComps, compsGpCaveat } from './comps.js';
 
 let passed = 0;
@@ -1024,6 +1024,44 @@ assertThrows(() => {
   assertEq(Math.round(gpAfter * 10000) / 10000, 0.6103, 'GP once the 6% commission is counted');
   assertEq(gpAfter < gpBefore, true, 'counting commission lowers the reported GP');
   assertEq(Math.round((gpBefore - gpAfter) * price), 234, 'the GP drop equals the commission dollars (6% of 3900)');
+}
+
+// --- Flake default basecoat lives ON the product (2026-07-16 catalog reorg) --
+// The pec_prod_color_pairings table is retired; every defaultBasecoatByFlake
+// map now builds from the flake product's default_basecoat_product_id via
+// flakeBasecoatDefaults. These assert (a) the map builds only from Flake rows
+// that actually carry a basecoat, and (b) that map drives the estimator/job
+// auto-fill: an area with a flake pick but NO basecoat pick still plans the
+// flake's default basecoat.
+{
+  const products = [
+    { ...productsById.flake, default_basecoat_product_id: 'basecoat' },
+    { id: 'flakeNoBc', name: 'Standard Flake (color TBD)', material_type: 'Flake', spread_rate: 350, kit_size: 1 }, // grandfathered placeholder, no default
+    { ...productsById.basecoat, default_basecoat_product_id: 'basecoat' }, // non-flake: ignored even with the column set
+  ];
+  const map = flakeBasecoatDefaults(products);
+  assertEq(map, { flake: 'basecoat' }, 'flakeBasecoatDefaults maps only Flake rows that carry a default basecoat');
+  assertEq(flakeBasecoatDefaults(null), {}, 'flakeBasecoatDefaults tolerates null products');
+
+  const plan = computeMaterialPlan({
+    areas: [{ id: 'a1', name: 'Garage', sqft: 600, system_type_id: 'std', flake_product_id: 'flake' }],
+    productsById,
+    recipeSlotsBySystemType,
+    defaultBasecoatByFlake: map,
+  });
+  assertEq(lineByMaterial(plan, 'Basecoat').product_id, 'basecoat', "flake's product-level default basecoat drives the auto-fill");
+  assertEq(lineByMaterial(plan, 'Basecoat').color, 'Tinted Gray', 'auto-filled basecoat resolves to the paired product');
+}
+
+// --- A Flake product cannot be saved without a default basecoat --------------
+// flakeProductSaveError is the canonical save gate the product modal calls
+// (mirrored as window.flakeProductSaveError in index.html). "Special Order
+// Flake" is exempt by name (per-job pick by design); non-flakes never trip it.
+{
+  assertEq(typeof flakeProductSaveError({ name: 'Decorative Simiron Flake - Domino', material_type: 'Flake', default_basecoat_product_id: null }), 'string', 'a flake with no basecoat is blocked with an error message');
+  assertEq(flakeProductSaveError({ name: 'Decorative Simiron Flake - Domino', material_type: 'Flake', default_basecoat_product_id: 'basecoat' }), null, 'a flake with a basecoat saves');
+  assertEq(flakeProductSaveError({ name: 'Special Order Flake', material_type: 'Flake', default_basecoat_product_id: null }), null, 'Special Order Flake is exempt');
+  assertEq(flakeProductSaveError({ name: 'Simiron 1100 SL - Black', material_type: 'Basecoat', default_basecoat_product_id: null }), null, 'non-flake products never trip the gate');
 }
 
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------

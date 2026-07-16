@@ -543,6 +543,40 @@ export function jobNameAddrKey(name, addr) {
 }
 
 /**
+ * defaultBasecoatByFlake map, sourced from the flake PRODUCT rows. The default
+ * basecoat per flake lives ON the flake product (default_basecoat_product_id,
+ * 2026-07-16 catalog reorg); pec_prod_color_pairings is retired (table kept in
+ * the DB, dead, for reversibility). Every consumer of the map builds it here
+ * so the source can never drift per call site.
+ *
+ * @param {Array<Object>} products  pec_prod_products rows
+ * @returns {Object<string,string>} flake_product_id -> basecoat_product_id
+ */
+export function flakeBasecoatDefaults(products) {
+  const out = {};
+  for (const p of (products || [])) {
+    if (p && p.material_type === 'Flake' && p.default_basecoat_product_id) out[p.id] = p.default_basecoat_product_id;
+  }
+  return out;
+}
+
+/**
+ * Save-time validation for the product modal: a Flake product MUST carry a
+ * default basecoat (so the estimator/job pickers can auto-fill it), except the
+ * "Special Order Flake" placeholder, whose whole point is a per-job pick.
+ * Returns the user-facing error string, or null when the payload is fine.
+ * Existing flakes are grandfathered implicitly: this only runs on save.
+ *
+ * @param {Object} payload  { name, material_type, default_basecoat_product_id }
+ */
+export function flakeProductSaveError(payload) {
+  if (!payload || payload.material_type !== 'Flake') return null;
+  if (payload.name === 'Special Order Flake') return null;
+  if (payload.default_basecoat_product_id) return null;
+  return 'Pick a default basecoat for this flake color.';
+}
+
+/**
  * Resolve a production job (pec_prod_jobs) to its CRM job card identity. The
  * reliable bridge is dripjobs_deal_id, but a MANUAL "+ Add Job" prod row has
  * none (deal NULL) even when the same customer exists as a bridged CRM job (the
