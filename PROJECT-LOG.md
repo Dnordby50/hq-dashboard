@@ -4,6 +4,41 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 MST] Next Day: split a job across two crews (simultaneous, "2 teams")
+By: Claude Code
+Changed: Delivered claude-code-prompt-30. Feature commit 1498e8a (index.html, help/whats-new.json, plus the prompt file), this docs commit. Also landed 7dd7e25 first: Cowork's 2026-07-16 polycoat migration + log entry were sitting STAGED but uncommitted (their entry says "committed locally"; git lock trouble, see _git_locks_to_delete/), so I completed that commit separately before mine to keep the two changes from mixing.
+
+HOW IT WORKS (the whole feature is one derived fact, no schema change): pec_prod_job_schedule_days has no unique key on (job_id, scheduled_date) (verified live by Cowork during scoping: only the id primary key is unique), so a SECOND row for the same job and date with a different crew_id is simply allowed. "Shared / 2 teams" is DERIVED, never stored: on a given date, a job whose rows span two distinct crew_ids is split. The "second" row is the later-created one (created_at, id tie-break), which is exactly the row the split control inserted, so the remove x lives on its card and structurally cannot delete the primary.
+
+Functions changed, all in index.html:
+- renderNextDay: split bookkeeping (rowsByJobToday, splitJobIds, isSecondRow), the "2 teams" badge on BOTH crew cards, the "Split to 2nd crew" button (only on cards with a crew, only when the job has one row that date, only when another active crew exists), the "Remove 2nd team" x (second card only, deletes that one row by primary key after a confirm), a drop guard so a split card cannot be dropped onto the other team's crew, and the job-level crew mirror now SKIPPED on split days (forward move and undo both), so dragging one team's card changes only that team's row.
+- openNextDaySplitModal (new): crew picker over active crews excluding the card's crew; inserts the second row copying the primary's time_slot (simultaneous, per the locked decision), day_index (same producing day), and notes (segment-note invariant), crew_lead blank. Re-checks the DB for two-rows-max before inserting, so a stale board cannot make a third. Plain single insert, never a blind retry (non-idempotent write rule).
+- nextDayPrintHtml: a split job prints under BOTH crews' First/Second/Third columns (the per-crew row filter finds each row naturally) with a plain "- 2 teams" marker (hyphen, not an em dash).
+- scheduleTotalDaysByJob (the SHARED proration denominator): now counts DISTINCT dates per job, so a split day is still ONE day.
+- renderScheduleCalendar, two surgical dedupes (justified under the "shared helper if strictly needed" guardrail because both would have double-counted): weekRevenueRows counts distinct job+date (week sidebar total unchanged by a split), and buildWeek draws ONE bar per job per date (no stacked duplicate bar doubling the visual money). Week-mode day cards intentionally still show the job under both crews, which matches the feature.
+- openScheduleModal: selectedDates seed and the reschedule path's existingIsos are now deduped Sets, so opening/saving a split job's schedule cannot re-insert the same date twice. Side effect, deliberate: a schedule-modal Save collapses the split back to the single picked crew (delete-all + reinsert is that modal's existing shape); the split is re-made on the Next Day board in seconds.
+- What's New: new entry id nextday-split-two-crews (help/whats-new.json, newest first, validates).
+
+DOUBLE-COUNT AUDIT (the prompt's critical guardrail), every consumer of schedule rows checked:
+- deriveJobStatus + runScheduleStatusSync + the prod_status_sync_trigger (2026-06-09 migration): all reduce dates to min/max spans, so a duplicate date is a no-op. Unchanged.
+- deriveScheduleState (job detail, work order, unified job header): already dedupes via a Set of dates. Unchanged.
+- Pipeline (loadPipelineData installInfo) and the pending-jobs check (scheduledJobIds): min/max and a Set of job_ids. Unchanged.
+- Next Day board header revenue: was per ROW, now per JOB per date (fixed here).
+- scheduleTotalDaysByJob / weekRevenueRows / buildWeek: were per ROW, now distinct job+date (fixed here).
+- "No slot yet · N" counts CARDS, which is accurate (a split job with both rows unslotted genuinely has two cards to place). Unchanged on purpose.
+- The unified job page's schedule-days table lists both rows for the split date (same Day number, two crews), which is the honest historical record. Unchanged.
+- Costing, bonuses, commissions, BusyBusy: none read schedule-day counts; labor attaches per crew member. Untouched per the guardrail.
+
+VERIFIED: both production suites pass (187 calculator, 142 estimate), all 8 inline script blocks parse clean via node --check (module-aware), whats-new.json validates, no em dashes in any new text. Plus a fixture check against the REAL extracted scheduleTotalDaysByJob and the exact new derivations: a $10k 2-day job split on day 1 counts 2 days not 3 rows, badges only the split job, day revenue = $5k + the unsplit job (counted once), week revenue unchanged at contract value, calendar draws one 2-day bar, and the later-created row is always the removable one. 9/9 checks pass.
+
+Why: Dylan needs two existing crews on one big job the same day to finish it faster; scoped by Cowork 2026-07-16 (prompt 30, locked decisions honored: same time slot, two crews max, board-only, no capacity/costing/bonus changes).
+Files touched: index.html, help/whats-new.json, claude-code-prompt-30-split-job-two-crews.md (new), PROJECT-LOG.md
+Next steps: Deploy as usual. No migration needed (verified: no unique constraint on job_id+date), so no Cowork handoff.
+Handoff to Cowork: None
+Handoff to Dylan: After the deploy, open the Next Day Schedule, click "Split to 2nd crew" on a job card that has a crew, pick the other team, and confirm the job shows under both crews with the "2 teams" badge and prints under both on the run sheet. The x on the second team's card puts it back to one crew.
+
+---
+
 ## [2026-07-16 14:29 MST] Cowork: fixed Polycoat add-product failure (material_type CHECK constraint, 3 tables)
 By: Cowork
 Changed: Applied a new migration to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via Supabase MCP apply_migration, adding 'Polycoat' to the material_type CHECK constraint on three tables. Wrote the matching file supabase/migrations/2026-07-16_polycoat_material_type.sql to the repo and committed locally (no push).
