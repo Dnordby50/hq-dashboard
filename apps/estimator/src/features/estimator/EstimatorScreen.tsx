@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Addon, Catalog, SalesPerson } from '../../lib/catalog';
 import {
   allocateProportionally,
@@ -32,7 +32,7 @@ import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type Com
 import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
 import { supabase } from '../../lib/supabase';
 import { uuid } from '../../offline/uuid';
-import { openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
+import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
 
 type AreaForm = { name: string; sqft: string; systemTypeId: string; mvb: boolean; slotValues: Record<string, string> };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
@@ -230,6 +230,31 @@ export default function EstimatorScreen({
   // Rep's answers to the templates' BLANK placeholders, keyed by the context
   // hash production/scope.cjs computes (same keys the server uses).
   const [scopeAnswers, setScopeAnswers] = useState<Record<string, string>>(() => editing?.scopeAnswers ?? {});
+  // ---- Live proposal panel (build 25, STANDARD mode) -----------------------
+  // The assembled scope of work, visible and editable WHILE the estimate is
+  // built instead of only after save on the estimate page. The text has three
+  // owners, in precedence order:
+  //   1. the rep (panelEdited / dbScopeEdited): their words, protected by the
+  //      never-overwrite rule the server already enforces (scope_edited_at +
+  //      force),
+  //   2. the server writer (scopeGenerated): pec-estimate-scope's assembled
+  //      document, loaded on the auto-first save or a Regenerate click,
+  //   3. the local template preview (nothing generated yet): instant,
+  //      offline-safe substitution of the same templates.
+  const [scopeText, setScopeText] = useState<string>(() => editing?.scopeOfWork ?? '');
+  const [scopeGenerated, setScopeGenerated] = useState<boolean>(() => editing?.hasScope === true);
+  // Hand-edit tracking, split in two because they mean different writes: a
+  // panel edit this session must RIDE the next save (editedScope); a scope
+  // already edited in the database only gates force/stale semantics.
+  const [panelEdited, setPanelEdited] = useState(false);
+  const [dbScopeEdited, setDbScopeEdited] = useState<boolean>(() => !!editing?.scopeEditedAt);
+  const [scopeStale, setScopeStale] = useState<boolean>(() => editing?.scopeStale === true);
+  const [scopeBusy, setScopeBusy] = useState(false);
+  const [scopeError, setScopeError] = useState('');
+  const [savedEstimateId, setSavedEstimateId] = useState<string | null>(() => editing?.id ?? null);
+  // Estimate saved OFFLINE with the auto-first generation still owed: the id
+  // waits here until the outbox drains, then the generation fires by itself.
+  const pendingAutoGenRef = useRef<string | null>(null);
   // ---- Custom estimate mode (build 24): the WHOLE estimate goes custom -----
   // One-off jobs the shop does not do often: Dylan types the scope and the
   // price himself; areas and the material engine are off. The toggle is
@@ -351,6 +376,90 @@ export default function EstimatorScreen({
     return scopeOpenQuestions(sources, scopeAnswers);
   }, [pricedAreas, systemTypes, addonForms, addonCatalog, scopeAnswers]);
   const setScopeAnswer = (key: string, value: string) => setScopeAnswers((prev) => ({ ...prev, [key]: value }));
+
+  // Instant local preview for the proposal panel: the same templates, the
+  // same BLANK substitution (shared production/scope.cjs), assembled in the
+  // same per-line document shape the server writes (## label + body, ---
+  // separators, same line labels the save composes). It is a PREVIEW: the
+  // model's fact substitution (sqft slots, stem walls is/is-not, flake color)
+  // has not run yet, so those template slots read as written until the
+  // server-assembled document replaces this after the first save. An
+  // unanswered question stays the literal word BLANK on purpose, exactly
+  // what the customer would see.
+  const localScopePreview = useMemo(() => {
+    if (isCustom) return '';
+    const sections: string[] = [];
+    pricedAreas.forEach((a, i) => {
+      const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+      if (!sys) return;
+      const isMvbOnly = sys.name === MVB_ONLY_SYSTEM_NAME;
+      const name = a.name || `Area ${i + 1}`;
+      const label = pricedAreas.length > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`;
+      const tpl = (a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
+      const body = tpl ? scopeApplyAnswers(tpl, scopeAnswers, sys.name) : `${Math.round(Number(a.sqft) || 0)} sqft`;
+      sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
+    });
+    for (const f of addonForms) {
+      const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) ?? null : null;
+      const snippet = cat && cat.scope_snippet && cat.scope_snippet.trim() ? cat.scope_snippet : null;
+      const head = `## ${f.label.trim() || 'Add-on'}${f.optional ? ' (optional)' : ''}`;
+      const body = snippet && cat ? scopeApplyAnswers(snippet, scopeAnswers, cat.name) : f.description.trim();
+      sections.push(body ? `${head}\n\n${body}` : head);
+    }
+    return sections.join('\n\n---\n\n');
+  }, [isCustom, pricedAreas, systemTypes, scopeAnswers, addonForms, addonCatalog]);
+
+  const scopeEditedAny = panelEdited || dbScopeEdited;
+  // What the panel shows: the rep's or the server's document once one exists,
+  // else the live local preview (which keeps updating as inputs change).
+  const scopeDisplay = scopeGenerated || scopeEditedAny ? scopeText : localScopePreview;
+  const onScopeTextChange = (v: string) => {
+    setScopeText(v);
+    setPanelEdited(true);
+    setScopeError('');
+    // An edited proposal is an unsaved change: it rides the next save.
+    setSaveState('idle');
+  };
+
+  // Call the ONE scope writer (pec-estimate-scope; the estimate page uses the
+  // same function with the same semantics) and load the assembled document
+  // into the live panel. force=true is only ever sent after the explicit
+  // "this replaces your edited text" confirm, mirroring the estimate page's
+  // Regenerate; the server refuses an unforced write over a human's words
+  // anyway (scope_edited_at, 409), so a bug here still cannot lose them.
+  const generateScope = useCallback(async (estimateId: string, force: boolean): Promise<boolean> => {
+    setScopeBusy(true);
+    setScopeError('');
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('Sign in to write the proposal.');
+      const res = await fetch('/.netlify/functions/pec-estimate-scope', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(force ? { estimate_id: estimateId, force: true } : { estimate_id: estimateId }),
+      });
+      const out = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!res.ok || out.success !== true) throw new Error(String(out.error || `Proposal generation failed (${res.status})`));
+      if (out.generated !== true) {
+        setScopeError(String(out.reason || 'Nothing to generate for this estimate yet.'));
+        return false;
+      }
+      setScopeText(String(out.scope_of_work ?? ''));
+      setScopeGenerated(true);
+      setPanelEdited(false);
+      setDbScopeEdited(false); // a successful write clears scope_edited_at server-side
+      setScopeStale(false);
+      return true;
+    } catch (e) {
+      // Surfaced in the panel, never blocking: the estimate page's Generate
+      // button covers any miss, and the local preview still stands.
+      setScopeError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      setScopeBusy(false);
+    }
+  }, []);
 
   // Any area wants MVB but the catalog is missing the MVB product.
   const anyAreaMvb = useMemo(() => engineAreas.some((a) => a.mvb === true), [engineAreas]);
@@ -610,8 +719,22 @@ export default function EstimatorScreen({
     refreshPending();
   }, [refreshPending]);
   useEffect(() => {
-    if (online) drainOutbox().then(refreshPending).catch(() => {});
-  }, [online, refreshPending]);
+    if (!online) return;
+    drainOutbox()
+      .then(refreshPending)
+      .then(() => {
+        // Offline-first-save catch-up (build 25): the auto-first proposal
+        // generation could not run at save time; now that the outbox has
+        // drained, fire it once. This is what makes the offline note's "the
+        // proposal writes itself once online" literally true in-session.
+        const id = pendingAutoGenRef.current;
+        if (id) {
+          pendingAutoGenRef.current = null;
+          generateScope(id, false);
+        }
+      })
+      .catch(() => {});
+  }, [online, refreshPending, generateScope]);
   useEffect(() => {
     setSaveState('idle');
   }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput]);
@@ -717,24 +840,6 @@ export default function EstimatorScreen({
     window.location.href = '/';
   }, []);
 
-  // Fire the AI scope writer after a save. FREE regeneration only while no
-  // human has edited the scope; an edited scope is marked stale by the save
-  // itself (markScopeStale) and regenerating then requires the explicit click
-  // on the estimate page. Best-effort: the estimate page has a Generate button
-  // for anything missed here, and offline saves generate later by design.
-  const triggerScope = useCallback(async (estimateId: string) => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) return;
-      await fetch('/.netlify/functions/pec-estimate-scope', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ estimate_id: estimateId }),
-      });
-    } catch { /* the estimate page's Generate button covers this */ }
-  }, []);
-
   // "Polish with AI" (custom mode only): cleans the typed scope into proposal
   // language. POLISH, not authorship: the endpoint's contract preserves
   // meaning, exclusions, and dollar figures verbatim and invents nothing. It
@@ -769,20 +874,23 @@ export default function EstimatorScreen({
     setPrePolish(null);
   }, [prePolish]);
 
-  const onSave = useCallback(async () => {
+  // The save, callable two ways: the Save button (opts omitted) and the
+  // Regenerate flow (skipAutoScope, because it runs its own generation right
+  // after). Returns the estimate id on success so callers can chain on it.
+  const performSave = useCallback(async (opts?: { skipAutoScope?: boolean }): Promise<string | null> => {
     // sellPrice non-null covers both modes: the typed custom price, or the
     // engine/override price. The engine snapshot is only required in standard.
-    if (!salesperson || sellPrice == null || totalPrice == null) return;
-    if (!isCustom && (!pricing || !hasPrice)) return;
+    if (!salesperson || sellPrice == null || totalPrice == null) return null;
+    if (!isCustom && (!pricing || !hasPrice)) return null;
     if (editing && !online) {
       setSaveState('error');
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
-      return;
+      return null;
     }
     // Floor-GP guard (build 17): warn, do not block. Same philosophy as the 15c
     // BLANK-scope send gate.
     if (belowFloor && !window.confirm(`Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor. Save this estimate anyway?`)) {
-      return;
+      return null;
     }
     setSaveState('saving');
     setSaveError('');
@@ -972,7 +1080,10 @@ export default function EstimatorScreen({
       // the materials rows cascade). Online-only, checked above.
       if (editing) await deleteEstimateChildren(editing.id);
 
-      const scopeWasEdited = !!editing?.scopeEditedAt;
+      // Live proposal (build 25): a panel edit rides this save under the
+      // hand-edited lock; otherwise an already-written document (edited or
+      // machine-made) is marked stale, because saves no longer regenerate.
+      const editedScopeText = !isCustom && panelEdited && scopeText.trim() ? scopeText : null;
       const { id } = await saveEstimateOffline({
         estimateId: editing?.id ?? null,
         status: editing?.status ?? 'draft',
@@ -999,13 +1110,25 @@ export default function EstimatorScreen({
         priceOverride: discounted ? { reason: overrideReason.trim(), by: createdBy } : null,
         createdBy: editing?.createdBy ?? createdBy,
         leadId: editing?.leadId ?? leadLink?.id ?? null,
-        // Custom saves write the scope themselves (with scope_edited_at); the
-        // stale flag is a standard-path concept.
-        markScopeStale: isCustom ? false : scopeWasEdited,
+        // Custom saves write the scope themselves (with scope_edited_at). A
+        // standard save flags the document stale whenever one exists and this
+        // save is not carrying fresh text: with auto-regenerate gone (build
+        // 25, cost + edit safety), "the estimate may have moved under the
+        // document" is now true of machine text too, not just edited text.
+        markScopeStale: isCustom ? false : editedScopeText == null && (dbScopeEdited || scopeGenerated),
+        editedScope: editedScopeText,
         isCustom,
         customScope: isCustom ? customScope : null,
         customPrice: isCustom ? sellPrice : null,
       });
+      // Auto-first, then manual (build 25): the ONE automatic generation
+      // happens on the save that has a scope-templated estimate with every
+      // scope question answered and no document yet. After that, saves only
+      // mark the document stale and the Regenerate button is the only writer.
+      // Custom estimates NEVER generate: the typed text IS the scope, and the
+      // template writer would replace it with add-on snippets.
+      const shouldAutoGen = !isCustom && !opts?.skipAutoScope && editedScopeText == null &&
+        !dbScopeEdited && !panelEdited && !scopeGenerated && scopeQuestions.length === 0;
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
         await drainOutbox().catch(() => {});
@@ -1015,13 +1138,24 @@ export default function EstimatorScreen({
             syncedNumber = (data as { estimate_number: number | null } | null)?.estimate_number ?? null;
           } catch { /* the number arrives when the outbox drains */ }
         }
-        // Auto-write the customer scope: on first save (scope null) and on any
-        // re-save while no human has edited it. An edited scope was marked
-        // stale above and is NEVER regenerated without the explicit click.
-        // Custom estimates NEVER trigger it: the typed text IS the scope, and
-        // the template writer would replace it with add-on snippets.
-        if (!isCustom && !scopeWasEdited) triggerScope(id);
+        // Fired in the background (not awaited) like the old post-save
+        // trigger, but the panel now shows the result the moment it lands.
+        if (shouldAutoGen) generateScope(id, false);
+      } else if (shouldAutoGen) {
+        // Offline: owed generation fires when the outbox drains (effect above).
+        pendingAutoGenRef.current = id;
       }
+      // Mirror what the save just wrote into the panel's own state.
+      if (!isCustom) {
+        if (editedScopeText != null) {
+          setDbScopeEdited(true);
+          setPanelEdited(false);
+          setScopeStale(false);
+        } else if (dbScopeEdited || scopeGenerated) {
+          setScopeStale(true);
+        }
+      }
+      setSavedEstimateId(id);
       await refreshPending();
       setSavedOffline(!navigator.onLine);
       setSaveState('saved');
@@ -1030,11 +1164,34 @@ export default function EstimatorScreen({
         // estimate page off this message (origin-checked on its side).
         postToParent({ type: 'pec-estimate-saved', estimate_id: id, estimate_number: syncedNumber });
       }
+      return id;
     } catch (e) {
       setSaveState('error');
       setSaveError(e instanceof Error ? e.message : String(e));
+      return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, triggerScope, isCustom, customScope, customCommission]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
+  const onSave = useCallback(() => { void performSave(); }, [performSave]);
+
+  // Manual Regenerate (build 25): the only proposal writer after the first
+  // generation. Saves first when the form has unsaved changes, so the
+  // document always re-assembles from what the rep is looking at, never a
+  // stale row. Replacing edited text takes the same explicit confirm as the
+  // estimate page's Regenerate, and only then sends force=true.
+  const regenerateScope = useCallback(async () => {
+    if (scopeBusy || !online || isCustom) return;
+    if (scopeEditedAny && !window.confirm('The proposal was edited by hand. Regenerating REPLACES the edited text with a fresh write-up assembled from the estimate. Continue?')) return;
+    const force = scopeEditedAny;
+    let id = savedEstimateId;
+    if (saveState !== 'saved') {
+      if (!canSave) {
+        setScopeError('Finish the estimate (customer and price) and it will save before regenerating.');
+        return;
+      }
+      id = await performSave({ skipAutoScope: true });
+    }
+    if (id) await generateScope(id, force);
+  }, [scopeBusy, online, isCustom, scopeEditedAny, savedEstimateId, saveState, canSave, performSave, generateScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: Exclude<keyof CustomerForm, 'isCommercial'>, v: string) =>
@@ -1316,6 +1473,66 @@ export default function EstimatorScreen({
                   />
                 </label>
               ))}
+            </section>
+          )}
+
+          {/* Live proposal (build 25): the assembled customer-facing scope,
+              editable as the estimate is built. Before the first generation
+              it is a local template preview (instant, works offline); the
+              server-assembled document replaces it on the auto-first save,
+              and after that only the explicit Regenerate rewrites it. */}
+          {!isCustom && (
+            <section className="card scope-live">
+              <div className="areas-head">
+                <span>Proposal / Scope of work</span>
+                <span className="scope-actions">
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={regenerateScope}
+                    disabled={scopeBusy || !online || (!savedEstimateId && !canSave)}
+                  >
+                    {scopeBusy ? 'Writing…' : scopeGenerated ? 'Regenerate proposal' : 'Write proposal now'}
+                  </button>
+                </span>
+              </div>
+              {!scopeDisplay.trim() ? (
+                <p className="hint">The proposal assembles here from your scope templates once an area has a system and square footage.</p>
+              ) : (
+                <>
+                  <textarea
+                    className="custom-scope"
+                    rows={12}
+                    value={scopeDisplay}
+                    onChange={(e) => onScopeTextChange(e.target.value)}
+                    aria-label="Proposal / scope of work"
+                  />
+                  {scopeBusy && <p className="hint">Writing the polished proposal…</p>}
+                  {!scopeBusy && scopeEditedAny && (
+                    <p className="hint">Edited by hand: the AI never replaces this text unless you tap Regenerate and confirm.</p>
+                  )}
+                  {!scopeBusy && !scopeEditedAny && !scopeGenerated && (
+                    <p className="hint">
+                      {scopeQuestions.length > 0
+                        ? 'Live template preview. Answer the questions above, then save, and the polished proposal writes itself.'
+                        : 'Live template preview. Save the estimate and the polished proposal writes itself.'}
+                    </p>
+                  )}
+                  {!scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
+                    <p className="warn">
+                      The estimate changed after this proposal was written.
+                      {scopeEditedAny ? ' Your text stays as-is unless you tap Regenerate.' : ' Tap Regenerate proposal to bring it up to date.'}
+                    </p>
+                  )}
+                  {scopeContainsBlank(scopeDisplay) && (
+                    <p className="warn">The word BLANK is still in the text and the customer will see it. Answer the scope questions above, or edit it out here.</p>
+                  )}
+                  {scopeError && <p className="warn">{scopeError}</p>}
+                  {!online && !scopeGenerated && !scopeEditedAny && (
+                    <p className="hint">Offline: showing the template preview. The polished proposal writes itself once you are back online (or from the estimate page).</p>
+                  )}
+                </>
+              )}
             </section>
           )}
 
