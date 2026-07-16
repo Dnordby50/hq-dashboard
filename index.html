@@ -8505,6 +8505,19 @@ function invAddDays(d, n) { const x = invParse(d); x.setUTCDate(x.getUTCDate() +
 function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
 const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
 const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
+// timestamptz -> "Jul 16, 2026, 7:48 AM" in Phoenix time. Same fixed UTC-7
+// shift as invToday/phxDay (Phoenix has no DST, so the constant offset is
+// always right); shift then read UTC parts, never the browser's local zone.
+function phxDateTime(iso) {
+  const ts = typeof iso === 'number' ? iso : Date.parse(iso);
+  if (!Number.isFinite(ts)) return '';
+  const d = new Date(ts - 7 * 3600 * 1000);
+  const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  const h24 = d.getUTCHours();
+  const h = h24 % 12 || 12;
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${mon} ${d.getUTCDate()}, ${d.getUTCFullYear()}, ${h}:${mm} ${h24 < 12 ? 'AM' : 'PM'}`;
+}
 // Title-case a STANDALONE system/enum value for display (a cell, badge, or chip,
 // never free text). "check" -> "Check", "credit_card" -> "Credit Card". Do not use
 // on user-typed fields (notes, addresses); those keep the user's casing.
@@ -9441,9 +9454,20 @@ async function renderJobInvoice(jobId) {
       // table (pre-migration) resolves with an error inside the result and
       // the card simply does not render.
       supabase.from('pec_change_order_signatures').select('*').eq('job_id', jobId).order('created_at'),
+      // Communication history (prompt 26): every invoice email + text for
+      // THIS job, batched alongside the AR row (never per-row). Same filter
+      // contract as the Invoicing list's last-sent column (email template_key
+      // compose/invoice, sms kind=invoice direction=out) so the two surfaces
+      // can never disagree; the one deliberate difference is that the panel
+      // ALSO shows failed attempts, labeled (Dylan: show every attempt).
+      // 'estimate' and 'change_order' log rows stay excluded on purpose.
+      supabase.from('pec_email_log').select('sent_at,sent_by_user,to_email,subject,status,error_message')
+        .eq('job_id', jobId).in('template_key', ['compose', 'invoice']),
+      supabase.from('pec_sms_log').select('created_at,sent_by_user,to_number,body,status,error_message')
+        .eq('job_id', jobId).eq('kind', 'invoice').eq('direction', 'out'),
     ]), { label: 'renderJobInvoice' });
-  } catch (e) { res = [{ error: e }, {}, {}]; }
-  const [arRes, payRes, coSigRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }]; }
+  const [arRes, payRes, coSigRes, emLogRes, smLogRes] = res;
   const coSigRows = (coSigRes && !coSigRes.error) ? (coSigRes.data || []) : [];
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
@@ -9484,6 +9508,53 @@ async function renderJobInvoice(jobId) {
       <td>${esc(p.recorded_by || '—')}</td>
       <td><button class="pec-btn sm ghost" data-edit-pay="${esc(p.id)}">Edit</button> <button class="pec-btn sm ghost" data-delete-pay="${esc(p.id)}" style="color:#dc2626">Delete</button></td></tr>`).join('')
     : '<tr class="nohover"><td colspan="6" class="pec-empty">No payments recorded yet.</td></tr>';
+  // Communication history entries: invoice emails + texts merged, newest
+  // first. The top entry doubles as the at-a-glance "last sent" (Dylan: the
+  // panel is enough, no separate summary line). Sender names resolve through
+  // the shared auth-uid -> name map (qoStaffNames, cached for the page life);
+  // an unknown sender stays blank. Timestamps render in Phoenix time via
+  // phxDateTime. Statuses render whatever the row carries: the sender writes
+  // sent/failed and the Resend webhook upgrades to delivered/opened/clicked/
+  // bounced/complained, colored with the Settings email-log convention.
+  const commErr = !!(emLogRes && emLogRes.error) || !!(smLogRes && smLogRes.error);
+  if (emLogRes && emLogRes.error) console.warn('[pec] invoice comm history email read failed:', emLogRes.error.message);
+  if (smLogRes && smLogRes.error) console.warn('[pec] invoice comm history sms read failed:', smLogRes.error.message);
+  const commStaffNames = await qoStaffNames();
+  const commPreview = b => b ? (b.length > 90 ? b.slice(0, 90) + '…' : b) : 'Invoice text';
+  const commEntries = [
+    ...((emLogRes && !emLogRes.error && emLogRes.data) || []).map(e => ({
+      ts: Date.parse(e.sent_at) || 0, channel: 'Email',
+      to: e.to_email || '', detail: e.subject || '',
+      status: e.status || '', err: e.error_message || '', by: commStaffNames[e.sent_by_user] || '',
+    })),
+    ...((smLogRes && !smLogRes.error && smLogRes.data) || []).map(s => ({
+      ts: Date.parse(s.created_at) || 0, channel: 'Text',
+      to: qoFmtPhone(s.to_number) || row.customer_name || '', detail: commPreview(s.body),
+      status: s.status || '', err: s.error_message || '', by: commStaffNames[s.sent_by_user] || '',
+    })),
+  ].sort((a, b) => b.ts - a.ts);
+  // PHASE 2 seam: when pec-public-invoice starts recording customer views,
+  // merge "Viewed by customer" rows into commEntries here (a third source
+  // with its own channel label); the table below needs no other change.
+  const commStatusColor = s => (s === 'failed' || s === 'bounced' || s === 'complained') ? '#dc2626'
+    : (s === 'delivered' || s === 'opened' || s === 'clicked') ? '#16a34a' : 'var(--muted)';
+  const commCardHtml = `
+    <div class="pec-card">
+      <h3>Communication history</h3>
+      ${commErr
+        ? '<div class="pec-empty">Couldn&#39;t load communication history.</div>'
+        : commEntries.length ? `<div class="pec-scroll-x"><table class="pec-table">
+          <thead><tr><th>Sent</th><th>Channel</th><th>To</th><th>Subject / message</th><th>Status</th><th>Sent by</th></tr></thead>
+          <tbody>${commEntries.map(c => `<tr class="nohover">
+            <td style="white-space:nowrap">${esc(phxDateTime(c.ts))}</td>
+            <td>${esc(c.channel)}</td>
+            <td>${esc(c.to)}</td>
+            <td style="font-size:.85rem">${esc(c.detail)}</td>
+            <td style="color:${commStatusColor(c.status)};font-weight:600">${esc(c.status)}${c.err ? `<div style="font-size:.72rem;font-weight:400;color:#dc2626">${esc(c.err)}</div>` : ''}</td>
+            <td>${esc(c.by)}</td>
+          </tr>`).join('')}</tbody></table></div>`
+        : '<div class="pec-empty">No invoice emails or texts have been sent for this job yet.</div>'}
+    </div>`;
   const canComplete = ['scheduled', 'in_progress'].includes(row.status);
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
@@ -9532,6 +9603,7 @@ async function renderJobInvoice(jobId) {
         <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right">Amount</th><th>Recorded by</th><th></th></tr></thead>
         <tbody>${payRows}</tbody></table></div>
     </div>
+    ${commCardHtml}
   `;
   mountChangeOrderCard($('invCoCard'), { jobId, customerId: row.customer_id, sigRows: coSigRows, onChanged: () => renderJobInvoice(jobId) });
   root.querySelectorAll('[data-edit-pay]').forEach(b => b.addEventListener('click', () => {
@@ -9599,6 +9671,7 @@ async function renderJobInvoice(jobId) {
       try {
         await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
         showToast('Invoice texted ✓', { ttl: 3500 });
+        renderInvoicing(); // re-lands on this invoice; the Communication history panel picks up the send
       } catch (err) {
         // Includes the opt-out refusal (409) and any Quo error, verbatim.
         showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });

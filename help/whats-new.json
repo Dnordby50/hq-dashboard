@@ -1,5 +1,16 @@
 [
   {
+    "id": "invoice-communication-history",
+    "date": "2026-07-16",
+    "title": "Invoicing: last-sent dates fixed, plus a Communication history on every invoice",
+    "summary": "The last-sent column on the Invoicing list now shows the real date of the newest invoice email or text for each completed job (a bug made it always show never sent or a dash, even after a send). Every invoice page also has a new Communication history section listing each invoice email and text for that job: when it went out (Phoenix time), who it went to, the subject, its delivery status, and which staff member sent it. Failed attempts show too, in red, so nothing hides.",
+    "howto": [
+      "Open Invoicing and check the completed section: jobs you have invoiced now show the actual last-sent date instead of never sent.",
+      "Click View Invoice on any job and scroll to Communication history to see every invoice email and text with its time, recipient, and status.",
+      "Statuses update on their own as emails deliver: sent means it left, delivered means it reached the inbox, and failed or bounced means it did not."
+    ]
+  },
+  {
     "id": "catalog-flake-basecoat-and-system-cleanup",
     "date": "2026-07-16",
     "title": "Simpler Price & Material Catalog",
