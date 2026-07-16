@@ -1,5 +1,16 @@
 [
   {
+    "id": "nextday-split-two-crews",
+    "date": "2026-07-16",
+    "title": "Split a job across two crews on the Next Day Schedule",
+    "summary": "A big job can now be worked by two crews at the same time. On the Next Day Schedule, split a job to a second existing crew and it shows up under both crew columns in the same time slot, each card marked with a 2 teams badge. The printed run sheet lists the job under both crews too. Revenue, job counts, and job status all stay correct: it is still one job on one day, just with two teams on site.",
+    "howto": [
+      "Open the Next Day Schedule and find the job's card in its crew column.",
+      "Click Split to 2nd crew on the card and pick the other team; a matching card appears in that crew's column.",
+      "To undo it later, click Remove 2nd team on the second card; the original crew's card stays put."
+    ]
+  },
+  {
     "id": "personal-todos",
     "date": "2026-07-16",
     "title": "Your own private To-dos list",

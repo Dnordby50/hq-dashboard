@@ -18528,15 +18528,25 @@ async function estimateSentLeadEffects(est, nowIso) {
 
 // Proration denominator, the ONE source shared by the calendar and the Next
 // Day board so a job's dollars can never disagree between the two surfaces.
-// totalScheduledDays per job = the count of that job's
-// pec_prod_job_schedule_days rows across ALL dates; revenue / totalDays is
+// totalScheduledDays per job = the count of that job's DISTINCT scheduled
+// dates across ALL pec_prod_job_schedule_days rows; revenue / totalDays is
 // the per-day slice, so a 1-day job shows its full contract and a 4-day job
-// shows a quarter per day. Holidays are excluded automatically (no job is
-// scheduled on a holiday, so no schedule row exists there); crew days off are
-// NOT counted (they are about crew availability, not a job's producing days).
+// shows a quarter per day. DISTINCT matters since the Next Day split feature:
+// a job split across two crews has TWO rows on the same date, but that is
+// still ONE producing day, so it must count once or every prorated dollar
+// figure would shrink the moment a job is split. Holidays are excluded
+// automatically (no job is scheduled on a holiday, so no schedule row exists
+// there); crew days off are NOT counted (they are about crew availability,
+// not a job's producing days).
 function scheduleTotalDaysByJob() {
   const m = {};
-  for (const d of state.scheduleDays || []) m[d.job_id] = (m[d.job_id] || 0) + 1;
+  const seen = new Set();
+  for (const d of state.scheduleDays || []) {
+    const k = d.job_id + '|' + d.scheduled_date;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    m[d.job_id] = (m[d.job_id] || 0) + 1;
+  }
   return m;
 }
 
@@ -18575,6 +18585,24 @@ async function renderNextDay() {
   const jobById = Object.fromEntries((state.prodJobs || []).map(j => [j.id, j]));
   const dayRows = (state.scheduleDays || []).filter(d => d.scheduled_date === target && jobById[d.job_id]);
   _nextDayRowsById = Object.fromEntries(dayRows.map(d => [d.id, d]));
+  // Split-job bookkeeping. "Shared / 2 teams" is DERIVED, never stored: a job
+  // whose rows on THIS date span two distinct crew_ids is being worked by two
+  // teams simultaneously (the pec_prod_job_schedule_days table has no unique
+  // key on job_id+date, so the second row is the whole mechanism). The
+  // "second" row of a split is the later-created one (created_at, id as the
+  // tie-break) -- that is the row the split control inserted, so the remove
+  // control lives on its card and can never delete the primary.
+  const rowsByJobToday = {};
+  for (const d of dayRows) (rowsByJobToday[d.job_id] ||= []).push(d);
+  const splitJobIds = new Set(Object.keys(rowsByJobToday).filter(jobId =>
+    new Set(rowsByJobToday[jobId].map(r => r.crew_id).filter(Boolean)).size >= 2));
+  const isSecondRow = (d) => {
+    const rows = rowsByJobToday[d.job_id] || [];
+    if (rows.length < 2) return false;
+    const sorted = rows.slice().sort((a, b) =>
+      String(a.created_at || '').localeCompare(String(b.created_at || '')) || String(a.id).localeCompare(String(b.id)));
+    return sorted[sorted.length - 1].id === d.id;
+  };
   const unslotted = dayRows.filter(d => !d.time_slot);
   // Tasks for this day. Completed ones are HIDDEN here and on the run sheet
   // (they keep their done styling on the calendar). A task is "slotted" only
@@ -18592,9 +18620,10 @@ async function renderNextDay() {
   // (contract / total scheduled days across ALL dates, via the shared
   // scheduleTotalDaysByJob denominator), not the full contract, so a 4-day
   // $40k job reads $10k on the day it is actually worth $10k. The header sums
-  // the slices of THIS date's schedule-day rows (a job with two rows on the
-  // same date contributes two slices, matching how the calendar counts days)
-  // and, exactly like the calendar's weekRevenue, skips touch-up callbacks
+  // ONE slice per JOB on this date (not per row: a split job has two rows on
+  // the same date but is still one job producing one day's revenue, so
+  // counting per row would double the header the moment a job is split) and,
+  // exactly like the calendar's weekRevenue, skips touch-up callbacks
   // (no-charge, never in revenue). Task cards carry no revenue and are not in
   // dayRows, so they contribute nothing here.
   const totalDaysByJob = scheduleTotalDaysByJob();
@@ -18602,18 +18631,31 @@ async function renderNextDay() {
     const rev = Number((jobById[jobId] || {}).revenue) || 0;
     return rev > 0 ? rev / (totalDaysByJob[jobId] || 1) : 0;
   };
-  const dayRevenue = dayRows.reduce((s, d) => {
-    const j = jobById[d.job_id];
-    return (!j || j.is_callback) ? s : s + revSliceFor(d.job_id);
+  const dayRevenue = Object.keys(rowsByJobToday).reduce((s, jobId) => {
+    const j = jobById[jobId];
+    return (!j || j.is_callback) ? s : s + revSliceFor(jobId);
   }, 0);
 
   const cardHtml = (d) => {
     const j = jobById[d.job_id] || {};
+    // Split controls. "Split to 2nd crew" shows only when this card HAS a crew
+    // (the picker excludes it), the job does not already have a second row on
+    // this date (two crews max), and another active crew exists to give it to.
+    // The remove ("2nd team" x) shows only on the SECOND row's card, so the
+    // primary can never be deleted through this control; both cards carry the
+    // "2 teams" badge so either crew's column reads as shared at a glance.
+    const rowsToday = rowsByJobToday[d.job_id] || [];
+    const shared = splitJobIds.has(d.job_id);
+    const canSplit = !!d.crew_id && rowsToday.length < 2 && crews.some(c => c.id !== d.crew_id);
+    const badge = shared ? ` <span style="font-size:.6rem;font-weight:700;background:var(--rd-accent,#D8531C);color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">2 teams</span>` : '';
+    const splitBtn = canSplit ? `<button type="button" data-split-day="${esc(d.id)}" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">Split to 2nd crew</button>` : '';
+    const removeBtn = (shared && isSecondRow(d)) ? `<button type="button" data-unsplit-day="${esc(d.id)}" title="Remove this second team; the other team's card stays" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">✕ Remove 2nd team</button>` : '';
     return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
         style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
-      <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>
+      <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
+      ${splitBtn || removeBtn ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${splitBtn}${removeBtn}</div>` : ''}
     </div>`;
   };
   // Task cards deliberately MATCH job-card styling, no badge (Dylan's explicit
@@ -18660,8 +18702,13 @@ async function renderNextDay() {
     const slotLabel = { AM: 'First', PM: 'Second', EXTRA: 'Third' };
     const jobLine = (d) => {
       const j = jobById[d.job_id] || {};
+      // A split job prints under BOTH crews (the per-crew row filter below
+      // finds each crew's own row naturally); the "- 2 teams" marker tells
+      // each crew on paper that the other team is on site too. Plain hyphen
+      // on purpose (print-side markers stay plain text).
+      const teams = splitJobIds.has(d.job_id) ? ' - 2 teams' : '';
       return `<div class="job">
-        <div class="cust">${esc(j.customer_name || '(no name)')}</div>
+        <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
         <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
       </div>`;
@@ -18755,6 +18802,34 @@ async function renderNextDay() {
     setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
   });
 
+  // Split to a 2nd crew / remove the 2nd team (card buttons). Split opens the
+  // crew-picker modal (openNextDaySplitModal, below renderNextDay); remove
+  // deletes ONLY the second schedule-day row by its primary key -- the button
+  // is rendered on the second row's card exclusively, so the primary row is
+  // structurally out of reach. Both repaint the board on success.
+  root.querySelectorAll('[data-split-day]').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const row = _nextDayRowsById[btn.dataset.splitDay];
+    if (row) openNextDaySplitModal(row, () => renderNextDay());
+  }));
+  root.querySelectorAll('[data-unsplit-day]').forEach(btn => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const row = _nextDayRowsById[btn.dataset.unsplitDay];
+    if (!row) return;
+    const j = jobById[row.job_id] || {};
+    const crewName = (crews.find(c => c.id === row.crew_id) || {}).name || 'the second team';
+    if (!confirm(`Remove ${crewName} from '${j.customer_name || 'this job'}' for this day? The other team's card stays.`)) return;
+    try {
+      const del = await supabase.from('pec_prod_job_schedule_days').delete().eq('id', row.id);
+      if (del.error) throw del.error;
+      showToast(`Removed ${esc(crewName)} from <strong>${esc(j.customer_name || 'job')}</strong>. One crew again.`);
+      renderNextDay();
+    } catch (err) {
+      console.error('[pec] next-day unsplit:', err);
+      showToast('Could not remove the second team: ' + (err && err.message ? err.message : err), { ttl: 6000 });
+    }
+  }));
+
   // Drag and drop. Job cards carry data-day-id (a pec_prod_job_schedule_days
   // row): dropping one sets that row's crew_id + time_slot (No-slot panel =
   // clear both) and mirrors crew onto the prod job so the calendar bar shows
@@ -18823,8 +18898,11 @@ async function renderNextDay() {
           }
           if (r.error) throw r.error;
           // Same mirror rule as the forward move: only a truthy crew is
-          // pushed onto the prod job (the forward path never nulls it either).
-          if (s.jobId && s.prev.crew_id) { try { await supabase.from('pec_prod_jobs').update({ crew_id: s.prev.crew_id }).eq('id', s.jobId); } catch (_) {} }
+          // pushed onto the prod job (the forward path never nulls it either),
+          // and never for a split day (each of a split's cards owns only its
+          // own row, so undo must not re-point the job-level crew either).
+          const hasSibling = s.jobId ? dayRows.some(d => d.job_id === s.jobId && d.id !== s.id) : false;
+          if (s.jobId && s.prev.crew_id && !hasSibling) { try { await supabase.from('pec_prod_jobs').update({ crew_id: s.prev.crew_id }).eq('id', s.jobId); } catch (_) {} }
         }
       }
       renderNextDay();
@@ -18869,13 +18947,26 @@ async function renderNextDay() {
         } else {
           const row = _nextDayRowsById[dayId]; if (!row) return;
           if (row.crew_id === crewId && (row.time_slot || null) === slot) return; // no change
+          // Split guard: a split job's two rows must stay two DISTINCT crews
+          // (that distinctness IS the "2 teams" state; merging them onto one
+          // crew would leave two identical cards and no badge). Block the drop
+          // instead of silently collapsing the split.
+          const siblingRow = dayRows.find(d => d.job_id === row.job_id && d.id !== row.id);
+          if (isCrewCell && siblingRow && siblingRow.crew_id === crewId) {
+            showToast('That crew already has this job\'s other team card for this day. Pick a different crew, or remove the 2nd team first.', { ttl: 6000 });
+            return;
+          }
           snapshot.push({ kind: 'job', id: row.id, jobId: row.job_id, prev: { crew_id: row.crew_id ?? null, time_slot: row.time_slot ?? null } });
           let upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId, time_slot: slot }).eq('id', row.id);
           if (upd.error && /time_slot/.test(upd.error.message || '')) {
             upd = await supabase.from('pec_prod_job_schedule_days').update({ crew_id: crewId }).eq('id', row.id); // pre-migration fallback
           }
           if (upd.error) throw upd.error;
-          if (crewId) { try { await supabase.from('pec_prod_jobs').update({ crew_id: crewId }).eq('id', row.job_id); } catch (_) {} }
+          // Mirror the crew onto the prod job (calendar bar label) ONLY for a
+          // single-crew day: on a split day each card must change only its own
+          // row, so the job-level crew_id (the primary crew) stays put no
+          // matter which card was dragged.
+          if (crewId && !siblingRow) { try { await supabase.from('pec_prod_jobs').update({ crew_id: crewId }).eq('id', row.job_id); } catch (_) {} }
           // A landing job bumps TASKS only; jobs already in the cell stay.
           const bumped = (isCrewCell && cellTasks.length) ? await bumpOccupants([], cellTasks, snapshot) : [];
           if (bumped.length) showToast(`Moved ${bumped.map(n => `'${esc(n)}'`).join(', ')} to No slot yet.`, { ttl: 8000, actionLabel: 'Undo', onAction: () => undoDrop(snapshot) });
@@ -18891,6 +18982,86 @@ async function renderNextDay() {
       }
     });
   });
+}
+
+// Split a Next Day job to a second existing crew: pick one of the OTHER active
+// crews and insert a SECOND pec_prod_job_schedule_days row for the same job +
+// date. The second row copies the primary's time_slot (both teams work
+// simultaneously, Dylan's locked decision), day_index (same producing day, so
+// day numbering stays honest), and notes (the segment-note invariant: every
+// day row of a segment carries the note); crew_lead starts blank like any new
+// card. No schema change backs this: the table has no unique key on
+// job_id+date, so the second row is simply allowed, and "shared" is derived
+// from two distinct crew_ids on the date. The job-level pec_prod_jobs.crew_id
+// (the primary crew) is deliberately NOT touched. Two crews max: the button
+// only renders on single-row cards, and the save re-checks against the DB so
+// a stale board cannot insert a third row. The insert is non-idempotent, so
+// it is a single plain call (never a blind auto-retry, per the standing
+// write-retry rule); a wedged-client failure just shows the error toast and
+// the user clicks Split again.
+function openNextDaySplitModal(row, onSaved) {
+  const job = (state.prodJobs || []).find(j => j.id === row.job_id) || {};
+  const others = (state.crews || []).filter(c => c.active && c.id !== row.crew_id);
+  if (!others.length) { showToast('No other active crew to split to. Add crews in Settings.', { ttl: 5000 }); return; }
+  const primaryCrew = ((state.crews || []).find(c => c.id === row.crew_id) || {}).name || 'current crew';
+  const html = `
+    <h3 style="margin:0 0 4px">Split to a 2nd crew</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">
+      <strong>${esc(job.customer_name || '(no name)')}</strong> · ${esc(fmtDate(row.scheduled_date))}<br>
+      Both teams are scheduled at the same time${row.time_slot ? ` (${esc(slotLabel(row.time_slot))} slot, same as ${esc(primaryCrew)})` : ''}. This adds a second card; it does not move the first one.
+    </div>
+    <div class="pec-field">
+      <label>Second crew</label>
+      <select id="splitCrewPick">${others.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select>
+    </div>
+    <div id="splitCrewError" style="color:var(--danger,#dc2626);font-size:.8rem;min-height:1em;margin-top:6px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="splitCrewSave">Split job</button>
+    </div>`;
+  openModal(html, { onMount: (modal) => {
+    const errEl = modal.querySelector('#splitCrewError');
+    const saveBtn = modal.querySelector('#splitCrewSave');
+    saveBtn.addEventListener('click', async () => {
+      errEl.textContent = '';
+      const crewId = modal.querySelector('#splitCrewPick').value;
+      if (!crewId) return;
+      saveBtn.disabled = true;
+      try {
+        // Fresh max-two check against the DB, not the (possibly stale) board:
+        // exactly two rows per job per date, ever.
+        const chk = await supabase.from('pec_prod_job_schedule_days')
+          .select('id,crew_id').eq('job_id', row.job_id).eq('scheduled_date', row.scheduled_date);
+        if (chk.error) throw chk.error;
+        const existing = chk.data || [];
+        if (existing.length >= 2) { errEl.textContent = 'This job already has two crews on this day.'; saveBtn.disabled = false; return; }
+        if (existing.some(r => r.crew_id === crewId)) { errEl.textContent = 'That crew is already on this job for this day.'; saveBtn.disabled = false; return; }
+        const newRow = {
+          job_id: row.job_id,
+          scheduled_date: row.scheduled_date,
+          day_index: row.day_index ?? 0,
+          crew_id: crewId,
+          time_slot: row.time_slot || null,
+          crew_lead: null,
+          notes: row.notes || null,
+        };
+        let ins = await supabase.from('pec_prod_job_schedule_days').insert(newRow);
+        if (ins.error && /time_slot/.test(ins.error.message || '')) {
+          const { time_slot, ...rest } = newRow; // pre-migration fallback, same as the other day-row writes
+          ins = await supabase.from('pec_prod_job_schedule_days').insert(rest);
+        }
+        if (ins.error) throw ins.error;
+        const crewName = (others.find(c => c.id === crewId) || {}).name || 'second crew';
+        closeModal();
+        showToast(`<strong>${esc(job.customer_name || 'Job')}</strong> is now split across ${esc(primaryCrew)} and ${esc(crewName)}.`);
+        if (onSaved) onSaved();
+      } catch (err) {
+        console.error('[pec] next-day split:', err);
+        errEl.textContent = 'Split failed: ' + (err && err.message ? err.message : err);
+        saveBtn.disabled = false;
+      }
+    });
+  } });
 }
 
 // Live refs for the pending-panel height sync (Task 3). Kept at module scope so a
@@ -19213,9 +19384,18 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
   // into `excluded` (shown on the panel's exclusions line), never in the total.
   const weekRevenueRows = (weekDays) => {
     const weekIsos = new Set(weekDays.map(isoDate));
+    // DISTINCT dates per job, matching the scheduleTotalDaysByJob denominator:
+    // a job split across two crews (two rows, one date, Next Day split
+    // feature) is still one producing day, so counting raw rows here would
+    // double that job's week slice the moment it is split.
     const daysInWeekByJob = {};
+    const seenJobDate = new Set();
     for (const d of state.scheduleDays) {
-      if (weekIsos.has(d.scheduled_date)) daysInWeekByJob[d.job_id] = (daysInWeekByJob[d.job_id] || 0) + 1;
+      if (!weekIsos.has(d.scheduled_date)) continue;
+      const k = d.job_id + '|' + d.scheduled_date;
+      if (seenJobDate.has(k)) continue;
+      seenJobDate.add(k);
+      daysInWeekByJob[d.job_id] = (daysInWeekByJob[d.job_id] || 0) + 1;
     }
     const rows = [], excluded = [];
     let total = 0;
@@ -19274,8 +19454,17 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const dayIsos = weekDays.map(isoDate);
     const isoToCol = new Map(dayIsos.map((iso, i) => [iso, i + 1]));
     const byJob = {};
+    // ONE bar per job per date: a split job (two crews, one date, Next Day
+    // split feature) would otherwise render two stacked identical bars, each
+    // carrying the full day slice, visually doubling that day's money. The
+    // 3-week calendar deliberately shows the split job ONCE (the split is a
+    // Next Day board concept; the week-mode day cards do show both crews).
+    const seenJobDate = new Set();
     for (const sd of state.scheduleDays) {
       if (!isoToCol.has(sd.scheduled_date)) continue;
+      const k = sd.job_id + '|' + sd.scheduled_date;
+      if (seenJobDate.has(k)) continue;
+      seenJobDate.add(k);
       (byJob[sd.job_id] ||= []).push(sd);
     }
     const bars = [];
@@ -19897,9 +20086,16 @@ function openScheduleModal(jobId) {
   // install_date pre-select (a job with an appointment but no schedule rows yet)
   // is preserved so the PM only confirms instead of re-typing.
   const nowMonth = new Date();
+  // DISTINCT dates: a job split across two crews (Next Day board) has two day
+  // rows on one date; the picker works in dates, so the date must appear once
+  // or Save would re-insert it twice under one crew. Note this also means a
+  // schedule-modal Save collapses a split back to a single crew (delete-all +
+  // reinsert with the one picked crew) -- deliberate: a full reschedule
+  // resets the day-by-day crew work, and the split is re-made on the Next Day
+  // board in seconds.
   const draft = {
     selectedDates: existingDays.length
-      ? existingDays.map(d => d.scheduled_date)
+      ? [...new Set(existingDays.map(d => d.scheduled_date))]
       : (job.install_date ? [job.install_date] : []),
     pickerMonth: new Date(nowMonth.getFullYear(), nowMonth.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
@@ -20310,7 +20506,9 @@ function openScheduleModal(jobId) {
       const reschedBtn = modal.querySelector('#schedResched');
       if (reschedBtn) reschedBtn.addEventListener('click', async () => {
         const errEl = modal.querySelector('#schedError'); errEl.textContent = '';
-        const existingIsos = existingDays.map(d => d.scheduled_date);
+        // DISTINCT dates, same reason as the selectedDates seed above: a split
+        // job's duplicate date must not re-insert twice into the kept rows.
+        const existingIsos = [...new Set(existingDays.map(d => d.scheduled_date))];
         const pulled = existingIsos.filter(iso => !draft.selectedDates.includes(iso)).sort();
         const added = draft.selectedDates.filter(iso => !existingIsos.includes(iso));
         if (added.length) return errEl.textContent = 'Reschedule only pulls existing days off the calendar. Deselect the newly added day(s), or use Save schedule to move days directly.';
