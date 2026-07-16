@@ -1,5 +1,16 @@
 [
   {
+    "id": "product-cost-basis-per-unit-vs-per-kit",
+    "date": "2026-07-16",
+    "title": "Clearer product cost: per gallon or per kit",
+    "summary": "Product cost in Settings is no longer ambiguous. The product editor now has two clearly labeled cost fields, cost per gallon (or box or pack) and cost per kit, and typing either one fills in the other automatically using the kit size. Job costing always uses the per-kit number, exactly as before, and every screen that shows a material cost now says which basis it is. No existing cost values changed.",
+    "howto": [
+      "Open Price & Material Catalog from the left menu, go to the Products tab, and click any product to edit it.",
+      "Enter whichever number you have: the per gallon, box, or pack price off an invoice, or the per kit price. The other field fills in live from the kit size.",
+      "Save as usual. The per kit number is what gets stored and what job costing uses."
+    ]
+  },
+  {
     "id": "nextday-split-two-crews",
     "date": "2026-07-16",
     "title": "Split a job across two crews on the Next Day Schedule",

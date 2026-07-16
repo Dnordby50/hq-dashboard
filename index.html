@@ -12443,7 +12443,7 @@ async function renderJobDetailInner(id) {
 
     // Small reusable material-lines table (used for the whole job and per area).
     const matTable = (lines, totalLabel, total) => `<div class="pec-scroll-x"><table class="pec-table" style="font-size:.75rem;margin:0">
-        <thead><tr><th>Product</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Line</th></tr></thead>
+        <thead><tr><th>Product</th><th style="text-align:right">Qty (kits)</th><th style="text-align:right">Unit $ / kit</th><th style="text-align:right">Line</th></tr></thead>
         <tbody>
           ${lines.map(l => `<tr>
             <td>${esc(l.product_name || '')}</td>
@@ -22102,7 +22102,7 @@ function openCostingDetail(jobId) {
         <div class="pec-table-wrap">
         <table class="pec-table">
           <thead><tr>
-            <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty</th><th>Order Qty</th><th>Unit $</th><th>Line $</th><th>Ordered</th><th>Delivered</th>
+            <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits)</th><th>Order Qty (kits)</th><th>Unit $ / kit</th><th>Line $</th><th>Ordered</th><th>Delivered</th>
           </tr></thead>
           <tbody>
             ${lines.map(l => `
@@ -22548,9 +22548,9 @@ async function renderUnifiedJob(jobId) {
          <table class="pec-table">
            <thead><tr>
              <th>Material</th><th>Product</th><th>Color</th><th>Cure</th>
-             <th>Qty</th><th>Order Qty</th><th>Unit $</th><th>Line $</th>
+             <th>Qty (kits)</th><th>Order Qty (kits)</th><th>Unit $ / kit</th><th>Line $</th>
              <th>Ordered</th><th>Delivered</th>
-             <th>Actual Used</th><th>Used $</th><th></th>
+             <th>Actual Used (kits)</th><th>Used $</th><th></th>
            </tr></thead>
            <tbody>
              ${lines.map(l => `
@@ -23596,8 +23596,8 @@ function openAddMaterialModal(jobId) {
     <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">Pick a catalog product and the quantity used. It is added as a job costing material line and counts toward Materials Used.</div>
     <div class="pec-field"><label>Product</label><select id="addMatProduct">${optHtml}</select></div>
     <div class="pec-row-2">
-      <div class="pec-field"><label>Quantity</label><input id="addMatQty" type="number" min="0" step="0.01" value="1"></div>
-      <div class="pec-field"><label>Unit $</label><input id="addMatUnit" type="number" min="0" step="0.01" value=""></div>
+      <div class="pec-field"><label>Quantity (kits)</label><input id="addMatQty" type="number" min="0" step="0.01" value="1"></div>
+      <div class="pec-field"><label>Unit $ / kit</label><input id="addMatUnit" type="number" min="0" step="0.01" value=""></div>
     </div>
     <div id="addMatErr" style="color:#dc2626;font-size:.8rem;min-height:1em;margin-bottom:6px"></div>
     <div class="pec-modal-actions">
@@ -26013,7 +26013,7 @@ function _mergeAcrossAreas(areaPlans) {
               <div class="pec-table-wrap">
               <table class="pec-table pec-pull-table">
                 <thead><tr>
-                  <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits/boxes)</th><th style="text-align:right">Unit $</th><th style="text-align:right">Line $</th><th>Per-job breakdown</th>
+                  <th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Qty (kits/boxes)</th><th style="text-align:right">Unit $ / kit</th><th style="text-align:right">Line $</th><th>Per-job breakdown</th>
                 </tr></thead>
                 <tbody>
                   ${supRows.map(row => `
@@ -26650,7 +26650,7 @@ function _mergeAcrossAreas(areaPlans) {
       <table class="pec-table">
         <thead><tr>
           <th>Material</th><th>Product</th><th>Supplier</th><th>Color</th><th>Cure</th>
-          <th>Qty</th><th>Unit cost</th><th>Backstock</th><th>Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
+          <th>Qty (kits)</th><th>Unit cost / kit</th><th>Backstock</th><th>Order</th><th>Use BS?</th><th>Ordered?</th><th>Delivered?</th>
         </tr></thead>
         <tbody>
           ${lines.map(l => `
@@ -26665,7 +26665,7 @@ function _mergeAcrossAreas(areaPlans) {
               <td><input data-prop="qty_needed"    type="number" min="0" step="1" value="${esc(l.qty_needed)}"    class="prod-num"></td>
               <td>${l.product_id
                 ? `<span class="prod-readonly">${l.unit_cost_snapshot == null ? '' : '$' + Number(l.unit_cost_snapshot).toFixed(2)}</span>`
-                : `<input data-prop="unit_cost_snapshot" type="number" min="0" step="0.01" value="${esc(l.unit_cost_snapshot ?? 0)}" class="prod-num" title="Custom blend: enter the per-unit cost for this job">`}</td>
+                : `<input data-prop="unit_cost_snapshot" type="number" min="0" step="0.01" value="${esc(l.unit_cost_snapshot ?? 0)}" class="prod-num" title="Custom blend: enter the per-kit cost for this job">`}</td>
               <td><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" class="prod-num"></td>
               <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num"></td>
               <td><input data-prop="use_backstock" type="checkbox" ${l.use_backstock?'checked':''}></td>
@@ -26675,7 +26675,7 @@ function _mergeAcrossAreas(areaPlans) {
         </tbody>
       </table>
       </div>
-      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product, Color and Cure come from the catalog and area settings (read-only here). Edit cure speed on the area; everything else in Price &amp; Material Catalog. Unit cost is editable only on custom blend lines (no catalog product); enter the per-job cost there and Save line edits.</div>
+      <div style="margin-top:8px;color:var(--muted);font-size:.7rem">Material, Product, Color and Cure come from the catalog and area settings (read-only here). Edit cure speed on the area; everything else in Price &amp; Material Catalog. Unit cost is per kit and editable only on custom blend lines (no catalog product); enter that job's per-kit cost there and Save line edits.</div>
     `;
     host.querySelectorAll('tr[data-line-id]').forEach(tr => {
       const id = tr.dataset.lineId;
@@ -26893,6 +26893,16 @@ function _mergeAcrossAreas(areaPlans) {
     });
   }
 
+  // Unit label by material_type. Liquids are gallons, dry broadcast is boxes,
+  // tints are packs. Shared by the product table (spread rate / kit size cells)
+  // and the product editor (the per-unit cost + spread rate labels).
+  const unitFor = (mt) => {
+    if (mt === 'Flake' || mt === 'Quartz') return { per: 'box', kit: 'box' };
+    if (mt === 'Metallic Pigment') return { per: 'pack', kit: 'pack' };
+    if (mt === 'Tint Pack') return { per: 'pack', kit: 'pack' };
+    return { per: 'gal', kit: 'gal' };
+  };
+
   function renderProducts(host) {
     // Group products by material_type so the Catalog reads as labeled sections
     // (Flake Materials, Quartz Colors, Basecoats, ...). Within each section
@@ -26923,19 +26933,15 @@ function _mergeAcrossAreas(areaPlans) {
     const uncategorized = state.products.filter(p => !sectionOrder.includes(p.material_type));
     if (uncategorized.length) grouped.push({ type: 'Other', label: 'Other', rows: uncategorized });
 
-    // Unit label by material_type. Liquids are gallons, dry broadcast is boxes,
-    // tints are kits. Used both for the spread rate and the kit-size cells.
-    const unitFor = (mt) => {
-      if (mt === 'Flake' || mt === 'Quartz') return { per: 'box', kit: 'box' };
-      if (mt === 'Metallic Pigment') return { per: 'pack', kit: 'pack' };
-      if (mt === 'Tint Pack') return { per: 'pack', kit: 'pack' };
-      return { per: 'gal', kit: 'gal' };
-    };
     const renderRow = (p) => {
       const u = unitFor(p.material_type);
       const spread = Number(p.spread_rate || 0);
       const kit = Number(p.kit_size || 0);
       const spreadPerKit = spread > 0 && kit > 0 ? Math.round(spread * kit) : null;
+      // Derived per-single-unit cost (unit_cost is stored per KIT and is what
+      // job costing uses; this is a reference so an invoice price is easy to
+      // sanity-check). Never stored.
+      const perUnit = p.unit_cost != null && kit > 0 ? Math.round(Number(p.unit_cost) / kit * 100) / 100 : null;
       return `
       <tr data-edit-product="${esc(p.id)}">
         <td>${p.image_url ? `<img class="prod-chip-thumb" src="${esc(p.image_url)}" alt="${esc(p.color || p.name)}">` : `<div class="prod-chip-empty">no chip</div>`}</td>
@@ -26946,7 +26952,7 @@ function _mergeAcrossAreas(areaPlans) {
         <td style="text-align:right;font-variant-numeric:tabular-nums">${esc(p.spread_rate)} <span style="color:var(--muted);font-size:.65rem">sqft / ${esc(u.per)}</span></td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${esc(p.kit_size)} <span style="color:var(--muted);font-size:.65rem">${esc(u.kit)}${Number(p.kit_size) === 1 ? '' : 's'} / kit</span></td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${spreadPerKit == null ? '<span style="color:var(--muted)">—</span>' : esc(spreadPerKit) + ' <span style="color:var(--muted);font-size:.65rem">sqft / kit</span>'}</td>
-        <td style="text-align:right">${p.unit_cost == null ? '<span style="color:var(--muted)">—</span>' : '$' + Number(p.unit_cost).toLocaleString()}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${p.unit_cost == null ? '<span style="color:var(--muted)">—</span>' : '$' + Number(p.unit_cost).toLocaleString() + ' <span style="color:var(--muted);font-size:.65rem">/ kit</span>' + (perUnit == null ? '' : `<div style="color:var(--muted);font-size:.65rem">$${perUnit.toLocaleString()} / ${esc(u.per)}</div>`)}</td>
         <td>${p.active ? 'Yes' : 'No'}</td>
         <td><span style="color:var(--accent);font-size:.7rem">Edit ›</span></td>
       </tr>`;
@@ -26955,7 +26961,7 @@ function _mergeAcrossAreas(areaPlans) {
     host.innerHTML = `
       <div class="pec-toolbar">
         <button class="pec-btn primary" id="prodAddProductBtn">+ Add product</button>
-        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost is per kit. Manufacturer = who makes it; Supplier = who you order it from.</span>
+        <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost per kit is what job costing uses. In the editor you can enter cost per gal/box/pack or per kit; the other fills in automatically. Manufacturer = who makes it; Supplier = who you order it from.</span>
       </div>
       ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => {
         // Every material section is collapsible and starts collapsed; the open
@@ -27017,6 +27023,12 @@ function _mergeAcrossAreas(areaPlans) {
     const distinct = (key) => Array.from(new Set(state.products.map(x => x[key]).filter(Boolean))).sort();
     const knownSuppliers = distinct('supplier');
     const knownManufacturers = distinct('manufacturer');
+    // Cost basis (2026-07-16): unit_cost is stored PER KIT and is the single
+    // source of truth for job costing. The per-unit field below is a live
+    // convenience mirror (per-kit / kit size), never persisted.
+    const perLabel = unitFor(p.material_type).per;
+    const initPerUnit = p.unit_cost != null && p.unit_cost !== '' && Number(p.kit_size) > 0
+      ? Math.round(Number(p.unit_cost) / Number(p.kit_size) * 100) / 100 : '';
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPModalBg">
         <div class="pec-modal">
@@ -27035,9 +27047,12 @@ function _mergeAcrossAreas(areaPlans) {
               <datalist id="pmSupplierList">${knownSuppliers.map(s => `<option value="${esc(s)}">`).join('')}</datalist>
             </div>
           </div>
-          <div class="pec-row-2">
+          <div class="pec-row-3">
             <div class="pec-field"><label>Color</label><input id="pmColor" value="${esc(p.color || '')}"></div>
-            <div class="pec-field"><label>Spread rate (sqft per gal/box)</label><input id="pmSpread" type="number" min="0" step="0.01" value="${esc(p.spread_rate)}"></div>
+            <div class="pec-field"><label>Spread rate (sqft per <span id="pmSpreadUnitU">${esc(perLabel)}</span>)</label><input id="pmSpread" type="number" min="0" step="0.01" value="${esc(p.spread_rate)}"></div>
+            <div class="pec-field"><label>Active</label>
+              <select id="pmActive"><option value="true" ${p.active?'selected':''}>Yes</option><option value="false" ${!p.active?'selected':''}>No</option></select>
+            </div>
           </div>
           <div class="pec-field" id="pmBasecoatField" style="${p.material_type === 'Flake' ? '' : 'display:none'}">
             <label>Default basecoat <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">auto-fills on the estimate when this flake is picked</span></label>
@@ -27048,10 +27063,8 @@ function _mergeAcrossAreas(areaPlans) {
           </div>
           <div class="pec-row-3">
             <div class="pec-field"><label>Kit size</label><input id="pmKit" type="number" min="0" step="0.01" value="${esc(p.kit_size)}"></div>
-            <div class="pec-field"><label>Unit cost / kit</label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
-            <div class="pec-field"><label>Active</label>
-              <select id="pmActive"><option value="true" ${p.active?'selected':''}>Yes</option><option value="false" ${!p.active?'selected':''}>No</option></select>
-            </div>
+            <div class="pec-field"><label>Cost per <span id="pmCostUnitU">${esc(perLabel)}</span> <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">the number you sometimes have off an invoice</span></label><input id="pmCostUnit" type="number" min="0" step="0.01" value="${esc(initPerUnit)}" placeholder="optional"></div>
+            <div class="pec-field"><label>Cost per kit <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">what job costing uses</span></label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
           </div>
           <div class="pec-field">
             <label>Product image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a URL; uploads coming later)</span></label>
@@ -27076,10 +27089,37 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     // The Default basecoat field only applies to Flake products; keep its
     // visibility live as the material type changes so a mid-edit type switch
-    // shows/hides it without a re-render.
+    // shows/hides it without a re-render. The per-unit cost + spread rate
+    // labels also follow the type (gal/box/pack).
     $('pmType').addEventListener('change', () => {
       $('pmBasecoatField').style.display = $('pmType').value === 'Flake' ? '' : 'none';
+      const per = unitFor($('pmType').value).per;
+      $('pmCostUnitU').textContent = per;
+      $('pmSpreadUnitU').textContent = per;
     });
+    // Two-way cost sync: only pmCost (per KIT) is ever saved to unit_cost;
+    // pmCostUnit is a convenience mirror. Whichever cost field was edited last
+    // anchors a kit-size change (default anchor is per-kit, the stored value).
+    // A blank or 0 kit size makes the conversion undefined, so the sync is a
+    // no-op and the existing "Kit size must be > 0" validation catches it on save.
+    {
+      const costUnitEl = $('pmCostUnit'), costKitEl = $('pmCost'), kitEl = $('pmKit');
+      const round2 = (n) => Math.round(n * 100) / 100;
+      let lastCostEdited = null; // 'unit' | 'kit' | null
+      const syncFromUnit = () => {
+        const k = Number(kitEl.value);
+        if (!(k > 0)) return;
+        costKitEl.value = costUnitEl.value === '' ? '' : round2(Number(costUnitEl.value) * k);
+      };
+      const syncFromKit = () => {
+        const k = Number(kitEl.value);
+        if (!(k > 0)) return;
+        costUnitEl.value = costKitEl.value === '' ? '' : round2(Number(costKitEl.value) / k);
+      };
+      costUnitEl.addEventListener('input', () => { lastCostEdited = 'unit'; syncFromUnit(); });
+      costKitEl.addEventListener('input', () => { lastCostEdited = 'kit'; syncFromKit(); });
+      kitEl.addEventListener('input', () => { if (lastCostEdited === 'unit') syncFromUnit(); else syncFromKit(); });
+    }
     const imgEl = $('pmImage');
     if (imgEl) imgEl.addEventListener('input', () => {
       const url = imgEl.value.trim();
