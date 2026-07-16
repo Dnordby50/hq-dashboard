@@ -8628,15 +8628,21 @@ async function renderInvoicing() {
   if (completedIds.length) {
     let emRes = { data: [] }, smRes = { data: [] };
     try {
+      // pec_email_log has NO created_at (sent_at is its only timestamp); the
+      // sms log is the reverse. Selecting a nonexistent column 400s the whole
+      // read, and supabase-js reports that as an in-band `error` (no throw),
+      // so the warns below are the only signal -- keep them.
       [emRes, smRes] = await withFreshSession(() => Promise.all([
-        supabase.from('pec_email_log').select('job_id,sent_at,created_at')
+        supabase.from('pec_email_log').select('job_id,sent_at')
           .in('job_id', completedIds).neq('status', 'failed').in('template_key', ['compose', 'invoice']),
         supabase.from('pec_sms_log').select('job_id,created_at')
           .in('job_id', completedIds).eq('kind', 'invoice').eq('direction', 'out').neq('status', 'failed'),
       ]), { label: 'renderInvoicing:lastSent' });
     } catch (e) { console.warn('[pec] last-invoice-sent lookup skipped:', e); }
+    if (emRes.error) console.warn('[pec] last-invoice-sent email read failed:', emRes.error.message);
+    if (smRes.error) console.warn('[pec] last-invoice-sent sms read failed:', smRes.error.message);
     for (const r of (emRes.error ? [] : emRes.data || [])) {
-      const ts = new Date(r.sent_at || r.created_at).getTime();
+      const ts = new Date(r.sent_at).getTime();
       if (Number.isFinite(ts) && ts > (lastInvoiceSentByJob[r.job_id] || 0)) lastInvoiceSentByJob[r.job_id] = ts;
     }
     for (const r of (smRes.error ? [] : smRes.data || [])) {
