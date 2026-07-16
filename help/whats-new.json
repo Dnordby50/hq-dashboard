@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-custom-mode",
+    "date": "2026-07-15",
+    "title": "Estimator: custom estimate mode for one-off jobs",
+    "summary": "The estimator now has a Standard/Custom switch at the top. Custom is for one-off work that does not fit the material calculator: you type the scope of work and the price yourself, and add-ons still work. An optional Polish with AI button cleans up your typed scope (it never changes your meaning, exclusions, or dollar figures, and you can undo it).",
+    "howto": [
+      "Open the estimator and tap Custom at the top (next to the customer card).",
+      "Type the scope of work and the price, then save; the proposal and PDF show exactly what you typed.",
+      "Optional: tap Polish with AI to clean up the wording, and Undo polish if you liked yours better."
+    ]
+  },
+  {
     "id": "polycoat-material-category",
     "date": "2026-07-15",
     "title": "New material category: Polycoat",
