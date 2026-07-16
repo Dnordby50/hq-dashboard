@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-live-proposal",
+    "date": "2026-07-15",
+    "title": "Estimator: the proposal now builds live as you estimate",
+    "summary": "Standard estimates now show the customer-facing proposal right in the estimator, in a new Proposal / Scope of work panel. It fills in from your scope templates the moment an area has a system and square footage, the AI writes the polished version by itself on the first save (once the scope questions are answered), and after that it only rewrites when you tap Regenerate proposal, so your edits are never lost. You can edit the text right in the panel before saving or sending.",
+    "howto": [
+      "Build a standard estimate as usual; the proposal drafts itself in the new panel as you go.",
+      "Answer the Finish the scope questions and save; the AI writes the polished proposal automatically the first time.",
+      "Edit the text in the panel any time, or tap Regenerate proposal after a change; it always asks before replacing text you edited."
+    ]
+  },
+  {
     "id": "estimator-custom-mode",
     "date": "2026-07-15",
     "title": "Estimator: custom estimate mode for one-off jobs",

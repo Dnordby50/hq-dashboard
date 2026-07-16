@@ -17745,10 +17745,14 @@ async function renderEstimateDetail(estimateId) {
             <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
               <strong>The estimate changed since you edited this scope.</strong> Your text is untouched; Regenerate replaces it with a fresh write-up from the current estimate.
             </div>` : ''}
+          ${est.scope_stale && !est.scope_edited_at && est.scope_of_work ? `
+            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>The estimate changed since this scope was written.</strong> Saving no longer rewrites it by itself; Regenerate replaces it with a fresh write-up from the current estimate.
+            </div>` : ''}
           <div id="estScopeView" style="margin-top:10px">
             ${est.scope_of_work
               ? `<div style="font-size:.84rem;line-height:1.55;white-space:pre-wrap;max-height:420px;overflow-y:auto;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:10px 12px">${esc(est.scope_of_work)}</div>`
-              : '<div style="color:var(--muted);font-size:.82rem">No scope yet. Generate writes the customer-facing scope from the system templates and this estimate’s details (areas, stem walls, add-ons). It runs automatically on save when online.</div>'}
+              : '<div style="color:var(--muted);font-size:.82rem">No scope yet. Generate writes the customer-facing scope from the system templates and this estimate’s details (areas, stem walls, add-ons). It also runs by itself on the estimator’s first save, once the scope questions are answered and the device is online.</div>'}
           </div>
           <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
             ${est.scope_edited_at
