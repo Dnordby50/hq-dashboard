@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-16 14:29 MST] Cowork: fixed Polycoat add-product failure (material_type CHECK constraint, 3 tables)
+By: Cowork
+Changed: Applied a new migration to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via Supabase MCP apply_migration, adding 'Polycoat' to the material_type CHECK constraint on three tables. Wrote the matching file supabase/migrations/2026-07-16_polycoat_material_type.sql to the repo and committed locally (no push).
+
+ROOT CAUSE: Dylan hit "new row for relation pec_prod_products violates check constraint pec_prod_products_material_type_check" when adding a Polycoat product. The earlier prompt (claude-code-prompt-polycoat-material-category.md) asserted material_type is free text with NO CHECK constraint and NO migration needed. That premise was wrong. An identical material_type CHECK sits on three tables (pec_prod_products, pec_prod_recipe_slots, pec_prod_material_lines), and none listed Polycoat. The front-end change shipped (dropdowns show Polycoat) but every DB write was rejected. Fixing only pec_prod_products would have failed again at recipe-slot wiring (the whole point of the feature) and later at costing material lines, so all three had to be extended.
+
+THE FIX: one idempotent migration (drop-if-exists then add) that extends all three CHECKs from the current 11 values to include 'Polycoat', placed after 'Sealer' to match the front-end dropdown order. Per Dylan's decision the CHECK guardrail is KEPT (not dropped to free text), so future new categories still need a migration like this one. No data rows changed; constraint-only.
+
+VERIFIED: pg_get_constraintdef on all three constraints now includes 'Polycoat' (checked live, has_polycoat true for pec_prod_products, pec_prod_recipe_slots, pec_prod_material_lines). Dylan can now add a Polycoat product and wire it into the Polycoat system recipe.
+
+Why: Dylan reported the add-product error; scoped and applied by Cowork 2026-07-16.
+Files touched: supabase/migrations/2026-07-16_polycoat_material_type.sql (new), PROJECT-LOG.md. External: PROD Supabase (3 CHECK constraints extended, idempotent, no data changed).
+Next steps: none required. If Claude Code later adds any NEW table that pins material_type, its CHECK must include Polycoat too.
+Handoff to Cowork: none (closed).
+Handoff to Dylan: Retry adding the Polycoat product; it saves now. Then wire it into the Polycoat system's recipe slot as planned. For the future: the "material_type is free text" assumption in the old polycoat prompt was incorrect, so any brand-new material category needs a one-line constraint migration, not just a front-end dropdown edit.
+
+---
+
 ## [2026-07-16 09:00] Cowork: ACH live test settled and verified (PASS)
 By: Cowork
 Changed: No repo code. Ran the prompt-11 handoff task 2, verification of the $1.00 ACH live-test payment on test invoice ACH-TEST-1 (job 63c361be-498c-4055-98c9-1cef1f7480cc), via two read-only Supabase MCP queries against project "HQ Dashboard" (zdfpzmmrgotynrwkeakd).
