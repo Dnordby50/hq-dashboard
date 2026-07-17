@@ -9356,7 +9356,9 @@ async function pushChangeOrderMaterialsToProd(job, coArea, inputs) {
 // one row per signature record with the pending/signed badge and the send /
 // link actions. Legacy CO lines (pre-signature data) keep rendering in the
 // line-items table as before; this card only lists tokened COs. Degrades to
-// nothing pre-migration.
+// nothing pre-migration. With 2+ PENDING COs the pending ones collapse into
+// one batch box (one stable link at /co/batch/<token>, one signature signs
+// all; prompt 31); 0 or 1 pending renders exactly the classic per-CO boxes.
 async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows = null }) {
   if (!el) return;
   let rows = sigRows;
@@ -9383,13 +9385,23 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
   // handler block below; do not rename them. Buttons stay text-only because
   // the send handlers rewrite textContent (Sending... then restore), which
   // would silently strip any inline icon after the first use.
-  el.innerHTML = rows.map((r, i) => {
+  //
+  // BATCH MODE (prompt 31): with 2+ PENDING COs the pending boxes collapse
+  // into ONE batch box (one link, one page at /co/batch/<token>, one
+  // signature covers all) and batch send is the ONLY send path; signed COs
+  // keep their normal boxes below it. With 0 or 1 pending, everything
+  // renders exactly as before, per-CO buttons included. Numbering stays the
+  // created_at position across ALL rows either way, so "#N" never renumbers
+  // when a CO moves between the batch box and the signed list.
+  const numById = {}; rows.forEach((r, i) => { numById[r.id] = i + 1; });
+  const pendingRows = rows.filter(r => r.status !== 'signed');
+  const coBoxHtml = (r, num) => {
     const amt = invUSD(invNum(r.amount));
     const sub = [r.system_name, r.sqft ? Number(r.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ');
     return `
     <div class="pec-co-box">
       <div class="pec-co-head">
-        <strong>Change Order #${i + 1}</strong>
+        <strong>Change Order #${num}</strong>
         ${r.status === 'signed'
           ? `<span class="pec-age pec-age-green" title="Signed by ${esc(r.signed_name || '')}">Signed ${esc(fmtStamp(r.signed_at))}</span>`
           : '<span class="pec-age pec-age-yellow">Pending signature</span>'}
@@ -9428,7 +9440,92 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
         <button class="pec-btn sm primary" data-co-view="${esc(r.token)}">View</button>
       </div>
     </div>`;
-  }).join('');
+  };
+
+  // Get-or-create the job's ONE stable pending batch link (decision 4: the
+  // token is minted once and every send reuses it; the page renders whatever
+  // is pending at view time, so a CO added later auto-appears on the same
+  // link). The partial unique index (one pending batch per job) makes the
+  // insert race-safe: if two renders race, the loser re-selects the winner's
+  // row. Pre-migration (table missing) or on any error this stays null and
+  // the card falls back to today's per-CO boxes with a note, never breaks.
+  let batch = null;
+  if (pendingRows.length >= 2) {
+    try {
+      const q = await supabase.from('pec_change_order_batches').select('*').eq('job_id', jobId).eq('status', 'pending').maybeSingle();
+      if (q.error) throw q.error;
+      batch = q.data;
+      if (!batch) {
+        const ins = await withFreshWrite(() => supabase.from('pec_change_order_batches').insert({ job_id: jobId }).select().single(), { label: 'co-batch-mint' });
+        if (ins.error) {
+          const re = await supabase.from('pec_change_order_batches').select('*').eq('job_id', jobId).eq('status', 'pending').maybeSingle();
+          if (re.error || !re.data) throw ins.error;
+          batch = re.data;
+        } else batch = ins.data;
+      }
+    } catch (err) {
+      console.warn('[pec] CO batch unavailable, per-CO fallback:', err?.message || err);
+      batch = null;
+    }
+  }
+
+  const grand = pendingRows.reduce((s, r) => s + invNum(r.amount), 0);
+  if (batch) {
+    // One batch box: every pending CO as a labeled line in one table (its own
+    // price per line, decision 6), grand total in the footer, ONE action row.
+    // The data-co-batch-* attributes are the batch wiring contract; the
+    // per-CO data-co-* handlers below still serve the signed boxes.
+    const batchBox = `
+    <div class="pec-co-box">
+      <div class="pec-co-head">
+        <strong>Change Orders awaiting approval (${pendingRows.length})</strong>
+        <span class="pec-age pec-age-yellow">Pending, one signature</span>
+      </div>
+      <div class="pec-co-body">
+        <div class="pec-scroll-x"><table class="pec-table">
+          <thead><tr><th>Product / Service</th><th class="pec-td-num pec-li-hide-sm">Quantity</th><th class="pec-td-num pec-li-hide-sm">Price</th><th class="pec-td-num pec-li-hide-sm">Subtotal</th><th class="pec-td-num pec-li-hide-sm">Tax</th><th class="pec-td-num">Total</th></tr></thead>
+          <tbody>
+            ${pendingRows.map(r => {
+              const amt = invUSD(invNum(r.amount));
+              const sub = [r.system_name, r.sqft ? Number(r.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ');
+              return `
+            <tr class="nohover">
+              <td><strong>#${numById[r.id]} · ${esc(r.title)}</strong>
+                ${sub ? `<div class="pec-li-sub">${esc(sub)}</div>` : ''}
+                ${r.description ? `<div class="pec-li-sub">${esc(r.description)}</div>` : ''}</td>
+              <td class="pec-td-num pec-li-hide-sm">1.00</td>
+              <td class="pec-td-num pec-li-hide-sm">${amt} / Ea</td>
+              <td class="pec-td-num pec-li-hide-sm">${amt}</td>
+              <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+              <td class="pec-td-num">${amt}</td>
+            </tr>`;
+            }).join('')}
+          </tbody>
+          <tfoot>
+            <tr class="pec-li-total-row nohover">
+              <td>Total to approve</td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-li-hide-sm"></td>
+              <td class="pec-td-num pec-li-hide-sm">${invUSD(grand)}</td>
+              <td class="pec-td-num pec-li-hide-sm">$0.00</td>
+              <td class="pec-td-num pec-li-grand-cell">${invUSD(grand)}</td>
+            </tr>
+          </tfoot>
+        </table></div>
+        <div class="pec-li-sub" style="margin-top:6px">One link, one page, one signature approves all ${pendingRows.length}. A change order added later shows up on the same link automatically.</div>
+      </div>
+      <div class="pec-co-actions">
+        <button class="pec-btn sm ghost" data-co-batch-copy>Copy batch link</button>
+        <button class="pec-btn sm accent-line" data-co-batch-email>Email batch</button>
+        <button class="pec-btn sm accent-line" data-co-batch-text>Text batch</button>
+        <button class="pec-btn sm primary" data-co-batch-view>View</button>
+      </div>
+    </div>`;
+    el.innerHTML = batchBox + rows.filter(r => r.status === 'signed').map(r => coBoxHtml(r, numById[r.id])).join('');
+  } else {
+    el.innerHTML = rows.map(r => coBoxHtml(r, numById[r.id])).join('')
+      + (pendingRows.length >= 2 ? `<div class="pec-li-sub" style="margin-top:4px">Batch approval (one link for all pending change orders) needs the 2026-07-17_change_order_batches migration. Per-CO links shown meanwhile.</div>` : '');
+  }
   const rowByToken = Object.fromEntries(rows.map(r => [String(r.token), r]));
   el.querySelectorAll('[data-co-view]').forEach(b => b.addEventListener('click', () => window.open('/co/' + b.dataset.coView, '_blank')));
   el.querySelectorAll('[data-co-copy]').forEach(b => b.addEventListener('click', () => {
@@ -9467,6 +9564,48 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
       showToast('Text failed: ' + (err?.message || err), { ttl: 5000 });
     }
   }));
+  // Batch actions (only rendered in batch mode). Email/Text both keep the
+  // 'change_order' log keys, so the Last-invoiced predicate (compose/invoice
+  // template keys, sms kind 'invoice') never counts a batch send.
+  if (batch) {
+    const bLink = `${location.origin}/co/batch/${batch.token}`;
+    const copyB = el.querySelector('[data-co-batch-copy]');
+    if (copyB) copyB.addEventListener('click', () => {
+      navigator.clipboard.writeText(bLink).then(() => { copyB.textContent = 'Copied'; setTimeout(() => { copyB.textContent = 'Copy batch link'; }, 1500); });
+    });
+    const viewB = el.querySelector('[data-co-batch-view]');
+    if (viewB) viewB.addEventListener('click', () => window.open(bLink, '_blank'));
+    const emailB = el.querySelector('[data-co-batch-email]');
+    if (emailB) emailB.addEventListener('click', async () => {
+      if (!customer?.email) { showToast('No email on file for this customer.', { ttl: 4000 }); return; }
+      emailB.disabled = true; emailB.textContent = 'Sending…';
+      try {
+        await pecSendEmail({
+          brand, to_email: customer.email, job_id: jobId, customer_id: customer.id,
+          subject: `${pendingRows.length} change orders need your approval`,
+          body_html: `<p>Hi ${esc(customer.name || '')},</p><p>${pendingRows.length} change orders for your project need your approval. One signature covers all of them:</p><ul>${pendingRows.map(r => `<li><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</li>`).join('')}</ul><p>Total to approve: <strong>${invUSD(grand)}</strong></p><p><a href="${esc(bLink)}" style="display:inline-block;background:#D8531C;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; sign all</a></p><p style="font-size:13px;color:#64748b">Or open this link: ${esc(bLink)}</p>`,
+          log_template_key: 'change_order',
+        });
+        showToast('Batch approval link emailed ✓', { ttl: 3000 });
+        emailB.textContent = 'Email batch'; emailB.disabled = false;
+      } catch (err) {
+        emailB.disabled = false; emailB.textContent = 'Email batch';
+        showToast('Email failed: ' + (err?.message || err), { ttl: 5000 });
+      }
+    });
+    const textB = el.querySelector('[data-co-batch-text]');
+    if (textB) textB.addEventListener('click', async () => {
+      textB.disabled = true; textB.textContent = 'Sending…';
+      try {
+        await pecSendSms({ brand, job_id: jobId, customer_id: customer?.id || customerId, kind: 'change_order', co_batch_token: batch.token });
+        showToast('Batch approval link texted ✓', { ttl: 3000 });
+        textB.textContent = 'Text batch'; textB.disabled = false;
+      } catch (err) {
+        textB.disabled = false; textB.textContent = 'Text batch';
+        showToast('Text failed: ' + (err?.message || err), { ttl: 5000 });
+      }
+    });
+  }
 }
 
 // payments. Mark Paid / Mark Complete reuse the shared modals, which re-call

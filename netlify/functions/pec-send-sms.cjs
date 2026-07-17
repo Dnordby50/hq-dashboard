@@ -105,7 +105,7 @@ exports.handler = async (event) => {
 
   const { brand, to_number = null, customer_id = null, job_id = null,
           kind = 'manual', body: rawBody = null, estimate_token = null,
-          co_token = null } = input;
+          co_token = null, co_batch_token = null } = input;
   if (!brand) return jc(400, { ok: false, error: 'brand is required' });
   // 'change_order' is deliberately its OWN kind (not 'invoice'): the Invoicing
   // "Last invoiced" column counts pec_sms_log rows with kind 'invoice', and a
@@ -195,15 +195,33 @@ exports.handler = async (event) => {
       // above is built.
       return jc(501, { ok: false, error: 'Estimate texting is not enabled yet (no estimate link source wired).' });
     } else if (kind === 'change_order') {
-      // Change-order approval link. The CO row is looked up by its signature
-      // token so the body always carries a REAL link (never a staff-typed one),
-      // identified sender + STOP line like the invoice text.
+      // Change-order approval link. The row is looked up by its token so the
+      // body always carries a REAL link (never a staff-typed one), identified
+      // sender + STOP line like the invoice text. Two shapes, SAME kind (the
+      // Last-invoiced predicate counts kind 'invoice'; both CO shapes must
+      // stay out of it):
+      //   co_batch_token -> the batch page (/co/batch/<t>): N pending COs,
+      //   one link, grand total summed live at send time.
+      //   co_token -> today's single-CO text, byte-for-byte unchanged.
+      if (co_batch_token) {
+        const bRows = await sb('GET', `/pec_change_order_batches?token=eq.${encodeURIComponent(co_batch_token)}&select=id,job_id,status&limit=1`);
+        const batch = Array.isArray(bRows) ? bRows[0] : null;
+        if (!batch) return jc(400, { ok: false, error: 'Change-order batch not found for that token.' });
+        if (batch.status === 'signed') return jc(409, { ok: false, error: 'That batch is already signed. Reload the job to get the current state.' });
+        const pend = await sb('GET', `/pec_change_order_signatures?job_id=eq.${encodeURIComponent(batch.job_id)}&status=eq.pending&select=amount`);
+        const n = Array.isArray(pend) ? pend.length : 0;
+        if (!n) return jc(400, { ok: false, error: 'No pending change orders on that job.' });
+        const grand = pend.reduce((s, r) => s + Number(r.amount || 0), 0);
+        const batchUrl = `${SITE_URL}/co/batch/${co_batch_token}`;
+        messageBody = `${businessName}: ${n} change order${n === 1 ? '' : 's'} totaling ${usd(grand)} need${n === 1 ? 's' : ''} your approval. Review and sign in one place: ${batchUrl}.${STOP_LINE}`;
+      } else {
       if (!co_token) return jc(400, { ok: false, error: 'co_token is required for a change-order text.' });
       const coRows = await sb('GET', `/pec_change_order_signatures?token=eq.${encodeURIComponent(co_token)}&select=title,amount,status&limit=1`);
       const co = Array.isArray(coRows) ? coRows[0] : null;
       if (!co) return jc(400, { ok: false, error: 'Change order not found for that token.' });
       const coUrl = `${SITE_URL}/co/${co_token}`;
       messageBody = `${businessName}: A change order "${co.title}" for ${usd(co.amount)} needs your approval. Review and sign: ${coUrl}.${STOP_LINE}`;
+      }
     } else { // manual
       const trimmed = String(rawBody || '').trim();
       if (!trimmed) return jc(400, { ok: false, error: 'Message body is empty.' });

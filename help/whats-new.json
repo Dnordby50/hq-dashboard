@@ -1,5 +1,16 @@
 [
   {
+    "id": "batch-change-order-approval",
+    "date": "2026-07-17",
+    "title": "Send all pending change orders for approval at once",
+    "summary": "When a job has two or more unsigned change orders, the Change Orders card now bundles them into one approval request: one link, one page, one signature that approves them all. The customer sees each change order with its own price plus a grand total, and anything they already signed shows greyed out for context. The link stays live, so a change order added after you send it appears on the same page automatically. With just one pending change order, nothing changes: you get the same per-change-order link and buttons as before.",
+    "howto": [
+      "Open a job's invoice (or the Estimate section on the job) that has two or more pending change orders. The card shows them together in one Change Orders awaiting approval box.",
+      "Use Copy batch link, Email batch, or Text batch to send the single approval link, or View to preview the page the customer sees.",
+      "When the customer signs once, every pending change order on the page flips to Signed, and the signed page doubles as the printable record."
+    ]
+  },
+  {
     "id": "product-cost-basis-per-unit-vs-per-kit",
     "date": "2026-07-16",
     "title": "Clearer product cost: per gallon or per kit",

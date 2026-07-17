@@ -155,6 +155,22 @@
   status = 200
   force = true
 
+# BATCH change-order approval page (/co/batch/<token>, prompt 31) plus its
+# signing POST. MUST stay ABOVE the /co/* rule: Netlify takes the first
+# matching redirect, and /co/* would otherwise swallow /co/batch/<token> and
+# hand "batch/<token>" to the single-CO page as its token.
+[[redirects]]
+  from = "/co/batch/*"
+  to = "/.netlify/functions/pec-public-change-order-batch?token=:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/co/batch/sign"
+  to = "/.netlify/functions/pec-public-change-order-batch"
+  status = 200
+  force = true
+
 # Public change-order approval page (same token pattern as /pay), plus its
 # signing POST. Both land on pec-public-change-order; the HTTP method
 # distinguishes render (GET) from sign (POST).
