@@ -1,5 +1,27 @@
 [
   {
+    "id": "custom-estimate-sqft-price-per-sqft",
+    "date": "2026-07-18",
+    "title": "Square footage and price per sqft on custom estimates",
+    "summary": "A custom estimate can now carry its square footage. Type the sqft next to the price in the estimator's Custom card and a live price per sqft shows right there. When the customer accepts, the number rides to the job, so the job header chip, the Job Costing $ / sqft readout, and the printed work order all show it instead of \"no sqft on file\". The sqft is optional and never changes the price: you still type the price yourself.",
+    "howto": [
+      "In the estimator, switch the estimate to Custom and type the price as usual.",
+      "Type the square footage in the new Square footage field; the $ / sqft line updates live.",
+      "Save and send as usual. After the customer accepts, the job's $ / sqft readouts and the work order pick the number up automatically. You can still adjust it later in the Sqft field on the job header."
+    ]
+  },
+  {
+    "id": "crew-notes-on-work-order",
+    "date": "2026-07-18",
+    "title": "Crew notes: cliff notes and watch-outs on the work order",
+    "summary": "Every estimate now has a Crew notes (internal) box: a short brief for the install crew with cliff notes on what the job is and watch-outs like access, prep, and site conditions. Type it yourself or click Generate from proposal to have AI draft it from the proposal and site facts (you can edit or undo the draft, and it never invents anything not in the estimate). The notes ride to the job when the customer accepts, stay editable on the job page, and print in their own Crew Notes section on the work order. The customer never sees them: they stay off the proposal, the estimate page, and the PDF.",
+    "howto": [
+      "In the estimator, scroll to the Crew notes (internal) card. Type notes, or click Generate from proposal for an AI draft you can edit or undo.",
+      "Save the estimate. When it is accepted, the notes carry to the job automatically.",
+      "Tweak them any time in the Crew notes box on the job page (Job Card section), then open View Work Order: the notes print in their own section above Issues / Notes."
+    ]
+  },
+  {
     "id": "batch-change-order-approval",
     "date": "2026-07-17",
     "title": "Send all pending change orders for approval at once",

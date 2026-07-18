@@ -49,7 +49,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over. A Preview button shows the exact customer page before sending.",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending.",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -133,7 +133,7 @@
     {
       "name": "Custom estimate mode",
       "area": "estimator",
-      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone.",
+      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone. An optional square footage field shows a live read-only price per sqft (the price stays the typed number) and carries to the job's sqft on accept, lighting up the $/sqft readouts on Job Costing and the work order.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-custom-polish.cjs"
@@ -142,8 +142,34 @@
           "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
         ]
       },
-      "tables": [],
+      "tables": [
+        "estimates"
+      ],
       "spec": "docs/archive/prompts/claude-code-prompt-24-estimator-custom-mode.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Crew notes on the work order",
+      "area": "estimator",
+      "description": "A short internal brief for the install crew (cliff notes on what the job is, plus watch-outs like access, prep, and site conditions), separate from the customer scope. Typed on the estimator in either mode or AI-drafted from the proposal with a manual Generate from proposal button (undoable, edits always win, never invents facts not in the estimate). It carries to the job on accept, stays editable on the job page's Job Card block, and prints in its own Crew Notes section on the crew work order. Strictly internal: it never appears on the customer proposal, estimate page, portal, or PDF.",
+      "code": {
+        "indexHtml": [
+          "renderWorkOrder",
+          "renderJobDetailInner"
+        ],
+        "netlifyFunctions": [
+          "pec-estimate-crew-notes.cjs",
+          "pec-public-estimate.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [
+        "estimates",
+        "jobs"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-32-estimator-sqft-and-crew-notes.md",
       "since": "2026-07"
     },
     {
@@ -383,14 +409,16 @@
     {
       "name": "Job costing",
       "area": "dashboard",
-      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot, and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings.",
+      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings.",
       "code": {
         "indexHtml": [
           "renderJobCosting",
+          "renderUnifiedJob",
           "loadCostingData",
           "computeCostingRow",
           "openCostingDetail",
-          "saveCostingField"
+          "saveCostingField",
+          "jobEffectiveSqft"
         ],
         "netlifyFunctions": [
           "pec-busybusy.cjs"
