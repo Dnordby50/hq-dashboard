@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-17 MST] Cowork: applied batch change-order approval migration to PROD (verified, anon-write denied)
+By: Cowork
+Changed: No repo code beyond this log entry. Ran the prompt-31 Cowork handoff task 1: applied supabase/migrations/2026-07-17_change_order_batches.sql (commit 005f331) to PROD (project HQ Dashboard, zdfpzmmrgotynrwkeakd) via the Supabase MCP apply_migration. This UNBLOCKS the batch change-order approval feature; until now the Change Orders card degraded to per-CO links with a note.
+
+PRE-CHECK (read-only, before touching prod): pec_change_order_batches did not exist yet (first application), pec_change_order_signatures had no batch_id column yet, and all prerequisites were present live (public.jobs, pec_change_order_signatures, is_admin_staff(), pec_prod_touch_updated_at()). One apply_migration call errored at the MCP permission layer BEFORE executing (permission stream closed, Supabase MCP briefly disconnected); I re-checked live and confirmed the table still did not exist (no partial apply), then applied cleanly (success).
+
+MIGRATION (additive, idempotent, one transaction): created public.pec_change_order_batches with 12 columns (id, job_id, token, status, signed_co_ids, signed_name, signature_data, signed_at, signer_ip, signer_user_agent, created_at, updated_at); the PARTIAL UNIQUE index idx_pec_co_batch_one_pending on (job_id) WHERE status='pending' (the one-stable-link-per-job guarantee); idx_pec_co_batch_job; RLS enabled with exactly ONE staff policy (pec_co_batch_staff FOR ALL, using and with check is_admin_staff(), NO anon policy); the updated_at touch trigger (pec_prod_touch_updated_at); and pec_change_order_signatures.batch_id (uuid FK to batches, ON DELETE SET NULL) plus its partial index. Touched no existing rows, no other table, and not the pec_replace_job_areas RPC.
+
+VERIFIED live, all PASS:
+- table exists (1); all 12 columns present in order.
+- idx_pec_co_batch_one_pending = CREATE UNIQUE INDEX ... (job_id) WHERE (status = 'pending').
+- exactly 1 policy: pec_co_batch_staff ALL is_admin_staff(); anon policy count 0; RLS enabled true; 1 non-internal trigger.
+- pec_change_order_signatures.batch_id present; FK = REFERENCES pec_change_order_batches(id) ON DELETE SET NULL.
+- ANON WRITE DENIED: as role anon, an INSERT into pec_change_order_batches raised an RLS/permission error (proven via an exception-trapping DO block that raises loudly if the insert had instead succeeded). Table left empty afterward (0 rows), no test data committed.
+
+Why: prompt-31 Cowork handoff task 1 (apply migration, verify, anon-write check).
+Files touched: PROJECT-LOG.md only. External: PROD Supabase (1 new table, 2 indexes, RLS, 1 policy, 1 trigger, 1 new column on pec_change_order_signatures plus its index; additive, idempotent, no data changed).
+Next steps: Dylan pushes/deploys if not already live; then the live end-to-end test (handoff tasks 2 and 3), which needs Dylan in the loop.
+Handoff to Cowork: none (task 1 closed; tasks 2 and 3 are live tests with Dylan).
+Handoff to Dylan: The migration is live, so your deploy is unblocked. Once deployed, run the end-to-end test. On a test job, add 2 pending COs and confirm the Change Orders card collapses to one "Change Orders awaiting approval (2)" box with a single action row (Copy batch link, Email batch, Text batch, View). Text batch to your cell (the SMS should name 2 change orders, the summed total, and one /co/batch/ link). Open it: both COs stacked, each with its own price, a grand total, one signature block. Add a 3rd CO and refresh the already-open link: the 3rd appears with no re-send. Sign once and confirm all three flip to Signed; in Supabase, ONE pec_change_order_batches row is status signed with signed_co_ids listing all three and signature_data holding the drawing, and each of the three pec_change_order_signatures rows is status signed with batch_id pointing at that row; the reloaded page shows the printable signed document (three sections, one signature, grand total). Finally confirm a job with exactly 1 pending CO still shows the classic per-CO box and its /co/<token> page signs unchanged.
+
+---
+
 ## [2026-07-17 MST] Invoicing: batch change-order approval (2+ pending COs = one link, one page, one signature)
 By: Claude Code
 Changed: Delivered claude-code-prompt-31-batch-change-order-approval. When a job has 2 or more pending (unsigned) change orders, they now go out as ONE approval request: one stable link per job (/co/batch/<token>), one stacked page, one typed-name + drawn signature that approves all of them. With exactly 0 or 1 pending CO, everything renders and behaves byte-for-byte like before (per-CO link, page, badges, Email/Text/Copy/View). Delivery and signature UX only: billing still hits jobs.price and the invoice at CO save, and unsigned COs never block billing.
