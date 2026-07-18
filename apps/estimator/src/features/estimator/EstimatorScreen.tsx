@@ -264,6 +264,10 @@ export default function EstimatorScreen({
   const [isCustom, setIsCustom] = useState<boolean>(() => editing?.isCustom === true);
   const [customScope, setCustomScope] = useState<string>(() => editing?.customScope ?? '');
   const [customPriceInput, setCustomPriceInput] = useState<string>(() => editing?.customPrice ?? '');
+  // Custom sqft (prompt 32): typed alongside the price so the estimator can
+  // show $/sqft as a READOUT. Optional, never a save gate, and never a rate
+  // that computes the price: price stays the typed number.
+  const [customSqftInput, setCustomSqftInput] = useState<string>(() => editing?.customSqft ?? '');
   // "Polish with AI" undo: the pre-polish text, kept until reverted or
   // re-polished, so the button is never a one-way door.
   const [prePolish, setPrePolish] = useState<string | null>(null);
@@ -561,6 +565,12 @@ export default function EstimatorScreen({
     const n = Number(customPriceInput);
     return Number.isFinite(n) && n > 0 ? r2(n) : null;
   }, [customPriceInput]);
+  // Custom sqft (prompt 32): same parse rule as the price. Optional; null
+  // means "not typed" and simply hides the readout.
+  const customSqft = useMemo(() => {
+    const n = Number(customSqftInput);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }, [customSqftInput]);
   // The system-portion sell price: the typed number in custom mode, else the
   // engine/override number. Add-on lines price on top of either.
   const sellPrice = isCustom ? customPrice : finalSell;
@@ -737,7 +747,7 @@ export default function EstimatorScreen({
   }, [online, refreshPending, generateScope]);
   useEffect(() => {
     setSaveState('idle');
-  }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput]);
+  }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput, customSqftInput]);
 
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
@@ -1120,6 +1130,7 @@ export default function EstimatorScreen({
         isCustom,
         customScope: isCustom ? customScope : null,
         customPrice: isCustom ? sellPrice : null,
+        customSqft: isCustom ? customSqft : null,
       });
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
@@ -1170,7 +1181,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -1603,6 +1614,15 @@ export default function EstimatorScreen({
                 <label className="field"><span>Price $ (you set it{customPrice == null ? ', required' : ''})</span>
                   <input inputMode="decimal" value={customPriceInput} placeholder="0" onChange={(e) => setCustomPriceInput(e.target.value.replace(/[^0-9.]/g, ''))} />
                 </label>
+                <label className="field"><span>Square footage (optional)</span>
+                  <input inputMode="decimal" value={customSqftInput} placeholder="0" onChange={(e) => setCustomSqftInput(e.target.value.replace(/[^0-9.]/g, ''))} />
+                </label>
+                {/* $/sqft READOUT (prompt 32): price / sqft, display only. The
+                    typed price is never computed from a rate. INTERNAL, same
+                    as the standard-mode ppsf line. */}
+                {customPrice != null && customSqft != null && (
+                  <div className="ppsf-line">{money2(customPrice / customSqft)}<span className="muted"> / sqft</span></div>
+                )}
                 <dl className="metrics">
                   <div><dt>Commission (standard {config.standardCommissionPct}%)</dt><dd>{money2(customCommission)}</dd></div>
                   <div><dt>Gross profit</dt><dd>--</dd></div>

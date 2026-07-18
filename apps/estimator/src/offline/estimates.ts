@@ -109,6 +109,10 @@ export type SaveEstimateArgs = {
   isCustom?: boolean;
   customScope?: string | null;
   customPrice?: number | null;
+  // Typed square footage for a custom estimate (prompt 32): display-only $/sqft
+  // in the estimator, carried to jobs.sqft on accept. Optional; null when not
+  // typed. Standard estimates keep sqft on their area rows and pass null.
+  customSqft?: number | null;
   // The engine's computed price (calc_price) and the manual-override provenance
   // (build 17). calcPrice keeps the math; totals.price is what actually sells.
   calcPrice: number | null;
@@ -188,6 +192,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     is_custom: isCustom,
     custom_scope: customScope,
     custom_price: customPrice,
+    custom_sqft: isCustom ? args.customSqft ?? null : null,
     materials_cost: p?.materialsCost ?? null,
     fixed_addons: p?.fixedAddons ?? 0,
     labor_pct: p?.laborPct ?? null,

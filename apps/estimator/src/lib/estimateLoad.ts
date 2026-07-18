@@ -56,6 +56,9 @@ export type LoadedEstimate = {
   isCustom: boolean;
   customScope: string;
   customPrice: string;
+  // Typed square footage of a custom estimate (prompt 32), as an input string
+  // like customPrice / areas.sqft; empty when not typed or standard.
+  customSqft: string;
 };
 
 // Split columns win; a row without them (saved before the migration/backfill)
@@ -170,6 +173,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     isCustom,
     customScope: e.custom_scope != null ? String(e.custom_scope) : '',
     customPrice: e.custom_price != null ? String(e.custom_price) : '',
+    customSqft: e.custom_sqft != null ? String(e.custom_sqft) : '',
   };
 }
 

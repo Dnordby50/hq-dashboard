@@ -11673,7 +11673,12 @@ async function renderWorkOrder(ctx) {
   const hourBudget = (laborPct != null && revenue > 0 && defaultLaborRate > 0)
     ? ((revenue * laborPct / 100) / defaultLaborRate)
     : null;
-  const totalSqft = planAreas.reduce((s, a) => s + (Number(a.sqft) || 0), 0);
+  // Printed Sqft: the area sum still wins for standard jobs (unchanged), but a
+  // custom / area-less job now falls back to the manual jobs.sqft (carried from
+  // estimates.custom_sqft on accept, or backfilled on the job header) instead
+  // of printing blank. jobEffectiveSqft with no areas is exactly that fallback.
+  const areaSqftSum = planAreas.reduce((s, a) => s + (Number(a.sqft) || 0), 0);
+  const totalSqft = areaSqftSum > 0 ? areaSqftSum : jobEffectiveSqft(job.sqft, []);
 
   const e = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const yn = (v) => v === true ? 'YES' : v === false ? 'NO' : '';
@@ -21616,6 +21621,7 @@ async function loadCostingData() {
   const systemIdByJob = {};
   state.systemIdByJob = systemIdByJob;
   state.crmStatusByProdJob = {};
+  state.crmSqftByProdJob = {};
   try {
     if ((state.prodJobs || []).length && typeof window.computeJobEstimate === 'function') {
       // Resolve each prod job to its CRM job card. The reliable bridge is
@@ -21639,7 +21645,7 @@ async function loadCostingData() {
         areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
         supabase.from('pec_prod_products').select('*'),
         supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
-        supabase.from('jobs').select('id,dripjobs_deal_id,price,status,address,customers(name)').is('archived_at', null),
+        supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,customers(name)').is('archived_at', null),
       ]), { label: 'loadCostingData:estimate' });
       const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
       // Publish the catalog on THIS module's state for openAddMaterialModal.
@@ -21659,7 +21665,7 @@ async function loadCostingData() {
       // Deal + name|address indexes of CRM job identities (first row wins).
       const crmByDeal = {}, crmByNameAddr = {};
       for (const row of (crmIdentRes.data || [])) {
-        const ident = { id: row.id, price: Number(row.price) || 0, status: row.status };
+        const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft };
         if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
         const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
         if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
@@ -21670,12 +21676,22 @@ async function loadCostingData() {
       // of the prod row's, which is usually stale at 'scheduled' for manual jobs.
       const resolvedByProd = {};
       const crmStatusByProd = {};
+      // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
+      // column, so the unified $/sqft readout needs the CRM job's manual sqft
+      // (set on accept for custom estimates, or backfilled on the job header)
+      // to fall back on when pec_prod_areas is empty.
+      const crmSqftByProd = {};
       const neededCrmIds = new Set();
       for (const job of (state.prodJobs || [])) {
         const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
-        if (ident) { resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id); if (ident.status) crmStatusByProd[job.id] = ident.status; }
+        if (ident) {
+          resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
+          if (ident.status) crmStatusByProd[job.id] = ident.status;
+          if (ident.sqft != null) crmSqftByProd[job.id] = ident.sqft;
+        }
       }
       state.crmStatusByProdJob = crmStatusByProd;
+      state.crmSqftByProdJob = crmSqftByProd;
       // Phase 2: areas + materials for only the resolved CRM jobs.
       const crmAreasByCrmId = {};
       if (neededCrmIds.size) {
@@ -23049,10 +23065,16 @@ async function renderUnifiedJob(jobId) {
                then refreshUnifiedTotals recomputes GP / Total Var live. -->
           ${moneyInput('Revenue', 'revenue', 'job', job.revenue)}
           ${(() => {
-            // $/sqft (build 17): contract revenue / the job's total area sqft.
+            // $/sqft (build 17): contract revenue / the job's effective sqft.
             // Dash when no sqft (never a fabricated number). Overridden prices
             // are included (it is what the job sold for). System = dominant area.
-            const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+            // Effective sqft (prompt 32): the ONE shared jobEffectiveSqft rule,
+            // so the manual jobs.sqft (set on accept for custom estimates, or
+            // backfilled on the job header) lights this up when there are no
+            // areas, instead of the old areas-only sum that showed "no sqft on
+            // file" for every custom job. pec_prod_jobs has no sqft column;
+            // the CRM value comes from the loadCostingData identity resolve.
+            const totalSqft = jobEffectiveSqft((state.crmSqftByProdJob || {})[jobId], areas.map(a => a.sqft));
             const rev = Number(job.revenue) || 0;
             const domSys = dominantSystemId(areas);
             const domName = domSys ? ((state.systemTypes || []).find(s => s.id === domSys) || {}).name || '' : '';

@@ -729,6 +729,14 @@ async function ensureJobCreated(est) {
   const intake = est.intake || {};
   const areas = await loadAreas(est.id);
   const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+  // Custom sqft (prompt 32): a custom estimate has no area rows, so totalSqft
+  // is 0 and jobs.sqft used to land null (every $/sqft readout showed "no
+  // sqft on file"). The typed estimates.custom_sqft fills that gap. Standard
+  // estimates keep the area sum; the manual jobs.sqft field stays a backfill
+  // override edited on the job page.
+  const customSqft = est.is_custom === true && Number(est.custom_sqft) > 0
+    ? Math.round(Number(est.custom_sqft))
+    : null;
   // Read line items from the TABLE (est.line_items may be the row set already,
   // or absent on a raw re-read); reloading makes ensureJobCreated correct no
   // matter which caller reached it, including the crash-heal path. The signed
@@ -793,7 +801,8 @@ async function ensureJobCreated(est) {
       type: 'epoxy',
       address: est.customer_address || null,
       scope: est.scope_of_work || null,
-      sqft: totalSqft > 0 ? String(Math.round(totalSqft)) : null,
+      // jobs.sqft is TEXT, so both paths write a string.
+      sqft: totalSqft > 0 ? String(Math.round(totalSqft)) : (customSqft != null ? String(customSqft) : null),
       price: est.price != null ? Number(est.price) : null,
       salesperson: intake.salesperson_name || null,
       signed_date: phoenixToday(),
