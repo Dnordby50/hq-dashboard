@@ -1,4 +1,4 @@
-# PEC CRM (TopCoat) — Claude Code Instructions
+# PEC CRM (TopCoat): Claude Code Instructions
 
 ## Context
 This project contains the multi-arm platform for Prescott Epoxy Company (PEC) and Finishing Touch Painting (FTP).
@@ -26,7 +26,7 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
 5. Flag handoffs explicitly. If a task needs Cowork or Dylan to do something manually (web action, file upload, paste into a sheet, etc.), end your log entry with a `## Handoff to Cowork` or `## Handoff to Dylan` section listing exactly what they need to do.
 
-6. Never use em dashes in any output. Use commas, parentheses, or two sentences instead.
+6. Never use em dashes in anything customer-facing (estimates, invoices, scope text, portal pages, emails, SMS, What's New entries, help content). Use commas, parentheses, or two sentences instead. Em dashes are fine in code, comments, internal docs, and PROJECT-LOG entries.
 
 7. Keep secrets out of code. If a credential is needed, put a placeholder in the code and add a Handoff entry asking Dylan to set the env variable.
 
@@ -36,7 +36,11 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
    Stay direct (still ask Dylan) when this Claude Code session is BLOCKED on a binary architectural choice that fundamentally changes downstream work, or when waiting on Cowork would cost more than the answer is worth (a 1-2 word reply that unblocks 30+ minutes of work). The trigger for direct asking is "this session is stalled until I get this answer", not "this needs Dylan's input eventually". When in doubt, write the Cowork prompt.
 
-9. Every user-facing change ships with a What's New entry: append one entry (id, date, title, one-line summary, 2-3 how-to steps, plain language, no em dashes) to the changelog JSON in the same session. Internal-only changes (refactors, webhooks, migrations with no visible behavior change) do not get entries. The changelog JSON is help/whats-new.json (newest first); the sign-in popup, the Help view's What's New card, and the help assistant all read that one file.
+9. Consult the reference files before searching or guessing. features.json maps every feature to its code anchors (index.html function names, Netlify functions, tables); read it before grepping index.html blind. SCHEMA.md is the table/column reference generated from the live Supabase schema; check it before writing ANY SQL or supabase-js select (assumed column names have caused real bugs twice). Regenerate SCHEMA.md after applying migrations, and update the relevant features.json entry when a feature's code or tables change.
+
+10. Token discipline. Never read index.html, PROJECT-LOG.md, or PROJECT-LOG-ARCHIVE.md wholesale. Locate code via features.json anchors plus grep. For broad searches across the repo, use Explore subagents so the main session's context stays small. PROJECT-LOG.md holds entries from 2026-06-01 onward; older entries are verbatim in PROJECT-LOG-ARCHIVE.md.
+
+11. Every user-facing change ships with a What's New entry: append one entry (id, date, title, one-line summary, 2-3 how-to steps, plain language, no em dashes) to the changelog JSON in the same session. Internal-only changes (refactors, webhooks, migrations with no visible behavior change) do not get entries. The changelog JSON is help/whats-new.json (newest first); the sign-in popup, the Help view's What's New card, and the help assistant all read that one file.
 
 ## Cowork Handoff Prompt Format
 
@@ -85,7 +89,7 @@ These are non-obvious shapes of the codebase that have caused bugs. Keep them in
 
 - Two parallel job tables. `public.jobs` (paired with `public.customers`) is read by the Jobs page (`renderJobs` at index.html:5613). `public.pec_prod_jobs` (paired with `pec_prod_job_schedule_days`, `pec_prod_crews`, `pec_prod_areas`) is read by the Job Schedule calendar (`renderSchedule` / `loadScheduleData` at index.html:6494). They are siblings, not duplicates. The proposal-accepted webhook writes to BOTH so DripJobs deals show up everywhere; manual entries (see next section) only write to `pec_prod_jobs` so they appear on the calendar but not the Jobs page.
 
-- The supabase-js "wedge" is an auth-LOCK problem, not an idle-JWT problem (this corrects the earlier "idle JWT" mental model). Diagnosed live (Cowork, 2026-05-31): the client hangs when GoTrue's internal exclusive auth lock loses mutual exclusion. The symptom is identical regardless of cause — the FIRST `.from(...)` / `auth.refreshSession()` call hangs with ZERO requests on the wire (it never reaches the network), no 401/403 — but the mechanism was a custom in-memory NO-OP lock we had installed: with `autoRefreshToken` on, the background refresh ticker ran concurrently with another auth op under the no-op lock, GoTrue's `lockAcquired` flag got stranded `true` (fingerprint: `lockAcquired:true` + `refreshingDeferred:null` + a growing `pendingInLock`, while `navigator.locks` itself is clean), and every later call queued forever (`await last`). It hit during ACTIVE use, not just idle; the ~57-min idle observation was coincidence, not the trigger. Fix shipped: removed the no-op lock so supabase-js uses its DEFAULT navigator.locks lock (real mutual exclusion), relying on `timedFetch` (the global fetch wrapper, index.html ~4770, hard 8s abort on `/auth/v1/` requests) to keep a stalled refresh fetch from holding the lock — which is what the no-op was originally meant to avoid. If you touch the client config: keep `timedFetch`; do NOT reinstate a non-exclusive lock; and if the idle-held-lock wedge ever returns, prefer a SHORT-HOLD custom navigator.locks lock over a no-op. Recovery/defense still in place (now rarely needed): `recoverWedgedClient()` rebuilds the client in place from stored tokens (no reload), `withFreshSession` 10s refresh-retry for READS (~5084) and `withDeadline` (no-retry) for non-idempotent WRITES (~5106), `withFreshWriteRetry` (recover+retry, idempotent writes only), the payment recover-verify-retry (existence check before re-insert), the visibilitychange idle-probe, and the 15s render fence whose Retry reloads. Never wrap a non-idempotent write (payment insert, change order) in a blind auto-retry: a retry can double-record if the first request actually landed — the payment path retries only after verifying the row didn't land.
+- The supabase-js "wedge" is an auth-LOCK problem, not an idle-JWT problem (this corrects the earlier "idle JWT" mental model). Diagnosed live (Cowork, 2026-05-31): the client hangs when GoTrue's internal exclusive auth lock loses mutual exclusion. The symptom is identical regardless of cause, the FIRST `.from(...)` / `auth.refreshSession()` call hangs with ZERO requests on the wire (it never reaches the network), no 401/403, but the mechanism was a custom in-memory NO-OP lock we had installed: with `autoRefreshToken` on, the background refresh ticker ran concurrently with another auth op under the no-op lock, GoTrue's `lockAcquired` flag got stranded `true` (fingerprint: `lockAcquired:true` + `refreshingDeferred:null` + a growing `pendingInLock`, while `navigator.locks` itself is clean), and every later call queued forever (`await last`). It hit during ACTIVE use, not just idle; the ~57-min idle observation was coincidence, not the trigger. Fix shipped: removed the no-op lock so supabase-js uses its DEFAULT navigator.locks lock (real mutual exclusion), relying on `timedFetch` (the global fetch wrapper, index.html ~4770, hard 8s abort on `/auth/v1/` requests) to keep a stalled refresh fetch from holding the lock, which is what the no-op was originally meant to avoid. If you touch the client config: keep `timedFetch`; do NOT reinstate a non-exclusive lock; and if the idle-held-lock wedge ever returns, prefer a SHORT-HOLD custom navigator.locks lock over a no-op. Recovery/defense still in place (now rarely needed): `recoverWedgedClient()` rebuilds the client in place from stored tokens (no reload), `withFreshSession` 10s refresh-retry for READS (~5084) and `withDeadline` (no-retry) for non-idempotent WRITES (~5106), `withFreshWriteRetry` (recover+retry, idempotent writes only), the payment recover-verify-retry (existence check before re-insert), the visibilitychange idle-probe, and the 15s render fence whose Retry reloads. Never wrap a non-idempotent write (payment insert, change order) in a blind auto-retry: a retry can double-record if the first request actually landed, the payment path retries only after verifying the row didn't land.
 
 ## Manual job entries (temporary bridge)
 
@@ -108,24 +112,23 @@ The cascade on `pec_prod_job_schedule_days.job_id` will delete the schedule rows
 
 ## File Layout
 
-- index.html: Single-file production dashboard (ARM 1). All UI lives here.
+- index.html: Single-file production dashboard (ARM 1). All UI lives here (~28k lines). Navigate it via features.json anchors plus grep, never a full read.
+- features.json: Feature manifest. One entry per shipped feature: plain-English description plus code anchors (index.html function names, Netlify functions, Supabase tables). Doubles as the catalog of what TopCoat offers.
+- SCHEMA.md: Supabase table/column reference generated from the live schema. Consult before writing SQL; regenerate after migrations.
 - netlify.toml: Netlify build and deploy config.
-- netlify/functions/: Serverless endpoints (Netlify Functions).
-  - sop-chat.js: SOP chat backend.
-  - _pec-supabase.js: Shared Supabase client helper for PEC functions.
-  - pec-create-staff.js: Provisions PEC staff records.
-  - pec-log-signin.js: Logs PEC staff sign-ins.
-  - pec-webhook-proposal-accepted.js: Webhook handler for proposal accepted.
-  - pec-webhook-stage-changed.js: Webhook handler for project stage changed.
-  - pec-webhook-project-completed.js: Webhook handler for project completed.
+- netlify/functions/: Serverless endpoints, 33 .cjs files (note: .cjs, not .js). Includes sop-chat.cjs (SOP chat backend), _pec-supabase.cjs (shared Supabase helper), pec-webhook-*.cjs (DripJobs webhooks), pec-public-estimate.cjs / pec-public-invoice.cjs (customer-facing pages), Stripe checkout/webhook, mcp.cjs (MCP server), and scheduled functions. Full list with purposes: see features.json.
+- apps/estimator/: Source of the estimator PWA (TypeScript, React, Vite). estimator/ at root is its BUILT output, served statically; never hand-edit the build output.
+- production/: Node calculation logic and tests (calculator.js, comps.js, scope.cjs). The npm test targets.
 - supabase/: Database schema, RLS policies, seed data, migrations, and SETUP.md for the PEC Supabase project.
+- docs/archive/prompts/: Historical build-spec prompts (builds 10-31 and named specs). Reference only; superseded by shipped code and PROJECT-LOG entries.
 - .htaccess: Apache rewrites for legacy hosting.
 - sync-braindump.sh: Local helper script for braindump sync.
 - SETUP.md: Original dashboard setup notes.
 - SOP-SETUP.md: SOP backend setup notes.
 - coach-log-setup.md: Coach log setup notes.
 - CLAUDE.md: This file. Standing rules for Claude Code.
-- PROJECT-LOG.md: Append-only history of meaningful changes by Claude Code, Cowork, and Dylan.
+- PROJECT-LOG.md: Append-only history of meaningful changes by Claude Code, Cowork, and Dylan. Entries from 2026-06-01 onward; older entries in PROJECT-LOG-ARCHIVE.md.
+- .claude/: Project tooling. settings.json (shared permission allowlist), skills/handoff/ (the /handoff command for Cowork prompts).
 
 ## Related but separate
 - Obsidian HQ vault: read-only reference for SOPs and context. Never modify from this project.

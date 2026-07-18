@@ -25,7 +25,7 @@ Sheet IDs already configured in the file:
 
 ## 3. Add Keys to Dashboard
 
-Open dashboard.html and find the CONFIG block at the top of the script section. Replace:
+Open index.html and find the CONFIG block at the top of the script section. Replace:
 
     SHEETS_API_KEY: 'YOUR_GOOGLE_SHEETS_API_KEY'
     ANTHROPIC_API_KEY: 'YOUR_ANTHROPIC_API_KEY'
@@ -40,8 +40,8 @@ Your web guy will know what to do with these.
 
 ## 5. Deploy
 
-Upload dashboard.html to your web host. That's it. Single file, no build step.
+Upload index.html to your web host. That's it. Single file, no build step.
 
 ## 6. Test Locally
 
-Just open dashboard.html in a browser. The coach and Sheets data will work if the API keys are set. No server needed.
+Just open index.html in a browser. The coach and Sheets data will work if the API keys are set. No server needed.
