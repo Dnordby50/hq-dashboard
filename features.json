@@ -1,0 +1,1008 @@
+{
+  "_readme": "TopCoat HQ Dashboard feature manifest. One entry per shipped feature: plain-English description (catalog quality) plus code anchors. Consult before grepping index.html. Anchors are FUNCTION NAMES, never line numbers. Update the relevant entry when shipping changes to a feature (CLAUDE.md rule 9). Generated 2026-07-18.",
+  "features": [
+    {
+      "name": "In-house estimator PWA",
+      "area": "estimator",
+      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects.",
+      "code": {
+        "other": [
+          "apps/estimator/src/main.tsx",
+          "apps/estimator/src/App.tsx",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx",
+          "apps/estimator/src/offline/idb.ts",
+          "apps/estimator/src/offline/outbox.ts",
+          "apps/estimator/src/offline/sync.ts",
+          "apps/estimator/src/lib/supabase.ts"
+        ]
+      },
+      "tables": [
+        "pec_prod_system_types",
+        "pec_prod_products",
+        "pec_prod_recipe_slots"
+      ],
+      "spec": "docs/archive/prompts/claude-code-framework-estimator-crm-beta.md",
+      "since": "2026-06"
+    },
+    {
+      "name": "Numbered estimate records",
+      "area": "estimator",
+      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete.",
+      "code": {
+        "indexHtml": [
+          "renderEstimates",
+          "renderEstimateDetail",
+          "openEstimatorModal",
+          "showDuplicateEstimateModal"
+        ],
+        "other": [
+          "apps/estimator/src/lib/estimateLoad.ts",
+          "apps/estimator/src/offline/estimates.ts"
+        ]
+      },
+      "tables": [
+        "estimates"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-15-estimator-rework.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Customer-facing estimate (send, sign, accept)",
+      "area": "estimator",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over. A Preview button shows the exact customer page before sending.",
+      "code": {
+        "indexHtml": [
+          "openEstimateSendModal"
+        ],
+        "netlifyFunctions": [
+          "pec-public-estimate.cjs"
+        ]
+      },
+      "tables": [
+        "estimates"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-16-customer-estimate.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Auto-written scope of work",
+      "area": "estimator",
+      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-scope.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/lib/ai.ts"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-15c-scope-questions-duplicates-preview.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Multi-system estimates",
+      "area": "estimator",
+      "description": "One estimate can cover several areas that each carry their own system (a flake garage plus a quartz patio), priced with each area's own recipe and rolled into a single price. The gross-profit target is the square-foot-weighted average of the systems in play so a small high-margin area does not skew the whole number.",
+      "code": {
+        "other": [
+          "apps/estimator/src/lib/calculator.ts",
+          "production/calculator.js",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-15b-multisystem-addons-scope.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Add-ons catalog",
+      "area": "estimator",
+      "description": "Reps drop upsells like stem walls, joint filling, upgrades, or drive time onto an estimate from a managed catalog, each with a prefilled price, real cost, unit, and scope paragraph. Because every add-on carries a cost, gross profit stays honest, and items marked optional stay out of the base total until the customer selects them.",
+      "code": {
+        "other": [
+          "apps/estimator/src/lib/catalog.ts",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [
+        "pec_prod_addons"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-15b-multisystem-addons-scope.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Estimate pricing engine and controls",
+      "area": "estimator",
+      "description": "Estimates price from just the system and square footage using recipe default products and a per-system target gross profit, then show the full work behind the number: price per square foot, the cost stack (materials, labor, sundries, add-ons, commission, gross profit), and a plain-English explanation including charm rounding. Reps can override the sell price with a required reason and a floor confirmation, every estimate bakes in an adjustable 2% sundries cost, and moisture vapor barrier is chosen per area.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-ai.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/lib/calculator.ts",
+          "apps/estimator/src/lib/comps.ts",
+          "production/calculator.js",
+          "apps/estimator/src/types/calculator.d.ts"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-17-estimate-controls.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Custom estimate mode",
+      "area": "estimator",
+      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-custom-polish.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-24-estimator-custom-mode.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Live proposal panel",
+      "area": "estimator",
+      "description": "The customer-facing proposal builds live inside the estimator as reps work, drafting from scope templates the moment an area has a system and square footage. The AI writes the polished version automatically on the first save once scope questions are answered, then only rewrites on an explicit Regenerate, and reps can edit the text in place before sending.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-scope.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/lib/ai.ts",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-25-estimator-live-ai-scope.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Structured customer and address fields",
+      "area": "estimator",
+      "description": "The estimator's customer card starts with a Residential or Commercial choice, capturing first/last name or company name plus optional contact, and splits the address into real fields. With a Google key configured, typing a street suggests real addresses and fills city, state, and zip, while everything stays hand-editable and fully offline. Commercial estimates carry the company name onto the proposal and the customer record.",
+      "code": {
+        "other": [
+          "apps/estimator/src/features/estimator/AddressAutocomplete.tsx",
+          "apps/estimator/src/lib/places.ts",
+          "apps/estimator/src/lib/customer.ts"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-23-estimator-customer-fields.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Leads pipeline board",
+      "area": "dashboard",
+      "description": "A Kanban Leads board shows every lead as a card across six pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead.",
+      "code": {
+        "indexHtml": [
+          "renderLeads",
+          "loadLeadsData",
+          "moveLeadStage",
+          "openNewLeadModal",
+          "openLeadLostModal"
+        ],
+        "netlifyFunctions": [
+          "pec-lead-intake.cjs",
+          "pec-lead-ai.cjs"
+        ]
+      },
+      "tables": [
+        "leads"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Lead detail with AI game plan",
+      "area": "dashboard",
+      "description": "Clicking a lead opens its full page: contact info, notes, and activity timeline on one side, and an AI read on the other with a score, the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically.",
+      "code": {
+        "indexHtml": [
+          "renderLeadDetail"
+        ],
+        "netlifyFunctions": [
+          "pec-lead-ai.cjs",
+          "pec-openphone-sync.cjs"
+        ],
+        "other": [
+          "apps/estimator/src/lib/lead.ts"
+        ]
+      },
+      "tables": [
+        "leads"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Customers and jobs records",
+      "area": "dashboard",
+      "description": "The core CRM record set: a searchable customer list with structured residential/commercial fields, lead sources, and tags, and a jobs list and pipeline board where each job opens to a redesigned detail page with a line-items estimate table, change-order boxes, notes, job-card fields, price per square foot, and a sticky save bar. Includes CSV customer import in the DripJobs export shape.",
+      "code": {
+        "indexHtml": [
+          "renderCustomers",
+          "renderCustomerDetail",
+          "openCustomerImportModal",
+          "renderJobs",
+          "renderJobDetail",
+          "renderPipeline"
+        ]
+      },
+      "tables": [
+        "customers",
+        "jobs"
+      ],
+      "since": "2026-05"
+    },
+    {
+      "name": "Unified Messages inbox",
+      "area": "dashboard",
+      "description": "A Messages tab that merges texts and call logs into one conversation per phone number, newest first, with All/Texts/Calls filters. Every conversation is clickable and replyable, even unknown numbers, which can be attached to a customer (filing all their texts and calls) or turned into a new lead with the phone prefilled.",
+      "code": {
+        "indexHtml": [
+          "renderMessages",
+          "openMessageThread",
+          "pecSendSms"
+        ],
+        "netlifyFunctions": [
+          "pec-send-sms.cjs",
+          "pec-webhook-quo.cjs"
+        ]
+      },
+      "tables": [
+        "pec_sms_log",
+        "pec_call_log"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Messages & Calls on the job",
+      "area": "dashboard",
+      "description": "Every job and customer profile has a phone-app-style feed showing the customer's texts and phone calls together in time order, with chat bubbles, call cards, AI call summaries, and full transcripts. Staff text the customer right from the job, and the same feed powers invoice and estimate conversations.",
+      "code": {
+        "indexHtml": [
+          "mountCustomerSmsThread",
+          "qoMergeFeedHtml"
+        ]
+      },
+      "tables": [
+        "pec_sms_log",
+        "pec_call_log"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Job Schedule calendar",
+      "area": "dashboard",
+      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones.",
+      "code": {
+        "indexHtml": [
+          "renderSchedule",
+          "renderScheduleCalendar",
+          "loadScheduleData",
+          "openScheduleModal",
+          "deriveScheduleState"
+        ]
+      },
+      "tables": [
+        "pec_prod_jobs",
+        "pec_prod_job_schedule_days",
+        "pec_prod_crews",
+        "pec_prod_areas"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-20-system-on-jobs.md",
+      "since": "2026-05"
+    },
+    {
+      "name": "Reschedule / pending flow",
+      "area": "dashboard",
+      "description": "When a job or part of one gets bumped, staff pull specific days off the calendar and the job parks in the Pending column with an amber reschedule badge showing days owed and the date pulled, keeping crew, hours, and price intact until it is rebooked. Calendar tasks, holidays, and days off slot alongside jobs.",
+      "code": {
+        "indexHtml": [
+          "openScheduleModal",
+          "holidayOn",
+          "openHolidayModal",
+          "openDayOffModal",
+          "openTaskModal"
+        ]
+      },
+      "tables": [
+        "pec_prod_job_schedule_days"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-21-schedule-pending.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Next Day Schedule and run sheet",
+      "area": "dashboard",
+      "description": "A focused next-working-day view that lays out each crew's jobs for tomorrow with prorated revenue, plus a Print run sheet button that produces a paper crew sheet. A big job can be split across two crews so it appears under both crew columns in the same slot with a 2 teams badge and on the printed sheet, while staying one job for revenue and status. It stacks into full-width mobile cards.",
+      "code": {
+        "indexHtml": [
+          "renderNextDay",
+          "openNextDaySplitModal",
+          "scheduleTotalDaysByJob"
+        ]
+      },
+      "tables": [
+        "pec_prod_crews",
+        "pec_prod_tasks"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-30-split-job-two-crews.md",
+      "since": "2026-06"
+    },
+    {
+      "name": "Material ordering",
+      "area": "dashboard",
+      "description": "An Ordering view that computes what to buy for scheduled jobs directly from each job card's system and color picks, organized by material (bulk by product plus a by-customer putaway list) with per-line and per-supplier cost. It gates ordering behind a colors-confirmed check so unspecified jobs are not ordered prematurely.",
+      "code": {
+        "indexHtml": [
+          "renderMaterialPull",
+          "computeMaterialPlan",
+          "aggregateMaterialPull",
+          "openMaterialPull",
+          "openAddMaterialModal",
+          "handleOrderLineToggle"
+        ]
+      },
+      "tables": [
+        "pec_prod_material_lines",
+        "pec_prod_products"
+      ],
+      "since": "2026-05"
+    },
+    {
+      "name": "Price & Material Catalog",
+      "area": "dashboard",
+      "description": "The single catalog of products, materials, flake colors, add-ons, and system-type recipes with pricing that feeds estimating, ordering, and costing. Products carry an explicit cost basis (per gallon/box/pack versus per kit, auto-converted by kit size), each flake carries its own default basecoat, systems show a collapsible one-line recipe summary, and material categories include liquids, flake, quartz, and Polycoat. Admins tune per-system target gross profit and the sundries rate here.",
+      "code": {
+        "indexHtml": [
+          "renderCatalog",
+          "renderProducts",
+          "renderSystemTypes",
+          "openProductModal",
+          "openSystemTypeModal",
+          "openRecipeSlotModal"
+        ]
+      },
+      "tables": [
+        "pec_prod_products",
+        "pec_prod_system_types",
+        "pec_prod_recipe_slots",
+        "pec_prod_addons"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-30-product-cost-basis.md",
+      "since": "2026-04"
+    },
+    {
+      "name": "Job costing",
+      "area": "dashboard",
+      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot, and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings.",
+      "code": {
+        "indexHtml": [
+          "renderJobCosting",
+          "loadCostingData",
+          "computeCostingRow",
+          "openCostingDetail",
+          "saveCostingField"
+        ],
+        "netlifyFunctions": [
+          "pec-busybusy.cjs"
+        ]
+      },
+      "tables": [
+        "pec_prod_job_costing",
+        "pec_prod_material_lines"
+      ],
+      "since": "2026-05"
+    },
+    {
+      "name": "Costing submit-for-review approval",
+      "area": "dashboard",
+      "description": "Non-admin office staff submit a finished costing for review, which locks the numbers, and an admin finalizes it from a Submitted-for-review queue. Admins can send a costing back with a required reason that reaches the submitter three ways (a banner on the job, a bell notification, and a Slack message) and is kept as a history, and finalizing opens a per-member bonus approval step showing each crew member's suggested bonus for adjustment before it is recorded with a full audit trail.",
+      "code": {
+        "indexHtml": [
+          "canFinalizeCosting",
+          "openCostingDetail"
+        ],
+        "netlifyFunctions": [
+          "pec-notify-costing-sendback.cjs"
+        ]
+      },
+      "tables": [
+        "pec_prod_costing_sendbacks",
+        "pec_prod_job_bonuses"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-22-bonus-approval-sendback.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Crew bonus and Bonus Report",
+      "area": "dashboard",
+      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member.",
+      "code": {
+        "indexHtml": [
+          "renderCrewBonus",
+          "computeCrewBonus",
+          "saveBonusField",
+          "renderBonusReport",
+          "buildBonusHandoutMemberPage",
+          "openBonusHandouts"
+        ]
+      },
+      "tables": [
+        "pec_prod_job_bonuses",
+        "pec_prod_job_manual_labor",
+        "pec_bonus_payouts"
+      ],
+      "since": "2026-06"
+    },
+    {
+      "name": "Commission tracking",
+      "area": "dashboard",
+      "description": "A Commission view showing per-salesperson commission as a rate-derived cost baked into the price, with payouts driven off the payment-received date on a Sunday-Saturday period with a Friday payroll check date. Owner-sold jobs are excluded via a per-seller flag, each commission clicks through to its job, and results filter by date range and salesperson.",
+      "code": {
+        "indexHtml": [
+          "renderCommission",
+          "commissionPeriod",
+          "commissionFriday",
+          "commissionDefaultRange"
+        ]
+      },
+      "tables": [],
+      "since": "2026-06"
+    },
+    {
+      "name": "Invoicing and accounts receivable",
+      "area": "dashboard",
+      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs.",
+      "code": {
+        "indexHtml": [
+          "renderInvoicing",
+          "renderJobInvoice",
+          "renderInvoicingDocs",
+          "pecDownloadInvoicePdf",
+          "pecOpenPrintDoc"
+        ]
+      },
+      "tables": [
+        "pec_payments"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-26-invoice-send-history-and-never-sent-fix.md",
+      "since": "2026-05"
+    },
+    {
+      "name": "Metrics and analytics",
+      "area": "dashboard",
+      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, and the open pipeline with an AI-written weekly read.",
+      "code": {
+        "indexHtml": [
+          "renderMetrics",
+          "openMetricsDrill"
+        ],
+        "netlifyFunctions": [
+          "pec-metrics-ai.cjs"
+        ]
+      },
+      "tables": [],
+      "since": "2026-05"
+    },
+    {
+      "name": "Change orders",
+      "area": "dashboard",
+      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later.",
+      "code": {
+        "indexHtml": [
+          "openChangeOrderModal",
+          "mountChangeOrderCard",
+          "pushChangeOrderMaterialsToProd"
+        ],
+        "netlifyFunctions": [
+          "pec-public-change-order.cjs",
+          "pec-public-change-order-batch.cjs"
+        ]
+      },
+      "tables": [
+        "pec_change_order_signatures",
+        "pec_change_order_batches"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-31-batch-change-order-approval.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Subcontractor expenses",
+      "area": "dashboard",
+      "description": "An itemized subcontractor card on job costing records who was paid what on subbed-out work, flowing into the job's costs and profit. A whole job can be flagged as subcontracted so hours expectations and crew bonus math skip it.",
+      "code": {
+        "indexHtml": [
+          "addSubExpenseRow",
+          "saveSubExpenseField",
+          "deleteSubExpenseRow",
+          "syncSubExpenseTotal"
+        ]
+      },
+      "tables": [
+        "pec_prod_job_sub_expenses"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-10-subcontractor-expenses.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Personal to-dos",
+      "area": "platform",
+      "description": "A private per-user checklist in the left menu where each person adds items, checks them off, and deletes them. Lists are completely private (not even admins can see them) and sync across every device the user signs in from.",
+      "code": {
+        "indexHtml": [
+          "renderTodos"
+        ]
+      },
+      "tables": [
+        "pec_user_todos"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-28-personal-todos.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Notifications",
+      "area": "platform",
+      "description": "A live notification bell in the top bar for events like costing submitted or sent back, payments edited or deleted, and customer portal activity. Notifications are clickable and route straight to their source (the job's costing view, the invoice, or the job card), respecting each user's access.",
+      "code": {
+        "indexHtml": [
+          "loadNotifications",
+          "renderBellPanel",
+          "notifTarget",
+          "fmtNotifTime"
+        ]
+      },
+      "tables": [
+        "pec_notifications"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-27-clickable-notifications.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "Per-user permissions",
+      "area": "platform",
+      "description": "Role and per-view access controls managed in Settings, defaulting all-on with an admin super-role, so each staff account only sees the views it should (Job Costing, Bonus Report, Commission, Catalog, and Settings are admin-only). Staff accounts, roles, and access are added and managed in the Settings Users area.",
+      "code": {
+        "indexHtml": [
+          "renderSettings",
+          "renderSettingsUsers",
+          "openTeamForm",
+          "openResetPasswordForm"
+        ],
+        "netlifyFunctions": [
+          "pec-create-staff.cjs",
+          "pec-reset-password.cjs"
+        ]
+      },
+      "tables": [],
+      "since": "2026-06"
+    },
+    {
+      "name": "Grouped navigation rail",
+      "area": "platform",
+      "description": "The left menu is organized into six flyout groups (Overview, Sales, Production, Finance, Admin, Help) that open a submenu of screens, replacing the long flat list, with a mobile Menu button. Old bookmarks and links keep working.",
+      "code": {
+        "indexHtml": [
+          "switchView",
+          "openModal",
+          "showCrmRenderError"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-19-nav-rework.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "What's New changelog",
+      "area": "platform",
+      "description": "A plain-language changelog that surfaces new features in a sign-in popup once, keeps the full history in a Help card, and grounds the help assistant. Each user-facing change ships with an entry describing what it does and how to use it.",
+      "code": {
+        "indexHtml": [
+          "maybeShowWhatsNew",
+          "wnEntryHtml",
+          "fillWhatsNewHelpCard"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-14-whats-new.md",
+      "since": "2026-07"
+    },
+    {
+      "name": "In-app help assistant",
+      "area": "platform",
+      "description": "A bottom-right Help chat bubble that answers how-to and where-is questions about the app, grounded in a CRM help document, the SOPs, and the What's New history. It explains features and orients users without performing actions or changing data.",
+      "code": {
+        "indexHtml": [
+          "sendSOPChat",
+          "buildSOPSystemPrompt",
+          "renderAssistantReply",
+          "getCrmHelpDoc"
+        ],
+        "netlifyFunctions": [
+          "sop-chat.js"
+        ]
+      },
+      "tables": [],
+      "since": "2026-06"
+    },
+    {
+      "name": "SOP hub",
+      "area": "platform",
+      "description": "A standard-operating-procedure hub with an AI SOP chat backend for company processes and documentation. It is kept out of the owner-facing front end but remains available in the codebase.",
+      "code": {
+        "indexHtml": [
+          "loadSOPs",
+          "renderSOPGrid",
+          "initOwnerSOPs",
+          "getAccessibleSOPs"
+        ],
+        "netlifyFunctions": [
+          "sop-chat.js"
+        ]
+      },
+      "tables": [],
+      "since": "2026-05"
+    },
+    {
+      "name": "Cockpit and JARVIS",
+      "area": "platform",
+      "description": "A separate Cockpit workspace reached from the sidebar's Daily flow card, with Dashboard, Execution, and JARVIS tabs. JARVIS is an AI strategy assistant, and the Dashboard gives a quick read on the current state of the business including booked sales.",
+      "code": {
+        "indexHtml": [
+          "sendCoach",
+          "jarvisSpeak",
+          "startVoice",
+          "saveCoachSession",
+          "renderBrainDumps"
+        ]
+      },
+      "tables": [],
+      "since": "2026-05"
+    },
+    {
+      "name": "Claude-facing MCP server",
+      "area": "integrations",
+      "description": "A Model Context Protocol server exposing read-only tools (sales summary, customers, jobs, schedule, pipeline) so Claude can answer questions about the business directly against live data.",
+      "code": {
+        "netlifyFunctions": [
+          "mcp.cjs"
+        ]
+      },
+      "tables": [],
+      "spec": "docs/archive/prompts/claude-code-prompt-mcp-v0.2-read-tools.md",
+      "since": "2026-06"
+    },
+    {
+      "name": "Customer portal",
+      "area": "portal",
+      "description": "A customer-facing portal, styled to the TopCoat brand, where the customer picks their flake color and signs off, sees an editable per-status project description, and views per-area budget details. Portal activity raises notifications on the internal side.",
+      "code": {
+        "indexHtml": [
+          "renderCustomerPortal"
+        ]
+      },
+      "tables": [],
+      "since": "2026-04"
+    },
+    {
+      "name": "Hosted invoice and pay page",
+      "area": "portal",
+      "description": "A public, branded invoice page at a private /pay/<token> link where customers view line items and pay online. Redesigned to a premium look with the amount due front and center, it hides pay buttons and shows a PENDING state while a bank transfer clears so no one pays twice.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-public-invoice.cjs",
+          "pec-invoice-intent.cjs"
+        ]
+      },
+      "tables": [
+        "pec_payments"
+      ],
+      "since": "2026-05"
+    },
+    {
+      "name": "Stripe card and ACH payments",
+      "area": "integrations",
+      "description": "Online payments through Stripe: customers pay invoices by card or bank transfer (ACH) from the pay link, an internal Charge card option runs a hosted payment for office staff, and payments attach to a named Stripe Customer. ACH settles asynchronously over 3-5 days, recording itself on clearing, showing pending markers, and raising a failure alert and red chip if a transfer bounces. Includes editable and deletable (audited, cascade-guarded) payment records with an activity log.",
+      "code": {
+        "indexHtml": [
+          "openPaymentModal",
+          "openChargeCardModal",
+          "openEditPaymentModal",
+          "deletePayment"
+        ],
+        "netlifyFunctions": [
+          "pec-stripe-checkout.cjs",
+          "pec-stripe-webhook.cjs"
+        ]
+      },
+      "tables": [
+        "pec_payments",
+        "pec_stripe_pending"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-11-ach-payments.md",
+      "since": "2026-06"
+    },
+    {
+      "name": "Resend email pipeline",
+      "area": "integrations",
+      "description": "A transactional email pipeline (Resend) for sending branded invoices and documents with a compose-before-send step, a Settings Email panel, editable templates with a real-view preview, and per-send delivery logging.",
+      "code": {
+        "indexHtml": [
+          "pecSendEmail",
+          "renderSettingsEmail"
+        ],
+        "netlifyFunctions": [
+          "pec-send-email.cjs",
+          "pec-webhook-resend.cjs"
+        ]
+      },
+      "tables": [
+        "pec_email_log",
+        "pec_email_templates",
+        "pec_email_senders"
+      ],
+      "since": "2026-05"
+    },
+    {
+      "name": "Quo / OpenPhone integration",
+      "area": "integrations",
+      "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines.",
+      "code": {
+        "indexHtml": [
+          "pecSendSms",
+          "mountCustomerSmsThread"
+        ],
+        "netlifyFunctions": [
+          "pec-send-sms.cjs",
+          "pec-webhook-quo.cjs",
+          "pec-openphone-sync.cjs"
+        ]
+      },
+      "tables": [
+        "pec_sms_log",
+        "pec_call_log"
+      ],
+      "since": "2026-06"
+    },
+    {
+      "name": "DripJobs integration",
+      "area": "integrations",
+      "description": "The inbound-deal integration that auto-bridges DripJobs proposals into the CRM via webhooks (proposal accepted, stage changed, project completed), writing jobs to both the Jobs page and the Job Schedule. A DripJobs Sync Health view makes missing, partial, or silently failed ingestion visible so staff can confirm jobs are syncing.",
+      "code": {
+        "indexHtml": [
+          "insertManualJob",
+          "openNewJobForm",
+          "renderDripJobsSyncHealth"
+        ],
+        "netlifyFunctions": [
+          "pec-webhook-proposal-accepted.cjs",
+          "pec-webhook-stage-changed.cjs",
+          "pec-webhook-project-completed.cjs",
+          "pec-webhook-appointment-set.cjs"
+        ]
+      },
+      "tables": [
+        "pec_prod_jobs"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-dripjobs-sync-health.md",
+      "since": "2026-05"
+    },
+    {
+      "name": "CompanyCam integration",
+      "area": "integrations",
+      "description": "Job photos come from CompanyCam via a staff-authenticated proxy, with a searchable project picker on the job detail and a navigable fullscreen photo viewer.",
+      "code": {
+        "indexHtml": [
+          "renderJobDetailInner"
+        ],
+        "netlifyFunctions": [
+          "pec-companycam.cjs"
+        ]
+      },
+      "tables": [],
+      "since": "2026-05"
+    },
+    {
+      "name": "BusyBusy time integration",
+      "area": "integrations",
+      "description": "Integration with BusyBusy for crew time entries feeding overtime-aware job costing, with a manual labor-entry path available so costing and crew bonus math work even when the live time sync is unavailable.",
+      "code": {
+        "indexHtml": [
+          "loadCostingData"
+        ],
+        "netlifyFunctions": [
+          "pec-busybusy.cjs"
+        ]
+      },
+      "tables": [
+        "pec_prod_busybusy_time_entries",
+        "pec_prod_job_manual_labor"
+      ],
+      "spec": "docs/archive/prompts/claude-code-prompt-busybusy-overtime-costing.md",
+      "since": "2026-06"
+    },
+    {
+      "name": "Google Sheets bridge",
+      "area": "integrations",
+      "description": "The original data bridge using Google Sheets (Booked Jobs and Dashboard Data sheets) via an Apps Script proxy to feed the dashboard's booked-sales and revenue figures, since migrated toward Supabase-native reads.",
+      "code": {
+        "indexHtml": [
+          "loadRevenue"
+        ],
+        "netlifyFunctions": [
+          "sheets-proxy.cjs"
+        ]
+      },
+      "tables": [],
+      "since": "2026-04"
+    },
+    {
+      "name": "Slack notifications",
+      "area": "integrations",
+      "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events, including estimate accepted or declined and costings sent back with their reason.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-notify-costing-sendback.cjs",
+          "pec-public-estimate.cjs"
+        ]
+      },
+      "tables": [],
+      "since": "2026-07"
+    },
+    {
+      "name": "Revenue goals home",
+      "area": "dashboard",
+      "description": "Owner home screen tracking booked-sales revenue pace plus the annual scorecard, rocks, meeting rhythm, and projects cards, sourced from Google Sheets.",
+      "code": {
+        "indexHtml": [
+          "loadRevenue",
+          "renderJobsTable",
+          "renderScorecard",
+          "renderRocks",
+          "renderRhythm",
+          "renderProjects"
+        ],
+        "netlifyFunctions": [
+          "sheets-proxy.cjs"
+        ]
+      },
+      "tables": [],
+      "since": null
+    },
+    {
+      "name": "Owner task list",
+      "area": "dashboard",
+      "description": "Owner personal task list synced through a Google Sheet, separate from crew tasks and the private per-user to-dos.",
+      "code": {
+        "indexHtml": [
+          "loadTasks",
+          "syncAllTasks",
+          "addTask",
+          "toggleTask",
+          "renderTasks"
+        ],
+        "netlifyFunctions": [
+          "sheets-proxy.cjs"
+        ]
+      },
+      "tables": [],
+      "since": null
+    },
+    {
+      "name": "Staff authentication",
+      "area": "platform",
+      "description": "Supabase email and password sign-in with owner-versus-employee shell gating, password reset, a global auth gate, and sign-in event logging.",
+      "code": {
+        "indexHtml": [
+          "initAuth",
+          "passwordSignIn",
+          "passwordReset",
+          "renderAuthUI",
+          "renderGlobalAuthGate"
+        ],
+        "netlifyFunctions": [
+          "pec-log-signin.cjs"
+        ]
+      },
+      "tables": [
+        "sign_in_log"
+      ],
+      "since": null
+    },
+    {
+      "name": "Job activity log",
+      "area": "dashboard",
+      "description": "Per-job audit trail card showing who changed what and when, plus the job status-change modal.",
+      "code": {
+        "indexHtml": [
+          "renderActivityCard",
+          "openStatusChangeModal"
+        ]
+      },
+      "tables": [
+        "audit_log"
+      ],
+      "since": null
+    },
+    {
+      "name": "Admin landing dashboard",
+      "area": "dashboard",
+      "description": "The admin CRM landing view shown after sign-in, giving a quick overview before drilling into specific screens.",
+      "code": {
+        "indexHtml": [
+          "renderDashboard"
+        ]
+      },
+      "tables": [],
+      "since": null
+    },
+    {
+      "name": "Color catalog admin",
+      "area": "dashboard",
+      "description": "Admin screen for the flake color catalog: add and edit colors that feed the customer portal color picker and material ordering.",
+      "code": {
+        "indexHtml": [
+          "renderColors",
+          "openColorForm"
+        ]
+      },
+      "tables": [
+        "colors"
+      ],
+      "since": null
+    },
+    {
+      "name": "Referrals tracking",
+      "area": "dashboard",
+      "description": "Simple tracking of customer referrals with an add/edit form.",
+      "code": {
+        "indexHtml": [
+          "renderReferrals",
+          "openReferralForm"
+        ]
+      },
+      "tables": [
+        "referrals"
+      ],
+      "since": null
+    },
+    {
+      "name": "Reviews",
+      "area": "dashboard",
+      "description": "Read-only view of collected customer reviews.",
+      "code": {
+        "indexHtml": [
+          "renderReviews"
+        ]
+      },
+      "tables": [
+        "reviews"
+      ],
+      "since": null
+    },
+    {
+      "name": "Schedule status auto-sync",
+      "area": "platform",
+      "description": "Boot-time sweep plus a scheduled daily function that flip job status from scheduled to in progress based on the production schedule, so statuses stay honest without manual edits.",
+      "code": {
+        "indexHtml": [
+          "runScheduleStatusSync",
+          "syncPublicJobStatusFromSchedule"
+        ],
+        "netlifyFunctions": [
+          "pec-auto-progress.cjs"
+        ]
+      },
+      "tables": [],
+      "since": null
+    }
+  ]
+}
