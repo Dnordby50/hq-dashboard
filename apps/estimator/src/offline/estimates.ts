@@ -113,6 +113,10 @@ export type SaveEstimateArgs = {
   // in the estimator, carried to jobs.sqft on accept. Optional; null when not
   // typed. Standard estimates keep sqft on their area rows and pass null.
   customSqft?: number | null;
+  // Internal crew brief (prompt 32, Part B), BOTH modes: typed or AI-drafted
+  // on the estimator, copied to jobs.crew_notes on accept, printed on the crew
+  // work order only. Never customer-facing.
+  crewNotes?: string | null;
   // The engine's computed price (calc_price) and the manual-override provenance
   // (build 17). calcPrice keeps the math; totals.price is what actually sells.
   calcPrice: number | null;
@@ -193,6 +197,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     custom_scope: customScope,
     custom_price: customPrice,
     custom_sqft: isCustom ? args.customSqft ?? null : null,
+    // Written on every save (null when blank) so clearing the field persists.
+    crew_notes: (args.crewNotes ?? '').trim() || null,
     materials_cost: p?.materialsCost ?? null,
     fixed_addons: p?.fixedAddons ?? 0,
     labor_pct: p?.laborPct ?? null,

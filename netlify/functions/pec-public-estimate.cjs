@@ -803,6 +803,9 @@ async function ensureJobCreated(est) {
       scope: est.scope_of_work || null,
       // jobs.sqft is TEXT, so both paths write a string.
       sqft: totalSqft > 0 ? String(Math.round(totalSqft)) : (customSqft != null ? String(customSqft) : null),
+      // Internal crew brief (prompt 32): rides to the job so the crew work
+      // order can print it. NEVER rendered on this function's customer page.
+      crew_notes: est.crew_notes || null,
       price: est.price != null ? Number(est.price) : null,
       salesperson: intake.salesperson_name || null,
       signed_date: phoenixToday(),

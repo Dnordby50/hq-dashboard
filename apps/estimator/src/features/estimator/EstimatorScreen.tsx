@@ -273,6 +273,16 @@ export default function EstimatorScreen({
   const [prePolish, setPrePolish] = useState<string | null>(null);
   const [polishBusy, setPolishBusy] = useState(false);
   const [polishError, setPolishError] = useState('');
+  // ---- Crew notes (prompt 32, Part B): INTERNAL brief for the install crew,
+  // both modes. Typed or AI-drafted (manual button only, never automatic);
+  // prints on the crew work order and nowhere customer-facing. The pre-
+  // generate text is kept for undo (the polish pattern), and a hand-edit
+  // since the last generate makes the next generate ask before overwriting.
+  const [crewNotes, setCrewNotes] = useState<string>(() => editing?.crewNotes ?? '');
+  const [crewNotesEdited, setCrewNotesEdited] = useState(false);
+  const [preGenCrewNotes, setPreGenCrewNotes] = useState<string | null>(null);
+  const [crewNotesBusy, setCrewNotesBusy] = useState(false);
+  const [crewNotesError, setCrewNotesError] = useState('');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
@@ -884,6 +894,62 @@ export default function EstimatorScreen({
     setPrePolish(null);
   }, [prePolish]);
 
+  // "Generate from proposal" for the crew notes: sends the assembled proposal
+  // (or the custom typed scope) plus the site facts already on the estimate to
+  // pec-estimate-crew-notes, which drafts the two-part brief (Cliff notes /
+  // Watch out for). Summary-allowed but never-fabricate lives server-side; the
+  // undo + ask-before-overwriting-a-hand-edit guarantees live here, exactly
+  // like Polish. Manual only: this never fires on its own.
+  const crewNotesScopeSource = (isCustom ? customScope : scopeDisplay).trim();
+  const generateCrewNotes = useCallback(async () => {
+    if (crewNotesBusy) return;
+    if (crewNotes.trim() && crewNotesEdited &&
+        !window.confirm('Replace your typed crew notes with a fresh AI draft? You can undo afterwards.')) return;
+    setCrewNotesBusy(true);
+    setCrewNotesError('');
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('Sign in to generate crew notes.');
+      const sqft = isCustom ? customSqft : (totalSqft > 0 ? totalSqft : null);
+      const facts: Record<string, unknown> = {
+        'system type': isCustom ? 'custom (one-off) job' : dominantSystem?.name ?? null,
+        'square footage': sqft != null ? Math.round(sqft) : null,
+        'gate code': intake.gate_code || null,
+        'moisture (1-5)': intake.moisture || null,
+        'MOHS hardness (1-10)': intake.mohs_hardness || null,
+        'stem walls': intake.stem_walls ? 'yes' : null,
+        'coat past garage door': intake.coat_past_garage ? 'yes' : null,
+        'additional non-slip': intake.additional_non_slip || null,
+        'grinder tooling / grit': intake.grinder_tooling_grit || null,
+        'special notes': intake.special_notes || null,
+        'add-on lines': addonForms.map((f) => f.label.trim() + (f.optional ? ' (optional)' : '')).filter(Boolean).join('; ') || null,
+      };
+      const res = await fetch('/.netlify/functions/pec-estimate-crew-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ scope: crewNotesScopeSource, facts }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.success || !out.notes) throw new Error(out.error || `Generate failed (${res.status})`);
+      setPreGenCrewNotes(crewNotes);
+      setCrewNotes(String(out.notes));
+      setCrewNotesEdited(false);
+      setSaveState('idle');
+    } catch (e) {
+      setCrewNotesError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCrewNotesBusy(false);
+    }
+  }, [crewNotes, crewNotesBusy, crewNotesEdited, crewNotesScopeSource, isCustom, customSqft, totalSqft, dominantSystem, intake, addonForms]);
+  const undoCrewNotes = useCallback(() => {
+    if (preGenCrewNotes == null) return;
+    setCrewNotes(preGenCrewNotes);
+    setPreGenCrewNotes(null);
+    setCrewNotesEdited(true);
+    setSaveState('idle');
+  }, [preGenCrewNotes]);
+
   // The save, callable two ways: the Save button (opts omitted) and the
   // Regenerate flow (skipAutoScope, because it runs its own generation right
   // after). Returns the estimate id on success so callers can chain on it.
@@ -1131,6 +1197,7 @@ export default function EstimatorScreen({
         customScope: isCustom ? customScope : null,
         customPrice: isCustom ? sellPrice : null,
         customSqft: isCustom ? customSqft : null,
+        crewNotes,
       });
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
@@ -1181,7 +1248,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -1595,6 +1662,32 @@ export default function EstimatorScreen({
             </div>
             <label className="field"><span>Special notes</span><textarea rows={2} value={intake.special_notes} onChange={(e) => setIntakeField('special_notes', e.target.value)} /></label>
           </details>}
+
+          {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
+              the crew work order only; never on the customer proposal, the
+              customer estimate page, or the PDF. Generate is manual-only. */}
+          <section className="card">
+            <div className="areas-head">
+              <span>Crew notes (internal)</span>
+              <span className="scope-actions">
+                {preGenCrewNotes != null && (
+                  <button type="button" className="link" onClick={undoCrewNotes}>Undo generate</button>
+                )}
+                <button type="button" className="link" onClick={generateCrewNotes} disabled={crewNotesBusy || !online || !crewNotesScopeSource}>
+                  {crewNotesBusy ? 'Generating…' : 'Generate from proposal'}
+                </button>
+              </span>
+            </div>
+            <p className="hint">Only the crew sees this; it prints on the work order, never on the customer proposal. Generate drafts cliff notes and watch-outs from the proposal; you can edit or undo.</p>
+            <textarea
+              rows={6}
+              value={crewNotes}
+              onChange={(e) => { setCrewNotes(e.target.value); setCrewNotesEdited(true); setSaveState('idle'); }}
+              placeholder="Cliff notes and watch-outs for the crew: access, prep, site conditions, customer asks…"
+            />
+            {crewNotesError && <p className="warn">Generate failed: {crewNotesError}</p>}
+            {!online && <p className="hint">Generate needs a connection; typed crew notes save fine without it.</p>}
+          </section>
         </div>
 
         <div className="right">

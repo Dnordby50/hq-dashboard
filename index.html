@@ -11855,6 +11855,14 @@ async function renderWorkOrder(ctx) {
     <div class="lbl">Additional non slip:</div><div class="val">${yn(job.additional_non_slip)}</div>
     <div class="lbl"></div>                <div class="val"></div>
   </div>
+  ${String(job.crew_notes || '').trim() ? `
+  <div class="section">
+    <!-- Crew notes (prompt 32): the INTERNAL cliff-notes / watch-outs brief,
+         separate from the customer scope below. Only rendered when present,
+         so older jobs print exactly as before. -->
+    <h3>CREW NOTES: CLIFF NOTES / WATCH-OUTS</h3>
+    <div class="notes-box">${sanitizeNotes(job.crew_notes)}</div>
+  </div>` : ''}
   <div class="section">
     <h3>ISSUES / NOTES</h3>
     <div class="notes-box">${sanitizeNotes(job.scope)}</div>
@@ -12225,6 +12233,17 @@ async function renderJobDetailInner(id) {
             </select>
           </div>
         </div>
+        <!-- Crew notes (prompt 32): internal cliff notes / watch-outs, carried
+             from the estimate on accept and editable here per job. Prints in
+             its own CREW NOTES section on the work order; never customer-
+             facing. Rendered only once the crew_notes migration has run (the
+             select('*') row has the key), so a pre-migration save never 400s
+             on a column Postgres does not have yet. -->
+        ${'crew_notes' in job ? `
+        <div class="pec-field" style="margin-top:10px">
+          <label>Crew notes <span style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)">internal, prints on the work order</span></label>
+          <textarea id="jcCrewNotes" rows="5" style="width:100%">${esc(job.crew_notes || '')}</textarea>
+        </div>` : ''}
       </div>
     </div>
 
@@ -13376,6 +13395,11 @@ async function renderJobDetailInner(id) {
       moisture: $('jcMoisture') ? jcInt('jcMoisture') : null,
       mohs_hardness: $('jcMohs') ? jcInt('jcMohs') : null,
       additional_non_slip: $('jcNonSlip') ? jcBool('jcNonSlip') : null,
+      // Crew notes (prompt 32): the textarea only exists once the crew_notes
+      // migration has run (the render gates on the column being in the row),
+      // so spreading on its presence keeps a pre-migration save from writing
+      // a column Postgres does not have.
+      ...($('jcCrewNotes') ? { crew_notes: $('jcCrewNotes').value.trim() || null } : {}),
       // grinder_tooling_grit is intentionally NOT written here: it was moved off
       // the job detail and lives only on the crew's job-complete work order.
       // Omitting it leaves the column untouched on a job-detail save.
