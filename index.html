@@ -6609,7 +6609,7 @@ const state = {
   pendingWorkOrderJobId: null,
   // Leads pipeline (pre-sale kanban, separate from the Jobs pipeline; feeds it
   // on accept through the estimator). openLeadId drives the detail pane.
-  leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '' },
+  leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '' },
   leadsData: null, openLeadId: null,
   // Estimates (first-class numbered objects, 2026-07-12 build). openEstimateId
   // drives the detail page; estimatesSearch is the list view's filter text.
@@ -17187,6 +17187,26 @@ const LEAD_SOURCE_LABELS = {
 };
 const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[s] || titleCaseValue(s || 'unknown');
 
+// AI score bands (prompt 33 Part B), the ONE place the cutoffs live: hot is
+// 70-100, warm 40-69, cold 1-39 (same thresholds the old color-only chip
+// used). The band WORD rides the badge so meaning never depends on color
+// alone, and the pec-age-* classes are color-mix over CSS vars so the badge
+// tracks whatever theme is active. Scoring stays read-only: pec-lead-ai runs
+// on intake and on the detail page's Refresh button, never from a render.
+function leadScoreBand(score) {
+  if (score == null || !Number.isFinite(score)) return null;
+  return score >= 70 ? { label: 'Hot', cls: 'pec-age-green' }
+    : score >= 40 ? { label: 'Warm', cls: 'pec-age-yellow' }
+    : { label: 'Cold', cls: 'pec-age-red' };
+}
+function leadScoreBadge(lead, opts = {}) {
+  const score = lead.score == null ? null : Number(lead.score);
+  const band = leadScoreBand(score);
+  if (!band) return '';
+  const reason = lead.ai_analysis && lead.ai_analysis.score_reason ? ': ' + lead.ai_analysis.score_reason : '';
+  return `<span class="pec-age ${band.cls}" ${opts.big ? 'style="font-size:.95rem;padding:4px 10px;font-weight:700"' : 'style="font-weight:700"'} title="${esc('AI score ' + score + ' of 100' + reason)}">${band.label} ${score}</span>`;
+}
+
 let _leadsById = {};
 let _leadsElapsedTimer = null;
 
@@ -17358,8 +17378,6 @@ function leadContactChipHtml(lead, stats) {
 function leadCardHtml(lead) {
   const value = (state.leadsData && state.leadsData.valueMap[lead.id]) || 0;
   const flags = (lead.ai_analysis && Array.isArray(lead.ai_analysis.risk_flags)) ? lead.ai_analysis.risk_flags : [];
-  const score = lead.score == null ? null : Number(lead.score);
-  const scoreCls = score == null ? '' : score >= 70 ? 'pec-age-green' : score >= 40 ? 'pec-age-yellow' : 'pec-age-red';
   const srcColor = LEAD_SOURCE_COLORS[lead.source] || '#64748b';
   const elapsed = lead.stage === 'new' ? leadElapsed(lead.created_at) : null;
   return `<div class="pipeline-card lead-card" draggable="true" data-lead-id="${esc(lead.id)}"
@@ -17370,7 +17388,7 @@ function leadCardHtml(lead) {
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
-      ${score != null && Number.isFinite(score) ? `<span class="pec-age ${scoreCls}" title="${esc('AI score' + (lead.ai_analysis && lead.ai_analysis.score_reason ? ': ' + lead.ai_analysis.score_reason : ''))}">${score}</span>` : ''}
+      ${leadScoreBadge(lead)}
     </div>
     ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
     ${value > 0 ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(value)}</div>` : ''}
@@ -17599,11 +17617,16 @@ async function renderLeads() {
 
   const columnsHtml = LEAD_STAGES.map(col => {
     const colRows = rows.filter(l => l.stage === col.key);
-    // New sorts OLDEST first (the longest-waiting lead is the most urgent);
-    // every other column reads newest activity first.
-    colRows.sort(col.key === 'new'
+    // Default: New sorts OLDEST first (the longest-waiting lead is the most
+    // urgent); every other column reads newest activity first. The score sort
+    // (Part B) puts the hottest AI score on top in EVERY column, unscored
+    // leads last, with the default order as the tiebreak.
+    const defaultCmp = col.key === 'new'
       ? (a, b) => String(a.created_at).localeCompare(String(b.created_at))
-      : (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')));
+      : (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    colRows.sort(f.sort === 'score'
+      ? (a, b) => ((b.score ?? -1) - (a.score ?? -1)) || defaultCmp(a, b)
+      : defaultCmp);
     const colValue = colRows.reduce((s, l) => s + (data.valueMap[l.id] || 0), 0);
     const body = colRows.length
       ? colRows.map(leadCardHtml).join('')
@@ -17636,6 +17659,10 @@ async function renderLeads() {
         <div class="pec-field" style="margin:0"><label>Created from</label><input type="date" id="leadFilterFrom" value="${esc(f.from)}"></div>
         <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="leadFilterTo" value="${esc(f.to)}"></div>
         <div class="pec-field" style="margin:0;min-width:180px"><label>Search</label><input id="leadFilterQ" value="${esc(f.q)}" placeholder="name, phone, or email"></div>
+        <div class="pec-field" style="margin:0"><label>Sort</label><select id="leadFilterSort">
+          <option value="" ${f.sort ? '' : 'selected'}>Urgency (default)</option>
+          <option value="score" ${f.sort === 'score' ? 'selected' : ''}>AI score: hot first</option>
+        </select></div>
         <button type="button" class="pec-btn" id="leadFilterGo">Go</button>
         <button type="button" class="pec-btn ghost" id="leadFilterReset">Reset</button>
       </div>
@@ -17651,12 +17678,16 @@ async function renderLeads() {
       from: $('leadFilterFrom').value,
       to: $('leadFilterTo').value,
       q: $('leadFilterQ').value,
+      sort: $('leadFilterSort').value,
     };
     renderLeads();
   });
+  // Sort applies immediately (it is a view preference, not a query filter, so
+  // making it wait for Go would just read as broken).
+  $('leadFilterSort').addEventListener('change', e => { state.leadsFilters.sort = e.target.value; renderLeads(); });
   $('leadFilterQ').addEventListener('keydown', e => { if (e.key === 'Enter') $('leadFilterGo').click(); });
   $('leadFilterReset').addEventListener('click', () => {
-    state.leadsFilters = { source: '', campaign: '', owner: '', from: '', to: '', q: '' };
+    state.leadsFilters = { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '' };
     renderLeads();
   });
 
@@ -17753,8 +17784,6 @@ async function renderLeadDetail(leadId) {
   _leadsById[lead.id] = lead; // so the shared stage-move path can find it
   const events = evRes.error ? [] : (evRes.data || []);
   const ai = lead.ai_analysis || null;
-  const score = lead.score == null ? null : Number(lead.score);
-  const scoreCls = score == null ? '' : score >= 70 ? 'pec-age-green' : score >= 40 ? 'pec-age-yellow' : 'pec-age-red';
   const owner = lead.owner_user_id ? (staffNames[lead.owner_user_id] || 'Unknown') : 'Unassigned';
   // Outreach summary from the same matcher the board chips use, run over just
   // this lead. Last-contacted is DERIVED (max outbound-log timestamp), not
@@ -17788,7 +17817,7 @@ async function renderLeadDetail(leadId) {
   const aiPanel = ai ? `
     ${ai.next_action ? `<div style="padding:10px 12px;background:color-mix(in srgb, var(--rd-accent,#D8531C) 10%, transparent);border-left:3px solid var(--rd-accent,#D8531C);border-radius:6px;font-weight:700;font-size:.9rem;margin-bottom:12px">${esc(ai.next_action)}</div>` : ''}
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-      ${score != null && Number.isFinite(score) ? `<span class="pec-age ${scoreCls}" style="font-size:.95rem;padding:4px 10px">${score}</span>` : ''}
+      ${leadScoreBadge(lead, { big: true })}
       <span style="font-size:.78rem;color:var(--muted)">${esc(ai.score_reason || '')}</span>
     </div>
     ${ai.summary ? `<div style="font-size:.84rem;line-height:1.5;margin-bottom:12px">${esc(ai.summary)}</div>` : ''}
@@ -17813,7 +17842,11 @@ async function renderLeadDetail(leadId) {
         <div class="pec-card">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
             <div>
-              <div style="font-size:1.2rem;font-weight:700">${esc(lead.full_name || '(no name)')}</div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span style="font-size:1.2rem;font-weight:700">${esc(lead.full_name || '(no name)')}</span>
+                ${leadScoreBadge(lead, { big: true })}
+              </div>
+              ${ai && ai.score_reason ? `<div style="font-size:.78rem;color:var(--muted);margin-top:4px">${esc(ai.score_reason)}</div>` : ''}
               <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
                 <span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[lead.source] || '#64748b')}">${esc(leadSourceLabel(lead.source))}</span>
                 ${lead.campaign ? `<span style="font-size:.75rem;color:var(--muted)">${esc(lead.campaign)}</span>` : ''}
