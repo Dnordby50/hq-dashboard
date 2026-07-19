@@ -245,14 +245,43 @@ exports.handler = async (event) => {
     }).catch(e => console.error('pec-webhook-quo: log insert failed', e.message));
 
     // 2. STOP / START. Only the first word matters for the keyword check (carriers
-    // treat "STOP please" as STOP). Update the matched customer's consent flags.
+    // treat "STOP please" as STOP). Updates the matched customer's consent
+    // flags AND (prompt 34) every live LEAD with this number, keyed on the
+    // indexed leads.phone_norm, because a pre-conversion lead has no customer
+    // row and its drip must die on STOP too. A STOP also stops the lead's
+    // active drip enrollment immediately (the runner would catch opted_out at
+    // the next send anyway; this makes the stop visible in the UI right
+    // away). START clears the lead flag but deliberately does NOT resume a
+    // stopped enrollment: re-entering a drip is a human decision (the Enroll
+    // button on the lead page). All best-effort: consent writes never block
+    // the webhook 200.
     const firstWord = bodyTrimmed.toLowerCase().split(/\s+/)[0] || '';
-    if (customer && STOP_WORDS.has(firstWord)) {
-      await sb('PATCH', `/customers?id=eq.${encodeURIComponent(customer.id)}`, { sms_opt_out: true, sms_opt_out_at: new Date().toISOString() })
-        .catch(e => console.error('pec-webhook-quo: opt-out set failed', e.message));
-    } else if (customer && START_WORDS.has(firstWord)) {
-      await sb('PATCH', `/customers?id=eq.${encodeURIComponent(customer.id)}`, { sms_opt_out: false, sms_opt_out_at: null })
-        .catch(e => console.error('pec-webhook-quo: opt-in clear failed', e.message));
+    const leadTail = fromE164 ? fromE164.replace(/\D/g, '').slice(-10) : null;
+    if (STOP_WORDS.has(firstWord)) {
+      if (customer) {
+        await sb('PATCH', `/customers?id=eq.${encodeURIComponent(customer.id)}`, { sms_opt_out: true, sms_opt_out_at: new Date().toISOString() })
+          .catch(e => console.error('pec-webhook-quo: opt-out set failed', e.message));
+      }
+      if (leadTail && leadTail.length === 10) {
+        try {
+          const stopped = await sb('PATCH', `/leads?phone_norm=eq.${leadTail}&deleted_at=is.null`,
+            { opted_out: true, opted_out_at: new Date().toISOString() }, true);
+          const ids = (Array.isArray(stopped) ? stopped : []).map(l => l.id);
+          if (ids.length) {
+            await sb('PATCH', `/pec_drip_enrollments?lead_id=in.(${ids.join(',')})&status=eq.active`,
+              { status: 'stopped', stop_reason: 'opted_out', stopped_at: new Date().toISOString(), next_send_at: null });
+          }
+        } catch (e) { console.error('pec-webhook-quo: lead opt-out/drip stop failed', e.message); }
+      }
+    } else if (START_WORDS.has(firstWord)) {
+      if (customer) {
+        await sb('PATCH', `/customers?id=eq.${encodeURIComponent(customer.id)}`, { sms_opt_out: false, sms_opt_out_at: null })
+          .catch(e => console.error('pec-webhook-quo: opt-in clear failed', e.message));
+      }
+      if (leadTail && leadTail.length === 10) {
+        await sb('PATCH', `/leads?phone_norm=eq.${leadTail}&deleted_at=is.null`, { opted_out: false, opted_out_at: null })
+          .catch(e => console.error('pec-webhook-quo: lead opt-in clear failed', e.message));
+      }
     }
 
     return json(200, { success: true });

@@ -35,6 +35,7 @@
 // map it in Zapier). TCPA is not a place to guess.
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
+const { enrollLead } = require('./_pec-drip.cjs');
 
 const ENDPOINT = 'lead-intake';
 const DEDUPE_WINDOW_DAYS = 90;
@@ -176,6 +177,17 @@ exports.handler = async (event) => {
     // NEW leads only: both dedupe paths return above, so a Zapier retry or a
     // repeat inquiry never re-runs (and re-bills) the analysis.
     await triggerLeadAi(lead.id);
+
+    // Auto-enroll into the active lead drip campaign (prompt 34). NEW leads
+    // only, same reasoning as the AI trigger: dedupe paths returned above, so
+    // a retry or repeat inquiry never re-enrolls (and the partial unique
+    // index would swallow it anyway). Best-effort by contract: enrollLead
+    // never throws, so a drip hiccup (or the migration not being applied
+    // yet) can never fail the intake response.
+    const enrolled = await enrollLead(sb, lead.id);
+    if (!enrolled.enrolled && enrolled.reason === 'error') {
+      console.warn('pec-lead-intake: drip enroll failed (non-fatal):', enrolled.error);
+    }
 
     await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source})`, payload: body });
     return json(200, { success: true, deduped: false, lead_id: lead.id });

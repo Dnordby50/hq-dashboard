@@ -17459,6 +17459,36 @@ function leadContactStats(leads, logs) {
   return stats;
 }
 
+// ---- Lead drip enrollment, client side (prompt 34) -------------------------
+// Manual leads are inserted directly by the dashboard (no server function in
+// the path), so the auto-enroll mirrors enrollLead in _pec-drip.cjs here:
+// active 'lead' campaign, first active step, next_send_at = now + day_offset.
+// Best-effort by contract: any failure (including the drip migration not
+// being applied yet, or the partial one-active-per-lead unique index firing)
+// only logs; adding the lead NEVER fails because of the drip.
+async function enrollLeadInDrip(leadId) {
+  try {
+    const campRes = await supabase.from('pec_drip_campaigns').select('id')
+      .eq('kind', 'lead').eq('status', 'active').order('created_at').limit(1).maybeSingle();
+    if (campRes.error || !campRes.data) return false;
+    const stepRes = await supabase.from('pec_drip_steps').select('step_index,day_offset')
+      .eq('campaign_id', campRes.data.id).eq('active', true).order('step_index').limit(1).maybeSingle();
+    if (stepRes.error || !stepRes.data) return false;
+    const ins = await supabase.from('pec_drip_enrollments').insert({
+      lead_id: leadId,
+      campaign_id: campRes.data.id,
+      status: 'active',
+      next_step_index: stepRes.data.step_index,
+      next_send_at: new Date(Date.now() + stepRes.data.day_offset * 864e5).toISOString(),
+    });
+    if (ins.error) {
+      if (!/duplicate|23505/i.test(ins.error.message || '')) console.warn('[drips] enroll failed:', ins.error.message);
+      return false;
+    }
+    return true;
+  } catch (e) { console.warn('[drips] enroll failed:', (e && e.message) || e); return false; }
+}
+
 // "How long has this NEW lead been waiting" label. This is the speed-to-lead
 // behavior driver: red past one hour. Returns null for unparseable dates.
 function leadElapsed(createdAt) {
@@ -17711,6 +17741,7 @@ function openNewLeadModal(prefill) {
           payload: { source: 'manual' },
         });
         if (evt.error) console.warn('[leads] created event failed:', evt.error.message);
+        await enrollLeadInDrip(ins.data.id);   // best-effort; never blocks the add
         closeModal();
         showToast(`Added lead ${esc(name)}`, { ttl: 2500 });
         renderLeads();
