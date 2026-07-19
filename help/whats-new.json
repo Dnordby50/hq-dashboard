@@ -1,5 +1,38 @@
 [
   {
+    "id": "leads-times-contacted",
+    "date": "2026-07-19",
+    "title": "See how many times each lead has been contacted",
+    "summary": "Every lead card on the Leads board now shows a Contacted count next to the speed-to-lead timer, pulled automatically from your outbound calls, texts, and emails in Quo and the dashboard. A lead nobody has reached out to reads Not contacted, and turns red once a new lead has been waiting over an hour. Open the lead for the full breakdown (calls, texts, emails, and when the last touch went out). There is nothing to log by hand: work the lead and the count keeps itself.",
+    "howto": [
+      "Open Leads and look at any card: the Contacted count sits in the bottom corner next to the waiting timer.",
+      "Click a lead to open it; the Outreach line under the contact info shows the breakdown and the last touch.",
+      "Scan for red Not contacted labels to catch new leads that are aging with zero outreach."
+    ]
+  },
+  {
+    "id": "leads-score-badge-sort",
+    "date": "2026-07-19",
+    "title": "Hot, Warm, and Cold lead scores you can sort by",
+    "summary": "The AI score on each lead now reads as a labeled badge (Hot 70 and up, Warm 40 to 69, Cold under 40) on the board card and at the top of the lead page, with the AI's one-line reason under the name. A new Sort control on the board puts the hottest leads at the top of every column so you can work the best leads first. Scoring itself is unchanged: it runs when a lead arrives and when you click Refresh analysis.",
+    "howto": [
+      "Open Leads: each scored card shows its Hot, Warm, or Cold badge next to the source.",
+      "Use the Sort dropdown in the filter bar and pick AI score: hot first.",
+      "Click a lead to see the score and the AI's reason right under the name, with the full game plan in the AI read panel."
+    ]
+  },
+  {
+    "id": "metrics-graphs-redesign",
+    "date": "2026-07-19",
+    "title": "Better looking, more useful Metrics graphs",
+    "summary": "The Metrics tab traded its flat bars for real charts. Speed to lead and price per sqft now draw as trend lines with a soft gradient so you can see the direction, not just this week's number. Conversion by source gets a rate chart above its tables, and the Sales volume, Revenue collected, and Jobs completed cards carry small trend sparklines. A new Outbound touches card shows how many touches it takes to win a lead and how many open leads have never been contacted. Every number still clicks through to the records behind it, and no metric changed how it is calculated.",
+    "howto": [
+      "Open Metrics and pick your time window and salesperson as usual.",
+      "Scroll to the Sales section for the new trend charts and the Outbound touches card.",
+      "Click any card, chart point, or row to see the underlying records, same as before."
+    ]
+  },
+  {
     "id": "custom-estimate-sqft-price-per-sqft",
     "date": "2026-07-18",
     "title": "Square footage and price per sqft on custom estimates",

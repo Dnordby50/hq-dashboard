@@ -207,11 +207,14 @@
     {
       "name": "Leads pipeline board",
       "area": "dashboard",
-      "description": "A Kanban Leads board shows every lead as a card across six pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead.",
+      "description": "A Kanban Leads board shows every lead as a card across six pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs (calls, texts, emails, matched by customer_id then normalized phone; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead.",
       "code": {
         "indexHtml": [
           "renderLeads",
           "loadLeadsData",
+          "loadOutboundTouchLogs",
+          "leadContactStats",
+          "leadScoreBadge",
           "moveLeadStage",
           "openNewLeadModal",
           "openLeadLostModal"
@@ -222,14 +225,17 @@
         ]
       },
       "tables": [
-        "leads"
+        "leads",
+        "pec_call_log",
+        "pec_sms_log",
+        "pec_email_log"
       ],
       "since": "2026-07"
     },
     {
       "name": "Lead detail with AI game plan",
       "area": "dashboard",
-      "description": "Clicking a lead opens its full page: contact info, notes, and activity timeline on one side, and an AI read on the other with a score, the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically.",
+      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails with the last touch, derived from the outbound comms logs), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically.",
       "code": {
         "indexHtml": [
           "renderLeadDetail"
@@ -243,7 +249,10 @@
         ]
       },
       "tables": [
-        "leads"
+        "leads",
+        "pec_call_log",
+        "pec_sms_log",
+        "pec_email_log"
       ],
       "since": "2026-07"
     },
@@ -508,17 +517,25 @@
     {
       "name": "Metrics and analytics",
       "area": "dashboard",
-      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, and the open pipeline with an AI-written weekly read.",
+      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card (avg touches to win / to estimate out, open leads never contacted, from the same comms-log matcher as the Leads board), the open pipeline with an AI-written weekly read, and a commented placeholder where Phase 3 drip/blast performance cards will land.",
       "code": {
         "indexHtml": [
           "renderMetrics",
-          "openMetricsDrill"
+          "openMetricsDrill",
+          "initMetricsCharts",
+          "metricsChartInk",
+          "kpiSparkSvg",
+          "ensureChartJs"
         ],
         "netlifyFunctions": [
           "pec-metrics-ai.cjs"
         ]
       },
-      "tables": [],
+      "tables": [
+        "pec_call_log",
+        "pec_sms_log",
+        "pec_email_log"
+      ],
       "since": "2026-05"
     },
     {
