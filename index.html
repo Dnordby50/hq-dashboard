@@ -10359,54 +10359,128 @@ function metricsTick(v, money) {
   if (money) return Math.abs(v) >= 1000 ? '$' + (Math.round(v / 100) / 10) + 'k' : '$' + Math.round(v);
   return Number.isInteger(v) ? String(v) : '';
 }
+// Chart chrome colors read from the LIVE CSS variables at init time (not
+// hard-coded hex), so text, gridlines, and washes stay legible under whichever
+// skin is active, light or dark; fallbacks match the light redesign tokens.
+// Per the dataviz spec: text wears ink tokens (never the series color), grid
+// is a recessive hairline, and the accent is the single series hue (every
+// Metrics chart is single-series, so no categorical palette is in play and no
+// legend is required).
+function metricsChartInk() {
+  const cs = getComputedStyle(document.documentElement);
+  const pick = (name, fb) => ((cs.getPropertyValue(name) || '').trim() || fb);
+  const cssAccent = pick('--pec-orange', '');
+  return {
+    accent: /^#[0-9a-f]{6}$/i.test(cssAccent) ? cssAccent : pick('--rd-accent', '#D8531C'),
+    ink: pick('--rd-ink-2', '#2b3142'),
+    muted: pick('--rd-muted', '#6b7280'),
+    grid: pick('--rd-line', '#e6e8ec'),
+    surface: pick('--rd-card', '#ffffff'),
+  };
+}
+// Vertical wash for area charts: series hue fading to transparent (a wash,
+// never a saturated block). Scriptable because the chart area does not exist
+// until first layout.
+function metricsAreaGradient(accent) {
+  return (context) => {
+    const { ctx, chartArea } = context.chart;
+    if (!chartArea) return accent + '1f';
+    const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+    g.addColorStop(0, accent + '3d');
+    g.addColorStop(1, accent + '00');
+    return g;
+  };
+}
 // Upgrades fallback bar holders to Chart.js charts. Each spec: { id, type
-// ('bar'|'line'), values, weeks, drillIds, money }. Holders that are no longer
-// in the document (a newer render replaced the view while the CDN script was
+// ('bar'|'line'|'hbar'), values, weeks OR labels, drillIds (optional), money,
+// fmt (optional tooltip/tick formatter) }. Holders that are no longer in the
+// document (a newer render replaced the view while the CDN script was
 // loading) are skipped. Clicks reuse the same drill-registry ids as the
 // fallback bars, so drilldown behavior is identical in both renderers.
 function initMetricsCharts(specs) {
-  const cssAccent = (getComputedStyle(document.documentElement).getPropertyValue('--pec-orange') || '').trim();
-  const accent = /^#[0-9a-f]{6}$/i.test(cssAccent) ? cssAccent : '#D8531C';
+  const c = metricsChartInk();
+  const accent = c.accent;
   for (const spec of specs) {
     const holder = document.getElementById(spec.id);
     if (!holder || !document.body.contains(holder)) continue;
     if (metricsCharts[spec.id]) { metricsCharts[spec.id].destroy(); delete metricsCharts[spec.id]; }
+    const horizontal = spec.type === 'hbar';
+    // hbar holders start collapsed (no CSS fallback exists for them; the
+    // tables beside them carry the data if the CDN never loads) and size to
+    // their row count on upgrade.
+    if (horizontal) holder.style.height = (spec.values.length * 30 + 44) + 'px';
     holder.innerHTML = '<canvas></canvas>';
-    const fmt = spec.money ? invUSD0 : String;
+    const fmt = spec.fmt || (spec.money ? invUSD0 : String);
+    const labels = spec.labels || spec.weeks.map(w => w.label);
+    const valueAxis = horizontal ? 'x' : 'y';
     metricsCharts[spec.id] = new Chart(holder.querySelector('canvas'), {
-      type: spec.type,
+      type: spec.type === 'line' ? 'line' : 'bar',
       data: {
-        labels: spec.weeks.map(w => w.label),
+        labels,
         datasets: [spec.type === 'line' ? {
-          // AR is a balance snapshot: a line reads as "level over time" where
-          // bars would read as "amount per week". Subtle area fill + a dot per
-          // week per the design spec.
-          data: spec.values, borderColor: accent, backgroundColor: accent + '1f',
-          fill: true, tension: 0.3, pointRadius: 3, pointHoverRadius: 5,
-          pointBackgroundColor: accent, borderWidth: 2,
+          // Trends and snapshots read as a line with a gradient area wash and
+          // a dot per period: 2px line, >=8px markers with a 2px surface ring
+          // (pointBorder in the card color) per the mark spec.
+          data: spec.values, borderColor: accent, backgroundColor: metricsAreaGradient(accent),
+          fill: true, tension: 0.3, pointRadius: 4, pointHoverRadius: 6,
+          pointBackgroundColor: accent, pointBorderColor: c.surface, pointBorderWidth: 2,
+          borderWidth: 2,
         } : {
-          data: spec.values, backgroundColor: accent, borderRadius: 6, maxBarThickness: 46,
+          // Bars: thin marks (<=24px), 4px rounded data-end, square baseline.
+          data: spec.values, backgroundColor: accent, maxBarThickness: 24,
+          borderRadius: horizontal
+            ? { topRight: 4, bottomRight: 4, topLeft: 0, bottomLeft: 0 }
+            : { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
         }],
       },
       options: {
         maintainAspectRatio: false,
+        indexAxis: horizontal ? 'y' : 'x',
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: ctx => fmt(ctx.parsed.y) } },
+          tooltip: { callbacks: { label: ctx => fmt(horizontal ? ctx.parsed.x : ctx.parsed.y) } },
         },
         scales: {
-          x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-          y: { beginAtZero: true, grid: { color: 'rgba(16,24,40,.07)' }, ticks: { font: { size: 10 }, callback: v => metricsTick(v, spec.money) } },
+          [horizontal ? 'y' : 'x']: { grid: { display: false }, border: { color: c.grid }, ticks: { font: { size: 10 }, color: c.muted } },
+          [valueAxis]: {
+            beginAtZero: true,
+            grid: { color: c.grid, lineWidth: 1 }, border: { display: false },
+            ticks: { font: { size: 10 }, color: c.muted, callback: v => (spec.fmt ? spec.fmt(v) : metricsTick(v, spec.money)) },
+          },
         },
-        // intersect:false so clicking anywhere in a week's column drills in,
-        // matching the full-height click targets of the old CSS bars.
+        // intersect:false so clicking anywhere in a period's column drills in,
+        // matching the full-height click targets of the old CSS bars. Charts
+        // without drillIds (speed-to-lead, conversion) just don't navigate.
         onClick: (evt, els, chart) => {
-          const hit = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: false, axis: 'x' }, true)[0];
-          if (hit) openMetricsDrill(spec.drillIds[hit.index]);
+          if (!spec.drillIds) return;
+          const hit = chart.getElementsAtEventForMode(evt, 'nearest', { intersect: false, axis: horizontal ? 'y' : 'x' }, true)[0];
+          if (hit && spec.drillIds[hit.index]) openMetricsDrill(spec.drillIds[hit.index]);
         },
       },
     });
   }
+}
+
+// KPI-card sparkline (prompt 33 Part C): a 12-ish point inline SVG in the
+// de-emphasis gray with the most recent segment and end dot in the accent,
+// per the stat-tile contract. Pure SVG (no Chart.js), so the cards show their
+// trend even if the CDN never loads. Returns '' when there is nothing to
+// plot (fewer than 2 points or all zeros).
+function kpiSparkSvg(values, accent) {
+  const vs = (values || []).map(v => Number(v) || 0);
+  if (vs.length < 2 || !vs.some(v => v > 0)) return '';
+  const W = 116, H = 26, P = 3;
+  const max = Math.max(...vs), min = Math.min(...vs);
+  const x = i => P + i * (W - 2 * P) / (vs.length - 1);
+  const y = v => max === min ? H / 2 : (H - P) - (v - min) * (H - 2 * P) / (max - min);
+  const pt = i => `${x(i).toFixed(1)},${y(vs[i]).toFixed(1)}`;
+  const all = vs.map((_, i) => pt(i)).join(' ');
+  const lastTwo = `${pt(vs.length - 2)} ${pt(vs.length - 1)}`;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true" style="display:block;overflow:visible">
+    <polyline points="${all}" fill="none" stroke="var(--rd-dim,#9aa1ad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="${lastTwo}" fill="none" stroke="${accent}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${x(vs.length - 1).toFixed(1)}" cy="${y(vs[vs.length - 1]).toFixed(1)}" r="3" fill="${accent}" stroke="var(--rd-card,#fff)" stroke-width="2"/>
+  </svg>`;
 }
 
 // drillIds[i] is a metrics drill-registry id (see regDrill in renderMetrics);
@@ -10450,16 +10524,19 @@ async function renderMetrics() {
       // per-job sqft + system for the $/sqft breakdown, system names, the
       // cached AI insight, and owner names. Each degrades independently: an
       // errored read empties its card, never the whole tab.
-      supabase.from('leads').select('id,stage,source,campaign,owner_user_id,created_at,contacted_at,accepted_at').is('deleted_at', null),
+      supabase.from('leads').select('id,stage,source,campaign,owner_user_id,created_at,contacted_at,estimate_sent_at,accepted_at,customer_id,phone,phone_norm,email').is('deleted_at', null),
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
       supabase.from('settings').select('value').eq('key', 'metrics_sales_ai_insight').maybeSingle(),
       qoStaffNames(),
+      // Outbound-touch logs for the contact-count stat card (prompt 33 Part
+      // C), same loader + matcher as the leads board. Degrades to null.
+      loadOutboundTouchLogs().catch(err => { console.warn('[metrics] touch logs:', err.message || err); return null; }),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
-    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames] = res;
+    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames, metricsTouchLogs] = res;
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
   // the view does not have it yet, so the rest of Metrics renders normally.
@@ -10565,11 +10642,12 @@ async function renderMetrics() {
   const deposits = Array(weeks.length).fill(0);
   const jobsCompleted = Array(weeks.length).fill(0);
   const jobsSold = Array(weeks.length).fill(0);
+  const salesVolWeekly = Array(weeks.length).fill(0); // signed $ per week, KPI sparkline
 
   for (const j of jobs) {
     if (!jobOk(j)) continue;
     const cb = bucketOf(j.completed_date); if (cb >= 0) { revCompleted[cb] += j.price; jobsCompleted[cb] += 1; }
-    const sb = bucketOf(j.signed_date); if (sb >= 0) jobsSold[sb] += 1;
+    const sb = bucketOf(j.signed_date); if (sb >= 0) { jobsSold[sb] += 1; salesVolWeekly[sb] += j.price; }
   }
   for (const p of payments) { if (!payOk(p)) continue; const b = bucketOf(p.received_date); if (b >= 0) revCollected[b] += p.amount; }
   for (const k in payByJob) { const j = jobById[k]; if (!jobOk(j)) continue; const first = payByJob[k][0]; const b = bucketOf(first.received_date); if (b >= 0) deposits[b] += first.amount; }
@@ -10861,10 +10939,18 @@ async function renderMetrics() {
     redo: '<svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>',
     clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   };
-  const kpiCard = (drillId, icon, label, desc, val, delta) => `<button type="button" class="pec-m-kpi" data-drill="${esc(drillId)}" title="Click for the underlying records">
+  // spark: optional weekly series -> inline SVG trend (kpiSparkSvg). Only
+  // cards with an HONEST per-week series get one; all-time or sparse-average
+  // metrics (callback rate, avg job size, invoice timing) stay sparkline-free
+  // rather than plotting a made-up series.
+  const chartInk = metricsChartInk();
+  const kpiCard = (drillId, icon, label, desc, val, delta, spark) => `<button type="button" class="pec-m-kpi" data-drill="${esc(drillId)}" title="Click for the underlying records">
     <div class="pec-m-kpi-top"><span class="pec-m-kpi-chip">${ico[icon]}</span><span class="pec-m-kpi-label">${label}</span></div>
     <div class="pec-m-kpi-desc">${desc}</div>
-    <div class="pec-m-kpi-val">${val}</div>
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div class="pec-m-kpi-val">${val}</div>
+      ${spark ? kpiSparkSvg(spark, chartInk.accent) : ''}
+    </div>
     ${delta || ''}
     <span class="pec-m-kpi-link">View details →</span>
   </button>`;
@@ -11019,6 +11105,39 @@ async function renderMetrics() {
     return { title: s.title, n: list.length, value: list.reduce((sum, l) => sum + (leadValueMap[l.id] || 0), 0) };
   });
   const openPipeValue = pipeByStage.reduce((s, r) => s + r.value, 0);
+
+  // Conversion-rate chart rows: sources with leads in the window, as plotted
+  // by the horizontal bar chart above the tables (top 8; the tables below
+  // always carry the full list, so nothing is silently dropped).
+  const convChartRows = convBySource.filter(([, g]) => g.leads > 0).slice(0, 8);
+
+  // ---- Outbound-touch stats (prompt 33 Part C) ------------------------------
+  // Same loader + matcher as the leads board (leadContactStats over ALL leads
+  // so touches attribute correctly, then filtered to the window's leads).
+  // "To win" counts touches stamped on or before accepted_at; "to estimate
+  // out" the same against estimate_sent_at, the closest thing this pipeline
+  // has to "booked". Leads with ZERO logged touches are excluded from the
+  // averages (the logs only reach back to the Quo integration, so an old win
+  // with no rows is a data gap, not a zero-touch win) and surfaced as counts
+  // instead.
+  const touchStats = metricsTouchLogs ? leadContactStats(salesLeads, metricsTouchLogs) : null;
+  const touchesUpTo = (l, cutoff) => {
+    const s = touchStats && touchStats[l.id];
+    if (!s) return 0;
+    if (!cutoff) return s.total;
+    const cut = new Date(cutoff).getTime();
+    return Number.isFinite(cut) ? s.times.filter(t => new Date(t).getTime() <= cut).length : s.total;
+  };
+  const avgOf = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const wonInWin = leadsInWin.filter(l => l.stage === 'accepted');
+  const wonTouchCounts = touchStats ? wonInWin.map(l => touchesUpTo(l, l.accepted_at)).filter(n => n > 0) : [];
+  const estOutInWin = leadsInWin.filter(l => l.estimate_sent_at);
+  const estTouchCounts = touchStats ? estOutInWin.map(l => touchesUpTo(l, l.estimate_sent_at)).filter(n => n > 0) : [];
+  const avgTouchesToWin = avgOf(wonTouchCounts);
+  const avgTouchesToEst = avgOf(estTouchCounts);
+  const openNeverContacted = touchStats ? openLeads.filter(l => !(touchStats[l.id] && touchStats[l.id].total > 0)).length : null;
+  const fmtAvgTouches = v => v == null ? '—' : (Math.round(v * 10) / 10) + 'x';
+
   let salesInsight = null;
   try { salesInsight = (insightRes && !insightRes.error && insightRes.data) ? JSON.parse(insightRes.data.value) : null; } catch (_) { salesInsight = null; }
 
@@ -11031,13 +11150,13 @@ async function renderMetrics() {
     </div>
     <div class="pec-m-group-h" style="margin-top:2px">Revenue &amp; wins</div>
     <div class="pec-m-kpis">
-      ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume))}
-      ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected))}
+      ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume), salesVolWeekly)}
+      ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected), revCollected)}
       ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize))}
     </div>
     <div class="pec-m-group-h">Production &amp; quality</div>
     <div class="pec-m-kpis" style="margin-bottom:16px">
-      ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted))}
+      ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted), jobsCompleted)}
       ${kpiCard(kpiIds.callbackPct, 'redo', 'Callback rate', `Callbacks over completed production jobs, all time${allSp}.`, invPct(callbackPct), '')}
       ${kpiCard(kpiIds.invAhead, 'clock', 'Invoiced before completion', 'Completed jobs (with an invoice on record) whose invoice went out before completion day.', invPct(pctInvAhead), invNoSendCount > 0 ? `<div class="pec-m-kpi-delta flat" style="text-transform:none;letter-spacing:0">${invNoSendCount} completed w/o invoice on record</div>` : '')}
     </div>
@@ -11071,7 +11190,7 @@ async function renderMetrics() {
     <div class="pec-m-group-h">Sales</div>
     <div class="pec-m-rank-grid">
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Price per sq ft (sold jobs, by month)</div>
-        <div class="pec-m-chart-wrap">${invBarChart(dpsfMonthly, months, dpsfMonthIds, v => v > 0 ? '$' + v.toFixed(1) : '')}</div>
+        <div class="pec-m-chart-wrap" id="pecChartDpsf">${invBarChart(dpsfMonthly, months, dpsfMonthIds, v => v > 0 ? '$' + v.toFixed(1) : '')}</div>
         <div style="color:var(--muted);font-size:.68rem;margin-top:6px">$/sqft available for ${dpsfJobs.length} of ${soldForSqft.length} sold job${soldForSqft.length === 1 ? '' : 's'} in these months. Backfill the Sqft field on the job page to raise coverage.</div>
         ${dpsfSystemRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>System</th><th style="text-align:right">Avg $/sqft</th><th style="text-align:right">Median $/sqft</th><th style="text-align:right">Jobs</th></tr></thead><tbody>
           ${dpsfSystemRows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">$${(g.sum / g.n).toFixed(2)}</td><td style="text-align:right">$${dpsfMedian(g.vals).toFixed(2)}</td><td style="text-align:right">${g.n}</td></tr>`).join('')}
@@ -11082,16 +11201,35 @@ async function renderMetrics() {
           <span style="font-size:1.6rem;font-weight:700">${fmtMins(s2lMedian)}</span>
           <span style="color:var(--muted);font-size:.72rem">median for leads created in this window (${s2lMins.length} contacted)</span>
         </div>
-        <div class="pec-m-chart-wrap">${invBarChart(s2lWeekly, weeks, weeks.map(() => ''), v => v > 0 ? fmtMins(v) : '')}</div>
+        <div class="pec-m-chart-wrap" id="pecChartS2l">${invBarChart(s2lWeekly, weeks, weeks.map(() => ''), v => v > 0 ? fmtMins(v) : '')}</div>
         ${s2lOwnerRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>Owner</th><th style="text-align:right">Median</th><th style="text-align:right">Leads contacted</th></tr></thead><tbody>
           ${s2lOwnerRows.map(r => `<tr class="nohover"><td>${esc(r.name)}</td><td style="text-align:right">${fmtMins(r.md)}</td><td style="text-align:right">${r.n}</td></tr>`).join('')}
         </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem">No contacted leads in this window yet.</div>'}
       </div>
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Conversion by source and campaign</div>
         <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 4px">Which ad money works: leads created in this window, accepted = sold.</div>
+        <div id="pecChartConv" style="position:relative"></div>
         ${convTable('Source', convBySource)}
         ${convTable('Campaign', convByCampaign)}
       </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Outbound touches (calls, texts, emails)</div>
+        ${!touchStats ? '<div class="pec-empty">Touch logs could not be loaded right now. Refresh in a moment.</div>' : `
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">How many times we reach out per lead, from the same outbound call, text, and email logs as the Contacted count on the Leads board.</div>
+        <div class="pec-grid-stats">
+          <div class="pec-stat"><div class="pec-stat-label">Avg touches to win</div><div class="pec-stat-val">${fmtAvgTouches(avgTouchesToWin)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Avg touches to estimate out</div><div class="pec-stat-val">${fmtAvgTouches(avgTouchesToEst)}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Open leads never contacted</div><div class="pec-stat-val" ${openNeverContacted > 0 ? 'style="color:var(--rd-danger,#ef4444)"' : ''}>${openNeverContacted == null ? '—' : openNeverContacted}</div></div>
+        </div>
+        ${avgTouchesToWin == null && avgTouchesToEst == null
+          ? '<div style="color:var(--muted);font-size:.72rem;margin-top:8px">Not enough data yet: no leads in this window have both a stage milestone and logged outreach. This fills in as leads get worked through Quo.</div>'
+          : `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">Touches counted on or before the milestone. Based on ${wonTouchCounts.length} won lead${wonTouchCounts.length === 1 ? '' : 's'} and ${estTouchCounts.length} lead${estTouchCounts.length === 1 ? '' : 's'} with an estimate out, in this window, that have logged outreach; leads with no logged touches are excluded (logs start at the Quo integration).</div>`}
+        `}
+      </div>
+      <!-- PHASE 3 SLOT (do not remove): drip-performance and blast-performance
+           metric cards land here once the Phase 2 drip engine and Phase 3
+           blast tool exist and are writing send/outcome data. Until then
+           there is deliberately nothing to show. -->
+
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Open pipeline and AI read</div>
         <table class="pec-table" style="font-size:.78rem"><thead><tr><th>Stage</th><th style="text-align:right">Leads</th><th style="text-align:right">Value</th></tr></thead><tbody>
           ${pipeByStage.map(r => `<tr class="nohover"><td>${esc(r.title)}</td><td style="text-align:right">${r.n}</td><td style="text-align:right">${invUSD0(r.value)}</td></tr>`).join('')}
@@ -11156,14 +11294,25 @@ async function renderMetrics() {
   // rows, and chart bars all carry data-drill ids into the same registry.
   root.querySelectorAll('[data-drill]').forEach(el => el.addEventListener('click', () => openMetricsDrill(el.dataset.drill)));
 
-  // Upgrade the three main weekly charts to Chart.js once the lazy CDN script
-  // is in. The holders already contain the CSS fallback bars (drill-wired
-  // above), so a CDN failure degrades to a readable chart, not an empty card.
-  // The More Metrics section intentionally stays on the fallback renderer.
+  // Upgrade the main charts to Chart.js once the lazy CDN script is in. The
+  // weekly holders already contain the CSS fallback bars (drill-wired above),
+  // so a CDN failure degrades to a readable chart, not an empty card; the
+  // conversion hbar has no CSS fallback because its tables sit right under
+  // it. Speed-to-lead and $/sqft render as gradient-area TREND lines (the
+  // point is the direction, not this week's number). The More Metrics
+  // section intentionally stays on the fallback renderer.
   ensureChartJs().then(() => initMetricsCharts([
     { id: 'pecChartRevCollected', type: 'bar', values: revCollected, weeks, drillIds: barIds.revCollected, money: true },
     { id: 'pecChartAr', type: 'line', values: arPerWeek, weeks, drillIds: barIds.ar, money: true },
     { id: 'pecChartJobsCompleted', type: 'bar', values: jobsCompleted, weeks, drillIds: barIds.jobsCompleted, money: false },
+    { id: 'pecChartDpsf', type: 'line', values: dpsfMonthly, labels: months.map(m => m.label), drillIds: dpsfMonthIds, fmt: v => '$' + (Number(v) || 0).toFixed(2) },
+    { id: 'pecChartS2l', type: 'line', values: s2lWeekly, weeks, fmt: v => fmtMins(v) },
+    ...(convChartRows.length ? [{
+      id: 'pecChartConv', type: 'hbar',
+      values: convChartRows.map(([, g]) => g.leads ? Math.round((g.accepted / g.leads) * 100) : 0),
+      labels: convChartRows.map(([name]) => name),
+      fmt: v => (Number(v) || 0) + '%',
+    }] : []),
   ])).catch(() => {});
 }
 
