@@ -11212,7 +11212,7 @@ async function renderMetrics() {
         ${convTable('Source', convBySource)}
         ${convTable('Campaign', convByCampaign)}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Outbound touches (calls, texts, emails)</div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Outbound touches (calls, texts, emails, drips)</div>
         ${!touchStats ? '<div class="pec-empty">Touch logs could not be loaded right now. Refresh in a moment.</div>' : `
         <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">How many times we reach out per lead, from the same outbound call, text, and email logs as the Contacted count on the Leads board.</div>
         <div class="pec-grid-stats">
@@ -17403,20 +17403,35 @@ function contactPhoneNorm(raw) {
 // (pec_email_log, every send except status 'failed'; a bounce still counts as
 // an attempt, like a no-answer call). The customer's side of an outbound row
 // is to_number / to_email. Reads only; nothing here writes to any log.
+// Phase 2 adds DRIP SENDS (pec_drip_sends, status 'sent' only: dry-run and
+// failed rows are not touches) as the fourth source. THE DE-DUPE RULE: a
+// live drip leg writes BOTH a ledger row and a mirror row in
+// pec_sms_log/pec_email_log (kind/template_key 'drip', for thread
+// completeness); the counter counts the LEDGER row and drops the mirrors
+// (kind/template_key column fetched here, filtered in leadContactStats),
+// because the ledger carries lead_id directly, which beats phone/email
+// matching. Pre-migration the drip select errors; it degrades to an empty
+// list so Phase 1 counting still works.
 // NOTE: selects ride PostgREST's default row cap (1000/table). Fine at
-// today's volumes (hundreds); revisit alongside the Phase 2 drip engine,
-// which will multiply outbound rows.
+// today's volumes (hundreds); the drip engine will multiply outbound rows,
+// so revisit pagination when live drip volume ramps.
 async function loadOutboundTouchLogs() {
-  const [callsRes, textsRes, emailsRes] = await Promise.all([
+  const [callsRes, textsRes, emailsRes, dripsRes] = await Promise.all([
     supabase.from('pec_call_log').select('customer_id,to_number,occurred_at,created_at').eq('direction', 'out'),
-    supabase.from('pec_sms_log').select('customer_id,to_number,created_at').eq('direction', 'out').neq('status', 'failed'),
-    supabase.from('pec_email_log').select('customer_id,to_email,sent_at').neq('status', 'failed'),
+    supabase.from('pec_sms_log').select('customer_id,to_number,created_at,kind').eq('direction', 'out').neq('status', 'failed'),
+    supabase.from('pec_email_log').select('customer_id,to_email,sent_at,template_key').neq('status', 'failed'),
+    supabase.from('pec_drip_sends').select('lead_id,channel,sent_at').eq('status', 'sent'),
   ]);
   if (callsRes.error || textsRes.error || emailsRes.error) {
     const err = (callsRes.error || textsRes.error || emailsRes.error);
     throw new Error('touch logs: ' + (err.message || err));
   }
-  return { calls: callsRes.data || [], texts: textsRes.data || [], emails: emailsRes.data || [] };
+  return {
+    calls: callsRes.data || [],
+    texts: textsRes.data || [],
+    emails: emailsRes.data || [],
+    drips: dripsRes.error ? [] : (dripsRes.data || []),
+  };
 }
 
 // Match the outbound logs to leads: lead id by { calls, texts, emails, total,
@@ -17426,12 +17441,15 @@ async function loadOutboundTouchLogs() {
 // point at the same lead can never double-count. Leads arrive newest-first
 // from the loaders, so if two leads ever share a phone (intake folds dupes,
 // so this is rare) the newest one claims the touches.
-// PHASE 2 EXTENSION POINT: when the drip engine ships, add its sends table as
-// a fourth source loop here (and in loadOutboundTouchLogs); nothing else in
-// the count needs to change.
+// Phase 2 (prompt 34) filled the extension point: drip sends are the fourth
+// source, attributed DIRECTLY by pec_drip_sends.lead_id (no matching needed).
+// De-dupe: the drip mirror rows in pec_sms_log (kind 'drip') and
+// pec_email_log (template_key 'drip') are SKIPPED here so a live drip text
+// never counts twice; the ledger row is the counted one.
 function leadContactStats(leads, logs) {
-  const byCustomer = {}, byPhone = {}, byEmail = {};
+  const byCustomer = {}, byPhone = {}, byEmail = {}, leadIds = new Set();
   for (const l of leads) {
+    leadIds.add(l.id);
     if (l.customer_id && !(l.customer_id in byCustomer)) byCustomer[l.customer_id] = l.id;
     const pn = l.phone_norm || contactPhoneNorm(l.phone);
     if (pn && !(pn in byPhone)) byPhone[pn] = l.id;
@@ -17440,7 +17458,7 @@ function leadContactStats(leads, logs) {
   }
   const stats = {};
   const bump = (leadId, kind, ts) => {
-    const s = (stats[leadId] ||= { calls: 0, texts: 0, emails: 0, total: 0, lastAt: null, times: [] });
+    const s = (stats[leadId] ||= { calls: 0, texts: 0, emails: 0, drips: 0, total: 0, lastAt: null, times: [] });
     s[kind]++; s.total++;
     if (ts) { s.times.push(ts); if (!s.lastAt || ts > s.lastAt) s.lastAt = ts; }
   };
@@ -17449,12 +17467,17 @@ function leadContactStats(leads, logs) {
     if (id) bump(id, 'calls', r.occurred_at || r.created_at);
   }
   for (const r of logs.texts) {
+    if (r.kind === 'drip') continue;   // counted from the drip ledger instead
     const id = (r.customer_id && byCustomer[r.customer_id]) || byPhone[contactPhoneNorm(r.to_number)];
     if (id) bump(id, 'texts', r.created_at);
   }
   for (const r of logs.emails) {
+    if (r.template_key === 'drip') continue;   // counted from the drip ledger instead
     const id = (r.customer_id && byCustomer[r.customer_id]) || byEmail[String(r.to_email || '').trim().toLowerCase()];
     if (id) bump(id, 'emails', r.sent_at);
+  }
+  for (const r of (logs.drips || [])) {
+    if (leadIds.has(r.lead_id)) bump(r.lead_id, 'drips', r.sent_at);
   }
   return stats;
 }
@@ -17548,7 +17571,7 @@ function leadContactChipHtml(lead, stats) {
   const s = stats[lead.id];
   const n = s ? s.total : 0;
   if (n > 0) {
-    return `<span style="font-weight:600" title="${esc(`${s.calls} call${s.calls === 1 ? '' : 's'}, ${s.texts} text${s.texts === 1 ? '' : 's'}, ${s.emails} email${s.emails === 1 ? '' : 's'}`)}">Contacted ${n}x</span>`;
+    return `<span style="font-weight:600" title="${esc(`${s.calls} call${s.calls === 1 ? '' : 's'}, ${s.texts} text${s.texts === 1 ? '' : 's'}, ${s.emails} email${s.emails === 1 ? '' : 's'}${s.drips ? `, ${s.drips} drip message${s.drips === 1 ? '' : 's'}` : ''}`)}">Contacted ${n}x</span>`;
   }
   const urgent = lead.stage === 'new' && (leadElapsed(lead.created_at) || {}).red;
   return `<span style="font-weight:700;${urgent ? 'color:var(--rd-danger,#ef4444)' : ''}">Not contacted</span>`;
@@ -17969,7 +17992,7 @@ async function renderLeadDetail(leadId) {
   // this lead. Last-contacted is DERIVED (max outbound-log timestamp), not
   // leads.contacted_at: that column is a first-touch stamp set once by the
   // first stage move and never updated, so it cannot say "last".
-  const touch = touchLogs ? (leadContactStats([lead], touchLogs)[lead.id] || { calls: 0, texts: 0, emails: 0, total: 0, lastAt: null }) : null;
+  const touch = touchLogs ? (leadContactStats([lead], touchLogs)[lead.id] || { calls: 0, texts: 0, emails: 0, drips: 0, total: 0, lastAt: null }) : null;
   const touchLine = (() => {
     if (!touch) return '';
     let body;
@@ -17980,6 +18003,7 @@ async function renderLeadDetail(leadId) {
         touch.calls ? `${touch.calls} call${touch.calls === 1 ? '' : 's'}` : '',
         touch.texts ? `${touch.texts} text${touch.texts === 1 ? '' : 's'}` : '',
         touch.emails ? `${touch.emails} email${touch.emails === 1 ? '' : 's'}` : '',
+        touch.drips ? `${touch.drips} drip message${touch.drips === 1 ? '' : 's'}` : '',
       ].filter(Boolean).join(', ');
       body = `<strong>Contacted ${touch.total} time${touch.total === 1 ? '' : 's'}</strong>: ${parts}${touch.lastAt ? `, last ${esc(fmtRelativeTime(touch.lastAt))}` : ''}`;
     }
