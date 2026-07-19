@@ -207,7 +207,7 @@
     {
       "name": "Leads pipeline board",
       "area": "dashboard",
-      "description": "A Kanban Leads board shows every lead as a card across six pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs (calls, texts, emails, matched by customer_id then normalized phone; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead.",
+      "description": "A Kanban Leads board shows every lead as a card across six pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip.",
       "code": {
         "indexHtml": [
           "renderLeads",
@@ -233,9 +233,41 @@
       "since": "2026-07"
     },
     {
+      "name": "Lead drip engine",
+      "area": "dashboard",
+      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Campaigns carry kind lead/estimate/invoice; estimate/invoice drips and the blast tool are Phase 3.",
+      "code": {
+        "indexHtml": [
+          "renderDrips",
+          "enrollLeadInDrip",
+          "renderLeadDetail",
+          "leadCardHtml"
+        ],
+        "netlifyFunctions": [
+          "pec-drip-runner.cjs",
+          "_pec-drip.cjs",
+          "pec-lead-intake.cjs",
+          "pec-webhook-quo.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-19_drip_engine.sql",
+          "production/drip-runner.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_drip_campaigns",
+        "pec_drip_steps",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "settings",
+        "leads"
+      ],
+      "since": "2026-07"
+    },
+    {
       "name": "Lead detail with AI game plan",
       "area": "dashboard",
-      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails with the last touch, derived from the outbound comms logs), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically.",
+      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip card shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, and drip messages (including dry-run previews) appear in the Activity timeline.",
       "code": {
         "indexHtml": [
           "renderLeadDetail"

@@ -1,5 +1,16 @@
 [
   {
+    "id": "lead-drip-engine",
+    "date": "2026-07-19",
+    "title": "Automatic follow-up drips for leads",
+    "summary": "New leads now enroll in a 30-day follow-up sequence of up to 8 texts and emails, each one written by the AI for that specific lead. The drip stops itself the moment the lead replies, moves forward in the pipeline, is marked lost, texts STOP, or hits the touch limit, and texts only go out between 8am and 8pm. Nothing sends yet: the master switch ships OFF and the campaign starts in dry run, which drafts every message for your review on the lead page and the new Drips screen so you can see exactly what the AI would say before turning it on.",
+    "howto": [
+      "Open Drips (under Sales) to see the campaign, its steps, and the drafted messages piling up in dry run.",
+      "Read a few days of drafts on the Drips screen or any lead's Activity timeline. When you like the copy, set the campaign to Go live and turn the master switch ON.",
+      "On any lead's page, use the Drip card to stop or enroll that lead by hand. A reply or a STOP always halts it automatically."
+    ]
+  },
+  {
     "id": "leads-times-contacted",
     "date": "2026-07-19",
     "title": "See how many times each lead has been contacted",
