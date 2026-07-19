@@ -2447,6 +2447,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="messages">Messages</button>
           <button data-pec-view="leads">Leads</button>
+          <button data-pec-view="drips" class="pec-role-admin">Drips</button>
           <button data-pec-view="estimates">Estimates</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- The standalone Estimator rail item was removed in build 18: the
@@ -7201,6 +7202,7 @@ function switchView(v) {
       nextday: renderNextDay,
       pipeline: renderPipeline,
       leads: renderLeads,
+      drips: renderDrips,
       estimates: renderEstimates,
       costing: renderJobCosting,
       // Job Costing + Completed Job Costing merged into one view with an
@@ -17512,6 +17514,137 @@ async function enrollLeadInDrip(leadId) {
   } catch (e) { console.warn('[drips] enroll failed:', (e && e.message) || e); return false; }
 }
 
+// ---- Drips admin view (prompt 34) ------------------------------------------
+// Dylan's control panel for the drip engine. The three controls that matter:
+// the GLOBAL master switch (settings key drip_sending_enabled; the runner
+// no-ops while it is off, and it ships off), each campaign's dry_run/live
+// mode (dry_run writes review copy, never sends), and pause. Steps are
+// read-only in Phase 2. Recent sends listed so dry-run copy is reviewable
+// here as well as on the lead page.
+async function renderDrips() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading drips…</div>';
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('settings').select('value').eq('key', 'drip_sending_enabled').maybeSingle(),
+      supabase.from('pec_drip_campaigns').select('*').order('created_at'),
+      supabase.from('pec_drip_steps').select('*').order('step_index'),
+      supabase.from('pec_drip_enrollments').select('campaign_id,status'),
+      supabase.from('pec_drip_sends').select('*, leads(full_name)').order('created_at', { ascending: false }).limit(25),
+    ]), { label: 'renderDrips' });
+  } catch (e) { res = [{ error: e }, { error: e }, {}, {}, {}]; }
+  const [swRes, campRes, stepRes, enrRes, sendRes] = res;
+  if (campRes.error) {
+    root.innerHTML = `<div class="pec-empty">Drip tables are not live yet (apply the 2026-07-19_drip_engine.sql migration first).<br><span style="font-size:.75rem;color:var(--muted)">${esc(campRes.error.message || '')}</span></div>`;
+    return;
+  }
+  const sendingOn = !swRes.error && swRes.data && swRes.data.value === 'true';
+  const campaigns = campRes.data || [];
+  const steps = stepRes.error ? [] : (stepRes.data || []);
+  const enrollments = enrRes.error ? [] : (enrRes.data || []);
+  const sends = sendRes.error ? [] : (sendRes.data || []);
+  const activeByCamp = {};
+  for (const e of enrollments) if (e.status === 'active') activeByCamp[e.campaign_id] = (activeByCamp[e.campaign_id] || 0) + 1;
+
+  const chip = (txt, color) => `<span class="pec-badge system" style="--pec-badge-bg:${color}">${esc(txt)}</span>`;
+  const SEND_STATUS_COLOR = { sent: '#16a34a', dry_run: '#7c3aed', failed: '#dc2626', skipped: '#64748b', queued: '#2563eb' };
+  const stepRows = (cid) => steps.filter(s => s.campaign_id === cid).map(s => `
+    <tr class="nohover"><td>Day ${s.day_offset}</td><td>${esc(s.channel)}</td>
+      <td style="color:var(--muted);font-size:.75rem">${esc(s.ai_guidance)}</td>
+      <td style="font-size:.75rem">${esc(s.email_subject || '')}</td>
+      <td>${s.active ? '' : chip('off', '#64748b')}</td></tr>`).join('');
+
+  root.innerHTML = `
+    <div style="max-width:1100px">
+      <h2 style="margin:0 0 4px">Drip campaigns</h2>
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:14px">Automatic AI-written follow-ups. Every message is tailored per lead at send time and stops on a reply, a stage change, a STOP, or the touch ceiling. Estimate and invoice drips plus the blast tool arrive in Phase 3.</div>
+
+      <div class="pec-card" style="border:2px solid ${sendingOn ? 'var(--rd-success,#10b981)' : 'var(--rd-danger,#ef4444)'}">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+          <div>
+            <div style="font-weight:800;font-size:1.05rem">Master switch: sending is ${sendingOn ? 'ON' : 'OFF'}</div>
+            <div style="color:var(--muted);font-size:.78rem;margin-top:4px">${sendingOn
+              ? 'The runner may send for campaigns set to live. Dry-run campaigns still only write review copy.'
+              : 'Nothing sends anywhere while this is off. The runner checks it first on every tick.'}</div>
+          </div>
+          <button type="button" class="pec-btn ${sendingOn ? 'danger' : 'primary'}" id="dripMasterToggle">${sendingOn ? 'Turn sending OFF' : 'Turn sending ON'}</button>
+        </div>
+      </div>
+
+      ${campaigns.length ? campaigns.map(c => `
+        <div class="pec-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+            <div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <strong style="font-size:.95rem">${esc(c.name)}</strong>
+                ${chip(c.kind, '#475569')}
+                ${chip(c.mode === 'live' ? 'LIVE' : 'Dry run', c.mode === 'live' ? '#dc2626' : '#7c3aed')}
+                ${chip(c.status, c.status === 'active' ? '#16a34a' : '#b45309')}
+              </div>
+              <div style="color:var(--muted);font-size:.75rem;margin-top:4px">
+                ${activeByCamp[c.id] || 0} active enrollment${(activeByCamp[c.id] || 0) === 1 ? '' : 's'} · max ${c.max_touches} touches per lead
+                ${c.mode !== 'live' ? ' · dry run: the runner writes the copy it WOULD send, nothing goes out' : ''}
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="pec-btn sm" data-drip-mode="${esc(c.id)}" data-mode-to="${c.mode === 'live' ? 'dry_run' : 'live'}">${c.mode === 'live' ? 'Back to dry run' : 'Go live'}</button>
+              <button type="button" class="pec-btn sm ghost" data-drip-status="${esc(c.id)}" data-status-to="${c.status === 'active' ? 'paused' : 'active'}">${c.status === 'active' ? 'Pause' : 'Resume'}</button>
+            </div>
+          </div>
+          <details style="margin-top:10px"><summary style="cursor:pointer;font-size:.8rem;color:var(--muted)">Steps (${steps.filter(s => s.campaign_id === c.id).length})</summary>
+            <div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem;margin-top:6px">
+              <thead><tr><th>When</th><th>Channel</th><th>AI guidance for this touch</th><th>Email subject</th><th></th></tr></thead>
+              <tbody>${stepRows(c.id)}</tbody>
+            </table></div>
+          </details>
+        </div>`).join('') : '<div class="pec-empty">No campaigns yet.</div>'}
+
+      <div class="pec-card">
+        <h3>Recent drip activity</h3>
+        ${sends.length ? `<div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem">
+          <thead><tr><th>When</th><th>Lead</th><th>Step</th><th>Channel</th><th>Status</th><th>Message</th></tr></thead>
+          <tbody>${sends.map(s => `
+            <tr class="nohover">
+              <td title="${esc(new Date(s.created_at).toLocaleString())}">${esc(fmtRelativeTime(s.created_at))}</td>
+              <td>${esc((s.leads && s.leads.full_name) || '(deleted)')}</td>
+              <td>${s.step_index + 1}</td>
+              <td>${esc(s.channel)}</td>
+              <td>${chip(s.status === 'dry_run' ? 'dry run' : s.status, SEND_STATUS_COLOR[s.status] || '#64748b')}${s.error_message ? `<div style="color:var(--rd-danger,#ef4444);font-size:.68rem">${esc(s.error_message)}</div>` : ''}</td>
+              <td style="max-width:420px">${s.body ? `<details><summary style="cursor:pointer">${esc(s.subject || String(s.body).slice(0, 60) + (String(s.body).length > 60 ? '…' : ''))}</summary><div style="white-space:pre-wrap;font-size:.75rem;color:var(--muted);margin-top:4px">${esc(s.body)}</div></details>` : ''}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>` : '<div class="pec-empty">No drip activity yet. It appears here (and on each lead page) as the runner ticks.</div>'}
+      </div>
+    </div>`;
+
+  // Master switch: settings upsert on key (the same client pattern the
+  // Settings view uses). Turning ON asks for confirmation; OFF never does
+  // (killing sends must always be one un-gated click).
+  $('dripMasterToggle').addEventListener('click', async () => {
+    const to = sendingOn ? 'false' : 'true';
+    if (to === 'true' && !confirm('Turn drip sending ON?\n\nCampaigns set to LIVE will start texting and emailing enrolled leads on their schedule. Dry-run campaigns still only write review copy.')) return;
+    const btn = $('dripMasterToggle');
+    btn.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'drip_sending_enabled', value: to }, { onConflict: 'key' }), { label: 'drip-master' });
+    if (w && w.error) { showToast('Could not update the switch: ' + w.error.message, { ttl: 5000 }); btn.disabled = false; return; }
+    renderDrips();
+  });
+  root.querySelectorAll('[data-drip-mode]').forEach(b => b.addEventListener('click', async () => {
+    const to = b.dataset.modeTo;
+    if (to === 'live' && !confirm('Set this campaign LIVE?\n\nWith the master switch on, the runner will actually send its messages. Review the dry-run copy first if you have not.')) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_drip_campaigns').update({ mode: to }).eq('id', b.dataset.dripMode), { label: 'drip-mode' });
+    if (w && w.error) { showToast('Could not change mode: ' + w.error.message, { ttl: 5000 }); b.disabled = false; return; }
+    renderDrips();
+  }));
+  root.querySelectorAll('[data-drip-status]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_drip_campaigns').update({ status: b.dataset.statusTo }).eq('id', b.dataset.dripStatus), { label: 'drip-status' });
+    if (w && w.error) { showToast('Could not change status: ' + w.error.message, { ttl: 5000 }); b.disabled = false; return; }
+    renderDrips();
+  }));
+}
+
 // "How long has this NEW lead been waiting" label. This is the speed-to-lead
 // behavior driver: red past one hour. Returns null for unparseable dates.
 function leadElapsed(createdAt) {
@@ -17542,24 +17675,28 @@ function startLeadsElapsedTimer() {
 async function loadLeadsData() {
   // Touch logs degrade to null (chips hide) rather than erroring the board or
   // showing a false "Not contacted" when the logs simply failed to load.
-  const [leadsRes, estRes, srcRes, staffNames, touchLogs] = await withFreshSession(() => Promise.all([
+  const [leadsRes, estRes, srcRes, staffNames, touchLogs, dripRes] = await withFreshSession(() => Promise.all([
     supabase.from('leads').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
     supabase.from('estimates').select('id,lead_id,price,status,created_at')
       .is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
     qoStaffNames(),
     loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
+    // Active drip enrollments for the board's small Drip chip (prompt 34).
+    // Errors (incl. pre-migration) degrade to no chips.
+    supabase.from('pec_drip_enrollments').select('lead_id').eq('status', 'active'),
   ]), { label: 'loadLeadsData' });
   if (leadsRes.error) throw new Error(leadsRes.error.message);
   const leads = leadsRes.data || [];
   const contactStats = touchLogs ? leadContactStats(leads, touchLogs) : null;
+  const dripActive = (dripRes && !dripRes.error && dripRes.data) ? new Set(dripRes.data.map(r => r.lead_id)) : new Set();
   const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
   // Source options: schema tokens + anything already in the data + the active
   // pec_lead_sources names (free-text sources are legal on manual leads).
   const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -17591,6 +17728,7 @@ function leadCardHtml(lead) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
       ${leadScoreBadge(lead)}
+      ${state.leadsData && state.leadsData.dripActive && state.leadsData.dripActive.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#7c3aed 14%,transparent);color:#7c3aed" title="Active drip: automatic follow-ups are running for this lead">Drip</span>' : ''}
     </div>
     ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
     ${value > 0 ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(value)}</div>` : ''}
@@ -17947,6 +18085,15 @@ function leadEventHtml(ev, staffNames) {
     body = `<span style="white-space:pre-wrap">${esc(p.text || '')}</span>`;
   } else if (ev.event_type === 'ai_analysis') {
     body = `AI scored <strong>${esc(p.score)}</strong>${p.next_action ? ` · ${esc(p.next_action)}` : ''}`;
+  } else if (ev.event_type === 'drip_send') {
+    // p is a pec_drip_sends row (see the timeline merge in renderLeadDetail).
+    const chan = p.channel === 'sms' ? 'text' : 'email';
+    const label = p.status === 'dry_run' ? `Drip ${chan} preview, step ${p.step_index + 1} (dry run, nothing sent)`
+      : p.status === 'sent' ? `Drip ${chan} sent (step ${p.step_index + 1})`
+      : `Drip ${chan} ${p.status} (step ${p.step_index + 1})`;
+    body = p.body
+      ? `<details><summary style="cursor:pointer">${esc(label)}${p.subject ? ` · ${esc(p.subject)}` : ''}</summary><div style="white-space:pre-wrap;font-size:.78rem;color:var(--muted);margin-top:6px">${esc(p.body)}</div></details>`
+      : `${esc(label)}${p.error_message ? ` · <span style="color:var(--rd-danger,#ef4444)">${esc(p.error_message)}</span>` : ''}`;
   } else if (ev.event_type === 'duplicate_intake') {
     body = `Reached out AGAIN (${esc(p.source || 'unknown')}); folded into this lead`;
   } else if (ev.event_type === 'created') {
@@ -17972,9 +18119,13 @@ async function renderLeadDetail(leadId) {
       qoStaffNames(),
       supabase.from('estimates').select('id,estimate_number,status,price,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
       loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
+      // Drip enrollment (latest) + this lead's send ledger. Pre-migration
+      // both error and degrade to "no drip block".
+      supabase.from('pec_drip_enrollments').select('*, pec_drip_campaigns(name,mode,max_touches)').eq('lead_id', leadId).order('enrolled_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('pec_drip_sends').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(50),
     ]), { label: 'renderLeadDetail' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, null]; }
-  const [leadRes, evRes, staffNames0, leadEstsRes, touchLogs] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, null, {}, {}]; }
+  const [leadRes, evRes, staffNames0, leadEstsRes, touchLogs, dripEnrRes, dripSendsRes] = res;
   const leadEstimates = (leadEstsRes && !leadEstsRes.error && leadEstsRes.data) || [];
   const staffNames = staffNames0 || {};
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="leadBack">← Back to leads</button></div>';
@@ -17986,6 +18137,13 @@ async function renderLeadDetail(leadId) {
   const lead = leadRes.data;
   _leadsById[lead.id] = lead; // so the shared stage-move path can find it
   const events = evRes.error ? [] : (evRes.data || []);
+  const dripEnr = (dripEnrRes && !dripEnrRes.error && dripEnrRes.data) ? dripEnrRes.data : null;
+  const dripSends = (dripSendsRes && !dripSendsRes.error && dripSendsRes.data) ? dripSendsRes.data : [];
+  // Drip sends join the activity timeline as pseudo-events, sorted with the
+  // real lead_events by timestamp (leadEventHtml has the drip_send case).
+  const timeline = events.concat(dripSends.map(s => ({
+    event_type: 'drip_send', created_at: s.sent_at || s.created_at, payload: s, actor_user_id: null,
+  }))).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
   const ai = lead.ai_analysis || null;
   const owner = lead.owner_user_id ? (staffNames[lead.owner_user_id] || 'Unknown') : 'Unassigned';
   // Outreach summary from the same matcher the board chips use, run over just
@@ -18014,6 +18172,34 @@ async function renderLeadDetail(leadId) {
   })();
   const stageOpts = LEAD_STAGES.map(s => `<option value="${s.key}" ${lead.stage === s.key ? 'selected' : ''}>${esc(s.title)}</option>`).join('');
   const contactRow = (label, val, href) => val ? `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${label}</span><div style="font-size:.88rem">${href ? `<a href="${esc(href)}" style="color:var(--rd-accent,var(--accent))">${esc(val)}</a>` : esc(val)}</div></div>` : '';
+
+  // Drip status card (prompt 34). Renders nothing pre-migration (the
+  // enrollment read errors). Stop is a plain status update; Enroll reuses
+  // the same client helper as the New Lead modal.
+  const dripCard = (() => {
+    if (dripEnrRes && dripEnrRes.error) return '';
+    const camp = dripEnr && dripEnr.pec_drip_campaigns;
+    let bodyHtml, action;
+    if (dripEnr && dripEnr.status === 'active') {
+      bodyHtml = `<div style="font-size:.85rem"><strong>Active</strong>: step ${dripEnr.next_step_index + 1} of ${camp ? camp.max_touches : '?'}, next touch ${dripEnr.next_send_at ? esc(fmtRelativeTime(dripEnr.next_send_at)) : 'scheduled'}</div>
+        <div style="color:var(--muted);font-size:.72rem;margin-top:4px">${esc(camp ? camp.name : '')}${camp && camp.mode !== 'live' ? ' · dry run: messages are drafted for review here, nothing sends' : ''}</div>`;
+      action = `<button type="button" class="pec-btn sm danger" id="leadDripStop">Stop drip</button>`;
+    } else if (dripEnr) {
+      bodyHtml = `<div style="font-size:.85rem"><strong>${dripEnr.status === 'completed' ? 'Completed' : 'Stopped'}</strong>${dripEnr.stop_reason ? `: ${esc(titleCaseValue(dripEnr.stop_reason))}` : ''}</div>`;
+      action = lead.opted_out ? '<span style="color:var(--muted);font-size:.72rem">Opted out; cannot re-enroll</span>'
+        : `<button type="button" class="pec-btn sm" id="leadDripEnroll">Enroll again</button>`;
+    } else {
+      bodyHtml = `<div style="font-size:.85rem;color:var(--muted)">Not enrolled.</div>`;
+      action = lead.opted_out ? '<span style="color:var(--muted);font-size:.72rem">Opted out; cannot enroll</span>'
+        : `<button type="button" class="pec-btn sm" id="leadDripEnroll">Enroll in drip</button>`;
+    }
+    return `<div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+        <div><h3 style="margin-top:0">Drip</h3>${bodyHtml}</div>
+        <div style="flex:none">${action}</div>
+      </div>
+    </div>`;
+  })();
 
   // AI panel body. next_action leads (bold, top) per Dylan: it is the thing
   // the rep needs first. Drafts are COPY-ONLY; SMS copy is disabled without
@@ -18096,12 +18282,15 @@ async function renderLeadDetail(leadId) {
         </div>
         <div class="pec-card">
           <h3>Activity</h3>
-          ${events.length ? events.map(ev => leadEventHtml(ev, staffNames)).join('') : '<div class="pec-empty">No activity yet.</div>'}
+          ${timeline.length ? timeline.map(ev => leadEventHtml(ev, staffNames)).join('') : '<div class="pec-empty">No activity yet.</div>'}
         </div>
       </div>
-      <div class="pec-card">
-        <h3>AI read</h3>
-        ${aiPanel}
+      <div>
+        ${dripCard}
+        <div class="pec-card">
+          <h3>AI read</h3>
+          ${aiPanel}
+        </div>
       </div>
     </div>
   `;
@@ -18147,6 +18336,26 @@ async function renderLeadDetail(leadId) {
       btn.disabled = false; btn.textContent = 'Save notes';
       showToast('Could not save notes: ' + (err && err.message ? err.message : err), { ttl: 5000 });
     }
+  });
+  // Drip controls. Stop is guarded on status=active so it cannot fight the
+  // runner; both re-enter the detail render for fresh state.
+  const dripStopBtn = $('leadDripStop');
+  if (dripStopBtn) dripStopBtn.addEventListener('click', async () => {
+    if (!confirm('Stop the drip for this lead? It will not restart on its own; use Enroll again if you change your mind.')) return;
+    dripStopBtn.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_drip_enrollments')
+      .update({ status: 'stopped', stop_reason: 'manual', stopped_at: new Date().toISOString(), next_send_at: null })
+      .eq('id', dripEnr.id).eq('status', 'active'), { label: 'drip-stop' });
+    if (w && w.error) { showToast('Could not stop the drip: ' + w.error.message, { ttl: 5000 }); dripStopBtn.disabled = false; return; }
+    showToast('Drip stopped', { ttl: 1800 });
+    renderLeads();
+  });
+  const dripEnrollBtn = $('leadDripEnroll');
+  if (dripEnrollBtn) dripEnrollBtn.addEventListener('click', async () => {
+    dripEnrollBtn.disabled = true;
+    const okE = await enrollLeadInDrip(lead.id);
+    showToast(okE ? 'Enrolled in the drip' : 'Could not enroll (no active lead campaign, or already enrolled)', { ttl: 3000 });
+    renderLeads();
   });
   const smsBtn = $('leadCopySms');
   if (smsBtn && !smsBtn.disabled) smsBtn.addEventListener('click', () => leadCopyText(ai.draft_sms, 'Text draft'));
