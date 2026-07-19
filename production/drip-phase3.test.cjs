@@ -5,8 +5,9 @@
 // Run: node production/drip-phase3.test.cjs
 'use strict';
 const {
-  runDrips, enrollLead, enrollSubject, enrollEstimateDrip, enrollJobInvoiceDrip,
-  resolveRecipient, STOP_LINE, SITE_URL,
+  runDrips, drainBlasts, computeBlastAudience, enrollLead, enrollSubject,
+  enrollEstimateDrip, enrollJobInvoiceDrip, resolveRecipient,
+  STOP_LINE, SITE_URL, BLAST_BATCH,
 } = require('../netlify/functions/_pec-drip.cjs');
 const {
   makeDb, baseTables, stubDeps, makeChecker, NOW_IN_WINDOW,
@@ -240,6 +241,113 @@ function invTables(over = {}) {
     ok(enr.next_send_at === NOW_IN_WINDOW.toISOString(), 'day-0 step is due immediately (anchored to the send moment, never backdated)');
     const r2 = await enrollJobInvoiceDrip(fx.sb, 'job1', NOW_IN_WINDOW);
     ok(!r2.enrolled && r2.reason === 'already_active', 'double enrollment 409s cleanly');
+  }
+
+  console.log('# blast audience: consent hard-filter + de-dupe with lead priority');
+  {
+    const candidates = [
+      { source: 'lead', id: 'L1', full_name: 'Ann Ash', phone: '9285550001', phone_norm: '9285550001', email: 'ann@x.com', sms_consent: true, opted_out: false },
+      { source: 'lead', id: 'L2', full_name: 'Bo Ban', phone: '9285550002', phone_norm: '9285550002', email: null, sms_consent: false, opted_out: false },  // no consent, no email -> removed for SMS-only blast
+      { source: 'lead', id: 'L3', full_name: 'Cy Cox', phone: '9285550003', phone_norm: '9285550003', email: 'cy@x.com', sms_consent: true, opted_out: true },   // opted out -> removed always
+      { source: 'customer', id: 'C1', name: 'Ann Ash', phone: '(928) 555-0001', phone_norm: '9285550001', email: 'ann@x.com', sms_opt_out: false },              // dupe of L1 by phone+email
+      { source: 'customer', id: 'C2', name: 'Dee Dot', phone: '9285550004', phone_norm: '9285550004', email: 'dee@x.com', sms_opt_out: true },                   // SMS opted out, email fine
+    ];
+    const sms = computeBlastAudience(candidates, 'sms');
+    ok(sms.recipients.length === 1 && sms.recipients[0].key === 'lead:L1', 'SMS-only: consent hard-filter leaves just the consenting lead');
+    ok(sms.removedConsent === 3 && sms.removedDupes === 1, 'removed-for-consent and removed-dupe counts are reported');
+    const both = computeBlastAudience(candidates, 'both');
+    ok(both.recipients.length === 2 && both.recipients.every(r => r.key !== 'customer:C1'), 'both-channel: the lead wins the phone/email collision with the customer');
+    const dee = both.recipients.find(r => r.key === 'customer:C2');
+    ok(dee && !dee.smsOk && dee.emailOk, 'sms_opt_out customer stays in the audience as email-only');
+    ok(both.recipients.find(r => r.key === 'lead:L1').smsOk && both.recipients.find(r => r.key === 'lead:L1').emailOk, 'per-channel eligibility is what the queue insert (and the confirm count) uses');
+  }
+
+  console.log('# blast drain: master switch, claims, resume, consent re-check');
+  const blastTables = (rows, over = {}) => baseTables({
+    pec_blasts: [{
+      id: 'b1', name: 'July special', channel: 'both', status: 'confirmed',
+      sms_body: 'Hello from Prescott Epoxy. Reply STOP to opt out.',
+      email_subject: 'Hello', email_body: 'Hello from Prescott Epoxy.',
+      audience_filter: {}, total_queued: rows.length, total_sent: 0, total_failed: 0, total_skipped: 0,
+      confirmed_at: '2026-07-20T16:00:00Z', completed_at: null,
+    }],
+    pec_drip_sends: rows,
+    ...over,
+  });
+  const qrow = (n, channel, subjOver = {}) => ({
+    id: 'q' + n, blast_id: 'b1', enrollment_id: null, campaign_id: null,
+    subject_type: 'lead', subject_id: 'lead1', lead_id: 'lead1', step_index: 0,
+    channel, status: 'queued', body: 'Hello from Prescott Epoxy. Reply STOP to opt out.',
+    subject: channel === 'email' ? 'Hello' : null,
+    created_at: `2026-07-20T15:${String(n).padStart(2, '0')}:00Z`, sent_at: null, scheduled_for: '2026-07-20T16:00:00Z',
+    ...subjOver,
+  });
+  {
+    const fx = makeDb(blastTables([qrow(1, 'sms'), qrow(2, 'email')], { settings: [{ id: 'set1', key: 'drip_sending_enabled', value: 'false' }] }));
+    const { deps, providers } = stubDeps(fx);
+    const sum = await drainBlasts(deps);
+    ok(sum.master_off === true && providers.sms.length === 0 && providers.email.length === 0, 'master switch OFF: a confirmed blast moves nothing');
+    ok(fx.db.pec_drip_sends.every(r => r.status === 'queued') && fx.db.pec_blasts[0].status === 'confirmed', 'queued rows just wait (they resume when the switch turns on)');
+  }
+  {
+    const fx = makeDb(blastTables([qrow(1, 'sms'), qrow(2, 'email')]));
+    const { deps, providers } = stubDeps(fx, { now: new Date('2026-07-20T10:00:00Z') });  // 3am Phoenix
+    const sum = await drainBlasts(deps);
+    ok(sum.sent === 1 && providers.email.length === 1 && providers.sms.length === 0 && sum.sms_held_quiet, 'outside quiet hours: email legs send, SMS legs are not claimed');
+    ok(fx.db.pec_drip_sends.find(r => r.channel === 'sms').status === 'queued' && fx.db.pec_blasts[0].status === 'sending', 'held SMS stays queued and the blast stays in sending for the next in-window tick');
+    const { deps: deps2, providers: p2 } = stubDeps(fx);   // back inside the window
+    await drainBlasts(deps2);
+    ok(p2.sms.length === 1 && p2.email.length === 0 && fx.db.pec_blasts[0].status === 'done', 'the next in-window pass sends ONLY the held SMS and completes the blast (no email re-send)');
+  }
+  {
+    // 30 email recipients: pass 1 claims BLAST_BATCH (25), pass 2 the rest.
+    // Total provider calls must equal total rows: resumable, never double.
+    const rows = Array.from({ length: 30 }, (_, i) => qrow(i + 10, 'email'));
+    const fx = makeDb(blastTables(rows));
+    const { deps, providers } = stubDeps(fx);
+    const s1 = await drainBlasts(deps);
+    ok(s1.sent === BLAST_BATCH && fx.db.pec_blasts[0].status === 'sending', 'pass 1 sends exactly BLAST_BATCH rows and leaves the blast in sending');
+    const s2 = await drainBlasts(deps);
+    ok(s2.sent === 5 && s2.done === 1, 'pass 2 sends the remaining 5 and completes');
+    ok(providers.email.length === 30 && fx.db.pec_drip_sends.every(r => r.status === 'sent'), 'every recipient sent exactly once across passes (claim-first, no double-send)');
+    const b = fx.db.pec_blasts[0];
+    ok(b.total_sent === 30 && b.total_failed === 0 && b.status === 'done' && b.completed_at, 'counts rolled up onto the blast header, status walked confirmed -> sending -> done');
+  }
+  {
+    // A STOP that lands between confirm and send must win.
+    const fx = makeDb(blastTables([qrow(1, 'sms'), qrow(2, 'email')]));
+    fx.db.leads[0].opted_out = true;
+    const { deps, providers } = stubDeps(fx);
+    const sum = await drainBlasts(deps);
+    ok(sum.skipped === 2 && providers.sms.length === 0 && providers.email.length === 0, 'opt-out after queueing skips every leg at send time');
+    ok(fx.db.pec_drip_sends.every(r => r.status === 'skipped' && r.error_message === 'opted_out_after_queue'), 'skips are recorded with the opted_out_after_queue reason');
+    ok(fx.db.pec_blasts[0].status === 'done' && fx.db.pec_blasts[0].total_skipped === 2, 'a fully-skipped blast still completes with honest counts');
+  }
+  {
+    // Customer recipient: mirror rows carry kind/template_key 'blast' so the
+    // Phase 1 contact counter can drop them (it counts the ledger instead).
+    const fx = makeDb(blastTables(
+      [qrow(1, 'sms', { subject_type: 'customer', subject_id: 'cust1', lead_id: null })],
+      { customers: [{ id: 'cust1', name: 'Bob Builder', first_name: 'Bob', phone: '9285559876', phone_norm: '9285559876', email: 'bob@example.com', sms_opt_out: false }] }
+    ));
+    const { deps, providers } = stubDeps(fx);
+    await drainBlasts(deps);
+    ok(providers.sms.length === 1 && providers.sms[0].to === '+19285559876', 'customer blast SMS resolves the live customer phone at send time');
+    const mirror = fx.db.pec_sms_log[0];
+    ok(mirror && mirror.kind === 'blast' && mirror.customer_id === 'cust1', 'pec_sms_log mirror is kind blast with customer attribution');
+    ok(fx.db.pec_drip_sends[0].status === 'sent' && fx.db.pec_drip_sends[0].provider_id, 'ledger row finalized with the provider id');
+  }
+  {
+    // Stalled 'sending' rows (a crashed pass) are failed, never re-sent.
+    const fx = makeDb(blastTables([
+      qrow(1, 'email', { status: 'sending', scheduled_for: '2026-07-20T10:00:00Z' }),  // claimed 7h ago
+      qrow(2, 'email'),
+    ]));
+    fx.db.pec_blasts[0].status = 'sending';
+    const { deps, providers } = stubDeps(fx);
+    const sum = await drainBlasts(deps);
+    ok(sum.stalled === 1 && fx.db.pec_drip_sends.find(r => r.id === 'q1').status === 'failed', 'a stale claim is marked failed by the stall sweep');
+    ok(providers.email.length === 1 && sum.done === 1 && fx.db.pec_blasts[0].total_failed === 1, 'the stalled row is never re-sent; the rest of the blast finishes');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

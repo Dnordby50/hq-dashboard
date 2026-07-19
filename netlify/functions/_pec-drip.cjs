@@ -315,6 +315,24 @@ async function sendResendEmailReal({ from, to, subject, html, reply_to }) {
   return { ok: true, id: body.id || null, error: null };
 }
 
+// Brand sender lookups, shared by the drip runner and the blast drain. The
+// cache object is per-run (callers pass their own), so a stale sender never
+// outlives one tick.
+async function getSmsSender(sb, cache) {
+  if (!(DRIP_BRAND in cache)) {
+    const senders = await sb('GET', `/pec_sms_senders?brand=eq.${DRIP_BRAND}&active=eq.true&select=*&limit=1`);
+    cache[DRIP_BRAND] = (Array.isArray(senders) && senders[0]) || null;
+  }
+  return cache[DRIP_BRAND];
+}
+async function getEmailSender(sb, cache) {
+  if (!(DRIP_BRAND in cache)) {
+    const senders = await sb('GET', `/pec_email_senders?brand=eq.${DRIP_BRAND}&select=*&limit=1`);
+    cache[DRIP_BRAND] = (Array.isArray(senders) && senders[0]) || null;
+  }
+  return cache[DRIP_BRAND];
+}
+
 const escHtml = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -582,6 +600,12 @@ async function endEnrollment(sb, enr, action, reason, nowIso) {
   });
 }
 
+// One master switch for everything outbound-automated: drips AND blasts.
+async function masterSwitchOn(sb) {
+  const sw = await sb('GET', `/settings?key=eq.drip_sending_enabled&select=value&limit=1`);
+  return Array.isArray(sw) && !!sw[0] && sw[0].value === 'true';
+}
+
 // ---------------------------------------------------------------------------
 // The runner. deps:
 //   sb(method, path, payload, returnRow)   REST layer (service role)
@@ -603,8 +627,7 @@ async function runDrips(deps) {
   };
 
   // 1. Global master switch: anything but the string 'true' means OFF.
-  const sw = await sb('GET', `/settings?key=eq.drip_sending_enabled&select=value&limit=1`);
-  if (!Array.isArray(sw) || !sw[0] || sw[0].value !== 'true') {
+  if (!(await masterSwitchOn(sb))) {
     summary.master_off = true;
     return summary;
   }
@@ -755,11 +778,7 @@ async function runDrips(deps) {
       // counts the ledger instead (the de-dupe rule).
       let anySent = false;
       if (smsBody) {
-        if (!smsSenderCache[DRIP_BRAND]) {
-          const senders = await sb('GET', `/pec_sms_senders?brand=eq.${DRIP_BRAND}&active=eq.true&select=*&limit=1`);
-          smsSenderCache[DRIP_BRAND] = (Array.isArray(senders) && senders[0]) || null;
-        }
-        const sender = smsSenderCache[DRIP_BRAND];
+        const sender = await getSmsSender(sb, smsSenderCache);
         if (!sender || !sender.from_number) {
           await writeLedger({ channel: 'sms', status: 'failed', body: smsBody, error_message: 'no active SMS sender for brand' });
           summary.failed++;
@@ -778,11 +797,7 @@ async function runDrips(deps) {
         }
       }
       if (canEmail && emailBody) {
-        if (!emailSenderCache[DRIP_BRAND]) {
-          const senders = await sb('GET', `/pec_email_senders?brand=eq.${DRIP_BRAND}&select=*&limit=1`);
-          emailSenderCache[DRIP_BRAND] = (Array.isArray(senders) && senders[0]) || null;
-        }
-        const sender = emailSenderCache[DRIP_BRAND];
+        const sender = await getEmailSender(sb, emailSenderCache);
         if (!sender || !sender.from_email) {
           await writeLedger({ channel: 'email', status: 'failed', subject: emailSubject, body: emailBody, error_message: 'no email sender for brand' });
           summary.failed++;
@@ -822,10 +837,206 @@ async function runDrips(deps) {
   return summary;
 }
 
+// ---------------------------------------------------------------------------
+// BLASTS (prompt 35 Part D). A blast is ONE composed message to a chosen
+// audience, not an enrolled sequence, so it never touches the runner loop.
+// The wizard materializes every recipient as a status 'queued' pec_drip_sends
+// row (blast_id set, enrollment_id null) at confirm time; that queue IS the
+// resume mechanism and the no-double-send guard: the drain only ever
+// processes 'queued' rows, claims each one (queued -> 'sending', the same
+// conditional-PATCH atomicity as the runner), and a crashed pass leaves rows
+// it claimed as 'sending' for the stall sweep to mark failed. A stalled row
+// is NEVER re-queued (the send may have landed; non-idempotent-write rule).
+// ---------------------------------------------------------------------------
+const BLAST_BATCH = 25;                   // rows per blast per pass; separate from RUN_CAP so a big blast never starves the drips
+const BLAST_STALL_MS = 60 * 60 * 1000;    // 'sending' rows older than this are failed, never re-sent
+
+// Pure audience math, shared verbatim with the wizard in index.html so the
+// count Dylan confirms is computed by the SAME rules the queue insert uses.
+// candidates: [{source:'lead'|'customer', id, name/full_name, first_name,
+//   phone, phone_norm, email, sms_consent, email_consent, opted_out,
+//   sms_opt_out}]. channel: 'sms'|'email'|'both'.
+// Consent hard-filter FIRST (leads need positive sms_consent and not
+// opted_out; customers are opt-out only), then de-dupe by phone tail and
+// lowercased email. Leads are processed first so on a collision the LEAD
+// wins and the send keeps lead attribution (contact counts).
+function computeBlastAudience(candidates, channel) {
+  const wantSms = channel === 'sms' || channel === 'both';
+  const wantEmail = channel === 'email' || channel === 'both';
+  const recipients = [];
+  let removedConsent = 0, removedDupes = 0;
+  const seenPhones = new Set(), seenEmails = new Set();
+  const ordered = [
+    ...candidates.filter(c => c.source === 'lead'),
+    ...candidates.filter(c => c.source !== 'lead'),
+  ];
+  for (const c of ordered) {
+    const isLead = c.source === 'lead';
+    const smsTo = toE164(c.phone);
+    const tail = c.phone_norm || phoneTail(c.phone);
+    const emailLc = c.email ? String(c.email).trim().toLowerCase() : null;
+    const optedOut = isLead ? !!c.opted_out : false;
+    const smsOk = wantSms && !optedOut && !!smsTo && (isLead ? !!c.sms_consent : !c.sms_opt_out);
+    const emailOk = wantEmail && !optedOut && !!emailLc && (isLead ? c.email_consent !== false : true);
+    if (!smsOk && !emailOk) { removedConsent++; continue; }
+    if ((tail && seenPhones.has(tail)) || (emailLc && seenEmails.has(emailLc))) { removedDupes++; continue; }
+    if (tail) seenPhones.add(tail);
+    if (emailLc) seenEmails.add(emailLc);
+    const name = c.name || c.full_name || null;
+    recipients.push({
+      key: (isLead ? 'lead:' : 'customer:') + c.id,
+      source: isLead ? 'lead' : 'customer',
+      id: c.id, name,
+      first_name: c.first_name || (name ? String(name).split(/\s+/)[0] : null),
+      smsOk, emailOk, phone: c.phone || null, smsTo, email: c.email || null,
+    });
+  }
+  return { recipients, removedConsent, removedDupes };
+}
+
+// The drain. Two callers, one engine: the 15-min scheduled tick (safety net +
+// resume after crash / quiet hours / master switch flipped on later) and
+// pec-blast-run.cjs (the "send now" kick right after confirm). deps as
+// runDrips; opts.blastId scopes to one blast.
+// Quiet hours: outside 8am-8pm Phoenix only email rows are claimed; SMS rows
+// simply stay queued for the next in-window pass. Blasts have no dry_run
+// (the human confirm IS the review gate), so this applies unconditionally.
+// Consent is RE-CHECKED at send time from the live lead/customer row: a STOP
+// that lands between confirm and send wins ('opted_out_after_queue').
+async function drainBlasts(deps, opts = {}) {
+  const sb = deps.sb;
+  const now = deps.now || (() => new Date());
+  const sendSms = deps.sendSms || sendQuoSmsReal;
+  const sendEmail = deps.sendEmail || sendResendEmailReal;
+  const summary = { master_off: false, blasts: 0, sent: 0, failed: 0, skipped: 0, stalled: 0, done: 0, sms_held_quiet: false };
+  if (!(await masterSwitchOn(sb))) { summary.master_off = true; return summary; }
+
+  const nowIso = now().toISOString();
+  const q = quietHours(now());
+  const idFilter = opts.blastId ? `&id=eq.${encodeURIComponent(opts.blastId)}` : '';
+  const blasts = await sb('GET', `/pec_blasts?status=in.(confirmed,sending)${idFilter}&select=*&order=confirmed_at.asc`);
+  const smsSenderCache = {}, emailSenderCache = {};
+
+  for (const blast of (Array.isArray(blasts) ? blasts : [])) {
+    summary.blasts++;
+    const bid = encodeURIComponent(blast.id);
+    try {
+      if (blast.status === 'confirmed') {
+        await sb('PATCH', `/pec_blasts?id=eq.${bid}&status=eq.confirmed`, { status: 'sending' });
+      }
+
+      // Stall sweep: rows a crashed pass left in 'sending' (scheduled_for is
+      // re-stamped at claim, so it doubles as the claim timestamp).
+      const stallIso = new Date(now().getTime() - BLAST_STALL_MS).toISOString();
+      const stalled = await sb('PATCH',
+        `/pec_drip_sends?blast_id=eq.${bid}&status=eq.sending&scheduled_for=lte.${encodeURIComponent(stallIso)}`,
+        { status: 'failed', error_message: 'stalled after claim; never auto-resent (the first send may have landed)' }, true);
+      if (Array.isArray(stalled)) summary.stalled += stalled.length;
+
+      const chanFilter = q.inWindow ? '' : '&channel=eq.email';
+      if (!q.inWindow) summary.sms_held_quiet = true;
+      const queued = await sb('GET',
+        `/pec_drip_sends?blast_id=eq.${bid}&status=eq.queued${chanFilter}&select=*&order=created_at.asc&limit=${BLAST_BATCH}`);
+      const rows = Array.isArray(queued) ? queued : [];
+
+      // Live subject rows for the send-time consent re-check + destination
+      // (the destination is deliberately NOT frozen into the queue row, so a
+      // phone/email fixed between confirm and send is honored).
+      const leadIds = [...new Set(rows.filter(r => r.subject_type === 'lead').map(r => r.subject_id))];
+      const custIds = [...new Set(rows.filter(r => r.subject_type === 'customer').map(r => r.subject_id))];
+      const [leadRows, custRows] = await Promise.all([
+        leadIds.length ? sb('GET', `/leads?id=in.(${leadIds.join(',')})&select=id,phone,email,opted_out,sms_consent,email_consent,customer_id,deleted_at`) : [],
+        custIds.length ? sb('GET', `/customers?id=in.(${custIds.join(',')})&select=id,phone,email,sms_opt_out`) : [],
+      ]);
+      const subjMap = new Map([
+        ...(Array.isArray(leadRows) ? leadRows : []).map(r => ['lead:' + r.id, r]),
+        ...(Array.isArray(custRows) ? custRows : []).map(r => ['customer:' + r.id, r]),
+      ]);
+
+      for (const row of rows) {
+        // CLAIM: queued -> sending, conditional on still being queued.
+        const claimed = await sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}&status=eq.queued`,
+          { status: 'sending', scheduled_for: nowIso }, true);
+        if (!Array.isArray(claimed) || !claimed.length) continue;   // another pass owns it
+
+        const finalize = (patch) => sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}`, patch)
+          .catch(e => console.error('pec-blast: finalize failed', e.message));
+
+        const subj = subjMap.get(row.subject_type + ':' + row.subject_id);
+        const isLead = row.subject_type === 'lead';
+        const gone = !subj || (isLead && subj.deleted_at);
+        const optedNow = gone
+          || (isLead && (subj.opted_out || (row.channel === 'sms' && !subj.sms_consent) || (row.channel === 'email' && subj.email_consent === false)))
+          || (!isLead && row.channel === 'sms' && subj.sms_opt_out);
+        if (optedNow) {
+          await finalize({ status: 'skipped', error_message: gone ? 'recipient_missing' : 'opted_out_after_queue' });
+          summary.skipped++; continue;
+        }
+        const customerId = isLead ? (subj.customer_id || null) : row.subject_id;
+
+        let out;
+        if (row.channel === 'sms') {
+          const to = toE164(subj.phone);
+          if (!to) { await finalize({ status: 'skipped', error_message: 'no_valid_phone' }); summary.skipped++; continue; }
+          const sender = await getSmsSender(sb, smsSenderCache);
+          if (!sender || !sender.from_number) {
+            await finalize({ status: 'failed', error_message: 'no active SMS sender for brand' });
+            summary.failed++; continue;
+          }
+          try { out = await sendSms({ from: sender.from_number, to, content: row.body }); }
+          catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+          await sb('POST', '/pec_sms_log', {
+            direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: to,
+            customer_id: customerId, body: row.body, kind: 'blast',
+            status: out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
+          }).catch(e => console.error('pec-blast: sms log failed', e.message));
+        } else {
+          const to = subj.email;
+          if (!to) { await finalize({ status: 'skipped', error_message: 'no_email' }); summary.skipped++; continue; }
+          const sender = await getEmailSender(sb, emailSenderCache);
+          if (!sender || !sender.from_email) {
+            await finalize({ status: 'failed', error_message: 'no email sender for brand' });
+            summary.failed++; continue;
+          }
+          try {
+            out = await sendEmail({
+              from: `${sender.from_name} <${sender.from_email}>`, to,
+              subject: row.subject || 'From Prescott Epoxy', html: dripEmailHtml(row.body),
+              reply_to: sender.reply_to || undefined,
+            });
+          } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+          await sb('POST', '/pec_email_log', {
+            customer_id: customerId, brand: DRIP_BRAND, template_key: 'blast',
+            to_email: to, from_email: sender.from_email, subject: row.subject || null,
+            status: out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
+          }).catch(e => console.error('pec-blast: email log failed', e.message));
+        }
+        await finalize({ status: out.ok ? 'sent' : 'failed', sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
+        if (out.ok) summary.sent++; else summary.failed++;
+      }
+
+      // Rollup onto the header (guarded so a concurrent Cancel is never
+      // overwritten). done = nothing queued AND nothing mid-claim.
+      const all = await sb('GET', `/pec_drip_sends?blast_id=eq.${bid}&select=status`);
+      const counts = { queued: 0, sending: 0, sent: 0, failed: 0, skipped: 0, dry_run: 0 };
+      (Array.isArray(all) ? all : []).forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+      const remaining = counts.queued + counts.sending;
+      await sb('PATCH', `/pec_blasts?id=eq.${bid}&status=in.(confirmed,sending)`, {
+        total_sent: counts.sent, total_failed: counts.failed, total_skipped: counts.skipped,
+        ...(remaining === 0 ? { status: 'done', completed_at: nowIso } : {}),
+      });
+      if (remaining === 0) summary.done++;
+    } catch (err) {
+      console.error('pec-blast: blast', blast.id, 'failed:', err && err.message || err);
+    }
+  }
+  return summary;
+}
+
 module.exports = {
-  runDrips, enrollLead, enrollEstimateDrip, enrollJobInvoiceDrip,
-  enrollSubject, resolveRecipient, checkKillSwitches,
-  kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms, usd,
-  dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT, RENDER_SYSTEM_PROMPTS,
-  RUN_CAP, STOP_LINE, SITE_URL,
+  runDrips, drainBlasts, computeBlastAudience, enrollLead, enrollEstimateDrip,
+  enrollJobInvoiceDrip, enrollSubject, resolveRecipient, checkKillSwitches,
+  masterSwitchOn, kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms,
+  usd, dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
+  RENDER_SYSTEM_PROMPTS, RUN_CAP, BLAST_BATCH, STOP_LINE, SITE_URL,
 };
