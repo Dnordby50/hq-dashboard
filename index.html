@@ -9860,6 +9860,21 @@ async function renderJobInvoice(jobId) {
       textB.disabled = true; const prevText = textB.textContent; textB.textContent = 'Texting…';
       try {
         await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
+        // First-send wins, same stamp as the email path below (this SMS path
+        // was missing it, so a text-only invoice never anchored the AR-timing
+        // metric and, since Phase 3, would never enroll payment reminders).
+        // The null->set transition is the ONE moment the invoice drip enrolls.
+        if (!row.invoice_first_sent_at) {
+          const nowIso = new Date().toISOString();
+          withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+            .then(res => {
+              if (!(res && res.error)) {
+                row.invoice_first_sent_at = nowIso;
+                enrollInvoiceDripClient(row.id).catch(() => {});
+              }
+            })
+            .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
+        }
         showToast('Invoice texted ✓', { ttl: 3500 });
         renderInvoicing(); // re-lands on this invoice; the Communication history panel picks up the send
       } catch (err) {
@@ -9936,7 +9951,15 @@ async function renderJobInvoice(jobId) {
           if (!row.invoice_first_sent_at) {
             const nowIso = new Date().toISOString();
             withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
-              .then(res => { if (!(res && res.error)) row.invoice_first_sent_at = nowIso; })
+              .then(res => {
+                if (!(res && res.error)) {
+                  row.invoice_first_sent_at = nowIso;
+                  // Phase 3: the first invoice send enrolls automatic payment
+                  // reminders (campaign ships dry_run; nothing texts/emails
+                  // until Dylan flips it live). Stamp-guarded = exactly once.
+                  enrollInvoiceDripClient(row.id).catch(() => {});
+                }
+              })
               .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
           }
           closeModal();

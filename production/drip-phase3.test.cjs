@@ -172,6 +172,76 @@ function invTables(over = {}) {
     ok(estEnr.next_send_at === '2026-07-21T17:00:00.000Z', 'first estimate touch lands a day after the send');
   }
 
+  console.log('# invoice drip: real balance + pay link, recomputed every run');
+  {
+    const fx = makeDb(invTables());
+    const { deps, providers } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    ok(sum.dry_run === 1 && providers.ai.length === 1 && providers.ai[0].kind === 'invoice', 'invoice touch renders once with the invoice prompt kind');
+    const smsRow = fx.db.pec_drip_sends.find(r => r.channel === 'sms');
+    ok(smsRow && smsRow.body.includes('Balance: $5,000.00') && smsRow.body.includes(`${SITE_URL}/pay/tok-pay-1`), 'SMS carries the code-appended REAL balance and pay link');
+    ok(smsRow.subject_type === 'job' && smsRow.subject_id === 'job1' && smsRow.lead_id === null, 'ledger row is job-keyed with no lead attribution');
+  }
+  {
+    const fx = makeDb(invTables({ pec_payments: [{ id: 'p1', job_id: 'job1', amount: 5000 }] }));
+    const { deps, providers } = stubDeps(fx);
+    await runDrips(deps);
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(enr.status === 'stopped' && enr.stop_reason === 'paid' && providers.ai.length === 0, 'a fully paid balance stops the reminders before any render');
+  }
+  {
+    // Partial payment: keeps reminding with the LOWERED balance; a later full
+    // payment stops the next run (recompute-per-run, never cached).
+    const fx = makeDb(invTables({ pec_payments: [{ id: 'p1', job_id: 'job1', amount: 2000 }] }));
+    const { deps } = stubDeps(fx);
+    await runDrips(deps);
+    const smsRow = fx.db.pec_drip_sends.find(r => r.channel === 'sms');
+    ok(fx.db.pec_drip_enrollments[0].status === 'active' && smsRow && smsRow.body.includes('Balance: $3,000.00'), 'a partial payment does NOT stop it; the copy shows the remaining balance');
+    fx.db.pec_payments.push({ id: 'p2', job_id: 'job1', amount: 3000 });
+    fx.db.pec_drip_enrollments[0].next_send_at = '2026-07-20T16:30:00Z';
+    await runDrips(deps);
+    ok(fx.db.pec_drip_enrollments[0].stop_reason === 'paid', 'the payment that clears the balance stops it on the next run');
+  }
+  {
+    const fx = makeDb(invTables());
+    fx.db.customers[0].sms_opt_out = true;
+    fx.db.pec_drip_enrollments[0].next_step_index = 1;   // 'both' step
+    const { deps } = stubDeps(fx);
+    await runDrips(deps);
+    const skip = fx.db.pec_drip_sends.find(r => r.channel === 'sms');
+    const email = fx.db.pec_drip_sends.find(r => r.channel === 'email');
+    ok(skip && skip.status === 'skipped' && skip.error_message === 'sms_opted_out', 'customer STOP skips the SMS leg with its own reason');
+    ok(email && email.status === 'dry_run' && email.body.includes(`${SITE_URL}/pay/tok-pay-1`), 'the email reminder still goes (opt-out is an SMS-scope signal)');
+  }
+  {
+    const fx = makeDb(invTables());
+    fx.db.jobs[0].voided_at = '2026-07-20T00:00:00Z';
+    const { deps } = stubDeps(fx);
+    await runDrips(deps);
+    ok(fx.db.pec_drip_enrollments[0].stop_reason === 'job_closed', 'a voided/archived job stops the reminders');
+  }
+  {
+    // Live mode: mirrors carry the job + customer so the conversation threads
+    // attach to the right records.
+    const fx = makeDb(invTables());
+    fx.db.pec_drip_campaigns[0].mode = 'live';
+    const { deps, providers } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    ok(sum.sent === 1 && providers.sms[0].to === '+19285559876', 'live invoice SMS goes to the CUSTOMER phone');
+    const mirror = fx.db.pec_sms_log.find(r => r.direction === 'out');
+    ok(mirror && mirror.kind === 'drip' && mirror.job_id === 'job1' && mirror.customer_id === 'cust1', 'pec_sms_log mirror carries job_id + customer_id');
+    ok(providers.sms[0].content.includes('Balance: $5,000.00') && providers.sms[0].content.trim().endsWith(STOP_LINE.trim()), 'live SMS has balance, pay link, and the STOP line');
+  }
+  {
+    const fx = makeDb(invTables({ pec_drip_enrollments: [] }));
+    const r = await enrollJobInvoiceDrip(fx.sb, 'job1', NOW_IN_WINDOW);
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(r.enrolled && enr.subject_type === 'job' && enr.subject_id === 'job1' && enr.lead_id === null, 'enrollJobInvoiceDrip creates a job-keyed enrollment');
+    ok(enr.next_send_at === NOW_IN_WINDOW.toISOString(), 'day-0 step is due immediately (anchored to the send moment, never backdated)');
+    const r2 = await enrollJobInvoiceDrip(fx.sb, 'job1', NOW_IN_WINDOW);
+    ok(!r2.enrolled && r2.reason === 'already_active', 'double enrollment 409s cleanly');
+  }
+
   console.log(`\n${state.passed} passed, ${state.failed} failed`);
   process.exit(state.failed ? 1 : 0);
 })().catch(err => { console.error('fixture crashed:', err); process.exit(1); });
