@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-19 MST] Cowork: scoped leads-pipeline robustness build (3 phases, Phase 1 prompt written)
+By: Cowork
+Changed: No code. Scoped Dylan's multi-part ask ("make the leads pipeline more robust: speed-to-lead + times-contacted on the card auto-pulled from Quo; automated drip campaigns for leads, estimates, invoices; a manual blast feature; tie all metrics into the Metrics dashboard; make the Metrics graphs less blank than flat bars"). Dug in with multiple-choice questions across three rounds before writing anything.
+
+LOCKED DECISIONS (Dylan): drips send FULLY AUTOMATIC with AI tailoring each message per lead (this intentionally overrides the old "AI drafts, never sends" rule for drip copy only; scoring/analysis stay read-only); channel = both SMS + email; lead cadence = tapering ~8-10 touches over 30 days (Dylan floated "daily for 30 days"; I pushed back on carrier/TCPA risk and he took the taper); times-contacted counts outbound Quo calls/texts + drip sends; drip kill-switches = ALL of (lead replies, stage advances / marked lost, STOP/opt-out, max touches); estimate drips = auto tapering until accepted/lost; invoice drips = auto payment reminders until paid; manual blast = filter a segment then deselect, both channels; new metrics = drip performance + blast performance + contact-count stats + speed-to-lead trend; graphs = Chart.js (CDN) for big charts + sparklines on KPI cards; build is PHASED into 3 prompts.
+
+KEY CODE FINDING (baked into the prompt): the 2026-07 leads notes assumed Quo activity lands in lead_events, but pec-webhook-quo.cjs actually writes calls to pec_call_log (direction in/out) and inbound texts to pec_sms_log; outbound texts come from pec-send-sms.cjs; emails in pec_email_log. lead_events is ~1 row and unused. So the times-contacted count must be derived by matching those comms logs to the lead via customer_id AND phone_norm (a lead may have no customer_id pre-conversion), de-duped. This corrects the mental model before Claude Code wastes a cycle on it.
+
+PHASE PLAN: P1 (prompt 33, written and handed to Dylan) = times-contacted chip on the lead card/detail from the comms logs + AI score badge/sort surfacing + Metrics graph redesign (Chart.js + sparklines) on the EXISTING metrics plus one contact-count stat card. P2 = the drip engine (schema for campaigns/enrollments/steps/sends, a scheduled Netlify function, AI per-message tailoring, all four kill-switches, opt-out/rate-limit enforcement) plus folding drip sends into the times-contacted tally. P3 = estimate + invoice drips on the same engine, the manual blast tool (filter-then-deselect, both channels), and the drip/blast performance metric cards (the placeholder P1 leaves in the Sales section). P2 and P3 prompts are written AFTER P1 ships, because they depend on P1's tables/reality.
+
+Why: Dylan's leads-robustness feedback; scoped by Cowork 2026-07-19.
+Files touched: none in the repo (prompt delivered to Dylan in chat + as a file). PROJECT-LOG.md this entry.
+Next steps: Dylan hands prompt 33 to Claude Code. After P1 ships and is tested, Cowork writes the Phase 2 prompt.
+Handoff to Cowork: none yet.
+Handoff to Dylan: Review and hand prompt 33 to Claude Code. Also run the git commit for this log entry (the Cowork cloud sandbox cannot commit).
+
+---
+
+
 ## [2026-07-18 MST] Estimator: custom-job square footage + crew notes on the work order (prompt 32 delivered)
 By: Claude Code
 Changed: Delivered claude-code-prompt-32-estimator-sqft-and-crew-notes. Two independent commits so either part can revert alone: Part A (9e84ea0) custom-estimate square footage + price per sqft; Part B (cac968e) crew notes on the estimator and work order; plus this docs commit (What's New x2, features.json, log, prompt archived to docs/archive/prompts/). NEITHER migration applied (Cowork handoff below). Anchor check: every index.html line ref in the prompt (jobEffectiveSqft 8542, renderWorkOrder 11608, costing $/sqft 23055, Job Card ~12184, saveJob ~13347) matched by function name + grep with no drift.
