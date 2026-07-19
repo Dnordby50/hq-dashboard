@@ -1,5 +1,27 @@
 [
   {
+    "id": "manual-blast-tool",
+    "date": "2026-07-19",
+    "title": "Send one message to many people with the new blast tool",
+    "summary": "The Drips page now has a Manual blast card. Compose one text and/or email (with an optional AI draft you edit), pick your audience by filtering leads and customers, and uncheck anyone you want to leave out. Anyone who opted out or never gave texting consent is removed before you ever see the count, duplicates are removed, and nothing sends until you confirm a screen that states the exact number of texts and emails going out. Texts respect the 8am to 8pm window, every one carries a Reply STOP line, and the master switch gates blasts just like drips. Progress shows live on the Drips page and you can cancel the unsent remainder at any time.",
+    "howto": [
+      "Open Drips (under Sales) and click New blast, then write the message or use Draft with AI and edit it.",
+      "Filter the audience, uncheck anyone to exclude, and review how many were removed for consent.",
+      "Confirm the exact counts on the last step. Watch progress on the Drips page; Cancel rest stops whatever has not sent yet."
+    ]
+  },
+  {
+    "id": "drip-blast-metrics",
+    "date": "2026-07-19",
+    "title": "Drip and blast results on the Metrics page",
+    "summary": "The Metrics Sales section now shows how the automatic sequences and blasts are performing. Drip performance breaks down each sequence (lead follow-up, estimate follow-up, invoice reminders): how many are running now, messages sent, replies, and conversions, plus a chart of why sequences ended. Blast performance lists each recent blast with sent, failed, skipped, and opt-out counts and a weekly volume chart. Everything follows the same time window as the rest of Metrics and you can click through to the records behind the numbers.",
+    "howto": [
+      "Open Metrics and scroll to the Sales section: the two new cards sit under Outbound touches.",
+      "Click the drip table or a blast row to see the individual sends behind the numbers.",
+      "Use the window selector at the top to change the period, same as every other card."
+    ]
+  },
+  {
     "id": "estimate-invoice-drips",
     "date": "2026-07-19",
     "title": "Automatic estimate follow-ups and invoice payment reminders",

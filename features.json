@@ -328,6 +328,58 @@
       "since": "2026-07"
     },
     {
+      "name": "Manual blast tool",
+      "area": "dashboard",
+      "description": "One composed message to a filtered audience, sent from the Drips page via a 3-step wizard: compose (one shared SMS and/or email; {first_name} is the only personalization; an optional Draft with AI button drafts from a typed goal and can never invent offers the goal does not state), audience (filter leads by stage/source/campaign/brand and customers by tag/company, then deselect anyone; opt-outs and missing consent are hard-filtered BEFORE the count is shown with removed counts displayed, and recipients are de-duped by phone/email with leads winning collisions), and a confirm step stating the EXACT per-channel counts that nothing sends without. Recipients are materialized as queued rows in the shared pec_drip_sends ledger (blast_id set); the drain claims each row conditionally (queued -> sending -> sent/failed), re-checks consent at send time so a late STOP wins, holds SMS outside 8am-8pm Phoenix, and is resumable and double-send-proof by construction. pec-blast-run kicks immediate sending after confirm; the 15-minute drip tick is the safety net. The master switch gates blasts too. Every text carries Reply STOP to opt out; lead-directed blast sends count as outbound touches via the shared ledger.",
+      "code": {
+        "indexHtml": [
+          "openBlastWizard",
+          "computeBlastAudienceClient",
+          "pecBlastRun",
+          "renderDrips",
+          "leadContactStats"
+        ],
+        "netlifyFunctions": [
+          "_pec-drip.cjs",
+          "pec-blast-run.cjs",
+          "pec-drip-runner.cjs",
+          "pec-lead-ai.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-19_drip_phase3.sql",
+          "production/drip-phase3.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_blasts",
+        "pec_drip_sends",
+        "leads",
+        "customers",
+        "settings"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Drip and blast performance metrics",
+      "area": "dashboard",
+      "description": "Two Sales-section Metrics cards (the former Phase 3 placeholder slot). Drip performance: one row per sequence kind (lead nurture, estimate follow-up, invoice reminders) with its dry-run/LIVE chip, active enrollments right now, sends and dry-run previews in the window, replies, and conversions (stage advanced / signed / paid) with a conversion rate over enrollments that ended in the window, plus a stop-reason bar chart and a drill to the window's sends. Blast performance: recent blasts with sent/failed/skipped, opt-outs generated after confirm, per-blast drills, and a weekly sent-volume chart; notes honestly that blast replies are not machine-attributed. Both filter by the existing Metrics time window, degrade to a not-migrated notice pre-migration, and show honest empty states while data is thin.",
+      "code": {
+        "indexHtml": [
+          "renderMetrics",
+          "openMetricsDrill"
+        ],
+        "netlifyFunctions": [],
+        "other": []
+      },
+      "tables": [
+        "pec_drip_campaigns",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "pec_blasts"
+      ],
+      "since": "2026-07"
+    },
+    {
       "name": "Lead detail with AI game plan",
       "area": "dashboard",
       "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip card shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, and drip messages (including dry-run previews) appear in the Activity timeline.",
@@ -612,7 +664,7 @@
     {
       "name": "Metrics and analytics",
       "area": "dashboard",
-      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card (avg touches to win / to estimate out, open leads never contacted, from the same comms-log matcher as the Leads board), the open pipeline with an AI-written weekly read, and a commented placeholder where Phase 3 drip/blast performance cards will land.",
+      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card (avg touches to win / to estimate out, open leads never contacted, from the same comms-log matcher as the Leads board), the open pipeline with an AI-written weekly read, and the Phase 3 drip/blast performance cards (see the Drip and blast performance metrics entry).",
       "code": {
         "indexHtml": [
           "renderMetrics",
