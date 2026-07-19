@@ -10558,10 +10558,20 @@ async function renderMetrics() {
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
       loadOutboundTouchLogs().catch(err => { console.warn('[metrics] touch logs:', err.message || err); return null; }),
+      // Drip + blast performance sources (prompt 35 Part E, the PHASE 3 SLOT
+      // cards). Each degrades independently: pre-migration errors render the
+      // honest "not migrated" empty state, never blank the tab. The sends
+      // read is unbounded but tiny at current volume; add a created_at range
+      // filter if the ledger ever grows past a few thousand rows.
+      supabase.from('pec_drip_campaigns').select('id,name,kind,mode,status'),
+      supabase.from('pec_drip_enrollments').select('id,campaign_id,status,stop_reason,enrolled_at,stopped_at,subject_type'),
+      supabase.from('pec_drip_sends').select('campaign_id,blast_id,channel,status,step_index,sent_at,created_at,error_message'),
+      supabase.from('pec_blasts').select('*').order('created_at', { ascending: false }).limit(12),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
-    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames, metricsTouchLogs] = res;
+    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames, metricsTouchLogs,
+    dripCampRes, dripEnrRes, dripSendRes, blastHdrRes] = res;
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
   // the view does not have it yet, so the rest of Metrics renders normally.
@@ -11166,6 +11176,89 @@ async function renderMetrics() {
   let salesInsight = null;
   try { salesInsight = (insightRes && !insightRes.error && insightRes.data) ? JSON.parse(insightRes.data.value) : null; } catch (_) { salesInsight = null; }
 
+  // ---- Drip + blast performance (prompt 35 Part E; fills the PHASE 3 SLOT) --
+  // Window rule: SENDS count by when they went out (sent_at, falling back to
+  // created_at for dry-run rows), OUTCOMES (replies/conversions/stop reasons)
+  // by when the enrollment ended (stopped_at). "Active now" is deliberately
+  // point-in-time, not windowed: it answers "what is running today".
+  const dripReady = !(dripCampRes && dripCampRes.error) && !(dripEnrRes && dripEnrRes.error) && !(dripSendRes && dripSendRes.error);
+  const dripCamps = dripReady ? (dripCampRes.data || []) : [];
+  const dripEnrs = dripReady ? (dripEnrRes.data || []) : [];
+  const dripSendsAll = dripReady ? (dripSendRes.data || []) : [];
+  const blastHdrs = (blastHdrRes && !blastHdrRes.error) ? (blastHdrRes.data || []) : [];
+  const inWinTs = ts => { const d = mstDay(ts); return d && d >= wStart && d <= wEnd; };
+  const campKind = Object.fromEntries(dripCamps.map(c => [c.id, c.kind]));
+  const dripLedger = dripSendsAll.filter(r => !r.blast_id);
+  const blastLedger = dripSendsAll.filter(r => r.blast_id);
+  const CONVERT_REASONS = { lead: ['stage_advanced', 'estimate_sent'], estimate: ['accepted'], invoice: ['paid'] };
+  const KIND_LABEL = { lead: 'Lead nurture', estimate: 'Estimate follow-up', invoice: 'Invoice reminders' };
+  const CONVERT_LABEL = { lead: 'advanced', estimate: 'signed', invoice: 'paid' };
+  const dripKindRows = ['lead', 'estimate', 'invoice'].map(kind => {
+    const campIds = new Set(dripCamps.filter(c => c.kind === kind).map(c => c.id));
+    const camp = dripCamps.find(c => c.kind === kind) || null;
+    const enrs = dripEnrs.filter(e => campIds.has(e.campaign_id));
+    const ended = enrs.filter(e => e.stopped_at && inWinTs(e.stopped_at));
+    const converted = ended.filter(e => CONVERT_REASONS[kind].includes(e.stop_reason)).length;
+    const sends = dripLedger.filter(r => campIds.has(r.campaign_id));
+    return {
+      kind, camp,
+      active: enrs.filter(e => e.status === 'active').length,
+      sent: sends.filter(r => r.status === 'sent' && inWinTs(r.sent_at)).length,
+      dryRun: sends.filter(r => r.status === 'dry_run' && inWinTs(r.created_at)).length,
+      replied: ended.filter(e => e.stop_reason === 'replied').length,
+      converted, endedN: ended.length,
+      convPct: ended.length ? Math.round((converted / ended.length) * 100) : null,
+    };
+  });
+  const dripHasAny = dripKindRows.some(r => r.active || r.sent || r.dryRun || r.endedN);
+  // Stop-reason breakdown across all kinds, ended in window (hbar).
+  const stopCounts = {};
+  for (const e of dripEnrs) {
+    if (!e.stopped_at || !inWinTs(e.stopped_at) || !e.stop_reason) continue;
+    stopCounts[e.stop_reason] = (stopCounts[e.stop_reason] || 0) + 1;
+  }
+  const stopRows = Object.entries(stopCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const dripSendsDrill = regDrill(() => ({
+    title: 'Drip sends in this window',
+    columns: ['When', 'Kind', 'Step', 'Channel', 'Status'],
+    rows: dripLedger.filter(r => inWinTs(r.sent_at || r.created_at))
+      .sort((a, b) => String(b.sent_at || b.created_at).localeCompare(String(a.sent_at || a.created_at)))
+      .map(r => ({ cells: [invFmtDate(mstDay(r.sent_at || r.created_at)), KIND_LABEL[campKind[r.campaign_id]] || '—', String(r.step_index + 1), r.channel, r.status === 'dry_run' ? 'dry run' : r.status] })),
+    total: [countOf(dripLedger.filter(r => inWinTs(r.sent_at || r.created_at)).length, 'send'), '', '', '', ''],
+    footnote: 'Dry-run rows are drafted previews; nothing went to a customer.',
+  }));
+  // Blast performance: weekly sent volume + per-blast drill.
+  const blastVolWeekly = Array(weeks.length).fill(0);
+  for (const r of blastLedger) {
+    if (r.status !== 'sent') continue;
+    const b = bucketOf(mstDay(r.sent_at));
+    if (b >= 0) blastVolWeekly[b]++;
+  }
+  const blastHasAny = blastHdrs.length > 0;
+  const blastNameById = Object.fromEntries(blastHdrs.map(b => [b.id, b.name]));
+  const blastVolIds = weeks.map((w, i) => regDrill(() => {
+    const rows = blastLedger.filter(r => r.status === 'sent' && bucketOf(mstDay(r.sent_at)) === i);
+    return {
+      title: `Blast messages sent, week of ${w.label}`,
+      columns: ['When', 'Blast', 'Channel'],
+      rows: rows.sort((a, b) => String(a.sent_at).localeCompare(String(b.sent_at)))
+        .map(r => ({ cells: [invFmtDate(mstDay(r.sent_at)), blastNameById[r.blast_id] || '—', r.channel] })),
+      total: [countOf(rows.length, 'message'), '', ''],
+    };
+  }));
+  const blastDrillIds = Object.fromEntries(blastHdrs.map(b => [b.id, regDrill(() => {
+    const rows = blastLedger.filter(r => r.blast_id === b.id);
+    return {
+      title: `Blast: ${b.name}`,
+      columns: ['When', 'Channel', 'Status', 'Note'],
+      rows: rows.sort((a, c) => String(a.created_at).localeCompare(String(c.created_at)))
+        .map(r => ({ cells: [invFmtDate(mstDay(r.sent_at || r.created_at)), r.channel, r.status, r.error_message || ''] })),
+      total: [countOf(rows.length, 'recipient send'), '', '', ''],
+      footnote: 'Replies to blasts are not machine-attributed; watch the Messages inbox.',
+    };
+  })]));
+  const blastOptOuts = (b) => blastLedger.filter(r => r.blast_id === b.id && r.status === 'skipped' && r.error_message === 'opted_out_after_queue').length;
+
   const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
   root.innerHTML = `
     <div class="pec-toolbar">
@@ -11250,10 +11343,52 @@ async function renderMetrics() {
           : `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">Touches counted on or before the milestone. Based on ${wonTouchCounts.length} won lead${wonTouchCounts.length === 1 ? '' : 's'} and ${estTouchCounts.length} lead${estTouchCounts.length === 1 ? '' : 's'} with an estimate out, in this window, that have logged outreach; leads with no logged touches are excluded (logs start at the Quo integration).</div>`}
         `}
       </div>
-      <!-- PHASE 3 SLOT (do not remove): drip-performance and blast-performance
-           metric cards land here once the Phase 2 drip engine and Phase 3
-           blast tool exist and are writing send/outcome data. Until then
-           there is deliberately nothing to show. -->
+      <!-- PHASE 3 SLOT, filled (prompt 35 Part E): drip + blast performance. -->
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Drip performance</div>
+        ${!dripReady ? '<div class="pec-empty">Drip tables are not migrated yet (apply the drip migrations first).</div>'
+        : !dripHasAny ? '<div class="pec-empty">No drip activity yet in this window. Campaigns are seeded in dry run; flip the master switch on the Drips page to start previews.</div>'
+        : `
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 6px">Sends count when they went out; replies and conversions count when the enrollment ended. Active is right now, not the window.</div>
+        <div class="pec-scroll-x"><table class="pec-table" style="font-size:.75rem" data-drill="${dripSendsDrill}">
+          <thead><tr><th>Sequence</th><th style="text-align:right">Active now</th><th style="text-align:right">Sent</th><th style="text-align:right">Previews</th><th style="text-align:right">Replies</th><th style="text-align:right">Converted</th></tr></thead>
+          <tbody>${dripKindRows.map(r => `
+            <tr class="nohover" style="cursor:pointer">
+              <td>${esc(KIND_LABEL[r.kind])}${r.camp ? ` <span class="pec-badge system" style="--pec-badge-bg:${r.camp.mode === 'live' ? '#dc2626' : '#7c3aed'};font-size:.6rem">${r.camp.mode === 'live' ? 'LIVE' : 'dry run'}</span>` : ''}</td>
+              <td style="text-align:right">${r.active}</td>
+              <td style="text-align:right">${r.sent}</td>
+              <td style="text-align:right">${r.dryRun}</td>
+              <td style="text-align:right">${r.replied}</td>
+              <td style="text-align:right">${r.converted}${r.convPct != null ? ` <span style="color:var(--muted)">(${r.convPct}% of ${r.endedN} ended, ${esc(CONVERT_LABEL[r.kind])})</span>` : ''}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        ${stopRows.length ? `
+        <div style="color:var(--muted);font-size:.7rem;margin:10px 0 4px">Why drips ended in this window</div>
+        <div id="pecChartDripStops" style="position:relative"></div>` : ''}
+        `}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Blast performance</div>
+        ${(blastHdrRes && blastHdrRes.error) ? '<div class="pec-empty">Blast tables are not migrated yet (apply the 2026-07-19_drip_phase3.sql migration first).</div>'
+        : !blastHasAny ? '<div class="pec-empty">No blasts sent yet. Compose one from the Drips page.</div>'
+        : `
+        <div class="pec-scroll-x"><table class="pec-table" style="font-size:.75rem">
+          <thead><tr><th>Blast</th><th>When</th><th style="text-align:right">Sent</th><th style="text-align:right">Failed</th><th style="text-align:right">Skipped</th><th style="text-align:right">Opt-outs</th><th>Status</th></tr></thead>
+          <tbody>${blastHdrs.map(b => `
+            <tr class="nohover" style="cursor:pointer" data-drill="${blastDrillIds[b.id]}">
+              <td><strong>${esc(b.name)}</strong> <span style="color:var(--muted)">${esc(b.channel)}</span></td>
+              <td>${esc(fmtRelativeTime(b.created_at))}</td>
+              <td style="text-align:right">${b.total_sent}</td>
+              <td style="text-align:right">${b.total_failed}</td>
+              <td style="text-align:right">${b.total_skipped}</td>
+              <td style="text-align:right">${blastOptOuts(b)}</td>
+              <td>${esc(b.status)}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        ${blastVolWeekly.some(v => v) ? `
+        <div style="color:var(--muted);font-size:.7rem;margin:10px 0 4px">Blast messages sent per week</div>
+        ${invBarChart(blastVolWeekly, weeks, blastVolIds, String)}` : ''}
+        <div style="color:var(--muted);font-size:.68rem;margin-top:6px">Replies to blasts are not machine-attributed; watch the Messages inbox. Opt-outs = recipients skipped because a STOP landed after the blast was confirmed.</div>
+        `}
+      </div>
 
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Open pipeline and AI read</div>
         <table class="pec-table" style="font-size:.78rem"><thead><tr><th>Stage</th><th style="text-align:right">Leads</th><th style="text-align:right">Value</th></tr></thead><tbody>
@@ -11337,6 +11472,14 @@ async function renderMetrics() {
       values: convChartRows.map(([, g]) => g.leads ? Math.round((g.accepted / g.leads) * 100) : 0),
       labels: convChartRows.map(([name]) => name),
       fmt: v => (Number(v) || 0) + '%',
+    }] : []),
+    // Drip stop-reason breakdown (prompt 35 Part E). Same single-accent hbar
+    // language as the conversion chart; counts, not rates.
+    ...(dripReady && dripHasAny && stopRows.length ? [{
+      id: 'pecChartDripStops', type: 'hbar',
+      values: stopRows.map(([, n]) => n),
+      labels: stopRows.map(([reason]) => reason.replace(/_/g, ' ')),
+      fmt: v => String(Number(v) || 0),
     }] : []),
   ])).catch(() => {});
 }
