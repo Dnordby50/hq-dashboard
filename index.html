@@ -17208,6 +17208,88 @@ function leadValueMapFrom(estRows) {
   return valueMap;
 }
 
+// ---- Times contacted (prompt 33 Part A) ------------------------------------
+// The count is DERIVED read-only from the outbound comms logs; there is no
+// counter column and no manual increment. Quo activity does NOT land in
+// lead_events (that assumption caused a bad scope in 2026-07): calls live in
+// pec_call_log, texts in pec_sms_log, emails in pec_email_log, keyed by
+// customer_id and raw phone/email, never by lead_id. So we fetch the outbound
+// rows (small tables, three narrow selects, done client-side rather than a new
+// aggregate endpoint) and match them to leads here.
+
+// The one phone normalization, mirroring the STORED generated columns
+// leads.phone_norm / customers.phone_norm (2026-07-16 migration) and the
+// backfill SQL: strip non-digits, keep the LAST 10 digits (drops a leading
+// country code 1), null under 10 digits so a partial number never
+// false-matches. Do not invent a variant.
+function contactPhoneNorm(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : null;
+}
+
+// Outbound-touch sources, Dylan's locked definition: outbound calls
+// (pec_call_log direction out; a no-answer attempt still counts, the customer
+// sees the missed call), outbound texts (pec_sms_log direction out, excluding
+// status 'failed' rows where nothing left our system), and emails
+// (pec_email_log, every send except status 'failed'; a bounce still counts as
+// an attempt, like a no-answer call). The customer's side of an outbound row
+// is to_number / to_email. Reads only; nothing here writes to any log.
+// NOTE: selects ride PostgREST's default row cap (1000/table). Fine at
+// today's volumes (hundreds); revisit alongside the Phase 2 drip engine,
+// which will multiply outbound rows.
+async function loadOutboundTouchLogs() {
+  const [callsRes, textsRes, emailsRes] = await Promise.all([
+    supabase.from('pec_call_log').select('customer_id,to_number,occurred_at,created_at').eq('direction', 'out'),
+    supabase.from('pec_sms_log').select('customer_id,to_number,created_at').eq('direction', 'out').neq('status', 'failed'),
+    supabase.from('pec_email_log').select('customer_id,to_email,sent_at').neq('status', 'failed'),
+  ]);
+  if (callsRes.error || textsRes.error || emailsRes.error) {
+    const err = (callsRes.error || textsRes.error || emailsRes.error);
+    throw new Error('touch logs: ' + (err.message || err));
+  }
+  return { calls: callsRes.data || [], texts: textsRes.data || [], emails: emailsRes.data || [] };
+}
+
+// Match the outbound logs to leads: lead id by { calls, texts, emails, total,
+// lastAt, times[] }. Each LOG ROW is attributed at most once, customer_id
+// first, then normalized phone (a pre-conversion lead has no customer_id),
+// then email for the email log — so a row whose customer_id AND phone both
+// point at the same lead can never double-count. Leads arrive newest-first
+// from the loaders, so if two leads ever share a phone (intake folds dupes,
+// so this is rare) the newest one claims the touches.
+// PHASE 2 EXTENSION POINT: when the drip engine ships, add its sends table as
+// a fourth source loop here (and in loadOutboundTouchLogs); nothing else in
+// the count needs to change.
+function leadContactStats(leads, logs) {
+  const byCustomer = {}, byPhone = {}, byEmail = {};
+  for (const l of leads) {
+    if (l.customer_id && !(l.customer_id in byCustomer)) byCustomer[l.customer_id] = l.id;
+    const pn = l.phone_norm || contactPhoneNorm(l.phone);
+    if (pn && !(pn in byPhone)) byPhone[pn] = l.id;
+    const em = String(l.email || '').trim().toLowerCase();
+    if (em && !(em in byEmail)) byEmail[em] = l.id;
+  }
+  const stats = {};
+  const bump = (leadId, kind, ts) => {
+    const s = (stats[leadId] ||= { calls: 0, texts: 0, emails: 0, total: 0, lastAt: null, times: [] });
+    s[kind]++; s.total++;
+    if (ts) { s.times.push(ts); if (!s.lastAt || ts > s.lastAt) s.lastAt = ts; }
+  };
+  for (const r of logs.calls) {
+    const id = (r.customer_id && byCustomer[r.customer_id]) || byPhone[contactPhoneNorm(r.to_number)];
+    if (id) bump(id, 'calls', r.occurred_at || r.created_at);
+  }
+  for (const r of logs.texts) {
+    const id = (r.customer_id && byCustomer[r.customer_id]) || byPhone[contactPhoneNorm(r.to_number)];
+    if (id) bump(id, 'texts', r.created_at);
+  }
+  for (const r of logs.emails) {
+    const id = (r.customer_id && byCustomer[r.customer_id]) || byEmail[String(r.to_email || '').trim().toLowerCase()];
+    if (id) bump(id, 'emails', r.sent_at);
+  }
+  return stats;
+}
+
 // "How long has this NEW lead been waiting" label. This is the speed-to-lead
 // behavior driver: red past one hour. Returns null for unparseable dates.
 function leadElapsed(createdAt) {
@@ -17236,22 +17318,41 @@ function startLeadsElapsedTimer() {
 
 // Load leads + the estimate-derived value map + owner names + source options.
 async function loadLeadsData() {
-  const [leadsRes, estRes, srcRes, staffNames] = await withFreshSession(() => Promise.all([
+  // Touch logs degrade to null (chips hide) rather than erroring the board or
+  // showing a false "Not contacted" when the logs simply failed to load.
+  const [leadsRes, estRes, srcRes, staffNames, touchLogs] = await withFreshSession(() => Promise.all([
     supabase.from('leads').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
     supabase.from('estimates').select('id,lead_id,price,status,created_at')
       .is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
     qoStaffNames(),
+    loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
   ]), { label: 'loadLeadsData' });
   if (leadsRes.error) throw new Error(leadsRes.error.message);
   const leads = leadsRes.data || [];
+  const contactStats = touchLogs ? leadContactStats(leads, touchLogs) : null;
   const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
   // Source options: schema tokens + anything already in the data + the active
   // pec_lead_sources names (free-text sources are legal on manual leads).
   const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
-  return { leads, valueMap, staffNames: staffNames || {}, sources };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats };
+}
+
+// The board card's contact chip. count semantics: null = logs unavailable
+// (render nothing rather than a lie); 0 = genuinely never reached out.
+// "Not contacted" on an aging NEW lead echoes the speed-to-lead timer's red
+// urgency so an untouched lead is obvious at a glance.
+function leadContactChipHtml(lead, stats) {
+  if (!stats) return '';
+  const s = stats[lead.id];
+  const n = s ? s.total : 0;
+  if (n > 0) {
+    return `<span style="font-weight:600" title="${esc(`${s.calls} call${s.calls === 1 ? '' : 's'}, ${s.texts} text${s.texts === 1 ? '' : 's'}, ${s.emails} email${s.emails === 1 ? '' : 's'}`)}">Contacted ${n}x</span>`;
+  }
+  const urgent = lead.stage === 'new' && (leadElapsed(lead.created_at) || {}).red;
+  return `<span style="font-weight:700;${urgent ? 'color:var(--rd-danger,#ef4444)' : ''}">Not contacted</span>`;
 }
 
 function leadCardHtml(lead) {
@@ -17275,7 +17376,10 @@ function leadCardHtml(lead) {
     ${value > 0 ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(value)}</div>` : ''}
     <div style="display:flex;justify-content:space-between;gap:6px;margin-top:8px;font-size:.7rem;color:var(--rd-muted,#6b7280)">
       <span>updated ${esc(fmtRelativeTime(lead.updated_at))}</span>
-      ${elapsed ? `<span data-lead-elapsed="${esc(lead.created_at)}" style="font-weight:700;${elapsed.red ? 'color:var(--rd-danger,#ef4444)' : ''}">${esc(elapsed.text)}</span>` : ''}
+      <span style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        ${leadContactChipHtml(lead, state.leadsData && state.leadsData.contactStats)}
+        ${elapsed ? `<span data-lead-elapsed="${esc(lead.created_at)}" style="font-weight:700;${elapsed.red ? 'color:var(--rd-danger,#ef4444)' : ''}">${esc(elapsed.text)}</span>` : ''}
+      </span>
     </div>
   </div>`;
 }
@@ -17633,9 +17737,10 @@ async function renderLeadDetail(leadId) {
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       qoStaffNames(),
       supabase.from('estimates').select('id,estimate_number,status,price,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
+      loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
     ]), { label: 'renderLeadDetail' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}]; }
-  const [leadRes, evRes, staffNames0, leadEstsRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, null]; }
+  const [leadRes, evRes, staffNames0, leadEstsRes, touchLogs] = res;
   const leadEstimates = (leadEstsRes && !leadEstsRes.error && leadEstsRes.data) || [];
   const staffNames = staffNames0 || {};
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="leadBack">← Back to leads</button></div>';
@@ -17651,6 +17756,29 @@ async function renderLeadDetail(leadId) {
   const score = lead.score == null ? null : Number(lead.score);
   const scoreCls = score == null ? '' : score >= 70 ? 'pec-age-green' : score >= 40 ? 'pec-age-yellow' : 'pec-age-red';
   const owner = lead.owner_user_id ? (staffNames[lead.owner_user_id] || 'Unknown') : 'Unassigned';
+  // Outreach summary from the same matcher the board chips use, run over just
+  // this lead. Last-contacted is DERIVED (max outbound-log timestamp), not
+  // leads.contacted_at: that column is a first-touch stamp set once by the
+  // first stage move and never updated, so it cannot say "last".
+  const touch = touchLogs ? (leadContactStats([lead], touchLogs)[lead.id] || { calls: 0, texts: 0, emails: 0, total: 0, lastAt: null }) : null;
+  const touchLine = (() => {
+    if (!touch) return '';
+    let body;
+    if (touch.total === 0) {
+      body = '<strong style="color:var(--rd-danger,#ef4444)">Not contacted yet</strong> (no outbound calls, texts, or emails on record)';
+    } else {
+      const parts = [
+        touch.calls ? `${touch.calls} call${touch.calls === 1 ? '' : 's'}` : '',
+        touch.texts ? `${touch.texts} text${touch.texts === 1 ? '' : 's'}` : '',
+        touch.emails ? `${touch.emails} email${touch.emails === 1 ? '' : 's'}` : '',
+      ].filter(Boolean).join(', ');
+      body = `<strong>Contacted ${touch.total} time${touch.total === 1 ? '' : 's'}</strong>: ${parts}${touch.lastAt ? `, last ${esc(fmtRelativeTime(touch.lastAt))}` : ''}`;
+    }
+    return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border));font-size:.84rem">
+      <span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:2px">Outreach</span>
+      ${body}
+    </div>`;
+  })();
   const stageOpts = LEAD_STAGES.map(s => `<option value="${s.key}" ${lead.stage === s.key ? 'selected' : ''}>${esc(s.title)}</option>`).join('');
   const contactRow = (label, val, href) => val ? `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${label}</span><div style="font-size:.88rem">${href ? `<a href="${esc(href)}" style="color:var(--rd-accent,var(--accent))">${esc(val)}</a>` : esc(val)}</div></div>` : '';
 
@@ -17704,6 +17832,7 @@ async function renderLeadDetail(leadId) {
             ${contactRow('Created', new Date(lead.created_at).toLocaleString(), null)}
             ${lead.lost_reason ? contactRow('Lost reason', lead.lost_reason, null) : ''}
           </div>
+          ${touchLine}
         </div>
         <div class="pec-card">
           <h3>Estimates${leadEstimates.length ? ` <span style="color:var(--muted);font-weight:400;font-size:.75rem">(${leadEstimates.length})</span>` : ''}</h3>
