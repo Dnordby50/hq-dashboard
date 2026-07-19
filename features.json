@@ -235,11 +235,12 @@
     {
       "name": "Lead drip engine",
       "area": "dashboard",
-      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Campaigns carry kind lead/estimate/invoice; estimate/invoice drips and the blast tool are Phase 3.",
+      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip and Invoice payment reminders entries for the two Phase 3 kinds.",
       "code": {
         "indexHtml": [
           "renderDrips",
           "enrollLeadInDrip",
+          "enrollSubjectInDrip",
           "renderLeadDetail",
           "leadCardHtml"
         ],
@@ -251,7 +252,10 @@
         ],
         "other": [
           "supabase/migrations/2026-07-19_drip_engine.sql",
-          "production/drip-runner.test.cjs"
+          "supabase/migrations/2026-07-19_drip_phase3.sql",
+          "production/drip-runner.test.cjs",
+          "production/drip-phase3.test.cjs",
+          "production/_drip-test-kit.cjs"
         ]
       },
       "tables": [
@@ -261,6 +265,65 @@
         "pec_drip_sends",
         "settings",
         "leads"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Estimate follow-up drip",
+      "area": "dashboard",
+      "description": "When an estimate is sent to the customer, the lead automatically moves from the lead-nurture drip to an estimate follow-up drip (the nurture drip stops with reason estimate_sent so nobody is on two tracks). Taper: days 1, 3, 7, 14 after the send, AI-written warm nudges to review and sign. The message may state the estimate price only when the record carries one, and the real signing link (/e/token) is appended by code after the AI scrub, so the model can never invent a link or amount. Stops at send time when any of the lead's estimates is accepted or signed (the interim signed state counts), when all are rejected or the lead is lost, on a portal change request (counts as replied, a human takes over), on an inbound text or call, on opt-out, or at max touches. Re-sending a revised estimate after a stop starts a fresh taper. Runs on the shared drip engine (master switch + dry_run rules apply); campaign ships dry_run.",
+      "code": {
+        "indexHtml": [
+          "enrollEstimateDripClient",
+          "estimateSentLeadEffects",
+          "renderDrips"
+        ],
+        "netlifyFunctions": [
+          "_pec-drip.cjs",
+          "pec-drip-runner.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-19_drip_phase3.sql",
+          "production/drip-phase3.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_drip_campaigns",
+        "pec_drip_steps",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "estimates",
+        "leads"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Invoice payment reminders",
+      "area": "dashboard",
+      "description": "Automatic payment reminders for open invoices. The first time an invoice goes to the customer (email compose or the Text invoice button; both stamp jobs.invoice_first_sent_at first-send-wins) the JOB enrolls in a reminder drip: day 0, then +3, +7, +14 (no due-date column exists, so the send moment is the anchor). Every run the engine recomputes the real balance from jobs.price minus pec_payments; a partial payment keeps the reminders coming showing the remaining balance, and the payment that clears it stops the enrollment with reason paid on the next tick. The recipient is the job's customer; their STOP (sms_opt_out) silences the SMS leg while email reminders continue, and an inbound text or call stops the whole drip as replied. Balance and pay link (/pay/token) are appended by code, never written by the model. Voided or archived jobs stop as job_closed. Money guardrail: the campaign ships dry_run and stays there until Dylan reviews generated copy and flips it live himself.",
+      "code": {
+        "indexHtml": [
+          "enrollInvoiceDripClient",
+          "renderJobInvoice",
+          "renderDrips"
+        ],
+        "netlifyFunctions": [
+          "_pec-drip.cjs",
+          "pec-drip-runner.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-19_drip_phase3.sql",
+          "production/drip-phase3.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_drip_campaigns",
+        "pec_drip_steps",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "jobs",
+        "customers",
+        "pec_payments"
       ],
       "since": "2026-07"
     },

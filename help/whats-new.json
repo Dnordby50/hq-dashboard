@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-invoice-drips",
+    "date": "2026-07-19",
+    "title": "Automatic estimate follow-ups and invoice payment reminders",
+    "summary": "Two new automatic sequences join the lead drip. When an estimate goes out, the customer gets warm AI-written nudges to review and sign it (days 1, 3, 7, and 14), each carrying their real signing link, and the sequence stops itself the instant they sign, decline, reply, or ask for a change. When an invoice first goes out, the job starts polite payment reminders (right away, then +3, +7, +14 days) that always show the real remaining balance and pay link; a partial payment keeps them coming with the lower balance, and the payment that clears it stops them immediately. Both ship in dry run under the same master switch, so nothing sends until you review the drafted copy and turn them on. Once a campaign is live and the switch is on, these send automatically, so read a few days of invoice drafts before flipping that one.",
+    "howto": [
+      "Open Drips (under Sales) to see the two new campaigns and their drafted messages piling up in dry run.",
+      "Send a test estimate or invoice and watch the drafts appear; check the wording, the link, and the balance.",
+      "When you trust the copy, set a campaign to Go live. Keep the invoice campaign in dry run until you have read several days of its drafts, since those messages are about money."
+    ]
+  },
+  {
     "id": "lead-drip-engine",
     "date": "2026-07-19",
     "title": "Automatic follow-up drips for leads",
