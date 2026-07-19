@@ -573,6 +573,85 @@ RLS: enabled · rows: 119
 PK: payment_id
 FK: payment_id → pec_payments.id
 
+### pec_drip_campaigns
+RLS: enabled · rows: 1
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| name | text | no |  |
+| kind | text | no | 'lead' |
+| status | text | no | 'active' |
+| mode | text | no | 'dry_run' |
+| max_touches | integer | no | 8 |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+Note: kind CHECK in ('lead','estimate','invoice'); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded with one 'lead' campaign (dry_run). RLS: staff-only via is_admin_staff(), no anon.
+
+### pec_drip_enrollments
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| lead_id | uuid | no |  |
+| campaign_id | uuid | no |  |
+| status | text | no | 'active' |
+| next_step_index | integer | no | 0 |
+| next_send_at | timestamptz | yes |  |
+| stop_reason | text | yes |  |
+| enrolled_at | timestamptz | no | now() |
+| stopped_at | timestamptz | yes |  |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: lead_id → leads.id; campaign_id → pec_drip_campaigns.id
+Note: status CHECK in ('active','stopped','completed'). PARTIAL UNIQUE index idx_pec_drip_enroll_one_active on (lead_id) WHERE status='active' (one active enrollment per lead). Index idx_pec_drip_enroll_due on (status, next_send_at) for the runner. RLS staff-only.
+
+### pec_drip_sends
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| enrollment_id | uuid | no |  |
+| lead_id | uuid | no |  |
+| campaign_id | uuid | no |  |
+| step_index | integer | no |  |
+| channel | text | no |  |
+| status | text | no |  |
+| scheduled_for | timestamptz | yes |  |
+| sent_at | timestamptz | yes |  |
+| subject | text | yes |  |
+| body | text | yes |  |
+| provider_id | text | yes |  |
+| error_message | text | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+FK: enrollment_id → pec_drip_enrollments.id; lead_id → leads.id; campaign_id → pec_drip_campaigns.id
+Note: channel CHECK in ('sms','email'); status CHECK in ('queued','sent','failed','skipped','dry_run'). The send ledger AND the 4th source for the Phase 1 times-contacted count (status='sent' only). RLS staff-only.
+
+### pec_drip_steps
+RLS: enabled · rows: 8
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| campaign_id | uuid | no |  |
+| step_index | integer | no |  |
+| day_offset | integer | no |  |
+| channel | text | no |  |
+| ai_guidance | text | no |  |
+| email_subject | text | yes |  |
+| active | boolean | no | true |
+
+PK: id
+FK: campaign_id → pec_drip_campaigns.id
+Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). Lead campaign seeded with 8 steps, day_offset 1,2,4,7,11,16,22,30. RLS staff-only.
+
 ### pec_email_log
 RLS: enabled · rows: 24
 
