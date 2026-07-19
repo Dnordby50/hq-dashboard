@@ -17492,15 +17492,18 @@ function leadContactStats(leads, logs) {
     if (id) bump(id, 'calls', r.occurred_at || r.created_at);
   }
   for (const r of logs.texts) {
-    if (r.kind === 'drip') continue;   // counted from the drip ledger instead
+    if (r.kind === 'drip' || r.kind === 'blast') continue;   // counted from the shared ledger instead
     const id = (r.customer_id && byCustomer[r.customer_id]) || byPhone[contactPhoneNorm(r.to_number)];
     if (id) bump(id, 'texts', r.created_at);
   }
   for (const r of logs.emails) {
-    if (r.template_key === 'drip') continue;   // counted from the drip ledger instead
+    if (r.template_key === 'drip' || r.template_key === 'blast') continue;   // counted from the shared ledger instead
     const id = (r.customer_id && byCustomer[r.customer_id]) || byEmail[String(r.to_email || '').trim().toLowerCase()];
     if (id) bump(id, 'emails', r.sent_at);
   }
+  // Blast sends to a LEAD land here too (pec_drip_sends rows with lead_id set
+  // and blast_id populated): a blast is an outbound touch like any other.
+  // Customer-only blast rows have lead_id null and correctly fall out.
   for (const r of (logs.drips || [])) {
     if (leadIds.has(r.lead_id)) bump(r.lead_id, 'drips', r.sent_at);
   }
@@ -17604,9 +17607,10 @@ async function renderDrips() {
       supabase.from('pec_drip_steps').select('*').order('step_index'),
       supabase.from('pec_drip_enrollments').select('campaign_id,status'),
       supabase.from('pec_drip_sends').select('*, leads(full_name)').order('created_at', { ascending: false }).limit(25),
+      supabase.from('pec_blasts').select('*').order('created_at', { ascending: false }).limit(12),
     ]), { label: 'renderDrips' });
-  } catch (e) { res = [{ error: e }, { error: e }, {}, {}, {}]; }
-  const [swRes, campRes, stepRes, enrRes, sendRes] = res;
+  } catch (e) { res = [{ error: e }, { error: e }, {}, {}, {}, {}]; }
+  const [swRes, campRes, stepRes, enrRes, sendRes, blastRes] = res;
   if (campRes.error) {
     root.innerHTML = `<div class="pec-empty">Drip tables are not live yet (apply the 2026-07-19_drip_engine.sql migration first).<br><span style="font-size:.75rem;color:var(--muted)">${esc(campRes.error.message || '')}</span></div>`;
     return;
@@ -17616,6 +17620,9 @@ async function renderDrips() {
   const steps = stepRes.error ? [] : (stepRes.data || []);
   const enrollments = enrRes.error ? [] : (enrRes.data || []);
   const sends = sendRes.error ? [] : (sendRes.data || []);
+  // Blasts degrade to "not migrated yet" (Phase 3 migration pending).
+  const blastsReady = !(blastRes && blastRes.error);
+  const blasts = blastsReady ? (blastRes.data || []) : [];
   const activeByCamp = {};
   for (const e of enrollments) if (e.status === 'active') activeByCamp[e.campaign_id] = (activeByCamp[e.campaign_id] || 0) + 1;
 
@@ -17630,7 +17637,7 @@ async function renderDrips() {
   root.innerHTML = `
     <div style="max-width:1100px">
       <h2 style="margin:0 0 4px">Drip campaigns</h2>
-      <div style="color:var(--muted);font-size:.8rem;margin-bottom:14px">Automatic AI-written follow-ups. Every message is tailored per lead at send time and stops on a reply, a stage change, a STOP, or the touch ceiling. Estimate and invoice drips plus the blast tool arrive in Phase 3.</div>
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:14px">Automatic AI-written follow-ups plus the manual blast tool. Drip messages are tailored per recipient at send time and stop on a reply, a signature, a payment, a STOP, or the touch ceiling. Everything here is gated by the master switch.</div>
 
       <div class="pec-card" style="border:2px solid ${sendingOn ? 'var(--rd-success,#10b981)' : 'var(--rd-danger,#ef4444)'}">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
@@ -17671,6 +17678,33 @@ async function renderDrips() {
             </table></div>
           </details>
         </div>`).join('') : '<div class="pec-empty">No campaigns yet.</div>'}
+
+      <div class="pec-card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+          <div>
+            <h3 style="margin:0">Manual blast</h3>
+            <div style="color:var(--muted);font-size:.75rem;margin-top:4px">One composed message to a filtered audience (leads and/or customers). Opt-outs and missing consent are removed before you see the count, every recipient is de-duped, and nothing sends without an exact-count confirmation${sendingOn ? '' : ' (and the master switch is currently OFF, so a confirmed blast just queues)'}.</div>
+          </div>
+          <button type="button" class="pec-btn primary" id="blastNew" ${blastsReady ? '' : 'disabled title="Apply the 2026-07-19_drip_phase3.sql migration first"'}>New blast</button>
+        </div>
+        ${blastsReady ? (blasts.length ? `<div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem;margin-top:10px">
+          <thead><tr><th>Blast</th><th>When</th><th>Channel</th><th>Progress</th><th>Status</th><th></th></tr></thead>
+          <tbody>${blasts.map(b => {
+            const inFlight = b.status === 'confirmed' || b.status === 'sending';
+            const BLAST_STATUS_COLOR = { draft: '#64748b', confirmed: '#2563eb', sending: '#b45309', done: '#16a34a', canceled: '#dc2626' };
+            return `<tr class="nohover">
+              <td><strong>${esc(b.name)}</strong></td>
+              <td title="${esc(new Date(b.created_at).toLocaleString())}">${esc(fmtRelativeTime(b.created_at))}</td>
+              <td>${esc(b.channel)}</td>
+              <td style="white-space:nowrap">${b.total_sent} sent · ${b.total_failed} failed · ${b.total_skipped} skipped <span style="color:var(--muted)">of ${b.total_queued} queued</span></td>
+              <td>${chip(b.status, BLAST_STATUS_COLOR[b.status] || '#64748b')}</td>
+              <td style="white-space:nowrap">${inFlight ? `
+                <button type="button" class="pec-btn sm" data-blast-run="${esc(b.id)}">Process now</button>
+                <button type="button" class="pec-btn sm ghost" data-blast-cancel="${esc(b.id)}">Cancel rest</button>` : ''}</td>
+            </tr>`; }).join('')}</tbody>
+        </table></div>` : '<div style="color:var(--muted);font-size:.78rem;margin-top:10px">No blasts yet.</div>')
+        : '<div style="color:var(--muted);font-size:.78rem;margin-top:10px">Blast tables are not live yet (apply the 2026-07-19_drip_phase3.sql migration first).</div>'}
+      </div>
 
       <div class="pec-card">
         <h3>Recent drip activity</h3>
@@ -17715,6 +17749,408 @@ async function renderDrips() {
     if (w && w.error) { showToast('Could not change status: ' + w.error.message, { ttl: 5000 }); b.disabled = false; return; }
     renderDrips();
   }));
+
+  // ---- Blast controls (prompt 35 Part D) ----
+  const blastNewBtn = $('blastNew');
+  if (blastNewBtn && blastsReady) blastNewBtn.addEventListener('click', () => openBlastWizard({ sendingOn }));
+  root.querySelectorAll('[data-blast-run]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true; b.textContent = 'Processing…';
+    try { await pecBlastRun(b.dataset.blastRun); } catch (err) { showToast('Blast run failed: ' + esc(err.message || String(err)), { ttl: 6000 }); }
+    renderDrips();
+  }));
+  root.querySelectorAll('[data-blast-cancel]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Cancel the rest of this blast?\n\nRecipients already sent stay sent (the record is honest); everyone still queued is skipped.')) return;
+    b.disabled = true;
+    // Order matters: kill the queue first, then the header, so a concurrent
+    // drain pass cannot claim rows after the header says canceled.
+    await withFreshWriteRetry(() => supabase.from('pec_drip_sends')
+      .update({ status: 'skipped', error_message: 'canceled' })
+      .eq('blast_id', b.dataset.blastCancel).eq('status', 'queued'), { label: 'blast-cancel-rows' });
+    await withFreshWriteRetry(() => supabase.from('pec_blasts')
+      .update({ status: 'canceled' }).eq('id', b.dataset.blastCancel).in('status', ['confirmed', 'sending']), { label: 'blast-cancel' });
+    renderDrips();
+  }));
+  // Light poll while a blast is in flight so the progress row moves without
+  // manual refreshes. Full re-render (the view is cheap); self-clears on nav.
+  if (_blastPollTimer) { clearTimeout(_blastPollTimer); _blastPollTimer = null; }
+  if (blasts.some(b => b.status === 'confirmed' || b.status === 'sending')) {
+    _blastPollTimer = setTimeout(() => { if (state.view === 'drips') renderDrips(); }, 5000);
+  }
+}
+let _blastPollTimer = null;
+
+// POST the "send now" kick for a confirmed blast. Safe to call repeatedly:
+// the drain claims each queued row conditionally, so a re-kick never
+// double-sends. A partial result is fine; the 15-min tick finishes the rest.
+async function pecBlastRun(blastId) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session && session.access_token;
+  if (!token) throw new Error('Not signed in.');
+  const res = await fetch('/.netlify/functions/pec-blast-run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ blast_id: blastId }),
+  });
+  let body = {}; try { body = await res.json(); } catch (_) {}
+  if (!res.ok || !body.ok) throw new Error(body.error || `Blast run failed (${res.status})`);
+  if (body.master_off) showToast('Master switch is OFF: the blast stays queued until you turn sending on.', { ttl: 6000 });
+  else if (body.sms_held_quiet) showToast('Texts are outside the 8am-8pm window and will go out at 8:00 AM; emails are sending now.', { ttl: 6000 });
+  return body;
+}
+
+// Client mirror of computeBlastAudience in _pec-drip.cjs (the fixture-tested
+// reference; keep the two in lockstep). Consent hard-filter FIRST, then
+// de-dupe by phone tail + lowercased email with leads winning collisions so
+// sends keep lead attribution. The confirm count and the queue insert both
+// come from this one function's output.
+function computeBlastAudienceClient(candidates, channel) {
+  const e164 = (raw) => {
+    if (!raw) return null;
+    let s = String(raw).trim();
+    if (s.startsWith('+')) { const d = s.slice(1).replace(/\D/g, ''); return d.length >= 10 && d.length <= 15 ? '+' + d : null; }
+    const d = s.replace(/\D/g, '');
+    if (d.length === 10) return '+1' + d;
+    if (d.length === 11 && d.startsWith('1')) return '+' + d;
+    if (d.length >= 11 && d.length <= 15) return '+' + d;
+    return null;
+  };
+  const wantSms = channel === 'sms' || channel === 'both';
+  const wantEmail = channel === 'email' || channel === 'both';
+  const recipients = [];
+  let removedConsent = 0, removedDupes = 0;
+  const seenPhones = new Set(), seenEmails = new Set();
+  const ordered = [...candidates.filter(c => c.source === 'lead'), ...candidates.filter(c => c.source !== 'lead')];
+  for (const c of ordered) {
+    const isLead = c.source === 'lead';
+    const smsTo = e164(c.phone);
+    const tail = c.phone_norm || contactPhoneNorm(c.phone);
+    const emailLc = c.email ? String(c.email).trim().toLowerCase() : null;
+    const optedOut = isLead ? !!c.opted_out : false;
+    const smsOk = wantSms && !optedOut && !!smsTo && (isLead ? !!c.sms_consent : !c.sms_opt_out);
+    const emailOk = wantEmail && !optedOut && !!emailLc && (isLead ? c.email_consent !== false : true);
+    if (!smsOk && !emailOk) { removedConsent++; continue; }
+    if ((tail && seenPhones.has(tail)) || (emailLc && seenEmails.has(emailLc))) { removedDupes++; continue; }
+    if (tail) seenPhones.add(tail);
+    if (emailLc) seenEmails.add(emailLc);
+    const name = c.name || c.full_name || null;
+    recipients.push({
+      key: (isLead ? 'lead:' : 'customer:') + c.id,
+      source: isLead ? 'lead' : 'customer', id: c.id, name,
+      first_name: c.first_name || (name ? String(name).split(/\s+/)[0] : null),
+      smsOk, emailOk, phone: c.phone || null, smsTo, email: c.email || null,
+    });
+  }
+  return { recipients, removedConsent, removedDupes };
+}
+
+// ---- Blast wizard (prompt 35 Part D) ---------------------------------------
+// Three steps in one modal: compose -> audience -> confirm. The compose text
+// is ONE shared message (personalized only via the {first_name} token); the
+// audience is filter-then-deselect; the confirm step states the EXACT
+// per-channel counts and nothing sends without that confirmation. On confirm
+// the recipients are materialized as queued pec_drip_sends rows (the resume
+// + no-double-send mechanism, see drainBlasts in _pec-drip.cjs) and
+// pec-blast-run is kicked for immediate sending.
+async function openBlastWizard({ sendingOn }) {
+  const wiz = {
+    step: 1, name: '', channel: 'both', goal: '',
+    smsBody: '', emailSubject: '', emailBody: '',
+    incLeads: true, incCustomers: false,
+    leadStages: new Set(['new', 'contacted', 'estimate_sent', 'presented']),
+    leadSource: '', leadCampaign: '', leadBrand: '',
+    custTag: '', custCompany: '',
+    data: null, audience: null, unchecked: new Set(),
+  };
+  const LEAD_STAGE_OPTS = ['new', 'contacted', 'estimate_sent', 'presented', 'accepted', 'lost'];
+  const phxHour = () => (new Date(Date.now() - 7 * 3600 * 1000)).getUTCHours();
+  const inQuietWindow = () => phxHour() >= 8 && phxHour() < 20;
+  const personalize = (text, r) => String(text || '').replace(/\{first_name\}/g, r.first_name || 'there');
+
+  let modalEl = null;
+  openModal('<div id="blastWiz" style="width:min(780px,92vw)"></div>', { onMount: m => { modalEl = m; render(); } });
+
+  function grabCompose() {
+    const v = id => { const el = modalEl.querySelector('#' + id); return el ? el.value : ''; };
+    wiz.name = v('bwName').trim();
+    wiz.goal = v('bwGoal');
+    if (modalEl.querySelector('#bwChannel')) wiz.channel = modalEl.querySelector('#bwChannel').value;
+    wiz.smsBody = v('bwSms');
+    wiz.emailSubject = v('bwEmailSubject');
+    wiz.emailBody = v('bwEmailBody');
+  }
+
+  async function loadAudienceData() {
+    if (wiz.data) return wiz.data;
+    const [leadsRes, custRes] = await withFreshSession(() => Promise.all([
+      supabase.from('leads').select('id,full_name,first_name,phone,phone_norm,email,sms_consent,email_consent,opted_out,stage,source,campaign,brand').is('deleted_at', null),
+      supabase.from('customers').select('id,name,first_name,phone,phone_norm,email,sms_opt_out,tags,company,lead_source').is('archived_at', null),
+    ]), { label: 'blast-audience' });
+    if (leadsRes.error) throw new Error(leadsRes.error.message);
+    if (custRes.error) throw new Error(custRes.error.message);
+    wiz.data = { leads: leadsRes.data || [], customers: custRes.data || [] };
+    return wiz.data;
+  }
+
+  function recomputeAudience() {
+    const cand = [];
+    if (wiz.incLeads) for (const l of wiz.data.leads) {
+      if (wiz.leadStages.size && !wiz.leadStages.has(l.stage)) continue;
+      if (wiz.leadSource && l.source !== wiz.leadSource) continue;
+      if (wiz.leadCampaign && l.campaign !== wiz.leadCampaign) continue;
+      if (wiz.leadBrand && l.brand !== wiz.leadBrand) continue;
+      cand.push({ source: 'lead', ...l });
+    }
+    if (wiz.incCustomers) for (const c of wiz.data.customers) {
+      if (wiz.custTag && !(Array.isArray(c.tags) ? c.tags : []).includes(wiz.custTag)) continue;
+      if (wiz.custCompany && c.company !== wiz.custCompany) continue;
+      cand.push({ source: 'customer', ...c });
+    }
+    wiz.audience = computeBlastAudienceClient(cand, wiz.channel);
+    // Deselections survive filter tweaks only for keys still present.
+    const keys = new Set(wiz.audience.recipients.map(r => r.key));
+    wiz.unchecked = new Set([...wiz.unchecked].filter(k => keys.has(k)));
+  }
+
+  const picked = () => (wiz.audience ? wiz.audience.recipients.filter(r => !wiz.unchecked.has(r.key)) : []);
+  const counts = () => {
+    const p = picked();
+    return { sms: p.filter(r => r.smsOk).length, email: p.filter(r => r.emailOk).length, people: p.length };
+  };
+
+  function render() {
+    const el = modalEl.querySelector('#blastWiz');
+    if (!el) return;
+    const stepHead = `
+      <h3 style="margin:0 0 2px">New blast</h3>
+      <div style="color:var(--muted);font-size:.75rem;margin-bottom:12px">Step ${wiz.step} of 3: ${['Compose', 'Audience', 'Confirm'][wiz.step - 1]}</div>`;
+
+    if (wiz.step === 1) {
+      const wantSms = wiz.channel !== 'email', wantEmail = wiz.channel !== 'sms';
+      el.innerHTML = `${stepHead}
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Blast name (internal)</label><input id="bwName" value="${esc(wiz.name)}" placeholder="July garage special"></div>
+          <div class="pec-field"><label>Channel</label><select id="bwChannel">
+            <option value="both" ${wiz.channel === 'both' ? 'selected' : ''}>Text + email</option>
+            <option value="sms" ${wiz.channel === 'sms' ? 'selected' : ''}>Text only</option>
+            <option value="email" ${wiz.channel === 'email' ? 'selected' : ''}>Email only</option>
+          </select></div>
+        </div>
+        <div class="pec-field"><label>What is this blast about? (for the AI draft button; optional)</label>
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <input id="bwGoal" value="${esc(wiz.goal)}" placeholder="e.g. We have two open install slots the week of Aug 3, offer a free quote" style="flex:1">
+            <button type="button" class="pec-btn sm" id="bwDraft">Draft with AI</button>
+          </div>
+          <div style="color:var(--muted);font-size:.7rem;margin-top:3px">The AI only drafts; you edit and you send. It can use the {first_name} token, which fills in per recipient.</div>
+        </div>
+        ${wantSms ? `<div class="pec-field"><label>Text message</label>
+          <textarea id="bwSms" rows="3" placeholder="Hi {first_name}, ...">${esc(wiz.smsBody)}</textarea>
+          <div style="color:var(--muted);font-size:.7rem;margin-top:3px"><span id="bwSmsCount">${wiz.smsBody.length}</span> characters. "Reply STOP to opt out." is appended automatically if missing.</div>
+        </div>` : ''}
+        ${wantEmail ? `<div class="pec-field"><label>Email subject</label><input id="bwEmailSubject" value="${esc(wiz.emailSubject)}"></div>
+        <div class="pec-field"><label>Email body (plain text; blank line = new paragraph)</label>
+          <textarea id="bwEmailBody" rows="7" placeholder="Hi {first_name},&#10;&#10;...">${esc(wiz.emailBody)}</textarea>
+        </div>` : ''}
+        <div class="pec-modal-actions">
+          <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+          <button type="button" class="pec-btn primary" id="bwNext1">Next: choose audience</button>
+        </div>`;
+      const smsTa = el.querySelector('#bwSms');
+      if (smsTa) smsTa.addEventListener('input', () => { el.querySelector('#bwSmsCount').textContent = smsTa.value.length; });
+      el.querySelector('#bwChannel').addEventListener('change', () => { grabCompose(); render(); });
+      el.querySelector('#bwDraft').addEventListener('click', async () => {
+        grabCompose();
+        if (!wiz.goal.trim()) { showToast('Tell the AI what the blast is about first (the goal box).', { ttl: 4000 }); return; }
+        const btn = el.querySelector('#bwDraft'); btn.disabled = true; btn.textContent = 'Drafting…';
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const res = await fetch('/.netlify/functions/pec-lead-ai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session && session.access_token}` },
+            body: JSON.stringify({ action: 'draft_blast', goal: wiz.goal, channel: wiz.channel }),
+          });
+          let body = {}; try { body = await res.json(); } catch (_) {}
+          if (!res.ok || !body.success) throw new Error(body.error || `Draft failed (${res.status})`);
+          if (body.draft.sms != null) wiz.smsBody = body.draft.sms;
+          if (body.draft.email_subject != null) wiz.emailSubject = body.draft.email_subject;
+          if (body.draft.email_body != null) wiz.emailBody = body.draft.email_body;
+          render();
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Draft with AI';
+          showToast('Draft failed: ' + esc(err.message || String(err)), { ttl: 6000 });
+        }
+      });
+      el.querySelector('#bwNext1').addEventListener('click', async () => {
+        grabCompose();
+        if (!wiz.name) { showToast('Give the blast a name.', { ttl: 3500 }); return; }
+        if (wiz.channel !== 'email' && !wiz.smsBody.trim()) { showToast('Write the text message (or switch to email only).', { ttl: 4000 }); return; }
+        if (wiz.channel !== 'sms' && (!wiz.emailSubject.trim() || !wiz.emailBody.trim())) { showToast('Write the email subject and body (or switch to text only).', { ttl: 4000 }); return; }
+        const btn = el.querySelector('#bwNext1'); btn.disabled = true; btn.textContent = 'Loading audience…';
+        try { await loadAudienceData(); } catch (err) { btn.disabled = false; btn.textContent = 'Next: choose audience'; showToast('Could not load the audience: ' + esc(err.message || String(err)), { ttl: 6000 }); return; }
+        recomputeAudience();
+        wiz.step = 2; render();
+      });
+      return;
+    }
+
+    if (wiz.step === 2) {
+      const a = wiz.audience;
+      const opts = (values, sel) => ['<option value="">All</option>', ...values.map(v => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(v)}</option>`)].join('');
+      const leadSources = [...new Set(wiz.data.leads.map(l => l.source).filter(Boolean))].sort();
+      const leadCampaigns = [...new Set(wiz.data.leads.map(l => l.campaign).filter(Boolean))].sort();
+      const leadBrands = [...new Set(wiz.data.leads.map(l => l.brand).filter(Boolean))].sort();
+      const custTags = [...new Set(wiz.data.customers.flatMap(c => Array.isArray(c.tags) ? c.tags : []))].sort();
+      const custCompanies = [...new Set(wiz.data.customers.map(c => c.company).filter(Boolean))].sort();
+      const c = counts();
+      el.innerHTML = `${stepHead}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="pec-card" style="margin:0">
+            <label style="display:flex;gap:8px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="bwIncLeads" ${wiz.incLeads ? 'checked' : ''}> Leads</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">${LEAD_STAGE_OPTS.map(s => `
+              <label style="display:flex;gap:4px;align-items:center;font-size:.72rem;cursor:pointer;border:1px solid var(--rd-line,#e6e8ec);border-radius:12px;padding:2px 8px">
+                <input type="checkbox" data-bw-stage="${s}" ${wiz.leadStages.has(s) ? 'checked' : ''}>${esc(s.replace('_', ' '))}</label>`).join('')}</div>
+            <div class="pec-row-2">
+              <div class="pec-field"><label>Source</label><select id="bwLeadSource">${opts(leadSources, wiz.leadSource)}</select></div>
+              <div class="pec-field"><label>Campaign</label><select id="bwLeadCampaign">${opts(leadCampaigns, wiz.leadCampaign)}</select></div>
+            </div>
+            <div class="pec-field"><label>Brand</label><select id="bwLeadBrand">${opts(leadBrands, wiz.leadBrand)}</select></div>
+          </div>
+          <div class="pec-card" style="margin:0">
+            <label style="display:flex;gap:8px;align-items:center;font-weight:700;cursor:pointer"><input type="checkbox" id="bwIncCust" ${wiz.incCustomers ? 'checked' : ''}> Customers</label>
+            <div class="pec-row-2" style="margin-top:8px">
+              <div class="pec-field"><label>Tag</label><select id="bwCustTag">${opts(custTags, wiz.custTag)}</select></div>
+              <div class="pec-field"><label>Company</label><select id="bwCustCompany">${opts(custCompanies, wiz.custCompany)}</select></div>
+            </div>
+          </div>
+        </div>
+        <div style="margin:10px 0 6px;font-size:.78rem">
+          <strong>${a.recipients.length}</strong> eligible recipient${a.recipients.length === 1 ? '' : 's'}
+          <span style="color:var(--muted)"> · ${a.removedConsent} removed for opt-out or missing consent · ${a.removedDupes} duplicate${a.removedDupes === 1 ? '' : 's'} removed</span>
+        </div>
+        ${a.recipients.length ? `<div style="max-height:280px;overflow:auto;border:1px solid var(--rd-line,#e6e8ec);border-radius:8px">
+          <table class="pec-table" style="font-size:.75rem">
+            <thead><tr><th style="width:28px"><input type="checkbox" id="bwAll" ${wiz.unchecked.size === 0 ? 'checked' : ''}></th><th>Name</th><th>From</th><th>Will get</th></tr></thead>
+            <tbody>${a.recipients.map(r => `
+              <tr class="nohover">
+                <td><input type="checkbox" class="bw-pick" data-key="${esc(r.key)}" ${wiz.unchecked.has(r.key) ? '' : 'checked'}></td>
+                <td>${esc(r.name || '(no name)')}</td>
+                <td style="color:var(--muted)">${r.source}</td>
+                <td style="font-size:.68rem">${r.smsOk ? '<span class="pec-badge system" style="--pec-badge-bg:#2563eb">TEXT</span> ' : ''}${r.emailOk ? '<span class="pec-badge system" style="--pec-badge-bg:#16a34a">EMAIL</span>' : ''}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>` : '<div class="pec-empty">Nobody matches these filters (after the consent filter). Widen the filters.</div>'}
+        <div style="margin-top:8px;font-size:.8rem"><strong>${c.sms}</strong> text${c.sms === 1 ? '' : 's'} · <strong>${c.email}</strong> email${c.email === 1 ? '' : 's'} selected</div>
+        <div class="pec-modal-actions">
+          <button type="button" class="pec-btn ghost" id="bwBack2">Back</button>
+          <button type="button" class="pec-btn primary" id="bwNext2" ${c.people ? '' : 'disabled'}>Next: review and confirm</button>
+        </div>`;
+      const rc = () => { recomputeAudience(); render(); };
+      el.querySelector('#bwIncLeads').addEventListener('change', e => { wiz.incLeads = e.target.checked; rc(); });
+      el.querySelector('#bwIncCust').addEventListener('change', e => { wiz.incCustomers = e.target.checked; rc(); });
+      el.querySelectorAll('[data-bw-stage]').forEach(cb => cb.addEventListener('change', () => {
+        cb.checked ? wiz.leadStages.add(cb.dataset.bwStage) : wiz.leadStages.delete(cb.dataset.bwStage); rc();
+      }));
+      el.querySelector('#bwLeadSource').addEventListener('change', e => { wiz.leadSource = e.target.value; rc(); });
+      el.querySelector('#bwLeadCampaign').addEventListener('change', e => { wiz.leadCampaign = e.target.value; rc(); });
+      el.querySelector('#bwLeadBrand').addEventListener('change', e => { wiz.leadBrand = e.target.value; rc(); });
+      el.querySelector('#bwCustTag').addEventListener('change', e => { wiz.custTag = e.target.value; rc(); });
+      el.querySelector('#bwCustCompany').addEventListener('change', e => { wiz.custCompany = e.target.value; rc(); });
+      const allCb = el.querySelector('#bwAll');
+      if (allCb) allCb.addEventListener('change', () => {
+        wiz.unchecked = allCb.checked ? new Set() : new Set(wiz.audience.recipients.map(r => r.key));
+        render();
+      });
+      el.querySelectorAll('.bw-pick').forEach(cb => cb.addEventListener('change', () => {
+        cb.checked ? wiz.unchecked.delete(cb.dataset.key) : wiz.unchecked.add(cb.dataset.key);
+        const c2 = counts();
+        el.querySelectorAll('div')[0]; // counts line lives in the footer div below the list
+        const foot = [...el.querySelectorAll('div')].find(d => d.textContent.includes('selected'));
+        if (foot) foot.innerHTML = `<strong>${c2.sms}</strong> text${c2.sms === 1 ? '' : 's'} · <strong>${c2.email}</strong> email${c2.email === 1 ? '' : 's'} selected`;
+        el.querySelector('#bwNext2').disabled = !c2.people;
+      }));
+      el.querySelector('#bwBack2').addEventListener('click', () => { wiz.step = 1; render(); });
+      el.querySelector('#bwNext2').addEventListener('click', () => { wiz.step = 3; render(); });
+      return;
+    }
+
+    // Step 3: confirm.
+    const c = counts();
+    const quietNote = (c.sms > 0 && !inQuietWindow())
+      ? '<div style="color:var(--rd-warning,#b45309);font-size:.78rem;margin-top:6px">It is outside the 8am-8pm texting window right now: texts will wait until 8:00 AM Phoenix time; emails go out immediately.</div>' : '';
+    const masterNote = sendingOn ? '' : '<div style="color:var(--rd-danger,#ef4444);font-size:.78rem;margin-top:6px;font-weight:700">The master switch is OFF. Confirming will queue the blast, but nothing sends until you turn sending ON on this page.</div>';
+    el.innerHTML = `${stepHead}
+      <div class="pec-card" style="margin:0 0 10px">
+        <div style="font-weight:800;font-size:1rem">"${esc(wiz.name)}" will send <span style="color:var(--pec-orange,#c2410c)">${c.sms} text${c.sms === 1 ? '' : 's'}</span> and <span style="color:var(--pec-orange,#c2410c)">${c.email} email${c.email === 1 ? '' : 's'}</span> to ${c.people} recipient${c.people === 1 ? '' : 's'}.</div>
+        ${quietNote}${masterNote}
+      </div>
+      ${wiz.channel !== 'email' ? `<div class="pec-field"><label>Text that will send</label><div style="white-space:pre-wrap;font-size:.78rem;border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;padding:8px">${esc(wiz.smsBody)}${/\bSTOP\b/i.test(wiz.smsBody) ? '' : ' Reply STOP to opt out.'}</div></div>` : ''}
+      ${wiz.channel !== 'sms' ? `<div class="pec-field"><label>Email that will send</label><div style="font-size:.78rem;border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;padding:8px"><strong>${esc(wiz.emailSubject)}</strong><div style="white-space:pre-wrap;margin-top:6px">${esc(wiz.emailBody)}</div></div></div>` : ''}
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" id="bwBack3">Back</button>
+        <button type="button" class="pec-btn primary" id="bwSend">Confirm and send</button>
+      </div>`;
+    el.querySelector('#bwBack3').addEventListener('click', () => { wiz.step = 2; render(); });
+    el.querySelector('#bwSend').addEventListener('click', async () => {
+      const p = picked();
+      const cc = counts();
+      if (!confirm(`Send ${cc.sms} text${cc.sms === 1 ? '' : 's'} and ${cc.email} email${cc.email === 1 ? '' : 's'} to ${cc.people} recipient${cc.people === 1 ? '' : 's'}?\n\nThis cannot be unsent.`)) return;
+      const btn = el.querySelector('#bwSend'); btn.disabled = true; btn.textContent = 'Queueing…';
+      try {
+        const nowIso = new Date().toISOString();
+        const stopLine = ' Reply STOP to opt out.';
+        // Build every ledger row FIRST so the header's total_queued states
+        // exactly what we are about to insert (the count Dylan confirmed).
+        const rowsFor = (blastId) => p.flatMap(r => {
+          const rows = [];
+          const base = {
+            blast_id: blastId, enrollment_id: null, campaign_id: null,
+            subject_type: r.source, subject_id: r.id,
+            lead_id: r.source === 'lead' ? r.id : null,
+            step_index: 0, status: 'queued', scheduled_for: nowIso,
+          };
+          if (r.smsOk) {
+            let body = personalize(wiz.smsBody, r).trim();
+            if (!/\bSTOP\b/i.test(body)) body += stopLine;
+            rows.push({ ...base, channel: 'sms', body });
+          }
+          if (r.emailOk) rows.push({ ...base, channel: 'email', subject: personalize(wiz.emailSubject, r).trim(), body: personalize(wiz.emailBody, r).trim() });
+          return rows;
+        });
+        const ins = await withFreshWrite(() => supabase.from('pec_blasts').insert({
+          name: wiz.name, channel: wiz.channel,
+          sms_body: wiz.channel !== 'email' ? wiz.smsBody : null,
+          email_subject: wiz.channel !== 'sms' ? wiz.emailSubject : null,
+          email_body: wiz.channel !== 'sms' ? wiz.emailBody : null,
+          audience_filter: {
+            incLeads: wiz.incLeads, incCustomers: wiz.incCustomers,
+            leadStages: [...wiz.leadStages], leadSource: wiz.leadSource, leadCampaign: wiz.leadCampaign, leadBrand: wiz.leadBrand,
+            custTag: wiz.custTag, custCompany: wiz.custCompany, deselected: wiz.unchecked.size,
+          },
+          status: 'confirmed', confirmed_at: nowIso,
+          total_queued: cc.sms + cc.email,
+          created_by: (state.session && state.session.user && state.session.user.id) || null,
+        }).select('id').single(), { label: 'blast-create' });
+        if (ins.error) throw ins.error;
+        const blastId = ins.data.id;
+        const rows = rowsFor(blastId);
+        let inserted = 0;
+        for (let i = 0; i < rows.length; i += 200) {
+          const chunk = rows.slice(i, i + 200);
+          const w = await withFreshWrite(() => supabase.from('pec_drip_sends').insert(chunk), { label: 'blast-queue' });
+          if (w.error) throw new Error(`queued ${inserted} of ${rows.length}, then: ${w.error.message}`);
+          inserted += chunk.length;
+        }
+        btn.textContent = 'Sending…';
+        try { await pecBlastRun(blastId); }
+        catch (err) { showToast('Queued, but the immediate send kick failed (' + esc(err.message || String(err)) + '). The runner picks it up within 15 minutes, or use Process now.', { ttl: 8000 }); }
+        closeModal();
+        showToast('Blast confirmed: ' + cc.sms + ' text' + (cc.sms === 1 ? '' : 's') + ' and ' + cc.email + ' email' + (cc.email === 1 ? '' : 's') + ' queued.', { ttl: 5000 });
+        renderDrips();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Confirm and send';
+        showToast('Blast not sent: ' + esc(err.message || String(err)), { ttl: 8000 });
+      }
+    });
+  }
 }
 
 // "How long has this NEW lead been waiting" label. This is the speed-to-lead

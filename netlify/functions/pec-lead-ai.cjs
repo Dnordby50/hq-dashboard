@@ -138,6 +138,55 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body || '{}'); }
   catch { return jc(400, { success: false, error: 'Invalid JSON' }); }
+
+  // Phase 3 (prompt 35): draft ONE-TO-MANY blast copy. Draft-only by design,
+  // exactly like the per-lead drafts: the AI fills the compose fields and a
+  // human edits and sends. Rides here (not a new function) because the auth,
+  // Anthropic plumbing, and draft discipline already live in this file.
+  if (body.action === 'draft_blast') {
+    const goal = String(body.goal || '').trim().slice(0, 1000);
+    const channel = ['sms', 'email', 'both'].includes(body.channel) ? body.channel : 'both';
+    if (!goal) return jc(400, { success: false, error: 'goal is required' });
+    try {
+      const { scrubCopy, capSms } = require('./_pec-drip.cjs');
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 800,
+          system: `You draft ONE outbound message from Prescott Epoxy Company (PEC), an epoxy floor coating company in Prescott, Arizona, that will be sent to MANY recipients at once (a blast). Hard rules:
+- The same text goes to everyone: no per-recipient facts. You may use the literal token {first_name}, which the system replaces per recipient.
+- Use ONLY what the staff goal below states. NEVER invent offers, prices, discounts, dates, deadlines, or statistics that the goal does not spell out.
+- Do not use em dashes or en dashes anywhere. Do not include links, phone numbers, or email addresses.
+- Friendly local business owner voice: brief, plain, warm, zero corporate filler, no emoji.
+- sms: 1 to 3 sentences, under 250 characters, identify Prescott Epoxy by name. Do not write an opt-out line; the system appends one.
+- email_body: 2 to 6 short sentences in plain paragraphs (blank line between paragraphs), signed off as "the Prescott Epoxy team".
+- email_subject: short and plain.
+Respond with ONLY a JSON object, no markdown fences: {"sms": <string or null>, "email_subject": <string or null>, "email_body": <string or null>}. Produce only the channels requested; set the others null.`,
+          messages: [{
+            role: 'user',
+            content: `STAFF GOAL FOR THIS BLAST (the only fact source): ${goal}\nCHANNELS REQUESTED: ${channel === 'both' ? 'sms, email' : channel}${body.audience_desc ? `\nAUDIENCE (context only, do not reference directly): ${String(body.audience_desc).slice(0, 300)}` : ''}`,
+          }],
+        }),
+      });
+      if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      const raw = textFromMessage(await res.json()).replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+      const obj = JSON.parse(raw);
+      return jc(200, {
+        success: true,
+        draft: {
+          sms: capSms(scrubCopy(obj.sms), 480),
+          email_subject: scrubCopy(obj.email_subject),
+          email_body: scrubCopy(obj.email_body),
+        },
+      });
+    } catch (err) {
+      console.error('pec-lead-ai draft_blast failed:', err);
+      return jc(500, { success: false, error: 'Draft failed', detail: err && err.message });
+    }
+  }
+
   const leadId = body.lead_id;
   if (!leadId) return jc(400, { success: false, error: 'lead_id is required' });
 
