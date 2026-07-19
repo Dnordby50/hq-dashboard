@@ -5,7 +5,8 @@
 // Run: node production/drip-phase3.test.cjs
 'use strict';
 const {
-  runDrips, enrollLead, enrollSubject, resolveRecipient, STOP_LINE, SITE_URL,
+  runDrips, enrollLead, enrollSubject, enrollEstimateDrip, enrollJobInvoiceDrip,
+  resolveRecipient, STOP_LINE, SITE_URL,
 } = require('../netlify/functions/_pec-drip.cjs');
 const {
   makeDb, baseTables, stubDeps, makeChecker, NOW_IN_WINDOW,
@@ -109,6 +110,66 @@ function invTables(over = {}) {
     ok(r1.enrolled && r2.enrolled && fx.db.pec_drip_enrollments.length === 2, 'lead-nurture and estimate drips co-exist on one lead');
     const r3 = await enrollSubject(fx.sb, 'estimate', 'lead', 'lead1', 'lead1', NOW_IN_WINDOW);
     ok(!r3.enrolled && r3.reason === 'already_active' && fx.db.pec_drip_enrollments.length === 2, 'a second active estimate enrollment for the same lead 409s cleanly');
+  }
+
+  console.log('# estimate drip: sends with the real estimate link, never a model link');
+  {
+    const fx = makeDb(estTables());
+    const { deps, providers } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    ok(sum.dry_run === 2 && providers.ai.length === 1 && providers.ai[0].kind === 'estimate', 'estimate touch renders once with the estimate prompt kind');
+    const smsRow = fx.db.pec_drip_sends.find(r => r.channel === 'sms');
+    const emailRow = fx.db.pec_drip_sends.find(r => r.channel === 'email');
+    ok(smsRow && smsRow.body.includes(`${SITE_URL}/e/tok-est-1`), 'SMS carries the code-appended estimate link (post-scrub)');
+    ok(smsRow.body.trim().endsWith(STOP_LINE.trim()), 'first estimate SMS still ends with the STOP line after the link');
+    ok(emailRow && emailRow.body.includes(`${SITE_URL}/e/tok-est-1`), 'email body carries the estimate link paragraph');
+    ok(smsRow.subject_type === 'lead' && smsRow.subject_id === 'lead1' && smsRow.lead_id === 'lead1', 'ledger rows keep lead attribution (contact-count join)');
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(enr.status === 'active' && enr.next_step_index === 1 && enr.next_send_at === '2026-07-22T16:00:00.000Z', 'advances to step 1 at enrolled_at + day 3');
+  }
+
+  console.log('# estimate drip: stop conditions at send time');
+  for (const [mut, reason, label] of [
+    [fx => { fx.db.estimates[0].status = 'accepted'; }, 'accepted', 'accepted estimate stops with reason accepted'],
+    [fx => { fx.db.estimates[0].status = 'signed'; }, 'accepted', 'interim signed state ALSO counts as accepted (never nag a signer)'],
+    [fx => { fx.db.estimates[0].status = 'rejected'; }, 'lost', 'all estimates rejected stops with reason lost'],
+    [fx => { fx.db.leads[0].stage = 'lost'; }, 'lost', 'lead marked lost stops the estimate drip'],
+    [fx => { fx.db.estimates[0].status = 'change_requested'; }, 'replied', 'a portal change request means the customer engaged: stop as replied'],
+    [fx => { fx.db.pec_sms_log.push({ id: 'in1', direction: 'in', from_number: '+19285551234', created_at: '2026-07-20T01:00:00Z' }); }, 'replied', 'an inbound text stops the estimate drip as replied'],
+  ]) {
+    const fx = makeDb(estTables());
+    mut(fx);
+    const { deps, providers } = stubDeps(fx);
+    await runDrips(deps);
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(enr.status === 'stopped' && enr.stop_reason === reason && providers.ai.length === 0, label);
+  }
+  {
+    // A lead with BOTH statuses present: any accepted wins over open ones.
+    const fx = makeDb(estTables());
+    fx.db.estimates.push({ id: 'est2', lead_id: 'lead1', status: 'accepted', price: 500, public_token: 'tok2', estimate_number: 'E-1043', sent_at: '2026-07-18T15:00:00Z', deleted_at: null });
+    const { deps } = stubDeps(fx);
+    await runDrips(deps);
+    ok(fx.db.pec_drip_enrollments[0].stop_reason === 'accepted', 'any accepted estimate for the lead stops the drip even if another is still open');
+  }
+
+  console.log('# estimate drip: eager hand-off from lead nurture');
+  {
+    const fx = makeDb(estTables({
+      pec_drip_campaigns: [{ ...EST_CAMP }, { id: 'camp1', name: 'Lead follow-up', kind: 'lead', status: 'active', mode: 'dry_run', max_touches: 8 }],
+      pec_drip_enrollments: [{
+        id: 'enrL', subject_type: 'lead', subject_id: 'lead1', lead_id: 'lead1',
+        campaign_id: 'camp1', status: 'active', next_step_index: 2,
+        next_send_at: '2026-07-23T16:00:00Z', enrolled_at: '2026-07-19T16:00:00Z',
+        stop_reason: null, stopped_at: null,
+      }],
+    }));
+    const r = await enrollEstimateDrip(fx.sb, 'lead1', NOW_IN_WINDOW);
+    const nurture = fx.db.pec_drip_enrollments.find(e => e.id === 'enrL');
+    const estEnr = fx.db.pec_drip_enrollments.find(e => e.campaign_id === 'campE');
+    ok(r.enrolled === true && estEnr && estEnr.status === 'active', 'estimate drip enrolls on estimate sent');
+    ok(nurture.status === 'stopped' && nurture.stop_reason === 'estimate_sent', 'active lead-nurture drip is eagerly stopped with reason estimate_sent (no double-touching)');
+    ok(estEnr.next_send_at === '2026-07-21T17:00:00.000Z', 'first estimate touch lands a day after the send');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

@@ -17491,27 +17491,76 @@ function leadContactStats(leads, logs) {
 // Best-effort by contract: any failure (including the drip migration not
 // being applied yet, or the partial one-active-per-lead unique index firing)
 // only logs; adding the lead NEVER fails because of the drip.
-async function enrollLeadInDrip(leadId) {
+// Phase 3: subject-generalized (mirrors enrollSubject in _pec-drip.cjs).
+// subject_type 'lead' covers lead-nurture + estimate drips; 'job' covers
+// invoice reminders. Tries the Phase 3 insert shape first and falls back to
+// the Phase 2 shape (no subject columns) so the UI works on either schema.
+async function enrollSubjectInDrip(kind, subjectType, subjectId, leadId) {
   try {
     const campRes = await supabase.from('pec_drip_campaigns').select('id')
-      .eq('kind', 'lead').eq('status', 'active').order('created_at').limit(1).maybeSingle();
+      .eq('kind', kind).eq('status', 'active').order('created_at').limit(1).maybeSingle();
     if (campRes.error || !campRes.data) return false;
     const stepRes = await supabase.from('pec_drip_steps').select('step_index,day_offset')
       .eq('campaign_id', campRes.data.id).eq('active', true).order('step_index').limit(1).maybeSingle();
     if (stepRes.error || !stepRes.data) return false;
-    const ins = await supabase.from('pec_drip_enrollments').insert({
+    const row = {
+      subject_type: subjectType,
+      subject_id: subjectId,
       lead_id: leadId,
       campaign_id: campRes.data.id,
       status: 'active',
       next_step_index: stepRes.data.step_index,
       next_send_at: new Date(Date.now() + stepRes.data.day_offset * 864e5).toISOString(),
-    });
+    };
+    let ins = await supabase.from('pec_drip_enrollments').insert(row);
+    if (ins.error && subjectType === 'lead' && /subject_type|subject_id/i.test(ins.error.message || '')) {
+      const { subject_type, subject_id, ...legacy } = row;   // pre-Phase-3 schema
+      ins = await supabase.from('pec_drip_enrollments').insert(legacy);
+    }
     if (ins.error) {
       if (!/duplicate|23505/i.test(ins.error.message || '')) console.warn('[drips] enroll failed:', ins.error.message);
       return false;
     }
     return true;
   } catch (e) { console.warn('[drips] enroll failed:', (e && e.message) || e); return false; }
+}
+
+async function enrollLeadInDrip(leadId) {
+  return enrollSubjectInDrip('lead', 'lead', leadId, leadId);
+}
+
+// Estimate follow-up enrollment (mirrors enrollEstimateDrip in _pec-drip.cjs;
+// see that function's comment for the WHY). Eagerly stops any active
+// lead-nurture drip (stop_reason 'estimate_sent') so the lead is never on two
+// nurture tracks at once, then enrolls the estimate drip. Best-effort: a sent
+// estimate NEVER fails because of the drip.
+async function enrollEstimateDripClient(leadId) {
+  if (!leadId) return false;
+  try {
+    const act = await supabase.from('pec_drip_enrollments')
+      .select('id,campaign_id').eq('lead_id', leadId).eq('status', 'active');
+    const list = (!act.error && act.data) || [];
+    if (list.length) {
+      const ids = [...new Set(list.map(e => e.campaign_id))];
+      const camps = await supabase.from('pec_drip_campaigns').select('id,kind').in('id', ids);
+      const leadCamps = new Set(((camps.data) || []).filter(c => c.kind === 'lead').map(c => c.id));
+      for (const e of list) {
+        if (leadCamps.has(e.campaign_id)) {
+          await supabase.from('pec_drip_enrollments')
+            .update({ status: 'stopped', stop_reason: 'estimate_sent', stopped_at: new Date().toISOString(), next_send_at: null })
+            .eq('id', e.id).eq('status', 'active');
+        }
+      }
+    }
+  } catch (e) { console.warn('[drips] estimate-drip lead-stop failed:', (e && e.message) || e); }
+  return enrollSubjectInDrip('estimate', 'lead', leadId, leadId);
+}
+
+// Invoice payment-reminder enrollment, fired on the invoice_first_sent_at
+// null->set transition (exactly once per job; a re-send never re-enrolls).
+async function enrollInvoiceDripClient(jobId) {
+  if (!jobId) return false;
+  return enrollSubjectInDrip('invoice', 'job', jobId, null);
 }
 
 // ---- Drips admin view (prompt 34) ------------------------------------------
@@ -19264,6 +19313,11 @@ async function estimateSentLeadEffects(est, nowIso) {
       actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
       ...evt,
     });
+    // Phase 3: a sent estimate hands the lead from the nurture drip to the
+    // estimate follow-up drip (stops lead-nurture with 'estimate_sent',
+    // enrolls the estimate taper). Fire-and-forget, same best-effort contract
+    // as the rest of this function; a re-send while active is a clean no-op.
+    enrollEstimateDripClient(lead.id).catch(() => {});
   } catch (err) {
     console.warn('[estimates] lead send bookkeeping skipped:', err && err.message ? err.message : err);
   }

@@ -387,6 +387,46 @@ async function enrollLead(sb, leadId, now = new Date()) {
   return enrollSubject(sb, 'lead', 'lead', leadId, leadId, now);
 }
 
+// Estimate follow-up enrollment, fired when an estimate transitions to
+// 'sent'. EAGERLY stops any active lead-nurture drip first (stop_reason
+// 'estimate_sent'): a sent estimate means the lead progressed, and without
+// the eager stop both sequences could touch the same person until the next
+// runner tick notices the stage change. Re-sending a revised estimate while
+// an estimate drip is active is a clean 409 no-op; after a stop (say
+// change_requested), a re-send starts a FRESH taper on purpose (a revised
+// estimate deserves its own follow-up clock). The client-side mirror in
+// index.html (enrollEstimateDripClient) must match this logic.
+async function enrollEstimateDrip(sb, leadId, now = new Date()) {
+  try {
+    const act = await sb('GET', `/pec_drip_enrollments?lead_id=eq.${encodeURIComponent(leadId)}&status=eq.active&select=id,campaign_id`);
+    const list = Array.isArray(act) ? act : [];
+    if (list.length) {
+      const ids = [...new Set(list.map(e => e.campaign_id))];
+      const camps = await sb('GET', `/pec_drip_campaigns?id=in.(${ids.join(',')})&select=id,kind`);
+      const leadCamps = new Set((Array.isArray(camps) ? camps : []).filter(c => c.kind === 'lead').map(c => c.id));
+      for (const e of list) {
+        if (leadCamps.has(e.campaign_id)) {
+          await sb('PATCH', `/pec_drip_enrollments?id=eq.${encodeURIComponent(e.id)}&status=eq.active`, {
+            status: 'stopped', stop_reason: 'estimate_sent', stopped_at: now.toISOString(), next_send_at: null,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('enrollEstimateDrip lead-stop failed (non-fatal):', String(err && err.message || err));
+  }
+  return enrollSubject(sb, 'estimate', 'lead', leadId, leadId, now);
+}
+
+// Invoice payment-reminder enrollment, fired when an invoice FIRST goes out
+// to the customer (the jobs.invoice_first_sent_at null->set transition, which
+// fires exactly once per job). Enrollment is anchored to NOW, never backdated
+// to an old stamp: a backdated anchor would make every step instantly due and
+// fire four reminders in an hour.
+async function enrollJobInvoiceDrip(sb, jobId, now = new Date()) {
+  return enrollSubject(sb, 'invoice', 'job', jobId, null, now);
+}
+
 // ---------------------------------------------------------------------------
 // Recipient resolution: (subject_type, subject_id) -> who to contact and
 // whether we may, per channel. Consent models DIFFER by subject on purpose:
@@ -783,7 +823,8 @@ async function runDrips(deps) {
 }
 
 module.exports = {
-  runDrips, enrollLead, enrollSubject, resolveRecipient, checkKillSwitches,
+  runDrips, enrollLead, enrollEstimateDrip, enrollJobInvoiceDrip,
+  enrollSubject, resolveRecipient, checkKillSwitches,
   kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms, usd,
   dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT, RENDER_SYSTEM_PROMPTS,
   RUN_CAP, STOP_LINE, SITE_URL,
