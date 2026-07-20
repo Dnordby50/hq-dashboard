@@ -5,6 +5,7 @@
 // Run: node production/google-pull.test.cjs
 'use strict';
 const { mapEventToRow, shouldSkipEcho } = require('../netlify/functions/pec-google-calendar-pull.cjs');
+const { composeGcalDescription, stripGcalDescription, GCAL_DESC_SEPARATOR } = require('../netlify/functions/_pec-google.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
 const { state, ok } = makeChecker();
@@ -45,6 +46,31 @@ const MEMBER = { id: 'sm1', name: 'Dylan N', google_calendar_id: 'cal_topcoat_1'
     ok(shouldSkipEcho({ updated: '2026-07-20T18:01:00.000Z' }, existing) === false, 'newer updated = a real Google edit, wins');
     ok(shouldSkipEcho({ updated: '2026-07-20T18:01:00.000Z' }, null) === false, 'no existing row never skips');
     ok(shouldSkipEcho({}, existing) === false, 'an event without updated is processed, not guessed away');
+  }
+
+  console.log('# description compose/strip round-trip (prompt 38 notes split)');
+  {
+    const composed = composeGcalDescription('Bring the moisture meter.\nGate code 1234', [
+      'Customer: Sam Jones (928) 555-1234',
+      'Open in TopCoat: https://prescottepoxy.netlify.app/?appt=appt1',
+    ]);
+    ok(composed.startsWith('Bring the moisture meter.') && composed.includes('\n\n' + GCAL_DESC_SEPARATOR + '\n'), 'notes first, then the separator + contact block');
+    ok(/Customer: Sam Jones/.test(composed) && /\?appt=appt1/.test(composed), 'contact line + deep link present');
+    ok(!composed.includes('—'), 'no em dash in the composed description');
+    ok(stripGcalDescription(composed) === 'Bring the moisture meter.\nGate code 1234', 'strip returns exactly the human-typed notes');
+    const edited = composed.replace('Bring the moisture meter.', 'Bring the BIG grinder.');
+    ok(stripGcalDescription(edited) === 'Bring the BIG grinder.\nGate code 1234', 'a Google-side edit above the separator survives, the auto block never lands in notes');
+    ok(stripGcalDescription(composeGcalDescription('', ['Open in TopCoat: x'])) === null, 'block-only description strips to null notes');
+    ok(stripGcalDescription('plain hand-typed text') === 'plain hand-typed text', 'a description with no separator passes through untouched');
+    ok(composeGcalDescription('only notes', []) === 'only notes', 'no contact lines means no separator');
+  }
+  {
+    const { row } = mapEventToRow({
+      id: 'gev4', summary: 'Estimate',
+      description: 'human note\n\n' + GCAL_DESC_SEPARATOR + '\nCustomer: X\nOpen in TopCoat: y',
+      start: { dateTime: '2026-07-21T10:00:00-07:00' }, end: { dateTime: '2026-07-21T11:00:00-07:00' },
+    }, MEMBER);
+    ok(row.notes === 'human note', 'pull mapping ingests only the free-text part into notes');
   }
 
   console.log('# no-start events are skipped as invalid');

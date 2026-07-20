@@ -135,7 +135,14 @@ async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches, se
     return;
   }
   ctx.customerFirst = rcpt.first;
-  const body = renderTemplate(rule.message_template, ctx);
+  // The customer-facing "Job notes" ride every customer message on both
+  // channels (prompt 38): appended after the template, scrubbed of em dashes
+  // like everything else customer-facing. Salesperson messages never carry
+  // it; select('*') simply lacks the column pre-migration, so this is a
+  // clean no-op until 2026-07-21_appointment_customer_notes.sql lands.
+  const jobNote = String(appt.customer_notes || '').trim();
+  const body = renderTemplate(rule.message_template, ctx)
+    + (jobNote ? '\n\n' + scrubDashes(jobNote) : '');
   const started = new Date(appt.start_at) <= now;
 
   if (wantSms) {

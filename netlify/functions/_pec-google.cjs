@@ -182,6 +182,36 @@ async function ensureTopcoatCalendar(accessToken) {
   return created.body.id;
 }
 
+// ---------------------------------------------------------------------------
+// Event-description composition (prompt 38). The pushed description = the
+// internal company notes (pec_appointments.notes) + a separator + an
+// auto-added contact/link block (customer name, phone, TopCoat deep link) so
+// the salesperson has everything on their phone calendar. The separator line
+// is load-bearing: the pull side strips everything from it downward before
+// ingesting a Google-side description edit back into `notes`, so the
+// auto-added block can never clobber the human-typed notes. customer_notes
+// (the customer-facing job note) is deliberately NEVER pushed to Google.
+// ---------------------------------------------------------------------------
+const GCAL_DESC_SEPARATOR = '----';
+
+function composeGcalDescription(notes, contactLines) {
+  const parts = [];
+  const n = String(notes || '').trim();
+  if (n) parts.push(n);
+  const lines = (contactLines || []).filter(Boolean);
+  if (lines.length) parts.push(GCAL_DESC_SEPARATOR + '\n' + lines.join('\n'));
+  return parts.join('\n\n');
+}
+
+// The free-text portion above the separator (a Google-side edit to the notes),
+// with the auto-added block removed. Null when nothing human-typed remains.
+function stripGcalDescription(desc) {
+  const lines = String(desc || '').split(/\r?\n/);
+  const i = lines.findIndex(l => l.trim() === GCAL_DESC_SEPARATOR);
+  const kept = (i >= 0 ? lines.slice(0, i) : lines).join('\n').trim();
+  return kept || null;
+}
+
 async function revokeToken(token) {
   try {
     await timedFetch(`${REVOKE_URL}?token=${encodeURIComponent(token)}`, { method: 'POST' });
@@ -216,4 +246,5 @@ module.exports = {
   exchangeCode, emailFromIdToken, getTokenRow, saveTokenRow,
   getFreshAccessToken, gcalFetch, ensureTopcoatCalendar, revokeToken,
   getStaffUser, timedFetch, TOPCOAT_CAL_NAME, SITE_URL,
+  GCAL_DESC_SEPARATOR, composeGcalDescription, stripGcalDescription,
 };

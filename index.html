@@ -6842,6 +6842,16 @@ function renderAuthUI() {
   setNav('catalog', can('can_edit_catalog'));
   setNav('costing', can('can_view_job_costing'));
   setNav('commission', can('can_view_commission'));
+  // Deep link from a Google Calendar event description (prompt 38):
+  // /?appt=<id> lands on the Appointments calendar with that appointment's
+  // edit modal open. Consumed once so later re-renders don't re-trigger it.
+  if (!window._pecApptDeepLinkDone) {
+    window._pecApptDeepLinkDone = true;
+    try {
+      const apptId = new URLSearchParams(location.search).get('appt');
+      if (apptId) { state.view = 'appointments'; state.openAppointmentId = apptId; }
+    } catch (_) { /* malformed query string; boot normally */ }
+  }
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
@@ -18671,7 +18681,12 @@ async function openAppointmentForm(existing, prefill = {}) {
       <div class="pec-field"><label>Zip</label><input id="afZip" value="${esc(a.location_zip || prefill.location_zip || '')}" maxlength="10"></div>
     </div>
     ${leadOpts ? `<div class="pec-field"><label>Link to lead (optional)</label><select id="afLead">${leadOpts}</select></div>` : ''}
-    <div class="pec-field"><label>Notes</label><textarea id="afNotes" rows="3">${esc(a.notes || '')}</textarea></div>
+    <div class="pec-field"><label>Job notes (customer sees)</label>
+      <textarea id="afCustomerNotes" rows="2" placeholder="e.g. Please have the garage cleared out before we arrive">${esc(a.customer_notes || '')}</textarea>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Added to the customer's appointment confirmation and reminder texts and emails.</div></div>
+    <div class="pec-field"><label>Company notes (internal)</label>
+      <textarea id="afNotes" rows="3">${esc(a.notes || '')}</textarea>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Private. Shows on the salesperson's Google Calendar event, never sent to the customer.</div></div>
     ${a.google_event_id ? '<div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Synced with Google Calendar.</div>' : ''}
     ${a.status === 'canceled' ? '<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This appointment is canceled.</div>' : ''}
     <div class="prod-msg-err" id="afErr" style="min-height:16px"></div>
@@ -18732,6 +18747,7 @@ async function openAppointmentForm(existing, prefill = {}) {
         location_zip: val('afZip') || null,
         location_place_id: (modal.querySelector('#afAddress').dataset.placeId || a.location_place_id) || null,
         notes: val('afNotes') || null,
+        customer_notes: val('afCustomerNotes') || null,
         lead_id: (modal.querySelector('#afLead') ? (val('afLead') || null) : leadId),
         customer_id: customerId,
       };
@@ -18739,16 +18755,20 @@ async function openAppointmentForm(existing, prefill = {}) {
       btn.disabled = true; btn.textContent = 'Saving…';
       try {
         let saved;
-        if (isNew) {
-          row.created_by = (state.session && state.session.user && state.session.user.id) || null;
-          const ins = await withFreshWrite(() => supabase.from('pec_appointments').insert(row).select('*').single(), { label: 'appt-insert' });
-          if (ins.error) throw ins.error;
-          saved = ins.data;
-        } else {
-          const upd = await withFreshWriteRetry(() => supabase.from('pec_appointments').update(row).eq('id', a.id).select('*').single(), { label: 'appt-update' });
-          if (upd.error) throw upd.error;
-          saved = upd.data;
+        // One-shot retry without customer_notes if that column is not
+        // migrated yet (PostgREST rejects unknown columns), so the save is
+        // never blocked in the pre-migration window.
+        const writeRow = async (r) => isNew
+          ? await withFreshWrite(() => supabase.from('pec_appointments').insert(r).select('*').single(), { label: 'appt-insert' })
+          : await withFreshWriteRetry(() => supabase.from('pec_appointments').update(r).eq('id', a.id).select('*').single(), { label: 'appt-update' });
+        if (isNew) row.created_by = (state.session && state.session.user && state.session.user.id) || null;
+        let res = await writeRow(row);
+        if (res.error && /customer_notes/.test(res.error.message || '')) {
+          const { customer_notes, ...withoutNote } = row;
+          res = await writeRow(withoutNote);
         }
+        if (res.error) throw res.error;
+        saved = res.data;
         closeModal();
         showToast(isNew ? 'Appointment booked' : 'Appointment saved', { ttl: 2200 });
         apptPostWrite(saved, { isNew });

@@ -205,6 +205,31 @@ function stubApptDeps(fx, now = NOW) {
     ok(fx.db.pec_appointment_reminder_sends.length === 1 && fx.db.pec_appointment_reminder_sends[0].rule_id === 'rule_sp_60', 'on-book salesperson rule skipped (the booking RPC covers it), no ledger row for it');
   }
 
+  console.log('# customer job note (prompt 38): appended on both customer channels, never the bell');
+  {
+    const fx = makeDb(baseTables({
+      pec_appointment_reminder_rules: [
+        { ...RULE_BOOK },
+        { id: 'rule_sp_60', enabled: true, audience: 'salesperson', channel: 'in_app', on_book: false, offset_minutes: 1440, appt_type: null, message_template: 'Heads up {sales_name}: {appt_time}' },
+      ],
+    }));
+    fx.db.pec_appointments[0].customer_notes = 'Please clear the garage — we start at the door.';
+    const { deps, providers } = stubApptDeps(fx);
+    await runApptReminders(deps, { appointmentId: 'appt1' });
+    ok(providers.sms.length === 1 && /Please clear the garage/.test(providers.sms[0].content), 'SMS carries the job note');
+    ok(!providers.sms[0].content.includes('—') && /garage, we start/.test(providers.sms[0].content), 'em dash in the note scrubbed to a comma');
+    ok(providers.sms[0].content.endsWith('Reply STOP to opt out.'), 'STOP line still last, after the note');
+    ok(providers.email.length === 1 && /Please clear the garage/.test(providers.email[0].html), 'email carries the job note too');
+    ok(fx.db.pec_notifications.length === 1 && !/garage/.test(fx.db.pec_notifications[0].body), 'salesperson bell never carries the customer note');
+  }
+  {
+    const fx = makeDb(baseTables({ pec_appointment_reminder_rules: [{ ...RULE_BOOK }] }));
+    // No customer_notes column at all (pre-migration select shape).
+    const { deps, providers } = stubApptDeps(fx);
+    await runApptReminders(deps, { appointmentId: 'appt1' });
+    ok(providers.sms.length === 1 && !/undefined|null/.test(providers.sms[0].content), 'absent column is a clean no-op (no undefined in the copy)');
+  }
+
   console.log('# per-type rule scoping');
   {
     const fx = makeDb(baseTables());

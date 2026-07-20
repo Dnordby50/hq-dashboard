@@ -15,7 +15,10 @@
 // on the row, so the pull runner can tell our own echo from a real edit.
 
 const { sb } = require('./_pec-supabase.cjs');
-const { googleConfigured, getFreshAccessToken, gcalFetch, getStaffUser } = require('./_pec-google.cjs');
+const {
+  googleConfigured, getFreshAccessToken, gcalFetch, getStaffUser,
+  composeGcalDescription, SITE_URL,
+} = require('./_pec-google.cjs');
 
 const APPT_TYPE_LABELS = {
   on_site_estimate: 'On-site estimate',
@@ -42,13 +45,53 @@ function phxDateStr(iso, plusDays = 0) {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
 }
 
-function eventBodyFromAppt(appt) {
+// (760) 576-4073 for 10-digit US numbers; anything else passes through
+// (mirror of the dashboard's qoFmtPhone so the two surfaces agree).
+function fmtPhone(p) {
+  const d = String(p || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : String(p || '');
+}
+
+// The auto-added contact/link block under the description separator: customer
+// name + phone (the appointment row stores neither; fetch from the linked
+// lead, else customer) and a TopCoat deep link (/?appt=<id>, the same route
+// the bell's 'appointments' target opens). Best-effort: a lookup failure just
+// means a shorter block. No em dashes (prompt 38 / standing rule 6).
+async function contactLinesForAppt(appt) {
+  const lines = [];
+  try {
+    let person = null;
+    if (appt.lead_id) {
+      const rows = await sb('GET', `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&select=full_name,phone&limit=1`);
+      const l = Array.isArray(rows) && rows[0];
+      if (l) person = { name: l.full_name, phone: l.phone };
+    }
+    if (!person && appt.customer_id) {
+      const rows = await sb('GET', `/customers?id=eq.${encodeURIComponent(appt.customer_id)}&select=name,phone&limit=1`);
+      const c = Array.isArray(rows) && rows[0];
+      if (c) person = { name: c.name, phone: c.phone };
+    }
+    if (person && (person.name || person.phone)) {
+      lines.push(['Customer:', person.name, person.phone ? fmtPhone(person.phone) : '']
+        .filter(Boolean).join(' '));
+    }
+  } catch (e) {
+    console.warn('pec-appt-sync-push: contact lookup skipped:', e && e.message || e);
+  }
+  lines.push(`Open in TopCoat: ${SITE_URL}/?appt=${appt.id}`);
+  return lines;
+}
+
+function eventBodyFromAppt(appt, contactLines) {
   const summary = appt.title || APPT_TYPE_LABELS[appt.appt_type] || 'Appointment';
   const location = [appt.location_address, appt.location_city, appt.location_state, appt.location_zip]
     .filter(Boolean).join(', ');
   const body = {
     summary,
-    description: appt.notes || '',
+    // Internal company notes + the auto-added contact/link block. The
+    // customer-facing customer_notes is deliberately NOT pushed (the
+    // calendar is the salesperson's internal view).
+    description: composeGcalDescription(appt.notes, contactLines),
     location: location || undefined,
     extendedProperties: { private: { topcoat_id: appt.id, topcoat_type: appt.appt_type } },
   };
@@ -134,7 +177,7 @@ exports.handler = async (event) => {
       eventId = null;
     }
 
-    const body = eventBodyFromAppt(appt);
+    const body = eventBodyFromAppt(appt, await contactLinesForAppt(appt));
     let res;
     if (eventId) {
       res = await gcalFetch(accessToken, 'PUT',

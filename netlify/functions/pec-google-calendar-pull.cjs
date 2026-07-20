@@ -19,7 +19,10 @@
 // assigned to the calendar's member.
 
 const { sb, json } = require('./_pec-supabase.cjs');
-const { googleConfigured, getFreshAccessToken, getTokenRow, saveTokenRow, gcalFetch } = require('./_pec-google.cjs');
+const {
+  googleConfigured, getFreshAccessToken, getTokenRow, saveTokenRow, gcalFetch,
+  stripGcalDescription,
+} = require('./_pec-google.cjs');
 
 const PHX_OFFSET = '-07:00'; // fixed, no DST (project convention)
 const APPT_TYPES = ['on_site_estimate', 'project_walkthrough', 'site_visit', 'other'];
@@ -39,7 +42,11 @@ function mapEventToRow(ev, member) {
   return {
     row: {
       title: ev.summary || null,
-      notes: ev.description || null,
+      // The pushed description = internal notes + a separator + an auto-added
+      // contact/link block (prompt 38). Ingest only the human-typed part
+      // above the separator so the auto block can never clobber `notes`.
+      // customer_notes is NEVER written from Google.
+      notes: stripGcalDescription(ev.description),
       location_address: ev.location || null,
       start_at: startAt,
       end_at: endAt,
