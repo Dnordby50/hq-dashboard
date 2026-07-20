@@ -17817,6 +17817,164 @@ async function renderPipeline() {
 // price (accepted estimate wins), computed in loadLeadsData.
 
 // ============================================================
+// Google Places address autocomplete (prompt 37), ported from the estimator
+// PWA's apps/estimator/src/lib/places.ts onto the vanilla dashboard. Same
+// contract: the CURRENT Places JS surface (importLibrary('places'),
+// AutocompleteSuggestion, Place.fetchFields), suggestions strictly an online
+// enhancement, the input fully usable typed by hand, silent degrade with no
+// key / offline / API not enabled on the key. The key is the same
+// domain-restricted browser key the Sheets reads use (CLAUDE.md rule 7
+// exception: referrer-restricted, minimum APIs, listed in netlify.toml
+// SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES). Places suggests nothing until
+// the Maps JavaScript + Places APIs are enabled on that key in Google Cloud
+// Console (Dylan handoff); until then this no-ops safely.
+// ============================================================
+const PEC_MAPS_KEY = 'AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY';
+
+let _pecPlacesLoading = null;
+function pecLoadPlaces() {
+  if (!PEC_MAPS_KEY) return Promise.resolve(false);
+  if (_pecPlacesLoading) return _pecPlacesLoading;
+  _pecPlacesLoading = new Promise((resolve) => {
+    if (window.google && window.google.maps && window.google.maps.importLibrary) { resolve(true); return; }
+    window.__pecMapsReady = () => resolve(true);
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(PEC_MAPS_KEY)}&v=weekly&loading=async&callback=__pecMapsReady`;
+    s.async = true;
+    s.onerror = () => { s.remove(); resolve(false); };
+    document.head.appendChild(s);
+  })
+    .then(async (ok) => {
+      if (!ok) return false;
+      try { await window.google.maps.importLibrary('places'); return true; }
+      catch (_) { return false; }
+    })
+    .then((ok) => {
+      // A failed load resets the latch so a later attempt (signal came back)
+      // retries instead of caching the failure forever.
+      if (!ok) _pecPlacesLoading = null;
+      return ok;
+    });
+  return _pecPlacesLoading;
+}
+
+// One session token per typing burst, cleared when a pick resolves: Google
+// bills a session (N keystrokes + 1 details fetch) as a unit, and a stale
+// token after a selection would bill every later keystroke individually.
+let _pecPlacesSession = null;
+
+async function pecFetchAddressSuggestions(input) {
+  if (!(await pecLoadPlaces())) return [];
+  try {
+    const places = await window.google.maps.importLibrary('places');
+    if (!_pecPlacesSession) _pecPlacesSession = new places.AutocompleteSessionToken();
+    const { suggestions } = await places.AutocompleteSuggestion.fetchAutocompleteSuggestions({
+      input, sessionToken: _pecPlacesSession, includedRegionCodes: ['us'],
+    });
+    return (suggestions || [])
+      .filter(s => s.placePrediction)
+      .map((s, i) => ({
+        id: String(s.placePrediction.placeId || i),
+        main: String(s.placePrediction.mainText || s.placePrediction.text || ''),
+        secondary: String(s.placePrediction.secondaryText || ''),
+        prediction: s.placePrediction,
+      }));
+  } catch (_) { return []; }
+}
+
+// Resolve a picked suggestion to split address fields. street_number + route
+// -> address1 (a unit in the pick itself, subpremise, lands in address2);
+// state is the short code (AZ). Null on any failure so the caller keeps the
+// typed text.
+async function pecResolveAddressSuggestion(prediction) {
+  try {
+    const place = prediction.toPlace();
+    await place.fetchFields({ fields: ['addressComponents'] });
+    _pecPlacesSession = null;
+    const comps = place.addressComponents || [];
+    const get = (type, short = false) => {
+      const c = comps.find(x => Array.isArray(x.types) && x.types.includes(type));
+      return c ? String((short ? c.shortText : c.longText) || '') : '';
+    };
+    return {
+      address1: [get('street_number'), get('route')].filter(Boolean).join(' '),
+      address2: get('subpremise'),
+      city: get('locality') || get('postal_town') || get('sublocality') || get('administrative_area_level_3'),
+      state: get('administrative_area_level_1', true),
+      zip: get('postal_code'),
+      placeId: (prediction.placeId != null) ? String(prediction.placeId) : '',
+    };
+  } catch (_) { return null; }
+}
+
+// Wire a plain text input up as an address-autocomplete field. onPick gets
+// { address1, address2, city, state, zip, placeId }. The dropdown is built
+// lazily on first suggestions, positioned under the input inside its
+// .pec-field wrapper, and keyboard-navigable (arrows / Enter / Escape).
+// Everything is additive: with no suggestions the input is just an input.
+function pecAttachPlacesAutocomplete(input, onPick) {
+  if (!input || input._pecPlacesWired) return;
+  input._pecPlacesWired = true;
+  const wrap = input.parentElement;
+  if (wrap && getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+  let panel = null, items = [], hi = -1, reqSeq = 0, hideTimer = null;
+
+  const hide = () => { if (panel) panel.style.display = 'none'; hi = -1; };
+  const ensurePanel = () => {
+    if (panel) return panel;
+    panel = document.createElement('div');
+    panel.setAttribute('role', 'listbox');
+    panel.style.cssText = 'position:absolute;left:0;right:0;top:100%;z-index:10010;background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.14);max-height:240px;overflow-y:auto;display:none;margin-top:2px';
+    (wrap || input.parentElement || document.body).appendChild(panel);
+    return panel;
+  };
+  const paint = () => {
+    const p = ensurePanel();
+    if (!items.length) { hide(); return; }
+    p.innerHTML = items.map((it, i) => `
+      <div data-sug="${i}" role="option" style="padding:8px 10px;cursor:pointer;font-size:.82rem;${i === hi ? 'background:var(--rd-soft,rgba(15,20,32,.06));' : ''}${i ? 'border-top:1px solid var(--rd-line,#eef0f3);' : ''}">
+        <div style="font-weight:600">${esc(it.main)}</div>
+        ${it.secondary ? `<div style="font-size:.72rem;color:var(--muted)">${esc(it.secondary)}</div>` : ''}
+      </div>`).join('');
+    p.style.display = '';
+    p.querySelectorAll('[data-sug]').forEach(el => {
+      // mousedown (not click): it fires before the input's blur hides the panel.
+      el.addEventListener('mousedown', (e) => { e.preventDefault(); pick(Number(el.dataset.sug)); });
+    });
+  };
+  const pick = async (i) => {
+    const it = items[i]; if (!it) return;
+    hide();
+    const addr = await pecResolveAddressSuggestion(it.prediction);
+    if (!addr) return; // resolution failed: keep whatever was typed
+    try { onPick(addr); } catch (e) { console.error('[places] onPick:', e); }
+  };
+
+  let debounce = null;
+  input.addEventListener('input', () => {
+    input.dataset.placeId = ''; // hand-editing invalidates a previous pick
+    const term = input.value.trim();
+    if (debounce) clearTimeout(debounce);
+    if (term.length < 3) { items = []; hide(); return; }
+    debounce = setTimeout(async () => {
+      const seq = ++reqSeq;
+      const got = await pecFetchAddressSuggestions(term);
+      if (seq !== reqSeq) return; // stale response; a newer keystroke won
+      items = got; hi = -1; paint();
+    }, 250);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (!panel || panel.style.display === 'none' || !items.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); hi = (hi + 1) % items.length; paint(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = (hi - 1 + items.length) % items.length; paint(); }
+    else if (e.key === 'Enter') { if (hi >= 0) { e.preventDefault(); pick(hi); } }
+    else if (e.key === 'Escape') { hide(); }
+  });
+  input.addEventListener('blur', () => { hideTimer = setTimeout(hide, 150); });
+  input.addEventListener('focus', () => { if (hideTimer) clearTimeout(hideTimer); if (items.length) paint(); });
+}
+
+// ============================================================
 // Appointments calendar (prompt 37). Sales appointments: on-site estimates
 // scheduled off a Lead, plus ad-hoc blocks ("other"). Deliberately SEPARATE
 // from the crew Job Schedule (renderSchedule): different concept, different
