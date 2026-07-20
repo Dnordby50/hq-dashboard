@@ -4,6 +4,37 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-21 MST] Notes split + phone-on-details + combined Email/Text send (prompt 38, all three features)
+By: Claude Code
+Changed: Shipped prompt 38 in five commits, one per feature/sub-part so each reverts alone: the Cowork scoping docs commit (7123fb1), the appointment notes split (b10ceec), phone tap-to-call/text on details (5eeb05c), the invoice combined Send control (120c976), and the NEW estimate text channel + its combined control (eb8471a), plus this docs commit.
+
+FEATURE 1 (notes split): `pec_appointments.notes` STAYS the internal Company notes (no data migration; existing notes were written as internal detail and already fed the Google description); the new `customer_notes` column (migration `2026-07-21_appointment_customer_notes.sql`, written NOT applied, verify block at the bottom) is the customer-facing Job notes. The form shows both with helper text and a one-shot save retry that drops customer_notes pre-migration so saves never block. The Google push now composes the event description as internal notes + a `----` separator + an auto-added block (customer name/phone fetched from the linked lead/customer, plus an `/?appt=<id>` deep link that renderAuthUI consumes at boot to open that appointment); customer_notes is NEVER pushed. The reminder engine appends the scrubbed job note to customer messages on BOTH channels, after the template and before the SMS STOP line; salesperson bells never carry it. The pull strips everything from the separator down before ingesting a Google-side description edit into notes, so the auto block can never clobber the human-typed part, and never writes customer_notes.
+
+FEATURE 2 (phone on details): shared `pecPhoneActionsHtml` (tel: link + Text button) wired by ONE delegated document listener, on: the job detail header (its Text routes to the job's own Messages & Calls tab, the canonical text-the-customer surface), the printed Crew Work Order's Job Identity grid (the prompt's `renderJobCard` anchor does not exist; the notes-box line it pointed at IS the work-order sheet, so the phone landed there as a tel: line in the formerly blank pair), the lead kanban card and lead detail, and the appointment popup (phone fetched async from the linked lead/customer). Everything else routes through `pecOpenTextTo` -> the EXISTING Messages thread; `openMessageThread` now synthesizes an empty seeded thread for a number with no history, with the send path unchanged (customer_id when known else raw number) so consent/STOP and logging stay in the one place. No phone = a muted note, never a dead link.
+
+FEATURE 3 (combined send): one shared split control (`pecSplitSendHtml`/`pecWireSplitSend`), primary click = Email + Text, caret = one channel, on BOTH the invoice page and the estimate detail. Nothing sends on the click itself: "both" shows the text confirm FIRST (declining quietly downgrades to email only), then the email compose; the text leg fires only after the email actually sent, so a canceled compose sends nothing. Missing channels never hard-block (no email on file falls through to text-only, no phone/opt-out/no-link sends email with a "text skipped" note). Invoice: same code as before refactored into openInvoiceEmail/doInvoiceTextSend (kind='invoice', STOP line, server opt-out authority, invoice_first_sent_at stamp + invoice-drip enroll on either channel). Estimate: the TEXT CHANNEL IS NEW. pec-send-sms's kind='estimate' 501 seam is now real: lookup by public_token, server-built body with the /e/<token> review-and-sign link + STOP line, opt-out enforced for the linked lead (opted_out) AND its customer (sms_opt_out), logged kind 'estimate' with customer attribution resolved through the lead (stays out of Last-invoiced). CRITICAL side-effect parity: `markEstimateSent` is the one shared flip (sent_at + status 'sent' + estimateSentLeadEffects), so a TEXT-only estimate goes live and the lead metrics/drip handoff stay right; the combined path passes skipFlip on the text leg so sent-state stamps exactly once, and a text-that-sent-but-flip-failed says so loudly (the customer's link would 404). The blank-scope BLANK warn gate is extracted and fires on ANY channel.
+
+VERIFIED: npm test 142; appt-reminders 44 (adds: job note on both channels with em-dash scrub + STOP line last, bell never carries it, pre-migration no-op); google-pull 22 (adds: compose/strip round-trip, Google-side edit survives above the separator, block-only strips to null notes, mapping ingests only free text); drip suites 55 + 60; node --check clean on pec-send-sms.cjs, pec-appt-sync-push.cjs, pec-google-calendar-pull.cjs, _pec-appt.cjs, _pec-google.cjs; all 7 inline index.html JS blocks parse; features.json + whats-new.json validate; zero em dashes in customer-facing additions. NOT verified live: the estimate text send (new Quo path) and the composed-Google-description round-trip need one real-world pass (handoffs below).
+
+Why: Dylan's three requests, scoped by Cowork 2026-07-20 (claude-code-prompt-38-notes-phone-invoice-send.md).
+Files touched: index.html, supabase/migrations/2026-07-21_appointment_customer_notes.sql (new), netlify/functions/{pec-send-sms,_pec-appt,_pec-google,pec-appt-sync-push,pec-google-calendar-pull}.cjs, production/{appt-reminders,google-pull}.test.cjs, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Cowork applies the migration + regenerates SCHEMA.md; Dylan live-tests the estimate text once deployed.
+Handoff to Cowork: see the section below.
+Handoff to Dylan: see the section below.
+
+## Handoff to Cowork
+1. Apply `supabase/migrations/2026-07-21_appointment_customer_notes.sql` to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) and run the verify block (exactly 1 row: customer_notes / text / YES). No RLS change on purpose.
+2. Regenerate the pec_appointments section of SCHEMA.md (standing rule 9).
+3. Acceptance (after deploy + migration): book a test appointment with BOTH note fields filled on a consented test lead; confirm the confirmation text AND email carry the Job notes, the Google event description shows Company notes + the customer name/phone + the Open-in-TopCoat link (and NOT the Job notes), and that clicking that link while signed in opens the appointment modal. Edit the description's top part in Google and confirm only that part lands back in Company notes after a pull tick.
+4. Acceptance (estimate text): from a draft estimate with a real test phone, use Send > Text only; confirm the SMS arrives with the /e/ link + STOP line, the link renders (estimate flipped to sent), pec_sms_log has a kind 'estimate' row, and the lead moved to estimate_sent with estimate_sent_at stamped.
+
+## Handoff to Dylan
+1. git push when ready (commits are local on main).
+2. The estimate TEXT channel is brand new: worth one live send to yourself before using it on a real customer (Cowork's acceptance walk covers it if you prefer).
+3. Reminder: the prompt-37 Google items are still open (enable Maps JS + Places API on the browser key; set GOOGLE_OAUTH_CLIENT_ID/SECRET in Netlify) and now also gate feature 1's Google-description behavior being visible.
+
+---
+
 ## [2026-07-20 MST] Cowork: scoped schedule-UX + CompanyCam-in-scheduler (prompt 39 written)
 By: Cowork
 Changed: No repo code. Wrote claude-code-prompt-39-schedule-ux-companycam.md to the repo root and delivered it to Dylan. Scoped three Dylan requests through 14 multiple-choice questions grounded in the current code.

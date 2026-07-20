@@ -1,5 +1,38 @@
 [
   {
+    "id": "appointment-notes-split",
+    "date": "2026-07-21",
+    "title": "Appointments now have customer Job notes and internal Company notes",
+    "summary": "The appointment form has two note boxes instead of one. Job notes are what the customer sees: they are added to the automated confirmation and reminder texts and emails, so you can say things like please clear the garage before we arrive. Company notes are private: they show on the salesperson's Google Calendar event, along with the customer's name, phone number, and a link that opens the appointment in TopCoat, and are never sent to the customer.",
+    "howto": [
+      "Open an appointment (or book a new one) from the Appointments page.",
+      "Put anything the customer should know in Job notes, and private detail in Company notes.",
+      "Save. Reminders carry the Job notes; the Google event carries the Company notes."
+    ]
+  },
+  {
+    "id": "phone-on-details",
+    "date": "2026-07-21",
+    "title": "Customer phone numbers on job, lead, and appointment pages",
+    "summary": "The customer's phone number now shows on the job page, the lead card and lead page, the appointment popup, and the printed crew work order. Tap the number to call. Tap Text next to it to open the existing texting screen for that person, so opt-outs and message history all stay in one place. On the job page, Text opens that job's own Messages and Calls feed.",
+    "howto": [
+      "Open a job, a lead, or an appointment.",
+      "Tap the phone number to call, or tap Text to send a message.",
+      "If there is no phone on file, it says so instead of showing a dead link."
+    ]
+  },
+  {
+    "id": "combined-send-invoice-estimate",
+    "date": "2026-07-21",
+    "title": "One Send button for invoices and estimates, by email and text together",
+    "summary": "Invoices and estimates now have a single Send button. Clicking it sends by email and text together: you still write the email in the compose window and confirm the text before anything goes out, so nothing sends by accident. The small arrow next to it offers Email only or Text only. Texting an estimate is brand new: the customer gets a text with their review-and-sign link, and the estimate is marked sent just like an emailed one. If the customer only has an email or only a phone, whatever is on file sends and a note tells you what was skipped.",
+    "howto": [
+      "Open an invoice or an estimate and click Send.",
+      "Confirm the text and finish the email compose window.",
+      "Use the arrow next to Send for Email only or Text only."
+    ]
+  },
+  {
     "id": "appointments-calendar",
     "date": "2026-07-20",
     "title": "New Appointments calendar for sales visits",

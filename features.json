@@ -27,17 +27,25 @@
     {
       "name": "Numbered estimate records",
       "area": "estimator",
-      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete.",
+      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel.",
       "code": {
         "indexHtml": [
-          "renderEstimates",
-          "renderEstimateDetail",
+          "ensureEstimateToken",
+          "estimateBlankScopeOk",
+          "markEstimateSent",
+          "openEstimateSendModal",
           "openEstimatorModal",
+          "renderEstimateDetail",
+          "renderEstimates",
+          "sendEstimateText",
           "showDuplicateEstimateModal"
         ],
         "other": [
           "apps/estimator/src/lib/estimateLoad.ts",
           "apps/estimator/src/offline/estimates.ts"
+        ],
+        "netlifyFunctions": [
+          "pec-send-sms.cjs"
         ]
       },
       "tables": [
@@ -304,8 +312,8 @@
       "code": {
         "indexHtml": [
           "enrollInvoiceDripClient",
-          "renderJobInvoice",
-          "renderDrips"
+          "renderDrips",
+          "renderJobInvoice"
         ],
         "netlifyFunctions": [
           "_pec-drip.cjs",
@@ -426,12 +434,14 @@
     {
       "name": "Unified Messages inbox",
       "area": "dashboard",
-      "description": "A Messages tab that merges texts and call logs into one conversation per phone number, newest first, with All/Texts/Calls filters. Every conversation is clickable and replyable, even unknown numbers, which can be attached to a customer (filing all their texts and calls) or turned into a new lead with the phone prefilled.",
+      "description": "A Messages tab that merges texts and call logs into one conversation per phone number, newest first, with All/Texts/Calls filters. Every conversation is clickable and replyable, even unknown numbers, which can be attached to a customer (filing all their texts and calls) or turned into a new lead with the phone prefilled. Prompt 38: customer phone numbers render with tap-to-call plus a Text action on the job detail header (routes to that job's comms tab), the lead card and lead detail, the appointment popup, and the printed crew work order; the Text action opens the existing Messages thread (openMessageThread now seeds an empty thread for a number with no history), so consent/STOP and logging stay in this one surface.",
       "code": {
         "indexHtml": [
-          "renderMessages",
           "openMessageThread",
-          "pecSendSms"
+          "pecOpenTextTo",
+          "pecPhoneActionsHtml",
+          "pecSendSms",
+          "renderMessages"
         ],
         "netlifyFunctions": [
           "pec-send-sms.cjs",
@@ -645,14 +655,16 @@
     {
       "name": "Invoicing and accounts receivable",
       "area": "dashboard",
-      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs.",
+      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs. Prompt 38: the Email invoice / Text invoice buttons merged into one split Send control (primary = email + text with the compose modal and text confirm both shown before anything sends; caret = one channel; missing channels send what is on file with a skipped note). Same send code underneath: kind='invoice' SMS with the pay link + STOP line, the compose modal, and the invoice_first_sent_at first-send stamp on either channel.",
       "code": {
         "indexHtml": [
-          "renderInvoicing",
-          "renderJobInvoice",
-          "renderInvoicingDocs",
           "pecDownloadInvoicePdf",
-          "pecOpenPrintDoc"
+          "pecOpenPrintDoc",
+          "pecSplitSendHtml",
+          "pecWireSplitSend",
+          "renderInvoicing",
+          "renderInvoicingDocs",
+          "renderJobInvoice"
         ]
       },
       "tables": [
@@ -1223,16 +1235,16 @@
     {
       "name": "Appointments calendar",
       "area": "dashboard",
-      "description": "A top-level Appointments view (Sales group, all staff): a Month/Week/Day calendar of sales appointments (on-site estimates, project walkthroughs, site visits, and ad-hoc 'other' blocks), separate from the crew Job Schedule. Each appointment is assigned to a pec_sales_team_members roster member (per-member event color, per-type accent, type + salesperson filters with an All Users default). Create from the New Appointment button or a day/slot tap; edit, cancel, delete, drag-to-reschedule and resize. Renders with FullCalendar 6 lazy-loaded from cdnjs and degrades to a month list that still edits when the CDN is blocked. Booking a lead-linked appointment notifies the bell (log_appointment_booked RPC) and kicks pec-appt-notify for the consent-checked customer confirmation; the scheduled pec-appt-reminder-runner sends the configured offset reminders (rules edited in Settings > Appointments). Schedule Estimate on a lead prefills the form and advances a new lead to contacted.",
+      "description": "A top-level Appointments view (Sales group, all staff): a Month/Week/Day calendar of sales appointments (on-site estimates, project walkthroughs, site visits, and ad-hoc 'other' blocks), separate from the crew Job Schedule. Each appointment is assigned to a pec_sales_team_members roster member (per-member event color, per-type accent, type + salesperson filters with an All Users default). Create from the New Appointment button or a day/slot tap; edit, cancel, delete, drag-to-reschedule and resize. Renders with FullCalendar 6 lazy-loaded from cdnjs and degrades to a month list that still edits when the CDN is blocked. Booking a lead-linked appointment notifies the bell (log_appointment_booked RPC) and kicks pec-appt-notify for the consent-checked customer confirmation; the scheduled pec-appt-reminder-runner sends the configured offset reminders (rules edited in Settings > Appointments). Schedule Estimate on a lead prefills the form and advances a new lead to contacted. Prompt 38: appointment notes are split into customer-facing Job notes (pec_appointments.customer_notes, appended to the customer's confirmation/reminder texts and emails on both channels, scrubbed of em dashes) and internal Company notes (pec_appointments.notes, pushed to the Google event description composed with an auto-added customer name/phone + a /?appt=<id> TopCoat deep link above a '----' separator; the pull ingests only the human-typed part back). The appointment popup also shows the linked lead/customer's phone with tap-to-call and tap-to-text.",
       "code": {
         "indexHtml": [
-          "renderAppointments",
-          "openAppointmentForm",
-          "apptPostWrite",
           "apptBookingSideEffects",
+          "apptPostWrite",
+          "openAppointmentForm",
+          "openApptRuleModal",
           "openScheduleEstimateFromLead",
-          "renderSettingsAppointments",
-          "openApptRuleModal"
+          "renderAppointments",
+          "renderSettingsAppointments"
         ],
         "netlifyFunctions": [
           "pec-appt-notify.cjs",
@@ -1252,7 +1264,7 @@
     {
       "name": "Google Calendar two-way sync",
       "area": "dashboard",
-      "description": "Per-member Google Calendar sync for the Appointments calendar. Each roster member connects their OWN Google account from Settings > Appointments (OAuth: pec-google-oauth-start mints an HMAC-signed-state consent URL, pec-google-oauth-callback exchanges the code, creates-or-reuses a dedicated 'TopCoat' secondary calendar in their account, and stores tokens in the service-role-only pec_sales_member_google_tokens vault; connection status the UI reads lives as flags on pec_sales_team_members). TopCoat pushes appointment create/update/cancel/delete into that TopCoat calendar (pec-appt-sync-push, kicked fire-and-forget from apptPostWrite), and the scheduled pec-google-calendar-pull polls it every 15 minutes with incremental syncTokens (410 = full resync), upserting by google_event_id with an echo/last-writer-wins rule on google_updated. Personal (primary) calendars are never read or written. Requires GOOGLE_OAUTH_CLIENT_ID/SECRET in Netlify env; everything no-ops cleanly while unconfigured.",
+      "description": "Per-member Google Calendar sync for the Appointments calendar. Each roster member connects their OWN Google account from Settings > Appointments (OAuth: pec-google-oauth-start mints an HMAC-signed-state consent URL, pec-google-oauth-callback exchanges the code, creates-or-reuses a dedicated 'TopCoat' secondary calendar in their account, and stores tokens in the service-role-only pec_sales_member_google_tokens vault; connection status the UI reads lives as flags on pec_sales_team_members). TopCoat pushes appointment create/update/cancel/delete into that TopCoat calendar (pec-appt-sync-push, kicked fire-and-forget from apptPostWrite), and the scheduled pec-google-calendar-pull polls it every 15 minutes with incremental syncTokens (410 = full resync), upserting by google_event_id with an echo/last-writer-wins rule on google_updated. Personal (primary) calendars are never read or written. Requires GOOGLE_OAUTH_CLIENT_ID/SECRET in Netlify env; everything no-ops cleanly while unconfigured. Prompt 38: the pushed event description = internal Company notes + a separator + an auto-added contact/link block (composeGcalDescription/stripGcalDescription in _pec-google.cjs); the pull strips the auto block so a Google-side description edit only ever lands in notes, and customer_notes never crosses to or from Google.",
       "code": {
         "indexHtml": [
           "renderSettingsAppointments",
