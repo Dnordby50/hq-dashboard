@@ -1,10 +1,10 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
-Generated 2026-07-18 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Generated 2026-07-20 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
 
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-64 tables, all in `public`, all with RLS enabled.
+68 tables, all in `public`, all with RLS enabled.
 
 ## Key relationships
 
@@ -14,6 +14,7 @@ Generated 2026-07-18 from the live schema of project `zdfpzmmrgotynrwkeakd` via 
 - Production side is a parallel world: `pec_prod_jobs` is the hub there (referenced by `pec_prod_areas`, `pec_prod_labor_entries`, `pec_prod_job_costing`, `pec_prod_material_lines`, schedule/bonus/costing tables, and self-referenced via `original_job_id`). `pec_prod_products` is the most-referenced table overall (16 FKs, from estimate/job/prod area material, recipe-slot, and color-pairing tables).
 - `jobs.system_type_id → pec_prod_system_types.id` is the main bridge between the HQ and production sides; `pec_prod_jobs.customer_id → customers.id` links production jobs back to shared customers.
 - `admin_users.id` is referenced by `user_permissions`, `pec_user_todos`, `pec_whats_new_acks`; `admin_users.auth_user_id → auth.users.id`.
+- `pec_appointments` (sales appointments) links to `customers` (`customer_id`) and `pec_sales_team_members` (`sales_member_id`, the assignee), and carries `lead_id` with **no FK** (an appointment outlives its lead). Google two-way-sync bookkeeping lives on `google_event_id/google_calendar_id/google_etag/google_updated`. Per-member Google OAuth tokens sit in `pec_sales_member_google_tokens` (**RLS on, zero policies: default-deny, service-role only** — do not add a policy); client-readable connection flags (`google_connected/google_email/google_calendar_id/google_connected_at`) are on `pec_sales_team_members`.
 
 ## Gotchas
 
@@ -442,6 +443,74 @@ CASE
 
 PK: id
 FK: customer_id → customers.id
+
+### pec_appointment_reminder_rules
+RLS: enabled · rows: 2
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| enabled | boolean | no | true |
+| audience | text | no |  |
+| channel | text | no |  |
+| on_book | boolean | no | false |
+| offset_minutes | integer | no | 0 |
+| appt_type | text | yes |  |
+| message_template | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+
+### pec_appointment_reminder_sends
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| appointment_id | uuid | yes |  |
+| rule_id | uuid | yes |  |
+| channel | text | yes |  |
+| sent_at | timestamptz | yes | now() |
+| status | text | yes |  |
+
+PK: id
+FK: appointment_id → pec_appointments.id (on delete cascade); rule_id → pec_appointment_reminder_rules.id (on delete set null)
+Unique: (appointment_id, rule_id, channel) — the never-double-send backstop.
+
+### pec_appointments
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| appt_type | text | no |  |
+| title | text | yes |  |
+| lead_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
+| sales_member_id | uuid | yes |  |
+| start_at | timestamptz | no |  |
+| end_at | timestamptz | no |  |
+| all_day | boolean | no | false |
+| location_address | text | yes |  |
+| location_city | text | yes |  |
+| location_state | text | yes |  |
+| location_zip | text | yes |  |
+| location_place_id | text | yes |  |
+| notes | text | yes |  |
+| status | text | no | 'scheduled' |
+| source | text | no | 'topcoat' |
+| google_event_id | text | yes |  |
+| google_calendar_id | text | yes |  |
+| google_etag | text | yes |  |
+| google_updated | timestamptz | yes |  |
+| created_by | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
+Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google. Unique (google_event_id) where not null.
 
 ### pec_bonus_payouts
 RLS: enabled · rows: 16
@@ -1278,6 +1347,22 @@ RLS: enabled · rows: 14
 PK: id
 FK: crew_id → pec_prod_crews.id
 
+### pec_sales_member_google_tokens
+RLS: enabled (NO policies — default-deny token vault, service-role only) · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| sales_member_id | uuid | yes |  |
+| access_token | text | yes |  |
+| refresh_token | text | yes |  |
+| token_expiry | timestamptz | yes |  |
+| sync_token | text | yes |  |
+| updated_at | timestamptz | yes | now() |
+
+PK: id
+FK: sales_member_id → pec_sales_team_members.id (unique)
+
 ### pec_sales_team_members
 RLS: enabled · rows: 2
 
@@ -1291,6 +1376,10 @@ RLS: enabled · rows: 2
 | updated_at | timestamptz | no | now() |
 | commission_pct | numeric | no | 0 |
 | exclude_from_commission | boolean | no | false |
+| google_connected | boolean | no | false |
+| google_email | text | yes |  |
+| google_calendar_id | text | yes |  |
+| google_connected_at | timestamptz | yes |  |
 
 PK: id
 

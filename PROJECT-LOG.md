@@ -4,6 +4,50 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-20 MST] Cowork: wired the Meta Lead Ads -> HQ Zap live (pec-lead-intake)
+By: Cowork
+Changed: No repo code. Built and PUBLISHED a Zapier Zap "PEC Meta Lead Ads -> HQ Lead Intake" (Zap id 373273604, published version v1, ON) connecting Facebook Lead Ads to the existing pec-lead-intake endpoint. Closes the 2026-07-20 handoff (the endpoint already existed; only the Zap was missing). Cowork drove Dylan's logged-in Zapier via Claude in Chrome.
+
+TRIGGER: Facebook Lead Ads -> New Lead, account dnordby50@gmail.com, Page "Prescott Epoxy Company" (id 296121796910370), Form = Default (Any Form). Any Form was chosen over pinning one form so all 7 PEC forms flow in and future forms auto-include, and to dodge Meta reassigning a form ID on edit (which silently breaks a pinned-form Zap); standard name/email/phone come through on every form.
+
+ACTION: Webhooks by Zapier -> POST, url https://prescottepoxy.netlify.app/.netlify/functions/pec-lead-intake, Payload Type JSON, Wrap Request In Array = No. Header x-webhook-secret set by Dylan (value copied from Netlify env PEC_WEBHOOK_SECRET; Cowork never handled the secret value). Data mapping: source=meta (literal), source_ref=Lead Id (idempotency), full_name=Full Name, email=Email, phone=Phone, address=Street Address, campaign=Campaign Name, adset=Adset Name, ad_name=Ad Name, form_name=Form Name, notes="Which Service Are You Interested In".
+
+TEST (live): posted Facebook's sample lead (Laura Donaldson) to the live endpoint. Response {success:true, deduped:false, lead_id:18f29104-b7cf-45b6-8911-0da1483930ba}. Full chain confirmed (Zapier -> intake -> lead created, AI analysis on arrival, drip enroll, Sync Health log). This created one real test lead in prod (Laura Donaldson) on top of the prior fake one.
+
+sms_consent NOT mapped (deliberate): the V1 form has no texting-consent checkbox, so per TCPA the safe default holds (Meta leads get email drips, no texts). Follow-up: add a consent checkbox to the Meta Instant Form (likely a form duplicate, since Meta will not edit a form that already has leads), pull a fresh test lead, then map that field to sms_consent via a Formatter (true only when checked). Draft TCPA checkbox wording was given to Dylan.
+
+Still open (unchanged from prior entry): the intake hardcodes brand:'PEC', so any future FTP Meta lead ads would mislabel as PEC (separate code change for when FTP starts running lead ads).
+
+Why: Dylan's 2026-07-20 request to hook up Meta first.
+Files touched: none in repo. External: new published Zap "PEC Meta Lead Ads -> HQ Lead Intake". PROJECT-LOG.md (this entry).
+Next steps: watch Sync Health (endpoint lead-intake) and the Leads board for the first real Meta lead; add the Meta-form consent checkbox to enable texts.
+Handoff to Dylan: 1) git add + commit this PROJECT-LOG entry (the Cowork cloud sandbox cannot commit). 2) Add the texting-consent checkbox to the Meta form when ready so Cowork can map sms_consent. 3) Optionally delete the test lead(s) (Laura Donaldson) from the Leads board.
+
+---
+
+## [2026-07-20 MST] Cowork: applied the Appointments migration to PROD + regenerated SCHEMA.md (prompt 37 handoff, tasks 1-2 done; 3-4 blocked on Dylan)
+By: Cowork
+Changed: No repo code. (1) Applied supabase/migrations/2026-07-20_appointments.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via MCP apply_migration (name 2026_07_20_appointments). (2) Regenerated the affected SCHEMA.md sections from the live schema.
+
+PRE-APPLY CHECK (read-only): confirmed every dependency the migration references already exists in prod, so an atomic begin/commit apply could not fail midway: functions is_admin_staff / is_admin_role / pec_prod_touch_updated_at / log_customer_deleted (the SECURITY DEFINER precedent) all present; customers table present; pec_notifications carries type/body/target_view/target_id; pec_appointments did not yet exist.
+
+VERIFY BLOCK: all pass. 4 new tables (pec_appointments, pec_sales_member_google_tokens, pec_appointment_reminder_rules, pec_appointment_reminder_sends). 4 google_* flag columns on pec_sales_team_members (google_calendar_id, google_connected, google_connected_at, google_email). Token vault pec_sales_member_google_tokens: relrowsecurity=true, 0 rows in pg_policies (default-deny is the security boundary, INTENTIONAL, do NOT add a policy). 2 seeded reminder rules (customer/both/on_book, customer/both/1440-min-before). RPC log_appointment_booked present. Unique index uq_pec_appt_reminder_send present. RLS policy pec_appointments_staff present.
+
+SECURITY ADVISOR (post-DDL): nothing new/critical from this migration. Two findings touch it and both are by-design: rls_enabled_no_policy INFO on pec_sales_member_google_tokens (that IS the default-deny token vault), and a pre-existing function_search_path_mutable WARN on the shared pec_prod_touch_updated_at trigger fn (not created here; the new log_appointment_booked fn sets search_path=public). No ERROR-level lints.
+
+SCHEMA.md: bumped header to "Generated 2026-07-20" and "68 tables" (was 64/2026-07-18), added a Key-relationships bullet for pec_appointments + the token-vault/roster-flags split, inserted the 4 new table sections in alphabetical position, and added the 4 google_* columns to the pec_sales_team_members section. Column types/nullability/defaults pulled from information_schema (not hand-guessed).
+
+STILL BLOCKED ON DYLAN (tasks 3-4 could not run):
+- Task 3 (Google Cloud): the browser key AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY currently has APIs limited to Sheets (per netlify.toml comment). Maps JavaScript API + Places API (New) must be ADDED to the key's API restrictions, and the HTTP-referrer restriction must include prescottepoxy.netlify.app/*. This needs Dylan's Google Cloud Console login; Cowork cannot enable it. Until added, address autocomplete silently shows no suggestions (safe degrade).
+- Task 4 (acceptance walk: Schedule Estimate -> bell + stage move; consented confirmation send counts; Google connect + push/pull/LWW round-trip): gated on Dylan setting GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET in Netlify env (which he separately owes) and connecting one salesperson's Google. Cowork will run the full walk once those are in place.
+
+Why: prompt 37 post-ship Cowork handoff (Claude Code shipped both phases, commits 3b09aa9..33d868a).
+Files touched: SCHEMA.md (regenerated), PROJECT-LOG.md (this entry). Prod DB: migration 2026_07_20_appointments applied.
+Next steps: Dylan (a) adds Maps JS + Places API to the browser key + confirms referrer, (b) sets the two Netlify OAuth env vars, (c) connects a salesperson's Google in Settings > Appointments. Then Cowork runs acceptance tasks 4a-4d and reports send counts + whether the Google round-trip held.
+Handoff to Dylan: 1) git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). 2) Enable the two Google APIs on the key. 3) Set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET in Netlify. 4) Tell Cowork when done and it will run the acceptance walk.
+
+---
+
 ## [2026-07-20 MST] Appointments calendar + Google two-way sync + address autocomplete (prompt 37, BOTH phases)
 By: Claude Code
 Changed: Shipped all of prompt 37 in eleven commits, keeping the prompt's commit boundaries so the Google layer (Phase B) can be reverted without touching the calendar. Phase A: the migration (80a2bdd docs + 3b09aa9), the native Appointments view (79d125b), the vanilla Places helper wired into the appointment form (9923364), lead-form autocomplete + split city/state/zip (20e38c9), Schedule Estimate from the lead card/detail (f17d373), booking notifications (a731347), and the scheduled reminder runner + fixture tests (ce80229). Phase B: per-member Google OAuth (1564349), push TopCoat->Google (2eb61ba), the scheduled pull (657d1f0), and the Settings > Appointments panel (e09a2af). Plus this docs commit (features.json x3, whats-new x4).
