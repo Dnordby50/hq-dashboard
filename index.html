@@ -18277,10 +18277,41 @@ async function renderApptFallbackList(holder, members) {
 
 // Post-write seam. Everything that must happen after an appointment write
 // funnels through here: refresh whatever appointment surface is on screen,
-// and on a NEW booking fire the side effects (bell + confirmation kick).
+// on a NEW booking fire the side effects (bell + confirmation kick), and
+// kick the Google push for every write. A hard delete passes the Google
+// identifiers captured before the row vanished so the event can still be
+// removed from the member's calendar.
 function apptPostWrite(row, opts = {}) {
   apptRefresh();
   if (opts.isNew && row) apptBookingSideEffects(row);
+  if (opts.deleted) {
+    if (row && row.google_event_id) {
+      apptKickPushSync({ action: 'delete', google_event_id: row.google_event_id, google_calendar_id: row.google_calendar_id });
+    }
+  } else if (row && row.id) {
+    apptKickPushSync({ appointment_id: row.id });
+  }
+}
+
+// Fire-and-forget push kick (TopCoat -> the member's Google "TopCoat"
+// calendar). Best-effort by contract: a push failure must never make a saved
+// appointment look unsaved, so failures only log; the row's null
+// google_event_id is the honest "not synced yet" state and the next write
+// re-kicks. Server-side the function no-ops cleanly while Google is
+// unconfigured or the member is not connected.
+async function apptKickPushSync(payload) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session && session.access_token;
+    if (!token) return;
+    fetch('/.netlify/functions/pec-appt-sync-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    }).then(r => r.json()).then(out => {
+      if (out && out.ok === false) console.warn('[appointments] google push:', out.error || out);
+    }).catch(() => {});
+  } catch (_) { /* fire-and-forget */ }
 }
 
 // Booking side effects, all best-effort: a notify failure must never make a
