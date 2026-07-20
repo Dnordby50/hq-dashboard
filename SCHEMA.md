@@ -684,7 +684,7 @@ FK: campaign_id → pec_drip_campaigns.id
 Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. 16 rows across the 3 campaigns. RLS staff-only.
 
 ### pec_email_log
-RLS: enabled · rows: 24
+RLS: enabled · rows: 25
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -704,6 +704,7 @@ RLS: enabled · rows: 24
 | clicked_at | timestamptz | yes |  |
 | bounced_at | timestamptz | yes |  |
 | error_message | text | yes |  |
+| body_html | text | yes |  |
 
 PK: id
 
