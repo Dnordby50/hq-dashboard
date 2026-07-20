@@ -20874,7 +20874,7 @@ async function renderEstimateDetail(estimateId) {
           ? '<button class="pec-btn sm primary" id="estRestore">Restore</button>'
           : '<button class="pec-btn sm ghost danger" id="estArchive" title="Soft-delete: hides it from the list and 404s the public link. Restorable from the Archived filter.">Archive</button>'}
         ${['draft', 'sent', 'change_requested'].includes(est.status)
-          ? `<button class="pec-btn sm primary" id="estSend">${est.sent_at ? 'Re-send to customer' : 'Send to customer'}</button>`
+          ? pecSplitSendHtml('pecEstSend', est.sent_at ? 'Re-send to customer' : 'Send to customer')
           : `<button class="pec-btn sm primary" disabled title="This estimate is ${esc(est.status)}; it can no longer be sent.">Send to customer</button>`}
       </div>
     </div>
@@ -21125,8 +21125,28 @@ async function renderEstimateDetail(estimateId) {
     try { await navigator.clipboard.writeText(url); showToast('Estimate link copied', { ttl: 2500 }); }
     catch (_) { window.prompt('Copy this link:', url); }
   });
-  const sendBtn2 = $('estSend');
-  if (sendBtn2) sendBtn2.addEventListener('click', () => openEstimateSendModal(est));
+  // Split Send (prompt 38): primary = Email + Text, caret = one channel.
+  // "Both" shows both gates before anything sends: text confirm first
+  // (declining quietly downgrades to email only), then the compose; the text
+  // fires only after the email succeeds and skips the second sent-flip.
+  pecWireSplitSend('pecEstSend', {
+    email: () => openEstimateSendModal(est),
+    text: () => sendEstimateText(est),
+    both: async () => {
+      let alsoText = false;
+      if (!est.customer_phone) showToast('No phone on file, the text will be skipped.', { ttl: 4500 });
+      else alsoText = confirm(`Also text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)} after the email? They will get the review-and-sign link with a "Reply STOP to opt out" line.`);
+      if (!est.customer_email && alsoText) {
+        showToast('No email on file, sending the text only.', { ttl: 4500 });
+        const ok = await sendEstimateText(est, { skipConfirm: true });
+        if (ok) renderEstimateDetail(est.id);
+        return;
+      }
+      openEstimateSendModal(est, {
+        afterSend: alsoText ? () => sendEstimateText(est, { skipConfirm: true, skipGate: true, skipFlip: true }) : null,
+      });
+    },
+  });
   const openJobLink = $('estOpenJob');
   if (openJobLink) openJobLink.addEventListener('click', (e) => {
     e.preventDefault();
@@ -21373,22 +21393,82 @@ async function renderEstimateDetail(estimateId) {
 // the email. A re-send from change_requested is a NEW sent_at on the SAME
 // number and link. Statuses allowed to send: draft / sent / change_requested
 // (the button gating in renderEstimateDetail matches this .in() filter).
-async function openEstimateSendModal(est) {
-  // Pre-migration rows only: mint the token the estimator never wrote. The
-  // 2026-07-11 migration gives new rows a DB default and backfilled old ones,
-  // so this is a belt-and-braces guard. CAS on "still null" so two tabs can
-  // never write different tokens; the re-read returns whichever landed.
-  if (!est.public_token) {
-    const tok = crypto.randomUUID();
-    try {
-      await withFreshWriteRetry(() => supabase.from('estimates').update({ public_token: tok }).eq('id', est.id).is('public_token', null), { label: 'estimate-token' });
-      const { data } = await supabase.from('estimates').select('public_token').eq('id', est.id).maybeSingle();
-      est.public_token = (data && data.public_token) || tok;
-    } catch (err) {
-      showToast('Could not prepare the estimate link: ' + esc(err.message || String(err)), { ttl: 5000 });
-      return;
+// Pre-migration rows only: mint the token the estimator never wrote. The
+// 2026-07-11 migration gives new rows a DB default and backfilled old ones,
+// so this is a belt-and-braces guard. CAS on "still null" so two tabs can
+// never write different tokens; the re-read returns whichever landed.
+// Shared by the email compose AND the new text path (prompt 38).
+async function ensureEstimateToken(est) {
+  if (est.public_token) return true;
+  const tok = crypto.randomUUID();
+  try {
+    await withFreshWriteRetry(() => supabase.from('estimates').update({ public_token: tok }).eq('id', est.id).is('public_token', null), { label: 'estimate-token' });
+    const { data } = await supabase.from('estimates').select('public_token').eq('id', est.id).maybeSingle();
+    est.public_token = (data && data.public_token) || tok;
+    return true;
+  } catch (err) {
+    showToast('Could not prepare the estimate link: ' + esc(err.message || String(err)), { ttl: 5000 });
+    return false;
+  }
+}
+
+// SEND GATE (warn, do not block), on ANY channel: a scope that still
+// literally says BLANK is the failure mode we fear most, a customer reading
+// BLANK in a document they are asked to sign. Honors Dylan's warn-but-allow.
+function estimateBlankScopeOk(est) {
+  return !/\bBLANK\b/.test(String(est.scope_of_work || ''))
+    || confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?');
+}
+
+// The one sent-state flip, shared by every channel (prompt 38): sending is
+// what makes the public /e/ link live, so a TEXT-only send MUST run the same
+// stamp + lead bookkeeping the email send always did, or a texted estimate
+// would never go live and the conversion metrics + drip handoff would be
+// wrong. Mutates est in place so the caller's later reads see sent state.
+async function markEstimateSent(est) {
+  const nowIso = new Date().toISOString();
+  const upd = await withFreshWriteRetry(() => supabase.from('estimates')
+    .update({ sent_at: nowIso, status: 'sent' })
+    .eq('id', est.id)
+    .in('status', ['draft', 'sent', 'change_requested']), { label: 'estimate-sent' });
+  if (upd.error) throw upd.error;
+  estimateSentLeadEffects(est, nowIso); // best-effort, no await needed
+  est.sent_at = nowIso; est.status = 'sent';
+  return nowIso;
+}
+
+// Text the estimate link via Quo (prompt 38: a NEW channel, mirroring the
+// invoice text: server-built compliant body + STOP line, kind 'estimate' in
+// pec_sms_log so it stays out of the Last-invoiced counter; the server also
+// guards lead/customer opt-out). opts.skipConfirm/skipGate: the combined
+// "both" path already showed those gates; opts.skipFlip: the email leg of a
+// combined send already flipped sent state, never double-stamp in one op.
+async function sendEstimateText(est, opts = {}) {
+  if (!est.customer_phone) { showToast('No phone on file for this customer.', { ttl: 4000 }); return false; }
+  if (!(await ensureEstimateToken(est))) return false;
+  if (!opts.skipGate && !estimateBlankScopeOk(est)) return false;
+  if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
+  try {
+    await pecSendSms({ brand: 'prescott-epoxy', kind: 'estimate', estimate_token: est.public_token, to_number: est.customer_phone });
+  } catch (err) {
+    showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
+    return false;
+  }
+  if (!opts.skipFlip) {
+    try { await markEstimateSent(est); }
+    catch (err) {
+      // The text went out but the estimate is not marked sent, so the link
+      // in the customer's hands may still 404. Say so loudly.
+      showToast('Text sent, but the estimate could not be marked as sent: ' + esc(err.message || String(err)) + '. Open it and re-send so the link goes live.', { ttl: 9000 });
+      return false;
     }
   }
+  showToast(`Estimate ${esc(estNumberLabel(est))} texted ✓`, { ttl: 3500 });
+  return true;
+}
+
+async function openEstimateSendModal(est, opts = {}) {
+  if (!(await ensureEstimateToken(est))) return;
   await fetchBrandIdentity();
   const brand = 'prescott-epoxy'; // PEC-only, matches est.brand today
   const accent = (state.brandIdentity && state.brandIdentity.accent_color) || '#D8531C';
@@ -21439,28 +21519,19 @@ async function openEstimateSendModal(est) {
       const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
-      // SEND GATE (warn, do not block): a scope that still literally says BLANK
-      // is the failure mode we fear most, a customer reading BLANK in a document
-      // they are asked to sign. Make it impossible to miss, but honor Dylan's
-      // "warn-but-allow".
-      if (/\bBLANK\b/.test(String(est.scope_of_work || '')) &&
-          !confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?')) {
-        return;
-      }
+      // Blank-scope gate (shared with the text channel, prompt 38).
+      if (!estimateBlankScopeOk(est)) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {
         // log_template_key 'estimate' keeps these out of the Invoicing "Last
         // invoiced" counter (which keys on compose/invoice rows).
         await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate' });
-        const nowIso = new Date().toISOString();
-        const upd = await withFreshWriteRetry(() => supabase.from('estimates')
-          .update({ sent_at: nowIso, status: 'sent' })
-          .eq('id', est.id)
-          .in('status', ['draft', 'sent', 'change_requested']), { label: 'estimate-sent' });
-        if (upd.error) throw upd.error;
-        estimateSentLeadEffects(est, nowIso); // best-effort, no await needed
+        await markEstimateSent(est);
         closeModal();
         showToast(`Estimate ${esc(number)} sent to ${esc(to)} ✓`, { ttl: 4000 });
+        // Combined "both" path: the pre-confirmed text leg runs only after
+        // the email actually sent; its skipFlip keeps sent-state single-stamp.
+        if (opts.afterSend) { try { await opts.afterSend(); } catch (_) { /* its own toast */ } }
         renderEstimateDetail(est.id);
       } catch (err) {
         console.error('[pec] estimate send failed', err);

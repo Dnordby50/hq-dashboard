@@ -180,20 +180,42 @@ exports.handler = async (event) => {
       // Short, 1-2 segment transactional body with the identified sender + pay link.
       messageBody = `${businessName}: Your invoice ${invNo} for ${total} is ready. View and pay: ${payUrl}.${STOP_LINE}`;
     } else if (kind === 'estimate') {
-      // STUB. The sales/estimator-texting flow does not exist yet. The path is
-      // WIRED (kind accepted, sender + recipient + opt-out all resolved) but
-      // guarded: without a real estimate token there is nothing legitimate to
-      // link, so we refuse rather than fake data.
-      // >>> SEAM: when the estimator sales flow ships, look up the estimate by
-      // estimate_token, build `${SITE_URL}/estimate/<token>` (or the real public
-      // estimate URL), and compose the body here. Until then this stays dormant.
-      if (!estimate_token) {
-        return jc(501, { ok: false, error: 'Estimate texting is not enabled yet. It turns on when the estimator sales flow ships.' });
+      // Real since prompt 38 (the old 501 seam): text the public estimate
+      // link (/e/<token>), mirroring the invoice text. The estimate is looked
+      // up by its public_token so the body always carries a REAL link, and
+      // the caller flips the estimate to sent AFTER this send succeeds (the
+      // link is inert until sent_at lands, same ordering as the email path).
+      // kind stays 'estimate' in pec_sms_log so these never pollute the
+      // Invoicing "Last invoiced" counter (which keys on kind 'invoice').
+      if (!estimate_token) return jc(400, { ok: false, error: 'estimate_token is required for an estimate text.' });
+      const estRows = await sb('GET', `/estimates?public_token=eq.${encodeURIComponent(estimate_token)}&deleted_at=is.null&select=id,estimate_number,price,customer_name,customer_first_name,customer_phone,lead_id&limit=1`);
+      const est = Array.isArray(estRows) ? estRows[0] : null;
+      if (!est) return jc(400, { ok: false, error: 'Estimate not found for that token.' });
+      // Consent: transactional send, opt-out-only (the invoice-text reading).
+      // A lead-linked estimate respects the lead's hard opt-out, and the
+      // lead's customer link both fills the log attribution and re-runs the
+      // customers.sms_opt_out guard below via the resolved id.
+      if (est.lead_id) {
+        const lRows = await sb('GET', `/leads?id=eq.${encodeURIComponent(est.lead_id)}&select=opted_out,customer_id&limit=1`);
+        const lead = Array.isArray(lRows) ? lRows[0] : null;
+        if (lead && lead.opted_out) {
+          await logRow({ direction: 'out', brand, from_number: fromNumber, to_number: recipient, customer_id: custId, kind, status: 'failed', sent_by_user: user.id, error_message: 'Lead has opted out of texts' });
+          return jc(409, { ok: false, error: 'This lead has opted out of texts (replied STOP). You cannot text them.' });
+        }
+        if (lead && lead.customer_id && !custId) {
+          custId = lead.customer_id;
+          const cRows = await sb('GET', `/customers?id=eq.${encodeURIComponent(custId)}&select=sms_opt_out&limit=1`);
+          const cust = Array.isArray(cRows) ? cRows[0] : null;
+          if (cust && cust.sms_opt_out) {
+            await logRow({ direction: 'out', brand, from_number: fromNumber, to_number: recipient, customer_id: custId, kind, status: 'failed', sent_by_user: user.id, error_message: 'Customer has opted out of texts' });
+            return jc(409, { ok: false, error: 'This customer has opted out of texts (replied STOP). You cannot text them.' });
+          }
+        }
       }
-      // Defensive: even if a token is passed today, there is no estimate store to
-      // validate it against, so do not pretend. Remove this block when the seam
-      // above is built.
-      return jc(501, { ok: false, error: 'Estimate texting is not enabled yet (no estimate link source wired).' });
+      const first = (est.customer_first_name || String(est.customer_name || '').split(/\s+/)[0] || '').trim();
+      const estNo = est.estimate_number != null ? 'EST-' + est.estimate_number : 'your estimate';
+      const estUrl = `${SITE_URL}/e/${estimate_token}`;
+      messageBody = `${businessName}: ${first ? 'Hi ' + first + ', your' : 'Your'} estimate ${estNo}${est.price != null ? ' for ' + usd(est.price) : ''} is ready to review and sign online: ${estUrl}.${STOP_LINE}`;
     } else if (kind === 'change_order') {
       // Change-order approval link. The row is looked up by its token so the
       // body always carries a REAL link (never a staff-typed one), identified
