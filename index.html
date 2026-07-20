@@ -1913,6 +1913,36 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
 </style>
 
 <!-- ============================================================
+     Appointments calendar (prompt 37). FullCalendar 6 injects its own
+     structural CSS from the JS bundle; these rules only re-skin it onto
+     the CRM's theme tokens so it tracks light/dark like everything else.
+     ============================================================ -->
+<style id="pec-appointments-theme">
+#pecApptCal {
+  --fc-border-color: var(--rd-line, var(--border, #e6e8ec));
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: var(--rd-soft, rgba(15,20,32,.04));
+  --fc-today-bg-color: color-mix(in srgb, var(--rd-accent, #D8531C) 9%, transparent);
+  --fc-event-text-color: #fff;
+}
+#pecApptCal .fc { font-size: .82rem; color: var(--rd-ink, var(--ink, #0f1420)); }
+#pecApptCal .fc-toolbar-title { font-size: 1.02rem; font-weight: 700; }
+#pecApptCal .fc-button {
+  background: var(--rd-card, #fff); border: 1px solid var(--rd-line, #e6e8ec);
+  color: var(--rd-ink, #0f1420); font-size: .74rem; text-transform: none; box-shadow: none;
+}
+#pecApptCal .fc-button:hover { background: var(--rd-soft, rgba(15,20,32,.05)); }
+#pecApptCal .fc-button-active, #pecApptCal .fc-button-primary:not(:disabled).fc-button-active {
+  background: var(--rd-accent, #D8531C); border-color: var(--rd-accent, #D8531C); color: #fff;
+}
+#pecApptCal .fc-event { cursor: pointer; border-left-width: 4px; }
+#pecApptCal .fc-daygrid-event { padding: 1px 3px; }
+#pecApptCal a { color: inherit; }
+.pec-appt-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: .72rem; color: var(--muted); }
+.pec-appt-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+</style>
+
+<!-- ============================================================
      Messages & Calls console (.qo-*). Modeled on the Quo/OpenPhone
      dark inbox Dylan screenshotted (2026-07-09): avatar header,
      sender-labeled chat bubbles, AI call-summary cards. Deliberately
@@ -2454,6 +2484,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                actual boundary. -->
           <button data-pec-view="email-log">Email Log</button>
           <button data-pec-view="leads">Leads</button>
+          <!-- Sales appointments calendar (prompt 37). Deliberately separate
+               from the crew Job Schedule below: this is estimates and
+               walkthroughs for the sales roster, not install days. All-staff
+               like Leads; RLS is the boundary. -->
+          <button data-pec-view="appointments">Appointments</button>
           <button data-pec-view="drips" class="pec-role-admin">Drips</button>
           <button data-pec-view="estimates">Estimates</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
@@ -6624,6 +6659,12 @@ const state = {
   openEstimateId: null, estimatesSearch: '',
   // Next-Day finalization board (crew x AM/PM). Anchor defaults to tomorrow.
   nextDayAnchor: null,
+  // Appointments calendar (prompt 37). apptFilters drives the type/member
+  // selects; apptView/apptDate survive re-renders so a filter change does not
+  // yank the calendar back to today. openAppointmentId: a bell tap or
+  // deep-link opens that appointment's edit modal after the view mounts.
+  apptFilters: { type: '', member: '' },
+  apptView: 'dayGridMonth', apptDate: null, openAppointmentId: null,
 };
 window.pecState = state;
 // Bridge for the topbar Refresh button. That button lives in renderRoot's plain
@@ -7202,6 +7243,7 @@ function switchView(v) {
       jobs: renderJobs,
       messages: renderMessages,
       'email-log': renderEmailLog,
+      appointments: renderAppointments,
       invoicing: renderInvoicing,
       commission: renderCommission,
       metrics: renderMetrics,
@@ -17773,6 +17815,502 @@ async function renderPipeline() {
 // Stages are the leads_stage_check constraint's six values, never more.
 // Lead VALUE is not a leads column: it is the lead's latest live estimate
 // price (accepted estimate wins), computed in loadLeadsData.
+
+// ============================================================
+// Appointments calendar (prompt 37). Sales appointments: on-site estimates
+// scheduled off a Lead, plus ad-hoc blocks ("other"). Deliberately SEPARATE
+// from the crew Job Schedule (renderSchedule): different concept, different
+// tables. Assignee is the pec_sales_team_members roster, not admin_users.
+// Render library is FullCalendar 6, lazy-loaded from cdnjs like Chart.js and
+// Quill; if the CDN is blocked the view degrades to a month-list that can
+// still create/edit/delete, because the write path (openAppointmentForm ->
+// supabase) never touches the render library.
+// ============================================================
+
+const APPT_TYPES = [
+  { key: 'on_site_estimate',    label: 'On-site estimate',    accent: '#2563eb' },
+  { key: 'project_walkthrough', label: 'Project walkthrough', accent: '#059669' },
+  { key: 'site_visit',          label: 'Site visit',          accent: '#d97706' },
+  { key: 'other',               label: 'Other / busy',        accent: '#64748b' },
+];
+const apptTypeInfo = (k) => APPT_TYPES.find(t => t.key === k) || APPT_TYPES[3];
+
+// Per-member event color, stable by roster order (created_at then name would
+// reshuffle on renames; the loaded order is name-sorted, so color follows the
+// alphabetical roster, which is stable enough for a 2-6 person team).
+const APPT_MEMBER_COLORS = ['#7c3aed', '#0ea5e9', '#dc2626', '#059669', '#b45309', '#2563eb', '#db2777', '#475569'];
+function apptMemberColor(members, memberId) {
+  const i = (members || []).findIndex(m => m.id === memberId);
+  return i >= 0 ? APPT_MEMBER_COLORS[i % APPT_MEMBER_COLORS.length] : '#64748b';
+}
+
+// Lazy-load FullCalendar 6 (global bundle: core + daygrid + timegrid +
+// interaction; it injects its own CSS). Mirrors ensureChartJs: reject on
+// failure, reset so a later open retries, caller falls back to the list view.
+let _fullCalLoading = null;
+function ensureFullCalendar() {
+  if (window.FullCalendar) return Promise.resolve();
+  if (_fullCalLoading) return _fullCalLoading;
+  _fullCalLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.15/index.global.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _fullCalLoading = null; reject(new Error('Could not load the calendar library.')); };
+    document.head.appendChild(s);
+  });
+  return _fullCalLoading;
+}
+
+// Local-time <-> input-field helpers. Staff browsers run in Phoenix time, the
+// project's single timezone; storage is timestamptz, display is local, same
+// convention as the rest of the CRM.
+function apptDateInputVal(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function apptTimeInputVal(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function apptFmtTime(d) {
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Range read with the active filters applied server-side. Returns { rows,
+// error }; a pre-migration read errors and the caller shows the honest
+// not-migrated note instead of a broken calendar (res.error FIRST, per the
+// supabase-js empty-vs-missing-column lesson).
+async function loadAppointmentsRange(startIso, endIso) {
+  const f = state.apptFilters;
+  let q = supabase.from('pec_appointments').select('*')
+    .gte('start_at', startIso).lt('start_at', endIso)
+    .neq('status', 'canceled')
+    .order('start_at', { ascending: true }).limit(1000);
+  if (f.type) q = q.eq('appt_type', f.type);
+  if (f.member) q = q.eq('sales_member_id', f.member);
+  try {
+    const res = await withFreshSession(() => q, { label: 'appointments-range' });
+    return { rows: res.data || [], error: res.error || null };
+  } catch (e) { return { rows: [], error: e }; }
+}
+
+function apptEventFromRow(row, members) {
+  const type = apptTypeInfo(row.appt_type);
+  const member = (members || []).find(m => m.id === row.sales_member_id);
+  const title = row.title || type.label;
+  return {
+    id: row.id,
+    title: member ? `${title} · ${member.name}` : title,
+    start: row.start_at,
+    end: row.end_at,
+    allDay: !!row.all_day,
+    backgroundColor: apptMemberColor(members, row.sales_member_id),
+    borderColor: type.accent,
+  };
+}
+
+async function renderAppointments() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading appointments…</div>';
+
+  // Destroy a previous calendar instance before the DOM under it is replaced.
+  if (state._apptCal) { try { state._apptCal.destroy(); } catch (_) {} state._apptCal = null; }
+
+  const rosterRes = await withFreshSession(
+    () => supabase.from('pec_sales_team_members').select('*').order('name'),
+    { label: 'appointments-roster' });
+  if (rosterRes.error) {
+    root.innerHTML = `<div class="pec-empty">Couldn't load the sales roster: ${esc(rosterRes.error.message)}</div>`;
+    return;
+  }
+  const members = rosterRes.data || [];
+  const activeMembers = members.filter(m => m.active !== false);
+  const f = state.apptFilters;
+
+  const typeOpts = ['<option value="">All types</option>']
+    .concat(APPT_TYPES.map(t => `<option value="${esc(t.key)}"${f.type === t.key ? ' selected' : ''}>${esc(t.label)}</option>`)).join('');
+  const memberOpts = ['<option value="">All Users</option>']
+    .concat(members.map(m => `<option value="${esc(m.id)}"${f.member === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`)).join('');
+  const legend = [
+    ...activeMembers.map(m => `<span><span class="dot" style="background:${esc(apptMemberColor(members, m.id))}"></span>${esc(m.name)}</span>`),
+    ...APPT_TYPES.map(t => `<span><span class="dot" style="background:${esc(t.accent)};border-radius:2px"></span>${esc(t.label)}</span>`),
+  ].join('');
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;justify-content:space-between">
+      <h2 style="margin:0">Appointments</h2>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="pec-field" style="margin:0"><label>Type</label><select id="pecApptTypeFilter">${typeOpts}</select></div>
+        <div class="pec-field" style="margin:0"><label>Salesperson</label><select id="pecApptMemberFilter">${memberOpts}</select></div>
+        <button class="pec-btn primary" id="pecApptNew">+ New Appointment</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div id="pecApptMigNote" style="display:none;color:#b45309;font-size:.78rem;margin-bottom:8px"></div>
+      <div id="pecApptCal"></div>
+      <div class="pec-appt-legend" style="margin-top:10px">${legend}</div>
+    </div>`;
+
+  $('pecApptNew').addEventListener('click', () => openAppointmentForm(null, { members }));
+  $('pecApptTypeFilter').addEventListener('change', e => { f.type = e.target.value; apptRefresh(members); });
+  $('pecApptMemberFilter').addEventListener('change', e => { f.member = e.target.value; apptRefresh(members); });
+
+  const holder = $('pecApptCal');
+  try {
+    await ensureFullCalendar();
+    const cal = new FullCalendar.Calendar(holder, {
+      initialView: state.apptView || 'dayGridMonth',
+      initialDate: state.apptDate || undefined,
+      headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,timeGridWeek,timeGridDay' },
+      buttonText: { today: 'Today', month: 'Month', week: 'Week', day: 'Day' },
+      height: 'auto',
+      nowIndicator: true,
+      editable: true,
+      selectable: true,
+      dayMaxEventRows: 4,
+      scrollTime: '08:00:00',
+      // Events come straight from Supabase per visible range; filter changes
+      // call refetchEvents(). Pre-migration the read errors once into the
+      // note div and the grid stays empty (never a broken render).
+      events: (info, success) => {
+        loadAppointmentsRange(info.start.toISOString(), info.end.toISOString()).then(({ rows, error }) => {
+          const note = $('pecApptMigNote');
+          if (note) {
+            note.style.display = error ? '' : 'none';
+            if (error) note.textContent = 'Appointments could not load: ' + (error.message || error) + ' (has the appointments migration been applied?)';
+          }
+          success(rows.map(r => apptEventFromRow(r, members)));
+        });
+      },
+      datesSet: (info) => {
+        state.apptView = info.view.type;
+        state.apptDate = info.view.currentStart ? info.view.currentStart.toISOString() : null;
+      },
+      dateClick: (info) => {
+        // Month-grid day tap: open the form pre-anchored to that day, 9-10am.
+        if (info.view.type !== 'dayGridMonth') return;
+        const d = new Date(info.date); d.setHours(9, 0, 0, 0);
+        openAppointmentForm(null, { members, start: d });
+      },
+      select: (info) => {
+        if (info.view.type === 'dayGridMonth') return; // dateClick covers month
+        openAppointmentForm(null, { members, start: info.start, end: info.end });
+      },
+      eventClick: (info) => { apptOpenById(info.event.id, members); },
+      eventDrop: (info) => apptCommitMove(info, members),
+      eventResize: (info) => apptCommitMove(info, members),
+    });
+    state._apptCal = cal;
+    cal.render();
+  } catch (err) {
+    // CDN blocked/offline: month-list fallback. Same data, same modal, no
+    // drag/resize; edits go through the form instead.
+    console.warn('[appointments] FullCalendar unavailable, using list fallback:', err.message || err);
+    await renderApptFallbackList(holder, members);
+  }
+
+  // Bell tap / deep link: open the requested appointment once mounted.
+  if (state.openAppointmentId) {
+    const id = state.openAppointmentId;
+    state.openAppointmentId = null;
+    apptOpenById(id, members);
+  }
+}
+
+// Refetch after a filter change or a write: live calendar refetches in place;
+// the fallback list re-renders the whole view (cheap). No-op off-view (e.g. a
+// booking made from the lead detail page) since renderAppointments always
+// starts from a fresh read anyway.
+function apptRefresh() {
+  if (state.view !== 'appointments') return;
+  if (state._apptCal) state._apptCal.refetchEvents();
+  else renderAppointments();
+}
+
+// Drag / resize commit: idempotent full-value patch, safe to retry. On any
+// failure revert the event so the calendar never lies about what saved.
+async function apptCommitMove(info, members) {
+  const ev = info.event;
+  const patch = {
+    start_at: ev.start ? ev.start.toISOString() : null,
+    end_at: ev.end ? ev.end.toISOString()
+      // Month-grid drops can null the end; keep the original duration.
+      : new Date(ev.start.getTime() + Math.max(30 * 60000,
+          (info.oldEvent && info.oldEvent.end && info.oldEvent.start) ? (info.oldEvent.end - info.oldEvent.start) : 60 * 60000)).toISOString(),
+    all_day: ev.allDay,
+  };
+  try {
+    const res = await withFreshWriteRetry(() => supabase.from('pec_appointments').update(patch).eq('id', ev.id), { label: 'appt-move' });
+    if (res.error) throw res.error;
+    showToast('Appointment moved', { ttl: 1600 });
+    apptPostWrite({ id: ev.id }, { moved: true });
+  } catch (err) {
+    console.error('[appointments] move failed:', err);
+    showToast('Could not move: ' + (err.message || err), { ttl: 5000 });
+    info.revert();
+  }
+}
+
+async function apptOpenById(id, members) {
+  const res = await supabase.from('pec_appointments').select('*').eq('id', id).maybeSingle();
+  if (res.error || !res.data) { showToast('Could not open that appointment.', { ttl: 4000 }); return; }
+  openAppointmentForm(res.data, { members });
+}
+
+// Month-list fallback (CDN blocked / offline). Prev/Today/Next over the
+// anchored month; rows open the same edit modal.
+async function renderApptFallbackList(holder, members) {
+  const anchor = state.apptDate ? new Date(state.apptDate) : new Date();
+  const mStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const mEnd = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1);
+  const { rows, error } = await loadAppointmentsRange(mStart.toISOString(), mEnd.toISOString());
+  const note = $('pecApptMigNote');
+  if (note && error) {
+    note.style.display = '';
+    note.textContent = 'Appointments could not load: ' + (error.message || error) + ' (has the appointments migration been applied?)';
+  }
+  const byDay = {};
+  for (const r of rows) {
+    const k = apptDateInputVal(new Date(r.start_at));
+    (byDay[k] = byDay[k] || []).push(r);
+  }
+  const days = Object.keys(byDay).sort();
+  holder.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
+      <div style="display:flex;gap:6px">
+        <button class="pec-btn sm ghost" id="pecApptPrevM">← Prev</button>
+        <button class="pec-btn sm ghost" id="pecApptTodayM">Today</button>
+        <button class="pec-btn sm ghost" id="pecApptNextM">Next →</button>
+      </div>
+      <strong>${esc(mStart.toLocaleDateString([], { month: 'long', year: 'numeric' }))}</strong>
+      <span style="color:var(--muted);font-size:.72rem">Calendar view unavailable (offline or CDN blocked); showing the month as a list.</span>
+    </div>
+    ${days.length ? days.map(k => {
+      const d = new Date(k + 'T12:00:00');
+      return `<div style="margin-bottom:8px">
+        <div style="font-size:.72rem;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">${esc(d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</div>
+        ${byDay[k].map(r => {
+          const t = apptTypeInfo(r.appt_type);
+          const m = members.find(x => x.id === r.sales_member_id);
+          const s = new Date(r.start_at), e = new Date(r.end_at);
+          return `<div data-appt-row="${esc(r.id)}" style="display:flex;gap:10px;align-items:center;padding:7px 10px;border:1px solid var(--rd-line,var(--border));border-left:4px solid ${esc(t.accent)};border-radius:6px;margin-bottom:4px;cursor:pointer">
+            <span style="font-size:.78rem;min-width:120px">${r.all_day ? 'All day' : esc(apptFmtTime(s) + ' – ' + apptFmtTime(e))}</span>
+            <strong style="font-size:.82rem;flex:1">${esc(r.title || t.label)}</strong>
+            <span class="pec-badge" style="--pec-badge-bg:${esc(apptMemberColor(members, r.sales_member_id))}">${esc(m ? m.name : 'Unassigned')}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    }).join('') : '<div class="pec-empty">No appointments this month.</div>'}`;
+  const nav = (months) => {
+    const n = new Date(mStart); n.setMonth(n.getMonth() + months);
+    state.apptDate = (months === 0 ? new Date() : n).toISOString();
+    renderAppointments();
+  };
+  $('pecApptPrevM').addEventListener('click', () => nav(-1));
+  $('pecApptTodayM').addEventListener('click', () => nav(0));
+  $('pecApptNextM').addEventListener('click', () => nav(1));
+  holder.querySelectorAll('[data-appt-row]').forEach(el =>
+    el.addEventListener('click', () => apptOpenById(el.dataset.apptRow, members)));
+}
+
+// Post-write seam. Everything that must happen after an appointment write
+// funnels through here: today that is refreshing whatever appointment surface
+// is on screen; the booking side effects (bell + confirmation kick) and the
+// Google push kick hang off this seam when their tasks land.
+function apptPostWrite(row, opts = {}) {
+  apptRefresh();
+}
+
+// Create/edit modal. `existing` is a pec_appointments row or null.
+// prefill: { members, start, end, appt_type, lead_id, customer_id, title,
+//            location_address/_city/_state/_zip, onSaved }.
+// The Schedule Estimate flow (lead detail/card) passes lead fields + onSaved;
+// the calendar passes members (+ start/end from a slot tap).
+async function openAppointmentForm(existing, prefill = {}) {
+  let members = prefill.members;
+  if (!members) {
+    const r = await supabase.from('pec_sales_team_members').select('*').order('name');
+    members = (r.data || []);
+  }
+  const activeMembers = members.filter(m => m.active !== false);
+  const a = existing || {};
+  const isNew = !existing;
+
+  // Times: existing row wins, then a tapped slot, then next-hour + 1h.
+  const now = new Date();
+  const defStart = a.start_at ? new Date(a.start_at)
+    : prefill.start ? new Date(prefill.start)
+    : new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+  const defEnd = a.end_at ? new Date(a.end_at)
+    : (prefill.end && prefill.start && (prefill.end - prefill.start) >= 15 * 60000) ? new Date(prefill.end)
+    : new Date(defStart.getTime() + 60 * 60000); // default length: 1 hour
+  const curType = a.appt_type || prefill.appt_type || 'on_site_estimate';
+  const curMember = a.sales_member_id || (activeMembers[0] ? activeMembers[0].id : '');
+  const leadId = a.lead_id || prefill.lead_id || null;
+  const customerId = a.customer_id || prefill.customer_id || null;
+
+  // "Link to lead" picker only in the generic create (the lead flows arrive
+  // already linked). Open stages only; 200 newest is plenty for a picker.
+  let leadOpts = '';
+  if (isNew && !leadId) {
+    const lr = await supabase.from('leads').select('id,full_name,stage')
+      .is('deleted_at', null).in('stage', ['new', 'contacted', 'estimate_sent', 'presented'])
+      .order('created_at', { ascending: false }).limit(200);
+    if (!lr.error && (lr.data || []).length) {
+      leadOpts = `<option value="">No linked lead</option>` +
+        lr.data.map(l => `<option value="${esc(l.id)}">${esc(l.full_name || '(no name)')} · ${esc(l.stage)}</option>`).join('');
+    }
+  }
+
+  openModal(`
+    <h3>${isNew ? 'New appointment' : 'Edit appointment'}</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Type</label>
+        <select id="afType">${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${curType === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
+      <div class="pec-field"><label>Salesperson</label>
+        <select id="afMember"><option value="">Unassigned</option>${members.map(m =>
+          `<option value="${esc(m.id)}"${curMember === m.id ? ' selected' : ''}>${esc(m.name)}${m.active === false ? ' (inactive)' : ''}</option>`).join('')}</select></div>
+    </div>
+    <div class="pec-field"><label>Title</label><input id="afTitle" value="${esc(a.title || prefill.title || '')}" placeholder="Customer or what this block is"></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Date</label><input type="date" id="afDate" value="${esc(apptDateInputVal(defStart))}"></div>
+      <div class="pec-field" style="display:flex;align-items:flex-end;padding-bottom:6px">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;cursor:pointer;margin:0">
+          <input type="checkbox" id="afAllDay" style="width:auto" ${a.all_day ? 'checked' : ''}> All day</label></div>
+    </div>
+    <div class="pec-row-2" id="afTimesRow" style="${a.all_day ? 'display:none' : ''}">
+      <div class="pec-field"><label>Start</label><input type="time" id="afStart" value="${esc(apptTimeInputVal(defStart))}" step="900"></div>
+      <div class="pec-field"><label>End</label><input type="time" id="afEnd" value="${esc(apptTimeInputVal(defEnd))}" step="900"></div>
+    </div>
+    <div class="pec-field"><label>Address</label><input id="afAddress" value="${esc(a.location_address || prefill.location_address || '')}" placeholder="Street address" autocomplete="off"></div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
+      <div class="pec-field"><label>City</label><input id="afCity" value="${esc(a.location_city || prefill.location_city || '')}"></div>
+      <div class="pec-field"><label>State</label><input id="afState" value="${esc(a.location_state || prefill.location_state || '')}" maxlength="2" placeholder="AZ"></div>
+      <div class="pec-field"><label>Zip</label><input id="afZip" value="${esc(a.location_zip || prefill.location_zip || '')}" maxlength="10"></div>
+    </div>
+    ${leadOpts ? `<div class="pec-field"><label>Link to lead (optional)</label><select id="afLead">${leadOpts}</select></div>` : ''}
+    <div class="pec-field"><label>Notes</label><textarea id="afNotes" rows="3">${esc(a.notes || '')}</textarea></div>
+    ${a.google_event_id ? '<div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Synced with Google Calendar.</div>' : ''}
+    ${a.status === 'canceled' ? '<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This appointment is canceled.</div>' : ''}
+    <div class="prod-msg-err" id="afErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions" style="justify-content:space-between">
+      <div style="display:flex;gap:8px">
+        ${isNew ? '' : `<button type="button" class="pec-btn ghost sm danger" id="afDelete">Delete</button>
+        <button type="button" class="pec-btn ghost sm" id="afCancelAppt">${a.status === 'canceled' ? 'Restore' : 'Cancel appt'}</button>`}
+      </div>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+        <button type="button" class="pec-btn primary" id="afSave">${isNew ? 'Book it' : 'Save'}</button>
+      </div>
+    </div>
+  `, { onMount: modal => {
+    const errEl = modal.querySelector('#afErr');
+    const val = (id) => (modal.querySelector('#' + id) ? modal.querySelector('#' + id).value : '').trim();
+    modal.querySelector('#afAllDay').addEventListener('change', e => {
+      modal.querySelector('#afTimesRow').style.display = e.target.checked ? 'none' : '';
+    });
+    // Address autocomplete (Places). Attached if the helper is available;
+    // absent key / offline the input is just a plain text field.
+    if (typeof pecAttachPlacesAutocomplete === 'function') {
+      pecAttachPlacesAutocomplete(modal.querySelector('#afAddress'), (addr) => {
+        modal.querySelector('#afAddress').value = addr.address1 || modal.querySelector('#afAddress').value;
+        if (addr.city) modal.querySelector('#afCity').value = addr.city;
+        if (addr.state) modal.querySelector('#afState').value = addr.state;
+        if (addr.zip) modal.querySelector('#afZip').value = addr.zip;
+        modal.querySelector('#afAddress').dataset.placeId = addr.placeId || '';
+      });
+    }
+
+    modal.querySelector('#afSave').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const dateStr = val('afDate');
+      if (!dateStr) { errEl.textContent = 'Pick a date.'; return; }
+      const allDay = modal.querySelector('#afAllDay').checked;
+      let startAt, endAt;
+      if (allDay) {
+        const d0 = new Date(dateStr + 'T00:00:00');
+        startAt = d0; endAt = new Date(d0.getTime() + 24 * 60 * 60000);
+      } else {
+        const st = val('afStart'), en = val('afEnd');
+        if (!st || !en) { errEl.textContent = 'Set a start and end time.'; return; }
+        startAt = new Date(dateStr + 'T' + st + ':00');
+        endAt = new Date(dateStr + 'T' + en + ':00');
+        if (!(endAt > startAt)) { errEl.textContent = 'End time must be after the start time.'; return; }
+      }
+      const row = {
+        appt_type: val('afType'),
+        title: val('afTitle') || null,
+        sales_member_id: val('afMember') || null,
+        start_at: startAt.toISOString(),
+        end_at: endAt.toISOString(),
+        all_day: allDay,
+        location_address: val('afAddress') || null,
+        location_city: val('afCity') || null,
+        location_state: val('afState') || null,
+        location_zip: val('afZip') || null,
+        location_place_id: (modal.querySelector('#afAddress').dataset.placeId || a.location_place_id) || null,
+        notes: val('afNotes') || null,
+        lead_id: (modal.querySelector('#afLead') ? (val('afLead') || null) : leadId),
+        customer_id: customerId,
+      };
+      const btn = modal.querySelector('#afSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        let saved;
+        if (isNew) {
+          row.created_by = (state.session && state.session.user && state.session.user.id) || null;
+          const ins = await withFreshWrite(() => supabase.from('pec_appointments').insert(row).select('*').single(), { label: 'appt-insert' });
+          if (ins.error) throw ins.error;
+          saved = ins.data;
+        } else {
+          const upd = await withFreshWriteRetry(() => supabase.from('pec_appointments').update(row).eq('id', a.id).select('*').single(), { label: 'appt-update' });
+          if (upd.error) throw upd.error;
+          saved = upd.data;
+        }
+        closeModal();
+        showToast(isNew ? 'Appointment booked' : 'Appointment saved', { ttl: 2200 });
+        apptPostWrite(saved, { isNew });
+        if (typeof prefill.onSaved === 'function') { try { prefill.onSaved(saved); } catch (e) { console.error('[appointments] onSaved:', e); } }
+      } catch (err) {
+        btn.disabled = false; btn.textContent = isNew ? 'Book it' : 'Save';
+        console.error('[appointments] save:', err);
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+
+    const delBtn = modal.querySelector('#afDelete');
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      if (!confirm('Delete this appointment? This removes it completely (use Cancel appt to keep the record).')) return;
+      delBtn.disabled = true;
+      try {
+        const res = await withFreshWrite(() => supabase.from('pec_appointments').delete().eq('id', a.id), { label: 'appt-delete' });
+        if (res.error) throw res.error;
+        closeModal();
+        showToast('Appointment deleted', { ttl: 2000 });
+        apptPostWrite(a, { deleted: true });
+      } catch (err) {
+        delBtn.disabled = false;
+        errEl.textContent = 'Could not delete: ' + (err && err.message ? err.message : err);
+      }
+    });
+
+    const cancelBtn = modal.querySelector('#afCancelAppt');
+    if (cancelBtn) cancelBtn.addEventListener('click', async () => {
+      const toStatus = a.status === 'canceled' ? 'scheduled' : 'canceled';
+      cancelBtn.disabled = true;
+      try {
+        const res = await withFreshWriteRetry(() => supabase.from('pec_appointments').update({ status: toStatus }).eq('id', a.id), { label: 'appt-cancel' });
+        if (res.error) throw res.error;
+        closeModal();
+        showToast(toStatus === 'canceled' ? 'Appointment canceled' : 'Appointment restored', { ttl: 2000 });
+        apptPostWrite({ ...a, status: toStatus }, { canceled: toStatus === 'canceled' });
+      } catch (err) {
+        cancelBtn.disabled = false;
+        errEl.textContent = 'Could not update: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
 
 const LEAD_STAGES = [
   { key: 'new', title: 'New' },
