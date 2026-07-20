@@ -19385,6 +19385,7 @@ function leadCardHtml(lead) {
         ${elapsed ? `<span data-lead-elapsed="${esc(lead.created_at)}" style="font-weight:700;${elapsed.red ? 'color:var(--rd-danger,#ef4444)' : ''}">${esc(elapsed.text)}</span>` : ''}
       </span>
     </div>
+    ${['new', 'contacted'].includes(lead.stage) ? `<div style="margin-top:8px"><button type="button" class="pec-btn ghost sm" data-schedule-est="${esc(lead.id)}" style="width:100%">Schedule Estimate</button></div>` : ''}
   </div>`;
 }
 
@@ -19431,6 +19432,44 @@ function moveLeadStage(leadId, toStage) {
       console.error('[leads] stage move:', err);
       showToast('Move failed: ' + (err && err.message ? err.message : err), { ttl: 5000 });
     });
+}
+
+// "Schedule Estimate" (prompt 37): opens the appointment form prefilled from
+// the lead (type on_site_estimate, lead/customer link, name as title, address
+// fields) and, on save, advances the lead. STAGE MAPPING NOTE: the locked
+// decision says "advance to the estimate stage", but LEAD_STAGES has no such
+// stage; the closest, estimate_sent, is stamped only when a real estimate
+// document goes out (estimateSentLeadEffects) and feeds conversion metrics
+// plus the drip kill-switch, so faking it here would corrupt both. A booked
+// estimate visit means contact was definitely made, so a NEW lead advances to
+// 'contacted' and anything at/past contacted keeps its stage (the prompt's
+// at-or-past guard). Flagged for Dylan in the PROJECT-LOG if he wants a real
+// 'estimate_scheduled' kanban column instead.
+function openScheduleEstimateFromLead(lead, onDone) {
+  openAppointmentForm(null, {
+    appt_type: 'on_site_estimate',
+    lead_id: lead.id,
+    customer_id: lead.customer_id || null,
+    title: lead.full_name || null,
+    location_address: lead.address || null,
+    location_city: lead.city || null,
+    location_state: lead.state || null,
+    location_zip: lead.zip || null,
+    onSaved: async (appt) => {
+      // Type is editable in the form; if the rep switched it to an ad-hoc
+      // block, the lead should not advance off it.
+      if (appt && appt.appt_type === 'on_site_estimate' && lead.stage === 'new') {
+        try {
+          await commitLeadStage(lead, 'contacted');
+          showToast('Lead moved to Contacted', { ttl: 2200 });
+        } catch (err) {
+          console.error('[leads] schedule-estimate stage move:', err);
+          showToast('Appointment booked, but the lead stage move failed: ' + (err && err.message ? err.message : err), { ttl: 6000 });
+        }
+      }
+      if (typeof onDone === 'function') { try { onDone(appt); } catch (_) {} }
+    },
+  });
 }
 
 // Lost needs a reason (Dylan's conversion metrics depend on it). Mirrors the
@@ -19717,6 +19756,14 @@ async function renderLeads() {
     });
   });
 
+  // Schedule Estimate straight off the card (prompt 37). stopPropagation so
+  // the card's own click handler doesn't also open the detail pane.
+  root.querySelectorAll('[data-schedule-est]').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const lead = _leadsById[btn.dataset.scheduleEst];
+    if (lead) openScheduleEstimateFromLead(lead, () => { if (state.view === 'leads' && !state.openLeadId) renderLeads(); });
+  }));
+
   startLeadsElapsedTimer();
 }
 
@@ -19884,6 +19931,7 @@ async function renderLeadDetail(leadId) {
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="leadBack">← Back to leads</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="pec-btn sm" id="leadScheduleEstimate" title="Book the on-site estimate visit on the Appointments calendar">Schedule Estimate</button>
         <button class="pec-btn sm" id="leadStartEstimate" title="Opens the estimator over the dashboard with this lead attached">Start estimate</button>
         ${lead.stage === 'accepted' ? '' : '<button class="pec-btn sm" id="leadMarkAccepted">Mark accepted</button>'}
         <button class="pec-btn sm primary" id="leadAiRefresh">Refresh analysis</button>
@@ -19962,6 +20010,10 @@ async function renderLeadDetail(leadId) {
   // returns the rep right here; the postMessage listener near
   // openEstimatorModal handles close + navigation to the new estimate.
   $('leadStartEstimate').addEventListener('click', () => openEstimatorModal({ leadId: lead.id }));
+  // Book the estimate visit; on save the stage may advance, so re-enter the
+  // detail render to show the fresh stage select.
+  $('leadScheduleEstimate').addEventListener('click', () =>
+    openScheduleEstimateFromLead(lead, () => { if (state.openLeadId === lead.id) renderLeadDetail(lead.id); }));
   root.querySelectorAll('[data-open-estimate]').forEach(row => row.addEventListener('click', () => {
     state.openEstimateId = row.dataset.openEstimate;
     switchView('estimates');
