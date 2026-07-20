@@ -9824,8 +9824,7 @@ async function renderJobInvoice(jobId) {
         ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
         <button class="pec-btn sm" id="pecInvEditLines">Edit line items</button>
         <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
-        <button class="pec-btn sm" id="pecInvEmail">Email invoice</button>
-        <button class="pec-btn sm" id="pecInvText">Text invoice</button>
+        ${pecSplitSendHtml('pecInvSend', 'Send invoice')}
         <button class="pec-btn sm" id="pecInvDownloadPdf">Download PDF</button>
         <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
         ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
@@ -9910,56 +9909,63 @@ async function renderJobInvoice(jobId) {
     return true;
   };
 
-  const textB = $('pecInvText');
-  if (textB) {
-    const smsBrand = smsBrandFromCompany(row.customer_company);
-    // Disable up front if the customer has opted out (tolerant pre-migration).
-    if (row.customer_id) {
-      supabase.from('customers').select('sms_opt_out').eq('id', row.customer_id).maybeSingle()
-        .then(({ data }) => { if (data && data.sms_opt_out) { textB.disabled = true; textB.title = 'This customer opted out of texts (replied STOP).'; } })
-        .catch(() => { /* column may not exist yet; leave enabled, server still guards */ });
-    }
-    if (!row.customer_phone) { textB.disabled = true; textB.title = 'No phone number on file for this customer.'; }
-    textB.addEventListener('click', async () => {
-      if (!row.public_token) { showToast('Public link not ready yet &mdash; run the brand/public-invoice migration.', { ttl: 4500 }); return; }
-      if (!(await confirmDespitePendingAch())) return;
-      const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
-      if (!confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`)) return;
-      textB.disabled = true; const prevText = textB.textContent; textB.textContent = 'Texting…';
-      try {
-        await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
-        // First-send wins, same stamp as the email path below (this SMS path
-        // was missing it, so a text-only invoice never anchored the AR-timing
-        // metric and, since Phase 3, would never enroll payment reminders).
-        // The null->set transition is the ONE moment the invoice drip enrolls.
-        if (!row.invoice_first_sent_at) {
-          const nowIso = new Date().toISOString();
-          withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
-            .then(res => {
-              if (!(res && res.error)) {
-                row.invoice_first_sent_at = nowIso;
-                enrollInvoiceDripClient(row.id).catch(() => {});
-              }
-            })
-            .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
-        }
-        showToast('Invoice texted ✓', { ttl: 3500 });
-        renderInvoicing(); // re-lands on this invoice; the Communication history panel picks up the send
-      } catch (err) {
-        // Includes the opt-out refusal (409) and any Quo error, verbatim.
-        showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
-      } finally {
-        textB.disabled = false; textB.textContent = prevText;
-      }
-    });
+  // Text-invoice pieces, shared by "Text only" and the combined "both" path
+  // (prompt 38 split-send). Same server contract as before: pec-send-sms
+  // kind='invoice' builds the compliant body with the pay link + STOP line
+  // and is the authority on the opt-out guard; the probe below is a courtesy
+  // so the both-path can say "text skipped" up front.
+  const smsBrand = smsBrandFromCompany(row.customer_company);
+  let invTextOptedOut = false;
+  if (row.customer_id) {
+    supabase.from('customers').select('sms_opt_out').eq('id', row.customer_id).maybeSingle()
+      .then(({ data }) => { if (data && data.sms_opt_out) invTextOptedOut = true; })
+      .catch(() => { /* column may not exist yet; server still guards */ });
   }
+  const confirmInvoiceText = () => {
+    const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
+    return confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`);
+  };
+  const doInvoiceTextSend = async () => {
+    try {
+      await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
+      // First-send wins, same stamp as the email path (the null->set
+      // transition is the ONE moment the invoice drip enrolls).
+      if (!row.invoice_first_sent_at) {
+        const nowIso = new Date().toISOString();
+        withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+          .then(res => {
+            if (!(res && res.error)) {
+              row.invoice_first_sent_at = nowIso;
+              enrollInvoiceDripClient(row.id).catch(() => {});
+            }
+          })
+          .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
+      }
+      showToast('Invoice texted ✓', { ttl: 3500 });
+      return true;
+    } catch (err) {
+      // Includes the opt-out refusal (409) and any Quo error, verbatim.
+      showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
+      return false;
+    }
+  };
+  const invoiceTextOnly = async () => {
+    if (!row.customer_phone) { showToast('No phone number on file for this customer.', { ttl: 4000 }); return; }
+    if (invTextOptedOut) { showToast('This customer opted out of texts (replied STOP).', { ttl: 4500 }); return; }
+    if (!row.public_token) { showToast('Public link not ready yet &mdash; run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+    if (!(await confirmDespitePendingAch())) return;
+    if (!confirmInvoiceText()) return;
+    const main = $('pecInvSendMain');
+    if (main) { main.disabled = true; main.textContent = 'Texting…'; }
+    await doInvoiceTextSend();
+    renderInvoicing(); // re-lands on this invoice; Communication history picks up the send
+  };
 
   // Compose-before-send dialog: To / Cc / Copy Me / Subject / rich-text body,
   // all pre-filled from the invoice template with tokens resolved client-side.
   // Sends in compose mode (server wraps the body in brand chrome).
-  const emailB = $('pecInvEmail');
-  if (emailB) emailB.addEventListener('click', async () => {
-    if (!(await confirmDespitePendingAch())) return;
+  const openInvoiceEmail = async ({ afterSend = null, skipAch = false } = {}) => {
+    if (!skipAch && !(await confirmDespitePendingAch())) return;
     const brand = 'prescott-epoxy'; // PEC-only CRM
     await fetchBrandIdentity(); // for the CTA color + chrome match
     const values = emailComposeValues(row);
@@ -10032,6 +10038,9 @@ async function renderJobInvoice(jobId) {
           }
           closeModal();
           showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
+          // Combined "both" path (prompt 38): the text leg runs only after
+          // the email actually sent, and was already confirmed up front.
+          if (afterSend) { try { await afterSend(); } catch (_) { /* its own toast */ } }
           renderInvoicing();
         } catch (err) {
           console.error('[pec] compose send failed', err);
@@ -10040,6 +10049,33 @@ async function renderJobInvoice(jobId) {
         }
       });
     } });
+  };
+
+  // The split Send control (prompt 38): primary = Email + Text, caret =
+  // Email only / Text only. "Both" shows BOTH gates before anything sends:
+  // the text confirm first (declining it quietly downgrades to email only),
+  // then the email compose; the text fires only after the email succeeds, so
+  // canceling the compose sends nothing at all. Missing channels do not
+  // hard-block: whatever is on file sends and the other leg gets a note.
+  pecWireSplitSend('pecInvSend', {
+    email: () => openInvoiceEmail(),
+    text: () => invoiceTextOnly(),
+    both: async () => {
+      if (!(await confirmDespitePendingAch())) return;
+      const canText = !!row.customer_phone && !invTextOptedOut && !!row.public_token;
+      if (!row.customer_email && canText) {
+        // Email leg has no address: fall through to text alone, with a note.
+        showToast('No email on file, sending the text only.', { ttl: 4500 });
+        if (confirmInvoiceText()) { await doInvoiceTextSend(); renderInvoicing(); }
+        return;
+      }
+      let alsoText = false;
+      if (!row.customer_phone) showToast('No phone on file, the text will be skipped.', { ttl: 4500 });
+      else if (invTextOptedOut) showToast('Customer opted out of texts, the text will be skipped.', { ttl: 4500 });
+      else if (!row.public_token) showToast('Public pay link not ready, the text will be skipped.', { ttl: 4500 });
+      else alsoText = confirmInvoiceText();
+      openInvoiceEmail({ skipAch: true, afterSend: alsoText ? doInvoiceTextSend : null });
+    },
   });
   // Change order: an add-on after the job begins. Since prompt 12 this opens
   // the SHARED two-mode modal (scope area or simple title+amount); the same
@@ -15965,6 +16001,48 @@ function pecOpenTextTo(phone, seed = {}) {
   } catch (_) { /* nav chrome is cosmetic; the thread still opens */ }
   openMessageThread(key, { rawNumber: phone, ...seed });
 }
+// Split "Send" control (prompt 38): one primary button whose click sends on
+// BOTH channels, plus a caret dropdown for Email only / Text only. Shared by
+// the invoice and estimate pages so the two cannot drift. Nothing sends on
+// the click itself: every path still goes through the email compose modal
+// and/or the text confirm dialog, so a stray click cannot message anyone.
+function pecSplitSendHtml(idBase, label) {
+  return `<span style="display:inline-flex" id="${idBase}Wrap">
+    <button class="pec-btn sm primary" id="${idBase}Main" title="Send by email and text together" style="border-top-right-radius:0;border-bottom-right-radius:0">${esc(label)}</button>
+    <button class="pec-btn sm primary" id="${idBase}Caret" aria-haspopup="true" title="Choose email only or text only" style="border-top-left-radius:0;border-bottom-left-radius:0;padding:2px 8px;margin-left:1px">&#9662;</button>
+  </span>`;
+}
+function pecWireSplitSend(idBase, handlers) {
+  const main = $(idBase + 'Main'), caret = $(idBase + 'Caret');
+  if (!main || !caret) return;
+  main.addEventListener('click', () => handlers.both());
+  caret.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const existing = document.getElementById(idBase + 'Menu');
+    if (existing) { existing.remove(); return; }
+    const menu = document.createElement('div');
+    menu.id = idBase + 'Menu';
+    menu.style.cssText = 'position:fixed;z-index:10020;background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.16);min-width:170px;overflow:hidden';
+    menu.innerHTML = [['both', 'Email + Text'], ['email', 'Email only'], ['text', 'Text only']]
+      .map(([k, l]) => `<div data-send-opt="${k}" style="padding:9px 12px;cursor:pointer;font-size:.8rem">${l}</div>`).join('');
+    const r = caret.getBoundingClientRect();
+    document.body.appendChild(menu);
+    menu.style.left = Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+    menu.style.top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8) + 'px';
+    menu.querySelectorAll('[data-send-opt]').forEach(el => {
+      el.addEventListener('mouseenter', () => { el.style.background = 'var(--rd-soft,rgba(15,20,32,.06))'; });
+      el.addEventListener('mouseleave', () => { el.style.background = ''; });
+      el.addEventListener('click', () => {
+        close();
+        const k = el.dataset.sendOpt;
+        (k === 'both' ? handlers.both : k === 'email' ? handlers.email : handlers.text)();
+      });
+    });
+    const close = () => { menu.remove(); document.removeEventListener('click', close); };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  });
+}
+
 // The one delegated wire for every [data-pec-text] button. Closes any open
 // modal first (the appointment popup renders one of these) so the thread is
 // not painted underneath a backdrop.
