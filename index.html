@@ -7830,6 +7830,8 @@ async function renderCustomerDetail(id) {
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px">${jobRowsHtml(completedJobs)}</div>
       </details>
     </div>
+
+    ${recordEmailsCardHtml('pecCustEmailsCard')}
   `;
 
   $('pecCustBack').addEventListener('click', () => {
@@ -7882,6 +7884,8 @@ async function renderCustomerDetail(id) {
   // Two-way SMS thread for this customer (async so it never blocks the page).
   mountCustomerSmsThread(root.querySelector('#pecCustSmsCard'), c);
   mountCustomerCalls(root.querySelector('#pecCustCallsCard'), c);
+  // Email history for this customer (prompt 36; async, read-only).
+  mountRecordEmailLog(root.querySelector('#pecCustEmailsCard'), { customerId: c.id });
 }
 
 async function openCustomerForm(c) {
@@ -12609,6 +12613,8 @@ async function renderJobDetailInner(id) {
 
     <div id="jobActivity"></div>
 
+    ${recordEmailsCardHtml('pecJobEmailsCard')}
+
     <!-- Sticky save bar: always reachable while scrolling the details tab,
          and it disappears with the pane on the comms tab. Same two ids the
          save wiring has always used. -->
@@ -12634,6 +12640,8 @@ async function renderJobDetailInner(id) {
   // never open Messages & Calls pay zero extra queries.
   let commsMounted = false;
   const mountCommsOnce = () => { if (!commsMounted) { commsMounted = true; mountJobComms($('jobCommsCard'), job); } };
+  // Email history for this job (prompt 36; async, read-only, details tab).
+  mountRecordEmailLog($('pecJobEmailsCard'), { jobId: id });
   const showJobTab = (tab) => {
     state.jobDetailTab = tab;
     $('pecJobTabDetails').style.display = tab === 'details' ? '' : 'none';
