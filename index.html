@@ -594,6 +594,9 @@ button.pec-stat:hover{border-color:var(--accent)}
    the whole surface. The iframe fills it; the app inside provides its own
    chrome (topbar, Close button that postMessages the dashboard). */
 .pec-modal.pec-modal-estimator{max-width:min(1180px,96vw);width:96vw;height:92vh;max-height:92vh;padding:0;overflow:hidden}
+/* Email Log row detail: wider than the 520px default so the 600px email
+   chrome renders without horizontal scrolling inside its iframe. */
+.pec-modal.pec-modal-email-log{max-width:min(720px,94vw)}
 .pec-estimator-frame{display:block;width:100%;height:100%;border:0}
 .pec-modal h3{font-family:var(--sans);font-weight:600;margin-bottom:14px}
 .pec-modal .pec-modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
@@ -2446,6 +2449,10 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="customers">Customers</button>
           <button data-pec-view="messages">Messages</button>
+          <!-- All-staff like Messages (no pec-role-admin class): any signed-in
+               user can read the email history; RLS (is_admin_staff) is the
+               actual boundary. -->
+          <button data-pec-view="email-log">Email Log</button>
           <button data-pec-view="leads">Leads</button>
           <button data-pec-view="drips" class="pec-role-admin">Drips</button>
           <button data-pec-view="estimates">Estimates</button>
@@ -7194,6 +7201,7 @@ function switchView(v) {
       customers: renderCustomers,
       jobs: renderJobs,
       messages: renderMessages,
+      'email-log': renderEmailLog,
       invoicing: renderInvoicing,
       commission: renderCommission,
       metrics: renderMetrics,
@@ -16131,6 +16139,289 @@ async function loadMessageConvos() {
   }
   const list = [...convos.values()].sort((a, b) => b.lastTs - a.lastTs);
   return { convos, list, staffNames, notes };
+}
+
+// ============================================================================
+// Email Log (prompt 36). One global view of every email the system sent
+// (pec_email_log), plus the same rows embedded on the customer and job detail
+// pages. Shared helpers keep the three surfaces in sync: emailLogTableHtml
+// renders the rows, wireEmailLogRows makes them clickable, openEmailLogDetail
+// shows full metadata + body. Body sources are a deliberate split:
+// transactional sends store body_html on the log row (captured going forward
+// by pec-send-email.cjs); drip/blast rows read pec_drip_sends.body via
+// provider_id = resend_id; older rows show an honest "not captured" note.
+// PEC-only for now, so no brand filter (the FTP brand gap is tracked
+// separately). All-staff visibility, same as Messages.
+// ============================================================================
+
+// Status coloring convention shared with the invoice Communication history
+// (commStatusColor) and the Settings email log: red for failed/bounced/
+// complained, green once Resend confirms delivery or engagement, muted for
+// queued/sent.
+const emailLogStatusColor = s => (s === 'failed' || s === 'bounced' || s === 'complained') ? '#dc2626'
+  : (s === 'delivered' || s === 'opened' || s === 'clicked') ? '#16a34a' : 'var(--muted)';
+
+// Humanize template_key for the Type column. Fixed labels for the known keys;
+// an unknown key falls back to Title Case so it never renders raw.
+const EMAIL_LOG_TYPE_LABELS = {
+  invoice: 'Invoice', estimate: 'Estimate', document: 'Document',
+  compose: 'Compose', change_order: 'Change order', drip: 'Drip', blast: 'Blast',
+};
+const emailLogTypeLabel = k => EMAIL_LOG_TYPE_LABELS[k] || titleCaseValue(k || '') || '—';
+
+// Status cell: the status word plus the engagement trail the Resend webhook
+// fills in (opened_at / clicked_at / bounced_at), plus any send error.
+function emailLogStatusCellHtml(r) {
+  const bits = [];
+  if (r.opened_at) bits.push('opened ' + invFmtDate(r.opened_at));
+  if (r.clicked_at) bits.push('clicked ' + invFmtDate(r.clicked_at));
+  if (r.bounced_at) bits.push('bounced ' + invFmtDate(r.bounced_at));
+  return `<span style="color:${emailLogStatusColor(r.status)};font-weight:600">${esc(r.status || '—')}</span>`
+    + (bits.length ? `<div style="font-size:.72rem;color:var(--muted)">${esc(bits.join(' · '))}</div>` : '')
+    + (r.error_message ? `<div style="font-size:.72rem;color:#dc2626">${esc(r.error_message)}</div>` : '');
+}
+
+// One shared table renderer for the main view and both record embeds. opts:
+//   custNames:  { customer_id -> name } for the Customer column (main view)
+//   staffNames: { auth_uid -> name } for the Sender column (qoStaffNames map;
+//               pec_email_log.sent_by_user stores the sender's auth uid, blank
+//               for system sends like drips and blasts)
+//   compact:    embeds drop the Customer column (the record IS the customer)
+function emailLogTableHtml(rows, opts = {}) {
+  const { custNames = {}, staffNames = {}, compact = false } = opts;
+  if (!rows.length) return '<div class="pec-empty">No emails sent yet.</div>';
+  const head = `<tr><th>Sent</th><th>To</th>${compact ? '' : '<th>Customer</th>'}<th>Type</th><th>Subject</th><th>Status</th><th>Sender</th></tr>`;
+  const body = rows.map(r => {
+    const custCell = r.customer_id
+      ? `<a href="#" data-email-log-cust="${esc(r.customer_id)}">${esc(custNames[r.customer_id] || 'Customer')}</a>`
+      : esc(r.to_email || '—');
+    return `<tr data-email-log-row="${esc(r.id)}" style="cursor:pointer" title="Open this email">
+      <td style="white-space:nowrap" title="${esc(phxDateTime(r.sent_at))}">${esc(timeAgo(r.sent_at))}</td>
+      <td>${esc(r.to_email || '—')}</td>
+      ${compact ? '' : `<td>${custCell}</td>`}
+      <td style="white-space:nowrap">${esc(emailLogTypeLabel(r.template_key))}</td>
+      <td style="font-size:.85rem">${esc(r.subject || '—')}</td>
+      <td>${emailLogStatusCellHtml(r)}</td>
+      <td>${esc(staffNames[r.sent_by_user] || '')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="pec-scroll-x"><table class="pec-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+// Row click -> detail modal; customer-name click -> customer detail page.
+function wireEmailLogRows(container, rows, staffNames) {
+  if (!container) return;
+  const byId = Object.fromEntries(rows.map(r => [r.id, r]));
+  container.querySelectorAll('[data-email-log-row]').forEach(tr => {
+    tr.addEventListener('click', () => openEmailLogDetail(byId[tr.dataset.emailLogRow], staffNames));
+  });
+  container.querySelectorAll('[data-email-log-cust]').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation(); // the row's own click would open the detail modal
+      state.view = 'customers';
+      state.openCustomerId = a.dataset.emailLogCust;
+      switchView('customers');
+    });
+  });
+}
+
+// Row detail: all metadata plus the full body. Uses the pecModalRoot helpers
+// (openModal/closeModal); the wider .pec-modal-email-log modifier fits the
+// 600px email chrome. Body resolution, in priority order:
+//   1) body_html on the row (transactional sends, captured going forward),
+//      rendered in a sandboxed srcdoc iframe (no scripts, no same-origin) so
+//      customer HTML/CSS can never break the app shell;
+//   2) drip/blast rows: pec_drip_sends.body (the pre-chrome plain text the
+//      runner rendered) via provider_id = resend_id, with a subject +
+//      nearest-time fallback for rows whose send failed before Resend
+//      returned an id;
+//   3) an honest "body not captured" note for rows that predate the capture.
+async function openEmailLogDetail(r, staffNames) {
+  if (!r) return;
+  const isSystem = r.template_key === 'drip' || r.template_key === 'blast';
+  const senderName = (staffNames && staffNames[r.sent_by_user]) || (isSystem ? 'System (automatic)' : '—');
+  const metaRow = (label, html) => `<tr class="nohover"><td style="color:var(--muted);white-space:nowrap;font-size:.78rem">${label}</td><td style="font-size:.85rem">${html}</td></tr>`;
+  openModal(`
+    <h3 style="margin-bottom:4px">${esc(r.subject || '(no subject)')}</h3>
+    <div class="pec-scroll-x"><table class="pec-table" style="margin:10px 0">
+      ${metaRow('Sent', esc(phxDateTime(r.sent_at)))}
+      ${metaRow('To', esc(r.to_email || '—'))}
+      ${metaRow('From', esc(r.from_email || '—'))}
+      ${metaRow('Type', esc(emailLogTypeLabel(r.template_key)))}
+      ${metaRow('Status', emailLogStatusCellHtml(r))}
+      ${metaRow('Sent by', esc(senderName))}
+    </table></div>
+    <div id="pecEmailLogBody"><div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading email body…</div></div>
+    <div class="pec-modal-actions"><button class="pec-btn" onclick="pecCloseModal()">Close</button></div>
+  `, { onMount: m => m.classList.add('pec-modal-email-log') });
+  const box = document.getElementById('pecEmailLogBody');
+  const notCaptured = '<div class="pec-empty">Body not captured (sent before email-body logging was added).</div>';
+  try {
+    if (r.body_html) {
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', ''); // no scripts, no same-origin: display only
+      iframe.setAttribute('title', 'Email body');
+      iframe.srcdoc = r.body_html;
+      iframe.style.cssText = 'width:100%;height:480px;border:1px solid var(--rd-line, var(--border));border-radius:8px;background:#f1f5f9';
+      box.innerHTML = '';
+      box.appendChild(iframe);
+    } else if (isSystem) {
+      let bodyText = null;
+      if (r.resend_id) {
+        const res = await supabase.from('pec_drip_sends').select('body').eq('provider_id', r.resend_id).limit(1);
+        if (!res.error && res.data && res.data[0]) bodyText = res.data[0].body;
+      }
+      if (bodyText == null && r.subject) {
+        // Failed sends have no provider id; fall back to the same subject on
+        // the email channel, nearest created_at to this row's sent_at.
+        const res = await supabase.from('pec_drip_sends')
+          .select('body,created_at').eq('channel', 'email').eq('subject', r.subject).limit(50);
+        if (!res.error && res.data && res.data.length) {
+          const ts = Date.parse(r.sent_at) || 0;
+          const near = res.data.slice().sort((a, b) =>
+            Math.abs((Date.parse(a.created_at) || 0) - ts) - Math.abs((Date.parse(b.created_at) || 0) - ts))[0];
+          bodyText = near ? near.body : null;
+        }
+      }
+      box.innerHTML = bodyText
+        ? `<div style="white-space:pre-wrap;font-size:.9rem;line-height:1.5;border:1px solid var(--rd-line, var(--border));border-radius:8px;padding:14px;max-height:480px;overflow:auto">${esc(bodyText)}</div>`
+        : notCaptured;
+    } else {
+      box.innerHTML = notCaptured;
+    }
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="pec-empty">Couldn't load the email body: ${esc(e.message || e)}</div>`;
+  }
+}
+
+// Filters live at module scope so they survive re-renders within the session
+// (a fresh sign-in starts clean, same as the Messages filter).
+const emailLogFilters = { search: '', type: '', status: '', from: '', to: '', limit: 200 };
+
+async function renderEmailLog() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading email log…</div>';
+  const f = emailLogFilters;
+
+  // Customer-name search resolves matching ids FIRST: pec_email_log.customer_id
+  // has no FK constraint, so PostgREST cannot embed customers(...) and the
+  // name match has to be its own cheap query. Strip PostgREST or() syntax
+  // characters from the term so a typed comma cannot break the filter string.
+  const term = f.search.trim().replace(/[(),]/g, ' ').replace(/\s+/g, ' ').trim();
+  let searchCustIds = [];
+  if (term) {
+    const custRes = await supabase.from('customers').select('id').ilike('name', `%${term}%`).limit(200);
+    if (!custRes.error) searchCustIds = (custRes.data || []).map(c => c.id);
+  }
+
+  // limit+1 so "Load more" only shows when there really is more.
+  const buildQuery = () => {
+    let q = supabase.from('pec_email_log').select('*').order('sent_at', { ascending: false }).limit(f.limit + 1);
+    if (term) {
+      const ors = [`to_email.ilike.%${term}%`];
+      if (searchCustIds.length) ors.push(`customer_id.in.(${searchCustIds.join(',')})`);
+      q = q.or(ors.join(','));
+    }
+    if (f.type) q = q.eq('template_key', f.type);
+    if (f.status) q = q.eq('status', f.status);
+    // Native date inputs give yyyy-mm-dd; anchor both ends to Phoenix time
+    // (fixed -07:00, no DST) so an evening send lands on the day staff expect.
+    if (f.from) q = q.gte('sent_at', f.from + 'T00:00:00-07:00');
+    if (f.to) q = q.lte('sent_at', f.to + 'T23:59:59-07:00');
+    return q;
+  };
+  const [logRes, staffNames] = await Promise.all([
+    withFreshSession(() => buildQuery(), { label: 'renderEmailLog' }),
+    qoStaffNames(),
+  ]);
+  if (logRes.error) {
+    root.innerHTML = `<div class="pec-empty">Couldn't load the email log: ${esc(logRes.error.message)}</div>`;
+    return;
+  }
+  const all = logRes.data || [];
+  const rows = all.slice(0, f.limit);
+  const hasMore = all.length > f.limit;
+
+  // Names for the Customer column (batched by id, never per-row).
+  const custIds = [...new Set(rows.map(r => r.customer_id).filter(Boolean))];
+  const custNames = {};
+  if (custIds.length) {
+    const nameRes = await supabase.from('customers').select('id,name').in('id', custIds);
+    if (!nameRes.error) (nameRes.data || []).forEach(c => { custNames[c.id] = c.name || ''; });
+  }
+
+  const opt = (v, l, cur) => `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(l)}</option>`;
+  const typeOpts = [['', 'All types'], ['invoice', 'Invoice'], ['estimate', 'Estimate'], ['document', 'Document'],
+    ['compose', 'Compose'], ['change_order', 'Change order'], ['drip', 'Drip'], ['blast', 'Blast']]
+    .map(([v, l]) => opt(v, l, f.type)).join('');
+  const statusOpts = [['', 'All statuses'], ['queued', 'Queued'], ['sent', 'Sent'], ['delivered', 'Delivered'],
+    ['opened', 'Opened'], ['clicked', 'Clicked'], ['bounced', 'Bounced'], ['complained', 'Complained'], ['failed', 'Failed']]
+    .map(([v, l]) => opt(v, l, f.status)).join('');
+  const hasFilters = !!(f.search || f.type || f.status || f.from || f.to);
+
+  root.innerHTML = `
+    <div class="pec-toolbar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><h2 style="margin:0">Email Log</h2></div>
+    <div class="pec-card">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="pec-field" style="margin:0;flex:1;min-width:220px"><label>Customer</label>
+          <input id="pecEmailLogSearch" type="search" placeholder="Search customer name or email address" value="${esc(f.search)}"></div>
+        <div class="pec-field" style="margin:0"><label>Type</label>
+          <select id="pecEmailLogType">${typeOpts}</select></div>
+        <div class="pec-field" style="margin:0"><label>Status</label>
+          <select id="pecEmailLogStatus">${statusOpts}</select></div>
+        <div class="pec-field" style="margin:0"><label>From</label><input type="date" id="pecEmailLogFrom" value="${esc(f.from)}"></div>
+        <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="pecEmailLogTo" value="${esc(f.to)}"></div>
+        ${hasFilters ? '<button class="pec-btn sm ghost" id="pecEmailLogClear" style="margin-bottom:2px">Clear</button>' : ''}
+      </div>
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:10px">Every email sent from the system, newest first. Click a row to read the full email and its delivery detail.</div>
+      <div id="pecEmailLogTable">${emailLogTableHtml(rows, { custNames, staffNames })}</div>
+      ${hasMore ? '<div style="margin-top:12px;text-align:center"><button class="pec-btn sm ghost" id="pecEmailLogMore">Load 200 more</button></div>' : ''}
+    </div>`;
+
+  const rerun = () => renderEmailLog();
+  const searchEl = $('pecEmailLogSearch');
+  const applySearch = () => { if (searchEl.value !== f.search) { f.search = searchEl.value; f.limit = 200; rerun(); } };
+  searchEl.addEventListener('keydown', e => { if (e.key === 'Enter') applySearch(); });
+  searchEl.addEventListener('change', applySearch);
+  $('pecEmailLogType').addEventListener('change', e => { f.type = e.target.value; f.limit = 200; rerun(); });
+  $('pecEmailLogStatus').addEventListener('change', e => { f.status = e.target.value; f.limit = 200; rerun(); });
+  $('pecEmailLogFrom').addEventListener('change', e => { f.from = e.target.value; f.limit = 200; rerun(); });
+  $('pecEmailLogTo').addEventListener('change', e => { f.to = e.target.value; f.limit = 200; rerun(); });
+  const clearBtn = $('pecEmailLogClear');
+  if (clearBtn) clearBtn.addEventListener('click', () => { Object.assign(f, { search: '', type: '', status: '', from: '', to: '', limit: 200 }); rerun(); });
+  const moreBtn = $('pecEmailLogMore');
+  if (moreBtn) moreBtn.addEventListener('click', () => { f.limit += 200; rerun(); });
+  wireEmailLogRows(root.querySelector('#pecEmailLogTable'), rows, staffNames);
+}
+
+// "Emails" card embedded at the bottom of the customer and job detail pages.
+// Same placeholder-card + async-mount pattern as the Texts card
+// (customerSmsCardHtml / mountCustomerSmsThread) so the record page never
+// blocks on the log read.
+function recordEmailsCardHtml(domId) {
+  return `
+    <div class="pec-card" id="${domId}">
+      <h3>Emails</h3>
+      <div data-email-log-rows><div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading emails…</div></div>
+    </div>`;
+}
+// key: { customerId } or { jobId }. Read-only, newest first, capped at 100
+// (a single record's history; the global view is the place to go deeper).
+async function mountRecordEmailLog(card, key) {
+  if (!card) return;
+  const box = card.querySelector('[data-email-log-rows]');
+  try {
+    let q = supabase.from('pec_email_log').select('*').order('sent_at', { ascending: false }).limit(100);
+    q = key.customerId ? q.eq('customer_id', key.customerId) : q.eq('job_id', key.jobId);
+    const [res, staffNames] = await Promise.all([q, qoStaffNames()]);
+    if (res.error) throw res.error;
+    const rows = res.data || [];
+    box.innerHTML = emailLogTableHtml(rows, { staffNames, compact: true });
+    wireEmailLogRows(box, rows, staffNames);
+  } catch (e) {
+    box.innerHTML = `<div class="pec-empty">Couldn't load emails: ${esc(e.message || e)}</div>`;
+  }
 }
 
 async function renderMessages() {
