@@ -23,8 +23,12 @@
 --      pre-appointment reminders (Settings > Appointments editor). on_book
 --      true = fires right after booking (offset_minutes ignored); otherwise
 --      offset_minutes before start_at. Seeded with a customer confirmation
---      (on book, both channels), a 1-day-before customer reminder, and an
---      on-book salesperson in-app notify.
+--      (on book, both channels) and a 1-day-before customer reminder. The
+--      on-book salesperson bell deliberately has NO seeded rule: it goes
+--      through the log_appointment_booked RPC at booking time (instant, and
+--      it names the acting user), and a runner-processed duplicate would
+--      double-notify. Salesperson rules created later in the editor (e.g. an
+--      in-app nudge 60 minutes before) are handled by the runner.
 --   4. pec_appointment_reminder_sends: idempotency ledger, one row per
 --      (appointment, rule, channel) send attempt. The unique index is the
 --      never-double-send backstop, same design as the drip ledger.
@@ -146,12 +150,10 @@ create trigger trg_pec_appt_rules_touch before update on public.pec_appointment_
 insert into public.pec_appointment_reminder_rules
   (enabled, audience, channel, on_book, offset_minutes, appt_type, message_template)
 select * from (values
-  (true, 'customer',    'both'::text,  true,  0,    null::text,
+  (true, 'customer', 'both'::text, true,  0,    null::text,
    'Hi {customer_first}, you are booked with Prescott Epoxy Company. {sales_name} will see you on {appt_date} at {appt_time}. Reply to this message if you need to reschedule.'),
-  (true, 'customer',    'both'::text,  false, 1440, null::text,
-   'Hi {customer_first}, a reminder from Prescott Epoxy Company: {sales_name} will see you tomorrow, {appt_date} at {appt_time}. Reply here if anything changes.'),
-  (true, 'salesperson', 'in_app'::text, true, 0,    null::text,
-   'New appointment booked for {sales_name}: {appt_date} at {appt_time}.')
+  (true, 'customer', 'both'::text, false, 1440, null::text,
+   'Hi {customer_first}, a reminder from Prescott Epoxy Company: {sales_name} will see you tomorrow, {appt_date} at {appt_time}. Reply here if anything changes.')
 ) as seed(enabled, audience, channel, on_book, offset_minutes, appt_type, message_template)
 where not exists (select 1 from public.pec_appointment_reminder_rules);
 
@@ -219,8 +221,8 @@ commit;
 --    select relrowsecurity from pg_class where relname='pec_sales_member_google_tokens';  -- true
 --    select count(*) from pg_policies where tablename='pec_sales_member_google_tokens';   -- 0
 -- 4) Seeds:
---    select audience, channel, on_book, offset_minutes from public.pec_appointment_reminder_rules order by audience, on_book desc;
---    -- 3 rows: customer/both/on_book, customer/both/1440-min, salesperson/in_app/on_book
+--    select audience, channel, on_book, offset_minutes from public.pec_appointment_reminder_rules order by on_book desc;
+--    -- 2 rows: customer/both/on_book, customer/both/1440-min
 -- 5) RPC:
 --    select proname from pg_proc where proname='log_appointment_booked';  -- 1 row
 -- 6) Ledger unique index:

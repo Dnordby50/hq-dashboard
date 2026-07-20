@@ -6184,6 +6184,9 @@ function notifTarget(n) {
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
+    // Booked-appointment bell rows (prompt 37): land on the calendar with
+    // that appointment's edit modal opened (openAppointmentId).
+    if (n.target_view === 'appointments') return { view: 'appointments', id: n.target_id };
     return null;
   }
   return n.job_id ? { view: 'jobs', id: n.job_id } : null;
@@ -6224,6 +6227,7 @@ function renderBellPanel(rows) {
       state.view = navView;
       if (navView === 'costing') state.openUnifiedJobId = navId;
       else if (navView === 'invoicing') state.openInvoiceJobId = navId;
+      else if (navView === 'appointments') state.openAppointmentId = navId;
       else state.openJobId = navId;
       panel.style.display = 'none';
       switchView(navView);
@@ -18272,11 +18276,50 @@ async function renderApptFallbackList(holder, members) {
 }
 
 // Post-write seam. Everything that must happen after an appointment write
-// funnels through here: today that is refreshing whatever appointment surface
-// is on screen; the booking side effects (bell + confirmation kick) and the
-// Google push kick hang off this seam when their tasks land.
+// funnels through here: refresh whatever appointment surface is on screen,
+// and on a NEW booking fire the side effects (bell + confirmation kick).
 function apptPostWrite(row, opts = {}) {
   apptRefresh();
+  if (opts.isNew && row) apptBookingSideEffects(row);
+}
+
+// Booking side effects, all best-effort: a notify failure must never make a
+// saved appointment look unsaved. (a) The staff bell, through the scoped
+// log_appointment_booked RPC (client JS cannot insert pec_notifications
+// under RLS; same pattern as log_customer_deleted). (b) A kick to
+// pec-appt-notify so the on-book customer confirmation (per the reminder
+// rules, consent-checked server-side) goes out now; the scheduled runner is
+// the safety net if the kick is lost. Ad-hoc "other" blocks with no linked
+// lead/customer stay silent by design.
+async function apptBookingSideEffects(appt) {
+  if (!appt || (appt.appt_type === 'other' && !appt.lead_id && !appt.customer_id)) return;
+  try {
+    let salesName = '';
+    if (appt.sales_member_id) {
+      const r = await supabase.from('pec_sales_team_members').select('name').eq('id', appt.sales_member_id).maybeSingle();
+      if (!r.error && r.data) salesName = r.data.name || '';
+    }
+    const when = new Date(appt.start_at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const rpc = await supabase.rpc('log_appointment_booked', {
+      p_appointment_id: appt.id,
+      p_title: appt.title || apptTypeInfo(appt.appt_type).label,
+      p_sales_name: salesName,
+      p_when: when,
+    });
+    if (rpc.error) console.warn('[appointments] bell RPC:', rpc.error.message);
+    else { invalidateRefCache('notifs'); refreshBell(); }
+  } catch (_) { /* RPC not migrated yet; the bell is best-effort */ }
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session && session.access_token;
+    if (token) {
+      fetch('/.netlify/functions/pec-appt-notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ appointment_id: appt.id }),
+      }).catch(() => {});
+    }
+  } catch (_) { /* fire-and-forget */ }
 }
 
 // Create/edit modal. `existing` is a pec_appointments row or null.

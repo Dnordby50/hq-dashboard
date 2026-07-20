@@ -1039,4 +1039,8 @@ module.exports = {
   masterSwitchOn, kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms,
   usd, dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
   RENDER_SYSTEM_PROMPTS, RUN_CAP, BLAST_BATCH, STOP_LINE, SITE_URL,
+  // Prompt 37: the appointment confirmation/reminder core (_pec-appt.cjs)
+  // sends through the same provider + brand-sender helpers as the drips so
+  // there is exactly one Quo/Resend code path per provider.
+  sendQuoSmsReal, sendResendEmailReal, getSmsSender, getEmailSender,
 };
