@@ -19496,7 +19496,12 @@ function openNewLeadModal(prefill) {
       <div class="pec-field"><label>Email</label><input id="nlEmail" placeholder="phone or email required"></div>
       <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${s === 'manual' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
     </div>
-    <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Street, City, State"></div>
+    <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Start typing a street address" autocomplete="off"></div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
+      <div class="pec-field"><label>City</label><input id="nlCity"></div>
+      <div class="pec-field"><label>State</label><input id="nlState" maxlength="2" placeholder="AZ"></div>
+      <div class="pec-field"><label>Zip</label><input id="nlZip" maxlength="10"></div>
+    </div>
     <div class="pec-row-2">
       <div class="pec-field"><label>Campaign</label><input id="nlCampaign" placeholder="optional"></div>
       <div class="pec-field"><label>Owner</label><select id="nlOwner"><option value="">Unassigned</option>${Object.entries(staffNames).map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('')}</select></div>
@@ -19512,6 +19517,14 @@ function openNewLeadModal(prefill) {
     const errEl = modal.querySelector('#nlErr');
     const save = modal.querySelector('#nlSave');
     modal.querySelector('#nlName').focus();
+    // Places autocomplete on the street field: a pick fills city/state/zip,
+    // all hand-editable; offline/no-key it is just a text input (prompt 37).
+    pecAttachPlacesAutocomplete(modal.querySelector('#nlAddress'), (addr) => {
+      modal.querySelector('#nlAddress').value = addr.address1 || modal.querySelector('#nlAddress').value;
+      if (addr.city) modal.querySelector('#nlCity').value = addr.city;
+      if (addr.state) modal.querySelector('#nlState').value = addr.state;
+      if (addr.zip) modal.querySelector('#nlZip').value = addr.zip;
+    });
     save.addEventListener('click', async () => {
       errEl.textContent = '';
       const val = id => (modal.querySelector('#' + id).value || '').trim();
@@ -19530,6 +19543,9 @@ function openNewLeadModal(prefill) {
           phone: phone ? phone.slice(-10) : null,
           email: email || null,
           address: val('nlAddress') || null,
+          city: val('nlCity') || null,
+          state: val('nlState') || null,
+          zip: val('nlZip') || null,
           campaign: val('nlCampaign') || null,
           owner_user_id: val('nlOwner') || null,
           notes: val('nlNotes') || null,
