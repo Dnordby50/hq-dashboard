@@ -1219,6 +1219,83 @@
       },
       "tables": [],
       "since": null
+    },
+    {
+      "name": "Appointments calendar",
+      "area": "dashboard",
+      "description": "A top-level Appointments view (Sales group, all staff): a Month/Week/Day calendar of sales appointments (on-site estimates, project walkthroughs, site visits, and ad-hoc 'other' blocks), separate from the crew Job Schedule. Each appointment is assigned to a pec_sales_team_members roster member (per-member event color, per-type accent, type + salesperson filters with an All Users default). Create from the New Appointment button or a day/slot tap; edit, cancel, delete, drag-to-reschedule and resize. Renders with FullCalendar 6 lazy-loaded from cdnjs and degrades to a month list that still edits when the CDN is blocked. Booking a lead-linked appointment notifies the bell (log_appointment_booked RPC) and kicks pec-appt-notify for the consent-checked customer confirmation; the scheduled pec-appt-reminder-runner sends the configured offset reminders (rules edited in Settings > Appointments). Schedule Estimate on a lead prefills the form and advances a new lead to contacted.",
+      "code": {
+        "indexHtml": [
+          "renderAppointments",
+          "openAppointmentForm",
+          "apptPostWrite",
+          "apptBookingSideEffects",
+          "openScheduleEstimateFromLead",
+          "renderSettingsAppointments",
+          "openApptRuleModal"
+        ],
+        "netlifyFunctions": [
+          "pec-appt-notify.cjs",
+          "pec-appt-reminder-runner.cjs",
+          "_pec-appt.cjs"
+        ]
+      },
+      "tables": [
+        "pec_appointments",
+        "pec_appointment_reminder_rules",
+        "pec_appointment_reminder_sends",
+        "pec_sales_team_members",
+        "pec_notifications"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Google Calendar two-way sync",
+      "area": "dashboard",
+      "description": "Per-member Google Calendar sync for the Appointments calendar. Each roster member connects their OWN Google account from Settings > Appointments (OAuth: pec-google-oauth-start mints an HMAC-signed-state consent URL, pec-google-oauth-callback exchanges the code, creates-or-reuses a dedicated 'TopCoat' secondary calendar in their account, and stores tokens in the service-role-only pec_sales_member_google_tokens vault; connection status the UI reads lives as flags on pec_sales_team_members). TopCoat pushes appointment create/update/cancel/delete into that TopCoat calendar (pec-appt-sync-push, kicked fire-and-forget from apptPostWrite), and the scheduled pec-google-calendar-pull polls it every 15 minutes with incremental syncTokens (410 = full resync), upserting by google_event_id with an echo/last-writer-wins rule on google_updated. Personal (primary) calendars are never read or written. Requires GOOGLE_OAUTH_CLIENT_ID/SECRET in Netlify env; everything no-ops cleanly while unconfigured.",
+      "code": {
+        "indexHtml": [
+          "renderSettingsAppointments",
+          "apptKickPushSync"
+        ],
+        "netlifyFunctions": [
+          "_pec-google.cjs",
+          "pec-google-oauth-start.cjs",
+          "pec-google-oauth-callback.cjs",
+          "pec-google-disconnect.cjs",
+          "pec-appt-sync-push.cjs",
+          "pec-google-calendar-pull.cjs"
+        ]
+      },
+      "tables": [
+        "pec_appointments",
+        "pec_sales_member_google_tokens",
+        "pec_sales_team_members"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Address autocomplete (HQ)",
+      "area": "dashboard",
+      "description": "Google Places address autocomplete on the HQ dashboard, ported from the estimator PWA's places.ts onto vanilla index.html (current AutocompleteSuggestion / Place.fetchFields surface, session-token billing hygiene, silent degrade offline or with no key). Wired into the appointment form's address field (fills city/state/zip + location_place_id) and the New Lead modal (which gained split city/state/zip inputs that now persist to the leads columns). Uses the existing domain-restricted browser key from netlify.toml's secret-scan omit list; suggestions only appear once the Maps JavaScript + Places APIs are enabled on that key in Google Cloud Console. Customer/job forms deliberately not wired this pass.",
+      "code": {
+        "indexHtml": [
+          "pecAttachPlacesAutocomplete",
+          "pecLoadPlaces",
+          "pecFetchAddressSuggestions",
+          "pecResolveAddressSuggestion",
+          "openNewLeadModal",
+          "openAppointmentForm"
+        ],
+        "other": [
+          "apps/estimator/src/lib/places.ts"
+        ]
+      },
+      "tables": [
+        "leads",
+        "pec_appointments"
+      ],
+      "since": "2026-07"
     }
   ]
 }

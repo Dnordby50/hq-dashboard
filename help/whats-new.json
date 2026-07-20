@@ -1,5 +1,49 @@
 [
   {
+    "id": "appointments-calendar",
+    "date": "2026-07-20",
+    "title": "New Appointments calendar for sales visits",
+    "summary": "There is a new Appointments page under Sales. It is a Month, Week, and Day calendar for on-site estimates, project walkthroughs, site visits, and other blocks like a supply run. Each appointment is assigned to a salesperson and gets that person's color, with a second color stripe for the appointment type. Filter by type or by salesperson (All Users shows everyone), drag an appointment to reschedule it, or drag its edge to change the length.",
+    "howto": [
+      "Open Appointments under Sales in the left menu.",
+      "Click New Appointment, or click a day or time slot on the calendar, to book one.",
+      "Click any appointment to edit, cancel, or delete it, and drag it to reschedule."
+    ]
+  },
+  {
+    "id": "schedule-estimate-from-lead",
+    "date": "2026-07-20",
+    "title": "Schedule an estimate straight from a lead",
+    "summary": "Leads now have a Schedule Estimate button, on the lead card and on the lead page. It opens the appointment form already filled in with the customer's name and address, books it on the Appointments calendar, and moves a brand-new lead to Contacted. When it is booked, the assigned salesperson gets a bell notification and the customer gets a confirmation text and email (only if they have agreed to be contacted). A reminder also goes out the day before; you can change the timing and wording in Settings.",
+    "howto": [
+      "Open Leads and find the lead.",
+      "Click Schedule Estimate on the card or at the top of the lead page.",
+      "Pick the date, time, and salesperson, then click Book it."
+    ]
+  },
+  {
+    "id": "google-calendar-sync",
+    "date": "2026-07-20",
+    "title": "Connect your Google Calendar to Appointments",
+    "summary": "Each salesperson can connect their own Google account in Settings. Connecting creates a calendar named TopCoat in their Google account: appointments booked in TopCoat show up there, and events they add to that TopCoat calendar show up in the Appointments page within about 15 minutes. Personal calendars are never read or changed. Reminder timing and message wording live in the same Settings tab.",
+    "howto": [
+      "Open Settings and click the Appointments tab.",
+      "Click Connect Google next to a salesperson and finish the Google sign-in in the new tab.",
+      "Come back and click Refresh to see the connected account."
+    ]
+  },
+  {
+    "id": "address-autocomplete",
+    "date": "2026-07-20",
+    "title": "Address autocomplete on leads and appointments",
+    "summary": "The address boxes on the New Lead form and the appointment form now suggest real addresses as you type. Picking a suggestion fills in the street, city, state, and zip for you, and everything stays editable by hand. If you are offline the box works like a normal text field.",
+    "howto": [
+      "Start typing a street address in the New Lead form or an appointment.",
+      "Pick the right suggestion from the list.",
+      "Fix up any field by hand if needed."
+    ]
+  },
+  {
     "id": "email-log",
     "date": "2026-07-20",
     "title": "New Email Log: see every email the system has sent",
