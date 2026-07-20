@@ -60,11 +60,24 @@ async function getUser(token) {
 }
 
 // Best-effort log write (service role). Returns the inserted row's id or null.
+// If the insert fails and the row carried body_html, retry once WITHOUT it:
+// before the 2026-07-20_email_log_body migration is applied the column does
+// not exist and PostgREST rejects the whole insert, and losing the entire log
+// row over an optional body would break the "every outcome writes a log row"
+// contract. Deploy order (function first, migration later) stays safe.
 async function logRow(row) {
   try {
     const out = await sb('POST', '/pec_email_log', row, true);
     return Array.isArray(out) && out[0] ? out[0].id : null;
-  } catch (e) { console.error('pec-send-email: log insert failed', e.message); return null; }
+  } catch (e) {
+    if (row && row.body_html !== undefined) {
+      console.error('pec-send-email: log insert with body_html failed, retrying without it', e.message);
+      const { body_html, ...rest } = row;
+      return logRow(rest);
+    }
+    console.error('pec-send-email: log insert failed', e.message);
+    return null;
+  }
 }
 
 const BRAND_DEFAULTS = {
@@ -255,6 +268,10 @@ exports.handler = async (event) => {
     const logId = await logRow({
       sent_by_user: user.id, job_id, customer_id, brand, template_key: logTemplateKey,
       to_email, from_email: sender.from_email, subject, status: 'sent', resend_id: resBody.id || null,
+      // The exact wrapped HTML that went to Resend, so the Email Log can show
+      // what the customer actually received. Best-effort like the rest of the
+      // row (logRow drops it and retries if the column is not migrated yet).
+      body_html: html,
     });
     return jc(200, { ok: true, log_id: logId, resend_id: resBody.id || null });
   } catch (err) {
