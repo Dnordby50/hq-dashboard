@@ -41,6 +41,13 @@
 [functions."pec-drip-runner"]
   schedule = "*/15 * * * *"
 
+# Appointment confirmation/reminder tick (prompt 37). Every 15 minutes; the
+# reminder-sends ledger's unique index makes overlapping runs exactly-once,
+# quiet-hours-held SMS legs release on the next in-window tick, and before
+# the appointments migration lands a run is a silent no-op.
+[functions."pec-appt-reminder-runner"]
+  schedule = "*/15 * * * *"
+
 # Old auto-subdomain -> current one. The site was renamed from hq-prescott to
 # prescottepoxy; this 301s any request still hitting the old netlify.app host to
 # the current one (path + query preserved via :splat), so a browser Back button

@@ -125,7 +125,7 @@ async function skipLeg(sb, apptId, ruleId, channel, status, summary) {
   } catch (_) { /* already recorded */ }
 }
 
-async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches) {
+async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches, senders) {
   const wantSms = rule.channel === 'sms' || rule.channel === 'both';
   const wantEmail = rule.channel === 'email' || rule.channel === 'both';
   const rcpt = await resolveApptRecipient(sb, appt);
@@ -148,7 +148,7 @@ async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches) {
       let out;
       if (!sender || !sender.from_number) out = { ok: false, id: null, error: 'no SMS sender for brand' };
       else {
-        try { out = await sendQuoSmsReal({ from: sender.from_number, to: rcpt.phone, content: body + STOP_LINE }); }
+        try { out = await senders.sendSms({ from: sender.from_number, to: rcpt.phone, content: body + STOP_LINE }); }
         catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
       }
       await sb('POST', '/pec_sms_log', {
@@ -176,7 +176,7 @@ async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches) {
       if (!sender || !sender.from_email) out = { ok: false, id: null, error: 'no email sender for brand' };
       else {
         try {
-          out = await sendResendEmailReal({
+          out = await senders.sendEmail({
             from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
             subject, html, reply_to: sender.reply_to || undefined,
           });
@@ -222,6 +222,12 @@ async function processSalespersonRule(sb, rule, appt, ctx, summary) {
 async function runApptReminders(deps, opts = {}) {
   const sb = deps.sb;
   const now = deps.now ? deps.now() : new Date();
+  // Injectable providers (fixture test drives the real engine, same pattern
+  // as runDrips); production callers pass only { sb }.
+  const senders = {
+    sendSms: deps.sendSms || sendQuoSmsReal,
+    sendEmail: deps.sendEmail || sendResendEmailReal,
+  };
   const summary = { rules: 0, appts: 0, sent: 0, failed: 0, skipped: 0, held_quiet: 0, not_migrated: false };
 
   let rules;
@@ -290,7 +296,7 @@ async function runApptReminders(deps, opts = {}) {
       try {
         if (rule.audience === 'customer') {
           if (adHoc) continue; // nothing to send, and no ledger noise
-          await processCustomerRule(sb, rule, appt, { ...ctx }, now, summary, caches);
+          await processCustomerRule(sb, rule, appt, { ...ctx }, now, summary, caches, senders);
         } else if (rule.audience === 'salesperson') {
           if (rule.on_book) continue; // covered by the booking RPC bell
           await processSalespersonRule(sb, rule, appt, ctx, summary);

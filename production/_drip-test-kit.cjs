@@ -19,7 +19,9 @@ function makeDb(tables) {
   function matches(row, key, val) {
     if (val.startsWith('eq.')) return String(row[key]) === val.slice(3);
     if (val.startsWith('lte.')) return row[key] != null && String(row[key]) <= decodeURIComponent(val.slice(4));
+    if (val.startsWith('gte.')) return row[key] != null && String(row[key]) >= decodeURIComponent(val.slice(4));
     if (val.startsWith('gt.')) return row[key] != null && String(row[key]) > decodeURIComponent(val.slice(3));
+    if (val.startsWith('neq.')) return String(row[key]) !== val.slice(4);
     if (val === 'is.null') return row[key] == null;
     if (val === 'not.is.null') return row[key] != null;
     if (val.startsWith('in.(')) return val.slice(4, -1).split(',').includes(String(row[key]));
@@ -86,6 +88,15 @@ function makeDb(tables) {
           && String(r.campaign_id) === String(payload.campaign_id)
           && r.status === 'active')) {
           throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "idx_pec_drip_enroll_one_active_subj"`);
+        }
+      }
+      // Enforce the prompt-37 reminder-ledger unique index, the claim the
+      // appointment engine's exactly-once guarantee rides on.
+      if (table === 'pec_appointment_reminder_sends') {
+        if (db[table].some(r => String(r.appointment_id) === String(payload.appointment_id)
+          && String(r.rule_id) === String(payload.rule_id)
+          && String(r.channel) === String(payload.channel))) {
+          throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "uq_pec_appt_reminder_send"`);
         }
       }
       const row = { id: 'row' + (idSeq++), created_at: new Date().toISOString(), ...payload };
