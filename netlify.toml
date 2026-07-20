@@ -48,6 +48,13 @@
 [functions."pec-appt-reminder-runner"]
   schedule = "*/15 * * * *"
 
+# Google -> TopCoat appointment pull (prompt 37 Phase B). Every 15 minutes;
+# incremental syncToken polling per connected member (410 = drop token and
+# full-resync). No-op until GOOGLE_OAUTH_* env vars are set and a member
+# connects; a manual call is just an ordinary idempotent tick.
+[functions."pec-google-calendar-pull"]
+  schedule = "*/15 * * * *"
+
 # Old auto-subdomain -> current one. The site was renamed from hq-prescott to
 # prescottepoxy; this 301s any request still hitting the old netlify.app host to
 # the current one (path + query preserved via :splat), so a browser Back button
