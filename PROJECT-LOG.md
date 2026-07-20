@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-20 MST] Cowork: scoped Email Log + found the Meta/Zapier intake already exists (prompt 36 written)
+By: Cowork
+Changed: No repo code. (1) Wrote claude-code-prompt-36-email-log.md to the repo root and delivered it to Dylan. (2) Delivered zapier-meta-leads-setup.md, a config recipe (not a build) for connecting Meta Lead Ads to the existing intake endpoint. Scoped Dylan's two asks ("a place to see every email sent to a customer" and "a place for Zapier to send Meta leads to") through two rounds of multiple-choice questions.
+
+KEY FINDING (pushed back on ask #2): the "place for Zapier to send leads" ALREADY EXISTS. netlify/functions/pec-lead-intake.cjs is documented for exactly this ("Zapier posts new leads here from Meta Lead Ads, Google Lead Forms, or any future source"): it dedupes on source+source_ref and on same-human-in-90-days, triggers pec-lead-ai on arrival, auto-enrolls the new lead in the drip, and logs every attempt to pec_webhook_ingest_log (Sync Health). Nothing to build. The reason no real Meta leads have landed (prod has one fake test lead) is that the Zap was never wired up. Delivered the exact endpoint URL (https://prescottepoxy.netlify.app/.netlify/functions/pec-lead-intake), the x-webhook-secret header (value in Netlify env PEC_WEBHOOK_SECRET), and the Meta->field mapping. TWO code gaps flagged for later, NOT fixed (Dylan chose PEC-only for now): the intake hardcodes brand:'PEC' (FTP Meta leads would mislabel), and sms_consent stays false unless the Zap maps a consent checkbox (email drips still fire, texts do not).
+
+EMAIL LOG (ask #1) is a real build; the DATA already exists (pec_email_log, 24 rows, written by pec-send-email.cjs per-send, delivery status/opens/clicks/bounces PATCHed in by the Svix-verified pec-webhook-resend.cjs). What is missing is a central viewer. LOCKED DECISIONS (Dylan): new top-level "Email Log" view PLUS the record's log embedded at the bottom of customer detail and job detail; global list newest-first with a customer search/filter (not grouped); full body viewable; show opens/clicks/bounces; all-staff visibility (like Messages); PEC-only (no brand filter). BODY-SOURCE SPLIT baked into the prompt: pec-send-email.cjs builds the wrapped HTML but never stores it, so prompt 36 adds pec_email_log.body_html (migration 2026-07-20_email_log_body.sql, additive/idempotent) and captures it on send going forward; drip/blast bodies already live in pec_drip_sends.body (join resend_id = provider_id) so they are read from the ledger; the 24 historical rows show an honest "body not captured" note. Preflight items in the prompt: audit ALL email send paths write pec_email_log (checked list: pec-notify-costing-sendback + any pec-webhook-* that emails; Supabase auth reset emails are out of scope), and a Cowork/Dylan check that the Resend webhook is configured (RESEND_WEBHOOK_SECRET set + open/click tracking enabled in the Resend dashboard) so opens/clicks actually flow.
+
+Why: Dylan's two-item request 2026-07-20; scoped by Cowork.
+Files touched: claude-code-prompt-36-email-log.md (new, repo root), PROJECT-LOG.md (this entry). Delivered to Dylan in chat: zapier-meta-leads-setup.md.
+Next steps: Dylan connects the Zap (guide delivered) and hands prompt 36 to Claude Code. When Claude Code ships prompt 36 it writes the migration; Cowork then applies 2026-07-20_email_log_body.sql, regenerates SCHEMA.md, and verifies the Resend webhook config.
+Handoff to Cowork: (activates when Claude Code ships prompt 36) apply the email_log_body migration to prod, regenerate SCHEMA.md, verify Resend delivery/open/click tracking is live.
+Handoff to Dylan: 1) git add + commit this log entry and claude-code-prompt-36-email-log.md (the Cowork cloud sandbox cannot git commit). 2) Wire the Meta Zap per zapier-meta-leads-setup.md. 3) Hand prompt 36 to Claude Code.
+
+---
+
+
 ## [2026-07-19 MST] Blasts + metrics: the manual blast tool and the drip/blast performance cards (prompt 35, Phase 3, ship set 2 of 2, PHASE 3 COMPLETE)
 By: Claude Code
 Changed: Ship set 2 of 2 for prompt 35 (Parts D-E; ship set 1 is the next entry down). Four commits: the blast drain engine + pec-blast-run (0bfbdc4), the compose wizard UI + contact-count fold + AI draft action (edc4f6a), the metrics cards (b2faf61), and this docs commit. No new migration: ship set 1's 2026-07-19_drip_phase3.sql already carried pec_blasts, blast_id, and the 'sending' status, so prod needs exactly ONE migration for all of Phase 3. SHIPS SAFE: blasts are gated by the same master switch (still 'false'); a confirmed blast with the switch off just queues and says so.

@@ -573,8 +573,34 @@ RLS: enabled · rows: 119
 PK: payment_id
 FK: payment_id → pec_payments.id
 
+### pec_blasts
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| name | text | no |  |
+| channel | text | no |  |
+| sms_body | text | yes |  |
+| email_subject | text | yes |  |
+| email_body | text | yes |  |
+| audience_filter | jsonb | no | '{}'::jsonb |
+| status | text | no | 'draft' |
+| total_queued | integer | no | 0 |
+| total_sent | integer | no | 0 |
+| total_failed | integer | no | 0 |
+| total_skipped | integer | no | 0 |
+| created_by | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+| confirmed_at | timestamptz | yes |  |
+| completed_at | timestamptz | yes |  |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+Note: manual blast header (Phase 3). channel CHECK in ('sms','email','both'); status CHECK in ('draft','confirmed','sending','done','canceled'). Recipients are materialized as pec_drip_sends rows with blast_id set (shared ledger). RLS staff-only via is_admin_staff(), no anon.
+
 ### pec_drip_campaigns
-RLS: enabled · rows: 1
+RLS: enabled · rows: 3
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -588,7 +614,7 @@ RLS: enabled · rows: 1
 | updated_at | timestamptz | no | now() |
 
 PK: id
-Note: kind CHECK in ('lead','estimate','invoice'); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded with one 'lead' campaign (dry_run). RLS: staff-only via is_admin_staff(), no anon.
+Note: kind CHECK in ('lead','estimate','invoice'); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded campaigns: lead (8-step taper, days 1,2,4,7,11,16,22,30), estimate (4 steps, days 1,3,7,14), invoice (4 steps, days 0,3,7,14). All dry_run. RLS staff-only.
 
 ### pec_drip_enrollments
 RLS: enabled · rows: 0
@@ -596,7 +622,7 @@ RLS: enabled · rows: 0
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
-| lead_id | uuid | no |  |
+| lead_id | uuid | yes |  |
 | campaign_id | uuid | no |  |
 | status | text | no | 'active' |
 | next_step_index | integer | no | 0 |
@@ -605,10 +631,12 @@ RLS: enabled · rows: 0
 | enrolled_at | timestamptz | no | now() |
 | stopped_at | timestamptz | yes |  |
 | updated_at | timestamptz | no | now() |
+| subject_type | text | no | 'lead' |
+| subject_id | uuid | no |  |
 
 PK: id
-FK: lead_id → leads.id; campaign_id → pec_drip_campaigns.id
-Note: status CHECK in ('active','stopped','completed'). PARTIAL UNIQUE index idx_pec_drip_enroll_one_active on (lead_id) WHERE status='active' (one active enrollment per lead). Index idx_pec_drip_enroll_due on (status, next_send_at) for the runner. RLS staff-only.
+FK: lead_id → leads.id (nullable since Phase 3); campaign_id → pec_drip_campaigns.id
+Note: subject_type CHECK in ('lead','job'); subject_id is polymorphic (no FK). For subject_type='lead', lead_id stays populated and equals subject_id (CHECK chk_pec_drip_enroll_lead_link; the contact counter + Quo STOP join on lead_id). PARTIAL UNIQUE idx_pec_drip_enroll_one_active_subj on (subject_type, subject_id, campaign_id) WHERE status='active' (replaced the Phase 2 one-active-per-lead index). Index idx_pec_drip_enroll_due on (status, next_send_at). RLS staff-only.
 
 ### pec_drip_sends
 RLS: enabled · rows: 0
@@ -616,9 +644,9 @@ RLS: enabled · rows: 0
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
-| enrollment_id | uuid | no |  |
-| lead_id | uuid | no |  |
-| campaign_id | uuid | no |  |
+| enrollment_id | uuid | yes |  |
+| lead_id | uuid | yes |  |
+| campaign_id | uuid | yes |  |
 | step_index | integer | no |  |
 | channel | text | no |  |
 | status | text | no |  |
@@ -629,13 +657,16 @@ RLS: enabled · rows: 0
 | provider_id | text | yes |  |
 | error_message | text | yes |  |
 | created_at | timestamptz | no | now() |
+| subject_type | text | yes |  |
+| subject_id | uuid | yes |  |
+| blast_id | uuid | yes |  |
 
 PK: id
-FK: enrollment_id → pec_drip_enrollments.id; lead_id → leads.id; campaign_id → pec_drip_campaigns.id
-Note: channel CHECK in ('sms','email'); status CHECK in ('queued','sent','failed','skipped','dry_run'). The send ledger AND the 4th source for the Phase 1 times-contacted count (status='sent' only). RLS staff-only.
+FK: enrollment_id → pec_drip_enrollments.id; lead_id → leads.id; campaign_id → pec_drip_campaigns.id; blast_id → pec_blasts.id (on delete set null)
+Note: the send ledger for BOTH drips and blasts, and the 4th source for the Phase 1 times-contacted count (status='sent' only). channel CHECK in ('sms','email'); status CHECK pec_drip_sends_status_check in ('queued','sending','sent','failed','skipped','dry_run'); subject_type CHECK in ('lead','job','customer'). CHECK chk_pec_drip_sends_origin: enrollment_id IS NOT NULL OR blast_id IS NOT NULL (every row belongs to a drip enrollment or a blast). Drip rows keep enrollment_id/campaign_id/lead_id; blast rows have those null, blast_id set, step_index 0. Indexes: idx_pec_drip_sends_lead (lead_id, status), idx_pec_drip_sends_enrollment, idx_pec_drip_sends_blast (blast_id, status) WHERE blast_id IS NOT NULL, idx_pec_drip_sends_subject (subject_type, subject_id). RLS staff-only.
 
 ### pec_drip_steps
-RLS: enabled · rows: 8
+RLS: enabled · rows: 16
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -650,7 +681,7 @@ RLS: enabled · rows: 8
 
 PK: id
 FK: campaign_id → pec_drip_campaigns.id
-Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). Lead campaign seeded with 8 steps, day_offset 1,2,4,7,11,16,22,30. RLS staff-only.
+Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. 16 rows across the 3 campaigns. RLS staff-only.
 
 ### pec_email_log
 RLS: enabled · rows: 24
