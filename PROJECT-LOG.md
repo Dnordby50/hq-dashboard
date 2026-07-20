@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-20 MST] Email Log: global view, customer/job embeds, full-body capture (prompt 36)
+By: Claude Code
+Changed: Shipped prompt 36 in five commits: the body_html migration (written, NOT applied), the sender body capture, the global Email Log view, the two record embeds, and docs. (1) `supabase/migrations/2026-07-20_email_log_body.sql` adds `pec_email_log.body_html text` (additive, idempotent, verify query at the bottom; goes to Cowork to apply). (2) `pec-send-email.cjs` now writes the final `wrapInChrome()` HTML (the exact payload POSTed to Resend) into the success-path log row; `logRow` gained a one-shot retry that drops `body_html` if the insert fails, so the function is safe to deploy BEFORE the migration lands without losing log rows (best-effort contract intact; failed sends log with a null body, per spec). (3) New top-level "Email Log" nav item under Sales next to Messages, all-staff like Messages (no pec-role-admin class; RLS `is_admin_staff()` is the real boundary). `renderEmailLog` lists `pec_email_log` newest-first, 200 rows + Load more (fetches limit+1 so the button only shows when there is more), with a customer search (matches `to_email` ilike AND customer names resolved to ids in a separate query, because `customer_id` has no FK so PostgREST cannot embed customers), type/status selects, and native date inputs anchored to Phoenix time (fixed -07:00). (4) Row click opens a `pecModalRoot` modal (new wider `.pec-modal-email-log` modifier, 720px) with all metadata plus the body. BODY-SOURCE SPLIT: `body_html` renders inside a sandboxed `srcdoc` iframe (sandbox="", no scripts/no same-origin, so customer HTML can never touch the app shell); drip/blast rows fetch `pec_drip_sends.body` via `provider_id = resend_id` (fallback: same subject on the email channel, nearest `created_at` to the row's `sent_at`, for failed sends with no provider id) and render as preformatted text since the ledger stores the pre-chrome plain body; anything else shows "Body not captured (sent before email-body logging was added)". The 24 historical prod rows all show that note honestly; no backfill, by decision. (5) An "Emails" card at the bottom of the customer detail page (by customer_id) and the job detail details tab (by job_id), read-only, capped 100, using the SAME shared helpers (`emailLogTableHtml` / `wireEmailLogRows` / `openEmailLogDetail`) so the three surfaces cannot drift.
+
+How it works / why it degrades safely: supabase-js does not throw on a missing column, and `select('*')` only returns columns that exist, so before the migration is applied `r.body_html` is simply undefined and every pre-capture row falls through to the not-captured note. Deploy order is safe in both directions.
+
+"Every email" audit (preflight): the paths that write pec_email_log are pec-send-email.cjs (template + compose), the drip runner, and the blast drain (_pec-drip.cjs, template_key 'drip'/'blast'). Three Resend senders do NOT log, and all three are internal office alerts to OFFICE_NOTIFY_EMAIL, not customer emails: pec-invoice-intent.cjs (customer chose a pay method), pec-public-estimate.cjs notifyOffice (accept/change/decline), and pec-stripe-webhook.cjs (ACH failure). Left unlogged on purpose and listed as known gaps in the features.json entry. Supabase auth emails (password resets) are also not logged; out of scope per the prompt.
+
+Why: Dylan wants one place to answer "what did we send this customer" and to read exactly what went out (Cowork scoping, 2026-07-20, decisions locked in claude-code-prompt-36-email-log.md).
+Files touched: supabase/migrations/2026-07-20_email_log_body.sql (new), netlify/functions/pec-send-email.cjs, index.html, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: Cowork applies the migration and verifies the Resend webhook config (below). Until open/click tracking is confirmed in the Resend dashboard, rows will simply stop at "delivered"; the column renders correctly either way.
+Handoff to Cowork: see the section below.
+Handoff to Dylan: None (Cowork covers the manual steps).
+
+## Handoff to Cowork
+1. Apply `supabase/migrations/2026-07-20_email_log_body.sql` to the prod Supabase project ("HQ Dashboard", zdfpzmmrgotynrwkeakd) and run the verify query at the bottom of the file (expected: 1 row, body_html / text / YES).
+2. Regenerate SCHEMA.md from the live schema (per standing rule 9) so pec_email_log shows the new column.
+3. Verify the Resend delivery plumbing end to end: RESEND_WEBHOOK_SECRET is set in Netlify env, the webhook endpoint is configured in the Resend dashboard pointing at /.netlify/functions/pec-webhook-resend, and open + click tracking are enabled on the sending domain. If tracking is off, statuses stop at "delivered"; the UI needs no change once it is enabled.
+
+---
+
 ## [2026-07-20 MST] Cowork: scoped Email Log + found the Meta/Zapier intake already exists (prompt 36 written)
 By: Cowork
 Changed: No repo code. (1) Wrote claude-code-prompt-36-email-log.md to the repo root and delivered it to Dylan. (2) Delivered zapier-meta-leads-setup.md, a config recipe (not a build) for connecting Meta Lead Ads to the existing intake endpoint. Scoped Dylan's two asks ("a place to see every email sent to a customer" and "a place for Zapier to send Meta leads to") through two rounds of multiple-choice questions.
