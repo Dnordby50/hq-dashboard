@@ -15172,11 +15172,260 @@ function settingsTabBar(active) {
     <button class="pec-btn ${active === 'general' ? 'primary' : 'ghost'} sm" data-settings-tab="general">General</button>
     <button class="pec-btn ${active === 'users' ? 'primary' : 'ghost'} sm" data-settings-tab="users">Users</button>
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
+    <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
     <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
 }
 function wireSettingsTabs(root) {
   root.querySelectorAll('[data-settings-tab]').forEach(b => b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); }));
+}
+
+// Settings > Appointments (prompt 37): per-member Google Calendar connect
+// plus the booking-confirmation / reminder rules editor. Reached only
+// through renderSettings, which already gates on the admin role; the DB-side
+// boundaries are the default-deny token vault and the admin-write RLS on
+// the rules table.
+async function renderSettingsAppointments() {
+  const root = $('pecViewRoot');
+  const [rosterRes, rulesRes] = await withFreshSession(() => Promise.all([
+    supabase.from('pec_sales_team_members').select('*').order('name'),
+    supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
+  ]), { label: 'settings-appointments' });
+  const members = (rosterRes.data || []);
+  const rules = (rulesRes.error ? [] : rulesRes.data || []);
+
+  const whenLabel = (r) => {
+    if (r.on_book) return 'On booking';
+    const m = Number(r.offset_minutes) || 0;
+    if (m % 1440 === 0 && m >= 1440) { const d = m / 1440; return `${d} day${d === 1 ? '' : 's'} before`; }
+    if (m % 60 === 0 && m >= 60) { const h = m / 60; return `${h} hour${h === 1 ? '' : 's'} before`; }
+    return `${m} min before`;
+  };
+  const typeLabel = (k) => k ? apptTypeInfo(k).label : 'All types';
+
+  root.innerHTML = `
+    ${settingsTabBar('appointments')}
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">Google Calendar sync</h3>
+        <button class="pec-btn ghost sm" id="apptGoogleRefresh">Refresh</button>
+      </div>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Each salesperson connects their own Google account. Connecting creates a calendar named
+        "TopCoat" in that account: TopCoat appointments appear there, and events added to it show
+        up here within about 15 minutes. Personal calendars are never read or written.
+      </div>
+      ${members.length ? members.map(m => `
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--rd-line,var(--border))">
+          <span class="dot" style="width:9px;height:9px;border-radius:50%;background:${esc(apptMemberColor(members, m.id))};flex:none"></span>
+          <strong style="flex:1">${esc(m.name)}${m.active === false ? ' <span style="color:var(--muted);font-weight:400">(inactive)</span>' : ''}</strong>
+          ${m.google_connected
+            ? `<span style="font-size:.76rem;color:var(--muted)">Connected as ${esc(m.google_email || 'unknown')}${m.google_connected_at ? ' · ' + esc(new Date(m.google_connected_at).toLocaleDateString()) : ''}</span>
+               <button class="pec-btn ghost sm danger" data-gdisc="${esc(m.id)}">Disconnect</button>`
+            : `<span style="font-size:.76rem;color:var(--muted)">Not connected</span>
+               <button class="pec-btn sm" data-gconn="${esc(m.id)}">Connect Google</button>`}
+        </div>`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
+    </div>
+
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">Booking confirmations &amp; reminders</h3>
+        <button class="pec-btn primary sm" id="apptRuleAdd">+ Add rule</button>
+      </div>
+      ${rulesRes.error ? `<div class="pec-empty">Reminder rules are not available yet: ${esc(rulesRes.error.message)} (has the appointments migration been applied?)</div>` : `
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        Customer rules send by text/email with consent checked at send time (texts only 8am to 8pm).
+        Salesperson rules show in the notification bell. Message tokens:
+        <code>{customer_first}</code> <code>{appt_date}</code> <code>{appt_time}</code> <code>{sales_name}</code>.
+      </div>
+      <table class="pec-table">
+        <thead><tr><th>On</th><th>Who</th><th>How</th><th>When</th><th>Type</th><th>Message</th><th></th></tr></thead>
+        <tbody>
+          ${rules.map(r => `
+            <tr>
+              <td>${r.enabled ? 'On' : '<span style="color:var(--muted)">Off</span>'}</td>
+              <td>${esc(titleCaseValue(r.audience))}</td>
+              <td>${esc(r.channel === 'in_app' ? 'In-app' : r.channel === 'both' ? 'Text + email' : r.channel.toUpperCase())}</td>
+              <td>${esc(whenLabel(r))}</td>
+              <td>${esc(typeLabel(r.appt_type))}</td>
+              <td style="max-width:340px"><span style="font-size:.76rem;color:var(--muted);display:inline-block;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.message_template || '')}">${esc(r.message_template || '(no message)')}</span></td>
+              <td><button class="pec-btn sm ghost" data-edit-rule="${esc(r.id)}">Edit</button></td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="7" class="pec-empty">No rules yet. Add one to send booking confirmations or reminders.</td></tr>'}
+        </tbody>
+      </table>`}
+    </div>`;
+
+  wireSettingsTabs(root);
+  $('apptGoogleRefresh').addEventListener('click', () => renderSettingsAppointments());
+
+  // Connect: mint the consent URL through the authenticated start endpoint,
+  // then open it in a new tab (the callback page tells them to come back).
+  root.querySelectorAll('[data-gconn]').forEach(btn => btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'Opening…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/.netlify/functions/pec-google-oauth-start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ sales_member_id: btn.dataset.gconn }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || `Start failed (${res.status})`);
+      window.open(out.url, '_blank', 'noopener');
+      showToast('Finish the Google sign-in in the new tab, then click Refresh here.', { ttl: 6000 });
+    } catch (err) {
+      showToast('Could not start the Google connection: ' + (err.message || err), { ttl: 7000 });
+    }
+    btn.disabled = false; btn.textContent = 'Connect Google';
+  }));
+
+  root.querySelectorAll('[data-gdisc]').forEach(btn => btn.addEventListener('click', async () => {
+    const m = members.find(x => x.id === btn.dataset.gdisc);
+    if (!confirm(`Disconnect Google for ${m ? m.name : 'this member'}? Their TopCoat calendar stays in their Google account, but syncing stops until they reconnect.`)) return;
+    btn.disabled = true; btn.textContent = 'Disconnecting…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/.netlify/functions/pec-google-disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ sales_member_id: btn.dataset.gdisc }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.ok) throw new Error(out.error || `Disconnect failed (${res.status})`);
+      showToast('Disconnected', { ttl: 2500 });
+      renderSettingsAppointments();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Disconnect';
+      showToast('Could not disconnect: ' + (err.message || err), { ttl: 7000 });
+    }
+  }));
+
+  const openRuleModal = (rule) => openApptRuleModal(rule, () => renderSettingsAppointments());
+  $('apptRuleAdd').addEventListener('click', () => openRuleModal(null));
+  root.querySelectorAll('[data-edit-rule]').forEach(btn => btn.addEventListener('click', () => {
+    openRuleModal(rules.find(r => r.id === btn.dataset.editRule) || null);
+  }));
+}
+
+// Create/edit one reminder rule. The channel options follow the audience
+// (customers get sms/email/both; salespeople only have the in-app bell, the
+// roster has no contact columns), and the offset is entered as an amount +
+// unit but stored flat in offset_minutes.
+function openApptRuleModal(rule, onDone) {
+  const r = rule || {};
+  const isNew = !rule;
+  const off = Number(r.offset_minutes) || 1440;
+  const unit = off % 1440 === 0 ? 'days' : off % 60 === 0 ? 'hours' : 'minutes';
+  const amount = unit === 'days' ? off / 1440 : unit === 'hours' ? off / 60 : off;
+  openModal(`
+    <h3>${isNew ? 'New reminder rule' : 'Edit reminder rule'}</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Who gets it</label>
+        <select id="arAudience">
+          <option value="customer"${(r.audience || 'customer') === 'customer' ? ' selected' : ''}>Customer</option>
+          <option value="salesperson"${r.audience === 'salesperson' ? ' selected' : ''}>Salesperson (in-app)</option>
+        </select></div>
+      <div class="pec-field"><label>How</label><select id="arChannel"></select></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>When</label>
+        <select id="arWhen">
+          <option value="on_book"${r.on_book ? ' selected' : ''}>Right when it is booked</option>
+          <option value="before"${!r.on_book ? ' selected' : ''}>Before the appointment</option>
+        </select></div>
+      <div class="pec-field" id="arOffsetWrap" style="${r.on_book ? 'display:none' : ''}">
+        <label>How long before</label>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="arAmount" min="1" step="1" value="${esc(String(amount))}" style="width:90px">
+          <select id="arUnit" style="flex:1">
+            <option value="minutes"${unit === 'minutes' ? ' selected' : ''}>minutes</option>
+            <option value="hours"${unit === 'hours' ? ' selected' : ''}>hours</option>
+            <option value="days"${unit === 'days' ? ' selected' : ''}>days</option>
+          </select>
+        </div></div>
+    </div>
+    <div class="pec-field"><label>Appointment type</label>
+      <select id="arType"><option value="">All types</option>${APPT_TYPES.map(t => `<option value="${esc(t.key)}"${r.appt_type === t.key ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
+    <div class="pec-field"><label>Message</label>
+      <textarea id="arTemplate" rows="4">${esc(r.message_template || 'Hi {customer_first}, a reminder from Prescott Epoxy Company: {sales_name} will see you on {appt_date} at {appt_time}. Reply here if anything changes.')}</textarea>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Tokens: {customer_first} {appt_date} {appt_time} {sales_name}. Texts get "Reply STOP to opt out." added automatically. No em dashes in customer messages (they are converted to commas).</div></div>
+    <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="arEnabled" style="width:auto" ${r.enabled === false ? '' : 'checked'}> Enabled</label>
+    <div class="prod-msg-err" id="arErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions" style="justify-content:space-between">
+      <div>${isNew ? '' : '<button type="button" class="pec-btn ghost sm danger" id="arDelete">Delete</button>'}</div>
+      <div style="display:flex;gap:8px">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="arSave">${isNew ? 'Add rule' : 'Save'}</button>
+      </div>
+    </div>
+  `, { onMount: modal => {
+    const errEl = modal.querySelector('#arErr');
+    const audSel = modal.querySelector('#arAudience');
+    const chanSel = modal.querySelector('#arChannel');
+    const paintChannels = () => {
+      const opts = audSel.value === 'salesperson'
+        ? [['in_app', 'In-app bell']]
+        : [['both', 'Text + email'], ['sms', 'Text only'], ['email', 'Email only']];
+      const cur = r.channel || opts[0][0];
+      chanSel.innerHTML = opts.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('');
+    };
+    paintChannels();
+    audSel.addEventListener('change', paintChannels);
+    modal.querySelector('#arWhen').addEventListener('change', e => {
+      modal.querySelector('#arOffsetWrap').style.display = e.target.value === 'on_book' ? 'none' : '';
+    });
+
+    modal.querySelector('#arSave').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const onBook = modal.querySelector('#arWhen').value === 'on_book';
+      const amountVal = Math.max(1, Math.round(Number(modal.querySelector('#arAmount').value) || 0));
+      const unitVal = modal.querySelector('#arUnit').value;
+      const offsetMinutes = onBook ? 0 : amountVal * (unitVal === 'days' ? 1440 : unitVal === 'hours' ? 60 : 1);
+      const template = (modal.querySelector('#arTemplate').value || '').trim();
+      if (!template) { errEl.textContent = 'Write the message.'; return; }
+      if (!onBook && !offsetMinutes) { errEl.textContent = 'Set how long before the appointment.'; return; }
+      const row = {
+        enabled: modal.querySelector('#arEnabled').checked,
+        audience: audSel.value,
+        channel: chanSel.value,
+        on_book: onBook,
+        offset_minutes: offsetMinutes,
+        appt_type: modal.querySelector('#arType').value || null,
+        message_template: template,
+      };
+      const btn = modal.querySelector('#arSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const res = isNew
+          ? await withFreshWrite(() => supabase.from('pec_appointment_reminder_rules').insert(row), { label: 'appt-rule-insert' })
+          : await withFreshWriteRetry(() => supabase.from('pec_appointment_reminder_rules').update(row).eq('id', r.id), { label: 'appt-rule-update' });
+        if (res.error) throw res.error;
+        closeModal();
+        showToast(isNew ? 'Rule added' : 'Rule saved', { ttl: 2000 });
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = isNew ? 'Add rule' : 'Save';
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+
+    const del = modal.querySelector('#arDelete');
+    if (del) del.addEventListener('click', async () => {
+      if (!confirm('Delete this rule? Already-sent reminders are unaffected; nothing new will send from it.')) return;
+      del.disabled = true;
+      try {
+        const res = await withFreshWrite(() => supabase.from('pec_appointment_reminder_rules').delete().eq('id', r.id), { label: 'appt-rule-delete' });
+        if (res.error) throw res.error;
+        closeModal();
+        showToast('Rule deleted', { ttl: 2000 });
+        if (typeof onDone === 'function') onDone();
+      } catch (err) {
+        del.disabled = false;
+        errEl.textContent = 'Could not delete: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
 }
 
 async function renderSettings() {
@@ -15187,6 +15436,7 @@ async function renderSettings() {
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
   if (state.settingsTab === 'users') return renderSettingsUsers();
   if (state.settingsTab === 'email') return renderSettingsEmail();
+  if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
