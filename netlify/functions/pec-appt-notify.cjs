@@ -6,7 +6,7 @@
 // with the service role inside runApptReminders. Always safe to re-kick: the
 // reminder-sends ledger's unique index makes every leg exactly-once.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb } = require('./_pec-supabase.cjs');
 const { runApptReminders } = require('./_pec-appt.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
