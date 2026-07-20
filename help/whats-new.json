@@ -1,5 +1,16 @@
 [
   {
+    "id": "email-log",
+    "date": "2026-07-20",
+    "title": "New Email Log: see every email the system has sent",
+    "summary": "There is a new Email Log page under Sales, next to Messages. It lists every email sent from the system, newest first, with who it went to, what kind of email it was, and its delivery status (delivered, opened, clicked, or bounced). Search by customer name or email address, or filter by type, status, and date. Click any row to read the exact email that went out. Emails sent before today did not have their body saved, so those rows say so; everything from now on is captured in full. The same email history also appears at the bottom of each customer page and job page.",
+    "howto": [
+      "Open Email Log under Sales in the left menu.",
+      "Type a customer name or email in the search box, or use the type, status, and date filters.",
+      "Click any row to read the full email and its delivery detail."
+    ]
+  },
+  {
     "id": "manual-blast-tool",
     "date": "2026-07-19",
     "title": "Send one message to many people with the new blast tool",

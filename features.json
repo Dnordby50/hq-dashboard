@@ -944,6 +944,30 @@
       "since": "2026-05"
     },
     {
+      "name": "Email log",
+      "area": "dashboard",
+      "description": "A top-level Email Log view (all staff, like Messages) listing every email the system sent from pec_email_log, newest first, with a customer name/address search, type and status filters, a date range, and delivery detail (opens, clicks, bounces from the Resend webhook). Clicking a row opens the full email: transactional sends store their final wrapped HTML in pec_email_log.body_html going forward (rendered in a sandboxed iframe), drip and blast rows read their body from the pec_drip_sends ledger (provider_id = resend_id), and rows that predate body capture show a clear not-captured note. The same rows embed read-only as an Emails card at the bottom of the customer detail and job detail pages. PEC only, no brand filter. Known gaps: internal office alert emails (invoice payment-intent, estimate accept/decline, Stripe ACH-failure) and Supabase auth emails (password resets) do not write pec_email_log.",
+      "code": {
+        "indexHtml": [
+          "renderEmailLog",
+          "emailLogTableHtml",
+          "openEmailLogDetail",
+          "mountRecordEmailLog",
+          "recordEmailsCardHtml",
+          "wireEmailLogRows"
+        ],
+        "netlifyFunctions": [
+          "pec-send-email.cjs",
+          "pec-webhook-resend.cjs"
+        ]
+      },
+      "tables": [
+        "pec_email_log",
+        "pec_drip_sends"
+      ],
+      "since": "2026-07"
+    },
+    {
       "name": "Quo / OpenPhone integration",
       "area": "integrations",
       "description": "Integration with the office phone (Quo/OpenPhone) powering two-way SMS from customer profiles and jobs, a Text invoice button that sends the pay link, STOP-based opt-out enforcement, and automatic call logging with AI summaries, next steps, and full transcripts on customer profiles and lead timelines.",
