@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-21 MST] Cowork: applied Routemize intake migration + the missing webhook_ingest_log migration to PROD, regenerated SCHEMA.md (prompt 43 handoff, tasks 1-3 done; 4-5 blocked on deploy)
+By: Cowork
+Changed: No repo code. Executed the prompt 43 Cowork handoff (Claude Code commit 332cdd6, local, not yet pushed).
+
+TASK 1 (routemize source migration): applied supabase/migrations/2026-07-21_appointment_routemize_source.sql to PROD ("HQ Dashboard", zdfpzmmrgotynrwkeakd) via MCP apply_migration (name appointment_routemize_source). PRE-CHECK: routemize_appt_id column absent; source check was CHECK ((source = ANY (ARRAY['topcoat'::text, 'google'::text]))); pec_appointments rows = 0. VERIFY (post-apply): routemize_appt_id text column exists; partial unique index = CREATE UNIQUE INDEX uq_pec_appointments_routemize_appt ON public.pec_appointments USING btree (routemize_appt_id) WHERE (routemize_appt_id IS NOT NULL); source constraint now = CHECK ((source = ANY (ARRAY['topcoat'::text, 'google'::text, 'routemize'::text]))). Matches the file's acceptance block exactly.
+
+TASK 2 (missing webhook log migration): applied supabase/migrations/2026-06-19_webhook_ingest_log.sql (name webhook_ingest_log). PRE-CHECK confirmed the surprise finding: to_regclass('public.pec_webhook_ingest_log') was NULL (the table never existed; the 2026-06-19 migration had never been applied, so all intake webhook logging had been no-oping). VERIFY: table exists, count = 0, RLS enabled, admin-read policy pec_webhook_ingest_log_admin_read present. Intake logging (endpoint label 'appt-intake') and the Sync Health view now have a table to write/read.
+
+TASK 3 (SCHEMA.md): regenerated from the live schema. pec_appointments: added the routemize_appt_id row and updated the Note (source check topcoat/google/routemize; unique (routemize_appt_id) where not null). Added a new pec_webhook_ingest_log section (12 columns, both indexes, admin-read policy note) in alphabetical position (after pec_user_todos, before pec_whats_new_acks). Header already dated Generated 2026-07-21.
+
+TASKS 4 (Routemize Zaps) and 5 (end-to-end smoke test): BLOCKED, not started. Blockers: (a) Dylan has NOT pushed 332cdd6, so /.netlify/functions/pec-appt-intake is not deployed yet; (b) need the PEC_WEBHOOK_SECRET value for the x-webhook-secret Zap header (Dylan provides once); (c) Zap building needs Zapier + Routemize access; (d) the smoke test sends a REAL confirmation SMS/email (STOP rule: customer communication) and needs a real test phone with sms_consent, so it needs Dylan's go-ahead + a test number. Smoke-test baseline captured: pec_webhook_ingest_log currently 0 rows.
+
+Why: prompt 43 Cowork handoff (DripJobs retirement; Routemize becomes the booking front end and pec_appointments the system of record).
+Files touched: SCHEMA.md (pec_appointments section + new pec_webhook_ingest_log section), PROJECT-LOG.md (this entry). Prod DB: migrations appointment_routemize_source + webhook_ingest_log applied.
+Next steps: Dylan pushes + deploys, provides PEC_WEBHOOK_SECRET; then Cowork builds the 4 Zaps and runs the smoke test.
+Handoff to Dylan: (1) git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). (2) git push to deploy the intake endpoint. (3) Send me the PEC_WEBHOOK_SECRET value and confirm a real test phone number I can book against, and I will finish tasks 4-5.
+
+---
+
+
 ## [2026-07-21 MST] Drip go-live prep (prompt 42): human approval gate + Drip Approvals queue + Settings > Drips + lead-card drip section
 By: Claude Code
 

@@ -508,10 +508,11 @@ RLS: enabled · rows: 0
 | created_by | uuid | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| routemize_appt_id | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
-Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google. Unique (google_event_id) where not null. notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google).
+Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google / routemize. Unique (google_event_id) where not null; unique (routemize_appt_id) where not null (the Routemize intake idempotency + lookup key; routemize_appt_id = external Routemize appointment id, set when source = 'routemize'). notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google).
 
 ### pec_bonus_payouts
 RLS: enabled · rows: 16
@@ -1462,6 +1463,28 @@ RLS: enabled · rows: 0
 
 PK: id
 FK: admin_user_id → admin_users.id
+
+### pec_webhook_ingest_log
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| endpoint | text | yes |  |
+| deal_id | text | yes |  |
+| customer_name | text | yes |  |
+| company | text | yes |  |
+| outcome | text | no |  |
+| status_code | integer | yes |  |
+| message | text | yes |  |
+| payload | jsonb | yes |  |
+| public_job_id | uuid | yes |  |
+| prod_job_id | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+Indexes: (created_at desc); (deal_id)
+Note: One row per inbound webhook attempt, from the DripJobs proposal/appointment webhooks and the Routemize appt-intake (endpoint label 'appt-intake'). outcome: ok / rejected / error / bridge_failed. Written by the service role (bypasses RLS); admin-only read via policy pec_webhook_ingest_log_admin_read (public.is_admin_staff()). Powers the Sync Health view. Applied to prod 2026-07-21 (the 2026-06-19 migration had never been applied).
 
 ### pec_whats_new_acks
 RLS: enabled · rows: 236
