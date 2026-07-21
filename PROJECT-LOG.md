@@ -4,6 +4,20 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-21 MST] Invoicing: park auto-completed jobs that still have future scheduled days out of AR (prompt 40, commit 1)
+By: Claude Code
+Changed: renderInvoicing (index.html) only. Jobs sitting in "Completed work, not paid in full" that (1) still have a schedule day strictly after today AND (2) were AUTO-completed (jobs.status_manual_at is null) now move to a new collapsed "Completed, but still on the schedule" section showing customer, address, balance, salesperson, and the next scheduled day ("next day: Aug 3"). They no longer count in Total AR or the AR job count. Jobs a human explicitly marked complete stay in AR even with a future day (respect manual completions). No stored status is touched; this is display-only relief for the backlog the auto-complete rule created (root-cause fix is commit 2, which is going-forward only).
+
+HOW THE BRIDGE WORKS: pec_job_ar rows (public.jobs) reach their schedule days (pec_prod_job_schedule_days -> pec_prod_jobs) via dripjobs_deal_id first, then the normalized name+address fallback (_nameAddrKey), the exact two bridges runScheduleStatusSync uses, and each prod row contributes install_date + its day rows with same-key rows aggregated, so the span here matches what deriveJobStatus and the DB trigger see. Reads are batched: the existing renderInvoicing Promise.all now also pulls prod row identity fields and ALL schedule days (one read each, never per-row), and rows carry sched_last / sched_next for commit 2 to reuse.
+
+WHY status_manual_at is read from jobs, not the view (the prompt offered either): pec_job_ar (2026-07-10_ar_exclude_archived.sql) does not expose status_manual_at. Extending the view would have been cleaner long-term, but between the code deploy and Cowork applying the migration, select('*') would return no such field and EVERY parked candidate would look auto-completed, wrongly parking manual completions. Instead: one batched jobs select over just the parked candidates (usually a handful), which works the moment the deploy lands, keeps commit 1 pure client, and fails safe -- if that read errors, nothing is parked, so AR can only over-show, never hide money.
+
+Why: Dylan's report: jobs with days still on the calendar showed as completed in AR, cluttering it. Root cause: the status machine auto-completes the day after the last scheduled day and 'completed' never re-evaluates, so adding a day back leaves a completed job carrying a future day. Decision (prompt 40): manual completion becomes the source of truth; commit 1 is the display-side backlog cleanup.
+Files touched: index.html (renderInvoicing), PROJECT-LOG.md.
+Next steps: commit 2 (remove schedule auto-completion client + trigger, add the Ready to invoice safety net).
+
+---
+
 ## [2026-07-21 MST] Cowork: scoped manual-completion-as-source-of-truth + Invoicing AR cleanup (prompt 40 written)
 By: Cowork
 Changed: No repo code touched by Cowork. Wrote claude-code-prompt-40-invoicing-completion.md to the repo root and delivered it to Dylan. Diagnosed the "completed jobs still on the schedule clutter AR" bug and scoped the fix through 12 multiple-choice questions.

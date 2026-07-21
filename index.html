@@ -8796,10 +8796,14 @@ async function renderInvoicing() {
   try {
     res = await withFreshSession(() => Promise.all([
       supabase.from('pec_job_ar').select('*').eq('customer_company', 'prescott-epoxy'),
-      supabase.from('pec_prod_jobs').select('dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
+      // ALL prod rows (manual entries have no deal id and are matched by the
+      // name+address fallback below, same as runScheduleStatusSync).
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,install_date,customer_name,address'),
+      // One batched read of every schedule day; per-row queries are banned here.
+      supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
     ]), { label: 'renderInvoicing' });
-  } catch (e) { res = [{ error: e }, {}]; }
-  const [arRes, prodRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}]; }
+  const [arRes, prodRes, dayRes] = res;
   if (arRes.error) {
     const hint = /pec_job_ar/.test(arRes.error.message || '') ? ' (Apply the 2026-05-27_invoicing_ar.sql migration first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(arRes.error.message)}${hint}</div>`;
@@ -8807,20 +8811,69 @@ async function renderInvoicing() {
   }
   const installByDeal = {};
   (prodRes.data || []).forEach(p => { if (p.dripjobs_deal_id) installByDeal[p.dripjobs_deal_id] = p.install_date; });
-  const rows = (arRes.data || []).map(r => ({
-    ...r,
-    price: invNum(r.price),
-    paid_to_date: invNum(r.paid_to_date),
-    balance: invNum(r.balance_remaining),
-    deposit_amount: r.deposit_amount == null ? null : invNum(r.deposit_amount),
-    install_date: r.dripjobs_deal_id ? (installByDeal[r.dripjobs_deal_id] || null) : null,
-  }));
-  state.arRows = rows;
 
   const EPS = 0.005;
   const today = invToday();
 
-  const completed = rows.filter(r => r.status === 'completed' && r.balance > EPS)
+  // Schedule span per AR row, bridged the same two ways runScheduleStatusSync
+  // bridges (dripjobs_deal_id first; normalized name+address for manual prod
+  // rows with no deal id). Each prod row contributes its install_date plus its
+  // schedule days, and rows sharing a key aggregate, so the span matches what
+  // deriveJobStatus / the DB trigger see. Feeds sched_next (earliest day
+  // strictly after today) and sched_last (latest day) on each AR row.
+  const daysByProd = {};
+  for (const d of (dayRes && !dayRes.error && dayRes.data || [])) (daysByProd[d.job_id] ||= []).push(d.scheduled_date);
+  const schedByDeal = {}, schedByNA = {};
+  for (const p of (prodRes.data || [])) {
+    const ds = (daysByProd[p.id] || []).slice();
+    if (p.install_date) ds.push(p.install_date);
+    if (!ds.length) continue;
+    if (p.dripjobs_deal_id) (schedByDeal[p.dripjobs_deal_id] ||= []).push(...ds);
+    const naKey = _nameAddrKey(p.customer_name, p.address);
+    if (naKey) (schedByNA[naKey] ||= []).push(...ds);
+  }
+  const rows = (arRes.data || []).map(r => {
+    const sched = ((r.dripjobs_deal_id && schedByDeal[r.dripjobs_deal_id]) || schedByNA[_nameAddrKey(r.customer_name, r.address)] || []).slice().sort();
+    return {
+      ...r,
+      price: invNum(r.price),
+      paid_to_date: invNum(r.paid_to_date),
+      balance: invNum(r.balance_remaining),
+      deposit_amount: r.deposit_amount == null ? null : invNum(r.deposit_amount),
+      install_date: r.dripjobs_deal_id ? (installByDeal[r.dripjobs_deal_id] || null) : null,
+      sched_last: sched.length ? sched[sched.length - 1] : null,
+      sched_next: sched.find(d => d > today) || null,
+    };
+  });
+  state.arRows = rows;
+
+  const completedAll = rows.filter(r => r.status === 'completed' && r.balance > EPS);
+  // PARKED (Dylan 2026-07-21): an AUTO-completed job that still has a schedule
+  // day strictly after today is not really receivable yet -- the status machine
+  // completed it the day after its last day, then a day got added back
+  // (reschedule, later phase, callback) and 'completed' never re-evaluates. Pull
+  // those out of the completed bucket and Total AR into their own section. A
+  // job a human explicitly marked complete (status_manual_at set) stays in AR
+  // even with a future day: respect manual completions. pec_job_ar does not
+  // expose status_manual_at (view def 2026-07-10_ar_exclude_archived.sql), so
+  // one batched jobs read over just the candidates -- chosen over extending the
+  // view so this works the moment it deploys, with no migration ordering. If
+  // that read fails, park NOTHING (fail toward showing AR, never hiding it).
+  let parked = completedAll.filter(r => r.sched_next);
+  if (parked.length) {
+    try {
+      const mres = await withFreshSession(() => supabase.from('jobs').select('id,status_manual_at').in('id', parked.map(r => r.id)), { label: 'renderInvoicing:manualCheck' });
+      if (mres.error) { console.warn('[pec] parked manual-check read failed:', mres.error.message); parked = []; }
+      else {
+        const manual = new Set((mres.data || []).filter(j => j.status_manual_at).map(j => j.id));
+        parked = parked.filter(r => !manual.has(r.id));
+      }
+    } catch (e) { console.warn('[pec] parked manual-check skipped:', e); parked = []; }
+  }
+  const parkedIds = new Set(parked.map(r => r.id));
+  parked.sort((a, b) => (a.sched_next || '').localeCompare(b.sched_next || ''));
+
+  const completed = completedAll.filter(r => !parkedIds.has(r.id))
     .sort((a, b) => (a.completed_date || '').localeCompare(b.completed_date || ''));
   // A waived deposit (commercial / special case) counts as "deposit handled":
   // the job is NOT owed a deposit, so it drops out of signedNoDep and is treated
@@ -8963,6 +9016,15 @@ async function renderInvoicing() {
     <td style="white-space:nowrap">${payBtn(r)} ${viewBtn(r)}</td></tr>`).join('')
     || '<tr class="nohover"><td colspan="9" class="pec-empty">Nothing here. Nice.</td></tr>';
 
+  // "next day: Aug 3" -- why the job is parked, at a glance.
+  const invMonDay = d => { const x = invParse(d); return x ? `${MON[x.getUTCMonth()]} ${x.getUTCDate()}` : '—'; };
+  const parkedRows = parked.map(r => `<tr class="nohover">
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${r.customer_name ? esc(r.customer_name) : '&mdash;'}</button></td><td>${r.address ? esc(r.address) : '&mdash;'}</td>
+    <td><strong>${invUSD(r.balance)}</strong></td>
+    <td>${esc(r.salesperson) || '&mdash;'}</td>
+    <td>next day: ${esc(invMonDay(r.sched_next))}</td>
+    <td style="white-space:nowrap">${viewBtn(r)}</td></tr>`).join('');
+
   const signedRows = signedNoDep.map(r => `<tr class="nohover">
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${esc(r.customer_name || '—')}</button></td><td>${esc(r.address || '—')}</td>
     <td>${invUSD(r.price)}</td><td><strong>${invUSD(depositOwed(r))}</strong></td>
@@ -9001,6 +9063,13 @@ async function renderInvoicing() {
         <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Last invoiced</th><th>Salesperson</th><th>Completed</th><th></th></tr></thead>
         <tbody>${completedRows}</tbody></table></div>
     </details>
+
+    ${parked.length ? `<details class="pec-card pec-ar-sec">
+      <summary>Completed, but still on the schedule <span class="pec-ar-meta">${parked.length} job${parked.length === 1 ? '' : 's'} · ${invUSD(parked.reduce((s, r) => s + r.balance, 0))} on hold, not counted in AR</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Balance</th><th>Salesperson</th><th>Still scheduled</th><th></th></tr></thead>
+        <tbody>${parkedRows}</tbody></table></div>
+    </details>` : ''}
 
     <details class="pec-card pec-ar-sec" open>
       <summary>Signed proposal, no deposit collected <span class="pec-ar-meta">${signedNoDep.length} job${signedNoDep.length === 1 ? '' : 's'} · ${invUSD(pendingDeposits)} in pending deposits</span></summary>
