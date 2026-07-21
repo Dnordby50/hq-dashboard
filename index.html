@@ -23192,6 +23192,10 @@ function openScheduleModal(jobId) {
   const renderBody = (modal) => {
     const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
     const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
+    // Recomputed per render (not hoisted) so a modal left open across midnight
+    // moves the ring on the next repaint. isoDate keeps it in the app's local
+    // date logic, matching the cells' own iso values.
+    const todayIso = isoDate(new Date());
     const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     // Day numbers are CHRONOLOGICAL, not click order (matches openAddJobModal
     // and the save path below): adding an earlier day to an existing schedule
@@ -23233,7 +23237,7 @@ function openScheduleModal(jobId) {
           const iso = isoDate(d);
           const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
           const idx = idxFor(iso);
-          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
+          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''} ${iso===todayIso?'is-today':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
         }).join('')}
       </div>
       <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add/remove. Days are numbered by date; the earliest selected day is Day 1.</div>
@@ -23755,6 +23759,10 @@ function openAddJobModal() {
   const renderBody = (modal) => {
     const monthStart = startOfWeek(new Date(draft.pickerMonth.getFullYear(), draft.pickerMonth.getMonth(), 1));
     const days = Array.from({ length: 42 }, (_, i) => addDays(monthStart, i));
+    // Recomputed per render (not hoisted) so a modal left open across midnight
+    // moves the ring on the next repaint. isoDate keeps it in the app's local
+    // date logic, matching the cells' own iso values.
+    const todayIso = isoDate(new Date());
     const monthLabel = draft.pickerMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     const idxFor = (iso) => {
       const sorted = draft.selectedDates.slice().sort();
@@ -23772,7 +23780,7 @@ function openAddJobModal() {
           const iso = isoDate(d);
           const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
           const idx = idxFor(iso);
-          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
+          return `<div class="day-cell ${inMonth?'':'dim'} ${idx>0?'selected':''} ${iso===todayIso?'is-today':''}" data-pick="${iso}" data-idx="${idx>0?idx:''}">${d.getDate()}</div>`;
         }).join('')}
       </div>
       <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">${draft.selectedDates.length} day${draft.selectedDates.length===1?'':'s'} selected. Click days to add or remove. Multi-day jobs span all selected days on the calendar.</div>
@@ -27895,6 +27903,13 @@ if (portalToken) {
   .pec-day-grid .day-cell.dim { color:var(--muted); opacity:.5 }
   .pec-day-grid .day-cell.selected { background:var(--rd-accent, var(--accent)); color:#fff; font-weight:700 }
   .pec-day-grid .day-cell.selected::after { content: attr(data-idx); position:absolute; top:1px; right:3px; font-size:.55rem }
+  /* Today: an outline ring (border + inset shadow, no fill) so the current day
+     reads at a glance without competing with .selected's accent fill. On a cell
+     that is BOTH selected and today the accent ring would vanish into the
+     accent background, so it flips to a white inset ring (legible on the fill
+     in light and dark mode alike, since selected text is already white). */
+  .pec-day-grid .day-cell.is-today { border-color:var(--rd-accent, var(--accent)); box-shadow:inset 0 0 0 1px var(--rd-accent, var(--accent)) }
+  .pec-day-grid .day-cell.selected.is-today { box-shadow:inset 0 0 0 2px #fff }
   /* Job Costing full-bleed */
   .pec-fullbleed { padding: 0 !important; max-width: none !important }
   .pec-fullbleed .pec-card { border-radius:0; border-left:0; border-right:0 }
