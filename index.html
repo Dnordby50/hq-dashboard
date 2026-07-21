@@ -21703,7 +21703,7 @@ async function renderNextDay() {
     const removeBtn = (shared && isSecondRow(d)) ? `<button type="button" data-unsplit-day="${esc(d.id)}" title="Remove this second team; the other team's card stays" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">✕ Remove 2nd team</button>` : '';
     return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
         style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
-      <strong style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}
+      <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
       ${splitBtn || removeBtn ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${splitBtn}${removeBtn}</div>` : ''}
@@ -21907,6 +21907,21 @@ async function renderNextDay() {
       e.dataTransfer.effectAllowed = 'move';
     });
     card.addEventListener('dragend', () => { draggedDayId = null; draggedTaskId = null; });
+  });
+
+  // Clicking a job NAME opens the same read-only quick-look the Pending panel
+  // uses. data-open-pcard carries the pec_prod_jobs id (what openPendingJobCard
+  // looks up in state.prodJobs), NOT this row's schedule-day id. stopPropagation
+  // keeps a click from reaching the card's drag/drop machinery; a DRAG that
+  // starts on the name still moves the whole card (dragstart binds on
+  // .nextday-card above and a drag never fires click). Task cards are not jobs
+  // and carry no data-open-pcard, so they stay unclickable on purpose.
+  root.querySelectorAll('[data-open-pcard]').forEach(el => {
+    const open = () => openPendingJobCard(el.dataset.openPcard);
+    el.addEventListener('click', (e) => { e.stopPropagation(); open(); });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); open(); }
+    });
   });
 
   const clip = (s, n = 40) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 3) + '...' : s; };
@@ -27748,7 +27763,10 @@ if (portalToken) {
   .pec-sched-pending { display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:4px }
   .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:pointer; transition:border-color .12s, box-shadow .12s }
   .pec-sched-pcard:hover, .pec-sched-pcard:focus-visible { border-color:var(--accent, #D8531C); box-shadow:0 2px 10px rgba(8,10,18,.10); outline:none }
-  .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600 }
+  /* The whole pending card opens the quick-look; the NAME advertises it
+     (hover underline) so the affordance is discoverable without hunting. */
+  .pec-sched-pcard h4 { font-size:.85rem; margin:0 0 4px; font-weight:600; cursor:pointer }
+  .pec-sched-pcard h4:hover { text-decoration:underline }
   .pec-sched-pcard .meta { font-size:.7rem; color:var(--muted); margin-bottom:8px; line-height:1.4 }
   .pec-sched-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap }
   /* Trimmed min-width (was 200px, which forced the toolbar to wrap early);
@@ -27762,6 +27780,10 @@ if (portalToken) {
   .pec-sched-addmenu .pec-btn { justify-content:flex-start; text-align:left }
   /* Next Day board (grids moved out of inline so a media query can restructure) */
   .nextday-board { display:grid; grid-template-columns:1fr 240px; gap:16px; align-items:start }
+  /* Job name on a run-sheet card: clickable (opens the quick-look) while the
+     card body stays the drag surface, so the name needs its own affordance. */
+  .nextday-jobname { cursor:pointer }
+  .nextday-jobname:hover, .nextday-jobname:focus-visible { text-decoration:underline }
   .nextday-headrow { display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:8px; margin-bottom:6px; font-size:.7rem; text-transform:uppercase; letter-spacing:.5px; color:var(--rd-muted,#6b7280) }
   .nextday-crewrow { display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:8px; margin-bottom:8px; align-items:start }
   .nextday-crewname { font-weight:600; padding-top:10px }
