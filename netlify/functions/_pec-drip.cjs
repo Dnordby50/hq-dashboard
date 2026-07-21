@@ -53,9 +53,12 @@
 
 const RUN_CAP = 25;               // enrollments per run; taper is day-grained so backlog clears fast
 const MAX_SMS_LEN = 480;          // hard cap on AI SMS copy (~3 segments)
-const QUIET_START_HOUR = 8;       // America/Phoenix, fixed UTC-7 (no DST)
-const QUIET_END_HOUR = 20;
-const PHX_OFFSET_MS = 7 * 60 * 60 * 1000;
+const PHX_OFFSET_MS = 7 * 60 * 60 * 1000;   // America/Phoenix, fixed UTC-7 (no DST)
+// Quiet-hours defaults (prompt 42: the window is now settings-driven; these
+// apply when the settings rows are missing or unparseable). Minutes since
+// midnight Phoenix; days are JS getDay() numbers (0=Sun). Mon-Sat 8am-8pm.
+const DEFAULT_QUIET = { startMin: 8 * 60, endMin: 20 * 60, days: [1, 2, 3, 4, 5, 6] };
+const QUIET_DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const DRIP_BRAND = 'prescott-epoxy';   // leads are PEC-only today; matches pec_sms_senders/pec_email_senders keys
 const STOP_LINE = ' Reply STOP to opt out.';
 // Same base URL rule as pec-send-sms.cjs / pec-public-estimate.cjs, so drip
@@ -89,16 +92,64 @@ function phoneTail(raw) {
 }
 
 // Quiet hours in fixed-offset Phoenix time. Returns { inWindow, nextOpen }.
-// nextOpen is the next 08:00 Phoenix as a Date (only meaningful when
-// !inWindow).
-function quietHours(now) {
+// nextOpen is the next window open as a Date (only meaningful when
+// !inWindow). cfg is a parsed quiet config ({ startMin, endMin, days });
+// callers with a live DB get one from getDripConfig(sb) so the window is
+// adjustable from company Settings; the default keeps the pre-prompt-42
+// behavior for direct callers and tests.
+function quietHours(now, cfg = DEFAULT_QUIET) {
+  const days = (Array.isArray(cfg.days) && cfg.days.length) ? cfg.days : DEFAULT_QUIET.days;
   const phx = new Date(now.getTime() - PHX_OFFSET_MS);   // wall clock via UTC getters
-  const h = phx.getUTCHours();
-  const inWindow = h >= QUIET_START_HOUR && h < QUIET_END_HOUR;
+  const minOfDay = phx.getUTCHours() * 60 + phx.getUTCMinutes();
+  const inWindow = days.includes(phx.getUTCDay()) && minOfDay >= cfg.startMin && minOfDay < cfg.endMin;
   if (inWindow) return { inWindow, nextOpen: null };
-  const open = new Date(Date.UTC(phx.getUTCFullYear(), phx.getUTCMonth(), phx.getUTCDate(), QUIET_START_HOUR, 0, 0));
-  if (h >= QUIET_END_HOUR) open.setUTCDate(open.getUTCDate() + 1);  // tonight -> tomorrow 8am
-  return { inWindow, nextOpen: new Date(open.getTime() + PHX_OFFSET_MS) };
+  // Walk forward day by day (Phoenix wall clock) to the first allowed day
+  // whose window open is still in the future. 8-day scan covers any day set.
+  for (let d = 0; d <= 7; d++) {
+    const cand = new Date(Date.UTC(phx.getUTCFullYear(), phx.getUTCMonth(), phx.getUTCDate() + d, 0, cfg.startMin, 0));
+    if (!days.includes(cand.getUTCDay())) continue;
+    const open = new Date(cand.getTime() + PHX_OFFSET_MS);
+    if (open.getTime() > now.getTime()) return { inWindow, nextOpen: open };
+  }
+  return { inWindow, nextOpen: new Date(now.getTime() + 24 * 60 * 60 * 1000) };  // unreachable with a sane config
+}
+
+// Parse the quiet-hours settings rows into the cfg quietHours() takes.
+// Malformed values fall back per-field to the defaults; an inverted window
+// (end <= start) falls back whole, because honoring it would either always
+// or never send.
+function parseQuietSettings(rows) {
+  const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map(r => [r.key, r.value]));
+  const toMin = (v, dflt) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || '').trim());
+    if (!m) return dflt;
+    const min = Number(m[1]) * 60 + Number(m[2]);
+    return min >= 0 && min < 1440 ? min : dflt;
+  };
+  let startMin = toMin(map.drip_quiet_start, DEFAULT_QUIET.startMin);
+  let endMin = toMin(map.drip_quiet_end, DEFAULT_QUIET.endMin);
+  if (endMin <= startMin) { startMin = DEFAULT_QUIET.startMin; endMin = DEFAULT_QUIET.endMin; }
+  let days = DEFAULT_QUIET.days;
+  if (map.drip_quiet_days != null && String(map.drip_quiet_days).trim() !== '') {
+    const parsed = [...new Set(String(map.drip_quiet_days).toLowerCase().split(',')
+      .map(s => QUIET_DAY_KEYS.indexOf(s.trim())).filter(d => d >= 0))].sort();
+    if (parsed.length) days = parsed;
+  }
+  return { startMin, endMin, days };
+}
+
+// One read for everything prompt 42 made adjustable: the approval gate and
+// the quiet-hours window. Missing rows read as the safe defaults (gate off,
+// Mon-Sat 8am-8pm), so pre-migration schemas keep exact Phase-3 behavior.
+async function getDripConfig(sb) {
+  let rows = [];
+  try {
+    rows = await sb('GET', '/settings?key=in.(drip_approval_required,drip_quiet_start,drip_quiet_end,drip_quiet_days)&select=key,value');
+  } catch (err) {
+    console.warn('pec-drip: settings read failed, using defaults:', String(err && err.message || err));
+  }
+  const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map(r => [r.key, r.value]));
+  return { approvalRequired: map.drip_approval_required === 'true', quiet: parseQuietSettings(rows) };
 }
 
 function addDays(iso, days) {
@@ -624,6 +675,7 @@ async function runDrips(deps) {
   const summary = {
     master_off: false, capped: false, checked: 0, sent: 0, dry_run: 0,
     skipped: 0, deferred: 0, stopped: 0, completed: 0, failed: 0, claimed_lost: 0,
+    pending: 0, pending_held: 0,
   };
 
   // 1. Global master switch: anything but the string 'true' means OFF.
@@ -631,6 +683,8 @@ async function runDrips(deps) {
     summary.master_off = true;
     return summary;
   }
+  // Prompt 42: approval gate + settings-driven quiet hours, read once per run.
+  const cfg = await getDripConfig(sb);
 
   // 2. Due work, oldest first, hard per-run cap.
   const nowIso = now().toISOString();
@@ -683,11 +737,29 @@ async function runDrips(deps) {
       const smsSkipReason = wantSms && !canSms ? rcpt.smsSkipReason : null;
       const emailSkipReason = wantEmail && !canEmail ? rcpt.emailSkipReason : null;
 
-      // 5. Quiet hours: any live SMS leg due outside 8am-8pm Phoenix defers
-      // the WHOLE step (sms+email stay a coherent pair) to the window open.
-      // Dry-run ignores quiet hours so Dylan's review copy shows up promptly.
-      if (canSms && campaign.mode === 'live') {
-        const q = quietHours(now());
+      // 4.5 Approval gate (prompt 42). Applies to LIVE campaigns with a
+      // sendable leg. If a pending row already exists for this step, the
+      // enrollment HOLDS here (no advance, no send, nothing new written)
+      // until a human approves or skips it in the Drip Approvals view; this
+      // is enforced regardless of the gate setting so flipping the gate off
+      // can never auto-send (or double-write) an item a human was reviewing.
+      const gateHold = campaign.mode === 'live' && (canSms || canEmail);
+      if (gateHold) {
+        const held = await sb('GET',
+          `/pec_drip_sends?enrollment_id=eq.${encodeURIComponent(enr.id)}&step_index=eq.${enr.next_step_index}&status=eq.pending&select=id&limit=1`);
+        if (Array.isArray(held) && held.length) { summary.pending_held++; continue; }
+      }
+      const gatePending = gateHold && cfg.approvalRequired;
+
+      // 5. Quiet hours: any live SMS leg due outside the allowed window
+      // (settings-driven; default 8am-8pm Phoenix Mon-Sat) defers the WHOLE
+      // step (sms+email stay a coherent pair) to the window open. Dry-run
+      // ignores quiet hours so Dylan's review copy shows up promptly, and so
+      // does the approval gate: the pending draft is written any time (Anne
+      // reviews on her schedule) and quiet hours are enforced at APPROVE
+      // time instead.
+      if (canSms && campaign.mode === 'live' && !gatePending) {
+        const q = quietHours(now(), cfg.quiet);
         if (!q.inWindow) {
           await sb('PATCH',
             `/pec_drip_enrollments?id=eq.${encodeURIComponent(enr.id)}&status=eq.active&next_step_index=eq.${enr.next_step_index}`,
@@ -698,16 +770,22 @@ async function runDrips(deps) {
       }
 
       // 6. CLAIM (the atomic advance). Compute the post-step state first.
-      const nextStep = steps.find(s => s.step_index > step.step_index);
-      const willComplete = !nextStep || step.step_index + 1 >= campaign.max_touches;
-      const claimPatch = willComplete
-        ? { status: 'completed', stop_reason: 'sequence_complete', stopped_at: nowIso, next_step_index: step.step_index + 1, next_send_at: null }
-        : { next_step_index: nextStep.step_index, next_send_at: addDays(enr.enrolled_at, nextStep.day_offset).toISOString() };
-      const claimed = await sb('PATCH',
-        `/pec_drip_enrollments?id=eq.${encodeURIComponent(enr.id)}&status=eq.active&next_step_index=eq.${enr.next_step_index}`,
-        claimPatch, true);
-      if (!Array.isArray(claimed) || !claimed.length) { summary.claimed_lost++; continue; } // another run owns this step
-      if (willComplete) summary.completed++;
+      // Skipped entirely when the approval gate holds the step: the whole
+      // point of the gate is that the enrollment does NOT advance (and the
+      // schedule does not move) until a human approves or skips; there the
+      // pending-leg unique index is the concurrency guard instead.
+      if (!gatePending) {
+        const nextStep = steps.find(s => s.step_index > step.step_index);
+        const willComplete = !nextStep || step.step_index + 1 >= campaign.max_touches;
+        const claimPatch = willComplete
+          ? { status: 'completed', stop_reason: 'sequence_complete', stopped_at: nowIso, next_step_index: step.step_index + 1, next_send_at: null }
+          : { next_step_index: nextStep.step_index, next_send_at: addDays(enr.enrolled_at, nextStep.day_offset).toISOString() };
+        const claimed = await sb('PATCH',
+          `/pec_drip_enrollments?id=eq.${encodeURIComponent(enr.id)}&status=eq.active&next_step_index=eq.${enr.next_step_index}`,
+          claimPatch, true);
+        if (!Array.isArray(claimed) || !claimed.length) { summary.claimed_lost++; continue; } // another run owns this step
+        if (willComplete) summary.completed++;
+      }
 
       const ledgerBase = {
         enrollment_id: enr.id, campaign_id: campaign.id,
@@ -728,15 +806,27 @@ async function runDrips(deps) {
         });
 
       // Wanted-but-unsendable legs are recorded, so the ledger explains gaps.
-      if (smsSkipReason) { await writeLedger({ channel: 'sms', status: 'skipped', error_message: smsSkipReason }); summary.skipped++; }
-      if (emailSkipReason) { await writeLedger({ channel: 'email', status: 'skipped', error_message: emailSkipReason }); summary.skipped++; }
-      if (!canSms && !canEmail) continue;   // nothing sendable this step; schedule already advanced
+      // Under the approval gate these writes move into the pending block
+      // below (after a successful render) so a held step never re-writes
+      // them on later ticks.
+      if (!gatePending) {
+        if (smsSkipReason) { await writeLedger({ channel: 'sms', status: 'skipped', error_message: smsSkipReason }); summary.skipped++; }
+        if (emailSkipReason) { await writeLedger({ channel: 'email', status: 'skipped', error_message: emailSkipReason }); summary.skipped++; }
+        if (!canSms && !canEmail) continue;   // nothing sendable this step; schedule already advanced
+      }
 
       // 7. Render the copy (one model call per touch).
       let copy;
       try {
         copy = await renderCopy(rcpt, step, campaign, { sms: canSms, email: canEmail });
       } catch (err) {
+        if (gatePending) {
+          // Nothing was claimed and nothing was written, so the step is NOT
+          // consumed: the next tick simply retries the render. (The live
+          // path consumes the step instead because it already claimed it.)
+          summary.failed++;
+          continue;
+        }
         const msg = 'ai_render_failed: ' + String(err && err.message || err).slice(0, 400);
         if (canSms) await writeLedger({ channel: 'sms', status: 'failed', error_message: msg });
         if (canEmail) await writeLedger({ channel: 'email', status: 'failed', error_message: msg });
@@ -763,6 +853,25 @@ async function runDrips(deps) {
         const prior = await sb('GET',
           `/pec_drip_sends?enrollment_id=eq.${encodeURIComponent(enr.id)}&channel=eq.sms&status=in.(sent,dry_run)&select=id&limit=1`);
         if ((!Array.isArray(prior) || !prior.length) && !/\bSTOP\b/.test(smsBody)) smsBody += STOP_LINE;
+      }
+
+      // 7.5 Approval gate: persist the exact would-send copy (tail + STOP
+      // line included) as PENDING rows and hold. No claim, no advance, no
+      // provider; a human approves, edits, or skips it in Drip Approvals.
+      // Raw POST (not writeLedger) so a failure surfaces here: the partial
+      // unique index uq_pec_drip_sends_pending_leg turns a concurrent
+      // tick's duplicate into a clean conflict, and on ANY failure nothing
+      // advances, so the step safely retries next tick.
+      if (gatePending) {
+        try {
+          if (smsSkipReason) { await writeLedger({ channel: 'sms', status: 'skipped', error_message: smsSkipReason }); summary.skipped++; }
+          if (emailSkipReason) { await writeLedger({ channel: 'email', status: 'skipped', error_message: emailSkipReason }); summary.skipped++; }
+          if (smsBody) { await sb('POST', '/pec_drip_sends', { ...ledgerBase, channel: 'sms', status: 'pending', body: smsBody }); summary.pending++; }
+          if (canEmail && emailBody) { await sb('POST', '/pec_drip_sends', { ...ledgerBase, channel: 'email', status: 'pending', subject: emailSubject, body: emailBody }); summary.pending++; }
+        } catch (err) {
+          console.error('pec-drip: pending write failed (step held, retries next tick):', String(err && err.message || err));
+        }
+        continue;
       }
 
       // 8. Dry run: write the would-send copy, touch no provider, done.
@@ -831,6 +940,265 @@ async function runDrips(deps) {
     } catch (err) {
       // One enrollment's failure never takes down the run.
       console.error('pec-drip-runner: enrollment', enr.id, 'failed:', err && err.message || err);
+      summary.failed++;
+    }
+  }
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// APPROVAL GATE resolution (prompt 42). resolvePendingStep is the backend of
+// the Drip Approvals view: it takes ONE held step (all its pending legs) and
+// either approves it (send the possibly-edited copy, then advance the
+// enrollment exactly as an auto-send would) or skips it (advance without
+// sending). Everything is re-checked at approve time, never trusted from
+// render time: consent, opt-out, replies, stage/paid/lost, quiet hours.
+// ---------------------------------------------------------------------------
+
+// Light scrub for HUMAN-edited copy: enforce the no-em-dash rule (standing
+// rule 6) but keep URLs, because the pending body already carries the
+// code-appended estimate/pay link and full scrubCopy would strip it.
+function scrubEditedCopy(text) {
+  if (text == null) return null;
+  const s = String(text).replace(/\s*[—–]\s*/g, ', ').trim();
+  return s || null;
+}
+
+// One approved leg through the provider + comms-log mirror (same request
+// shapes and log rows as the runner's live path). finalize PATCHes the
+// ledger row; returns true when the provider accepted the send.
+async function sendApprovedLeg(sb, providers, ctx) {
+  const { row, body, subject, rcpt, subjectType, subjectId, smsSenderCache, emailSenderCache, finalize, now } = ctx;
+  if (row.channel === 'sms') {
+    const sender = await getSmsSender(sb, smsSenderCache);
+    if (!sender || !sender.from_number) {
+      await finalize({ status: 'failed', error_message: 'no active SMS sender for brand' });
+      return false;
+    }
+    let out;
+    try { out = await providers.sendSms({ from: sender.from_number, to: rcpt.smsTo, content: body }); }
+    catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+    await sb('POST', '/pec_sms_log', {
+      direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: rcpt.smsTo,
+      customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
+      body, kind: 'drip',
+      status: out.ok ? 'sent' : 'failed', quo_message_id: out.id, error_message: out.error,
+    }).catch(e => console.error('pec-drip-approve: sms log failed', e.message));
+    await finalize({ status: out.ok ? 'sent' : 'failed', body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
+    return out.ok;
+  }
+  const sender = await getEmailSender(sb, emailSenderCache);
+  if (!sender || !sender.from_email) {
+    await finalize({ status: 'failed', error_message: 'no email sender for brand' });
+    return false;
+  }
+  let out;
+  try {
+    out = await providers.sendEmail({
+      from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
+      subject: subject || 'From Prescott Epoxy', html: dripEmailHtml(body), reply_to: sender.reply_to || undefined,
+    });
+  } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+  await sb('POST', '/pec_email_log', {
+    customer_id: rcpt.customer_id, job_id: subjectType === 'job' ? subjectId : null,
+    brand: DRIP_BRAND, template_key: 'drip',
+    to_email: rcpt.email, from_email: sender.from_email, subject: subject || 'From Prescott Epoxy',
+    status: out.ok ? 'sent' : 'failed', resend_id: out.id, error_message: out.error,
+  }).catch(e => console.error('pec-drip-approve: email log failed', e.message));
+  await finalize({ status: out.ok ? 'sent' : 'failed', subject: subject || null, body, sent_at: out.ok ? now().toISOString() : null, provider_id: out.id, error_message: out.error });
+  return out.ok;
+}
+
+// opts: { enrollmentId, stepIndex, action: 'approve'|'skip',
+//         edits: { [sendRowId]: { body, subject } } }
+// Returns { ok, outcome: 'approved'|'skipped'|'voided', ... } or
+// { ok:false, error } for caller mistakes / lost races.
+async function resolvePendingStep(deps, { enrollmentId, stepIndex, action, edits = {} }) {
+  const sb = deps.sb;
+  const now = deps.now || (() => new Date());
+  const providers = { sendSms: deps.sendSms || sendQuoSmsReal, sendEmail: deps.sendEmail || sendResendEmailReal };
+  const nowIso = now().toISOString();
+  const step = Number(stepIndex);
+  if (!enrollmentId || !Number.isInteger(step) || !['approve', 'skip'].includes(action)) {
+    return { ok: false, error: 'bad_request' };
+  }
+  const eid = encodeURIComponent(enrollmentId);
+
+  const pend = await sb('GET', `/pec_drip_sends?enrollment_id=eq.${eid}&step_index=eq.${step}&status=eq.pending&select=*`);
+  const rows = Array.isArray(pend) ? pend : [];
+  if (!rows.length) return { ok: false, error: 'nothing_pending' };
+
+  // Voiding keeps the ledger honest: the row survives as 'skipped' with the
+  // reason in error_message so the queue (and the lead page) can say WHY a
+  // reviewed message never went out.
+  const voidRows = async (reason) => {
+    for (const r of rows) {
+      await sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(r.id)}&status=eq.pending`,
+        { status: 'skipped', error_message: reason });
+    }
+  };
+
+  const enrs = await sb('GET', `/pec_drip_enrollments?id=eq.${eid}&select=*&limit=1`);
+  const enr = (Array.isArray(enrs) && enrs[0]) || null;
+  if (!enr) { await voidRows('voided: enrollment_missing'); return { ok: true, outcome: 'voided', reason: 'enrollment_missing' }; }
+  if (enr.status !== 'active') {
+    await voidRows('voided: enrollment_' + enr.status);
+    return { ok: true, outcome: 'voided', reason: 'enrollment_' + enr.status };
+  }
+  const camps = await sb('GET', `/pec_drip_campaigns?id=eq.${encodeURIComponent(enr.campaign_id)}&select=*&limit=1`);
+  const campaign = (Array.isArray(camps) && camps[0]) || null;
+  if (!campaign) {
+    await voidRows('voided: campaign_missing');
+    await endEnrollment(sb, enr, 'stopped', 'campaign_missing', nowIso);
+    return { ok: true, outcome: 'voided', reason: 'campaign_missing' };
+  }
+
+  const subjectType = enr.subject_type || 'lead';
+  const subjectId = enr.subject_id || enr.lead_id;
+
+  // The advance is the SAME conditional claim the runner uses, so approve
+  // and skip move the schedule exactly like an auto-send would, and two
+  // concurrent reviewers cannot both own the step.
+  const steps = await sb('GET', `/pec_drip_steps?campaign_id=eq.${encodeURIComponent(enr.campaign_id)}&active=eq.true&select=*&order=step_index.asc`);
+  const nextStep = (Array.isArray(steps) ? steps : []).find(s => s.step_index > step);
+  const willComplete = !nextStep || step + 1 >= campaign.max_touches;
+  const claimPatch = willComplete
+    ? { status: 'completed', stop_reason: 'sequence_complete', stopped_at: nowIso, next_step_index: step + 1, next_send_at: null }
+    : { next_step_index: nextStep.step_index, next_send_at: addDays(enr.enrolled_at, nextStep.day_offset).toISOString() };
+  const advance = async () => {
+    const claimed = await sb('PATCH',
+      `/pec_drip_enrollments?id=eq.${eid}&status=eq.active&next_step_index=eq.${step}`, claimPatch, true);
+    return Array.isArray(claimed) && claimed.length > 0;
+  };
+
+  if (action === 'skip') {
+    if (!(await advance())) return { ok: false, error: 'already_resolved' };
+    await voidRows('skipped_by_reviewer');
+    return { ok: true, outcome: 'skipped', completed: willComplete };
+  }
+
+  // APPROVE. Sending is still governed by the master switch, and consent +
+  // kill-switches are re-run NOW, because everything can change between
+  // render and approval (reply, STOP, payment, lost, stage advance).
+  if (!(await masterSwitchOn(sb))) return { ok: false, error: 'master_off' };
+  const rcpt = await resolveRecipient(sb, subjectType, subjectId);
+  const kill = await checkKillSwitches(sb, enr, campaign, rcpt);
+  if (kill) {
+    await voidRows('voided: ' + kill.reason);
+    await endEnrollment(sb, enr, kill.action, kill.reason, nowIso);
+    return { ok: true, outcome: 'voided', reason: kill.reason };
+  }
+
+  const q = quietHours(now(), (await getDripConfig(sb)).quiet);
+  // Claim-first, same tradeoff as the runner: whoever wins the advance owns
+  // the send; a crash after claim loses the touch, never doubles it.
+  if (!(await advance())) return { ok: false, error: 'already_resolved' };
+
+  const result = { ok: true, outcome: 'approved', sent: 0, failed: 0, deferred: 0, voided_legs: 0, completed: willComplete };
+  const smsSenderCache = {}, emailSenderCache = {};
+  let anySent = false;
+  for (const row of rows) {
+    const edit = edits[row.id] || {};
+    const body = scrubEditedCopy(edit.body != null ? edit.body : row.body);
+    const subject = scrubEditedCopy(edit.subject != null ? edit.subject : row.subject);
+    // Per-leg claim (pending -> sending) persists the edited copy and makes
+    // a double-click / double-tab approve a no-op on the second pass.
+    const claimedRow = await sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}&status=eq.pending`,
+      { status: 'sending', body, subject }, true);
+    if (!Array.isArray(claimedRow) || !claimedRow.length) continue;
+    const finalize = (patch) => sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}`, patch)
+      .catch(e => console.error('pec-drip-approve: finalize failed', e.message));
+
+    if (!body) { await finalize({ status: 'skipped', error_message: 'empty_after_edit' }); result.voided_legs++; continue; }
+    const allowed = row.channel === 'sms' ? rcpt.smsAllowed : rcpt.emailAllowed;
+    if (!allowed) {
+      const why = row.channel === 'sms' ? (rcpt.smsSkipReason || 'sms_not_allowed') : (rcpt.emailSkipReason || 'email_not_allowed');
+      await finalize({ status: 'skipped', error_message: 'voided: ' + why });
+      result.voided_legs++;
+      continue;
+    }
+    if (row.channel === 'sms' && !q.inWindow) {
+      // Approved outside the quiet-hours window: hold the (edited) message
+      // as 'queued' for the runner's flush at the window open; never late.
+      await finalize({ status: 'queued', scheduled_for: q.nextOpen.toISOString() });
+      result.deferred++;
+      continue;
+    }
+    const sentOk = await sendApprovedLeg(sb, providers, {
+      row, body, subject, rcpt, subjectType, subjectId, smsSenderCache, emailSenderCache, finalize, now,
+    });
+    if (sentOk) { anySent = true; result.sent++; } else result.failed++;
+  }
+  // First-touch stamp, same write-once rule as the runner.
+  if (anySent && rcpt.lead && !rcpt.lead.contacted_at) {
+    await sb('PATCH', `/leads?id=eq.${encodeURIComponent(rcpt.lead.id)}&contacted_at=is.null`, { contacted_at: now().toISOString() })
+      .catch(e => console.error('pec-drip-approve: contacted_at stamp failed', e.message));
+  }
+  return result;
+}
+
+// Runner-side flush for approved-then-deferred sends (SMS approved during
+// quiet hours sits as 'queued' with enrollment_id set; blast rows are
+// excluded by blast_id=is.null). The human approved the COPY; what can
+// still change is re-checked here: consent/opt-out, per-kind stop
+// conditions (paid / lost / accepted), and an inbound reply.
+async function flushApprovedDrips(deps) {
+  const sb = deps.sb;
+  const now = deps.now || (() => new Date());
+  const providers = { sendSms: deps.sendSms || sendQuoSmsReal, sendEmail: deps.sendEmail || sendResendEmailReal };
+  const summary = { master_off: false, flushed: 0, failed: 0, skipped: 0, held: false };
+  if (!(await masterSwitchOn(sb))) { summary.master_off = true; return summary; }
+  const q = quietHours(now(), (await getDripConfig(sb)).quiet);
+  const rows = await sb('GET',
+    `/pec_drip_sends?status=eq.queued&blast_id=is.null&enrollment_id=not.is.null&select=*&order=created_at.asc&limit=${BLAST_BATCH}`);
+  const smsSenderCache = {}, emailSenderCache = {};
+  for (const row of (Array.isArray(rows) ? rows : [])) {
+    if (row.channel === 'sms' && !q.inWindow) { summary.held = true; continue; }  // stays queued for the next in-window tick
+    const claimed = await sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}&status=eq.queued`,
+      { status: 'sending' }, true);
+    if (!Array.isArray(claimed) || !claimed.length) continue;   // another tick owns it
+    const finalize = (patch) => sb('PATCH', `/pec_drip_sends?id=eq.${encodeURIComponent(row.id)}`, patch)
+      .catch(e => console.error('pec-drip-flush: finalize failed', e.message));
+    try {
+      const subjectType = row.subject_type || 'lead';
+      const subjectId = row.subject_id || row.lead_id;
+      const rcpt = await resolveRecipient(sb, subjectType, subjectId);
+      let stop = null;
+      if (!rcpt.ok) stop = rcpt.reason;
+      else if (rcpt.optedOut) stop = 'opted_out';
+      else if (row.channel === 'sms' && !rcpt.smsAllowed) stop = rcpt.smsSkipReason || 'sms_not_allowed';
+      else if (row.channel === 'email' && !rcpt.emailAllowed) stop = rcpt.emailSkipReason || 'email_not_allowed';
+      if (!stop) {
+        const enrs = await sb('GET', `/pec_drip_enrollments?id=eq.${encodeURIComponent(row.enrollment_id)}&select=*&limit=1`);
+        const enr = (Array.isArray(enrs) && enrs[0]) || null;
+        const camps = enr ? await sb('GET', `/pec_drip_campaigns?id=eq.${encodeURIComponent(enr.campaign_id)}&select=*&limit=1`) : [];
+        const campaign = (Array.isArray(camps) && camps[0]) || null;
+        if (enr && campaign) {
+          // Per-kind stop conditions + replied, but NOT the max-touches core:
+          // the enrollment already advanced at approve time, so that check
+          // would misread this leg as over the ceiling.
+          const kindCheck = await (KIND_CHECKS[campaign.kind] || KIND_CHECKS.lead)(sb, enr, rcpt);
+          if (kindCheck) stop = kindCheck.reason;
+          else {
+            const replied = await checkReplied(sb, enr, rcpt);
+            if (replied) stop = replied.reason;
+          }
+        }
+      }
+      if (stop) { await finalize({ status: 'skipped', error_message: 'voided: ' + stop }); summary.skipped++; continue; }
+      const sentOk = await sendApprovedLeg(sb, providers, {
+        row, body: row.body, subject: row.subject, rcpt, subjectType, subjectId,
+        smsSenderCache, emailSenderCache, finalize, now,
+      });
+      if (sentOk) {
+        summary.flushed++;
+        if (rcpt.lead && !rcpt.lead.contacted_at) {
+          await sb('PATCH', `/leads?id=eq.${encodeURIComponent(rcpt.lead.id)}&contacted_at=is.null`, { contacted_at: now().toISOString() })
+            .catch(e => console.error('pec-drip-flush: contacted_at stamp failed', e.message));
+        }
+      } else summary.failed++;
+    } catch (err) {
+      await finalize({ status: 'failed', error_message: String(err && err.message || err).slice(0, 400) });
       summary.failed++;
     }
   }
@@ -912,7 +1280,8 @@ async function drainBlasts(deps, opts = {}) {
   if (!(await masterSwitchOn(sb))) { summary.master_off = true; return summary; }
 
   const nowIso = now().toISOString();
-  const q = quietHours(now());
+  // Same settings-driven window as the drips (one definition of quiet hours).
+  const q = quietHours(now(), (await getDripConfig(sb)).quiet);
   const idFilter = opts.blastId ? `&id=eq.${encodeURIComponent(opts.blastId)}` : '';
   const blasts = await sb('GET', `/pec_blasts?status=in.(confirmed,sending)${idFilter}&select=*&order=confirmed_at.asc`);
   const smsSenderCache = {}, emailSenderCache = {};
@@ -1039,6 +1408,9 @@ module.exports = {
   masterSwitchOn, kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms,
   usd, dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
   RENDER_SYSTEM_PROMPTS, RUN_CAP, BLAST_BATCH, STOP_LINE, SITE_URL,
+  // Prompt 42: approval gate + settings-driven quiet hours.
+  resolvePendingStep, flushApprovedDrips, getDripConfig, parseQuietSettings,
+  scrubEditedCopy, DEFAULT_QUIET,
   // Prompt 37: the appointment confirmation/reminder core (_pec-appt.cjs)
   // sends through the same provider + brand-sender helpers as the drips so
   // there is exactly one Quo/Resend code path per provider.

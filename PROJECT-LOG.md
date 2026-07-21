@@ -4,6 +4,44 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-21 MST] Drip go-live prep (prompt 42): human approval gate + Drip Approvals queue + Settings > Drips + lead-card drip section
+By: Claude Code
+
+Changed: Built everything needed to take all three drip campaigns live SUPERVISED: for the first week every drip message is held for Anne to review/edit/approve before it sends. Nothing was flipped live in code (guardrail); go-live is the Cowork config step below.
+
+1. MIGRATION (written, NOT applied): `supabase/migrations/2026-07-21_drip_approval_gate.sql`. Adds `'pending'` to the `pec_drip_sends` status CHECK (chose a real status over overloading `'queued'`, because `'queued'` now ALSO has a meaning in the drip path: approved-but-deferred-for-quiet-hours, see 3), a partial unique index `uq_pec_drip_sends_pending_leg` on (enrollment_id, step_index, channel) WHERE status='pending' (the idempotency backstop), and insert-only seeds for `drip_approval_required` ('true'), `drip_quiet_start` ('08:00'), `drip_quiet_end` ('20:00'), `drip_quiet_days` ('mon,...,sat').
+
+2. ENGINE (`_pec-drip.cjs`): the gate branch in runDrips. HOW IT WORKS: when `drip_approval_required='true'` and the campaign is LIVE with a sendable leg, the runner renders the exact would-send copy (tail links + STOP line included) into `pending` ledger rows and does NOT claim/advance the enrollment; the schedule freezes on that step until a human acts. Idempotency is a pending-exists check per tick plus the unique index for races. The hold is enforced even when the gate is later switched OFF (a leftover pending item can never auto-send), and dry-run campaigns ignore the gate entirely (they already send nothing). WHY the render-failure path differs from live: in the gate branch nothing was claimed, so an AI failure just retries next tick instead of burning the touch. Quiet hours are now settings-driven: `quietHours(now, cfg)` + `parseQuietSettings` + `getDripConfig` (defaults preserve the old hardcoded window, plus the new Mon-Sat day rule); the same cfg drives the runner defer, the approve path, and drainBlasts, so there is exactly one definition of the send window.
+
+3. APPROVE/SKIP: `resolvePendingStep` (in `_pec-drip.cjs`, fixture-testable) behind new endpoint `pec-drip-approve.cjs` (staff JWT, pec-blast-run posture). Approve re-runs resolveRecipient + checkKillSwitches AT THAT MOMENT: a reply, STOP, payment, lost, or stage advance between render and approve VOIDS the item (rows -> skipped with `voided: <reason>`, enrollment ended) and nothing sends. Then it advances the enrollment with the SAME conditional claim as the runner (two reviewers cannot both own a step; approve-after-approve is a clean no-op) and sends via the shared provider path (`sendApprovedLeg`, mirrored into pec_sms_log/pec_email_log kind 'drip', contacted_at first-touch stamp). Edited copy gets a LIGHT scrub (`scrubEditedCopy`: em/en dashes only, URLs kept, because the body already carries the code-appended estimate/pay link). Quiet hours at approve time: SMS legs flip to `queued` with scheduled_for = window open and the runner's new `flushApprovedDrips` pass sends them at the open after a final consent/kill re-check; EMAIL sends immediately 24/7 (deliberate, matches the engine's email-any-time rule; not a setting for now). Approve also refuses while the master switch is off. Skip advances without sending (`skipped_by_reviewer`).
+
+4. UI (`index.html`): (a) new admin view Drip Approvals (`renderDripApprovals`, nav + route): one card per held STEP (a 'both' step's text+email approve together), recipient with masked phone/email, campaign + step, editable body/subject, Approve & Send / Skip this step / Stop drip (stop = the lead-page stop path + voids the held rows). (b) Settings > Drips tab (`renderSettingsDrips`): master switch (SAME `drip_sending_enabled` row as the Drips view, so they mirror by construction, same confirm-on-enable rule), approval gate toggle, and the quiet-hours editor (start/end times + day checkboxes, validated). (c) Lead card: `dripCard` expanded into a full drip section: status, the messages sent/held for THIS lead with full body behind `<details>` (plus a Review shortcut into Drip Approvals when something is pending), and the UPCOMING steps with planned dates (first row shows the real next_send_at; later rows enrolled_at + day_offset, the runner's own math). (d) timeline labels for pending/queued drip rows; pending chip in the Drips activity table.
+
+5. TESTS: `production/drip-approval.test.cjs` (45 assertions) drives the real engine: gate holds exactly one pending set with no advance and no dupes on re-tick, gate-off reverts to Phase-3 sends, leftover pending still holds with gate off, approve sends edited copy + advances + stamps, skip advances silently, replied-between-render-and-approve voids and stops, master-off blocks approve, quiet-hours approve defers SMS + flush sends it at the open, STOP-between-approve-and-flush voids, settings-driven window parsing + day rules. Test kit now enforces the pending unique index. All suites green: drip-runner 55, drip-phase3 60, drip-approval 45, appt-reminders 44, appt-intake 51, npm test 142.
+
+6. DOCS: CLAUDE.md standing rule 12 (every major feature ships with a settings surface, Dylan 2026-07-21). Two What's New entries (Drip Approvals; Drip controls in Settings). features.json: drip-engine + lead-detail entries updated, new "Drip approval gate and settings controls" entry.
+
+Verified: node --check on all touched functions; every inline index.html script parses; all fixture suites + npm test green; features.json and whats-new.json parse.
+Needs-live: the migration applied, then the go-live config flip, then a real held item approved end-to-end through Quo/Resend.
+
+Why: Dylan wants all three campaigns live NOW but with a human hand on every message for about a week (Anne reviewing), then a one-switch move to full auto. The gate makes day-one live safe: live-but-held means real sends only ever happen through a human click until `drip_approval_required` is flipped off.
+
+Files touched: supabase/migrations/2026-07-21_drip_approval_gate.sql (new), netlify/functions/_pec-drip.cjs, netlify/functions/pec-drip-runner.cjs, netlify/functions/pec-drip-approve.cjs (new), index.html, production/drip-approval.test.cjs (new), production/_drip-test-kit.cjs, CLAUDE.md, features.json, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: Cowork applies the migration + regenerates SCHEMA.md; Dylan deploys; Cowork flips go-live config on Dylan's go; after the supervised week Dylan turns the approval switch off in Settings > Drips.
+
+## Handoff to Cowork
+1. Apply `supabase/migrations/2026-07-21_drip_approval_gate.sql` to PROD ("HQ Dashboard", zdfpzmmrgotynrwkeakd) and run its verify block (status CHECK includes 'pending'; index uq_pec_drip_sends_pending_leg exists; the four drip_* settings rows exist).
+2. Regenerate SCHEMA.md (pec_drip_sends status CHECK + new index; settings row count).
+3. GO-LIVE CONFIG (only when Dylan says go, and after the code is deployed): set settings `drip_sending_enabled='true'`, set all three `pec_drip_campaigns.mode='live'`, confirm `drip_approval_required='true'`. Week one then runs live-but-held: every due message lands in Drip Approvals instead of sending.
+4. Smoke: after the first runner tick with a due enrollment, confirm a pending row appears in Drip Approvals, approve it, and verify the real SMS/email lands and the enrollment advances.
+
+## Handoff to Dylan
+1. git push to deploy (commits are local).
+2. Tell Cowork "go" for the config flip when you are ready; after the supervised week, turn "Approval before sending" OFF in Settings > Drips for full auto.
+
+---
+
 ## [2026-07-21 MST] Routemize -> TopCoat appointment intake (prompt 43): migration + endpoint + shared lead-side booking effects
 By: Claude Code
 

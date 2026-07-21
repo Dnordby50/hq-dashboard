@@ -1,5 +1,27 @@
 [
   {
+    "id": "drip-approvals-queue",
+    "date": "2026-07-21",
+    "title": "Drip Approvals: review and OK every automatic message before it sends",
+    "summary": "While the new approval setting is on, every automatic follow-up message (lead, estimate, and invoice drips) waits in the Drip Approvals page instead of sending on its own. You see the exact text or email, can edit it, and then Approve and Send, Skip that step, or Stop the drip for that person. If the customer replied, paid, or opted out while a message was waiting, approving it will not send; the item is closed with the reason shown. Texts approved outside the send window go out when the window opens.",
+    "howto": [
+      "Open Drip Approvals in the left menu to see everything waiting.",
+      "Read the message, tweak the wording if you want, then click Approve and Send.",
+      "Use Skip this step to move on without sending, or Stop drip to end that person's follow-ups."
+    ]
+  },
+  {
+    "id": "drip-settings-controls",
+    "date": "2026-07-21",
+    "title": "Drip controls now live in Settings",
+    "summary": "Settings has a new Drips tab with the three controls that matter: the master on/off switch for all automatic sending (the same one as on the Drips page), the approval switch that decides whether messages wait for a human OK first, and the send window (start time, end time, and days) that texts are allowed to go out in. Changing the window needs no code change and applies to drips and blasts right away; a text due outside the window waits for the next opening instead of being skipped.",
+    "howto": [
+      "Go to Settings, then the Drips tab.",
+      "Use the top switch to pause or resume all automatic sending in one click.",
+      "Adjust the send window times and days and click Save window; emails still send any time."
+    ]
+  },
+  {
     "id": "routemize-appointments-on-calendar",
     "date": "2026-07-21",
     "title": "Appointments booked in Routemize show up on the calendar by themselves",

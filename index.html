@@ -2496,6 +2496,10 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                like Leads; RLS is the boundary. -->
           <button data-pec-view="appointments">Appointments</button>
           <button data-pec-view="drips" class="pec-role-admin">Drips</button>
+          <!-- Prompt 42: the human review queue for held drip messages while
+               the approval gate (Settings > Drips) is on. Admin like Drips;
+               the approve endpoint + staff RLS are the real boundary. -->
+          <button data-pec-view="drip-approvals" class="pec-role-admin">Drip Approvals</button>
           <button data-pec-view="estimates">Estimates</button>
           <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- The standalone Estimator rail item was removed in build 18: the
@@ -7291,6 +7295,7 @@ function switchView(v) {
       pipeline: renderPipeline,
       leads: renderLeads,
       drips: renderDrips,
+      'drip-approvals': renderDripApprovals,
       estimates: renderEstimates,
       costing: renderJobCosting,
       // Job Costing + Completed Job Costing merged into one view with an
@@ -15450,11 +15455,115 @@ function settingsTabBar(active) {
     <button class="pec-btn ${active === 'users' ? 'primary' : 'ghost'} sm" data-settings-tab="users">Users</button>
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
     <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
+    <button class="pec-btn ${active === 'drips' ? 'primary' : 'ghost'} sm" data-settings-tab="drips">Drips</button>
     <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
 }
 function wireSettingsTabs(root) {
   root.querySelectorAll('[data-settings-tab]').forEach(b => b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); }));
+}
+
+// Settings > Drips (prompt 42, and the new standing rule: every major
+// feature's knobs live in company Settings, settings-table backed, no code
+// edit to tune). Three controls: the master switch (the SAME
+// drip_sending_enabled row the admin Drips view toggles, so the two stay in
+// sync by construction), the approval gate (drip_approval_required; Dylan
+// flips this off after the supervised launch week), and the quiet-hours
+// window (start/end/days) the engine reads on every tick.
+async function renderSettingsDrips() {
+  const root = $('pecViewRoot');
+  const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
+    .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days']),
+    { label: 'settings-drips' });
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const masterOn = map.drip_sending_enabled === 'true';
+  const gateOn = map.drip_approval_required === 'true';
+  const qStart = map.drip_quiet_start || '08:00';
+  const qEnd = map.drip_quiet_end || '20:00';
+  const qDays = String(map.drip_quiet_days || 'mon,tue,wed,thu,fri,sat').toLowerCase().split(',').map(s => s.trim());
+  const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-drips-save' });
+    if (w && w.error) throw w.error;
+  };
+
+  root.innerHTML = `
+    ${settingsTabBar('drips')}
+    <div class="pec-card" style="border:2px solid ${masterOn ? 'var(--rd-success,#10b981)' : 'var(--rd-danger,#ef4444)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:800">Automatic sending is ${masterOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">The master switch for all drips and blasts. Nothing sends anywhere while this is off. This is the same switch as on the Drips page.</div>
+        </div>
+        <button type="button" class="pec-btn ${masterOn ? 'danger' : 'primary'} sm" id="setDripMaster">${masterOn ? 'Turn sending OFF' : 'Turn sending ON'}</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Approval before sending: ${gateOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${gateOn
+            ? 'Every drip message waits in Drip Approvals for a person to review, edit, and approve before it sends. Turn this off to let live campaigns send fully automatically.'
+            : 'Live campaigns send automatically on schedule. Turn this on to hold every message in Drip Approvals for a human OK first.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${gateOn ? '' : 'primary'}" id="setDripGate">${gateOn ? 'Turn approvals OFF' : 'Turn approvals ON'}</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">Send window (quiet hours)</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">Texts only go out inside this window (Arizona time). A text due outside it waits for the next open, it is never skipped. Emails send any time. Applies to drips and blasts.</div>
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <div class="pec-field" style="margin:0"><label>From</label><input type="time" id="setQuietStart" value="${esc(qStart)}"></div>
+        <div class="pec-field" style="margin:0"><label>To</label><input type="time" id="setQuietEnd" value="${esc(qEnd)}"></div>
+        <div class="pec-field" style="margin:0"><label>Days</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;padding:6px 0">
+            ${DAYS.map(([k, lbl]) => `<label style="display:flex;gap:4px;align-items:center;font-size:.8rem;font-weight:400"><input type="checkbox" data-quiet-day="${k}" ${qDays.includes(k) ? 'checked' : ''} style="width:auto">${lbl}</label>`).join('')}
+          </div>
+        </div>
+        <button type="button" class="pec-btn primary sm" id="setQuietSave">Save window</button>
+        <span id="setQuietErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+    </div>`;
+  wireSettingsTabs(root);
+
+  $('setDripMaster').addEventListener('click', async () => {
+    const to = masterOn ? 'false' : 'true';
+    // Turning ON asks for confirmation; OFF never does (killing sends must
+    // always be one un-gated click). Same rule as the Drips view toggle.
+    if (to === 'true' && !confirm('Turn drip sending ON?\n\nCampaigns set to LIVE will start texting and emailing enrolled leads on their schedule. With approvals on, messages wait in Drip Approvals instead of sending on their own.')) return;
+    const btn = $('setDripMaster'); btn.disabled = true;
+    try { await saveSetting('drip_sending_enabled', to); } catch (err) { showToast('Could not update the switch: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setDripGate').addEventListener('click', async () => {
+    const to = gateOn ? 'false' : 'true';
+    if (to === 'false' && !confirm('Turn approvals OFF?\n\nLive drip campaigns will send fully automatically from now on, with no human review. Anything already waiting in Drip Approvals still needs a decision there.')) return;
+    const btn = $('setDripGate'); btn.disabled = true;
+    try { await saveSetting('drip_approval_required', to); } catch (err) { showToast('Could not update the approval gate: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setQuietSave').addEventListener('click', async () => {
+    const errEl = $('setQuietErr');
+    errEl.textContent = '';
+    const start = $('setQuietStart').value;
+    const end = $('setQuietEnd').value;
+    const days = [...root.querySelectorAll('[data-quiet-day]')].filter(c => c.checked).map(c => c.dataset.quietDay);
+    if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)) { errEl.textContent = 'Pick both times.'; return; }
+    if (end <= start) { errEl.textContent = 'The window must end after it starts.'; return; }
+    if (!days.length) { errEl.textContent = 'Pick at least one day (otherwise texts would never send).'; return; }
+    const btn = $('setQuietSave'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await saveSetting('drip_quiet_start', start);
+      await saveSetting('drip_quiet_end', end);
+      await saveSetting('drip_quiet_days', days.join(','));
+      showToast('Send window saved', { ttl: 2500 });
+      renderSettings();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save window';
+      errEl.textContent = 'Could not save: ' + (err.message || err);
+    }
+  });
 }
 
 // Settings > Appointments (prompt 37): per-member Google Calendar connect
@@ -15714,6 +15823,7 @@ async function renderSettings() {
   if (state.settingsTab === 'users') return renderSettingsUsers();
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
+  if (state.settingsTab === 'drips') return renderSettingsDrips();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
@@ -19504,7 +19614,7 @@ async function renderDrips() {
   for (const e of enrollments) if (e.status === 'active') activeByCamp[e.campaign_id] = (activeByCamp[e.campaign_id] || 0) + 1;
 
   const chip = (txt, color) => `<span class="pec-badge system" style="--pec-badge-bg:${color}">${esc(txt)}</span>`;
-  const SEND_STATUS_COLOR = { sent: '#16a34a', dry_run: '#7c3aed', failed: '#dc2626', skipped: '#64748b', queued: '#2563eb' };
+  const SEND_STATUS_COLOR = { sent: '#16a34a', dry_run: '#7c3aed', failed: '#dc2626', skipped: '#64748b', queued: '#2563eb', sending: '#2563eb', pending: '#b45309' };
   const stepRows = (cid) => steps.filter(s => s.campaign_id === cid).map(s => `
     <tr class="nohover"><td>Day ${s.day_offset}</td><td>${esc(s.channel)}</td>
       <td style="color:var(--muted);font-size:.75rem">${esc(s.ai_guidance)}</td>
@@ -19593,7 +19703,7 @@ async function renderDrips() {
               <td>${esc((s.leads && s.leads.full_name) || '(deleted)')}</td>
               <td>${s.step_index + 1}</td>
               <td>${esc(s.channel)}</td>
-              <td>${chip(s.status === 'dry_run' ? 'dry run' : s.status, SEND_STATUS_COLOR[s.status] || '#64748b')}${s.error_message ? `<div style="color:var(--rd-danger,#ef4444);font-size:.68rem">${esc(s.error_message)}</div>` : ''}</td>
+              <td>${chip(s.status === 'dry_run' ? 'dry run' : s.status === 'pending' ? 'awaiting approval' : s.status, SEND_STATUS_COLOR[s.status] || '#64748b')}${s.error_message ? `<div style="color:var(--rd-danger,#ef4444);font-size:.68rem">${esc(s.error_message)}</div>` : ''}</td>
               <td style="max-width:420px">${s.body ? `<details><summary style="cursor:pointer">${esc(s.subject || String(s.body).slice(0, 60) + (String(s.body).length > 60 ? '…' : ''))}</summary><div style="white-space:pre-wrap;font-size:.75rem;color:var(--muted);margin-top:4px">${esc(s.body)}</div></details>` : ''}</td>
             </tr>`).join('')}</tbody>
         </table></div>` : '<div class="pec-empty">No drip activity yet. It appears here (and on each lead page) as the runner ticks.</div>'}
@@ -19671,8 +19781,189 @@ async function pecBlastRun(blastId) {
   let body = {}; try { body = await res.json(); } catch (_) {}
   if (!res.ok || !body.ok) throw new Error(body.error || `Blast run failed (${res.status})`);
   if (body.master_off) showToast('Master switch is OFF: the blast stays queued until you turn sending on.', { ttl: 6000 });
-  else if (body.sms_held_quiet) showToast('Texts are outside the 8am-8pm window and will go out at 8:00 AM; emails are sending now.', { ttl: 6000 });
+  else if (body.sms_held_quiet) showToast('Texts are outside the allowed send window (Settings > Drips) and will go out when it opens; emails are sending now.', { ttl: 6000 });
   return body;
+}
+
+// ---- Drip Approvals (prompt 42) --------------------------------------------
+// The human review queue while the approval gate (Settings > Drips) is ON:
+// every due drip message is held as a 'pending' pec_drip_sends row instead
+// of sending. Anne reviews, optionally edits, then approves (send + advance
+// the enrollment exactly like an auto-send), skips (advance, no send), or
+// stops the whole drip. The heavy lifting (consent + kill-switch re-checks
+// at approve time, quiet-hours deferral, claim-first advance) lives in
+// pec-drip-approve.cjs -> resolvePendingStep in _pec-drip.cjs.
+function pecMaskPhone(p) {
+  const d = String(p || '').replace(/\D/g, '');
+  return d.length >= 4 ? `(•••) •••-${d.slice(-4)}` : '(no phone)';
+}
+function pecMaskEmail(e) {
+  const s = String(e || '').trim();
+  const at = s.indexOf('@');
+  if (at < 1) return s || '(no email)';
+  return s[0] + '•••' + s.slice(at);
+}
+
+async function pecDripApprove(payload) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session && session.access_token;
+  if (!token) throw new Error('Not signed in.');
+  const res = await fetch('/.netlify/functions/pec-drip-approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  let body = {}; try { body = await res.json(); } catch (_) {}
+  if (!res.ok || !body.ok) throw new Error(body.error || `Request failed (${res.status})`);
+  return body;
+}
+
+async function renderDripApprovals() {
+  const root = $('pecViewRoot');
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading approvals…</div>';
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_drip_sends')
+        .select('*, pec_drip_campaigns(name,kind,max_touches), leads(full_name,phone,email)')
+        .eq('status', 'pending').order('created_at', { ascending: false }).limit(200),
+      supabase.from('settings').select('key,value').in('key', ['drip_sending_enabled', 'drip_approval_required']),
+    ]), { label: 'renderDripApprovals' });
+  } catch (e) { res = [{ error: e }, {}]; }
+  const [sendRes, swRes] = res;
+  if (sendRes.error) {
+    root.innerHTML = `<div class="pec-empty">Could not load the approvals queue (apply the 2026-07-21_drip_approval_gate.sql migration first).<br><span style="font-size:.75rem;color:var(--muted)">${esc(sendRes.error.message || '')}</span></div>`;
+    return;
+  }
+  const rows = sendRes.data || [];
+  const sw = Object.fromEntries(((swRes && swRes.data) || []).map(r => [r.key, r.value]));
+  const gateOn = sw.drip_approval_required === 'true';
+  const masterOn = sw.drip_sending_enabled === 'true';
+
+  // Job-subject rows (invoice reminders) have no lead join; pull their
+  // customer for the display name and masked targets.
+  const jobIds = [...new Set(rows.filter(r => r.subject_type === 'job').map(r => r.subject_id))];
+  let custByJob = {};
+  if (jobIds.length) {
+    const jr = await supabase.from('jobs').select('id,customers(name,phone,email)').in('id', jobIds);
+    custByJob = Object.fromEntries(((jr && jr.data) || []).map(j => [j.id, j.customers || null]));
+  }
+
+  // One queue item per held STEP: a 'both' step has a text and an email leg
+  // that are approved together, exactly as the runner would have sent them.
+  const items = [];
+  const byKey = {};
+  for (const r of rows) {
+    const key = r.enrollment_id + ':' + r.step_index;
+    if (!byKey[key]) {
+      byKey[key] = {
+        key, enrollment_id: r.enrollment_id, step_index: r.step_index,
+        campaign: r.pec_drip_campaigns, lead: r.leads,
+        subject_type: r.subject_type, subject_id: r.subject_id, lead_id: r.lead_id,
+        created_at: r.created_at, legs: [],
+      };
+      items.push(byKey[key]);
+    }
+    byKey[key].legs.push(r);
+    if (r.created_at > byKey[key].created_at) byKey[key].created_at = r.created_at;
+  }
+  items.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+  const itemHtml = (it) => {
+    const cust = it.subject_type === 'job' ? custByJob[it.subject_id] : null;
+    const who = (it.lead && it.lead.full_name) || (cust && cust.name) || '(unknown recipient)';
+    const camp = it.campaign || {};
+    const legHtml = (r) => r.channel === 'sms'
+      ? `<div style="margin-top:10px">
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Text to ${esc(pecMaskPhone((it.lead && it.lead.phone) || (cust && cust.phone)))}</div>
+          <textarea data-appr-body="${esc(r.id)}" rows="3" style="width:100%;font-size:.82rem">${esc(r.body || '')}</textarea>
+        </div>`
+      : `<div style="margin-top:10px">
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Email to ${esc(pecMaskEmail((it.lead && it.lead.email) || (cust && cust.email)))}</div>
+          <input data-appr-subject="${esc(r.id)}" value="${esc(r.subject || '')}" placeholder="Subject" style="width:100%;margin-bottom:6px;font-size:.82rem">
+          <textarea data-appr-body="${esc(r.id)}" rows="6" style="width:100%;font-size:.82rem">${esc(r.body || '')}</textarea>
+        </div>`;
+    return `<div class="pec-card" data-appr-item data-appr-enr="${esc(it.enrollment_id)}" data-appr-step="${it.step_index}">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start">
+        <div>
+          ${it.lead_id ? `<strong style="font-size:.95rem;cursor:pointer;color:var(--rd-accent,var(--accent))" data-appr-lead="${esc(it.lead_id)}">${esc(who)}</strong>` : `<strong style="font-size:.95rem">${esc(who)}</strong>`}
+          <div style="color:var(--muted);font-size:.74rem;margin-top:3px">
+            ${esc(camp.name || 'Drip')} · step ${it.step_index + 1}${camp.max_touches ? ` of ${camp.max_touches}` : ''} · ${it.legs.map(l => l.channel === 'sms' ? 'text' : 'email').join(' + ')} · waiting ${esc(fmtRelativeTime(it.created_at))}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="pec-btn primary sm" data-appr-approve>Approve &amp; Send</button>
+          <button type="button" class="pec-btn ghost sm" data-appr-skip>Skip this step</button>
+          <button type="button" class="pec-btn danger sm" data-appr-stop>Stop drip</button>
+        </div>
+      </div>
+      ${it.legs.map(legHtml).join('')}
+    </div>`;
+  };
+
+  root.innerHTML = `
+    <div style="max-width:900px">
+      <h2 style="margin:0 0 4px">Drip Approvals</h2>
+      <div style="color:var(--muted);font-size:.8rem;margin-bottom:12px">Messages the drip engine wants to send, held for a human OK. Edit the copy if you like, then Approve &amp; Send. Consent, replies, payments, and quiet hours are re-checked at the moment you approve, so an approval can never message someone who already replied, paid, or opted out.</div>
+      ${gateOn ? '' : `<div class="pec-card" style="border-left:3px solid #b45309"><div style="font-size:.8rem"><strong>The approval gate is OFF</strong> (Settings &gt; Drips): new drip messages send automatically. Anything below was held earlier and still needs a decision here.</div></div>`}
+      ${masterOn ? '' : `<div class="pec-card" style="border-left:3px solid var(--rd-danger,#ef4444)"><div style="font-size:.8rem"><strong>Master switch is OFF</strong>: Approve &amp; Send is blocked until sending is turned on (Settings &gt; Drips or the Drips view).</div></div>`}
+      ${items.length ? items.map(itemHtml).join('') : `<div class="pec-empty">Nothing waiting for approval.${gateOn ? ' New drip messages appear here as they come due (the engine checks every 15 minutes).' : ''}</div>`}
+    </div>`;
+
+  root.querySelectorAll('[data-appr-lead]').forEach(el => el.addEventListener('click', () => {
+    state.openLeadId = el.dataset.apprLead;
+    switchView('leads');
+  }));
+  root.querySelectorAll('[data-appr-item]').forEach(card => {
+    const enrollmentId = card.dataset.apprEnr;
+    const stepIndex = Number(card.dataset.apprStep);
+    const btns = card.querySelectorAll('button');
+    const busy = (b) => btns.forEach(x => { x.disabled = b; });
+    const collectEdits = () => {
+      const edits = {};
+      card.querySelectorAll('[data-appr-body]').forEach(t => { edits[t.dataset.apprBody] = { ...(edits[t.dataset.apprBody] || {}), body: t.value }; });
+      card.querySelectorAll('[data-appr-subject]').forEach(t => { edits[t.dataset.apprSubject] = { ...(edits[t.dataset.apprSubject] || {}), subject: t.value }; });
+      return edits;
+    };
+    card.querySelector('[data-appr-approve]').addEventListener('click', async () => {
+      busy(true);
+      try {
+        const out = await pecDripApprove({ enrollment_id: enrollmentId, step_index: stepIndex, action: 'approve', edits: collectEdits() });
+        if (out.outcome === 'voided') showToast('Not sent: ' + titleCaseValue(out.reason || 'no longer eligible') + '. The drip was ended instead.', { ttl: 6000 });
+        else if (out.deferred) showToast(`Approved.${out.sent ? ` ${out.sent} sent now;` : ''} the text goes out when the send window opens.`, { ttl: 6000 });
+        else showToast(`Sent ${out.sent} message${out.sent === 1 ? '' : 's'}.`, { ttl: 4000 });
+      } catch (err) {
+        const m = err && err.message;
+        showToast(m === 'master_off' ? 'The master switch is OFF: turn sending on first (Settings > Drips).'
+          : m === 'already_resolved' || m === 'nothing_pending' ? 'Someone else already handled this one.'
+          : 'Approve failed: ' + (m || err), { ttl: 6000 });
+      }
+      renderDripApprovals();
+    });
+    card.querySelector('[data-appr-skip]').addEventListener('click', async () => {
+      if (!confirm('Skip this step? The message is not sent and the drip moves on to its next step on its normal schedule.')) return;
+      busy(true);
+      try { await pecDripApprove({ enrollment_id: enrollmentId, step_index: stepIndex, action: 'skip' }); showToast('Step skipped', { ttl: 2500 }); }
+      catch (err) { showToast('Skip failed: ' + ((err && err.message) || err), { ttl: 6000 }); }
+      renderDripApprovals();
+    });
+    card.querySelector('[data-appr-stop]').addEventListener('click', async () => {
+      if (!confirm('Stop this drip entirely? No more messages will be drafted or sent for this enrollment; use the lead page to enroll again later.')) return;
+      busy(true);
+      // Same stop path as the lead page (guarded on status=active so it
+      // cannot fight the runner), then void the held rows so the ledger
+      // explains what happened to them.
+      const w = await withFreshWriteRetry(() => supabase.from('pec_drip_enrollments')
+        .update({ status: 'stopped', stop_reason: 'manual', stopped_at: new Date().toISOString(), next_send_at: null })
+        .eq('id', enrollmentId).eq('status', 'active'), { label: 'appr-drip-stop' });
+      if (w && w.error) { showToast('Could not stop the drip: ' + w.error.message, { ttl: 5000 }); busy(false); return; }
+      await withFreshWriteRetry(() => supabase.from('pec_drip_sends')
+        .update({ status: 'skipped', error_message: 'voided: stopped_by_reviewer' })
+        .eq('enrollment_id', enrollmentId).eq('status', 'pending'), { label: 'appr-drip-void' });
+      showToast('Drip stopped', { ttl: 2500 });
+      renderDripApprovals();
+    });
+  });
 }
 
 // Client mirror of computeBlastAudience in _pec-drip.cjs (the fixture-tested
@@ -20539,6 +20830,8 @@ function leadEventHtml(ev, staffNames) {
     const chan = p.channel === 'sms' ? 'text' : 'email';
     const label = p.status === 'dry_run' ? `Drip ${chan} preview, step ${p.step_index + 1} (dry run, nothing sent)`
       : p.status === 'sent' ? `Drip ${chan} sent (step ${p.step_index + 1})`
+      : p.status === 'pending' ? `Drip ${chan} awaiting approval, step ${p.step_index + 1} (held in Drip Approvals)`
+      : p.status === 'queued' ? `Drip ${chan} approved, step ${p.step_index + 1} (sends when the window opens)`
       : `Drip ${chan} ${p.status} (step ${p.step_index + 1})`;
     body = p.body
       ? `<details><summary style="cursor:pointer">${esc(label)}${p.subject ? ` · ${esc(p.subject)}` : ''}</summary><div style="white-space:pre-wrap;font-size:.78rem;color:var(--muted);margin-top:6px">${esc(p.body)}</div></details>`
@@ -20588,6 +20881,16 @@ async function renderLeadDetail(leadId) {
   const events = evRes.error ? [] : (evRes.data || []);
   const dripEnr = (dripEnrRes && !dripEnrRes.error && dripEnrRes.data) ? dripEnrRes.data : null;
   const dripSends = (dripSendsRes && !dripSendsRes.error && dripSendsRes.data) ? dripSendsRes.data : [];
+  // Prompt 42: the drip section previews UPCOMING steps, which needs the
+  // enrolled campaign's step list (only fetchable once the enrollment row
+  // is known, hence the follow-up query). Best-effort like the drip reads.
+  let dripSteps = [];
+  if (dripEnr && dripEnr.status === 'active') {
+    try {
+      const st = await supabase.from('pec_drip_steps').select('*').eq('campaign_id', dripEnr.campaign_id).eq('active', true).order('step_index');
+      dripSteps = (!st.error && st.data) || [];
+    } catch (_) { /* pre-migration or offline: the section just omits upcoming steps */ }
+  }
   // Drip sends join the activity timeline as pseudo-events, sorted with the
   // real lead_events by timestamp (leadEventHtml has the drip_send case).
   const timeline = events.concat(dripSends.map(s => ({
@@ -20622,15 +20925,16 @@ async function renderLeadDetail(leadId) {
   const stageOpts = LEAD_STAGES.map(s => `<option value="${s.key}" ${lead.stage === s.key ? 'selected' : ''}>${esc(s.title)}</option>`).join('');
   const contactRow = (label, val, href) => val ? `<div style="margin-bottom:6px"><span style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">${label}</span><div style="font-size:.88rem">${href ? `<a href="${esc(href)}" style="color:var(--rd-accent,var(--accent))">${esc(val)}</a>` : esc(val)}</div></div>` : '';
 
-  // Drip status card (prompt 34). Renders nothing pre-migration (the
-  // enrollment read errors). Stop is a plain status update; Enroll reuses
-  // the same client helper as the New Lead modal.
+  // Drip section (prompt 34, expanded in prompt 42 per Dylan: show not just
+  // the status but the messages that went out / are held AND what is coming
+  // next). Renders nothing pre-migration (the enrollment read errors). Stop
+  // is a plain status update; Enroll reuses the New Lead modal helper.
   const dripCard = (() => {
     if (dripEnrRes && dripEnrRes.error) return '';
     const camp = dripEnr && dripEnr.pec_drip_campaigns;
     let bodyHtml, action;
     if (dripEnr && dripEnr.status === 'active') {
-      bodyHtml = `<div style="font-size:.85rem"><strong>Active</strong>: step ${dripEnr.next_step_index + 1} of ${camp ? camp.max_touches : '?'}, next touch ${dripEnr.next_send_at ? esc(fmtRelativeTime(dripEnr.next_send_at)) : 'scheduled'}</div>
+      bodyHtml = `<div style="font-size:.85rem"><strong>Active</strong>: step ${dripEnr.next_step_index + 1} of ${camp ? camp.max_touches : '?'}, next touch ${dripEnr.next_send_at ? esc(fmtRelativeTime(dripEnr.next_send_at)) : 'waiting for approval'}</div>
         <div style="color:var(--muted);font-size:.72rem;margin-top:4px">${esc(camp ? camp.name : '')}${camp && camp.mode !== 'live' ? ' · dry run: messages are drafted for review here, nothing sends' : ''}</div>`;
       action = `<button type="button" class="pec-btn sm danger" id="leadDripStop">Stop drip</button>`;
     } else if (dripEnr) {
@@ -20642,11 +20946,66 @@ async function renderLeadDetail(leadId) {
       action = lead.opted_out ? '<span style="color:var(--muted);font-size:.72rem">Opted out; cannot enroll</span>'
         : `<button type="button" class="pec-btn sm" id="leadDripEnroll">Enroll in drip</button>`;
     }
+
+    // Messages: this lead's send ledger (newest first), full body behind the
+    // expandable <details> pattern. Consent-skip rows are left to the
+    // Activity timeline; this list is what a customer saw or will see.
+    const MSG_LABEL = { sent: 'Sent', dry_run: 'Dry run', pending: 'Awaiting approval', queued: 'Approved, waiting for the send window', sending: 'Sending', failed: 'Failed' };
+    const MSG_COLOR = { sent: '#16a34a', dry_run: '#7c3aed', pending: '#b45309', queued: '#2563eb', sending: '#2563eb', failed: '#dc2626' };
+    const msgs = dripSends.filter(s => MSG_LABEL[s.status]);
+    const pendingCount = msgs.filter(s => s.status === 'pending').length;
+    const msgsHtml = msgs.length ? `
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">
+        <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Messages</div>
+        ${pendingCount ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;padding:6px 8px;background:color-mix(in srgb, #b45309 12%, transparent);border-radius:6px;font-size:.76rem">
+          <span>${pendingCount} message${pendingCount === 1 ? '' : 's'} waiting for approval</span>
+          <button type="button" class="pec-btn sm" id="leadDripReview">Review</button>
+        </div>` : ''}
+        ${msgs.map(s => `
+          <div style="padding:5px 0;font-size:.78rem;border-bottom:1px solid var(--rd-line,var(--border))">
+            <details>
+              <summary style="cursor:pointer">
+                <span class="pec-badge system" style="--pec-badge-bg:${MSG_COLOR[s.status]}">${esc(MSG_LABEL[s.status])}</span>
+                ${s.channel === 'sms' ? 'Text' : 'Email'} · step ${s.step_index + 1}
+                <span style="color:var(--muted)" title="${esc(new Date(s.sent_at || s.created_at).toLocaleString())}">· ${esc(fmtRelativeTime(s.sent_at || s.created_at))}</span>
+              </summary>
+              <div style="margin-top:5px;color:var(--muted);white-space:pre-wrap">${s.subject ? `<strong>${esc(s.subject)}</strong>\n` : ''}${esc(s.body || s.error_message || '(no copy recorded)')}</div>
+            </details>
+          </div>`).join('')}
+      </div>` : '';
+
+    // Upcoming: the remaining schedule, so the card answers "what is coming"
+    // and not just "what already went". The FIRST upcoming touch shows the
+    // real next_send_at (it carries quiet-hours deferrals); later steps are
+    // planned from enrolled_at + day_offset, the same math the runner uses.
+    let upcomingHtml = '';
+    if (dripEnr && dripEnr.status === 'active' && dripSteps.length && camp) {
+      const remaining = dripSteps.filter(s => s.step_index >= dripEnr.next_step_index && s.step_index < camp.max_touches);
+      const fmtDay = (d) => d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      upcomingHtml = remaining.length ? `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">
+          <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">Upcoming</div>
+          ${remaining.map((s, i) => {
+            const when = i === 0 && dripEnr.next_send_at
+              ? new Date(dripEnr.next_send_at)
+              : new Date(new Date(dripEnr.enrolled_at).getTime() + s.day_offset * 864e5);
+            const chan = s.channel === 'both' ? 'text + email' : (s.channel === 'sms' ? 'text' : 'email');
+            const held = i === 0 && pendingCount > 0;
+            return `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;font-size:.78rem">
+              <span>${i === 0 ? '<strong>Next</strong>: ' : ''}${esc(chan)} <span style="color:var(--muted)">(step ${s.step_index + 1})</span></span>
+              <span style="color:var(--muted)">${held ? 'held for approval' : esc(fmtDay(when))}</span>
+            </div>`;
+          }).join('')}
+        </div>` : '';
+    }
+
     return `<div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
         <div><h3 style="margin-top:0">Drip</h3>${bodyHtml}</div>
         <div style="flex:none">${action}</div>
       </div>
+      ${msgsHtml}
+      ${upcomingHtml}
     </div>`;
   })();
 
@@ -20805,6 +21164,8 @@ async function renderLeadDetail(leadId) {
     showToast('Drip stopped', { ttl: 1800 });
     renderLeads();
   });
+  const dripReviewBtn = $('leadDripReview');
+  if (dripReviewBtn) dripReviewBtn.addEventListener('click', () => switchView('drip-approvals'));
   const dripEnrollBtn = $('leadDripEnroll');
   if (dripEnrollBtn) dripEnrollBtn.addEventListener('click', async () => {
     dripEnrollBtn.disabled = true;

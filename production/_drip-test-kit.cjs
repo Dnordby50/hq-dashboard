@@ -90,6 +90,17 @@ function makeDb(tables) {
           throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "idx_pec_drip_enroll_one_active_subj"`);
         }
       }
+      // Enforce the prompt-42 pending-leg partial unique index: at most one
+      // PENDING send row per (enrollment_id, step_index, channel). This is
+      // the approval gate's concurrency backstop.
+      if (table === 'pec_drip_sends' && payload.status === 'pending') {
+        if (db[table].some(r => r.status === 'pending'
+          && String(r.enrollment_id) === String(payload.enrollment_id)
+          && Number(r.step_index) === Number(payload.step_index)
+          && String(r.channel) === String(payload.channel))) {
+          throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "uq_pec_drip_sends_pending_leg"`);
+        }
+      }
       // Enforce the prompt-37 reminder-ledger unique index, the claim the
       // appointment engine's exactly-once guarantee rides on.
       if (table === 'pec_appointment_reminder_sends') {

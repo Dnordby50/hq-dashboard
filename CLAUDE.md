@@ -42,6 +42,8 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
 11. Every user-facing change ships with a What's New entry: append one entry (id, date, title, one-line summary, 2-3 how-to steps, plain language, no em dashes) to the changelog JSON in the same session. Internal-only changes (refactors, webhooks, migrations with no visible behavior change) do not get entries. The changelog JSON is help/whats-new.json (newest first); the sign-in popup, the Help view's What's New card, and the help assistant all read that one file.
 
+12. Every major feature ships with a settings surface. Its key parameters (on/off, timing, limits, thresholds, quiet hours) must be adjustable from company Settings, backed by the `settings` table, with no code change required. (Hardwired by Dylan, 2026-07-21.)
+
 ## Cowork Handoff Prompt Format
 
 Cowork prompts go to a separate operator with no chat history, no familiarity with the current session's reasoning, and no access to this conversation. They MUST be self-contained. When you write one, print it in chat as a fenced code block in this shape:

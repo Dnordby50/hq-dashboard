@@ -243,27 +243,32 @@
     {
       "name": "Lead drip engine",
       "area": "dashboard",
-      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip and Invoice payment reminders entries for the two Phase 3 kinds.",
+      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip and Invoice payment reminders entries for the two Phase 3 kinds. Prompt 42 (go-live prep) added a GLOBAL approval gate: while the settings key drip_approval_required is 'true', a due step on a LIVE campaign renders its real copy into a 'pending' pec_drip_sends row (one per sendable leg, held once per step by a partial unique index) and the enrollment does NOT advance until a human approves, edits, or skips it in the Drip Approvals view; approving re-runs consent + kill-switches + quiet hours at that moment (a reply/STOP/payment/lost between render and approve voids the item with the reason shown), sends through the same providers, and advances with the same claim. SMS approved outside the window sits as 'queued' and is flushed by the runner at the window open with a final consent re-check. Quiet hours are settings-driven (drip_quiet_start/end/days, default 08:00-20:00 Phoenix Mon-Sat) and editable in Settings > Drips along with the master switch and the gate.",
       "code": {
         "indexHtml": [
           "renderDrips",
           "enrollLeadInDrip",
           "enrollSubjectInDrip",
           "renderLeadDetail",
-          "leadCardHtml"
+          "leadCardHtml",
+          "renderDripApprovals",
+          "renderSettingsDrips"
         ],
         "netlifyFunctions": [
           "pec-drip-runner.cjs",
           "_pec-drip.cjs",
           "pec-lead-intake.cjs",
-          "pec-webhook-quo.cjs"
+          "pec-webhook-quo.cjs",
+          "pec-drip-approve.cjs"
         ],
         "other": [
           "supabase/migrations/2026-07-19_drip_engine.sql",
           "supabase/migrations/2026-07-19_drip_phase3.sql",
           "production/drip-runner.test.cjs",
           "production/drip-phase3.test.cjs",
-          "production/_drip-test-kit.cjs"
+          "production/_drip-test-kit.cjs",
+          "supabase/migrations/2026-07-21_drip_approval_gate.sql",
+          "production/drip-approval.test.cjs"
         ]
       },
       "tables": [
@@ -388,9 +393,39 @@
       "since": "2026-07"
     },
     {
+      "name": "Drip approval gate and settings controls",
+      "area": "dashboard",
+      "description": "The supervised-launch layer over the drip engine (prompt 42). Drip Approvals (admin nav) lists every held drip message across leads and jobs, newest first: recipient with masked phone/email, campaign + step, and the editable body (plus subject for email). Per item: Approve & Send (re-checks consent, opt-out, replies, stage/paid/lost, and quiet hours at that exact moment, then sends via the normal providers, logs 'sent', and advances the enrollment exactly like an auto-send), Skip this step (advances without sending), Stop drip (ends the enrollment). Settings > Drips holds the knobs, all settings-table rows per standing rule 12: the master sending switch (same drip_sending_enabled row as the Drips view, so the two mirror each other), the approval gate (drip_approval_required; ON for the launch week, Dylan flips it off for full-auto), and the SMS send window (drip_quiet_start/drip_quiet_end/drip_quiet_days, Arizona time; texts due outside it wait for the next open, emails send any time, and the window also governs blasts). The gate intercepts LIVE campaigns only (dry-run already sends nothing); a leftover pending item keeps its step held even after the gate is switched off, so flipping the gate can never auto-send something a human was reviewing.",
+      "code": {
+        "indexHtml": [
+          "renderDripApprovals",
+          "pecDripApprove",
+          "renderSettingsDrips",
+          "renderLeadDetail"
+        ],
+        "netlifyFunctions": [
+          "pec-drip-approve.cjs",
+          "_pec-drip.cjs",
+          "pec-drip-runner.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-21_drip_approval_gate.sql",
+          "production/drip-approval.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_drip_sends",
+        "pec_drip_enrollments",
+        "pec_drip_campaigns",
+        "pec_drip_steps",
+        "settings"
+      ],
+      "since": "2026-07"
+    },
+    {
       "name": "Lead detail with AI game plan",
       "area": "dashboard",
-      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip card shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, and drip messages (including dry-run previews) appear in the Activity timeline.",
+      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip section shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, the messages already sent or held (full body behind expandable rows, with a Review shortcut to Drip Approvals when something is waiting), and the UPCOMING steps with their planned dates, so the card answers what is coming next, not just what already went out. Drip messages also appear in the Activity timeline.",
       "code": {
         "indexHtml": [
           "renderLeadDetail"
