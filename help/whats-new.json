@@ -1,5 +1,27 @@
 [
   {
+    "id": "schedule-today-and-name-quick-look",
+    "date": "2026-07-21",
+    "title": "See today at a glance when scheduling, and tap a job name for a quick look",
+    "summary": "The month day pickers in the Schedule and Add Job windows now outline today's date, so you can orient yourself before picking install days. And the job name is now clickable on both the Pending Jobs list and the Next Day board: tap it to open the quick summary card with the proposal, price, system, hours, and scope. Dragging cards on the Next Day board works exactly like before.",
+    "howto": [
+      "Open + Schedule on any pending job, or open Add Job: today's date has a ring around it.",
+      "Click a job's name in Pending Jobs or on the Next Day board to see its summary.",
+      "Use + Schedule inside the summary to jump straight to scheduling."
+    ]
+  },
+  {
+    "id": "scheduler-companycam-photos-zoom",
+    "date": "2026-07-21",
+    "title": "Job site photos while you schedule, with zoom",
+    "summary": "The Schedule window now has a Site photos section showing the job's CompanyCam photos, so you can check the site while picking days and crews. Open any photo full screen and zoom in for a closer look: double click or scroll to magnify, drag to move around, pinch on a phone. The same zoom works in the job page photo gallery. If the job has no CompanyCam project linked yet, a Link a project button takes you to the job page to set it up.",
+    "howto": [
+      "Open + Schedule on a job and expand Site photos (CompanyCam).",
+      "Click a photo to open it full screen, then double click or scroll to zoom and drag to look around.",
+      "Double click again to zoom back out, then swipe or use the arrows for the next photo."
+    ]
+  },
+  {
     "id": "appointment-notes-split",
     "date": "2026-07-21",
     "title": "Appointments now have customer Job notes and internal Company notes",

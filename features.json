@@ -473,7 +473,7 @@
     {
       "name": "Job Schedule calendar",
       "area": "dashboard",
-      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones.",
+      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date.",
       "code": {
         "indexHtml": [
           "renderSchedule",
@@ -481,13 +481,17 @@
           "loadScheduleData",
           "openScheduleModal",
           "deriveScheduleState"
+        ],
+        "netlifyFunctions": [
+          "pec-companycam.cjs"
         ]
       },
       "tables": [
         "pec_prod_jobs",
         "pec_prod_job_schedule_days",
         "pec_prod_crews",
-        "pec_prod_areas"
+        "pec_prod_areas",
+        "jobs"
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-20-system-on-jobs.md",
       "since": "2026-05"
@@ -495,14 +499,15 @@
     {
       "name": "Reschedule / pending flow",
       "area": "dashboard",
-      "description": "When a job or part of one gets bumped, staff pull specific days off the calendar and the job parks in the Pending column with an amber reschedule badge showing days owed and the date pulled, keeping crew, hours, and price intact until it is rebooked. Calendar tasks, holidays, and days off slot alongside jobs.",
+      "description": "When a job or part of one gets bumped, staff pull specific days off the calendar and the job parks in the Pending column with an amber reschedule badge showing days owed and the date pulled, keeping crew, hours, and price intact until it is rebooked. Calendar tasks, holidays, and days off slot alongside jobs. Clicking a pending job's name or card opens the read-only quick look.",
       "code": {
         "indexHtml": [
           "openScheduleModal",
           "holidayOn",
           "openHolidayModal",
           "openDayOffModal",
-          "openTaskModal"
+          "openTaskModal",
+          "openPendingJobCard"
         ]
       },
       "tables": [
@@ -514,12 +519,13 @@
     {
       "name": "Next Day Schedule and run sheet",
       "area": "dashboard",
-      "description": "A focused next-working-day view that lays out each crew's jobs for tomorrow with prorated revenue, plus a Print run sheet button that produces a paper crew sheet. A big job can be split across two crews so it appears under both crew columns in the same slot with a 2 teams badge and on the printed sheet, while staying one job for revenue and status. It stacks into full-width mobile cards.",
+      "description": "A focused next-working-day view that lays out each crew's jobs for tomorrow with prorated revenue, plus a Print run sheet button that produces a paper crew sheet. A big job can be split across two crews so it appears under both crew columns in the same slot with a 2 teams badge and on the printed sheet, while staying one job for revenue and status. It stacks into full-width mobile cards. Clicking a job's name on a run-sheet card opens the read-only quick look; dragging the card still moves it between crews and slots.",
       "code": {
         "indexHtml": [
           "renderNextDay",
           "openNextDaySplitModal",
-          "scheduleTotalDaysByJob"
+          "scheduleTotalDaysByJob",
+          "openPendingJobCard"
         ]
       },
       "tables": [
@@ -1026,10 +1032,12 @@
     {
       "name": "CompanyCam integration",
       "area": "integrations",
-      "description": "Job photos come from CompanyCam via a staff-authenticated proxy, with a searchable project picker on the job detail and a navigable fullscreen photo viewer.",
+      "description": "Job photos come from CompanyCam via a staff-authenticated proxy, with a searchable project picker on the job detail and a navigable fullscreen photo viewer that zooms and pans (double click, wheel, pinch). The Job Schedule's +Schedule modal shows the same photos read-only.",
       "code": {
         "indexHtml": [
-          "renderJobDetailInner"
+          "renderJobDetailInner",
+          "openScheduleModal",
+          "openLightbox"
         ],
         "netlifyFunctions": [
           "pec-companycam.cjs"
