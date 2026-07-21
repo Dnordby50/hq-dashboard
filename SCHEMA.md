@@ -1,6 +1,6 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
-Generated 2026-07-20 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
 
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
@@ -498,6 +498,7 @@ RLS: enabled · rows: 0
 | location_zip | text | yes |  |
 | location_place_id | text | yes |  |
 | notes | text | yes |  |
+| customer_notes | text | yes |  |
 | status | text | no | 'scheduled' |
 | source | text | no | 'topcoat' |
 | google_event_id | text | yes |  |
@@ -510,7 +511,7 @@ RLS: enabled · rows: 0
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
-Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google. Unique (google_event_id) where not null.
+Note: lead_id has NO FK (appointment survives its lead's soft-delete). appt_type check: on_site_estimate / project_walkthrough / site_visit / other. status check: scheduled / completed / canceled. source check: topcoat / google. Unique (google_event_id) where not null. notes = internal "Company notes" (pushed to the Google event description); customer_notes = customer-facing "Job notes" (appended to the customer's confirmation/reminder texts and emails, never pushed to Google).
 
 ### pec_bonus_payouts
 RLS: enabled · rows: 16

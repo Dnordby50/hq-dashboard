@@ -4,6 +4,52 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-21 MST] Cowork: scoped manual-completion-as-source-of-truth + Invoicing AR cleanup (prompt 40 written)
+By: Cowork
+Changed: No repo code touched by Cowork. Wrote claude-code-prompt-40-invoicing-completion.md to the repo root and delivered it to Dylan. Diagnosed the "completed jobs still on the schedule clutter AR" bug and scoped the fix through 12 multiple-choice questions.
+
+ROOT CAUSE: the status state machine auto-completes a job the day after its last scheduled day (today > end -> 'completed') and then locks it (deriveJobStatus rule 1 / the trigger's status <> 'completed' guard), so a day added back later (reschedule, later phase, warranty/callback) leaves the job 'completed' with a future scheduled day, parked in the "Completed, not paid in full" AR bucket. The rule lives in TWO lockstep places: client deriveJobStatus (index.html:6347, branch ~6354) AND the server trigger pec_prod_jobs_sync_public_status (migration 2026-06-09_unified_status_trigger.sql, else branch ~76-78). A client-only fix would be silently overridden by the trigger.
+
+LOCKED DECISIONS (Dylan):
+- Manual completion is the new source of truth: schedule never auto-completes; a job past its last day sits in_progress until a human clicks Mark Complete / drags to Complete. Change client deriveJobStatus AND the DB trigger in lockstep (today > end -> 'in_progress'), and stop auto-stamping completed_date (only markJobComplete stamps it).
+- "Still has scheduled days" = a day dated STRICTLY AFTER today.
+- Invoicing display: park such completed jobs in a new labeled "Completed, but still on the schedule" section, out of Total AR (visible, never silently hidden). Respect MANUAL completions (status_manual_at not null stays in AR even with a future day). Bridge AR row -> schedule via dripjobs_deal_id AND the name+address fallback.
+- Backlog: going-forward only, NO DB backfill of existing rows; Commit 1's display filter cleans up existing bad rows by display.
+- completed_date on the auto-complete paths: cleared / never auto-stamped going forward.
+- Safety net (Dylan's pick): new "Ready to invoice" section on the Invoicing tab listing in_progress jobs whose last scheduled day has passed, with a Mark Complete button, so finished work can't silently stay out of AR.
+
+PACKAGING: TWO commits. Commit 1 = Invoicing display filter (immediate relief). Commit 2 = remove schedule auto-completion (client + new trigger migration 2026-07-21_manual_completion_source_of_truth.sql, Claude Code writes / Cowork applies) + the Ready-to-invoice section. 2 staff-facing What's New entries.
+
+MENTOR PUSH-BACKS baked in: (a) making completion manual flips the risk to forgotten invoices, mitigated by the Ready-to-invoice safety net; (b) the DB trigger is the non-obvious half of the fix (a client-only change is silently overridden); (c) manual completions are respected so a stray warranty/callback day never yanks a genuinely-done job out of AR.
+
+SEPARATE FOLLOW-UP (not in prompt 40): Dylan also asked to default estimate/invoice sends to Email AND Text with an editable combined compose modal (DripJobs "Send Proposal" style: delivery-method dropdown defaulting to Both, editable text body + editable email To/Cc/Subject/Body, one Send). Prompt 38 (unpushed) already defaults primary send to Email + Text but via a sequential confirm/compose flow with a server-built (non-editable) text body. The DripJobs-style editable combined modal is a larger, distinct feature; to be scoped as prompt 41.
+
+Why: Dylan's 2026-07-21 request (the invoicing tab should not show jobs that still have scheduled days as completed; it clouds real AR).
+Files touched: claude-code-prompt-40-invoicing-completion.md (new, repo root), PROJECT-LOG.md (this entry).
+Next steps: Dylan hands prompt 40 to Claude Code. Cowork applies the new trigger migration after Claude Code writes it.
+Handoff to Dylan: git add + commit this log entry and claude-code-prompt-40-invoicing-completion.md (the Cowork cloud sandbox cannot git commit), then hand prompt 40 to Claude Code. Prompt 41 (send modal) still to be scoped.
+
+---
+
+
+## [2026-07-21 MST] Cowork: applied the customer_notes migration to PROD + regenerated SCHEMA.md (prompt 38 feature 1 handoff)
+By: Cowork
+Changed: No repo code. (1) Applied Claude Code's supabase/migrations/2026-07-21_appointment_customer_notes.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via MCP apply_migration (name appointment_customer_notes). The migration is a single additive, idempotent DDL: alter table public.pec_appointments add column if not exists customer_notes text. (2) Regenerated the affected SCHEMA.md.
+
+PRE-CHECK: information_schema showed pec_appointments had NO customer_notes column before applying (0 rows returned). VERIFY (post-apply): exactly one row, customer_notes / text / YES. No RLS/policy change (the existing all-staff pec_appointments_staff FOR ALL policy covers the new column, per the migration header). pec_appointments row count is still 0, so no data to backfill; existing notes stay as internal "Company notes" by design.
+
+SCHEMA.md: bumped the header to "Generated 2026-07-21", inserted the customer_notes row directly under notes in the pec_appointments section, and appended a clarifying sentence to that table's Note line (notes = internal Company notes -> Google event description; customer_notes = customer-facing Job notes -> appended to the customer's confirmation/reminder texts and emails, never pushed to Google). No other sections touched.
+
+Net state of prompt 38 feature 1: the customer_notes column now exists in prod, so once Claude Code's index.html + _pec-appt.cjs + pec-appt-sync-push.cjs changes deploy, the two-note split is fully live (customer job notes append to reminders; company notes feed the Google description). Features 2 (phone on details) and 3 (combined Email/Text send on invoices + estimates) are code-only, no migration.
+
+Why: prompt 38 feature-1 Cowork handoff (Claude Code wrote the migration; Cowork applies + regenerates SCHEMA.md, standing rule 9).
+Files touched: SCHEMA.md (pec_appointments section + header date), PROJECT-LOG.md (this entry). Prod DB: migration appointment_customer_notes applied.
+Next steps: none blocking. Confirm the rest of prompt 38 (index.html/functions) is committed + deployed.
+Handoff to Dylan: git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). Also commit the Claude Code prompt-38 code changes + the migration file if not already committed.
+
+---
+
+
 ## [2026-07-21 MST] Schedule UX polish + CompanyCam in the scheduler (prompt 39, all three features)
 By: Claude Code
 Changed: Shipped prompt 39 in three feature commits plus this docs commit: today-ring in the day pickers (78803ca), clickable job names for the quick-look (6bbb0ac), and CompanyCam-in-scheduler + lightbox zoom (66c4a41). All work in index.html; no migrations, no new functions.
