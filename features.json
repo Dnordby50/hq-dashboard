@@ -1245,7 +1245,7 @@
     {
       "name": "Appointments calendar",
       "area": "dashboard",
-      "description": "A top-level Appointments view (Sales group, all staff): a Month/Week/Day calendar of sales appointments (on-site estimates, project walkthroughs, site visits, and ad-hoc 'other' blocks), separate from the crew Job Schedule. Each appointment is assigned to a pec_sales_team_members roster member (per-member event color, per-type accent, type + salesperson filters with an All Users default). Create from the New Appointment button or a day/slot tap; edit, cancel, delete, drag-to-reschedule and resize. Renders with FullCalendar 6 lazy-loaded from cdnjs and degrades to a month list that still edits when the CDN is blocked. Booking a lead-linked appointment notifies the bell (log_appointment_booked RPC) and kicks pec-appt-notify for the consent-checked customer confirmation; the scheduled pec-appt-reminder-runner sends the configured offset reminders (rules edited in Settings > Appointments). Schedule Estimate on a lead prefills the form and advances a new lead to contacted. Prompt 38: appointment notes are split into customer-facing Job notes (pec_appointments.customer_notes, appended to the customer's confirmation/reminder texts and emails on both channels, scrubbed of em dashes) and internal Company notes (pec_appointments.notes, pushed to the Google event description composed with an auto-added customer name/phone + a /?appt=<id> TopCoat deep link above a '----' separator; the pull ingests only the human-typed part back). The appointment popup also shows the linked lead/customer's phone with tap-to-call and tap-to-text.",
+      "description": "A top-level Appointments view (Sales group, all staff): a Month/Week/Day calendar of sales appointments (on-site estimates, project walkthroughs, site visits, and ad-hoc 'other' blocks), separate from the crew Job Schedule. Each appointment is assigned to a pec_sales_team_members roster member (per-member event color, per-type accent, type + salesperson filters with an All Users default). Create from the New Appointment button or a day/slot tap; edit, cancel, delete, drag-to-reschedule and resize. Renders with FullCalendar 6 lazy-loaded from cdnjs and degrades to a month list that still edits when the CDN is blocked. Booking a lead-linked appointment notifies the bell (log_appointment_booked RPC) and kicks pec-appt-notify for the consent-checked customer confirmation; the scheduled pec-appt-reminder-runner sends the configured offset reminders (rules edited in Settings > Appointments). Schedule Estimate on a lead prefills the form and advances a new lead to contacted. Prompt 38: appointment notes are split into customer-facing Job notes (pec_appointments.customer_notes, appended to the customer's confirmation/reminder texts and emails on both channels, scrubbed of em dashes) and internal Company notes (pec_appointments.notes, pushed to the Google event description composed with an auto-added customer name/phone + a /?appt=<id> TopCoat deep link above a '----' separator; the pull ingests only the human-typed part back). The appointment popup also shows the linked lead/customer's phone with tap-to-call and tap-to-text. Prompt 43: booking a lead-linked appointment also pauses the lead's active nurture drip (enrollment stopped with reason appointment_booked) via the shared server helper apptBookingLeadEffects in _pec-appt.cjs, called from the pec-appt-notify on-book kick; appointments can also arrive from Routemize (see the Routemize appointment intake entry).",
       "code": {
         "indexHtml": [
           "apptBookingSideEffects",
@@ -1268,6 +1268,34 @@
         "pec_appointment_reminder_sends",
         "pec_sales_team_members",
         "pec_notifications"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Routemize appointment intake",
+      "area": "integrations",
+      "description": "The webhook path that makes Routemize (prescottepoxycompany.routemize.com) the booking front end and TopCoat's appointment calendar the system of record after DripJobs retirement. Zapier posts every Routemize appointment event (created / updated / canceled / deleted) to pec-appt-intake with the shared webhook secret; the endpoint upserts pec_appointments by routemize_appt_id (source 'routemize', bare datetimes read as America/Phoenix), matches the contact to a live lead by last-10 phone or email (customer fallback; never auto-creates either), and maps the assigned rep to the pec_sales_team_members roster by google_email else name. A Routemize delete marks the row canceled, never hard-deletes, so the existing Google push removes the calendar event on its next kick. A NEW lead-linked booking reproduces the in-app booking's lead-side state through the shared server helper apptBookingLeadEffects (_pec-appt.cjs): a new lead with a booked on-site estimate advances to contacted with a stage_change lead_event, the lead's active nurture drip stops with reason appointment_booked (in-app bookings get the same drip pause via the pec-appt-notify kick), a staff bell row lands, and a best-effort runApptReminders kick sends the consented customer confirmation immediately (the 15-minute runner is the safety net). Every attempt logs to pec_webhook_ingest_log (endpoint 'appt-intake') for the Sync Health view. Unmatched contact or rep never blocks the appointment: it lands unlinked/unassigned with the details noted in the internal Company notes.",
+      "code": {
+        "indexHtml": [],
+        "netlifyFunctions": [
+          "pec-appt-intake.cjs",
+          "_pec-appt.cjs",
+          "pec-appt-notify.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-21_appointment_routemize_source.sql",
+          "production/appt-intake.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_appointments",
+        "leads",
+        "lead_events",
+        "pec_drip_enrollments",
+        "pec_drip_campaigns",
+        "pec_sales_team_members",
+        "pec_notifications",
+        "pec_webhook_ingest_log"
       ],
       "since": "2026-07"
     },

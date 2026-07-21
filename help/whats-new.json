@@ -1,5 +1,16 @@
 [
   {
+    "id": "routemize-appointments-on-calendar",
+    "date": "2026-07-21",
+    "title": "Appointments booked in Routemize show up on the calendar by themselves",
+    "summary": "When a customer books through Routemize, the appointment now lands on the TopCoat Appointments calendar automatically, assigned to the right salesperson and linked to the matching lead. The customer gets the usual booking confirmation text and email, the lead moves to Contacted, and its automatic follow-up messages stop so nobody gets a follow-up text after they already booked. Cancel or reschedule in Routemize and the calendar updates too.",
+    "howto": [
+      "Book, move, or cancel appointments in Routemize like normal; TopCoat mirrors it within a few seconds.",
+      "Open the Appointments view to see them; Routemize bookings look like any other appointment.",
+      "If a booking could not be matched to a lead or salesperson, the details are in the appointment's Company notes so you can link or assign it."
+    ]
+  },
+  {
     "id": "manual-completion-source-of-truth",
     "date": "2026-07-21",
     "title": "Jobs only count as complete when you mark them complete",
