@@ -223,6 +223,75 @@ async function processSalespersonRule(sb, rule, appt, ctx, summary) {
   }
 }
 
+// Lead-side booking effects (prompt 43), the server twin of the client's
+// booking flow so a Routemize-ingested appointment leaves the lead in the
+// same state an in-app booking does. Two callers:
+//   - pec-appt-intake.cjs with { advanceStage: true }: full parity with the
+//     Schedule Estimate flow (a NEW lead with a booked on-site estimate
+//     advances to 'contacted' + a stage_change lead_event), plus the drip
+//     pause below.
+//   - pec-appt-notify.cjs with { advanceStage: false }: in-app bookings keep
+//     their existing client-side stage handling (openScheduleEstimateFromLead
+//     owns the advance there), so the kick adds ONLY the drip pause.
+//   - Drip pause (both callers): booking an appointment means a live
+//     conversation, so the lead's ACTIVE lead-nurture enrollment stops with
+//     stop_reason 'appointment_booked' (the enrollment status CHECK has no
+//     'paused'; a stop-with-reason is the engine's pause, same shape as the
+//     estimate_sent eager stop). Estimate/invoice drips are left alone.
+// Every step is best-effort and idempotent: the stage patch is guarded on
+// stage=eq.new (a lost race writes nothing, so no duplicate event), the
+// enrollment patch is guarded on status=eq.active, and nothing here ever
+// throws (a side-effect failure must never fail the caller's response).
+async function apptBookingLeadEffects(sb, appt, opts = {}) {
+  const out = { staged: false, drip_stopped: 0 };
+  if (!appt || !appt.lead_id) return out;
+  const nowIso = (opts.now ? opts.now() : new Date()).toISOString();
+
+  if (opts.advanceStage && appt.appt_type === 'on_site_estimate') {
+    try {
+      // Mirror openScheduleEstimateFromLead: only a 'new' lead advances; the
+      // conditional PATCH makes "did it actually flip" the DB's answer, so
+      // the lead_event is written exactly when the transition happened.
+      const rows = await sb('PATCH',
+        `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&stage=eq.new&deleted_at=is.null`,
+        { stage: 'contacted', contacted_at: nowIso }, true);
+      if (Array.isArray(rows) && rows.length) {
+        out.staged = true;
+        await sb('POST', '/lead_events', {
+          lead_id: appt.lead_id,
+          event_type: 'stage_change',
+          from_stage: 'new',
+          to_stage: 'contacted',
+          payload: { via: 'appointment_booked', appointment_id: appt.id, source: appt.source || null },
+        }).catch(e => console.warn('apptBookingLeadEffects: stage event failed (non-fatal):', e && e.message));
+      }
+    } catch (e) {
+      console.warn('apptBookingLeadEffects: stage advance failed (non-fatal):', e && e.message || e);
+    }
+  }
+
+  try {
+    const act = await sb('GET',
+      `/pec_drip_enrollments?lead_id=eq.${encodeURIComponent(appt.lead_id)}&status=eq.active&select=id,campaign_id`);
+    const list = Array.isArray(act) ? act : [];
+    if (list.length) {
+      const ids = [...new Set(list.map(e => e.campaign_id))];
+      const camps = await sb('GET', `/pec_drip_campaigns?id=in.(${ids.join(',')})&select=id,kind`);
+      const leadCamps = new Set((Array.isArray(camps) ? camps : []).filter(c => c.kind === 'lead').map(c => c.id));
+      for (const e of list) {
+        if (!leadCamps.has(e.campaign_id)) continue;
+        await sb('PATCH', `/pec_drip_enrollments?id=eq.${encodeURIComponent(e.id)}&status=eq.active`, {
+          status: 'stopped', stop_reason: 'appointment_booked', stopped_at: nowIso, next_send_at: null,
+        });
+        out.drip_stopped++;
+      }
+    }
+  } catch (e) {
+    console.warn('apptBookingLeadEffects: drip pause failed (non-fatal):', e && e.message || e);
+  }
+  return out;
+}
+
 // The tick. opts.appointmentId narrows to one appointment (the on-book kick);
 // without it the runner scans for due work. Always safe to call again: the
 // ledger makes every leg exactly-once.
@@ -317,4 +386,4 @@ async function runApptReminders(deps, opts = {}) {
   return summary;
 }
 
-module.exports = { runApptReminders, resolveApptRecipient, renderTemplate, scrubDashes, apptDateStr, apptTimeStr };
+module.exports = { runApptReminders, apptBookingLeadEffects, resolveApptRecipient, renderTemplate, scrubDashes, apptDateStr, apptTimeStr };

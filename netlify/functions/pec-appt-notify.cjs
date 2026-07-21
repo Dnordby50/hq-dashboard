@@ -7,7 +7,7 @@
 // reminder-sends ledger's unique index makes every leg exactly-once.
 
 const { sb } = require('./_pec-supabase.cjs');
-const { runApptReminders } = require('./_pec-appt.cjs');
+const { runApptReminders, apptBookingLeadEffects } = require('./_pec-appt.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -49,6 +49,20 @@ exports.handler = async (event) => {
 
   try {
     const summary = await runApptReminders({ sb }, { appointmentId: String(input.appointment_id) });
+    // Prompt 43: an in-app booking pauses the lead's active nurture drip too
+    // (drip pause ONLY; the client's Schedule Estimate flow still owns the
+    // stage advance, so advanceStage stays false here). Best-effort and
+    // idempotent, so a re-kick is harmless.
+    try {
+      const rows = await sb('GET', `/pec_appointments?id=eq.${encodeURIComponent(String(input.appointment_id))}&select=id,lead_id,appt_type,source&limit=1`);
+      const appt = Array.isArray(rows) && rows[0];
+      if (appt && appt.lead_id) {
+        const fx = await apptBookingLeadEffects(sb, appt, { advanceStage: false });
+        if (fx.drip_stopped) summary.drip_stopped = fx.drip_stopped;
+      }
+    } catch (e) {
+      console.warn('pec-appt-notify: lead effects skipped (non-fatal):', e && e.message);
+    }
     console.log('pec-appt-notify:', JSON.stringify({ appointment_id: input.appointment_id, ...summary }));
     return jc(200, { ok: true, ...summary });
   } catch (err) {
