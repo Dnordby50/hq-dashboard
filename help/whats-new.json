@@ -1,5 +1,27 @@
 [
   {
+    "id": "manual-completion-source-of-truth",
+    "date": "2026-07-21",
+    "title": "Jobs only count as complete when you mark them complete",
+    "summary": "A job used to flip to completed by itself the day after its last scheduled day, which put jobs into the AR list that were not really done (or that got new days added later). Now a job that runs past its schedule simply stays in progress until someone hits Mark Complete, so the Completed, not paid in full list only shows work a person confirmed is finished. Jobs that show completed but still have days on the calendar now sit in their own section on the Invoicing tab and no longer count toward Total AR.",
+    "howto": [
+      "Finish a job? Mark it complete from the job page, the Invoicing tab, or by dragging it to Complete on the pipeline.",
+      "Nothing else changes it to completed for you, so Total AR is only work that is truly done.",
+      "Check the Completed, but still on the schedule section on the Invoicing tab for older jobs parked out of AR."
+    ]
+  },
+  {
+    "id": "ready-to-invoice-list",
+    "date": "2026-07-21",
+    "title": "New Ready to invoice list on the Invoicing tab",
+    "summary": "Since jobs no longer complete themselves, finished work could sit unnoticed if nobody marks it complete. The new Ready to invoice section catches it: any in progress job whose last scheduled day has passed shows up there with its balance and a Mark Complete button. One click confirms the job is done and moves it into the Completed list so you can send the final invoice.",
+    "howto": [
+      "Open the Invoicing tab and look at Ready to invoice (work finished, not marked complete).",
+      "Hit Mark Complete on a job that is really done; it moves into the Completed, not paid in full list.",
+      "Send the final invoice from there like always."
+    ]
+  },
+  {
     "id": "schedule-today-and-name-quick-look",
     "date": "2026-07-21",
     "title": "See today at a glance when scheduling, and tap a job name for a quick look",

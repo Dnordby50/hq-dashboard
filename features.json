@@ -661,9 +661,10 @@
     {
       "name": "Invoicing and accounts receivable",
       "area": "dashboard",
-      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs. Prompt 38: the Email invoice / Text invoice buttons merged into one split Send control (primary = email + text with the compose modal and text confirm both shown before anything sends; caret = one channel; missing channels send what is on file with a skipped note). Same send code underneath: kind='invoice' SMS with the pay link + STOP line, the compose modal, and the invoice_first_sent_at first-send stamp on either channel.",
+      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs. Prompt 38: the Email invoice / Text invoice buttons merged into one split Send control (primary = email + text with the compose modal and text confirm both shown before anything sends; caret = one channel; missing channels send what is on file with a skipped note). Same send code underneath: kind='invoice' SMS with the pay link + STOP line, the compose modal, and the invoice_first_sent_at first-send stamp on either channel. Prompt 40: manual completion is the source of truth. Completed AR rows that were AUTO-completed (jobs.status_manual_at null) but still have a schedule day after today are parked in a 'Completed, but still on the schedule' section and excluded from Total AR; a 'Ready to invoice' section lists in_progress jobs whose last scheduled day has passed, each with a Mark Complete button (markJobComplete, which now also stamps status_manual_at). Schedule spans reach AR rows via the dripjobs_deal_id bridge with the normalized name+address fallback, all reads batched.",
       "code": {
         "indexHtml": [
+          "markJobComplete",
           "pecDownloadInvoicePdf",
           "pecOpenPrintDoc",
           "pecSplitSendHtml",
@@ -1227,9 +1228,10 @@
     {
       "name": "Schedule status auto-sync",
       "area": "platform",
-      "description": "Boot-time sweep plus a scheduled daily function that flip job status from scheduled to in progress based on the production schedule, so statuses stay honest without manual edits.",
+      "description": "Boot-time sweep plus a scheduled daily function that flip job status from scheduled to in progress based on the production schedule, so statuses stay honest without manual edits. The one canonical rule is deriveJobStatus (client) in lockstep with the pec_prod_jobs_sync_public_status trigger (2026-07-21_manual_completion_source_of_truth.sql). Since 2026-07-21 nothing auto-completes: a job past its last scheduled day stays in_progress until a human marks it complete, and only the manual completion paths stamp completed_date.",
       "code": {
         "indexHtml": [
+          "deriveJobStatus",
           "runScheduleStatusSync",
           "syncPublicJobStatusFromSchedule"
         ],

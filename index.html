@@ -5883,11 +5883,23 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
       const reason = (reasonEl.value || '').trim();
       try {
         const stamp = new Date().toISOString();
-        let upd = await supabase.from('jobs').update({ status: toStatus, status_manual_at: stamp }).eq('id', jobId);
+        const patch = { status: toStatus, status_manual_at: stamp };
+        // Manual completion is the ONLY thing that stamps completed_date now
+        // (no schedule auto-complete, 2026-07-21), so the pipeline drag and the
+        // dropdown must stamp it themselves or AR aging shows a dash. Preserve
+        // an already-recorded date (a re-complete keeps the original).
+        if (toStatus === 'completed') {
+          try {
+            const cur = await supabase.from('jobs').select('completed_date').eq('id', jobId).single();
+            if (!cur.error && !(cur.data && cur.data.completed_date)) patch.completed_date = mstTodayIso();
+          } catch (_) {}
+        }
+        let upd = await supabase.from('jobs').update(patch).eq('id', jobId);
         if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
           // Migration not applied yet: persist the status anyway. The override
           // will not be sticky until the column exists, but the change takes.
-          upd = await supabase.from('jobs').update({ status: toStatus }).eq('id', jobId);
+          const { status_manual_at, ...rest } = patch;
+          upd = await supabase.from('jobs').update(rest).eq('id', jobId);
         }
         if (upd.error) throw upd.error;
         const after = { status: toStatus, source: 'manual_override' };
@@ -6321,8 +6333,9 @@ function mstTodayIso() {
 
 // THE one canonical job-status rule. Every status derivation path (the schedule
 // sweep, the live calendar sync, the job-detail render, the Pipeline display,
-// and the DB trigger 2026-06-09_unified_status_trigger.sql) must produce the
-// SAME answer, so a job reads identically everywhere. This is the client copy;
+// and the DB trigger 2026-07-21_manual_completion_source_of_truth.sql, which
+// supersedes 2026-06-09_unified_status_trigger.sql) must produce the SAME
+// answer, so a job reads identically everywhere. This is the client copy;
 // the trigger is the path-independent server copy of the exact same machine.
 //
 // Inputs (all ISO YYYY-MM-DD strings except the two flags):
@@ -6341,17 +6354,21 @@ function mstTodayIso() {
 //   2. A manual pin wins; only a genuine human calendar action (or the DB
 //      trigger on a real prod-row change) clears it -- background sweeps never do.
 //   3. No schedule -> 'signed'. start > today -> 'scheduled'.
-//      start <= today <= end -> 'in_progress'. today > end -> 'completed'
-//      (auto-complete the day AFTER the LAST scheduled day, not the first).
-// Callers stamp completed_date = end themselves; this stays pure (status only).
+//      start <= today -> 'in_progress', INCLUDING past the last scheduled day.
+//      Manual completion is the source of truth (Dylan, 2026-07-21): a job
+//      never auto-completes just because its schedule ran out -- it stays
+//      in_progress until a human marks it complete (Mark Complete on the job
+//      detail / Invoicing, or the pipeline drag). Finished-but-unmarked work
+//      is surfaced by the Invoicing tab's "Ready to invoice" section so it
+//      cannot slip. The server copy is 2026-07-21_manual_completion_source_
+//      of_truth.sql (superseding the final branch of the 2026-06-09 trigger).
+// completed_date is stamped ONLY by the manual completion paths, never derived.
 function deriveJobStatus({ start, end, today, storedStatus, manualPinned }) {
   if (storedStatus === 'completed') return null;   // rule 1
   if (manualPinned) return null;                   // rule 2
   if (!start) return 'signed';                     // rule 3: not on the calendar
-  const last = end || start;                       // end always exists if start does; defensive
   if (start > today) return 'scheduled';
-  if (today <= last) return 'in_progress';         // start <= today <= end
-  return 'completed';                              // today > end
+  return 'in_progress';                            // started; only a human completes
 }
 
 // Fallback bridge keys. The only DB link between public.jobs and the schedule
@@ -6406,13 +6423,14 @@ async function syncPublicJobStatusFromSchedule(dealId, { cleared = false, start 
   try {
     if (!dealId) return;
     const today = mstTodayIso();
-    const res = await supabase.from('jobs').select('id,status,completed_date').eq('dripjobs_deal_id', dealId).is('archived_at', null);
+    const res = await supabase.from('jobs').select('id,status').eq('dripjobs_deal_id', dealId).is('archived_at', null);
     if (res.error) { console.warn('[pec] schedule status sync lookup:', res.error.message); return; }
     for (const j of res.data || []) {
       const target = deriveJobStatus({ start: cleared ? null : start, end: cleared ? null : end, today, storedStatus: j.status, manualPinned: false });
       if (!target || j.status === target) continue;
+      // deriveJobStatus never returns 'completed' (manual completion is the
+      // source of truth, 2026-07-21), so no completed_date stamping here.
       const patch = { status: target, status_manual_at: null };
-      if (target === 'completed' && !j.completed_date) patch.completed_date = end || start;
       let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
       if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
         const { status_manual_at, ...rest } = patch; // pre-migration fallback
@@ -6433,8 +6451,9 @@ async function syncPublicJobStatusFromSchedule(dealId, { cleared = false, start 
 // scheduling actions; this catches jobs that were scheduled earlier (or via a
 // path that did not call it) and were left stuck on 'signed'. The rule lives in
 // deriveJobStatus (the single canonical machine): no schedule -> 'signed';
-// start in the future -> 'scheduled'; start <= today <= end -> 'in_progress';
-// today past the LAST day -> 'completed'. NEVER touches a job an admin pinned by
+// start in the future -> 'scheduled'; start <= today -> 'in_progress', even
+// past the last day (manual completion is the source of truth, 2026-07-21;
+// this sweep never completes a job). NEVER touches a job an admin pinned by
 // hand (status_manual_at) -- that is the manual override via the pipeline drag
 // or the job-detail dropdown, which wins until the calendar changes again (only
 // that path clears the pin). Completed is never changed. Best-effort; throttled
@@ -6453,7 +6472,7 @@ async function runScheduleStatusSync({ force = false } = {}) {
       supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date'),
       // ALL non-archived, non-completed jobs (deal id optional; some match only
       // by name+address). customers(name) + address feed the fallback bridge.
-      supabase.from('jobs').select('id,status,status_manual_at,dripjobs_deal_id,address,completed_date,customers(name)').is('archived_at', null).neq('status', 'completed'),
+      supabase.from('jobs').select('id,status,status_manual_at,dripjobs_deal_id,address,customers(name)').is('archived_at', null).neq('status', 'completed'),
     ]);
     if (pjRes.error || jobsRes.error) return;
     const daysByProd = {};
@@ -6492,10 +6511,9 @@ async function runScheduleStatusSync({ force = false } = {}) {
       // covers "already completed" and any no-op.
       const target = deriveJobStatus({ start, end, today, storedStatus: j.status, manualPinned: !!j.status_manual_at });
       if (!target || j.status === target) continue;
+      // No completed_date stamping: deriveJobStatus never returns 'completed'
+      // anymore, and only human completion paths stamp the date (2026-07-21).
       const patch = { status: target };
-      // Stamp completed_date (to the LAST scheduled day) when auto-completing, so
-      // AR aging is correct -- mirrors markJobComplete. Only when not already set.
-      if (target === 'completed' && !j.completed_date) patch.completed_date = end || start;
       let upd = await supabase.from('jobs').update(patch).eq('id', j.id);
       if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
         const { status_manual_at, ...rest } = patch; // pre-migration fallback
@@ -8880,7 +8898,17 @@ async function renderInvoicing() {
   // like a deposit-collected job for the in-progress bucket.
   const signedNoDep = rows.filter(r => !r.deposit_collected && !r.deposit_waived && r.status !== 'completed' && r.balance > EPS)
     .sort((a, b) => (a.signed_date || '').localeCompare(b.signed_date || ''));
-  const active = rows.filter(r => (r.deposit_collected || r.deposit_waived) && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS)
+  // READY TO INVOICE (safety net, 2026-07-21): with schedule auto-completion
+  // removed, a finished job nobody marks complete would otherwise never enter
+  // AR. Bridged in_progress jobs whose LAST scheduled day is strictly before
+  // today (every work day in the past = work physically done) wait here for a
+  // human to confirm via Mark Complete, which moves them into the real
+  // Completed AR bucket. Shown ONCE: subtracted from the Active bucket below,
+  // which keeps in-progress jobs whose last day is today or later.
+  const ready = rows.filter(r => r.status === 'in_progress' && r.balance > EPS && r.sched_last && r.sched_last < today)
+    .sort((a, b) => (a.sched_last || '').localeCompare(b.sched_last || ''));
+  const readyIds = new Set(ready.map(r => r.id));
+  const active = rows.filter(r => (r.deposit_collected || r.deposit_waived) && ['signed', 'scheduled', 'in_progress'].includes(r.status) && r.balance > EPS && !readyIds.has(r.id))
     .sort((a, b) => (a.install_date || a.signed_date || '').localeCompare(b.install_date || b.signed_date || ''));
   const closed = rows.filter(r => r.balance <= EPS && r.last_payment_date && invDaysBetween(r.last_payment_date, today) <= 60)
     .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
@@ -9018,6 +9046,12 @@ async function renderInvoicing() {
 
   // "next day: Aug 3" -- why the job is parked, at a glance.
   const invMonDay = d => { const x = invParse(d); return x ? `${MON[x.getUTCMonth()]} ${x.getUTCDate()}` : '—'; };
+  const readyRows = ready.map(r => `<tr class="nohover">
+    <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${r.customer_name ? esc(r.customer_name) : '&mdash;'}</button></td><td>${r.address ? esc(r.address) : '&mdash;'}</td>
+    <td>${invUSD(r.price)}</td><td><strong>${invUSD(r.balance)}</strong></td>
+    <td>${invFmtDate(r.sched_last)}</td>
+    <td>${esc(r.salesperson) || '&mdash;'}</td>
+    <td style="white-space:nowrap"><button class="pec-btn sm primary" data-complete="${r.id}">Mark Complete</button> ${viewBtn(r)}</td></tr>`).join('');
   const parkedRows = parked.map(r => `<tr class="nohover">
     <td><button type="button" class="pec-cust-name" data-openjob="${esc(r.id)}">${r.customer_name ? esc(r.customer_name) : '&mdash;'}</button></td><td>${r.address ? esc(r.address) : '&mdash;'}</td>
     <td><strong>${invUSD(r.balance)}</strong></td>
@@ -9063,6 +9097,13 @@ async function renderInvoicing() {
         <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Age</th><th>Last invoiced</th><th>Salesperson</th><th>Completed</th><th></th></tr></thead>
         <tbody>${completedRows}</tbody></table></div>
     </details>
+
+    ${ready.length ? `<details class="pec-card pec-ar-sec" open>
+      <summary>Ready to invoice (work finished, not marked complete) <span class="pec-ar-meta">${ready.length} job${ready.length === 1 ? '' : 's'} · ${invUSD(ready.reduce((s, r) => s + r.balance, 0))} waiting on your confirmation</span></summary>
+      <div class="pec-scroll-x"><table class="pec-table">
+        <thead><tr><th>Customer</th><th>Address</th><th>Total</th><th>Balance</th><th>Last scheduled day</th><th>Salesperson</th><th></th></tr></thead>
+        <tbody>${readyRows}</tbody></table></div>
+    </details>` : ''}
 
     ${parked.length ? `<details class="pec-card pec-ar-sec">
       <summary>Completed, but still on the schedule <span class="pec-ar-meta">${parked.length} job${parked.length === 1 ? '' : 's'} · ${invUSD(parked.reduce((s, r) => s + r.balance, 0))} on hold, not counted in AR</span></summary>
@@ -10615,7 +10656,15 @@ async function markJobComplete(row) {
   if (!confirm(`Mark this job complete?\n\n${row.customer_name || ''}\n${row.address || ''}`)) return;
   const today = invToday();
   try {
-    const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
+    // status_manual_at marks this as a HUMAN completion, which is what keeps
+    // the job in AR (not the "Completed, but still on the schedule" parking)
+    // if a schedule day is ever added back later. Same deploy-safe fallback as
+    // the other status writers if the column is missing.
+    const patch = { completed_date: today, status: 'completed', status_manual_at: new Date().toISOString() };
+    let upd = await withFreshWriteRetry(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'mark-complete' });
+    if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+      upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
+    }
     if (upd.error) throw upd.error;
     // Mirror completion onto the production row so Job Costing (which reads
     // pec_prod_jobs.status) sees it. Without this, an Invoicing-side Mark
@@ -12990,10 +13039,10 @@ async function renderJobDetailInner(id) {
   // when the schedule implied a different status. Idempotent full-value update,
   // so the wedge-safe recover+retry helper is appropriate. Non-blocking.
   if (statusTarget !== statusBeforeSync) {
-    // Stamp completed_date (to the LAST scheduled day) when auto-completing, so
-    // AR aging matches the sweep and markJobComplete. Only when not already set.
+    // Status only: deriveJobStatus never returns 'completed' (manual completion
+    // is the source of truth, 2026-07-21), so completed_date is never stamped
+    // here -- only the human Mark Complete paths stamp it.
     const syncPatch = { status: statusTarget };
-    if (statusTarget === 'completed' && !job.completed_date) syncPatch.completed_date = scheduleState.lastDate || jobInstallDate;
     (async () => {
       try {
         const upd = await withFreshWriteRetry(() => supabase.from('jobs').update(syncPatch).eq('id', id), { label: 'status-schedule-sync' });
@@ -30112,6 +30161,13 @@ function _mergeAcrossAreas(areaPlans) {
     try {
       const { error } = await supabase.from('pec_prod_jobs').update({ status: 'completed' }).eq('id', j.id);
       if (error) throw error;
+      // The DB trigger mirrors this onto jobs.status but no longer stamps
+      // completed_date (manual completion source of truth, 2026-07-21). This
+      // IS a human completion, so stamp the date here. Best-effort, fills only
+      // a null so a re-complete keeps the original date.
+      if (j.dripjobs_deal_id) {
+        try { await supabase.from('jobs').update({ completed_date: mstTodayIso() }).eq('dripjobs_deal_id', j.dripjobs_deal_id).is('completed_date', null); } catch (_) {}
+      }
       okEl.textContent = 'Marked complete.';
       await loadJobs();
       state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
