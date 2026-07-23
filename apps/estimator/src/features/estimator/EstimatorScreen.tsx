@@ -31,6 +31,7 @@ import { drainOutbox } from '../../offline/sync';
 import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
 import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
 import { supabase } from '../../lib/supabase';
+import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
 import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
 
@@ -197,6 +198,60 @@ export default function EstimatorScreen({
       zip: leadLink.zip ?? '',
     };
   });
+  // Duplicate-customer search (prompt 44): find an existing customer/lead and
+  // link the estimate to it instead of creating a fresh unlinked record.
+  // linkedLead overrides the URL leadLink at save time (the rep deliberately
+  // picked it). Online-only; offline the search UI is hidden and the normal
+  // outbox save path is untouched. Toggleable from Settings > Estimates.
+  const custSearchEnabled = !editing && online && config.customerSearchEnabled !== false;
+  const [custSearch, setCustSearch] = useState('');
+  const [custMatches, setCustMatches] = useState<CustomerMatch[]>([]);
+  const [custSearchOpen, setCustSearchOpen] = useState(false);
+  const [linkedLead, setLinkedLead] = useState<{ id: string; name: string } | null>(null);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!custSearchEnabled || custSearch.trim().length < 2) {
+      setCustMatches([]);
+      setCustSearchOpen(false);
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const found = await searchCustomersAndLeads(custSearch);
+        if (!alive) return;
+        setCustMatches(found);
+        setCustSearchOpen(true);
+      } catch {
+        // Search is a nicety, never a gate: a failed query just shows nothing.
+        if (alive) { setCustMatches([]); setCustSearchOpen(false); }
+      }
+    }, 300);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [custSearch, custSearchEnabled]);
+  const pickCustomerMatch = useCallback(async (m: CustomerMatch) => {
+    setCustomer(m.form);
+    setCustSearch('');
+    setCustMatches([]);
+    setCustSearchOpen(false);
+    if (m.kind === 'lead') {
+      setLinkedLead({ id: m.id, name: m.name });
+      setLinkNote(null);
+      return;
+    }
+    // Customer match: the estimate links through a lead (the spine downstream
+    // readers key off), found or created now. On failure the fields stay
+    // prefilled and the save proceeds unlinked, with a visible note.
+    try {
+      const leadId = await ensureLeadForCustomer(m.id, m.form);
+      setLinkedLead({ id: leadId, name: m.name });
+      setLinkNote(null);
+    } catch {
+      setLinkedLead(null);
+      setLinkNote('Fields filled, but linking to the existing customer failed. The estimate will save unlinked.');
+    }
+  }, []);
+
   const [intake, setIntake] = useState<Intake>(() =>
     editing ? intakeFromLoaded(editing.intake) : emptyIntake,
   );
@@ -1185,7 +1240,9 @@ export default function EstimatorScreen({
         calcPrice: basePrice,
         priceOverride: discounted ? { reason: overrideReason.trim(), by: createdBy } : null,
         createdBy: editing?.createdBy ?? createdBy,
-        leadId: editing?.leadId ?? leadLink?.id ?? null,
+        // The dedup pick (linkedLead) outranks the URL lead link: the rep
+        // explicitly chose that record. An edit keeps its stored lead.
+        leadId: editing?.leadId ?? linkedLead?.id ?? leadLink?.id ?? null,
         // Custom saves write the scope themselves (with scope_edited_at). A
         // standard save flags the document stale whenever one exists and this
         // save is not carrying fresh text: with auto-regenerate gone (build
@@ -1248,7 +1305,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -1353,6 +1410,47 @@ export default function EstimatorScreen({
                 <button type="button" className={customer.isCommercial ? 'on' : ''} onClick={() => setCommercial(true)}>Commercial</button>
               </div>
             </div>
+            {custSearchEnabled && (
+              <div className="cust-search">
+                <label className="field cust-wide">
+                  <span>Search existing customers and leads</span>
+                  <div className="addr-ac">
+                    <input
+                      value={custSearch}
+                      onChange={(e) => setCustSearch(e.target.value)}
+                      onFocus={() => { if (custMatches.length) setCustSearchOpen(true); }}
+                      placeholder="Name, phone, email, or address"
+                    />
+                    {custSearchOpen && custMatches.length > 0 && (
+                      <div className="addr-ac-list" role="listbox">
+                        {custMatches.map((m) => (
+                          <button
+                            key={`${m.kind}:${m.id}`}
+                            type="button"
+                            className="addr-ac-item"
+                            onClick={() => void pickCustomerMatch(m)}
+                          >
+                            <span className="addr-ac-main">
+                              {m.name} <span className={`match-kind ${m.kind}`}>{m.kind === 'lead' ? 'Lead' : 'Customer'}</span>
+                            </span>
+                            {(m.phone || m.addressLine) && (
+                              <span className="addr-ac-sec">{[m.phone, m.addressLine].filter(Boolean).join(' · ')}</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </label>
+                {linkedLead && (
+                  <p className="hint link-ok">
+                    Linked to existing record: <strong>{linkedLead.name}</strong>. Saving attaches this estimate to it instead of creating a duplicate.{' '}
+                    <button type="button" className="as-link" onClick={() => setLinkedLead(null)}>Unlink</button>
+                  </p>
+                )}
+                {linkNote && <p className="hint link-warn">{linkNote}</p>}
+              </div>
+            )}
             <div className="cust-grid">
               {customer.isCommercial ? (
                 <>

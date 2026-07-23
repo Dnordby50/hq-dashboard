@@ -34,6 +34,7 @@ export type PricingConfig = {
   floorGpPct: number;  // estimator_floor_gp_pct: GP% floor below which an override warns (build 17)
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
+  customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
 };
 
 export type Catalog = {
@@ -88,6 +89,7 @@ export async function loadCatalog(): Promise<Catalog> {
         'estimator_default_commission_pct',
         'estimator_sundries_pct',
         'estimator_floor_gp_pct',
+        'estimator_customer_search_enabled',
       ]),
   ]);
 
@@ -125,6 +127,7 @@ export async function loadCatalog(): Promise<Catalog> {
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&
       settings['estimator_default_commission_pct'] !== '',
+    customerSearchEnabled: String(settings['estimator_customer_search_enabled'] ?? 'true').toLowerCase() !== 'false',
   };
 
   const catalog: Catalog = {

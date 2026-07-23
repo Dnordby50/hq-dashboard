@@ -244,6 +244,35 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 .addr-ac-main { font-weight: 600; }
 .addr-ac-sec { font-size: 0.75rem; color: var(--muted); }
 
+/* Duplicate-customer search (prompt 44): reuses the addr-ac dropdown shell;
+   each result carries a Customer/Lead kind badge so duplicates are
+   distinguishable at a glance. */
+.cust-search { margin-bottom: 0.6rem; }
+.match-kind {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.match-kind.lead { background: rgba(216, 83, 28, 0.12); color: #b45309; border: 1px solid rgba(216, 83, 28, 0.4); }
+.match-kind.customer { background: rgba(37, 99, 235, 0.1); color: #1d4ed8; border: 1px solid rgba(37, 99, 235, 0.35); }
+.link-ok { color: #15803d; }
+.link-warn { color: #b45309; }
+.as-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #d8531c);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* MVB tri-state control: off / add-on / standalone. */
 .mvb-seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 0.5rem; overflow: hidden; }
 .seg {
