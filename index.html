@@ -2481,6 +2481,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                actual privacy boundary. Lives in Overview because the build-19
                rail renders every destination inside a group flyout. -->
           <button data-pec-view="todos">To-dos</button>
+          <!-- Prompt 44 nav reorg: Leads/Estimates/Drips/Settings became their
+               own rail groups and Jobs pipeline moved under Production. Only
+               the markup ORDER changed; every data-pec-view and all routing is
+               untouched (the build-19 rail renderer parses this markup, so
+               reordering here IS the rail change). -->
           <div class="pec-subnav-group">Sales</div>
           <button data-pec-view="jobs">Jobs</button>
           <button data-pec-view="customers">Customers</button>
@@ -2489,36 +2494,45 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                user can read the email history; RLS (is_admin_staff) is the
                actual boundary. -->
           <button data-pec-view="email-log">Email Log</button>
+          <div class="pec-subnav-group">Leads</div>
           <button data-pec-view="leads">Leads</button>
           <!-- Sales appointments calendar (prompt 37). Deliberately separate
                from the crew Job Schedule below: this is estimates and
                walkthroughs for the sales roster, not install days. All-staff
                like Leads; RLS is the boundary. -->
           <button data-pec-view="appointments">Appointments</button>
-          <button data-pec-view="drips" class="pec-role-admin">Drips</button>
-          <!-- Prompt 42: the human review queue for held drip messages while
-               the approval gate (Settings > Drips) is on. Admin like Drips;
-               the approve endpoint + staff RLS are the real boundary. -->
-          <button data-pec-view="drip-approvals" class="pec-role-admin">Drip Approvals</button>
+          <div class="pec-subnav-group">Estimates</div>
           <button data-pec-view="estimates">Estimates</button>
-          <button data-pec-view="pipeline">Jobs pipeline</button>
           <!-- The standalone Estimator rail item was removed in build 18: the
                estimator is reached from Leads > Start estimate and the
                Estimates list > New estimate. settings.estimator_allowed_emails
                only ever gated this beta button and is now unused. -->
+          <div class="pec-subnav-group">Drips</div>
+          <button data-pec-view="drips" class="pec-role-admin">Drips</button>
+          <!-- Prompt 42: the human review queue for held drip messages while
+               the approval gate (Settings > Drips) is on. Admin like Drips;
+               the approve endpoint + staff RLS are the real boundary. Both
+               items are admin-only, so railSync hides the whole Drips group
+               for non-admins (group-hides-when-all-items-hidden). -->
+          <button data-pec-view="drip-approvals" class="pec-role-admin">Drip Approvals</button>
           <div class="pec-subnav-group">Production</div>
           <button data-pec-view="ordering">Ordering</button>
           <button data-pec-view="schedule">Job Schedule</button>
           <button data-pec-view="nextday">Next Day Schedule</button>
+          <button data-pec-view="pipeline">Jobs pipeline</button>
           <div class="pec-subnav-group">Finance</div>
           <button data-pec-view="invoicing">Invoicing</button>
           <button data-pec-view="costing" class="pec-role-admin">Job Costing</button>
           <button data-pec-view="crew-bonus" class="pec-role-admin">Bonus Report</button>
           <button data-pec-view="commission" class="pec-role-admin">Commission</button>
-          <div class="pec-subnav-group">Admin</div>
+          <!-- Prompt 44: the old Admin group's three items live here now. All
+               admin-only, so the whole Settings group hides for non-admins. -->
+          <div class="pec-subnav-group">Settings</div>
+          <button data-pec-view="settings" class="pec-role-admin">Settings</button>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="dripjobs-sync-health" class="pec-role-admin">DripJobs Sync Health</button>
-          <button data-pec-view="settings" class="pec-role-admin">Settings</button>
+          <!-- Help stays here (last) but RAIL_PIN lifts it into its own pinned
+               rail row, so it never renders inside the Settings flyout. -->
           <button data-pec-view="docs">Help</button>
         </nav>
       </aside>
@@ -5134,9 +5148,12 @@ if (document.readyState === 'loading') {
     const RAIL_ICONS = {
       Overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
       Sales: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 5-6"/></svg>',
+      Leads: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>',
+      Estimates: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/></svg>',
+      Drips: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/></svg>',
       Production: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
       Finance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9a2.5 2.5 0 0 0-2.5-1.5c-1.5 0-2.5.8-2.5 2s1 1.7 2.5 2 2.5.8 2.5 2-1 2-2.5 2A2.5 2.5 0 0 1 9.5 15M12 6v1.5M12 16.5V18"/></svg>',
-      Admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8 8 11 4.5-3 8-6 8-11V5z"/></svg>',
+      Settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08A1.7 1.7 0 0 0 10.1 3.6V3.5a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03h.1a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.56 1.03z"/></svg>',
       Help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17"/></svg>',
     };
     // Build 19 renames (routes unchanged; labels only, per Dylan's sign-off).
