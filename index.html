@@ -10218,6 +10218,201 @@ function openScheduleEditor(row, installments, { onSaved }) {
   } });
 }
 
+// The ONE invoice send flow (prompt 38 split-send mechanics, extracted from
+// renderJobInvoice by prompt 45 so the Approvals view can send a held
+// installment through the identical path). row = the pec_job_ar row.
+// opts: invNo (display), onDone (after any completed send; the job view
+// passes renderInvoicing), onSent (after each successful leg; the job view
+// stamps the current installment 'sent'). Returns { email, text, both }
+// handlers in the pecWireSplitSend shape.
+//
+// Text leg: pec-send-sms kind='invoice' builds the compliant body server-side
+// (now schedule-aware: it states the current amount due) and is the authority
+// on the opt-out guard; the probe here is a courtesy. Email leg: the
+// compose-before-send modal, template-prefilled, server wraps in brand
+// chrome. Both legs stamp jobs.invoice_first_sent_at first-send-wins (the one
+// moment the reminder drip first enrolls). ACH guard (prompt 13 decision 8):
+// never dun a customer whose bank transfer is already clearing, one lookup
+// per send CLICK, degrades to 0 and never blocks the send.
+function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {}) {
+  const done = () => { if (onDone) onDone(); };
+  const sentLeg = async () => { if (onSent) { try { await onSent(); } catch (_) { /* logged inside */ } } };
+  const confirmDespitePendingAch = async () => {
+    let pendSum = 0;
+    try {
+      const { data, error } = await supabase.from('pec_stripe_pending').select('amount').eq('job_id', row.id).eq('status', 'pending');
+      if (!error && Array.isArray(data)) pendSum = data.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    } catch (_) { /* treat as none */ }
+    if (pendSum > 0.005 && !confirm(`This job has a ${invUSD(pendSum)} bank transfer pending. Send anyway?`)) return false;
+    return true;
+  };
+
+  const smsBrand = smsBrandFromCompany(row.customer_company);
+  let invTextOptedOut = false;
+  if (row.customer_id) {
+    supabase.from('customers').select('sms_opt_out').eq('id', row.customer_id).maybeSingle()
+      .then(({ data }) => { if (data && data.sms_opt_out) invTextOptedOut = true; })
+      .catch(() => { /* column may not exist yet; server still guards */ });
+  }
+  const confirmInvoiceText = () => {
+    const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
+    return confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`);
+  };
+  const doInvoiceTextSend = async () => {
+    try {
+      await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
+      // First-send wins, same stamp as the email path (the null->set
+      // transition is the ONE moment the invoice drip enrolls).
+      if (!row.invoice_first_sent_at) {
+        const nowIso = new Date().toISOString();
+        withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+          .then(res => {
+            if (!(res && res.error)) {
+              row.invoice_first_sent_at = nowIso;
+              enrollInvoiceDripClient(row.id).catch(() => {});
+            }
+          })
+          .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
+      }
+      await sentLeg();
+      showToast('Invoice texted ✓', { ttl: 3500 });
+      return true;
+    } catch (err) {
+      // Includes the opt-out refusal (409) and any Quo error, verbatim.
+      showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
+      return false;
+    }
+  };
+  const invoiceTextOnly = async () => {
+    if (!row.customer_phone) { showToast('No phone number on file for this customer.', { ttl: 4000 }); return; }
+    if (invTextOptedOut) { showToast('This customer opted out of texts (replied STOP).', { ttl: 4500 }); return; }
+    if (!row.public_token) { showToast('Public link not ready yet &mdash; run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+    if (!(await confirmDespitePendingAch())) return;
+    if (!confirmInvoiceText()) return;
+    const main = $('pecInvSendMain');
+    if (main) { main.disabled = true; main.textContent = 'Texting…'; }
+    await doInvoiceTextSend();
+    done(); // re-lands on the invoice; Communication history picks up the send
+  };
+
+  // Compose-before-send dialog: To / Cc / Copy Me / Subject / rich-text body,
+  // all pre-filled from the invoice template with tokens resolved client-side.
+  // Sends in compose mode (server wraps the body in brand chrome).
+  const openInvoiceEmail = async ({ afterSend = null, skipAch = false } = {}) => {
+    if (!skipAch && !(await confirmDespitePendingAch())) return;
+    const brand = 'prescott-epoxy'; // PEC-only CRM
+    await fetchBrandIdentity(); // for the CTA color + chrome match
+    const values = emailComposeValues(row);
+    const staffEmail = state.adminUser?.email || '';
+    openModal(`
+      <h3>Email invoice</h3>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>To</label><input id="cmpTo" value="${esc(row.customer_email || '')}" placeholder="customer@example.com (comma-separated for multiple)"></div>
+        <div class="pec-field"><label>Cc</label><input id="cmpCc" placeholder="optional, comma-separated"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="cmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
+      <div class="pec-field"><label>Subject</label><input id="cmpSubject"></div>
+      <div class="pec-field"><label>Body</label><div id="cmpEditorWrap" style="background:#fff;border-radius:6px"><div id="cmpEditor" style="min-height:240px"></div></div></div>
+      <div class="prod-msg-err" id="cmpErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="cmpSend" disabled>Loading editor…</button>
+      </div>
+    `, { onMount: async modal => {
+      // Pre-fill subject + body from the saved template (fall back to defaults).
+      let subjectTpl = DEFAULT_INVOICE_SUBJECT, bodyTpl = DEFAULT_INVOICE_BODY;
+      try {
+        const { data } = await supabase.from('pec_email_templates').select('subject,html').eq('key', 'invoice').eq('brand', brand).maybeSingle();
+        if (data) { subjectTpl = data.subject || subjectTpl; bodyTpl = data.html || bodyTpl; }
+      } catch (_) { /* defaults */ }
+      modal.querySelector('#cmpSubject').value = emailResolveSubject(subjectTpl, values);
+      const bodyHtml = emailResolveBody(bodyTpl, values);
+      let quill = null;
+      try {
+        await ensureQuill();
+        quill = new Quill(modal.querySelector('#cmpEditor'), { theme: 'snow', modules: { toolbar: [['bold', 'italic', 'underline'], [{ list: 'ordered' }, { list: 'bullet' }], ['link'], ['clean']] } });
+        quill.clipboard.dangerouslyPasteHTML(bodyHtml);
+      } catch (e) {
+        // Editor failed to load: fall back to a plain textarea of the HTML.
+        modal.querySelector('#cmpEditorWrap').innerHTML = `<textarea id="cmpEditorTa" rows="12" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem">${esc(bodyHtml)}</textarea>`;
+      }
+      const sendBtn = modal.querySelector('#cmpSend');
+      sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
+      sendBtn.addEventListener('click', async () => {
+        const errEl = modal.querySelector('#cmpErr'); errEl.textContent = '';
+        const to = modal.querySelector('#cmpTo').value.trim();
+        let cc = modal.querySelector('#cmpCc').value.trim();
+        if (modal.querySelector('#cmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
+        const subject = modal.querySelector('#cmpSubject').value.trim();
+        const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#cmpEditorTa')?.value || '');
+        if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
+        if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
+        sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+        try {
+          await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, job_id: row.id, customer_id: row.customer_id });
+          // First-send wins: stamp jobs.invoice_first_sent_at only if still null,
+          // for the AR-timing metric (invoice sent before completion day). The
+          // `.is(..., null)` filter makes it safe across clients (never overwrites
+          // an earlier send). Fire-and-forget: the email already went out, so a
+          // stamp failure must not block the success toast. Skipped on "copy
+          // public link" and the Settings test-send (not real invoice sends).
+          if (!row.invoice_first_sent_at) {
+            const nowIso = new Date().toISOString();
+            withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+              .then(res => {
+                if (!(res && res.error)) {
+                  row.invoice_first_sent_at = nowIso;
+                  // Phase 3: the first invoice send enrolls automatic payment
+                  // reminders (campaign ships dry_run; nothing texts/emails
+                  // until Dylan flips it live). Stamp-guarded = exactly once.
+                  enrollInvoiceDripClient(row.id).catch(() => {});
+                }
+              })
+              .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
+          }
+          await sentLeg();
+          closeModal();
+          showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
+          // Combined "both" path (prompt 38): the text leg runs only after
+          // the email actually sent, and was already confirmed up front.
+          if (afterSend) { try { await afterSend(); } catch (_) { /* its own toast */ } }
+          done();
+        } catch (err) {
+          console.error('[pec] compose send failed', err);
+          sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+        }
+      });
+    } });
+  };
+
+  // The split-send shape (prompt 38): primary = Email + Text, caret = one
+  // channel. "Both" shows BOTH gates before anything sends: the text confirm
+  // first (declining quietly downgrades to email only), then the email
+  // compose; the text fires only after the email succeeds, so canceling the
+  // compose sends nothing at all. Missing channels do not hard-block.
+  return {
+    email: () => openInvoiceEmail(),
+    text: () => invoiceTextOnly(),
+    both: async () => {
+      if (!(await confirmDespitePendingAch())) return;
+      const canText = !!row.customer_phone && !invTextOptedOut && !!row.public_token;
+      if (!row.customer_email && canText) {
+        // Email leg has no address: fall through to text alone, with a note.
+        showToast('No email on file, sending the text only.', { ttl: 4500 });
+        if (confirmInvoiceText()) { await doInvoiceTextSend(); done(); }
+        return;
+      }
+      let alsoText = false;
+      if (!row.customer_phone) showToast('No phone on file, the text will be skipped.', { ttl: 4500 });
+      else if (invTextOptedOut) showToast('Customer opted out of texts, the text will be skipped.', { ttl: 4500 });
+      else if (!row.public_token) showToast('Public pay link not ready, the text will be skipped.', { ttl: 4500 });
+      else alsoText = confirmInvoiceText();
+      openInvoiceEmail({ skipAch: true, afterSend: alsoText ? doInvoiceTextSend : null });
+    },
+  };
+}
+
 async function renderJobInvoice(jobId) {
   const root = $('pecViewRoot');
   // Warm the brand identity (name / address / phone / license / logo) so the
@@ -10481,192 +10676,29 @@ async function renderJobInvoice(jobId) {
     catch (_) { window.prompt('Copy this link:', url); }
   });
 
-  // Text invoice: send the pay link by SMS through Quo (kind=invoice). Manual
-  // (Dylan chose manual send for phase 1), no compose box -- the server builds a
-  // short, compliant body from the AR row. Mirrors the email button's gating.
-  // The server is the authority on the opt-out guard (returns a clear 409); this
-  // also disables the button up front for opted-out customers as a courtesy.
-  // Prompt 13 decision 8: never dun a customer whose bank transfer is already
-  // clearing. ONE lookup per send CLICK (not per keystroke, not per render);
-  // degrades to 0 and never blocks the send if the marker table is unreachable.
-  const confirmDespitePendingAch = async () => {
-    let pendSum = 0;
-    try {
-      const { data, error } = await supabase.from('pec_stripe_pending').select('amount').eq('job_id', row.id).eq('status', 'pending');
-      if (!error && Array.isArray(data)) pendSum = data.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-    } catch (_) { /* treat as none */ }
-    if (pendSum > 0.005 && !confirm(`This job has a ${invUSD(pendSum)} bank transfer pending. Send anyway?`)) return false;
-    return true;
-  };
-
-  // Text-invoice pieces, shared by "Text only" and the combined "both" path
-  // (prompt 38 split-send). Same server contract as before: pec-send-sms
-  // kind='invoice' builds the compliant body with the pay link + STOP line
-  // and is the authority on the opt-out guard; the probe below is a courtesy
-  // so the both-path can say "text skipped" up front.
-  const smsBrand = smsBrandFromCompany(row.customer_company);
-  let invTextOptedOut = false;
-  if (row.customer_id) {
-    supabase.from('customers').select('sms_opt_out').eq('id', row.customer_id).maybeSingle()
-      .then(({ data }) => { if (data && data.sms_opt_out) invTextOptedOut = true; })
-      .catch(() => { /* column may not exist yet; server still guards */ });
-  }
-  const confirmInvoiceText = () => {
-    const phoneLabel = row.customer_phone ? ` to ${row.customer_phone}` : '';
-    return confirm(`Text invoice ${invNo}${phoneLabel}? They will get the pay link with a "Reply STOP to opt out" line.`);
-  };
-  const doInvoiceTextSend = async () => {
-    try {
-      await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
-      // First-send wins, same stamp as the email path (the null->set
-      // transition is the ONE moment the invoice drip enrolls).
-      if (!row.invoice_first_sent_at) {
-        const nowIso = new Date().toISOString();
-        withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
-          .then(res => {
-            if (!(res && res.error)) {
-              row.invoice_first_sent_at = nowIso;
-              enrollInvoiceDripClient(row.id).catch(() => {});
-            }
-          })
-          .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
-      }
-      showToast('Invoice texted ✓', { ttl: 3500 });
-      return true;
-    } catch (err) {
-      // Includes the opt-out refusal (409) and any Quo error, verbatim.
-      showToast('Text not sent: ' + esc(err.message || String(err)), { ttl: 6000 });
-      return false;
-    }
-  };
-  const invoiceTextOnly = async () => {
-    if (!row.customer_phone) { showToast('No phone number on file for this customer.', { ttl: 4000 }); return; }
-    if (invTextOptedOut) { showToast('This customer opted out of texts (replied STOP).', { ttl: 4500 }); return; }
-    if (!row.public_token) { showToast('Public link not ready yet &mdash; run the brand/public-invoice migration.', { ttl: 4500 }); return; }
-    if (!(await confirmDespitePendingAch())) return;
-    if (!confirmInvoiceText()) return;
-    const main = $('pecInvSendMain');
-    if (main) { main.disabled = true; main.textContent = 'Texting…'; }
-    await doInvoiceTextSend();
-    renderInvoicing(); // re-lands on this invoice; Communication history picks up the send
-  };
-
-  // Compose-before-send dialog: To / Cc / Copy Me / Subject / rich-text body,
-  // all pre-filled from the invoice template with tokens resolved client-side.
-  // Sends in compose mode (server wraps the body in brand chrome).
-  const openInvoiceEmail = async ({ afterSend = null, skipAch = false } = {}) => {
-    if (!skipAch && !(await confirmDespitePendingAch())) return;
-    const brand = 'prescott-epoxy'; // PEC-only CRM
-    await fetchBrandIdentity(); // for the CTA color + chrome match
-    const values = emailComposeValues(row);
-    const staffEmail = state.adminUser?.email || '';
-    openModal(`
-      <h3>Email invoice</h3>
-      <div class="pec-row-2">
-        <div class="pec-field"><label>To</label><input id="cmpTo" value="${esc(row.customer_email || '')}" placeholder="customer@example.com (comma-separated for multiple)"></div>
-        <div class="pec-field"><label>Cc</label><input id="cmpCc" placeholder="optional, comma-separated"></div>
-      </div>
-      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="cmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
-      <div class="pec-field"><label>Subject</label><input id="cmpSubject"></div>
-      <div class="pec-field"><label>Body</label><div id="cmpEditorWrap" style="background:#fff;border-radius:6px"><div id="cmpEditor" style="min-height:240px"></div></div></div>
-      <div class="prod-msg-err" id="cmpErr" style="min-height:16px"></div>
-      <div class="pec-modal-actions">
-        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
-        <button type="button" class="pec-btn primary" id="cmpSend" disabled>Loading editor…</button>
-      </div>
-    `, { onMount: async modal => {
-      // Pre-fill subject + body from the saved template (fall back to defaults).
-      let subjectTpl = DEFAULT_INVOICE_SUBJECT, bodyTpl = DEFAULT_INVOICE_BODY;
+  // The send flow lives in pecInvoiceSendKit (prompt 45 refactor: the
+  // Approvals view sends a held installment through the SAME kit, so there is
+  // exactly one invoice send path). onSent stamps the current planned/held
+  // installment 'sent' when a schedule exists; the deposit's manual send is
+  // exactly this stamp. onDone re-lands on this invoice via renderInvoicing.
+  const sendKit = pecInvoiceSendKit(row, {
+    invNo,
+    onDone: () => renderInvoicing(),
+    onSent: async () => {
       try {
-        const { data } = await supabase.from('pec_email_templates').select('subject,html').eq('key', 'invoice').eq('brand', brand).maybeSingle();
-        if (data) { subjectTpl = data.subject || subjectTpl; bodyTpl = data.html || bodyTpl; }
-      } catch (_) { /* defaults */ }
-      modal.querySelector('#cmpSubject').value = emailResolveSubject(subjectTpl, values);
-      const bodyHtml = emailResolveBody(bodyTpl, values);
-      let quill = null;
-      try {
-        await ensureQuill();
-        quill = new Quill(modal.querySelector('#cmpEditor'), { theme: 'snow', modules: { toolbar: [['bold', 'italic', 'underline'], [{ list: 'ordered' }, { list: 'bullet' }], ['link'], ['clean']] } });
-        quill.clipboard.dangerouslyPasteHTML(bodyHtml);
-      } catch (e) {
-        // Editor failed to load: fall back to a plain textarea of the HTML.
-        modal.querySelector('#cmpEditorWrap').innerHTML = `<textarea id="cmpEditorTa" rows="12" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem">${esc(bodyHtml)}</textarea>`;
-      }
-      const sendBtn = modal.querySelector('#cmpSend');
-      sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
-      sendBtn.addEventListener('click', async () => {
-        const errEl = modal.querySelector('#cmpErr'); errEl.textContent = '';
-        const to = modal.querySelector('#cmpTo').value.trim();
-        let cc = modal.querySelector('#cmpCc').value.trim();
-        if (modal.querySelector('#cmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
-        const subject = modal.querySelector('#cmpSubject').value.trim();
-        const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#cmpEditorTa')?.value || '');
-        if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
-        if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
-        sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
-        try {
-          await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, job_id: row.id, customer_id: row.customer_id });
-          // First-send wins: stamp jobs.invoice_first_sent_at only if still null,
-          // for the AR-timing metric (invoice sent before completion day). The
-          // `.is(..., null)` filter makes it safe across clients (never overwrites
-          // an earlier send). Fire-and-forget: the email already went out, so a
-          // stamp failure must not block the success toast. Skipped on "copy
-          // public link" and the Settings test-send (not real invoice sends).
-          if (!row.invoice_first_sent_at) {
-            const nowIso = new Date().toISOString();
-            withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
-              .then(res => {
-                if (!(res && res.error)) {
-                  row.invoice_first_sent_at = nowIso;
-                  // Phase 3: the first invoice send enrolls automatic payment
-                  // reminders (campaign ships dry_run; nothing texts/emails
-                  // until Dylan flips it live). Stamp-guarded = exactly once.
-                  enrollInvoiceDripClient(row.id).catch(() => {});
-                }
-              })
-              .catch(err => console.warn('[pec] invoice_first_sent_at stamp skipped:', err && err.message ? err.message : err));
-          }
-          closeModal();
-          showToast('Invoice sent to ' + esc(to) + ' ✓', { ttl: 4000 });
-          // Combined "both" path (prompt 38): the text leg runs only after
-          // the email actually sent, and was already confirmed up front.
-          if (afterSend) { try { await afterSend(); } catch (_) { /* its own toast */ } }
-          renderInvoicing();
-        } catch (err) {
-          console.error('[pec] compose send failed', err);
-          sendBtn.disabled = false; sendBtn.textContent = 'Send invoice';
-          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
-        }
-      });
-    } });
-  };
-
-  // The split Send control (prompt 38): primary = Email + Text, caret =
-  // Email only / Text only. "Both" shows BOTH gates before anything sends:
-  // the text confirm first (declining it quietly downgrades to email only),
-  // then the email compose; the text fires only after the email succeeds, so
-  // canceling the compose sends nothing at all. Missing channels do not
-  // hard-block: whatever is on file sends and the other leg gets a note.
-  pecWireSplitSend('pecInvSend', {
-    email: () => openInvoiceEmail(),
-    text: () => invoiceTextOnly(),
-    both: async () => {
-      if (!(await confirmDespitePendingAch())) return;
-      const canText = !!row.customer_phone && !invTextOptedOut && !!row.public_token;
-      if (!row.customer_email && canText) {
-        // Email leg has no address: fall through to text alone, with a note.
-        showToast('No email on file, sending the text only.', { ttl: 4500 });
-        if (confirmInvoiceText()) { await doInvoiceTextSend(); renderInvoicing(); }
-        return;
-      }
-      let alsoText = false;
-      if (!row.customer_phone) showToast('No phone on file, the text will be skipped.', { ttl: 4500 });
-      else if (invTextOptedOut) showToast('Customer opted out of texts, the text will be skipped.', { ttl: 4500 });
-      else if (!row.public_token) showToast('Public pay link not ready, the text will be skipped.', { ttl: 4500 });
-      else alsoText = confirmInvoiceText();
-      openInvoiceEmail({ skipAch: true, afterSend: alsoText ? doInvoiceTextSend : null });
+        if (!(ask && ask.mode === 'installment')) return;
+        const inst = ask.installment;
+        if (!['planned', 'queued', 'pending_approval'].includes(inst.status)) return;
+        await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+          .update({ status: 'sent', sent_at: new Date().toISOString() })
+          .eq('id', inst.id).in('status', ['planned', 'queued', 'pending_approval']), { label: 'installment-sent-stamp' });
+        // Re-anchor the payment reminders on this ask (first-send already
+        // enrolls; a later installment send re-enrolls after a paid stop).
+        enrollInvoiceDripClient(row.id).catch(() => {});
+      } catch (err) { console.warn('[pec] installment sent-stamp skipped:', err && err.message ? err.message : err); }
     },
   });
+  pecWireSplitSend('pecInvSend', sendKit);
   // Change order: an add-on after the job begins. Since prompt 12 this opens
   // the SHARED two-mode modal (scope area or simple title+amount); the same
   // modal serves the job detail Estimate section, so both surfaces write the
@@ -20288,9 +20320,12 @@ async function renderDripApprovals() {
         .select('*, pec_drip_campaigns(name,kind,max_touches), leads(full_name,phone,email)')
         .eq('status', 'pending').order('created_at', { ascending: false }).limit(200),
       supabase.from('settings').select('key,value').in('key', ['drip_sending_enabled', 'drip_approval_required']),
+      // Prompt 45: milestone-fired invoice installments held for approval. A
+      // missing table pre-migration errors inside the result; section hidden.
+      supabase.from('pec_invoice_installments').select('*').eq('status', 'pending_approval').order('queued_at', { ascending: true }).limit(100),
     ]), { label: 'renderDripApprovals' });
-  } catch (e) { res = [{ error: e }, {}]; }
-  const [sendRes, swRes] = res;
+  } catch (e) { res = [{ error: e }, {}, { error: e }]; }
+  const [sendRes, swRes, instRes] = res;
   if (sendRes.error) {
     root.innerHTML = `<div class="pec-empty">Could not load the approvals queue (apply the 2026-07-21_drip_approval_gate.sql migration first).<br><span style="font-size:.75rem;color:var(--muted)">${esc(sendRes.error.message || '')}</span></div>`;
     return;
@@ -20328,6 +20363,58 @@ async function renderDripApprovals() {
     if (r.created_at > byKey[key].created_at) byKey[key].created_at = r.created_at;
   }
   items.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+  // ---- Held invoice installments (prompt 45): milestone fired, waiting for
+  // a human before the invoice goes out. Approve sends through the normal
+  // invoice send kit (compose + text confirm); everything is re-checked fresh
+  // at approve time (paid / voided / archived / not-yet-current => no send).
+  const instItems = (instRes && !instRes.error && instRes.data) || [];
+  const instCtx = { arById: {}, paysByJob: {}, instByJob: {} };
+  if (instItems.length) {
+    const ijIds = [...new Set(instItems.map(i => i.job_id))];
+    try {
+      const [arR, payR, allR] = await Promise.all([
+        supabase.from('pec_job_ar').select('*').in('id', ijIds),
+        supabase.from('pec_payments').select('job_id,amount').in('job_id', ijIds),
+        supabase.from('pec_invoice_installments').select('*').in('job_id', ijIds),
+      ]);
+      ((arR && arR.data) || []).forEach(r => { instCtx.arById[r.id] = r; });
+      ((payR && payR.data) || []).forEach(p => { (instCtx.paysByJob[p.job_id] ||= []).push(p); });
+      ((allR && allR.data) || []).forEach(i => { (instCtx.instByJob[i.job_id] ||= []).push(i); });
+    } catch (e) { console.warn('[pec] installment approvals context read failed:', e); }
+  }
+  const instItemHtml = (i) => {
+    const ar = instCtx.arById[i.job_id];
+    if (!ar) return '';   // job voided/archived since queueing; approve would void it anyway
+    const arN = { ...ar, price: invNum(ar.price) };
+    const askNow = pecInstallmentAsk(arN, instCtx.instByJob[i.job_id] || [i], instCtx.paysByJob[i.job_id] || []);
+    const isCurrent = !!(askNow && askNow.mode === 'installment' && askNow.installment && askNow.installment.id === i.id);
+    const amt = isCurrent ? askNow.amount : invNum(i.computed_amount);
+    const invNo = ar.hq_invoice_number || ar.dripjobs_deal_id || String(ar.id).slice(0, 8);
+    return `<div class="pec-card" data-inst-appr="${esc(i.id)}" data-inst-job="${esc(i.job_id)}">
+      <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start">
+        <div>
+          <strong style="font-size:.95rem;cursor:pointer;color:var(--rd-accent,var(--accent))" data-inst-open="${esc(i.job_id)}">${esc(ar.customer_name || '(unknown customer)')}</strong>
+          <div style="color:var(--muted);font-size:.74rem;margin-top:3px">
+            Invoice ${esc(invNo)} · ${esc(i.label || 'Installment')} · <strong>${invUSD(amt)}</strong> · ${esc(pecInstMilestoneLabel(i.trigger_kind, i.due_date).toLowerCase())}${i.queued_at ? ` · waiting ${esc(fmtRelativeTime(i.queued_at))}` : ''}
+          </div>
+          ${isCurrent
+            ? '<div style="color:var(--muted);font-size:.74rem;margin-top:3px">This is the amount due on the customer&#39;s pay page right now.</div>'
+            : '<div style="color:#b45309;font-size:.74rem;margin-top:3px">Waiting its turn: an earlier ask on this invoice is still unpaid. It becomes sendable when that one settles.</div>'}
+          ${i.note ? `<div style="color:var(--muted);font-size:.72rem;margin-top:3px">${esc(i.note)}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${isCurrent ? '<button type="button" class="pec-btn primary sm" data-inst-approve>Approve &amp; Send</button>' : ''}
+          <button type="button" class="pec-btn ghost sm" data-inst-open2="${esc(i.job_id)}">Open invoice</button>
+          <button type="button" class="pec-btn ghost sm" data-inst-skip>Skip</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  const instSectionHtml = instItems.length ? `
+      <h3 style="margin:18px 0 6px">Invoice installments</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">Scheduled invoice asks whose milestone happened. Approve &amp; Send opens the normal invoice send (email compose + text). Paid, voided, or out-of-turn installments are re-checked at that moment and never send. The deposit never appears here; you send it from the invoice.</div>
+      ${instItems.map(instItemHtml).join('')}` : '';
 
   const itemHtml = (it) => {
     const cust = it.subject_type === 'job' ? custByJob[it.subject_id] : null;
@@ -20367,7 +20454,9 @@ async function renderDripApprovals() {
       <div style="color:var(--muted);font-size:.8rem;margin-bottom:12px">Messages the drip engine wants to send, held for a human OK. Edit the copy if you like, then Approve &amp; Send. Consent, replies, payments, and quiet hours are re-checked at the moment you approve, so an approval can never message someone who already replied, paid, or opted out.</div>
       ${gateOn ? '' : `<div class="pec-card" style="border-left:3px solid #b45309"><div style="font-size:.8rem"><strong>The approval gate is OFF</strong> (Settings &gt; Drips): new drip messages send automatically. Anything below was held earlier and still needs a decision here.</div></div>`}
       ${masterOn ? '' : `<div class="pec-card" style="border-left:3px solid var(--rd-danger,#ef4444)"><div style="font-size:.8rem"><strong>Master switch is OFF</strong>: Approve &amp; Send is blocked until sending is turned on (Settings &gt; Drips or the Drips view).</div></div>`}
-      ${items.length ? items.map(itemHtml).join('') : `<div class="pec-empty">Nothing waiting for approval.${gateOn ? ' New drip messages appear here as they come due (the engine checks every 15 minutes).' : ''}</div>`}
+      ${instSectionHtml}
+      ${instItems.length ? '<h3 style="margin:18px 0 6px">Drip messages</h3>' : ''}
+      ${items.length ? items.map(itemHtml).join('') : `<div class="pec-empty">${instItems.length ? 'No drip messages waiting.' : 'Nothing waiting for approval.'}${gateOn ? ' New drip messages appear here as they come due (the engine checks every 15 minutes).' : ''}</div>`}
     </div>`;
 
   root.querySelectorAll('[data-appr-lead]').forEach(el => el.addEventListener('click', () => {
@@ -20421,6 +20510,79 @@ async function renderDripApprovals() {
         .update({ status: 'skipped', error_message: 'voided: stopped_by_reviewer' })
         .eq('enrollment_id', enrollmentId).eq('status', 'pending'), { label: 'appr-drip-void' });
       showToast('Drip stopped', { ttl: 2500 });
+      renderDripApprovals();
+    });
+  });
+
+  // Installment approvals wiring (prompt 45).
+  const openInv = (jobId) => { state.openInvoiceJobId = jobId; switchView('invoicing'); };
+  root.querySelectorAll('[data-inst-open]').forEach(el => el.addEventListener('click', () => openInv(el.dataset.instOpen)));
+  root.querySelectorAll('[data-inst-open2]').forEach(el => el.addEventListener('click', () => openInv(el.dataset.instOpen2)));
+  root.querySelectorAll('[data-inst-appr]').forEach(card => {
+    const instId = card.dataset.instAppr;
+    const jobId = card.dataset.instJob;
+    const btns = card.querySelectorAll('button');
+    const busy = b => btns.forEach(x => { x.disabled = b; });
+    const approveB = card.querySelector('[data-inst-approve]');
+    if (approveB) approveB.addEventListener('click', async () => {
+      busy(true);
+      try {
+        // Fresh re-check at approve time (client mirror of
+        // installmentVoidReason in _pec-installments.cjs; keep in lockstep):
+        // paid / voided / archived / already-covered / out-of-turn between
+        // queue and approve means NO send.
+        const [arR, allR, payR] = await withFreshSession(() => Promise.all([
+          supabase.from('pec_job_ar').select('*').eq('id', jobId).maybeSingle(),
+          supabase.from('pec_invoice_installments').select('*').eq('job_id', jobId),
+          supabase.from('pec_payments').select('*').eq('job_id', jobId),
+        ]), { label: 'inst-approve-recheck' });
+        const ar = arR.data;
+        const voidIt = async (note) => {
+          await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+            .update({ status: 'canceled', note }).eq('id', instId).eq('status', 'pending_approval'), { label: 'inst-void' });
+        };
+        if (!ar) { await voidIt('voided: job_closed'); showToast('Not sent: the job was voided or archived. The installment was canceled.', { ttl: 6000 }); renderDripApprovals(); return; }
+        const arN = { ...ar, price: invNum(ar.price), paid_to_date: invNum(ar.paid_to_date), balance: invNum(ar.balance_remaining), deposit_amount: ar.deposit_amount == null ? null : invNum(ar.deposit_amount) };
+        const askNow = pecInstallmentAsk(arN, allR.data || [], payR.data || []);
+        if (!askNow || askNow.mode === 'paid') { await voidIt('voided: paid'); showToast('Not sent: this invoice is already paid. The installment was canceled.', { ttl: 6000 }); renderDripApprovals(); return; }
+        const mine = (askNow.schedule || []).find(s => s.id === instId);
+        if (mine && mine.settled) {
+          await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+            .update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', instId).eq('status', 'pending_approval'), { label: 'inst-settle' });
+          showToast('Not sent: this installment is already covered by payments. Marked paid.', { ttl: 6000 }); renderDripApprovals(); return;
+        }
+        if (!(askNow.mode === 'installment' && askNow.installment && askNow.installment.id === instId)) {
+          showToast('Not sent: an earlier ask on this invoice is still unpaid. This one sends when it becomes the amount due.', { ttl: 6500 });
+          busy(false); return;
+        }
+        const invNo = ar.hq_invoice_number || ar.dripjobs_deal_id || '—';
+        const kit = pecInvoiceSendKit(arN, {
+          invNo,
+          onDone: () => renderDripApprovals(),
+          onSent: async () => {
+            try {
+              await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+                .update({ status: 'sent', sent_at: new Date().toISOString() })
+                .eq('id', instId).in('status', ['pending_approval', 'queued', 'planned']), { label: 'inst-approve-sent' });
+              // Re-anchor payment reminders on the newly current ask.
+              enrollInvoiceDripClient(jobId).catch(() => {});
+            } catch (e2) { console.warn('[pec] installment sent-stamp skipped:', e2); }
+          },
+        });
+        busy(false);
+        kit.both();
+      } catch (err) {
+        showToast('Approve failed: ' + esc((err && err.message) || err), { ttl: 6000 });
+        busy(false);
+      }
+    });
+    card.querySelector('[data-inst-skip]').addEventListener('click', async () => {
+      if (!confirm('Skip this installment? It is not sent and drops out of the schedule; the next ask takes its place. You can rebuild it in the schedule editor.')) return;
+      busy(true);
+      const w = await withFreshWriteRetry(() => supabase.from('pec_invoice_installments')
+        .update({ status: 'skipped', note: 'skipped_by_reviewer' }).eq('id', instId).eq('status', 'pending_approval'), { label: 'inst-skip' });
+      if (w && w.error) { showToast('Skip failed: ' + w.error.message, { ttl: 5000 }); busy(false); return; }
+      showToast('Installment skipped', { ttl: 2500 });
       renderDripApprovals();
     });
   });

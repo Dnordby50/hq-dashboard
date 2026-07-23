@@ -18,6 +18,7 @@
 // carries a "Reply STOP to opt out" line.
 
 const { sb } = require('./_pec-supabase.cjs');
+const { resolveCurrentAsk } = require('./_pec-installments.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -177,8 +178,30 @@ exports.handler = async (event) => {
       const invNo = ar.hq_invoice_number || ar.dripjobs_deal_id || String(job_id).slice(0, 8);
       const total = usd(ar.price);
       const payUrl = `${SITE_URL}/pay/${ar.public_token}`;
-      // Short, 1-2 segment transactional body with the identified sender + pay link.
-      messageBody = `${businessName}: Your invoice ${invNo} for ${total} is ready. View and pay: ${payUrl}.${STOP_LINE}`;
+      // Prompt 45: when the job has a payment schedule, the text states the
+      // CURRENT amount due (deposit or installment), not the project total.
+      // Resolved through the shared _pec-installments resolver, same as the
+      // pay page. Best-effort: any read hiccup (or a pre-migration schema)
+      // falls back to the legacy body, and a job with no schedule keeps the
+      // legacy body byte-for-byte.
+      let ask = null;
+      try {
+        const [instRows, payRows, jobRows] = await Promise.all([
+          sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(job_id)}&select=*`),
+          sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(job_id)}&select=amount`),
+          sb('GET', `/jobs?id=eq.${encodeURIComponent(job_id)}&select=id,price,status,deposit_collected,deposit_waived&limit=1`),
+        ]);
+        if (Array.isArray(instRows) && instRows.length && Array.isArray(jobRows) && jobRows[0]) {
+          ask = resolveCurrentAsk({ job: jobRows[0], installments: instRows, payments: Array.isArray(payRows) ? payRows : [] });
+        }
+      } catch (err) { console.warn('send-sms: installment resolve skipped:', String(err && err.message || err)); }
+      if (ask && (ask.mode === 'installment' || ask.mode === 'balance')) {
+        const labelPart = ask.mode === 'installment' && ask.label && !/^installment$/i.test(ask.label) ? ` (${ask.label})` : '';
+        messageBody = `${businessName}: A payment of ${usd(ask.amount)} is now due on invoice ${invNo}${labelPart}. View and pay: ${payUrl}.${STOP_LINE}`;
+      } else {
+        // Short, 1-2 segment transactional body with the identified sender + pay link.
+        messageBody = `${businessName}: Your invoice ${invNo} for ${total} is ready. View and pay: ${payUrl}.${STOP_LINE}`;
+      }
     } else if (kind === 'estimate') {
       // Real since prompt 38 (the old 501 seam): text the public estimate
       // link (/e/<token>), mirroring the invoice text. The estimate is looked

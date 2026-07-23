@@ -11,11 +11,33 @@
 // 'drip_sending_enabled', seeded 'false') a run is a no-op.
 
 const { sb, json } = require('./_pec-supabase.cjs');
-const { runDrips, drainBlasts, flushApprovedDrips } = require('./_pec-drip.cjs');
+const {
+  runDrips, drainBlasts, flushApprovedDrips, enrollJobInvoiceDrip,
+  sendQuoSmsReal, sendResendEmailReal, getSmsSender, getEmailSender,
+  dripEmailHtml, STOP_LINE, SITE_URL,
+} = require('./_pec-drip.cjs');
+const { runInstallmentTriggers } = require('./_pec-installments.cjs');
 
 exports.handler = async () => {
   try {
     const summary = await runDrips({ sb });
+    // Prompt 45: the invoice-installment milestone pass rides the same tick.
+    // Fired milestones queue into the approval gate (or auto-send when the
+    // gate is off); the module is settings-gated and every failure is its own,
+    // never the drip run's. Providers are injected here so _pec-installments
+    // stays require-free of the drip engine (no circular require) and the
+    // fixture tests can stub them.
+    let installments = null;
+    try {
+      installments = await runInstallmentTriggers({
+        sb,
+        providers: {
+          sendSms: sendQuoSmsReal, sendEmail: sendResendEmailReal,
+          getSmsSender, getEmailSender, dripEmailHtml,
+          enrollInvoiceDrip: enrollJobInvoiceDrip, STOP_LINE, SITE_URL,
+        },
+      });
+    } catch (err) { console.error('pec-drip-runner: installment pass failed:', err && err.message || err); }
     // Prompt 42: flush drip sends a human approved during quiet hours (they
     // sit as 'queued' with the edited copy until the window opens; consent
     // and kill-switches are re-checked in the flush before sending).
@@ -30,8 +52,8 @@ exports.handler = async () => {
     let blasts = null;
     try { blasts = await drainBlasts({ sb }); }
     catch (err) { console.error('pec-drip-runner: blast drain failed:', err && err.message || err); }
-    console.log('pec-drip-runner:', JSON.stringify({ ...summary, approved, blasts }));
-    return json(200, { ok: true, ...summary, approved, blasts });
+    console.log('pec-drip-runner:', JSON.stringify({ ...summary, approved, blasts, installments }));
+    return json(200, { ok: true, ...summary, approved, blasts, installments });
   } catch (err) {
     console.error('pec-drip-runner failed:', err && err.message || err);
     return json(500, { ok: false, error: String(err && err.message || err) });
