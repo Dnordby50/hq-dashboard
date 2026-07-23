@@ -16,6 +16,11 @@
 // flow) is unchanged from prompts 11 + 13.
 
 const { sb, tokenFromEvent } = require('./_pec-supabase.cjs');
+// Prompt 45: payment schedules. resolveCurrentAsk is the ONE definition of
+// "the current amount due" (shared with Stripe checkout, the reminder drip,
+// and the staff UI). A job with no installment rows resolves to null and this
+// page renders EXACTLY its legacy full-balance behavior.
+const { resolveCurrentAsk } = require('./_pec-installments.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // Accounting-style negatives ("-$745.00"): a refund is a negative pec_payments
@@ -97,13 +102,61 @@ const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 // in-flight bank transfer covers the whole balance the pill says so; a
 // "Payment due" pill next to the netted "$0.00" amount would read as a
 // contradiction (the exact confusion prompt 13 removed everywhere else).
-function statusPill(row, pendingSum) {
+function statusPill(row, pendingSum, ask) {
   const balance = Number(row.balance_remaining || 0);
   if (balance <= 0.005) return { bg: '#16a34a', text: 'Paid in full' };
+  // Schedule mode (prompt 45): the pill reflects the CURRENT ask, never the
+  // full balance, so "no payment due yet" reads calm, not delinquent.
+  if (ask) {
+    if (ask.mode === 'none' || ask.mode === 'paid') return { bg: '#334155', text: 'On schedule' };
+    if (round2(ask.amount - (Number(pendingSum) || 0)) <= 0.005) return { bg: '#b45309', text: 'Payment processing' };
+    if (ask.isDeposit) return { bg: '#b45309', text: 'Deposit due' };
+    return { bg: '#b91c1c', text: 'Payment due' };
+  }
   if (round2(balance - (Number(pendingSum) || 0)) <= 0.005) return { bg: '#b45309', text: 'Payment processing' };
   if (row.status === 'completed') return { bg: '#b91c1c', text: 'Payment due' };
   if (!row.deposit_collected && !row.deposit_waived) return { bg: '#b45309', text: 'Deposit due' };
   return { bg: '#334155', text: 'Balance due' };
+}
+
+// Customer-facing milestone phrasing for the schedule card. No em dashes.
+function askDuePhrase(inst) {
+  switch (inst.trigger_kind) {
+    case 'on_acceptance': return 'Due at acceptance';
+    case 'on_start': return 'Due when work begins';
+    case 'on_completion': return 'Due at completion';
+    case 'date': return inst.due_date ? 'Due ' + fmtDate(inst.due_date) : 'Due by date';
+    default: return 'On request';
+  }
+}
+
+// The payment schedule card (prompt 45, locked decision 7): every installment
+// with what is paid and what is upcoming, plus the project money context.
+function scheduleSection(ask, b) {
+  if (!ask) return '';
+  const rows = (ask.schedule || []).map(s => {
+    const state = s.settled
+      ? '<span style="color:#16a34a;font-weight:700">Paid</span>'
+      : s.isCurrent && (ask.mode === 'installment')
+        ? '<span style="color:' + esc(b.accent_color) + ';font-weight:800">Due now</span>'
+        : '<span style="color:#6b7280">Upcoming</span>';
+    const applied = !s.settled && s.applied > 0.005 ? `<div class="desc">${usd(s.applied)} received</div>` : '';
+    return `<tr>
+      <td><span style="font-weight:600">${esc(s.label || (s.isDeposit ? 'Deposit' : 'Installment'))}</span><div class="desc">${esc(askDuePhrase({ trigger_kind: s.trigger_kind, due_date: null }))}</div></td>
+      <td style="text-align:right;width:130px;white-space:nowrap">${usd(s.amount)}${applied}</td>
+      <td style="text-align:right;width:110px;white-space:nowrap">${state}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card pad" style="margin-top:18px">
+    <div class="eyebrow">Payment schedule</div>
+    <h3 class="sec">Your payment plan</h3>
+    <table class="li">
+      <thead><tr><th>Payment</th><th style="text-align:right">Amount</th><th style="text-align:right">Status</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="text-align:right;margin-top:14px;font-size:13.5px;color:#374151">Project total ${usd(ask.totals.price)} &middot; Paid ${usd(ask.totals.paid)} &middot; Remaining ${usd(ask.totals.balance)}</div>
+    ${ask.mode === 'none' ? `<div style="margin-top:10px;font-size:13.5px;color:#6b7280;line-height:1.6">No payment is due right now. The next payment comes due at its milestone above.</div>` : ''}
+  </div>`;
 }
 
 // Online payment via Stripe Checkout (PEC absorbs the processing fee, so the
@@ -113,9 +166,12 @@ function statusPill(row, pendingSum) {
 // line below the buttons is decision 9 of prompt 11). A "Pay deposit" button
 // also shows when a deposit is still due and is smaller than the balance. Check
 // + Zelle stay as secondary options. `token` is the invoice public_token.
-function payButtons(b, row, token, pendingSum) {
+function payButtons(b, row, token, pendingSum, ask) {
   const due = round2(row.balance_remaining);
   if (due <= 0.005 || !token) return '';
+  // Schedule mode (prompt 45): nothing due right now = no pay buttons at all
+  // (one outstanding ask at a time; the schedule card explains what is next).
+  if (ask && (ask.mode === 'none' || ask.mode === 'paid')) return '';
   // Prompt 13 decisions 3 + 4: a pending bank transfer covering the FULL
   // balance replaces the buttons with a processing note (they return
   // automatically if the ACH fails, because failed markers leave pendingSum);
@@ -123,17 +179,23 @@ function payButtons(b, row, token, pendingSum) {
   // checkout function clamps server-side too, so a stale link or back button
   // cannot double-charge past the remainder either way.
   const pendSum = round2(Number(pendingSum) || 0);
-  const remainder = round2(Math.max(0, due - pendSum));
+  // Schedule mode nets the pending ACH against the CURRENT ask; legacy mode
+  // nets against the full balance, exactly as before.
+  const remainder = ask
+    ? round2(Math.max(0, ask.amount - pendSum))
+    : round2(Math.max(0, due - pendSum));
   if (remainder <= 0.005) {
     return `<div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Payment</div>
       <h3 class="sec">Payment processing</h3>
-      <div style="font-size:14.5px;color:#374151;line-height:1.6">Your bank transfer of ${usd(pendSum)} is processing and covers the balance. No further payment is needed right now. Bank transfers take 3 to 5 business days to clear.</div>
+      <div style="font-size:14.5px;color:#374151;line-height:1.6">Your bank transfer of ${usd(pendSum)} is processing and covers the ${ask ? 'payment that is due' : 'balance'}. No further payment is needed right now. Bank transfers take 3 to 5 business days to clear.</div>
     </div>`;
   }
   const depositDue = !row.deposit_collected && !row.deposit_waived;
   const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
-  const showDeposit = depositDue && owed >= 0.5 && owed < remainder - 0.005;
+  // The legacy standalone deposit button only exists WITHOUT a schedule; with
+  // one, the deposit is an installment and the current ask IS the button.
+  const showDeposit = !ask && depositDue && owed >= 0.5 && owed < remainder - 0.005;
   const zelle = b.zelle_email || 'dylan@prescottepoxy.com';
   const phone = b.phone || '(928) 800-8154';
   const tok = encodeURIComponent(token);
@@ -143,12 +205,23 @@ function payButtons(b, row, token, pendingSum) {
     : `<p style="margin:0 0 10px">Pay by check (give it to the crew or mail it) or send Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(name(b))} at <strong>${esc(phone)}</strong>.</p>`;
   // Card AND offline are presented with equal weight (filled buttons of the
   // same size). The offline button expands an in-page panel; no navigation.
+  // Schedule mode: the primary button charges the CURRENT ask (server-side
+  // amount via kind=installment; the client never supplies an amount). A
+  // secondary full-balance button appears when more than this ask remains, so
+  // a customer who wants to pay everything still can (kind=balance already
+  // clamps server-side).
+  const balNet = round2(Math.max(0, due - pendSum));
+  const primaryHref = ask ? `/api/stripe/checkout?token=${tok}&kind=installment` : `/api/stripe/checkout?token=${tok}&kind=balance`;
+  const primaryLabel = ask
+    ? `Pay ${usd(remainder)}${ask.isDeposit ? ' deposit' : ''} online`
+    : `Pay ${usd(remainder)} online`;
   return `<div class="card pad" style="margin-top:18px">
     <div class="eyebrow">Payment options</div>
-    <h3 class="sec">Pay your balance</h3>
+    <h3 class="sec">${ask ? (ask.isDeposit ? 'Pay your deposit' : 'Pay what is due') : 'Pay your balance'}</h3>
     <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-      <a class="btn accent" href="/api/stripe/checkout?token=${tok}&kind=balance">Pay ${usd(remainder)} online</a>
+      <a class="btn accent" href="${primaryHref}">${primaryLabel}</a>
       ${showDeposit ? `<a class="btn ink" href="/api/stripe/checkout?token=${tok}&kind=deposit">Pay deposit ${usd(owed)}</a>` : ''}
+      ${ask && balNet > remainder + 0.005 ? `<a class="btn ink" href="/api/stripe/checkout?token=${tok}&kind=balance">Pay the full remaining ${usd(balNet)}</a>` : ''}
       <button type="button" id="offlineToggle" class="btn ink">Pay by check, cash, or Zelle</button>
     </div>
     <div class="secure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Pay online by card or bank transfer (ACH), no card fees on bank transfer. Payments are secured by Stripe (we cover the processing fee).</div>
@@ -238,7 +311,12 @@ function invoicePage(row, brand, payments, opts) {
   // automatically if the ACH fails (failed markers are not in pendingSum).
   const pendingSum = Number(o.pendingSum || 0);
   const dueNet = Math.max(0, round2(due - pendingSum));
-  const pill = statusPill(row, pendingSum);
+  // Schedule mode (prompt 45): the hero "Amount due" is the CURRENT ask (net
+  // of in-flight ACH), never the full balance. ask == null -> legacy page.
+  const ask = o.ask || null;
+  const heroDue = ask ? Math.max(0, round2(ask.amount - pendingSum)) : dueNet;
+  const dueLater = ask ? Math.max(0, round2(dueNet - heroDue)) : 0;
+  const pill = statusPill(row, pendingSum, ask);
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
   const dateLine = row.completed_date
@@ -329,14 +407,18 @@ function invoicePage(row, brand, payments, opts) {
           ${dateLine ? `<div class="sub">${dateLine}</div>` : ''}
         </div>
         <div class="right">
-          <div class="eyebrow">Amount due</div>
-          <div class="big">${usd(dueNet)}</div>
-          <div class="sub">Total ${usd(total)} &middot; Paid ${usd(row.paid_to_date)}</div>
+          <div class="eyebrow">${ask ? 'Amount due now' : 'Amount due'}</div>
+          <div class="big">${usd(heroDue)}</div>
+          <div class="sub">Total ${usd(total)} &middot; Paid ${usd(row.paid_to_date)}${ask && dueLater > 0.005 ? ` &middot; Later ${usd(dueLater)}` : ''}</div>
         </div>
       </div>
       <div class="pad">
         ${b.invoice_intro_text ? `<div style="font-size:14.5px;color:#374151;line-height:1.6;margin-bottom:20px">${paymentInstructionsHtml(b.invoice_intro_text)}</div>` : ''}
-        ${dueNet > 0.005 ? `<div class="duebox">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : ''}
+        ${ask
+          ? (heroDue > 0.005
+              ? `<div class="duebox">A payment of ${usd(heroDue)} is due${ask.label && ask.mode === 'installment' ? ' (' + esc(ask.label) + ')' : ''}. See payment options below.</div>`
+              : (ask.mode === 'none' && dueNet > 0.005 ? `<div class="duebox" style="background:#f8fafc;border-color:#cbd5e1">No payment is due right now. Your payment schedule is below.</div>` : ''))
+          : (dueNet > 0.005 ? `<div class="duebox">A payment of ${usd(dueNet)} is due. See payment options below.</div>` : '')}
         <div class="grid2">
           <div><div class="lbl">Bill to</div><div style="font-weight:700">${esc(row.customer_name || '')}</div><div style="color:#4b5563;margin-top:2px">${esc(billTo)}</div></div>
           <div><div class="lbl">Job address</div><div style="color:#4b5563">${esc(row.address || billTo)}</div>${dateLine ? `<div style="color:#4b5563;font-size:13px;margin-top:4px">${dateLine}</div>` : ''}</div>
@@ -350,15 +432,18 @@ function invoicePage(row, brand, payments, opts) {
           <tr><td>Tax</td><td>${usd(0)}</td></tr>
           <tr><td>Paid to date</td><td>-${usd(row.paid_to_date)}</td></tr>
           ${pendingSum > 0.005 ? `<tr><td>Pending bank transfer</td><td>-${usd(pendingSum)}</td></tr>` : ''}
-          <tr class="total"><td>Amount due</td><td>${usd(dueNet)}</td></tr>
+          ${ask && dueLater > 0.005 ? `<tr><td>Scheduled for later</td><td>-${usd(dueLater)}</td></tr>` : ''}
+          <tr class="total"><td>${ask ? 'Amount due now' : 'Amount due'}</td><td>${usd(heroDue)}</td></tr>
         </table>
         ${pendingSum > 0.005 ? `<div style="text-align:right;font-size:12px;color:#92400e;margin-top:8px">Amount due reflects a pending bank transfer of ${usd(pendingSum)} that takes 3 to 5 business days to clear.</div>` : ''}
       </div>
     </div>
 
+    ${scheduleSection(ask, b)}
+
     ${paymentsSection(payments, b, o.pendingRows)}
 
-    ${payButtons(b, row, o.token, pendingSum)}
+    ${payButtons(b, row, o.token, pendingSum, ask)}
 
     ${b.payment_instructions_html ? `<div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Good to know</div>
@@ -420,6 +505,16 @@ exports.handler = async (event) => {
       const pr = await sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount,method,reference,received_date&order=received_date.asc`);
       if (Array.isArray(pr)) payments = pr;
     } catch (_) { /* show page without the ledger */ }
+    // Payment schedule (prompt 45): resolve the current ask through the
+    // shared resolver. Best-effort: a pre-migration schema or read hiccup
+    // means no schedule treatment and the page renders its legacy behavior.
+    let ask = null;
+    try {
+      const instRows = await sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(row.id)}&select=*`);
+      if (Array.isArray(instRows) && instRows.length) {
+        ask = resolveCurrentAsk({ job: row, installments: instRows, payments });
+      }
+    } catch (_) { /* no schedule treatment */ }
     // ACH state (prompts 11 + 13): pending markers make the invoice reflect an
     // in-flight bank transfer IMMEDIATELY and persistently (pending line in
     // Payments, net Amount due, buttons hidden when fully covered), and the
@@ -450,7 +545,7 @@ exports.handler = async (event) => {
     } catch (_) { /* no ACH treatment */ }
     const pendingSum = round2(pendingRows.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0));
     const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
-    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed });
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed, ask });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);

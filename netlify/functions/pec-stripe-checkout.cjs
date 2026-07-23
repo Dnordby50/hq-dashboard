@@ -9,6 +9,9 @@
 // never treated as proof of payment. Calls the Stripe REST API directly (no SDK).
 const crypto = require('crypto');
 const { sb } = require('./_pec-supabase.cjs');
+// Prompt 45: kind=installment charges exactly the CURRENT installment amount,
+// resolved server-side by the shared resolver (never a client-supplied value).
+const { computeInstallmentCharge } = require('./_pec-installments.cjs');
 
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
@@ -39,7 +42,7 @@ exports.handler = async (event) => {
 
   const q = event.queryStringParameters || {};
   const token = String(q.token || '').trim();
-  const kind = q.kind === 'deposit' ? 'deposit' : (q.kind === 'custom' ? 'custom' : 'balance');
+  const kind = q.kind === 'deposit' ? 'deposit' : (q.kind === 'custom' ? 'custom' : (q.kind === 'installment' ? 'installment' : 'balance'));
   if (!UUID_RE.test(token)) return page(404, 'Invoice not found', 'This payment link is invalid or has expired.');
 
   if (!STRIPE_SECRET_KEY) {
@@ -73,7 +76,32 @@ exports.handler = async (event) => {
   const chargeable = round2(balance - pendingSum);
   if (chargeable < 0.5) return redirect(`${SITE_URL}/pay/${token}`);
   let amount;
-  if (kind === 'deposit') {
+  let installmentId = null;
+  let askLabel = null;
+  if (kind === 'installment') {
+    // The amount is the CURRENT ask at click time, resolved fresh from the
+    // token's rows (schedule may have moved since the page rendered; charging
+    // whatever is current NOW is the correct behavior per locked decision 9).
+    // Nothing chargeable (no schedule, milestone not fired, covered by
+    // pending ACH, below the Stripe minimum) redirects back to the invoice.
+    try {
+      const [instRows, payRows] = await Promise.all([
+        sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(row.id)}&select=*`),
+        sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(row.id)}&select=amount`),
+      ]);
+      const charge = computeInstallmentCharge({
+        job: row, installments: Array.isArray(instRows) ? instRows : [],
+        payments: Array.isArray(payRows) ? payRows : [], pendingSum,
+      });
+      if (!charge) return redirect(`${SITE_URL}/pay/${token}`);
+      amount = charge.amount;
+      installmentId = charge.installmentId;
+      askLabel = charge.label || null;
+    } catch (err) {
+      console.error('stripe-checkout: installment resolve failed', err.message);
+      return redirect(`${SITE_URL}/pay/${token}`);
+    }
+  } else if (kind === 'deposit') {
     if (row.deposit_collected || row.deposit_waived) return redirect(`${SITE_URL}/pay/${token}`);
     const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
     amount = round2(Math.min(owed, chargeable));
@@ -91,7 +119,9 @@ exports.handler = async (event) => {
   if (!(amount >= 0.5)) return redirect(`${SITE_URL}/pay/${token}`);
 
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
-  const productName = (kind === 'deposit' ? 'Deposit — Invoice ' : (kind === 'custom' ? 'Payment — Invoice ' : 'Invoice ')) + invNo;
+  const productName = kind === 'installment'
+    ? `${askLabel && !/^installment$/i.test(askLabel) ? askLabel : 'Payment'}, Invoice ${invNo}`
+    : (kind === 'deposit' ? 'Deposit — Invoice ' : (kind === 'custom' ? 'Payment — Invoice ' : 'Invoice ')) + invNo;
   // PaymentIntent description so the customer name (not just the email) shows in
   // the Stripe Payments list and on the receipt.
   const payDesc = (row.customer_name ? row.customer_name + ' — ' : '') + productName;
@@ -142,6 +172,7 @@ exports.handler = async (event) => {
     'metadata[job_id]': row.id,
     'metadata[public_token]': token,
     'metadata[kind]': kind,
+    ...(installmentId ? { 'metadata[installment_id]': installmentId, 'payment_intent_data[metadata][installment_id]': installmentId } : {}),
     'payment_intent_data[metadata][job_id]': row.id,
     'payment_intent_data[metadata][kind]': kind,
     'payment_intent_data[description]': payDesc,

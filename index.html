@@ -9976,10 +9976,38 @@ function pecInstStatusChip(s) {
     canceled: ['var(--muted)', 'Canceled'],
   };
   const [color, label] = map[s.inst.status] || ['var(--muted)', s.inst.status];
-  // Money truth beats the row status: a line covered by payments reads Paid
-  // even before the settle stamp lands (the resolver derives from money).
+  // Money truth beats the row status in BOTH directions: a line covered by
+  // payments reads Paid before the settle stamp lands, and a stamped-paid
+  // line whose payment was edited away reads Reopened (it becomes the current
+  // ask again by the same allocation).
   if (s.settled && !['skipped', 'canceled'].includes(s.inst.status)) return '<span style="color:#16a34a;font-weight:700;font-size:.72rem">Paid</span>';
+  if (!s.settled && s.inst.status === 'paid') return '<span style="color:#b45309;font-weight:700;font-size:.72rem">Reopened</span>';
   return `<span style="color:${color};font-weight:700;font-size:.72rem">${esc(label)}</span>`;
+}
+
+// Client twin of settleInstallments in _pec-installments.cjs (keep in
+// lockstep): after a staff-recorded payment, stamp any installment the money
+// now covers 'paid'. Fire-and-forget bookkeeping; every reader derives
+// settlement from the payments themselves, so a miss is cosmetic only.
+async function pecSettleInstallmentsClient(jobId) {
+  try {
+    const [instR, payR, jobR] = await Promise.all([
+      supabase.from('pec_invoice_installments').select('*').eq('job_id', jobId),
+      supabase.from('pec_payments').select('amount').eq('job_id', jobId),
+      supabase.from('jobs').select('id,price,status,deposit_collected,deposit_waived').eq('id', jobId).maybeSingle(),
+    ]);
+    const insts = instR.data || [];
+    if (!insts.length || !jobR.data) return;
+    const ask = pecInstallmentAsk({ ...jobR.data, price: invNum(jobR.data.price) }, insts, payR.data || []);
+    if (!ask) return;
+    const nowIso = new Date().toISOString();
+    for (const s of ask.schedule) {
+      if (!s.settled || s.inst.status === 'paid' || ['skipped', 'canceled'].includes(s.inst.status)) continue;
+      await supabase.from('pec_invoice_installments')
+        .update({ status: 'paid', paid_at: nowIso })
+        .eq('id', s.inst.id).in('status', ['planned', 'queued', 'pending_approval', 'sent']);
+    }
+  } catch (err) { console.warn('[pec] client installment settle skipped:', err && err.message ? err.message : err); }
 }
 
 // Deposit prepare from the staff side (the acceptance hook's twin; same
@@ -11051,6 +11079,9 @@ function openPaymentModal(row, { deposit }) {
         }
         closeModal();
         showToast(`Recorded ${invUSD(amount)} for <strong>${esc(row.customer_name || 'job')}</strong>`, { ttl: 4000 });
+        // Prompt 45: stamp any schedule installment this payment covers
+        // (fire-and-forget; the schedule derives from money either way).
+        pecSettleInstallmentsClient(row.id).catch(() => {});
         renderInvoicing();
       } catch (err) {
         console.error('[pec] payment insert failed', err);

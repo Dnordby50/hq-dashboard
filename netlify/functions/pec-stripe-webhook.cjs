@@ -26,6 +26,10 @@
 // pending-to-failed TRANSITION so a retried delivery cannot double-ping.
 const crypto = require('crypto');
 const { sb } = require('./_pec-supabase.cjs');
+// Prompt 45: after a payment records, stamp any installment it covers 'paid'
+// (best-effort; the resolver derives settlement from money, so a missed stamp
+// self-heals on the next settle call).
+const { settleInstallments } = require('./_pec-installments.cjs');
 
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -70,8 +74,9 @@ async function recordPayment(s, jobId, kind, piId, amount) {
   const existing = await sb('GET', `/pec_payments?reference=eq.${encodeURIComponent(piId)}&select=id&limit=1`);
   if (Array.isArray(existing) && existing.length) return { duplicate: true };
 
+  let paymentId = null;
   try {
-    await sb('POST', '/pec_payments', {
+    const inserted = await sb('POST', '/pec_payments', {
       job_id: jobId,
       amount,
       method: 'stripe',
@@ -79,7 +84,8 @@ async function recordPayment(s, jobId, kind, piId, amount) {
       received_date: phoenixToday(),
       recorded_by: 'Stripe',
       notes: `Stripe Checkout ${s.id || ''}`.trim(),
-    });
+    }, true);
+    paymentId = (Array.isArray(inserted) && inserted[0] && inserted[0].id) || null;
   } catch (insErr) {
     // Another delivery already recorded it (unique violation) -> success.
     if (/duplicate key|unique/i.test(insErr.message || '')) return { duplicate: true };
@@ -102,6 +108,18 @@ async function recordPayment(s, jobId, kind, piId, amount) {
   } catch (depErr) {
     // The payment is recorded; never fail the webhook over the deposit flag.
     console.error('stripe-webhook: deposit reflect failed (payment recorded)', depErr.message);
+  }
+
+  // Prompt 45: advance the payment schedule. Every installment the money now
+  // covers flips to 'paid' (the current ask then advances by construction,
+  // since the resolver derives "current" from the same allocation). Runs for
+  // EVERY kind, not just kind=installment: a full-balance or deposit payment
+  // settles schedule lines just the same. Best-effort, never fails the
+  // webhook; a miss self-heals on the next payment or runner tick.
+  try {
+    await settleInstallments(sb, jobId, { paymentId });
+  } catch (setErr) {
+    console.error('stripe-webhook: installment settle failed (payment recorded)', setErr.message);
   }
 
   return { recorded: true };
