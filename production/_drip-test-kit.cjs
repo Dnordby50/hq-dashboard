@@ -101,6 +101,13 @@ function makeDb(tables) {
           throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "uq_pec_drip_sends_pending_leg"`);
         }
       }
+      // Enforce the prompt-45 one-deposit-per-job partial unique index
+      // (uq_pec_invoice_installments_deposit): the deposit-prepare race guard.
+      if (table === 'pec_invoice_installments' && payload.is_deposit) {
+        if (db[table].some(r => r.is_deposit && String(r.job_id) === String(payload.job_id))) {
+          throw new Error(`Supabase POST /${table} failed (409): duplicate key value violates unique constraint "uq_pec_invoice_installments_deposit"`);
+        }
+      }
       // Enforce the prompt-37 reminder-ledger unique index, the claim the
       // appointment engine's exactly-once guarantee rides on.
       if (table === 'pec_appointment_reminder_sends') {
