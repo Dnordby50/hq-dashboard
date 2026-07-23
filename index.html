@@ -9389,7 +9389,7 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
     <div data-co-body style="display:none"></div>
   `, { onMount: async (modal) => {
     let job, systems = [], productById = {}, fullSlotsBySystem = {}, defaultBasecoatByFlake = {}, settingsMap = {};
-    let coCount = 0, areaModeAvailable = true;
+    let coCount = 0, areaModeAvailable = true, jobAreas = [];
     try {
       const [jobRes, sysRes, prodRes, slotRes, setRes] = await withFreshSession(() => Promise.all([
         supabase.from('jobs').select('id,price,line_items,finalized,customer_id,dripjobs_deal_id,address,customers(name,company,email,phone)').eq('id', jobId).single(),
@@ -9406,12 +9406,17 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
       for (const k in fullSlotsBySystem) fullSlotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
       defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
       for (const r of (setRes.data || [])) settingsMap[r.key] = r.value;
-      // CO count doubles as the migration probe: pre-migration the
-      // is_change_order filter 400s and AREA mode is disabled with a note
-      // (simple mode keeps working exactly like today).
-      const coRes = await supabase.from('job_areas').select('order_index').eq('job_id', jobId).eq('is_change_order', true);
+      // The areas read doubles as the migration probe: pre-migration the
+      // is_change_order column 400s and AREA + coat modes are disabled with a
+      // note (simple mode keeps working exactly like today). Prompt 44: pull
+      // the full area rows (not just the CO count) so the Additional-coat pane
+      // can offer a per-area picker.
+      const coRes = await supabase.from('job_areas').select('id,name,sqft,system_type_id,is_change_order').eq('job_id', jobId).order('order_index');
       if (coRes.error) { areaModeAvailable = false; }
-      else coCount = (coRes.data || []).length;
+      else {
+        jobAreas = coRes.data || [];
+        coCount = jobAreas.filter(a => a.is_change_order).length;
+      }
     } catch (err) {
       modal.querySelector('[data-co-loading]').textContent = 'Could not load: ' + (err?.message || err);
       return;
@@ -9425,12 +9430,32 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
     const charmBand = Number(settingsMap.estimator_charm_band) >= 0 && settingsMap.estimator_charm_band != null ? Number(settingsMap.estimator_charm_band) : 250;
 
     const sysOptions = systems.filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
+
+    // Additional-coat catalog (prompt 44). Each entry maps a coat kind to the
+    // system type whose recipe yields exactly that coat's product line, so the
+    // existing pushChangeOrderMaterialsToProd machinery emits the right
+    // material with zero new plumbing. To wire a new coat later (extra
+    // topcoat, primer, ...) add a row here plus a one-slot system type for it;
+    // nothing below is MVB-specific.
+    const ADDITIONAL_COATS = [
+      { key: 'mvb', label: 'Moisture vapor barrier (MVB)', systemName: 'MVB Only' },
+    ];
+    const coatSystemFor = (coat) => systems.find(s => s.name === coat.systemName && s.active !== false) || null;
+    const availableCoats = ADDITIONAL_COATS.filter(c => coatSystemFor(c));
+    // Areas the coat can be added to: every saved area except ones already on
+    // a coat-only system (adding MVB on top of an MVB Only area double-counts).
+    const coatSystemNames = new Set(ADDITIONAL_COATS.map(c => c.systemName));
+    const sysNameById = Object.fromEntries(systems.map(s => [s.id, s.name]));
+    const coatTargets = jobAreas.filter(a => !coatSystemNames.has(sysNameById[a.system_type_id]));
+    const coatModeAvailable = areaModeAvailable && availableCoats.length > 0 && coatTargets.length > 0;
+
     const body = modal.querySelector('[data-co-body]');
     modal.querySelector('[data-co-loading]').style.display = 'none';
     body.style.display = '';
     body.innerHTML = `
       <div style="display:inline-flex;border:1px solid var(--rd-line,var(--border));border-radius:8px;overflow:hidden;margin-bottom:12px">
         <button type="button" class="pec-btn sm primary" data-co-mode="area" style="border:none;border-radius:0">Scope change (new area)</button>
+        <button type="button" class="pec-btn sm ghost" data-co-mode="coat" style="border:none;border-radius:0">Additional coat</button>
         <button type="button" class="pec-btn sm ghost" data-co-mode="simple" style="border:none;border-radius:0">Simple (title + amount)</button>
       </div>
       <div data-co-pane="area">
@@ -9445,6 +9470,21 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
         <div data-co-price-hint style="font-size:.7rem;color:var(--muted);min-height:1em;margin-bottom:8px"></div>
         <div class="pec-field"><label>Scope detail (optional)</label><textarea data-co-desc rows="2" placeholder="What the crew is adding" style="resize:vertical"></textarea></div>
         ` : `<div class="pec-empty" style="font-size:.8rem">Scope mode needs the 2026-07-09_change_orders_scope migration applied first. Use Simple mode for now.</div>`}
+      </div>
+      <div data-co-pane="coat" style="display:none">
+        ${coatModeAvailable ? `
+        <div class="pec-ar-sub" style="margin-bottom:10px">Adds an extra coat to an existing area at that area's square footage. The material flows to Job Costing and the material pull automatically; the price is yours to set.</div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Coat <span style="color:var(--accent,#D8531C)">*</span></label><select data-co-coat>${availableCoats.map(c => `<option value="${esc(c.key)}">${esc(c.label)}</option>`).join('')}</select></div>
+          <div class="pec-field"><label>Area <span style="color:var(--accent,#D8531C)">*</span></label><select data-co-coat-area><option value="">Pick an area…</option>${coatTargets.map(a => `<option value="${esc(a.id)}">${esc(a.name || 'Area')} (${Number(a.sqft) || 0} sqft${a.is_change_order ? ', change order' : ''})</option>`).join('')}</select></div>
+        </div>
+        <div class="pec-row-2">
+          <div class="pec-field"><label>Square footage <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-coat-sqft type="number" min="0" step="1" placeholder="fills from the area"></div>
+          <div class="pec-field"><label>Price ($) <span style="color:var(--accent,#D8531C)">*</span></label><input data-co-coat-price type="number" min="0" step="0.01" placeholder="auto-fills, edit freely"></div>
+        </div>
+        <div data-co-coat-hint style="font-size:.7rem;color:var(--muted);min-height:1em;margin-bottom:8px"></div>
+        <div data-co-coat-zero style="display:none;font-size:.75rem;color:#b45309;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.35);border-radius:8px;padding:6px 10px;margin-bottom:8px">$0 = material and cost only. The customer price does not change and the added cost lowers this job's GP.</div>
+        ` : `<div class="pec-empty" style="font-size:.8rem">${!areaModeAvailable ? 'Additional coats need the 2026-07-09_change_orders_scope migration applied first.' : (availableCoats.length === 0 ? 'No coat systems found in the catalog (needs the "MVB Only" system type, active).' : 'This job has no saved areas to add a coat to.')}</div>`}
       </div>
       <div data-co-pane="simple" style="display:none">
         <div class="pec-ar-sub" style="margin-bottom:10px">A billable line with no production scope (e.g. haul away debris). Increases the invoice total / balance owed.</div>
@@ -9462,8 +9502,7 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
     const setMode = (m) => {
       mode = m;
       body.querySelectorAll('[data-co-mode]').forEach(b => { b.classList.toggle('primary', b.dataset.coMode === m); b.classList.toggle('ghost', b.dataset.coMode !== m); });
-      body.querySelector('[data-co-pane="area"]').style.display = m === 'area' ? '' : 'none';
-      body.querySelector('[data-co-pane="simple"]').style.display = m === 'simple' ? '' : 'none';
+      ['area', 'coat', 'simple'].forEach(p => { body.querySelector(`[data-co-pane="${p}"]`).style.display = m === p ? '' : 'none'; });
     };
     body.querySelectorAll('[data-co-mode]').forEach(b => b.addEventListener('click', () => setMode(b.dataset.coMode)));
     setMode(mode);
@@ -9506,6 +9545,51 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
       priceEl.addEventListener('input', () => { priceTouched = true; hintEl.textContent = 'Manual price.'; });
     }
 
+    // Additional-coat pane (prompt 44): picking an area fills its sqft; the
+    // price prefills from the SAME estimator pricing engine, priced as the
+    // coat's system at that sqft, and stays freely editable INCLUDING $0
+    // (absorb the coat as internal cost, no customer charge).
+    const coatEl = body.querySelector('[data-co-coat]');
+    const coatAreaEl = body.querySelector('[data-co-coat-area]');
+    const coatSqftEl = body.querySelector('[data-co-coat-sqft]');
+    const coatPriceEl = body.querySelector('[data-co-coat-price]');
+    const coatHintEl = body.querySelector('[data-co-coat-hint]');
+    const coatZeroEl = body.querySelector('[data-co-coat-zero]');
+    let coatPriceTouched = false;
+    const coatZeroNote = () => { if (coatZeroEl) coatZeroEl.style.display = parseFloat(coatPriceEl.value) === 0 ? '' : 'none'; };
+    const coatRecompute = () => {
+      if (!coatModeAvailable || coatPriceTouched) return;
+      const coat = availableCoats.find(c => c.key === coatEl.value);
+      const sys = coat && coatSystemFor(coat);
+      const sqft = Number(coatSqftEl.value);
+      if (!sys || !(sqft > 0)) { coatHintEl.textContent = ''; return; }
+      try {
+        const out = window.computeEstimatePricing({
+          areas: [{ id: 'co-coat', name: coat.label, sqft, system_type_id: sys.id, flake_product_id: null, basecoat_product_id: null }],
+          productsById: productById, recipeSlotsBySystemType: fullSlotsBySystem, defaultBasecoatByFlake,
+          systemTypes: systems, laborRate, commissionPct: defaultCommissionPct, targetGpPct,
+          priceIncrement, charmThreshold, charmBand,
+        });
+        if (out && !out.error && Number(out.price) > 0) {
+          coatPriceEl.value = out.price;
+          coatHintEl.textContent = `Suggested by estimator pricing (${out.targetGpPct}% target GP). Edit freely, down to $0.`;
+        } else {
+          coatHintEl.textContent = 'Could not auto-price (' + esc((out && out.error) || 'no pricing data') + '). Enter the price manually.';
+        }
+      } catch (e) { coatHintEl.textContent = 'Could not auto-price. Enter the price manually.'; }
+      coatZeroNote();
+    };
+    if (coatModeAvailable) {
+      coatAreaEl.addEventListener('change', () => {
+        const a = coatTargets.find(x => x.id === coatAreaEl.value);
+        if (a) coatSqftEl.value = Number(a.sqft) || '';
+        coatPriceTouched = false; coatRecompute();
+      });
+      coatEl.addEventListener('change', () => { coatPriceTouched = false; coatRecompute(); });
+      coatSqftEl.addEventListener('input', () => { coatPriceTouched = false; coatRecompute(); });
+      coatPriceEl.addEventListener('input', () => { coatPriceTouched = true; coatHintEl.textContent = 'Manual price.'; coatZeroNote(); });
+    }
+
     saveBtn.addEventListener('click', async () => {
       errEl.textContent = '';
       const existingItems = Array.isArray(job.line_items) ? job.line_items : [];
@@ -9525,6 +9609,51 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
           await mintCoSignature(jobId, { area_id: null, title: name, description, system_name: null, sqft: null, amount: invRound2(amt) });
           closeModal();
           showToast('Change order added (' + invUSD(amt) + ')', { ttl: 3500 });
+          if (onSaved) onSaved();
+        } catch (err) {
+          saveBtn.disabled = false; saveBtn.textContent = 'Add change order';
+          errEl.textContent = isSessionStale(err) ? 'Session briefly stalled. Try again.' : (err.message || String(err));
+        }
+        return;
+      }
+      if (mode === 'coat') {
+        // ADDITIONAL COAT (prompt 44): same four-step save as AREA mode, with
+        // the coat's own system type standing in for a picked system, so the
+        // recipe machinery emits exactly the coat's product into costing +
+        // materials. Differences from AREA mode: the title is generated, and
+        // $0 is a VALID price (material/cost only, no customer charge).
+        if (!coatModeAvailable) { errEl.textContent = 'Additional coats need the 2026-07-09 migration and at least one saved area.'; return; }
+        const coat = availableCoats.find(c => c.key === coatEl.value);
+        const sys = coat && coatSystemFor(coat);
+        const target = coatTargets.find(x => x.id === coatAreaEl.value);
+        const sqft = Number(coatSqftEl.value);
+        const price = parseFloat(coatPriceEl.value);
+        if (!coat || !sys) { errEl.textContent = 'Pick a coat.'; return; }
+        if (!target) { errEl.textContent = 'Pick the area the coat goes on.'; return; }
+        if (!(sqft > 0)) { errEl.textContent = 'Enter the square footage.'; return; }
+        if (!Number.isFinite(price) || price < 0) { errEl.textContent = 'Enter a price (0 is allowed: material only, no customer charge).'; return; }
+        const title = coat.label + ' added to ' + (target.name || 'area');
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+        try {
+          const ins = await withFreshWrite(() => supabase.from('job_areas')
+            .insert({ job_id: jobId, name: title, sqft, system_type_id: sys.id, price: invRound2(price), description: null, order_index: 500 + coCount, is_change_order: true })
+            .select().single(), { label: 'co-coat-insert' });
+          if (ins.error) throw ins.error;
+          // The invoice line ships even at $0 so the included coat is
+          // documented on the invoice; job price only moves by the amount.
+          const nextItems = existingItems.concat([{ name: title, description: '', price: invRound2(price), is_change_order: true }]);
+          const nextPrice = invRound2(invNum(job.price) + price);
+          const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
+          if (upd.error) {
+            try { await supabase.from('job_areas').delete().eq('id', ins.data.id); } catch (_) {}
+            throw upd.error;
+          }
+          // Signature only when the customer is actually being charged; a $0
+          // internal absorb has nothing for them to approve.
+          if (price > 0) await mintCoSignature(jobId, { area_id: ins.data.id, title, description: '', system_name: sys.name, sqft, amount: invRound2(price) });
+          await pushChangeOrderMaterialsToProd(job, { name: title, sqft, system_type_id: sys.id }, { productById, fullSlotsBySystem, defaultBasecoatByFlake, systems, laborRate });
+          closeModal();
+          showToast(price > 0 ? 'Additional coat added (' + invUSD(price) + ')' : 'Additional coat added (no customer charge, cost only)', { ttl: 3500 });
           if (onSaved) onSaved();
         } catch (err) {
           saveBtn.disabled = false; saveBtn.textContent = 'Add change order';
