@@ -4,6 +4,7 @@
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>
 
 const { sb, epoxyStages, paintStages, badSecret, json, randomToken, logIngest } = require('./_pec-supabase.cjs');
+const { prepareDepositInstallment } = require('./_pec-installments.cjs');
 
 const ENDPOINT = 'proposal-accepted';
 
@@ -123,6 +124,16 @@ exports.handler = async (event) => {
         sort_order: i,
       }));
       await sb('POST', '/timeline_stages', stages);
+    }
+
+    // Required deposit (prompt 45): prepare the deposit installment on this
+    // acceptance path too. Idempotent inside (a re-fired delivery is a no-op);
+    // best-effort so a hiccup never fails the webhook. This webhook has no
+    // system_type_id, so precedence falls through to the company default.
+    try {
+      await prepareDepositInstallment(sb, job.id, {});
+    } catch (depErr) {
+      console.error('proposal-accepted: deposit prepare failed (job unaffected):', String(depErr && depErr.message || depErr));
     }
 
     // Auto-bridge: create the matching pec_prod_jobs row so this proposal lands

@@ -33,6 +33,7 @@
 // status), so exactly one request wins the transition.
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
+const { prepareDepositInstallment } = require('./_pec-installments.cjs');
 const crypto = require('crypto');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -917,6 +918,18 @@ async function ensureJobCreated(est) {
     job_id: jobId,
     pec_prod_job_id: prodJobId,
   });
+
+  // -- Required deposit (prompt 45, locked decision 3): PREPARE a deposit
+  // installment at the resolved default (per-job manual jobs.deposit_amount,
+  // else the system type's deposit_pct, else settings default_deposit_pct).
+  // Staff SEND it manually from the invoice; nothing auto-sends here.
+  // Idempotent inside (existence-checked + unique index), best-effort by
+  // design: an acceptance must never fail because the deposit prep hiccuped.
+  try {
+    await prepareDepositInstallment(sb, jobId, { systemTypeId: est.system_type_id || null });
+  } catch (err) {
+    console.error('public-estimate: deposit prepare failed (acceptance unaffected):', String(err && err.message || err));
+  }
 
   // -- Lead to accepted (first-touch accepted_at + one deterministic event).
   await moveLead(est, 'accepted', null);

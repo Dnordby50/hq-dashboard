@@ -9900,6 +9900,324 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
 
 // payments. Mark Paid / Mark Complete reuse the shared modals, which re-call
 // renderInvoicing() and land back here while openInvoiceJobId is set.
+// ---- Invoice payment schedule (prompt 45) ----------------------------------
+// Client mirror of resolveCurrentAsk in netlify/functions/_pec-installments.cjs
+// (the fixture-tested authority -- keep the two in lockstep). HOW IT WORKS:
+// the job's total received payments fill the ordered installments front to
+// back (deposit first, then seq); a line is settled when the cumulative money
+// covers its snapshot amount; the FIRST unsettled line whose milestone has
+// fired is the one current ask (exactly one at a time; later lines never jump
+// the queue). No installment rows = null = the legacy full-balance behavior.
+const PEC_INST_EPS = 0.005;
+function pecInstAmount(kind, value, jobTotal) {
+  const v = Number(value) || 0;
+  return kind === 'percent' ? invRound2((Number(jobTotal) || 0) * v / 100) : invRound2(v);
+}
+function pecInstMilestoneLabel(t, dueDate) {
+  return t === 'on_acceptance' ? 'On acceptance'
+    : t === 'on_start' ? 'On job start'
+    : t === 'on_completion' ? 'On completion'
+    : t === 'date' ? (dueDate ? 'Due ' + invFmtDate(dueDate) : 'On a date')
+    : 'Manual';
+}
+function pecInstAskFired(inst, jobStatus) {
+  if (['sent', 'pending_approval', 'queued'].includes(inst.status)) return true;
+  switch (inst.trigger_kind) {
+    case 'on_acceptance': return true;
+    case 'on_start': return jobStatus === 'in_progress' || jobStatus === 'completed';
+    case 'on_completion': return jobStatus === 'completed';
+    case 'date': return !!inst.due_date && String(inst.due_date) <= invToday();
+    default: return false;
+  }
+}
+function pecInstallmentAsk(job, installments, payments) {
+  const active = (installments || []).filter(i => i.status !== 'skipped' && i.status !== 'canceled');
+  if (!active.length) return null;
+  const paidTotal = invRound2((payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0));
+  const price = invRound2(Number(job.price) || 0);
+  const balance = invRound2(price - paidTotal);
+  const ordered = [...active].sort((a, b) =>
+    ((b.is_deposit ? 1 : 0) - (a.is_deposit ? 1 : 0))
+    || ((Number(a.seq) || 0) - (Number(b.seq) || 0))
+    || String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  let cum = 0;
+  const alloc = ordered.map(inst => {
+    const amt = invRound2(inst.computed_amount);
+    let applied = invRound2(Math.min(Math.max(paidTotal - cum, 0), amt));
+    cum = invRound2(cum + amt);
+    let settled = applied >= amt - PEC_INST_EPS;
+    if (inst.is_deposit && (job.deposit_waived || job.deposit_collected)) { settled = true; applied = amt; }
+    return { inst, amount: amt, applied, settled };
+  });
+  const totals = { price, paid: paidTotal, balance: Math.max(balance, 0) };
+  const currentRow = alloc.find(a => !a.settled) || null;
+  const schedule = alloc.map(a => ({
+    ...a, id: a.inst.id, isCurrent: !!(currentRow && a.inst.id === currentRow.inst.id),
+  }));
+  if (!currentRow) {
+    if (balance > PEC_INST_EPS) return { mode: 'balance', amount: balance, label: 'Remaining balance', installment: null, schedule, totals };
+    return { mode: 'paid', amount: 0, installment: null, schedule, totals };
+  }
+  if (balance <= PEC_INST_EPS) return { mode: 'paid', amount: 0, installment: null, schedule, totals };
+  const inst = currentRow.inst;
+  if (!pecInstAskFired(inst, job.status)) return { mode: 'none', amount: 0, installment: inst, schedule, totals };
+  const amount = invRound2(Math.min(invRound2(currentRow.amount - currentRow.applied), balance));
+  if (amount <= PEC_INST_EPS) return { mode: 'paid', amount: 0, installment: inst, schedule, totals };
+  return { mode: 'installment', amount, label: inst.label || (inst.is_deposit ? 'Deposit' : 'Installment'), installment: inst, schedule, totals };
+}
+function pecInstStatusChip(s) {
+  const map = {
+    planned: ['var(--muted)', 'Planned'],
+    queued: ['#b45309', 'Sending'],
+    pending_approval: ['#b45309', 'Awaiting approval'],
+    sent: ['#2563eb', 'Sent'],
+    paid: ['#16a34a', 'Paid'],
+    skipped: ['var(--muted)', 'Skipped'],
+    canceled: ['var(--muted)', 'Canceled'],
+  };
+  const [color, label] = map[s.inst.status] || ['var(--muted)', s.inst.status];
+  // Money truth beats the row status: a line covered by payments reads Paid
+  // even before the settle stamp lands (the resolver derives from money).
+  if (s.settled && !['skipped', 'canceled'].includes(s.inst.status)) return '<span style="color:#16a34a;font-weight:700;font-size:.72rem">Paid</span>';
+  return `<span style="color:${color};font-weight:700;font-size:.72rem">${esc(label)}</span>`;
+}
+
+// Deposit prepare from the staff side (the acceptance hook's twin; same
+// precedence rule, mirrored from prepareDepositInstallment in
+// _pec-installments.cjs: manual jobs.deposit_amount, then the system type's
+// deposit_pct, then settings default_deposit_pct, else 50).
+async function pecPrepareDepositClient(row, { onDone }) {
+  try {
+    const [jr, sr] = await withFreshSession(() => Promise.all([
+      supabase.from('jobs').select('system_type_id,deposit_amount,deposit_collected,deposit_waived').eq('id', row.id).maybeSingle(),
+      supabase.from('settings').select('value').eq('key', 'default_deposit_pct').maybeSingle(),
+    ]), { label: 'prepare-deposit' });
+    const j = jr.data || {};
+    if (j.deposit_collected) { showToast('The deposit is already collected.', { ttl: 4000 }); return; }
+    if (j.deposit_waived) { showToast('This job has "no deposit needed" set. Require the deposit first.', { ttl: 5000 }); return; }
+    let kind = 'percent', value = null, source = '';
+    if (j.deposit_amount != null && invNum(j.deposit_amount) > PEC_INST_EPS) {
+      kind = 'fixed'; value = invRound2(j.deposit_amount); source = 'this job’s deposit amount';
+    } else {
+      if (j.system_type_id) {
+        const st = await supabase.from('pec_prod_system_types').select('deposit_pct').eq('id', j.system_type_id).maybeSingle();
+        if (st.data && st.data.deposit_pct != null && Number(st.data.deposit_pct) > 0) { value = Number(st.data.deposit_pct); source = 'the system type default'; }
+      }
+      if (value == null) {
+        const v = sr.data ? Number(sr.data.value) : null;
+        value = (v != null && Number.isFinite(v) && v > 0) ? v : 50;
+        source = 'the company default (Settings > Invoicing)';
+      }
+    }
+    const computed = pecInstAmount(kind, value, row.price);
+    if (!(computed > PEC_INST_EPS)) { showToast('Nothing to prepare: the resolved deposit is $0.', { ttl: 4500 }); return; }
+    const desc = kind === 'fixed' ? invUSD(computed) : `${value}% (${invUSD(computed)})`;
+    if (!confirm(`Prepare a ${desc} deposit for this invoice?\n\nUsing ${source}. It is added to the schedule as an unsent deposit; you still send it yourself.`)) return;
+    const ins = await withFreshWrite(() => supabase.from('pec_invoice_installments').insert({
+      job_id: row.id, seq: 0, label: 'Deposit', amount_kind: kind, amount_value: value,
+      computed_amount: computed, trigger_kind: 'on_acceptance', status: 'planned',
+      is_deposit: true, standalone: true,
+    }), { label: 'prepare-deposit-insert' });
+    if (ins.error) throw ins.error;
+    if (j.deposit_amount == null) {
+      await withFreshWrite(() => supabase.from('jobs').update({ deposit_amount: computed }).eq('id', row.id).is('deposit_amount', null), { label: 'prepare-deposit-mirror' }).catch(() => {});
+    }
+    showToast('Deposit prepared (unsent). Send it with the Send control when ready.', { ttl: 4500 });
+    if (onDone) onDone();
+  } catch (err) {
+    console.error('[pec] prepare deposit failed', err);
+    showToast('Could not prepare the deposit: ' + esc(err.message || String(err)), { ttl: 6000 });
+  }
+}
+
+// The schedule editor (prompt 45). Add/edit/remove/reorder installments,
+// dollar-or-percent per line, milestone trigger per line, and the deposit
+// choice (first line of the schedule vs its own separate line). Editing is
+// allowed on planned / queued / awaiting-approval lines; sent and paid lines
+// are locked (they were communicated or covered -- history, not a draft).
+// Uses openModal (#pecModalRoot), the invoicing module's modal root.
+function openScheduleEditor(row, installments, { onSaved }) {
+  const EDITABLE = ['planned', 'queued', 'pending_approval'];
+  let lines = (installments || []).filter(i => !['skipped', 'canceled'].includes(i.status)).map(i => ({
+    id: i.id, label: i.label || '', amount_kind: i.amount_kind, amount_value: Number(i.amount_value) || 0,
+    trigger_kind: i.trigger_kind, status: i.status, is_deposit: !!i.is_deposit, standalone: !!i.standalone,
+    seq: Number(i.seq) || 0, editable: EDITABLE.includes(i.status), _delete: false,
+  })).sort((a, b) => ((b.is_deposit ? 1 : 0) - (a.is_deposit ? 1 : 0)) || (a.seq - b.seq));
+  const TRIGGERS = [['on_acceptance', 'On acceptance'], ['on_start', 'On job start'], ['on_completion', 'On completion']];
+  openModal(`
+    <h3>Payment schedule</h3>
+    <div class="pec-ar-sub" style="margin-bottom:12px">Each line is one ask, in order, due on a job milestone. Enter dollars or a percent of the invoice total (${invUSD(row.price)}). Only one line is ever due at a time; the next becomes due when the one before it is paid and its milestone has happened. Sent and paid lines are locked.</div>
+    <div id="schedRows"></div>
+    <button type="button" class="pec-btn ghost sm" id="schedAdd" style="margin-top:8px">+ Add installment</button>
+    <div id="schedTotals" style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;font-weight:700"></div>
+    <div class="prod-msg-err" id="schedErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="schedSave">Save schedule</button>
+    </div>
+  `, { onMount: modal => {
+    const rowsEl = modal.querySelector('#schedRows');
+    const totalsEl = modal.querySelector('#schedTotals');
+    const visible = () => lines.filter(l => !l._delete);
+    const updateTotals = () => {
+      const tot = invRound2(visible().reduce((s, l) => s + pecInstAmount(l.amount_kind, l.amount_value, row.price), 0));
+      const diff = invRound2(tot - invRound2(row.price));
+      totalsEl.innerHTML = `<span>Schedule total</span><span>${invUSD(tot)}${Math.abs(diff) > PEC_INST_EPS ? ` <span style="color:#b45309;font-size:.72rem;font-weight:600">(${diff > 0 ? invUSD(diff) + ' over' : invUSD(-diff) + ' under'} the invoice total; any shortfall is asked as the remaining balance at the end)</span>` : ''}</span>`;
+    };
+    const syncFromInputs = () => {
+      modal.querySelectorAll('.sch-label').forEach(el => { lines[+el.dataset.i].label = el.value; });
+      modal.querySelectorAll('.sch-kind').forEach(el => { lines[+el.dataset.i].amount_kind = el.value; });
+      modal.querySelectorAll('.sch-value').forEach(el => { lines[+el.dataset.i].amount_value = Number(el.value) || 0; });
+      modal.querySelectorAll('.sch-trigger').forEach(el => { lines[+el.dataset.i].trigger_kind = el.value; });
+      modal.querySelectorAll('.sch-standalone').forEach(el => { lines[+el.dataset.i].standalone = el.value === 'separate'; });
+    };
+    const renderRows = () => {
+      const vis = visible();
+      rowsEl.innerHTML = vis.length ? vis.map(l => {
+        const i = lines.indexOf(l);
+        const nonDep = vis.filter(x => !x.is_deposit);
+        const pos = nonDep.indexOf(l);
+        const computed = pecInstAmount(l.amount_kind, l.amount_value, row.price);
+        if (!l.editable) {
+          return `<div class="pec-card" style="padding:10px;margin-bottom:8px;opacity:.75">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              ${l.is_deposit ? '<span class="pec-age pec-age-yellow">Deposit</span>' : ''}
+              <strong style="flex:1">${esc(l.label || (l.is_deposit ? 'Deposit' : 'Installment'))}</strong>
+              <span>${l.amount_kind === 'percent' ? esc(String(l.amount_value)) + '% = ' : ''}${invUSD(computed)}</span>
+              <span class="pec-ar-sub" style="font-size:.72rem">${esc(pecInstMilestoneLabel(l.trigger_kind))} · ${esc(l.status)} · locked</span>
+            </div>
+          </div>`;
+        }
+        return `<div class="pec-card" style="padding:10px;margin-bottom:8px">
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+            ${l.is_deposit ? '<span class="pec-age pec-age-yellow">Deposit</span>' : ''}
+            <input class="sch-label" data-i="${i}" value="${esc(l.label)}" placeholder="${l.is_deposit ? 'Deposit' : 'Label (e.g. Progress payment)'}" style="flex:1;min-width:150px">
+            <select class="sch-kind" data-i="${i}" style="width:56px">
+              <option value="fixed" ${l.amount_kind === 'fixed' ? 'selected' : ''}>$</option>
+              <option value="percent" ${l.amount_kind === 'percent' ? 'selected' : ''}>%</option>
+            </select>
+            <input class="sch-value" data-i="${i}" type="number" step="0.01" min="0" value="${l.amount_value}" style="width:100px;text-align:right">
+            <span class="sch-computed pec-ar-sub" data-i="${i}" style="width:90px;text-align:right">${invUSD(computed)}</span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            ${l.is_deposit
+              ? `<select class="sch-standalone" data-i="${i}" title="Show the deposit as line 1 of the schedule, or keep it its own separate line">
+                  <option value="separate" ${l.standalone ? 'selected' : ''}>Separate deposit (own line)</option>
+                  <option value="inline" ${!l.standalone ? 'selected' : ''}>First line of the schedule</option>
+                </select><span class="pec-ar-sub" style="font-size:.72rem">Due on acceptance · you send it manually</span>`
+              : `<select class="sch-trigger" data-i="${i}">
+                  ${TRIGGERS.map(([k, lb]) => `<option value="${k}" ${l.trigger_kind === k ? 'selected' : ''}>${lb}</option>`).join('')}
+                </select>`}
+            <span style="flex:1"></span>
+            ${!l.is_deposit ? `
+              <button type="button" class="pec-btn ghost sm sch-up" data-i="${i}" ${pos <= 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" class="pec-btn ghost sm sch-down" data-i="${i}" ${pos === nonDep.length - 1 ? 'disabled' : ''}>↓</button>` : ''}
+            ${l.status === 'planned' || !l.id ? `<button type="button" class="pec-btn ghost sm sch-del" data-i="${i}">Remove</button>` : ''}
+          </div>
+        </div>`;
+      }).join('') : '<div class="pec-ar-sub">No installments yet. Add one below, or prepare the deposit from the invoice page.</div>';
+      updateTotals();
+    };
+    rowsEl.addEventListener('input', e => {
+      const t = e.target;
+      if (t.classList.contains('sch-value') || t.classList.contains('sch-kind')) {
+        syncFromInputs();
+        const i = +t.dataset.i;
+        const el = rowsEl.querySelector(`.sch-computed[data-i="${i}"]`);
+        if (el) el.textContent = invUSD(pecInstAmount(lines[i].amount_kind, lines[i].amount_value, row.price));
+        updateTotals();
+      }
+    });
+    rowsEl.addEventListener('change', e => {
+      if (e.target.classList.contains('sch-kind')) e.target.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    rowsEl.addEventListener('click', e => {
+      const btn = e.target.closest('.sch-up, .sch-down, .sch-del');
+      if (!btn) return;
+      syncFromInputs();
+      const i = +btn.dataset.i;
+      if (btn.classList.contains('sch-del')) {
+        if (lines[i].id) lines[i]._delete = true; else lines.splice(i, 1);
+      } else {
+        // Swap with the neighboring visible non-deposit line.
+        const vis = lines.filter(l => !l._delete && !l.is_deposit);
+        const pos = vis.indexOf(lines[i]);
+        const target = btn.classList.contains('sch-up') ? vis[pos - 1] : vis[pos + 1];
+        if (target) {
+          const j = lines.indexOf(target);
+          [lines[i], lines[j]] = [lines[j], lines[i]];
+        }
+      }
+      renderRows();
+    });
+    modal.querySelector('#schedAdd').addEventListener('click', () => {
+      syncFromInputs();
+      lines.push({ id: null, label: '', amount_kind: 'percent', amount_value: 0, trigger_kind: 'on_start', status: 'planned', is_deposit: false, standalone: false, seq: 0, editable: true, _delete: false });
+      renderRows();
+    });
+    renderRows();
+    modal.querySelector('#schedSave').addEventListener('click', async () => {
+      syncFromInputs();
+      const errEl = modal.querySelector('#schedErr'); errEl.textContent = '';
+      const keep = lines.filter(l => !l._delete);
+      if (keep.filter(l => l.editable).some(l => !(Number(l.amount_value) > 0))) { errEl.textContent = 'Every installment needs an amount above zero.'; return; }
+      if (keep.filter(l => l.editable && l.amount_kind === 'percent').some(l => Number(l.amount_value) > 100)) { errEl.textContent = 'A percent line cannot be more than 100%.'; return; }
+      const btn = modal.querySelector('#schedSave'); btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        // Sequence: deposit stays 0; the rest number 1..n in display order.
+        let n = 0;
+        for (const l of keep) l._seq = l.is_deposit ? 0 : ++n;
+        // Deletes first (planned-only guard server-side too), then updates, then inserts.
+        for (const l of lines.filter(x => x._delete && x.id)) {
+          const del = await withFreshWrite(() => supabase.from('pec_invoice_installments').delete().eq('id', l.id).eq('status', 'planned'), { label: 'schedule-delete' });
+          if (del.error) throw del.error;
+        }
+        for (const l of keep.filter(x => x.id && x.editable)) {
+          const upd = await withFreshWrite(() => supabase.from('pec_invoice_installments').update({
+            label: (l.label || '').trim() || (l.is_deposit ? 'Deposit' : ''),
+            amount_kind: l.amount_kind, amount_value: invRound2(l.amount_value),
+            computed_amount: pecInstAmount(l.amount_kind, l.amount_value, row.price),
+            trigger_kind: l.is_deposit ? 'on_acceptance' : l.trigger_kind,
+            standalone: l.is_deposit ? l.standalone : false,
+            seq: l._seq,
+          }).eq('id', l.id).in('status', ['planned', 'queued', 'pending_approval']), { label: 'schedule-update' });
+          if (upd.error) throw upd.error;
+        }
+        for (const l of keep.filter(x => x.id && !x.editable)) {
+          // Locked lines keep their content; only the order stamp moves.
+          const upd = await withFreshWrite(() => supabase.from('pec_invoice_installments').update({ seq: l._seq }).eq('id', l.id), { label: 'schedule-reseq' });
+          if (upd.error) throw upd.error;
+        }
+        for (const l of keep.filter(x => !x.id)) {
+          const ins = await withFreshWrite(() => supabase.from('pec_invoice_installments').insert({
+            job_id: row.id, seq: l._seq, label: (l.label || '').trim(),
+            amount_kind: l.amount_kind, amount_value: invRound2(l.amount_value),
+            computed_amount: pecInstAmount(l.amount_kind, l.amount_value, row.price),
+            trigger_kind: l.trigger_kind, status: 'planned', is_deposit: false, standalone: false,
+          }), { label: 'schedule-insert' });
+          if (ins.error) throw ins.error;
+        }
+        // An edited deposit line is the per-job override: mirror its dollars
+        // onto jobs.deposit_amount so the legacy deposit button, the Stripe
+        // webhook's auto-flip, and the deposit metrics all agree with it.
+        const depLine = keep.find(x => x.is_deposit && x.editable);
+        if (depLine) {
+          await withFreshWrite(() => supabase.from('jobs')
+            .update({ deposit_amount: pecInstAmount(depLine.amount_kind, depLine.amount_value, row.price) })
+            .eq('id', row.id), { label: 'schedule-deposit-mirror' }).catch(() => {});
+        }
+        closeModal();
+        showToast('Payment schedule saved', { ttl: 3000 });
+        if (onSaved) onSaved();
+      } catch (err) {
+        console.error('[pec] schedule save failed', err);
+        btn.disabled = false; btn.textContent = 'Save schedule';
+        errEl.textContent = isSessionStale(err) ? 'Session briefly stalled — try again.' : (err.message || String(err));
+      }
+    });
+  } });
+}
+
 async function renderJobInvoice(jobId) {
   const root = $('pecViewRoot');
   // Warm the brand identity (name / address / phone / license / logo) so the
@@ -9943,9 +10261,12 @@ async function renderJobInvoice(jobId) {
         .eq('job_id', jobId).in('template_key', ['compose', 'invoice']),
       supabase.from('pec_sms_log').select('created_at,sent_by_user,to_number,body,status,error_message')
         .eq('job_id', jobId).eq('kind', 'invoice').eq('direction', 'out'),
+      // Payment schedule (prompt 45). A missing table pre-migration resolves
+      // as an error inside the result and the schedule card shows a hint.
+      supabase.from('pec_invoice_installments').select('*').eq('job_id', jobId).order('seq'),
     ]), { label: 'renderJobInvoice' });
-  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }]; }
-  const [arRes, payRes, coSigRes, emLogRes, smLogRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }, { error: e }]; }
+  const [arRes, payRes, coSigRes, emLogRes, smLogRes, instRes] = res;
   const coSigRows = (coSigRes && !coSigRes.error) ? (coSigRes.data || []) : [];
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
@@ -9963,6 +10284,12 @@ async function renderJobInvoice(jobId) {
     deposit_amount: r.deposit_amount == null ? null : invNum(r.deposit_amount),
   };
   const payments = payRes.data || [];
+  // Payment schedule (prompt 45): the ask is resolved the same way the public
+  // pay page and the reminder drip resolve it (client mirror of the shared
+  // resolver). ask === null -> no schedule -> the legacy full-balance view.
+  const instErr = !!(instRes && instRes.error);
+  const installments = (instRes && !instRes.error && instRes.data) || [];
+  const ask = installments.length ? pecInstallmentAsk(row, installments, payments) : null;
   const items = Array.isArray(row.line_items) ? row.line_items : [];
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || '—';
   const ageChip = row.completed_date ? invAgeCompleted(invDaysSince(row.completed_date)) : invAgeSigned(invDaysSince(row.signed_date));
@@ -10066,7 +10393,50 @@ async function renderJobInvoice(jobId) {
       }</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Paid to date</div><div class="pec-stat-val">${invUSD(row.paid_to_date)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Balance</div><div class="pec-stat-val">${invUSD(row.balance)}</div></div>
+      ${ask ? `<div class="pec-stat" style="border-left:3px solid var(--rd-accent,var(--accent,#D8531C))"><div class="pec-stat-label">Due now</div><div class="pec-stat-val">${
+        ask.mode === 'installment' ? invUSD(ask.amount)
+        : ask.mode === 'balance' ? invUSD(ask.amount)
+        : ask.mode === 'none' ? '—' : invUSD(0)
+      }</div><div class="pec-ar-sub">${
+        ask.mode === 'installment' ? esc(ask.label)
+        : ask.mode === 'balance' ? 'remaining balance'
+        : ask.mode === 'none' ? 'waiting on ' + esc(pecInstMilestoneLabel(ask.installment && ask.installment.trigger_kind).toLowerCase())
+        : 'paid in full'
+      }</div></div>` : ''}
     </div>
+    ${(() => {
+      if (instErr) return `<div class="pec-card"><h3>Payment schedule</h3><div class="pec-empty">Couldn&#39;t load the payment schedule (apply the 2026-07-22_invoice_installments.sql migration first).<br><span style="font-size:.72rem;color:var(--muted)">${esc(instRes.error.message || '')}</span></div></div>`;
+      const canPrepDeposit = !row.deposit_collected && !row.deposit_waived
+        && !installments.some(i => i.is_deposit && !['skipped', 'canceled'].includes(i.status));
+      const schedBtns = `<div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="pec-btn sm" id="pecSchedEdit">${installments.length ? 'Edit schedule' : 'Build schedule'}</button>
+        ${canPrepDeposit ? '<button class="pec-btn sm" id="pecSchedPrepDep">Prepare deposit</button>' : ''}
+      </div>`;
+      const head = `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px"><h3 style="margin:0">Payment schedule</h3>${schedBtns}</div>`;
+      if (!ask) {
+        return `<div class="pec-card">${head}
+          <div class="pec-ar-sub">No schedule: this invoice asks for the full remaining balance, exactly as before. Build a schedule to bill a required deposit or milestone installments, one ask at a time.</div>
+        </div>`;
+      }
+      const schedRows = ask.schedule.map(s => `<tr class="nohover" ${s.isCurrent ? 'style="background:color-mix(in srgb, var(--rd-accent,#D8531C) 8%, transparent)"' : ''}>
+        <td>${s.inst.is_deposit ? '<span class="pec-age pec-age-yellow">Deposit</span> ' : ''}${esc(s.inst.label || (s.inst.is_deposit ? '' : 'Installment'))}${s.isCurrent ? ' <span style="color:var(--rd-accent,#D8531C);font-weight:800;font-size:.68rem;letter-spacing:.5px">DUE NOW</span>' : ''}</td>
+        <td style="text-align:right">${invUSD(s.amount)}${s.inst.amount_kind === 'percent' ? `<div class="pec-ar-sub" style="font-size:.68rem">${esc(String(Number(s.inst.amount_value)))}% of total</div>` : ''}${!s.settled && s.applied > PEC_INST_EPS ? `<div class="pec-ar-sub" style="font-size:.68rem">${invUSD(s.applied)} applied</div>` : ''}</td>
+        <td>${esc(pecInstMilestoneLabel(s.inst.trigger_kind, s.inst.due_date))}</td>
+        <td>${pecInstStatusChip(s)}${s.inst.sent_at ? `<div class="pec-ar-sub" style="font-size:.68rem">sent ${esc(invFmtDate(String(s.inst.sent_at).slice(0, 10)))}</div>` : ''}</td>
+      </tr>`).join('');
+      const modeNote = ask.mode === 'none'
+        ? `<div class="pec-ar-sub" style="margin-top:8px">Nothing is due right now: the next installment waits on its milestone (${esc(pecInstMilestoneLabel(ask.installment && ask.installment.trigger_kind).toLowerCase())}).</div>`
+        : ask.mode === 'balance'
+          ? `<div class="pec-ar-sub" style="margin-top:8px">Every installment is covered; the remaining ${invUSD(ask.amount)} of the invoice total is the current ask.</div>`
+          : '';
+      return `<div class="pec-card">${head}
+        <div class="pec-scroll-x"><table class="pec-table">
+          <thead><tr><th>Ask</th><th style="text-align:right">Amount</th><th>Due</th><th>Status</th></tr></thead>
+          <tbody>${schedRows}</tbody></table></div>
+        ${modeNote}
+        <div class="pec-ar-sub" style="margin-top:8px;font-size:.72rem">The customer&#39;s pay page shows this schedule and asks only for the amount due now. Fired milestones wait in Approvals before anything sends; the deposit you always send yourself.</div>
+      </div>`;
+    })()}
     <div class="pec-card">
       <h3>Line items</h3>
       <div class="pec-scroll-x"><table class="pec-table">
@@ -10417,6 +10787,11 @@ async function renderJobInvoice(jobId) {
   const requireDepB = $('pecInvRequireDep');
   if (requireDepB) requireDepB.addEventListener('click', () => depFlag(requireDepB, { deposit_waived: false }, 'Deposit required again'));
   const compB = $('pecInvComplete'); if (compB) compB.addEventListener('click', () => markJobComplete(row));
+  // Payment schedule wiring (prompt 45).
+  const schedEditB = $('pecSchedEdit');
+  if (schedEditB) schedEditB.addEventListener('click', () => openScheduleEditor(row, installments, { onSaved: () => renderJobInvoice(jobId) }));
+  const schedDepB = $('pecSchedPrepDep');
+  if (schedDepB) schedDepB.addEventListener('click', () => pecPrepareDepositClient(row, { onDone: () => renderJobInvoice(jobId) }));
 }
 
 // Edit a previously-recorded payment. Goes through the atomic edit_recorded_payment
@@ -15456,6 +15831,7 @@ function settingsTabBar(active) {
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
     <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
     <button class="pec-btn ${active === 'drips' ? 'primary' : 'ghost'} sm" data-settings-tab="drips">Drips</button>
+    <button class="pec-btn ${active === 'invoicing' ? 'primary' : 'ghost'} sm" data-settings-tab="invoicing">Invoicing</button>
     <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
 }
@@ -15814,6 +16190,89 @@ function openApptRuleModal(rule, onDone) {
   }});
 }
 
+// Settings > Invoicing (prompt 45, standing rule: every major feature's knobs
+// live in company Settings, settings-table backed, no code edit to tune).
+// Three controls: the company default deposit percent (the LAST stop in the
+// deposit precedence: per-job manual amount, then the system type's
+// deposit_pct, then this), the payment-schedules master switch (milestone
+// auto-queueing on/off), and the approval gate (held-for-a-human vs the
+// runner auto-sending the installment notice at trigger time).
+async function renderSettingsInvoicing() {
+  const root = $('pecViewRoot');
+  const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required']),
+    { label: 'settings-invoicing' });
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
+  const schedOn = map.payment_schedules_enabled !== 'false';
+  const gateOn = map.installment_approval_required !== 'false';
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-invoicing-save' });
+    if (w && w.error) throw w.error;
+  };
+
+  root.innerHTML = `
+    ${settingsTabBar('invoicing')}
+    <div class="pec-card">
+      <h3 style="margin-top:0">Default deposit</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">When an estimate is accepted, a deposit is prepared automatically at this percent of the job total (you still send it yourself). A deposit amount typed on the job wins over this, and a system type with its own deposit percent (Price &amp; Material Catalog) wins over this too.</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="number" id="setDepPct" min="0" max="100" step="0.5" value="${esc(depPct)}" style="width:110px;text-align:right"> <strong>%</strong>
+        <button type="button" class="pec-btn primary sm" id="setDepPctSave">Save</button>
+        <span id="setDepPctErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Payment schedules: ${schedOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${schedOn
+            ? 'When a scheduled installment&#39;s milestone happens (job start, completion), it is queued automatically. Turn this off to stop all automatic queueing; staff can still send every installment by hand from the invoice.'
+            : 'Milestones do nothing on their own. Staff send every installment by hand from the invoice. Turn this on to queue installments automatically when their milestone happens.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${schedOn ? '' : 'primary'}" id="setSchedOn">${schedOn ? 'Turn schedules OFF' : 'Turn schedules ON'}</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Approval before sending: ${gateOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${gateOn
+            ? 'A queued installment waits in Approvals for a person to review and send. The deposit always waits for you regardless.'
+            : 'A queued installment texts and emails the customer automatically (with the pay link) the moment its milestone happens and it becomes the amount due. The deposit still always waits for you.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${gateOn ? '' : 'primary'}" id="setInstGate">${gateOn ? 'Turn approvals OFF' : 'Turn approvals ON'}</button>
+      </div>
+    </div>`;
+  wireSettingsTabs(root);
+
+  $('setDepPctSave').addEventListener('click', async () => {
+    const errEl = $('setDepPctErr'); errEl.textContent = '';
+    const v = Number($('setDepPct').value);
+    if (!Number.isFinite(v) || v < 0 || v > 100) { errEl.textContent = 'Enter a percent between 0 and 100.'; return; }
+    const btn = $('setDepPctSave'); btn.disabled = true;
+    try { await saveSetting('default_deposit_pct', v); showToast('Default deposit saved', { ttl: 2500 }); }
+    catch (err) { errEl.textContent = err.message || String(err); }
+    btn.disabled = false;
+  });
+  $('setSchedOn').addEventListener('click', async () => {
+    const to = schedOn ? 'false' : 'true';
+    const btn = $('setSchedOn'); btn.disabled = true;
+    try { await saveSetting('payment_schedules_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setInstGate').addEventListener('click', async () => {
+    const to = gateOn ? 'false' : 'true';
+    // Turning approvals OFF means real customer texts/emails with no human
+    // review; confirm hard, mirroring the drip gate's rule.
+    if (to === 'false' && !confirm('Turn installment approvals OFF?\n\nWhen a milestone fires, the installment notice (text + email with the pay link) sends to the customer automatically, with no human review. The deposit still always waits for you. Continue?')) return;
+    const btn = $('setInstGate'); btn.disabled = true;
+    try { await saveSetting('installment_approval_required', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+}
+
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
@@ -15824,6 +16283,7 @@ async function renderSettings() {
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'drips') return renderSettingsDrips();
+  if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
@@ -31169,7 +31629,13 @@ function _mergeAcrossAreas(areaPlans) {
               <input id="smTargetGp" type="number" min="0" max="100" step="0.01" value="${esc(s.target_gp_pct ?? '')}" placeholder="e.g. 52">
             </div>
           </div>
-          <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
+          <div class="pec-row-2">
+            <div class="pec-field">
+              <label>Deposit % <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">deposit prepared on acceptance for jobs of this system; blank = company default (Settings &gt; Invoicing)</span></label>
+              <input id="smDepositPct" type="number" min="0" max="100" step="0.5" value="${esc(s.deposit_pct ?? '')}" placeholder="e.g. 50">
+            </div>
+            <div class="pec-field"><label>Notes</label><input id="smNotes" value="${esc(s.notes || '')}"></div>
+          </div>
           <div class="pec-modal-actions">
             ${existing ? '<button class="pec-btn danger" id="smDelete">Delete</button>' : ''}
             <span style="flex:1"></span>
@@ -31198,6 +31664,9 @@ function _mergeAcrossAreas(areaPlans) {
         // Null falls back to the global estimator_target_gp_pct setting. Feeds
         // BOTH the computed price and the estimator's red-GP threshold.
         target_gp_pct: targetGpRaw === '' ? null : Number(targetGpRaw),
+        // Deposit precedence step (b): system type beats the company default,
+        // loses to a deposit amount typed on the job (prompt 45).
+        deposit_pct: $('smDepositPct').value === '' ? null : Number($('smDepositPct').value),
         notes: $('smNotes').value || null,
       };
       if (!payload.name) return $('smError').textContent = 'Name is required.';
