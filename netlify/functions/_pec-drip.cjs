@@ -51,6 +51,11 @@
 // render (scrubCopy strips model-written URLs on purpose; data beats the
 // model for anything that must be exactly right).
 
+// Prompt 45: the invoice adapter resolves the CURRENT ask through the shared
+// installment resolver (one-way require; _pec-installments never requires
+// this module, its runner takes the provider helpers via injected deps).
+const { resolveCurrentAsk } = require('./_pec-installments.cjs');
+
 const RUN_CAP = 25;               // enrollments per run; taper is day-grained so backlog clears fast
 const MAX_SMS_LEN = 480;          // hard cap on AI SMS copy (~3 segments)
 const PHX_OFFSET_MS = 7 * 60 * 60 * 1000;   // America/Phoenix, fixed UTC-7 (no DST)
@@ -255,7 +260,11 @@ function buildRenderPrompt(ctx, step, campaign, needs) {
     record = {
       first_name: ctx.first_name,
       invoice_number: ctx.job.hq_invoice_number || null,
+      // Prompt 45 (decision 10): with a payment schedule, `balance` is the
+      // CURRENT outstanding ask (deposit or installment), not the full
+      // remaining balance; payment_label carries its milestone context.
       balance: ctx.balance != null ? usd(ctx.balance) : null,
+      payment_label: ctx.askLabel || null,
       job_address: ctx.job.address || null,
       invoice_sent_days_ago: daysAgo(ctx.job.invoice_first_sent_at),
     };
@@ -508,7 +517,8 @@ async function enrollJobInvoiceDrip(sb, jobId, now = new Date()) {
 async function resolveRecipient(sb, subjectType, subjectId) {
   const id = encodeURIComponent(subjectId);
   if (subjectType === 'job') {
-    const jobs = await sb('GET', `/jobs?id=eq.${id}&select=id,price,public_token,customer_id,voided_at,archived_at,completed_date,hq_invoice_number,invoice_first_sent_at,address&limit=1`);
+    // status + deposit flags feed the installment resolver (prompt 45).
+    const jobs = await sb('GET', `/jobs?id=eq.${id}&select=id,price,status,public_token,customer_id,voided_at,archived_at,completed_date,hq_invoice_number,invoice_first_sent_at,address,deposit_collected,deposit_waived&limit=1`);
     const job = (Array.isArray(jobs) && jobs[0]) || null;
     if (!job) return { ok: false, reason: 'job_missing' };
     const custs = job.customer_id
@@ -593,6 +603,29 @@ const KIND_CHECKS = {
     const paidToDate = (Array.isArray(pays) ? pays : []).reduce((s, p) => s + Number(p.amount || 0), 0);
     const balance = Number(job.price || 0) - paidToDate;
     if (balance <= BALANCE_EPS) return { action: 'stopped', reason: 'paid' };
+    // Prompt 45 (decision 10): when the job has a payment schedule, the
+    // reminder nudges on the CURRENT outstanding ask (deposit or the current
+    // installment), never the full remaining balance. Nothing currently due
+    // (the next installment's milestone has not fired) stops the enrollment
+    // as 'not_due'; the send that queues/ships the next installment
+    // re-enrolls, so reminders resume anchored to the new ask. Best-effort
+    // read: a pre-migration schema keeps the exact legacy behavior.
+    try {
+      const instRows = await sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(job.id)}&select=*`);
+      if (Array.isArray(instRows) && instRows.length) {
+        const ask = resolveCurrentAsk({ job, installments: instRows, payments: Array.isArray(pays) ? pays : [] });
+        if (ask) {
+          if (ask.mode === 'paid') return { action: 'stopped', reason: 'paid' };
+          if (ask.mode === 'none') return { action: 'stopped', reason: 'not_due' };
+          rcpt.balance = ask.amount;      // the ONLY amount the copy may state
+          rcpt.askLabel = ask.mode === 'installment' ? (ask.label || null) : null;
+          rcpt.askIsSchedule = true;
+          return null;
+        }
+      }
+    } catch (err) {
+      console.warn('pec-drip: installment resolve skipped (legacy balance):', String(err && err.message || err));
+    }
     rcpt.balance = balance;   // the ONLY amount the copy may state
     return null;
   },
@@ -638,7 +671,9 @@ function kindTail(kind, rcpt) {
   }
   if (kind === 'invoice' && rcpt.job && rcpt.job.public_token) {
     const url = `${SITE_URL}/pay/${rcpt.job.public_token}`;
-    const bal = rcpt.balance != null ? `Balance: ${usd(rcpt.balance)}. ` : '';
+    // Schedule jobs say "Amount due now" (the current ask), plain jobs keep
+    // the legacy "Balance" wording byte-for-byte (prompt 45, decision 10).
+    const bal = rcpt.balance != null ? `${rcpt.askIsSchedule ? 'Amount due now' : 'Balance'}: ${usd(rcpt.balance)}. ` : '';
     return { sms: ` ${bal}Pay online: ${url}`, text: `${bal}Pay online here: ${url}` };
   }
   return null;

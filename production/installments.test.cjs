@@ -375,6 +375,59 @@ function stubProviders(log = { sms: [], email: [], enrolls: [] }) {
   }
 
   // ==========================================================================
+  console.log('reminders: the invoice drip nudges on the CURRENT ask (decision 10)');
+  {
+    const { resolveRecipient, checkKillSwitches } = require('../netlify/functions/_pec-drip.cjs');
+    const campaign = { kind: 'invoice', max_touches: 4, name: 'Invoice reminders' };
+    const enr = { id: 'enr1', subject_type: 'job', subject_id: 'job1', enrolled_at: '2026-07-22T00:00:00Z', next_step_index: 0 };
+    const mk = (over = {}) => makeDb(tables({
+      jobs: [job({ status: 'in_progress' })],
+      customers: [{ id: 'cust1', name: 'Jane Doe', first_name: 'Jane', phone: '+15551234567', phone_norm: '5551234567', email: 'jane@example.com', sms_opt_out: false }],
+      pec_sms_log: [], pec_call_log: [],
+      ...over,
+    }));
+
+    // Schedule with a fired current ask: the reminder amount IS the ask.
+    const a = mk({
+      pec_invoice_installments: [
+        inst({ seq: 1, label: 'Job start', computed_amount: 4000, trigger_kind: 'on_start' }),
+        inst({ seq: 2, label: 'Completion', computed_amount: 6000, trigger_kind: 'on_completion' }),
+      ],
+    });
+    const rcptA = await resolveRecipient(a.sb, 'job', 'job1');
+    const outA = await checkKillSwitches(a.sb, enr, campaign, rcptA);
+    ok(outA === null && rcptA.balance === 4000 && rcptA.askLabel === 'Job start' && rcptA.askIsSchedule === true, 'reminder states the current installment amount + label, not the full balance');
+
+    // Nothing currently due (next milestone unfired after a paid installment):
+    // the enrollment stops as not_due instead of nagging about $0 or the balance.
+    const b = mk({
+      pec_invoice_installments: [
+        inst({ seq: 1, label: 'Job start', computed_amount: 4000, trigger_kind: 'on_start' }),
+        inst({ seq: 2, label: 'Completion', computed_amount: 6000, trigger_kind: 'on_completion' }),
+      ],
+      pec_payments: [{ id: 'p1', job_id: 'job1', amount: 4000 }],
+    });
+    const rcptB = await resolveRecipient(b.sb, 'job', 'job1');
+    const outB = await checkKillSwitches(b.sb, enr, campaign, rcptB);
+    ok(outB && outB.action === 'stopped' && outB.reason === 'not_due', 'nothing currently due -> the reminder drip stops as not_due');
+
+    // No schedule: exact legacy behavior (full remaining balance).
+    const c = mk({ pec_payments: [{ id: 'p1', job_id: 'job1', amount: 1500 }] });
+    const rcptC = await resolveRecipient(c.sb, 'job', 'job1');
+    const outC = await checkKillSwitches(c.sb, enr, campaign, rcptC);
+    ok(outC === null && rcptC.balance === 8500 && !rcptC.askIsSchedule, 'no schedule -> legacy full-balance reminder, untouched');
+
+    // Fully paid stops regardless of schedule shape.
+    const d = mk({
+      pec_invoice_installments: [inst({ seq: 1, computed_amount: 10000, trigger_kind: 'on_start' })],
+      pec_payments: [{ id: 'p1', job_id: 'job1', amount: 10000 }],
+    });
+    const rcptD = await resolveRecipient(d.sb, 'job', 'job1');
+    const outD = await checkKillSwitches(d.sb, enr, campaign, rcptD);
+    ok(outD && outD.action === 'stopped' && outD.reason === 'paid', 'paid in full still stops the drip');
+  }
+
+  // ==========================================================================
   console.log(`\n${state.passed} passed, ${state.failed} failed`);
   process.exit(state.failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });
