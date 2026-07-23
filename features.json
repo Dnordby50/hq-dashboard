@@ -73,6 +73,48 @@
       "since": "2026-07"
     },
     {
+      "name": "Estimate view tracking",
+      "area": "estimator",
+      "description": "Every customer open of the public estimate page is logged (link-preview bots from SMS/email apps filtered by user agent) and, when enabled, drops a shared bell notification for all staff; clicking it opens the estimate. The estimate card's Customer view section shows Viewed N times with the last open time. Settings > Estimates carries the notification switch (default on) and an optional first-view-per-day throttle (default off).",
+      "code": {
+        "indexHtml": [
+          "renderEstimateDetail",
+          "notifTarget",
+          "renderSettingsEstimates"
+        ],
+        "netlifyFunctions": [
+          "pec-public-estimate.cjs"
+        ]
+      },
+      "tables": [
+        "pec_estimate_views",
+        "pec_notifications",
+        "settings"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Estimator duplicate-customer search",
+      "area": "estimator",
+      "description": "A search box on the estimator's customer card finds existing customers and leads by name, phone, email, or address as the rep types, labeling each result Customer or Lead with phone and address. Picking a match prefills the form and links the estimate through estimates.lead_id (a customer match reuses or creates its lead via leads.customer_id), so no duplicate record is created. Online-only; offline the search hides and the outbox save path is unchanged. Toggle in Settings > Estimates (estimator_customer_search_enabled).",
+      "code": {
+        "indexHtml": [
+          "renderSettingsEstimates"
+        ],
+        "other": [
+          "apps/estimator/src/lib/customerSearch.ts",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [
+        "customers",
+        "leads",
+        "estimates",
+        "settings"
+      ],
+      "since": "2026-07"
+    },
+    {
       "name": "Auto-written scope of work",
       "area": "estimator",
       "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved.",
@@ -788,7 +830,7 @@
     {
       "name": "Change orders",
       "area": "dashboard",
-      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later.",
+      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. An Additional coat mode adds an extra coat (MVB today, extensible ADDITIONAL_COATS list) to a chosen existing area at its square footage, with an editable price down to $0 for cost-only absorption; the coat rides the area machinery so its product reaches the material pull and costing automatically. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later.",
       "code": {
         "indexHtml": [
           "openChangeOrderModal",
@@ -843,7 +885,7 @@
     {
       "name": "Notifications",
       "area": "platform",
-      "description": "A live notification bell in the top bar for events like costing submitted or sent back, payments edited or deleted, and customer portal activity. Notifications are clickable and route straight to their source (the job's costing view, the invoice, or the job card), respecting each user's access.",
+      "description": "A live notification bell in the top bar for events like costing submitted or sent back, payments edited or deleted, customer portal activity, and customer estimate views. Notifications are clickable and route straight to their source (the job's costing view, the invoice, the job card, or the estimate card), respecting each user's access.",
       "code": {
         "indexHtml": [
           "loadNotifications",
@@ -880,7 +922,7 @@
     {
       "name": "Grouped navigation rail",
       "area": "platform",
-      "description": "The left menu is organized into six flyout groups (Overview, Sales, Production, Finance, Admin, Help) that open a submenu of screens, replacing the long flat list, with a mobile Menu button. Old bookmarks and links keep working.",
+      "description": "The left menu is organized into flyout groups (Overview, Sales, Leads, Estimates, Drips, Production, Finance, Settings, and a pinned Help) that open a submenu of screens, replacing the long flat list, with a mobile Menu button. Jobs pipeline lives under Production; Settings, Pricing, and Sync Health under Settings; the Drips and Settings groups hide entirely for non-admins. Old bookmarks and links keep working.",
       "code": {
         "indexHtml": [
           "switchView",

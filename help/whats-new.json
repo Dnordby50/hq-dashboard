@@ -1,5 +1,49 @@
 [
   {
+    "id": "change-order-additional-coat",
+    "date": "2026-07-23",
+    "title": "Add an extra coat (like MVB) to a job as a change order",
+    "summary": "The change order window on a job has a new Additional coat option. Pick the coat (moisture vapor barrier for now) and the area it goes on; the square footage fills in from that area and a suggested price appears, which you can edit freely. You can even set the price to zero dollars to absorb the coat as an internal cost with no customer charge (the screen tells you this lowers the job's profit). Saving adds the product to the job's material pull and job costing automatically, just like any other change order.",
+    "howto": [
+      "Open the job and click Add change order, then choose the Additional coat tab.",
+      "Pick MVB and the area it goes on; adjust the square footage or price if needed (zero dollars means no customer charge).",
+      "Save. The material shows up on the material pull and job costing on its own, and any price you set is added to the invoice."
+    ]
+  },
+  {
+    "id": "nav-rail-reorg",
+    "date": "2026-07-23",
+    "title": "The left menu is reorganized into clearer groups",
+    "summary": "The sidebar now has dedicated groups for Leads (with Appointments), Estimates, and Drips, so those no longer hide inside Sales. Jobs pipeline moved into Production next to the schedules, and Settings, Pricing, and Sync Health live in a new Settings group at the bottom. Every page works exactly as before; only where you find it changed.",
+    "howto": [
+      "Look for Leads, Estimates, and Drips as their own icons in the left rail.",
+      "Find Jobs pipeline under Production.",
+      "Find Settings, Pricing, and Sync Health under the new Settings group."
+    ]
+  },
+  {
+    "id": "estimate-view-tracking",
+    "date": "2026-07-23",
+    "title": "See when a customer opens their estimate",
+    "summary": "Every time a customer opens their estimate link, TopCoat records it and drops a notification in the bell so the whole team knows there is interest. Clicking the notification opens that estimate, and the estimate card now shows how many times it was viewed and when it was last opened. Automatic link previews from text and email apps are filtered out so the bell only rings for real opens.",
+    "howto": [
+      "Send an estimate like normal; when the customer opens it, a bell notification appears for everyone.",
+      "Click the notification to jump straight to that estimate.",
+      "Check the bottom of the Customer view card on any estimate for the view count; tune the notification switches in Settings > Estimates."
+    ]
+  },
+  {
+    "id": "estimator-duplicate-search",
+    "date": "2026-07-23",
+    "title": "The estimator now finds existing customers so you never create duplicates",
+    "summary": "When you start an estimate, a search box at the top of the customer form looks up existing customers and leads as you type a name, phone number, email, or address. Each result is labeled Customer or Lead with its phone and address so you can tell people apart. Picking one fills in the whole customer form and attaches the estimate to that existing record, so follow-ups, appointments, and history all stay on one card instead of splitting across duplicates. The search needs a connection; offline estimating works exactly as before.",
+    "howto": [
+      "Start a new estimate and type into Search existing customers and leads at the top of the customer form.",
+      "Pick the right match; the form fills in and a note confirms the estimate is linked to that record.",
+      "Not the right person after all? Click Unlink and type the details by hand. The search can be turned off in Settings > Estimates."
+    ]
+  },
+  {
     "id": "deposits-payment-schedules",
     "date": "2026-07-22",
     "title": "Required deposits, partial invoicing, and payment schedules",
