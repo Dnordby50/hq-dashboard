@@ -6226,6 +6226,8 @@ function notifTarget(n) {
     // Booked-appointment bell rows (prompt 37): land on the calendar with
     // that appointment's edit modal opened (openAppointmentId).
     if (n.target_view === 'appointments') return { view: 'appointments', id: n.target_id };
+    // estimate_viewed bell rows (prompt 44): open that estimate's card.
+    if (n.target_view === 'estimates') return { view: 'estimates', id: n.target_id };
     return null;
   }
   return n.job_id ? { view: 'jobs', id: n.job_id } : null;
@@ -6267,6 +6269,7 @@ function renderBellPanel(rows) {
       if (navView === 'costing') state.openUnifiedJobId = navId;
       else if (navView === 'invoicing') state.openInvoiceJobId = navId;
       else if (navView === 'appointments') state.openAppointmentId = navId;
+      else if (navView === 'estimates') state.openEstimateId = navId;
       else state.openJobId = navId;
       panel.style.display = 'none';
       switchView(navView);
@@ -16040,6 +16043,7 @@ function settingsTabBar(active) {
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
     <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
     <button class="pec-btn ${active === 'drips' ? 'primary' : 'ghost'} sm" data-settings-tab="drips">Drips</button>
+    <button class="pec-btn ${active === 'estimates' ? 'primary' : 'ghost'} sm" data-settings-tab="estimates">Estimates</button>
     <button class="pec-btn ${active === 'invoicing' ? 'primary' : 'ghost'} sm" data-settings-tab="invoicing">Invoicing</button>
     <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
@@ -16149,6 +16153,56 @@ async function renderSettingsDrips() {
       errEl.textContent = 'Could not save: ' + (err.message || err);
     }
   });
+}
+
+// Settings > Estimates (prompt 44, standing rule 12): the knobs for estimate
+// view tracking and the estimator's duplicate-customer search. Each toggle is
+// one settings row; the readers (pec-public-estimate.cjs for views, the
+// estimator PWA for search) default the same way when the row is missing, so
+// pre-migration nothing changes.
+async function renderSettingsEstimates() {
+  const root = $('pecViewRoot');
+  const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
+    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled']),
+    { label: 'settings-estimates' });
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
+  const firstPerDayOn = (map.estimate_view_notify_first_per_day || 'false') === 'true';
+  const dedupOn = (map.estimator_customer_search_enabled || 'true') !== 'false';
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
+    if (w && w.error) throw w.error;
+  };
+  const toggleCard = (title, on, desc, btnId) => `
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">${title}: ${on ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${desc}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${on ? '' : 'primary'}" id="${btnId}">${on ? 'Turn OFF' : 'Turn ON'}</button>
+      </div>
+    </div>`;
+
+  root.innerHTML = `
+    ${settingsTabBar('estimates')}
+    ${toggleCard('View notifications', viewNotifsOn,
+      'When a customer opens their estimate link, everyone gets a bell notification. Every open is always logged on the estimate card either way; this only controls the bell.', 'setEstViewNotifs')}
+    ${toggleCard('Only notify on the first view each day', firstPerDayOn,
+      'On: at most one bell per estimate per day, even if the customer opens it ten times. Off: a bell for every open.', 'setEstViewDaily')}
+    ${toggleCard('Duplicate-customer search in the estimator', dedupOn,
+      'Shows a search box on the estimator customer form that finds existing customers and leads (by name, phone, email, or address) so reps link to them instead of creating duplicates.', 'setEstDedup')}`;
+  wireSettingsTabs(root);
+
+  const wire = (id, key, cur) => $(id).addEventListener('click', async () => {
+    const btn = $(id); btn.disabled = true;
+    try { await saveSetting(key, cur ? 'false' : 'true'); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  wire('setEstViewNotifs', 'estimate_view_notifications_enabled', viewNotifsOn);
+  wire('setEstViewDaily', 'estimate_view_notify_first_per_day', firstPerDayOn);
+  wire('setEstDedup', 'estimator_customer_search_enabled', dedupOn);
 }
 
 // Settings > Appointments (prompt 37): per-member Google Calendar connect
@@ -16492,6 +16546,7 @@ async function renderSettings() {
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'drips') return renderSettingsDrips();
+  if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
@@ -22244,6 +22299,18 @@ async function renderEstimateDetail(estimateId) {
   if (est.change_request_note) trail.push([est.updated_at, `Change requested: ${esc(est.change_request_note)}`]);
   trail.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
 
+  // Customer views of the public page (prompt 44): count + latest from
+  // pec_estimate_views (written server-side by pec-public-estimate.cjs).
+  // Best-effort: pre-migration (no table) just hides the line.
+  let viewsInfo = null;
+  try {
+    const vr = await supabase.from('pec_estimate_views')
+      .select('viewed_at', { count: 'exact' })
+      .eq('estimate_id', estimateId)
+      .order('viewed_at', { ascending: false }).limit(1);
+    if (!vr.error) viewsInfo = { count: vr.count || 0, last: vr.data && vr.data[0] ? vr.data[0].viewed_at : null };
+  } catch (_) {}
+
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="estBack">← Back to estimates</button>
@@ -22397,6 +22464,9 @@ async function renderEstimateDetail(estimateId) {
             ${est.status === 'change_requested' && est.change_request_note ? `<div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Changes requested:</strong> <span style="white-space:pre-wrap">${esc(est.change_request_note)}</span><div style="color:var(--muted);font-size:.72rem;margin-top:4px">Edit the estimate, then re-send. Same number, same link, new sent date.</div></div>` : ''}
             ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
             ${est.public_token ? `<div style="color:var(--muted);font-size:.7rem;margin-top:8px;word-break:break-all">${esc(location.origin + '/e/' + est.public_token)}</div>` : ''}
+            ${viewsInfo ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:8px;font-size:.78rem;${viewsInfo.count ? '' : 'color:var(--muted)'}">${viewsInfo.count
+              ? `<strong>Viewed ${viewsInfo.count} time${viewsInfo.count === 1 ? '' : 's'}</strong>, last on ${esc(new Date(viewsInfo.last).toLocaleDateString())} at ${esc(new Date(viewsInfo.last).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}`
+              : 'Not viewed yet.'}</div>` : ''}
           `}
         </div>
         <div class="pec-card">

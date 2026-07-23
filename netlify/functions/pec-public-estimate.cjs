@@ -1051,6 +1051,49 @@ async function handleReject(est, body) {
 // Handler
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Estimate view logging (prompt 44). Every customer open of /e/<token> writes
+// a pec_estimate_views row and (when enabled in Settings) a shared-bell
+// pec_notifications row. Dylan chose EVERY open (no throttle), so the only
+// filter is link-preview bots: SMS and email clients pre-fetch the link to
+// build a preview card, which would light the bell before the customer ever
+// tapped it. The regex targets known unfurler/crawler UA tokens plus obvious
+// script clients; a normal phone/desktop browser UA never matches. The staff
+// ?preview= route never reaches this (separate handler branch), but a staff
+// member opening the raw public link DOES log, same as the portal.
+// Best-effort by design: a logging failure must never break the customer page.
+const BOT_UA_RE = /\bbot\b|bot[\/;)]|crawler|spider|crawling|preview|prefetch|prerender|facebookexternalhit|whatsapp|slackbot|imgproxy|telegram|skypeuripreview|discord|twitterbot|linkedin|pinterest|embedly|googleimageproxy|snapchat|viber|\bline\//i;
+
+async function logEstimateView(est, event) {
+  try {
+    const ua = String(event.headers['user-agent'] || '').slice(0, 300);
+    if (BOT_UA_RE.test(ua)) return;
+    const ip = String(event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim().slice(0, 60) || null;
+    await sb('POST', '/pec_estimate_views', { estimate_id: est.id, user_agent: ua || null, ip });
+
+    const set = await sb('GET', '/settings?key=in.(estimate_view_notifications_enabled,estimate_view_notify_first_per_day)&select=key,value');
+    const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+    if (String(cfg.estimate_view_notifications_enabled || 'true') === 'false') return;
+    if (String(cfg.estimate_view_notify_first_per_day || 'false') === 'true') {
+      // One bell per estimate per Phoenix day. Phoenix is UTC-7 year-round
+      // (no DST), so today's local midnight is a fixed UTC offset.
+      const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix' }).format(new Date());
+      const dupes = await sb('GET', `/pec_notifications?type=eq.estimate_viewed&target_id=eq.${est.id}&created_at=gte.${day}T07:00:00Z&select=id&limit=1`);
+      if ((dupes || []).length) return;
+    }
+    await sb('POST', '/pec_notifications', {
+      type: 'estimate_viewed',
+      job_id: est.job_id || null,
+      body: est.estimate_number != null ? `Customer viewed estimate #${est.estimate_number}` : 'Customer viewed an estimate',
+      priority: 'normal',
+      target_view: 'estimates',
+      target_id: est.id,
+    });
+  } catch (err) {
+    console.warn('estimate view log skipped:', err.message);
+  }
+}
+
 exports.handler = async (event) => {
   // POST /api/estimate/action: the three customer actions.
   if (event.httpMethod === 'POST') {
@@ -1116,6 +1159,9 @@ exports.handler = async (event) => {
       loadAreas(est.id),
     ]);
     const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+    // Await (not fire-and-forget): the lambda may freeze the instant the
+    // response returns, which would drop an un-awaited insert.
+    await logEstimateView(est, event);
     return estimatePage(est, brand, sysName, totalSqft);
   } catch (err) {
     console.error('public-estimate error:', err.message);
