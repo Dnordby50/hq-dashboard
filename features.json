@@ -313,7 +313,7 @@
     {
       "name": "Invoice payment reminders",
       "area": "dashboard",
-      "description": "Automatic payment reminders for open invoices. The first time an invoice goes to the customer (email compose or the Text invoice button; both stamp jobs.invoice_first_sent_at first-send-wins) the JOB enrolls in a reminder drip: day 0, then +3, +7, +14 (no due-date column exists, so the send moment is the anchor). Every run the engine recomputes the real balance from jobs.price minus pec_payments; a partial payment keeps the reminders coming showing the remaining balance, and the payment that clears it stops the enrollment with reason paid on the next tick. The recipient is the job's customer; their STOP (sms_opt_out) silences the SMS leg while email reminders continue, and an inbound text or call stops the whole drip as replied. Balance and pay link (/pay/token) are appended by code, never written by the model. Voided or archived jobs stop as job_closed. Money guardrail: the campaign ships dry_run and stays there until Dylan reviews generated copy and flips it live himself.",
+      "description": "Automatic payment reminders for open invoices. The first time an invoice goes to the customer (email compose or the Text invoice button; both stamp jobs.invoice_first_sent_at first-send-wins) the JOB enrolls in a reminder drip: day 0, then +3, +7, +14 (no due-date column exists, so the send moment is the anchor). Every run the engine recomputes the real balance from jobs.price minus pec_payments; a partial payment keeps the reminders coming showing the remaining balance, and the payment that clears it stops the enrollment with reason paid on the next tick. The recipient is the job's customer; their STOP (sms_opt_out) silences the SMS leg while email reminders continue, and an inbound text or call stops the whole drip as replied. Balance and pay link (/pay/token) are appended by code, never written by the model. Voided or archived jobs stop as job_closed. Money guardrail: the campaign ships dry_run and stays there until Dylan reviews generated copy and flips it live himself. Prompt 45: when the job has a payment schedule, reminders state the current outstanding ask (deposit or installment, with its label) instead of the full balance, and stop as not_due while nothing is currently due.",
       "code": {
         "indexHtml": [
           "enrollInvoiceDripClient",
@@ -330,12 +330,13 @@
         ]
       },
       "tables": [
+        "customers",
+        "jobs",
         "pec_drip_campaigns",
-        "pec_drip_steps",
         "pec_drip_enrollments",
         "pec_drip_sends",
-        "jobs",
-        "customers",
+        "pec_drip_steps",
+        "pec_invoice_installments",
         "pec_payments"
       ],
       "since": "2026-07"
@@ -395,7 +396,7 @@
     {
       "name": "Drip approval gate and settings controls",
       "area": "dashboard",
-      "description": "The supervised-launch layer over the drip engine (prompt 42). Drip Approvals (admin nav) lists every held drip message across leads and jobs, newest first: recipient with masked phone/email, campaign + step, and the editable body (plus subject for email). Per item: Approve & Send (re-checks consent, opt-out, replies, stage/paid/lost, and quiet hours at that exact moment, then sends via the normal providers, logs 'sent', and advances the enrollment exactly like an auto-send), Skip this step (advances without sending), Stop drip (ends the enrollment). Settings > Drips holds the knobs, all settings-table rows per standing rule 12: the master sending switch (same drip_sending_enabled row as the Drips view, so the two mirror each other), the approval gate (drip_approval_required; ON for the launch week, Dylan flips it off for full-auto), and the SMS send window (drip_quiet_start/drip_quiet_end/drip_quiet_days, Arizona time; texts due outside it wait for the next open, emails send any time, and the window also governs blasts). The gate intercepts LIVE campaigns only (dry-run already sends nothing); a leftover pending item keeps its step held even after the gate is switched off, so flipping the gate can never auto-send something a human was reviewing.",
+      "description": "The supervised-launch layer over the drip engine (prompt 42). Drip Approvals (admin nav) lists every held drip message across leads and jobs, newest first: recipient with masked phone/email, campaign + step, and the editable body (plus subject for email). Per item: Approve & Send (re-checks consent, opt-out, replies, stage/paid/lost, and quiet hours at that exact moment, then sends via the normal providers, logs 'sent', and advances the enrollment exactly like an auto-send), Skip this step (advances without sending), Stop drip (ends the enrollment). Settings > Drips holds the knobs, all settings-table rows per standing rule 12: the master sending switch (same drip_sending_enabled row as the Drips view, so the two mirror each other), the approval gate (drip_approval_required; ON for the launch week, Dylan flips it off for full-auto), and the SMS send window (drip_quiet_start/drip_quiet_end/drip_quiet_days, Arizona time; texts due outside it wait for the next open, emails send any time, and the window also governs blasts). The gate intercepts LIVE campaigns only (dry-run already sends nothing); a leftover pending item keeps its step held even after the gate is switched off, so flipping the gate can never auto-send something a human was reviewing. The Approvals page also hosts the Invoice installments queue (prompt 45; see Deposits and payment schedules).",
       "code": {
         "indexHtml": [
           "renderDripApprovals",
@@ -696,11 +697,14 @@
     {
       "name": "Invoicing and accounts receivable",
       "area": "dashboard",
-      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs. Prompt 38: the Email invoice / Text invoice buttons merged into one split Send control (primary = email + text with the compose modal and text confirm both shown before anything sends; caret = one channel; missing channels send what is on file with a skipped note). Same send code underneath: kind='invoice' SMS with the pay link + STOP line, the compose modal, and the invoice_first_sent_at first-send stamp on either channel. Prompt 40: manual completion is the source of truth. Completed AR rows that were AUTO-completed (jobs.status_manual_at null) but still have a schedule day after today are parked in a 'Completed, but still on the schedule' section and excluded from Total AR; a 'Ready to invoice' section lists in_progress jobs whose last scheduled day has passed, each with a Mark Complete button (markJobComplete, which now also stamps status_manual_at). Schedule spans reach AR rows via the dripjobs_deal_id bridge with the normalized name+address fallback, all reads batched.",
+      "description": "An Invoicing module tracking invoices and AR with completed, pending, and cancelled sections, a last-invoiced column, total AR that excludes archived and deposit-in-progress jobs, and a per-invoice Communication history listing every invoice email and text with time, recipient, subject, delivery status, and sender. Supports deposit waivers, recording payments as deposits, and downloadable invoice PDFs. Prompt 38: the Email invoice / Text invoice buttons merged into one split Send control (primary = email + text with the compose modal and text confirm both shown before anything sends; caret = one channel; missing channels send what is on file with a skipped note). Same send code underneath: kind='invoice' SMS with the pay link + STOP line, the compose modal, and the invoice_first_sent_at first-send stamp on either channel. Prompt 40: manual completion is the source of truth. Completed AR rows that were AUTO-completed (jobs.status_manual_at null) but still have a schedule day after today are parked in a 'Completed, but still on the schedule' section and excluded from Total AR; a 'Ready to invoice' section lists in_progress jobs whose last scheduled day has passed, each with a Mark Complete button (markJobComplete, which now also stamps status_manual_at). Schedule spans reach AR rows via the dripjobs_deal_id bridge with the normalized name+address fallback, all reads batched. Prompt 45: the job invoice gains a Payment schedule card (Due-now stat, schedule editor, Prepare deposit), and the send flow is extracted into pecInvoiceSendKit so the Approvals view sends held installments through the identical path.",
       "code": {
         "indexHtml": [
           "markJobComplete",
+          "openScheduleEditor",
           "pecDownloadInvoicePdf",
+          "pecInstallmentAsk",
+          "pecInvoiceSendKit",
           "pecOpenPrintDoc",
           "pecSplitSendHtml",
           "pecWireSplitSend",
@@ -710,10 +714,52 @@
         ]
       },
       "tables": [
+        "pec_invoice_installments",
         "pec_payments"
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-26-invoice-send-history-and-never-sent-fix.md",
       "since": "2026-05"
+    },
+    {
+      "name": "Deposits and payment schedules",
+      "area": "dashboard",
+      "description": "Partial invoicing on the one-invoice-per-job model (prompt 45). Accepting an estimate prepares an unsent deposit installment at the resolved default (per-job deposit amount, else the system type's deposit_pct, else the settings default_deposit_pct); staff send it manually. Each invoice can carry a schedule of installments, entered as dollars or a percent of the total (both stored, dollars snapshotted), due on job milestones (acceptance / job start / completion; manual and date exist in schema). Exactly one installment is ever the current ask; the shared resolver in _pec-installments.cjs is the single definition used by the pay page, Stripe, the reminder drip, and the staff UI (client mirror pecInstallmentAsk). Milestone-fired installments queue into an approval hold on the drip runner tick (auto-send via Quo/Resend when the gate is off and the master switch is on); approving sends through the normal invoice send kit with a paid/voided/out-of-turn re-check. The pay page shows the current amount due plus the whole plan, kind=installment charges exactly the server-computed current ask, the webhook settles covered installments, and reminders reference the current ask. A job with no installments behaves exactly as before.",
+      "code": {
+        "indexHtml": [
+          "pecInstallmentAsk",
+          "openScheduleEditor",
+          "pecPrepareDepositClient",
+          "pecInvoiceSendKit",
+          "pecSettleInstallmentsClient",
+          "renderJobInvoice",
+          "renderDripApprovals",
+          "renderSettingsInvoicing"
+        ],
+        "netlifyFunctions": [
+          "_pec-installments.cjs",
+          "pec-public-invoice.cjs",
+          "pec-stripe-checkout.cjs",
+          "pec-stripe-webhook.cjs",
+          "pec-send-sms.cjs",
+          "pec-drip-runner.cjs",
+          "_pec-drip.cjs",
+          "pec-public-estimate.cjs",
+          "pec-webhook-proposal-accepted.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-22_invoice_installments.sql",
+          "production/installments.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_invoice_installments",
+        "jobs",
+        "pec_payments",
+        "settings",
+        "pec_prod_system_types"
+      ],
+      "spec": "claude-code-prompt-45-partial-invoicing-schedule.md",
+      "since": "2026-07"
     },
     {
       "name": "Metrics and analytics",
@@ -941,14 +987,16 @@
     {
       "name": "Hosted invoice and pay page",
       "area": "portal",
-      "description": "A public, branded invoice page at a private /pay/<token> link where customers view line items and pay online. Redesigned to a premium look with the amount due front and center, it hides pay buttons and shows a PENDING state while a bank transfer clears so no one pays twice.",
+      "description": "A public, branded invoice page at a private /pay/<token> link where customers view line items and pay online. Redesigned to a premium look with the amount due front and center, it hides pay buttons and shows a PENDING state while a bank transfer clears so no one pays twice. With a payment schedule (prompt 45) the page shows the current amount due as the hero, the full installment plan with paid/upcoming states, and project total/paid/remaining; without one it renders exactly the legacy full-balance page.",
       "code": {
         "netlifyFunctions": [
-          "pec-public-invoice.cjs",
-          "pec-invoice-intent.cjs"
+          "_pec-installments.cjs",
+          "pec-invoice-intent.cjs",
+          "pec-public-invoice.cjs"
         ]
       },
       "tables": [
+        "pec_invoice_installments",
         "pec_payments"
       ],
       "since": "2026-05"
@@ -956,7 +1004,7 @@
     {
       "name": "Stripe card and ACH payments",
       "area": "integrations",
-      "description": "Online payments through Stripe: customers pay invoices by card or bank transfer (ACH) from the pay link, an internal Charge card option runs a hosted payment for office staff, and payments attach to a named Stripe Customer. ACH settles asynchronously over 3-5 days, recording itself on clearing, showing pending markers, and raising a failure alert and red chip if a transfer bounces. Includes editable and deletable (audited, cascade-guarded) payment records with an activity log.",
+      "description": "Online payments through Stripe: customers pay invoices by card or bank transfer (ACH) from the pay link, an internal Charge card option runs a hosted payment for office staff, and payments attach to a named Stripe Customer. ACH settles asynchronously over 3-5 days, recording itself on clearing, showing pending markers, and raising a failure alert and red chip if a transfer bounces. Includes editable and deletable (audited, cascade-guarded) payment records with an activity log. kind=installment (prompt 45) charges exactly the current installment amount computed server-side from the token; the webhook settles covered installments after recording.",
       "code": {
         "indexHtml": [
           "openPaymentModal",
@@ -970,6 +1018,7 @@
         ]
       },
       "tables": [
+        "pec_invoice_installments",
         "pec_payments",
         "pec_stripe_pending"
       ],

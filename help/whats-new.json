@@ -1,5 +1,16 @@
 [
   {
+    "id": "deposits-payment-schedules",
+    "date": "2026-07-22",
+    "title": "Required deposits, partial invoicing, and payment schedules",
+    "summary": "You are no longer limited to billing the full project total. When an estimate is accepted, a deposit is prepared automatically at your default percent (you still send it yourself). On any invoice you can build a payment schedule: each installment is a dollar amount or a percent of the total, due on a job milestone (acceptance, job start, or completion). Only one amount is ever due at a time; the customer's pay page shows the amount due now plus the whole plan, and paying online charges exactly that amount. When a milestone happens, the installment waits in Approvals for your OK before anything sends, and payment reminders talk about the amount currently due instead of the whole balance. Invoices without a schedule work exactly as before.",
+    "howto": [
+      "Open an invoice and click Build schedule to add installments (dollars or percent, each tied to a milestone), or Prepare deposit to add just the deposit.",
+      "Send the deposit with the normal Send control; milestone installments appear in Approvals when they come due and send after you approve them.",
+      "Tune the company default deposit percent and the schedule switches in Settings > Invoicing (a system type can carry its own deposit percent in the catalog)."
+    ]
+  },
+  {
     "id": "drip-approvals-queue",
     "date": "2026-07-21",
     "title": "Drip Approvals: review and OK every automatic message before it sends",
