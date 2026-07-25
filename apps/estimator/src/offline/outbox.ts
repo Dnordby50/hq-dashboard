@@ -17,6 +17,14 @@ export type OutboxOp = {
   attempts: number;
   status: 'pending' | 'error';
   lastError?: string;
+  // Backoff gate (prompt 48): do not retry before this ISO time. OPTIONAL and
+  // absent-means-due, so ops queued by builds older than this field still
+  // drain unchanged. Set on failure (production/outbox-drain.cjs schedule),
+  // ignored entirely by a manual "Retry now".
+  nextAttemptAt?: string;
+  // When the op first entered the queue (ISO). Optional for the same
+  // backward-compat reason; the UI falls back to the opId's timestamp prefix.
+  queuedAt?: string;
 };
 
 let _seq = 0;
@@ -33,7 +41,7 @@ export async function enqueue(op: {
   row: Record<string, unknown>;
   client_updated_at: string;
 }): Promise<void> {
-  const full: OutboxOp = { opId: nextOpId(), attempts: 0, status: 'pending', ...op };
+  const full: OutboxOp = { opId: nextOpId(), attempts: 0, status: 'pending', queuedAt: new Date().toISOString(), ...op };
   await idbPut('outbox', full);
 }
 
@@ -43,7 +51,7 @@ export async function listOps(): Promise<OutboxOp[]> {
   return ops.sort((a, b) => a.opId.localeCompare(b.opId));
 }
 
-export const markError = (op: OutboxOp, message: string) =>
-  idbPut('outbox', { ...op, attempts: op.attempts + 1, status: 'error' as const, lastError: message });
+export const markError = (op: OutboxOp, message: string, nextAttemptAt?: string) =>
+  idbPut('outbox', { ...op, attempts: op.attempts + 1, status: 'error' as const, lastError: message, nextAttemptAt });
 
 export const removeOp = (opId: string) => idbDelete('outbox', opId);

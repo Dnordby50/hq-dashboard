@@ -167,3 +167,30 @@ declare module '*/production/estimate-draft.cjs' {
   ): boolean;
   export function estimateIdForSave(editingId: string | null | undefined, draftId: string): string;
 }
+
+// Outbox drain policy (repo-root production/outbox-drain.cjs, prompt 48):
+// retry backoff + skip-children-of-a-failed-parent, shared with the fixture
+// tests so the tested policy is the policy the sync loop runs.
+declare module '*/production/outbox-drain.cjs' {
+  export interface DrainOp {
+    opId: string;
+    id: string;
+    row: Record<string, unknown>;
+    attempts: number;
+    nextAttemptAt?: string;
+  }
+  export function backoffMs(attempts: number): number;
+  export function nextAttemptAfterFailure(attempts: number, nowMs: number): string;
+  export function isDue(op: DrainOp, nowMs: number, force?: boolean): boolean;
+  export function referencesUnavailable(op: DrainOp, unavailableIds: Set<string>): boolean;
+  export function drainPass<T extends DrainOp>(
+    ops: T[],
+    deps: {
+      upsert(op: T): Promise<string | null>;
+      markError(op: T, message: string, nextAttemptAt: string): unknown;
+      removeOp(opId: string): unknown;
+      now(): number;
+    },
+    opts?: { force?: boolean },
+  ): Promise<{ synced: number; failed: number; blocked: number; deferred: number }>;
+}
