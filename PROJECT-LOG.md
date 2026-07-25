@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Cowork: applied both prompt 48 migrations to PROD, regenerated SCHEMA.md, ran the drift checker (1 PARTIAL, investigated: false positive, header bug not drift)
+By: Cowork
+
+Changed: No repo code. Executed the prompt 48 Cowork handoff (Claude Code commits 964ec59, f28a9ea, d652ffa, ec6a8c6, dbcc010, on main and deployed).
+
+1. APPLIED supabase/migrations/2026-07-25_migration_drift_probe.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) as 2026_07_25_migration_drift_probe. Function body and grants applied verbatim, nothing modified. VERIFY BLOCK: the sample pec_schema_probe call returns present:true for all four probes (table settings, column estimates.crew_notes, index uq_pec_drip_sends_pending_leg, setting migration_drift_baseline); the 'tables' array returns 76 names (the file predicted 70+). Settings migration_drift_check_enabled='true' and migration_drift_baseline='2026-07-01' both present. GRANTS RE-CHECKED EXPLICITLY with has_function_privilege: service_role can EXECUTE, anon and authenticated cannot. No browser exposure.
+
+2. APPLIED supabase/migrations/2026-07-25_sync_stuck_reports.sql as 2026_07_25_sync_stuck_reports. VERIFY BLOCK all pass: relrowsecurity true; exactly one policy, pec_sync_stuck_reports_staff_read, cmd SELECT (no write policy added, per the guardrail); three indexes (pec_sync_stuck_reports_pkey, pec_sync_stuck_reports_op_id_key, idx_pec_sync_stuck_reports_open); settings sync_stuck_threshold_attempts='2' and sync_stuck_escalation_enabled='true'.
+
+3. SCHEMA.md regenerated, three sections touched: (a) NEW ### pec_sync_stuck_reports section (10 columns, PK, the op_id unique, the open-items index, and a Note covering service-role-write / staff-read / no-write-policy and the resolved_at semantics); (b) ### settings row count 17 -> 21 plus a line documenting the four new keys and their defaults, since the table itself is just key/value and the keys are the actual contract; (c) a Gotchas bullet for public.pec_schema_probe(jsonb) explaining SECURITY DEFINER, the service_role-only EXECUTE, and WHY it exists (PostgREST cannot see pg_indexes or pg_tables).
+
+4. DRIFT CHECKER FIRST RUN (manual=1&notify=0), ok:true, baseline 2026-07-01:
+   checked 45 | applied 36 | missing 0 | partial 1 | unknown 8 | reverse 0 (empty) | notified 0
+   missing is EMPTY, which is the headline: the five migrations Cowork applied on 2026-07-25 all read as applied, and so do both migrations from today. Reverse drift is empty, so nothing in prod is unaccounted for by a repo file. The 8 unknown are correctly bucketed (view-only, data-only backfills, function/trigger-only, check-constraint-only migrations that declare no probeable artifact).
+
+   THE ONE PARTIAL, investigated rather than dismissed per the handoff:
+   file 2026-07-19_drip_engine.sql, absent: `index: idx_pec_drip_enroll_one_active`, all 9 other artifacts present.
+   VERDICT: FALSE POSITIVE. It is a stale @artifacts header, NOT prod drift. 2026-07-19_drip_phase3.sql line 117 does `drop index if exists idx_pec_drip_enroll_one_active` and replaces it with idx_pec_drip_enroll_one_active_subj (subject_type, subject_id, campaign_id) where status='active', as part of the Phase 3 subject generalization. Prod is CORRECT: pg_indexes on pec_drip_enrollments shows idx_pec_drip_enroll_one_active_subj present and the old index correctly absent, exactly as drip_phase3's own verify footer requires ("does NOT have idx_pec_drip_enroll_one_active"). drip_engine's header is accurate about what that file creates; it just cannot express "a later migration intentionally removed this".
+
+   SCOPE OF THE GAP: swept every 2026-07+ migration for drops. Exactly ONE supersession exists in the whole set (the line above), so this is a single isolated case today, not a widespread modelling failure.
+
+   WHY THIS MATTERS ENOUGH TO FIX NOW, not later: an un-fixed false positive means the Diagnostics panel shows a permanent yellow/partial and the daily scheduled run has a standing reason to notify. That is exactly the cry-wolf failure the prompt-48 spec warned about in its own guardrails ("a checker that generates daily noise about a known-pending migration will be muted, and then it is worth nothing"). The checker's first real output being a false alarm is the worst possible start for a tool whose only job is to be believed. NOTE the scheduled run was NOT suppressed, so the 07:00 MST daily tick will notify on this unless it is fixed or notify-gated first.
+
+   RECOMMENDED FIX (Claude Code, small): extend the @artifacts convention with a supersession notation, e.g. `--   index: idx_pec_drip_enroll_one_active (superseded-by: 2026-07-19_drip_phase3.sql)`, and have pec-migration-drift.cjs treat a superseded artifact as satisfied when absent AND the naming file is itself applied (so it still catches the case where the superseding migration never ran). Deliberately NOT fixed by deleting the header line: the file genuinely does create that index, and a fresh-database replay would have it. Cowork did not touch the code, per CLAUDE.md (code edits are Claude Code's lane, not a Cowork handoff).
+
+Why: prompt 48 Cowork handoff, tasks 1-4.
+Files touched: SCHEMA.md (3 sections), PROJECT-LOG.md (this entry).
+Next steps: Claude Code adds the superseded-by notation and re-runs the checker to a clean 37/0/0. Until then expect one partial in the panel and a daily bell.
+Handoff to Dylan: (1) git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). (2) Decide whether to hand the superseded-by fix to Claude Code now or accept one daily false bell until it ships. (3) Still open from earlier today: prompt 34 (metrics/costing/bonus) has never run, and the ZZ Test Draft lead + EST-102034 still need deleting.
+
+---
+
 ## [2026-07-25 MST] Prompt 48 shipped: migration drift detection + estimator stuck-sync visibility
 By: Claude Code
 

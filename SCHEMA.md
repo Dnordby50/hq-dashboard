@@ -23,6 +23,7 @@ Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via 
 - `pec_payments` has **no** `created_at`: its timestamps are `received_date` (date) and `recorded_at`.
 - `jobs` vs `pec_prod_jobs` are different tables: `pec_prod_jobs` (the production/sync side) *does* carry a denormalized `customer_name` column; `jobs` (HQ side) does not: join to `customers`.
 - All 64 tables have RLS enabled; server-side code needs the service-role key or matching policies.
+- `public.pec_schema_probe(jsonb)` (added 2026-07-25, prompt 48) is the drift checker's batched existence query: it answers table/column/index/setting probes and returns every live public table for reverse-drift comparison. SECURITY DEFINER with `search_path` pinned, `stable`, read-only. EXECUTE is granted to service_role ONLY (revoked from public/anon/authenticated), because it reads pg_catalog; do not expose it to the browser. It exists because PostgREST cannot see pg_indexes or pg_tables directly.
 
 ## Tables (alphabetical)
 
@@ -1470,6 +1471,27 @@ RLS: enabled · rows: 1
 
 PK: id
 
+### pec_sync_stuck_reports
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| op_id | text | no |  |
+| table_name | text | no |  |
+| row_id | uuid | yes |  |
+| attempts | integer | no | 0 |
+| first_queued_at | timestamptz | yes |  |
+| last_error | text | yes |  |
+| estimate_id | uuid | yes |  |
+| reported_at | timestamptz | no | now() |
+| resolved_at | timestamptz | yes |  |
+
+PK: id
+Unique: (op_id) — the estimator upserts on its outbox op id, so repeated reports from new sessions UPDATE one row instead of piling up.
+Index: (resolved_at, reported_at desc) as idx_pec_sync_stuck_reports_open (unresolved first, newest first).
+Note: escalation ledger for estimator saves stuck in the offline outbox (prompt 48, Part B). Written service-role-only via pec-sync-stuck.cjs after sync_stuck_threshold_attempts failures; carries ids, attempt count and the raw error, never row bodies or customer PII. RLS: staff SELECT only via public.is_admin_staff(), NO write policy by design. resolved_at is set by the office when the cause is fixed; a later report on the same op clears it and re-bells.
+
 ### pec_user_todos
 RLS: enabled · rows: 0
 
@@ -1570,7 +1592,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 17
+RLS: enabled · rows: 21
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1579,6 +1601,7 @@ RLS: enabled · rows: 17
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-25 (prompt 48): migration_drift_check_enabled ('true', master switch for the daily drift check; the on-demand Diagnostics run always works), migration_drift_baseline ('2026-07-01', only migrations dated on/after this are probed), sync_stuck_threshold_attempts ('2', failed attempts before the estimator shows the red not-syncing state), sync_stuck_escalation_enabled ('true', whether a stuck save also raises an admin bell).
 
 ### sign_in_log
 RLS: enabled · rows: 20
