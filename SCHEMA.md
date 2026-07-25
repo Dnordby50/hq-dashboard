@@ -1382,8 +1382,11 @@ RLS: enabled · rows: 2
 | google_email | text | yes |  |
 | google_calendar_id | text | yes |  |
 | google_connected_at | timestamptz | yes |  |
+| auth_user_id | uuid | yes |  |
 
 PK: id
+FK: auth_user_id → auth.users.id
+Unique: (auth_user_id) WHERE auth_user_id IS NOT NULL — partial index uq_pec_sales_team_members_auth_user; one login maps to at most one member, any number of unmapped (NULL) rows allowed. Set from Settings > Sales Team; drives the estimator's current-user salesperson default (prompt 47).
 
 ### pec_sms_log
 RLS: enabled · rows: 68

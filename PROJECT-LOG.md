@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Cowork: applied the sales-member auth_user_id migration to PROD + regenerated SCHEMA.md (prompt 47 handoff, tasks 1-2 done; 3-4 blocked on deploy)
+By: Cowork
+
+Changed: No repo code. Executed tasks 1-2 of the prompt 47 Cowork handoff (Claude Code commits 020a76e / 66c8278 / cf38ae1, all still LOCAL and unpushed as of this entry).
+
+1. APPLIED supabase/migrations/2026-07-22_sales_member_auth_user.sql to PROD (project "HQ Dashboard", zdfpzmmrgotynrwkeakd) via Supabase apply_migration, name 2026_07_22_sales_member_auth_user. Pre-check first: confirmed pec_sales_team_members had 12 columns and no auth_user_id, so this was a clean first apply (not a re-run).
+
+VERIFY BLOCK RESULTS (all three checks pass):
+- Column: auth_user_id / uuid / is_nullable YES.
+- Index: `CREATE UNIQUE INDEX uq_pec_sales_team_members_auth_user ON public.pec_sales_team_members USING btree (auth_user_id) WHERE (auth_user_id IS NOT NULL)` - partial predicate present as specified.
+- FK: pec_sales_team_members_auth_user_id_fkey, FOREIGN KEY (auth_user_id) REFERENCES auth.users(id).
+No other column on the table was touched; no name-match backfill was run (per the handoff guardrail). Both member rows read auth_user_id = NULL: Aron Bronson (c893da3f-6659-4a40-95ec-9cfaa57c2782) and Dylan Nordby (2add1f35-c46f-4931-8220-e5ba14939e3f), both active.
+
+2. REGENERATED the SCHEMA.md pec_sales_team_members section (targeted single-section edit, no other section touched): added the auth_user_id row, an `FK: auth_user_id → auth.users.id` line, and a `Unique:` line documenting the partial index plus what it drives (Settings > Sales Team mapping, estimator current-user salesperson default). Documented the partial predicate explicitly because a plain "unique" reading would wrongly imply only one member can be unmapped.
+
+READ-ONLY PREP for task 3 (the mapping itself NOT done, it is a UI action gated on deploy): the eligible logins in admin_users are anne@finishingtouchpaintingaz.com (admin), aron@prescottepoxy.com (office), dylan@prescottepoxy.com (admin), kfloyd107@gmail.com (pm), landentjohnson2004@gmail.com (pm), office@prescottepoxy.com (admin). The intended pairing is Aron Bronson -> aron@prescottepoxy.com and Dylan Nordby -> dylan@prescottepoxy.com, but this was NOT applied: the handoff routes the mapping through the Settings > Sales Team UI (task 3) and explicitly forbids a name-match backfill, and the UI does not exist in prod until the commits are pushed. Dylan was asked to confirm his own row maps to dylan@prescottepoxy.com rather than office@prescottepoxy.com (he holds both admin logins).
+
+BLOCKED: tasks 3 (member -> login mapping) and 4 (card-first smoke test) cannot run until the three commits are pushed and Netlify has rebuilt. Until a member is mapped, the new default is inert by design: an unmapped login gets no salesperson default and the estimator blocks the save with a prompt rather than guessing (that is the intended fallback, not a bug).
+
+Why: prompt 47 Cowork handoff (Claude Code wrote the migration; Cowork applies + regenerates SCHEMA.md, standing rule 9).
+Files touched: SCHEMA.md (pec_sales_team_members section), PROJECT-LOG.md (this entry).
+Next steps: Dylan pushes main (3 local commits) so the Settings > Sales Team Login dropdown goes live, then Cowork maps both members and runs the task-4 smoke test.
+Handoff to Dylan: (1) git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). (2) git push origin main, currently 3 commits ahead. (3) Confirm dylan@prescottepoxy.com is the right login for the Dylan Nordby sales-team row.
+
+---
+
 ## [2026-07-25 MST] Card-first estimate drafts + current-user salesperson default (prompt 47)
 By: Claude Code
 
