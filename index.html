@@ -2531,6 +2531,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
           <button data-pec-view="settings" class="pec-role-admin">Settings</button>
           <button data-pec-view="catalog" class="pec-role-admin">Price &amp; Material Catalog</button>
           <button data-pec-view="dripjobs-sync-health" class="pec-role-admin">DripJobs Sync Health</button>
+          <button data-pec-view="schema-drift" class="pec-role-admin">Schema Drift</button>
           <!-- Help stays here (last) but RAIL_PIN lifts it into its own pinned
                rail row, so it never renders inside the Settings flyout. -->
           <button data-pec-view="docs">Help</button>
@@ -5159,7 +5160,7 @@ if (document.readyState === 'loading') {
     // Build 19 renames (routes unchanged; labels only, per Dylan's sign-off).
     const RAIL_RELABEL = { catalog: 'Pricing', nextday: 'Next Day' };
     // Reports/diagnostics subordinated under a divider INSIDE their group flyout.
-    const RAIL_SECTION = { 'crew-bonus': 'Reports', commission: 'Reports', 'dripjobs-sync-health': 'Diagnostics' };
+    const RAIL_SECTION = { 'crew-bonus': 'Reports', commission: 'Reports', 'dripjobs-sync-health': 'Diagnostics', 'schema-drift': 'Diagnostics' };
     // Utility items lifted out of their markup group into their own pinned rail
     // row at the bottom (Help is a universal utility, not part of Admin).
     const RAIL_PIN = { docs: 'Help' };
@@ -6220,6 +6221,11 @@ async function refreshBell() {
 // tap can never dump someone on a blocked view; an unknown target_view stays
 // text-only rather than guessing.
 function notifTarget(n) {
+  // migration_drift / sync_stuck rows without a row-level target (prompt 48):
+  // the Schema drift panel is a whole-view destination, so route by view alone
+  // (admin-gated like the panel itself). 'panel' is a placeholder nav id; the
+  // click handler has an explicit schema-drift branch that sets no open-id.
+  if (n.target_view === 'schema-drift') return isAdmin() ? { view: 'schema-drift', id: 'panel' } : null;
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
@@ -6270,6 +6276,7 @@ function renderBellPanel(rows) {
       else if (navView === 'invoicing') state.openInvoiceJobId = navId;
       else if (navView === 'appointments') state.openAppointmentId = navId;
       else if (navView === 'estimates') state.openEstimateId = navId;
+      else if (navView === 'schema-drift') { /* whole-view destination, no open-id */ }
       else state.openJobId = navId;
       panel.style.display = 'none';
       switchView(navView);
@@ -7324,6 +7331,7 @@ function switchView(v) {
       'completed-costing': () => { state.costingTab = 'completed'; return renderJobCosting(); },
       'crew-bonus': renderBonusReport,
       'dripjobs-sync-health': renderDripJobsSyncHealth,
+      'schema-drift': renderSchemaDrift,
       todos: renderTodos,
       settings: renderSettings,
     })[v] || renderDashboard;
@@ -28816,6 +28824,135 @@ async function renderDripJobsSyncHealth() {
   root.querySelectorAll('[data-sync-opencosting]').forEach(b => b.addEventListener('click', () => {
     state.openUnifiedJobId = b.dataset.syncOpencosting; switchView('costing');
   }));
+}
+
+// Settings > Diagnostics > Schema drift (prompt 48, Part A). On-demand twin of
+// the daily pec-migration-drift schedule: calls the function with ?manual=1
+// (so the panel works even when the scheduled check is switched off) and
+// notify=0 (results are on screen; the bell is the scheduled run's job), then
+// renders the four buckets at artifact-level detail. The two drift settings
+// knobs (rule 12) live here beside the results they govern.
+async function renderSchemaDrift() {
+  const root = $('pecViewRoot');
+  if (!isAdmin()) { root.innerHTML = '<div class="pec-empty">You do not have access to Schema Drift.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Checking the live schema…</div>';
+
+  // Settings knobs, read directly (the checker reads its own copy server-side).
+  let cfg = {};
+  try {
+    const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
+      .in('key', ['migration_drift_check_enabled', 'migration_drift_baseline']), { label: 'schema-drift-settings' });
+    cfg = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  } catch (_) { /* knobs render with defaults */ }
+  const checkOn = (cfg.migration_drift_check_enabled || 'true') !== 'false';
+  const baselineSetting = /^\d{4}-\d{2}-\d{2}$/.test(cfg.migration_drift_baseline || '') ? cfg.migration_drift_baseline : '2026-07-01';
+
+  let data = null, fetchErr = null;
+  try {
+    const res = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0');
+    data = await res.json();
+  } catch (err) {
+    fetchErr = err && err.message ? err.message : String(err);
+  }
+
+  const fmtDateTime = (iso) => { if (!iso) return '—'; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); };
+  const artifactList = (arr) => (arr || []).map(a => `<code style="font-size:.72rem">${esc(a)}</code>`).join('<br>');
+  const bucketTable = (rows, cols) => `<div style="overflow-x:auto"><table class="pec-table" style="font-size:.8rem">
+      <thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>
+      <tbody>${rows.join('')}</tbody></table></div>`;
+
+  let resultHtml;
+  if (fetchErr) {
+    resultHtml = `<div class="pec-card"><div class="pec-empty">Could not run the drift check: ${esc(fetchErr)}</div></div>`;
+  } else if (data && data.ok === false) {
+    // The probe RPC itself is missing -- the checker's own bootstrap drift.
+    resultHtml = `<div class="pec-card" style="border-left:4px solid var(--rd-danger,#dc2626)">
+      <h3 style="margin:0 0 4px;color:var(--rd-danger,#dc2626)">Checker cannot run</h3>
+      <div style="font-size:.8rem">${esc(data.error || 'unknown error')}</div>
+    </div>`;
+  } else if (data) {
+    const clean = !data.missing.length && !data.partial.length;
+    const summary = `<div class="pec-card" style="border-left:4px solid ${clean ? 'var(--rd-ok,#16a34a)' : 'var(--rd-danger,#dc2626)'}">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:baseline">
+        <div><div style="color:var(--muted);font-size:.72rem">Checked (since ${esc(data.baseline)})</div><div style="font-size:1.3rem;font-weight:700">${data.checked}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Applied</div><div style="font-size:1.3rem;font-weight:700;color:var(--rd-ok,#16a34a)">${data.applied}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Missing</div><div style="font-size:1.3rem;font-weight:700;${data.missing.length ? 'color:var(--rd-danger,#dc2626)' : ''}">${data.missing.length}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Partial</div><div style="font-size:1.3rem;font-weight:700;${data.partial.length ? 'color:var(--rd-danger,#dc2626)' : ''}">${data.partial.length}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Not verifiable</div><div style="font-size:1.3rem;font-weight:700">${data.unknown.length}</div></div>
+        <div><div style="color:var(--muted);font-size:.72rem">Checked at</div><div style="font-size:.95rem;font-weight:600">${esc(fmtDateTime(data.checkedAt))}</div></div>
+      </div>
+      ${clean ? '<div style="font-size:.8rem;color:var(--rd-ok,#16a34a);margin-top:8px;font-weight:600">Every checked migration is fully applied to prod.</div>' : ''}
+    </div>`;
+
+    const partialHtml = data.partial.length ? `<div class="pec-card" style="border-left:4px solid var(--rd-danger,#dc2626)">
+      <h3 style="margin:0 0 2px;color:var(--rd-danger,#dc2626)">Partially applied <span style="color:var(--muted);font-size:.72rem;font-weight:400">a migration HALF-ran; the schema is inconsistent — ${data.partial.length}</span></h3>
+      ${bucketTable(data.partial.map(p => `<tr class="nohover"><td><strong>${esc(p.file)}</strong></td><td>${artifactList(p.absent)}</td><td style="color:var(--muted)">${artifactList(p.present)}</td></tr>`), ['Migration', 'Absent from prod', 'Present'])}
+    </div>` : '';
+
+    const missingHtml = data.missing.length ? `<div class="pec-card" style="border-left:4px solid var(--rd-danger,#dc2626)">
+      <h3 style="margin:0 0 2px">Not applied <span style="color:var(--muted);font-size:.72rem;font-weight:400">no declared artifact exists in prod — ${data.missing.length}</span></h3>
+      ${bucketTable(data.missing.map(m => `<tr class="nohover"><td><strong>${esc(m.file)}</strong></td><td>${artifactList(m.absent)}</td></tr>`), ['Migration', 'Absent from prod'])}
+    </div>` : '';
+
+    const unknownHtml = data.unknown.length ? `<div class="pec-card">
+      <h3 style="margin:0 0 2px">Not verifiable <span style="color:var(--muted);font-size:.72rem;font-weight:400">nothing probeable declared; confirm by hand if in doubt — ${data.unknown.length}</span></h3>
+      ${bucketTable(data.unknown.map(u => `<tr class="nohover"><td>${esc(u.file)}</td><td style="color:var(--muted);font-size:.72rem">${esc(u.reason)}</td></tr>`), ['Migration', 'Why'])}
+    </div>` : '';
+
+    const rev = data.reverse || { tables: [], truncated: 0 };
+    const reverseHtml = `<div class="pec-card">
+      <h3 style="margin:0 0 2px">Reverse drift <span style="color:var(--muted);font-size:.72rem;font-weight:400">informational — ${rev.tables.length}${rev.truncated ? ` shown, ${rev.truncated} more` : ''}</span></h3>
+      <div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">Live prod tables that no SQL file in the repo creates. Usually a table made directly in Supabase Studio. Nothing is wrong by definition; it just is not in version control.</div>
+      ${rev.tables.length ? `<div style="font-size:.78rem">${rev.tables.map(t => `<code>${esc(t)}</code>`).join(' · ')}</div>` : '<div class="pec-empty" style="font-size:.8rem">None. Every live table traces to a repo SQL file.</div>'}
+    </div>`;
+
+    resultHtml = summary + partialHtml + missingHtml + unknownHtml + reverseHtml;
+  } else {
+    resultHtml = '<div class="pec-card"><div class="pec-empty">No result.</div></div>';
+  }
+
+  root.innerHTML = `
+    <div class="pec-card">
+      <h3 style="margin:0 0 4px">Schema drift <span style="color:var(--muted);font-size:.7rem;font-weight:400">are all repo migrations actually applied to prod?</span></h3>
+      <div style="font-size:.75rem;color:var(--muted)">Each migration file declares the tables, columns, indexes, and settings it creates (its <code>@artifacts</code> header); this check probes the LIVE schema for every one of them. It runs daily at 07:00 MST and raises a bell when something is missing; this panel runs the same check on demand. Detection is by artifact, not filename, so a half-applied migration is caught too.</div>
+      <div style="margin-top:10px"><button type="button" class="pec-btn sm primary" id="schemaDriftRerun">Run check now</button></div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Daily scheduled check: ${checkOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">The 07:00 MST automatic run and its bell notifications. This panel's on-demand check works either way.</div>
+        </div>
+        <button type="button" class="pec-btn sm ${checkOn ? '' : 'primary'}" id="schemaDriftToggle">${checkOn ? 'Turn OFF' : 'Turn ON'}</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;font-size:.85rem">Baseline date</div>
+          <div style="color:var(--muted);font-size:.76rem">Only migrations dated on or after this are checked (older files predate the @artifacts convention).</div>
+        </div>
+        <input type="date" id="schemaDriftBaseline" value="${esc(baselineSetting)}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--rd-bg,transparent);color:inherit">
+        <button type="button" class="pec-btn ghost sm" id="schemaDriftBaselineSave">Save</button>
+      </div>
+    </div>
+    ${resultHtml}`;
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'schema-drift-save' });
+    if (w && w.error) throw w.error;
+  };
+  $('schemaDriftRerun').addEventListener('click', () => renderSchemaDrift());
+  $('schemaDriftToggle').addEventListener('click', async () => {
+    const btn = $('schemaDriftToggle'); btn.disabled = true;
+    try { await saveSetting('migration_drift_check_enabled', checkOn ? 'false' : 'true'); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSchemaDrift();
+  });
+  $('schemaDriftBaselineSave').addEventListener('click', async () => {
+    const btn = $('schemaDriftBaselineSave'); btn.disabled = true;
+    const v = $('schemaDriftBaseline').value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { showToast('Pick a valid date.', { ttl: 4000 }); btn.disabled = false; return; }
+    try { await saveSetting('migration_drift_baseline', v); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSchemaDrift();
+  });
 }
 
 // ============================================================

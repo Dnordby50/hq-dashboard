@@ -1,0 +1,1598 @@
+{
+  "migrations": [
+    {
+      "file": "2026-04-28_pm_ordering.sql",
+      "date": "2026-04-28",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-01_pec_systems_recipes.sql",
+      "date": "2026-05-01",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-03_pec_prod_link_columns.sql",
+      "date": "2026-05-03",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_catalog_expansion.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_customer_fields.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_flake_cleanup_special_order.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_job_schedule.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_metallic_pigment_split.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-04_quartz_material_type.sql",
+      "date": "2026-05-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-05_lead_sources_full_list.sql",
+      "date": "2026-05-05",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-07_cure_speed_tints_topcoat.sql",
+      "date": "2026-05-07",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-17_catalog_pricing_pass.sql",
+      "date": "2026-05-17",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-17_job_costing_unified.sql",
+      "date": "2026-05-17",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-19_job_areas.sql",
+      "date": "2026-05-19",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-19_jobs_system_type.sql",
+      "date": "2026-05-19",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-20_recipe_formula.sql",
+      "date": "2026-05-20",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-23_job_areas_rls.sql",
+      "date": "2026-05-23",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_grind_and_seal_consolidation.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_job_card_fields.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_polyaspartic_consolidation.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_sales_team_members.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_status_signed.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-24_system_budgets.sql",
+      "date": "2026-05-24",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-25_audit_log_job_actions.sql",
+      "date": "2026-05-25",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-25_non_slip_boolean.sql",
+      "date": "2026-05-25",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-27_invoicing_ar.sql",
+      "date": "2026-05-27",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-28_payment_method_card.sql",
+      "date": "2026-05-28",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-29_polish_grit_optional.sql",
+      "date": "2026-05-29",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-29_prod_jobs_line_items.sql",
+      "date": "2026-05-29",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-30_colors_confirmed.sql",
+      "date": "2026-05-30",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-30_deposit_waived.sql",
+      "date": "2026-05-30",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-31_email_platform.sql",
+      "date": "2026-05-31",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-05-31_job_finalize.sql",
+      "date": "2026-05-31",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-01_brand_and_public_invoice.sql",
+      "date": "2026-06-01",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-01_job_area_estimate.sql",
+      "date": "2026-06-01",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-01_system_type_sort_order.sql",
+      "date": "2026-06-01",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-02_job_save_txn.sql",
+      "date": "2026-06-02",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-02_price_integrity.sql",
+      "date": "2026-06-02",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-02_prod_jobs_archive_hide.sql",
+      "date": "2026-06-02",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-03_jobs_status_manual_override.sql",
+      "date": "2026-06-03",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-04_prod_status_sync_trigger.sql",
+      "date": "2026-06-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-04_schedule_time_slot.sql",
+      "date": "2026-06-04",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_admin_users_role_company.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_notifications.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_portal_colors.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_portal_data_columns.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_portal_install_date.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_portal_views.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_search_jobs_trgm.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-06_status_descriptions.sql",
+      "date": "2026-06-06",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-07_brand_black_orange.sql",
+      "date": "2026-06-07",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-07_line_items_manual_override.sql",
+      "date": "2026-06-07",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-07_log_customer_deleted.sql",
+      "date": "2026-06-07",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-07_schedule_time_slot_extra.sql",
+      "date": "2026-06-07",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_commission_payouts.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_commission_payroll_date.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_edit_payment.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_sales_team_commission.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_touchup_callback.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-08_user_permissions.sql",
+      "date": "2026-06-08",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-09_unified_status_trigger.sql",
+      "date": "2026-06-09",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-10_prod_tasks.sql",
+      "date": "2026-06-10",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-13_busybusy_time.sql",
+      "date": "2026-06-13",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-14_costing_lifecycle.sql",
+      "date": "2026-06-14",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-15_crew_bonus_manual_and_payouts.sql",
+      "date": "2026-06-15",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-15_exclude_from_commission.sql",
+      "date": "2026-06-15",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-15_invoice_first_sent.sql",
+      "date": "2026-06-15",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-19_ot_hours.sql",
+      "date": "2026-06-19",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-19_webhook_ingest_log.sql",
+      "date": "2026-06-19",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-21_estimator_core.sql",
+      "date": "2026-06-21",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-21_estimator_owner_email_fix.sql",
+      "date": "2026-06-21",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-21_estimator_pricing_followup.sql",
+      "date": "2026-06-21",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-21_estimator_visibility.sql",
+      "date": "2026-06-21",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-22_customer_stripe_id.sql",
+      "date": "2026-06-22",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-22_log_payment_deleted.sql",
+      "date": "2026-06-22",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-22_stripe_payment_idempotency.sql",
+      "date": "2026-06-22",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-23_holidays_and_crew_days_off.sql",
+      "date": "2026-06-23",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-23_invoice_text_fields.sql",
+      "date": "2026-06-23",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-27_costing_submit_review.sql",
+      "date": "2026-06-27",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-06-28_quo_sms.sql",
+      "date": "2026-06-28",
+      "hasHeader": false,
+      "none": null,
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-01_prod_tasks_nextday.sql",
+      "date": "2026-07-01",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_tasks.crew_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_tasks.time_slot"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-06_can_finalize_costing.sql",
+      "date": "2026-07-06",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.user_permissions.can_finalize_costing"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-06_quo_call_log.sql",
+      "date": "2026-07-06",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_call_log"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_call_log_customer"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-09_change_orders_scope.sql",
+      "date": "2026-07-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_change_order_signatures"
+        },
+        {
+          "kind": "column",
+          "name": "public.job_areas.is_change_order"
+        },
+        {
+          "kind": "index",
+          "name": "idx_job_areas_change_order"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_co_sig_job"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-09_stripe_pending.sql",
+      "date": "2026-07-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_stripe_pending"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_stripe_pending_job"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-09_sub_expenses.sql",
+      "date": "2026-07-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_prod_job_sub_expenses"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.subcontracted"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_prod_job_sub_expenses_job"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-09_whats_new_acks.sql",
+      "date": "2026-07-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_whats_new_acks"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_whats_new_acks_user"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-10_ar_exclude_archived.sql",
+      "date": "2026-07-10",
+      "hasHeader": true,
+      "none": "view change only (pec_job_ar), not probeable",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-10_day_index_chronological.sql",
+      "date": "2026-07-10",
+      "hasHeader": true,
+      "none": "data-only renumber of pec_prod_job_schedule_days.day_index",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-10_reschedule_limbo.sql",
+      "date": "2026-07-10",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.reschedule_days_owed"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.rescheduled_from"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-11_estimate_public_token_default.sql",
+      "date": "2026-07-11",
+      "hasHeader": true,
+      "none": "column default change + backfill only",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-11_lead_intake_ai.sql",
+      "date": "2026-07-11",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.campaign"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.ad_meta"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.ai_analysis"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.ai_analyzed_at"
+        },
+        {
+          "kind": "index",
+          "name": "idx_leads_phone_live"
+        },
+        {
+          "kind": "index",
+          "name": "idx_leads_email_live"
+        },
+        {
+          "kind": "index",
+          "name": "idx_lead_events_type"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-12_estimate_objects.sql",
+      "date": "2026-07-12",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.estimate_number"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.line_items"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.mvb"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.flake_color"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_email"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_phone"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_address"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.change_request_note"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.rejected_reason"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.rejected_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.pricing_snapshot"
+        },
+        {
+          "kind": "index",
+          "name": "estimates_estimate_number_key"
+        },
+        {
+          "kind": "index",
+          "name": "idx_estimates_lead"
+        },
+        {
+          "kind": "index",
+          "name": "idx_estimates_status"
+        },
+        {
+          "kind": "index",
+          "name": "idx_estimates_created_at"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-12_estimator_pricing_defaults.sql",
+      "date": "2026-07-12",
+      "hasHeader": true,
+      "none": "data-only catalog/pricing updates",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-13_estimate_addons_scope.sql",
+      "date": "2026-07-13",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_prod_addons"
+        },
+        {
+          "kind": "table",
+          "name": "public.estimate_line_items"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_system_types.scope_template"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_system_types.scope_template_mvb"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_system_types.deposit_pct"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_edited_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_stale"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_generated_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_model"
+        },
+        {
+          "kind": "index",
+          "name": "pec_prod_addons_name_key"
+        },
+        {
+          "kind": "index",
+          "name": "idx_estimate_line_items_estimate"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-13_estimate_scope_answers.sql",
+      "date": "2026-07-13",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_answers"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.scope_questions"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-14_bonus_approval_audit.sql",
+      "date": "2026-07-14",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.suggested_amount"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.approved_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.approved_at"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-14_costing_sendback_notes.sql",
+      "date": "2026-07-14",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_prod_costing_sendbacks"
+        },
+        {
+          "kind": "index",
+          "name": "pec_prod_costing_sendbacks_job_id_idx"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-14_job_costing_commission.sql",
+      "date": "2026-07-14",
+      "hasHeader": true,
+      "none": "functions and triggers only",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-15_estimate_controls.sql",
+      "date": "2026-07-15",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.mvb"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_areas.mvb"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.calc_price"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.price_override_reason"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.price_overridden_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.price_overridden_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.deleted_by"
+        },
+        {
+          "kind": "setting",
+          "name": "estimator_sundries_pct"
+        },
+        {
+          "kind": "setting",
+          "name": "estimator_floor_gp_pct"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-15_estimate_customer_backfill.sql",
+      "date": "2026-07-15",
+      "hasHeader": true,
+      "none": "data-only backfill of estimates customer fields",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-15_estimate_customer_fields.sql",
+      "date": "2026-07-15",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_first_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_last_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_company"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_is_commercial"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_address1"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_address2"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_city"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_state"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_zip"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-16_estimate_custom_mode.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.is_custom"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.custom_scope"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.custom_price"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-16_flake_default_basecoat.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_products.default_basecoat_product_id"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-16_notification_targets.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_notifications.target_view"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_notifications.target_id"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-16_personal_todos.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_user_todos"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_user_todos_user"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-16_polycoat_material_type.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": "check-constraint changes only",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-16_quo_phone_norm.sql",
+      "date": "2026-07-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.customers.phone_norm"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.phone_norm"
+        },
+        {
+          "kind": "index",
+          "name": "idx_customers_phone_norm"
+        },
+        {
+          "kind": "index",
+          "name": "idx_leads_phone_norm"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-17_change_order_batches.sql",
+      "date": "2026-07-17",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_change_order_batches"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_change_order_signatures.batch_id"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_co_batch_one_pending"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_co_batch_job"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_co_sig_batch"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-18_crew_notes.sql",
+      "date": "2026-07-18",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.crew_notes"
+        },
+        {
+          "kind": "column",
+          "name": "public.jobs.crew_notes"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-18_estimate_custom_sqft.sql",
+      "date": "2026-07-18",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimates.custom_sqft"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-19_drip_engine.sql",
+      "date": "2026-07-19",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_drip_campaigns"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_drip_steps"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_drip_enrollments"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_drip_sends"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_steps_campaign"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_enroll_one_active"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_enroll_due"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_sends_lead"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_sends_enrollment"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_sending_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-19_drip_phase3.sql",
+      "date": "2026-07-19",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_blasts"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_enrollments.subject_type"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_enrollments.subject_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_sends.subject_type"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_sends.subject_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_sends.blast_id"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_enroll_one_active_subj"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_sends_blast"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_drip_sends_subject"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-20_appointments.sql",
+      "date": "2026-07-20",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_appointments"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_sales_member_google_tokens"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_appointment_reminder_rules"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_appointment_reminder_sends"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.google_connected"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.google_email"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.google_calendar_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.google_connected_at"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_appointments_start_at"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_appointments_sales_member"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_appointments_google_event"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_appt_reminder_send"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-20_email_log_body.sql",
+      "date": "2026-07-20",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_email_log.body_html"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-21_appointment_customer_notes.sql",
+      "date": "2026-07-21",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.customer_notes"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-21_appointment_routemize_source.sql",
+      "date": "2026-07-21",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.routemize_appt_id"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_appointments_routemize_appt"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-21_drip_approval_gate.sql",
+      "date": "2026-07-21",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "index",
+          "name": "uq_pec_drip_sends_pending_leg"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_approval_required"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_quiet_start"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_quiet_end"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_quiet_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-21_manual_completion_source_of_truth.sql",
+      "date": "2026-07-21",
+      "hasHeader": true,
+      "none": "function and trigger only",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-22_invoice_installments.sql",
+      "date": "2026-07-22",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_invoice_installments"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_invoice_installments_job"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_invoice_installments_status"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_invoice_installments_deposit"
+        },
+        {
+          "kind": "setting",
+          "name": "default_deposit_pct"
+        },
+        {
+          "kind": "setting",
+          "name": "payment_schedules_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "installment_approval_required"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-22_sales_member_auth_user.sql",
+      "date": "2026-07-22",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.auth_user_id"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_sales_team_members_auth_user"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-23_estimate_views.sql",
+      "date": "2026-07-23",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_estimate_views"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_estimate_views_estimate"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_view_notifications_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_view_notify_first_per_day"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-23_estimator_customer_search_setting.sql",
+      "date": "2026-07-23",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimator_customer_search_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-25_migration_drift_probe.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "migration_drift_check_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "migration_drift_baseline"
+        }
+      ]
+    }
+  ],
+  "knownTables": [
+    "admin_users",
+    "audit_log",
+    "colors",
+    "customers",
+    "estimate_area_materials",
+    "estimate_areas",
+    "estimate_line_items",
+    "estimates",
+    "job_area_materials",
+    "job_areas",
+    "job_colors",
+    "jobs",
+    "lead_events",
+    "leads",
+    "pec_appointment_reminder_rules",
+    "pec_appointment_reminder_sends",
+    "pec_appointments",
+    "pec_blasts",
+    "pec_bonus_payouts",
+    "pec_brand_identity",
+    "pec_call_log",
+    "pec_change_order_batches",
+    "pec_change_order_signatures",
+    "pec_commission_payouts",
+    "pec_drip_campaigns",
+    "pec_drip_enrollments",
+    "pec_drip_sends",
+    "pec_drip_steps",
+    "pec_email_log",
+    "pec_email_senders",
+    "pec_email_templates",
+    "pec_estimate_views",
+    "pec_invoice_installments",
+    "pec_lead_sources",
+    "pec_notifications",
+    "pec_payments",
+    "pec_portal_views",
+    "pec_prod_addons",
+    "pec_prod_area_tints",
+    "pec_prod_areas",
+    "pec_prod_busybusy_time_entries",
+    "pec_prod_color_pairings",
+    "pec_prod_costing_sendbacks",
+    "pec_prod_crew_member_days_off",
+    "pec_prod_crew_members",
+    "pec_prod_crews",
+    "pec_prod_holidays",
+    "pec_prod_job_bonuses",
+    "pec_prod_job_costing",
+    "pec_prod_job_manual_labor",
+    "pec_prod_job_schedule_days",
+    "pec_prod_job_sub_expenses",
+    "pec_prod_jobs",
+    "pec_prod_labor_entries",
+    "pec_prod_material_lines",
+    "pec_prod_overhead_allocations",
+    "pec_prod_products",
+    "pec_prod_recipe_slots",
+    "pec_prod_system_types",
+    "pec_prod_tasks",
+    "pec_sales_member_google_tokens",
+    "pec_sales_team_members",
+    "pec_sms_log",
+    "pec_sms_senders",
+    "pec_status_descriptions",
+    "pec_stripe_pending",
+    "pec_user_todos",
+    "pec_webhook_ingest_log",
+    "pec_whats_new_acks",
+    "photos",
+    "referrals",
+    "reviews",
+    "settings",
+    "sign_in_log",
+    "timeline_stages",
+    "user_permissions"
+  ]
+}

@@ -5,7 +5,10 @@
   # only to build the estimator PWA into repo-root /estimator (Vite base
   # '/estimator/'), which `publish = "."` then serves as static files. The root
   # app is untouched.
-  command = "npm --prefix apps/estimator ci && npm --prefix apps/estimator run build"
+  # The migration manifest is regenerated first so the deployed
+  # pec-migration-drift function always probes against the migrations in THIS
+  # deploy's commit (functions have no repo tree at runtime).
+  command = "node scripts/build-migration-manifest.mjs && npm --prefix apps/estimator ci && npm --prefix apps/estimator run build"
 
 [build.environment]
   # Pin Node so the estimator build is reproducible on Netlify (Vite 5 needs 18+).
@@ -47,6 +50,14 @@
 # the appointments migration lands a run is a silent no-op.
 [functions."pec-appt-reminder-runner"]
   schedule = "*/15 * * * *"
+
+# Migration drift check (prompt 48). Daily at 14:00 UTC = 07:00 MST, after
+# the 06:00 auto-progress sweep. Probes every 2026-07+ migration's @artifacts
+# against the live schema and raises de-duped admin bells on missing/partial
+# migrations. Also callable on demand (the Settings > Diagnostics panel and
+# curl use ?manual=1&notify=0).
+[functions."pec-migration-drift"]
+  schedule = "0 14 * * *"
 
 # Google -> TopCoat appointment pull (prompt 37 Phase B). Every 15 minutes;
 # incremental syncToken polling per connected member (410 = drop token and
