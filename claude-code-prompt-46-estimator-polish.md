@@ -1,4 +1,4 @@
-# Claude Code Prompt 44: Estimator polish (MVB change-order line, nav reorg, estimate view tracking, customer dedup)
+# Claude Code Prompt 46: Estimator polish (MVB change-order line, nav reorg, estimate view tracking, customer dedup)
 
 Four related estimator/CRM changes for TopCoat. Read CLAUDE.md + the last 3 PROJECT-LOG.md entries first. Follow standing rules: commit per change, append a PROJECT-LOG entry, add What's New entries for user-facing changes, expose settings per rule 12, check SCHEMA.md before any SQL, and no em dashes in anything customer-facing. Migrations: WRITE them but do NOT apply them (Cowork applies per standing rule 9); list them in a `## Handoff to Cowork` block.
 

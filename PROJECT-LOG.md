@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Cowork: audited which build prompts were actually shipped (two unrun, one numbering collision)
+By: Cowork
+
+Changed: No code, no prompt files. Read-only audit at Dylan's request ("which prompts were not run in code, I went out of order"). Method: cross-referenced the 11 prompt spec files at the repo root against PROJECT-LOG ship entries, `git log --oneline -45`, `ls supabase/migrations`, SCHEMA.md, and grep of index.html / apps/estimator/src for each prompt's distinctive markers. Findings:
+
+NOT RUN (1): claude-code-prompt-34-metrics-costing-bonus.md (scoped 2026-07-19). Evidence: the Metrics window control at index.html:12181 is still the old `winOpts = [['4w','Last 4 weeks'],['12w','Last 12 weeks'],['ytd','Year to date']]` (prompt 34 Part A calls for MTD/YTD/Last-4-weeks/Custom with MTD default); zero hits for "Office notes"/office_notes (Part C), the AI insights panel (Part B), or any bonus lock/reversal marker (Part E); none of the three specified migrations (pec_prod_job_costing.office_notes*, pec_prod_job_bonuses.review_status*, pec_bonus_payouts.reversed_at*) exist in supabase/migrations or SCHEMA.md. Note the prompt's own Preflight asked Dylan to settle prompt-33 sequencing and one flagged default (AI insights manual button vs auto-on-load) before it ran; that never got answered, which is the likely reason it stalled.
+
+NOT RUN (2): claude-code-prompt-44-estimate-card-first-salesperson.md (card-first draft flow + current-user salesperson default). Evidence: `pec_sales_team_members` in SCHEMA.md has no `auth_user_id` column, no `supabase/migrations/2026-07-22_sales_member_auth_user.sql` exists, `apps/estimator/src/lib/catalog.ts` has no auth_user_id on SalesPerson, and no "In Draft" badge anywhere in apps/estimator/src. The file is also still UNTRACKED in git (git status: `?? claude-code-prompt-44-estimate-card-first-salesperson.md`).
+
+ROOT CAUSE OF THE SKIP (numbering collision): the estimator-polish spec was first written as claude-code-prompt-44-estimator-polish.md, then renumbered to 46 (the tracked 44-estimator-polish.md shows as ` D` in git status, and 46-estimator-polish.md is untracked). But it SHIPPED under the old number: commits b702e39 / b98ef77 / afa8977 / 37407df / ebf7ade / 1597e76 all say "prompt 44", and the top PROJECT-LOG entry is titled "Estimator polish (prompt 44)". So "prompt 44" in git history means the prompt-46 work, and the real prompt 44 (card-first + salesperson) was shadowed and never handed over. A second, older collision: "prompt 34" refers to BOTH the lead-drip-engine Phase 2 (shipped 2026-07-19) and the metrics/costing/bonus spec (unrun).
+
+RAN, despite having no ship entry that names it: prompt 40 (manual completion as source of truth + AR cleanup). Commits 174bf19 (park completed-but-still-scheduled out of AR) and 9d051c3 (no schedule auto-complete + ready-to-invoice list), migration 2026-07-21_manual_completion_source_of_truth.sql present, "Completed, but still on the schedule" and "Ready to invoice" both live in index.html. Only the scoping entry mentions prompt 40 by number, which is why a number-only grep of the log reads as a gap.
+
+CONFIRMED SHIPPED: 36, 37, 38, 39, 40, 42, 43, 45, 46 (logged as 44). Prompt 41 was reserved for the editable combined send modal and was never written (no file); prompt 35 (drip phase 3) shipped but its spec was never saved to the repo root.
+
+Why: Dylan built out of order and wanted to know what fell through the cracks.
+Files touched: PROJECT-LOG.md (this entry) only.
+Next steps: Dylan decides whether to run prompt 34 (needs the two open questions answered first) and prompt 44. Recommend renaming claude-code-prompt-44-estimate-card-first-salesperson.md to 47 before handing it over, so its number does not collide with the shipped "prompt 44" commits.
+Handoff to Dylan: git add PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). The untracked prompt files 44-estimate-card-first-salesperson.md and 46-estimator-polish.md, plus the deletion of 44-estimator-polish.md, are also still uncommitted.
+
+---
+
 ## [2026-07-23 MST] Estimator polish (prompt 44): MVB change-order coat, nav reorg, estimate view tracking, customer dedup search
 By: Claude Code
 
