@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-card-first-salesperson-default",
+    "date": "2026-07-25",
+    "title": "Estimates save as an In Draft card the moment you start, and default to you as the salesperson",
+    "summary": "When you start a new estimate from a lead, the estimate now appears in the Estimates list as an In Draft card as soon as you make your first edit, so nothing is lost if you get pulled away before hitting Save. New estimates also pick you as the salesperson automatically (based on your login), instead of whoever happened to be first in the list. You can still change the salesperson freely, for example when creating an estimate for another rep. If your login is not linked to a salesperson yet, the estimator tells you and an admin can link it in Settings under Sales Team.",
+    "howto": [
+      "Start an estimate from a lead as usual; after your first edit, look in the Estimates list and you will see it there with an In Draft label.",
+      "Check the Salesperson box on a new estimate: it should already show your name. Change it any time you are estimating on someone else's behalf.",
+      "Admins: open Settings, then Sales Team, edit a member, and set their Login so the automatic salesperson pick works for them."
+    ]
+  },
+  {
     "id": "change-order-additional-coat",
     "date": "2026-07-23",
     "title": "Add an extra coat (like MVB) to a job as a change order",

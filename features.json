@@ -4,8 +4,12 @@
     {
       "name": "In-house estimator PWA",
       "area": "estimator",
-      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects.",
+      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects. Prompt 47: a new estimate defaults its salesperson to the LOGGED-IN rep, mapped explicitly by pec_sales_team_members.auth_user_id (set per member in Settings > Sales Team via openSalesTeamModal's Login picker; migration 2026-07-22_sales_member_auth_user.sql). An unmapped login gets a blank salesperson plus a get-mapped prompt, never a silent first-in-list fallback; the field stays freely editable. Shared rules (draft gate, trigger, default priority) live in production/estimate-draft.cjs, fixture-tested.",
       "code": {
+        "indexHtml": [
+          "renderSettings",
+          "openSalesTeamModal"
+        ],
         "other": [
           "apps/estimator/src/main.tsx",
           "apps/estimator/src/App.tsx",
@@ -13,13 +17,18 @@
           "apps/estimator/src/offline/idb.ts",
           "apps/estimator/src/offline/outbox.ts",
           "apps/estimator/src/offline/sync.ts",
-          "apps/estimator/src/lib/supabase.ts"
+          "apps/estimator/src/lib/supabase.ts",
+          "apps/estimator/src/lib/catalog.ts",
+          "production/estimate-draft.cjs",
+          "production/estimate-draft.test.cjs",
+          "supabase/migrations/2026-07-22_sales_member_auth_user.sql"
         ]
       },
       "tables": [
         "pec_prod_system_types",
         "pec_prod_products",
-        "pec_prod_recipe_slots"
+        "pec_prod_recipe_slots",
+        "pec_sales_team_members"
       ],
       "spec": "docs/archive/prompts/claude-code-framework-estimator-crm-beta.md",
       "since": "2026-06"
@@ -27,7 +36,7 @@
     {
       "name": "Numbered estimate records",
       "area": "estimator",
-      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel.",
+      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel. Prompt 47 (card first): the estimate ROW now exists the moment the rep makes their first real edit in the estimator, written by an early draft save (parent row only, requires name/phone/email/address/salesperson, all prefilled in the lead flow) under the same pre-minted id the full Save upserts. Draft-status estimates show an 'In Draft' badge on the list rows and the detail header (the shared EST_STATUS_META draft label; numbering stays the Postgres sequence, so an unnumbered card reads '(unnumbered)' until its first sync).",
       "code": {
         "indexHtml": [
           "ensureEstimateToken",
@@ -42,7 +51,8 @@
         ],
         "other": [
           "apps/estimator/src/lib/estimateLoad.ts",
-          "apps/estimator/src/offline/estimates.ts"
+          "apps/estimator/src/offline/estimates.ts",
+          "production/estimate-draft.cjs"
         ],
         "netlifyFunctions": [
           "pec-send-sms.cjs"

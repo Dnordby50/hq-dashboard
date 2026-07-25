@@ -4,6 +4,45 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Card-first estimate drafts + current-user salesperson default (prompt 47)
+By: Claude Code
+
+Changed: Built claude-code-prompt-47-estimate-card-first-salesperson.md (the spec formerly numbered 44; renamed to 47 first, per Cowork's 2026-07-25 audit, since git history's "prompt 44" is the estimator-polish work now spec'd as 46). Three commits: 020a76e (housekeeping: Cowork's audit log entry + the spec renumbering, which also clears Dylan's pending commit handoff from that audit), 66c8278 (the feature), plus this docs commit. One migration written, NOT applied (Cowork applies, handoff below). All locked decisions honored; `npm test` green (187 calculator + 142 estimate15b + 31 new = all passing) and estimator `tsc --noEmit` + `vite build` clean.
+
+1. SALESPERSON = CURRENT USER. Migration `supabase/migrations/2026-07-22_sales_member_auth_user.sql`: nullable `pec_sales_team_members.auth_user_id uuid` FK to auth.users(id) plus partial unique index `uq_pec_sales_team_members_auth_user` (one login maps to at most one member; unmapped rows unlimited). HOW THE DEFAULT RESOLVES (production/estimate-draft.cjs `defaultSalespersonId`, locked priority): the edited estimate's salesperson if still valid > the member whose auth_user_id matches the signed-in user (App.tsx already threads `createdBy` = session user id into EstimatorScreen, so no new plumbing) > BLANK. Never salespeople[0]: an unmapped login (admin, new hire) gets a blank REQUIRED field plus the prompt "Your login is not linked to a salesperson yet. Ask an admin to map you in Settings > Sales Team, or pick a salesperson to continue." shown at the salesperson card and the price panel, and the same gate blocks the early draft save. Field stays freely editable (estimating on another rep's behalf is normal). The catalog reads the column via `select('*')` (the estimateLoad forward-compat pattern) so a pre-migration database or a stale cached offline catalog degrades to "no match, blank" instead of a 400.
+
+2. SETTINGS SURFACE (standing rule 12). Settings > General > Sales Team: the table gained a Login column (mapped login's email, or an amber "Not linked"), and openSalesTeamModal gained a Login picker fed from admin_users (which already carries auth_user_id -> auth.users.id). Pre-migration save falls back without the column (the exclude_from_commission pattern) with a toast naming the migration; a 23505 on the unique index reads "That login is already linked to another sales team member." Admin-only via the existing Settings gating.
+
+3. CARD FIRST. New estimates persist as an "In Draft" card on the rep's FIRST real edit. HOW: EstimatorScreen pre-mints the estimate id once (uuid in state) and `estimateIdForSave` routes BOTH the early draft save and every full Save to that same id, so the outbox (idempotent upsert by id) always converges on one row. A watcher effect over every form input feeds `createDraftTrigger` (estimate-draft.cjs): the open never fires (the effect compares against a mount snapshot of its deps by reference, which also defeats React StrictMode's dev double-run), the first change with the five required fields present (name = last name or company, phone, email, address1, salesperson; all lead-prefilled in the normal flow) fires exactly once, debounced 800ms, and a failed write re-arms. The draft save writes the PARENT row only (status 'draft', customer, salesperson intake, lead_id, created_by; no areas/line items/pricing, price null, estimate_number left to the Postgres sequence on insert per the locked numbering decision) via the same saveEstimateOffline, so offline drafts queue like everything else. Backing out with no edit writes nothing.
+
+4. SAME-ID RE-SAVE FIX (surfaced by the design). Previously each Save press on a NEW estimate minted a fresh id, i.e. saving twice created two estimates. Now a re-save upserts the same row and (like the edit flow) rewrites children behind a live delete, so a second full save online is clean; offline it blocks with the same reconnect message the edit path uses. The first full save after an offline draft still works offline (a draft row has no children to rewrite).
+
+5. "IN DRAFT" BADGE. One change covers every surface: EST_STATUS_META's draft label is now 'In Draft', which estStatusChip renders on the Estimates list rows, the estimate detail header, and the lead card's open-estimate modal. No second badge anywhere, so nothing double-labels.
+
+6. CARRY-TO-JOB VERIFIED (no rebuild): saveEstimateOffline writes intake.salesperson_name on every save (offline/estimates.ts ~line 169), and pec-public-estimate.cjs reads it into jobs.salesperson (:811) and pec_prod_jobs.sales_team (:889) on accept. The draft path reuses the same writer and salesperson is required for the draft, so the name is always present.
+
+TESTS: new production/estimate-draft.test.cjs (31 assertions) drives the REAL shared module: the five-field gate (residential vs commercial name, whitespace = missing), trigger never-on-open / StrictMode double-open / fires-once / incomplete-fields-do-not-consume / unmapped-blocks / editing-never-fires / reset-re-arms, default priority (edit pick > auth match > blank, pre-migration catalog tolerated), unmapped detection, and the same-id rule. Added to the npm test chain (package.json).
+
+WHY the shared-module shape: the trigger and default rules live in production/estimate-draft.cjs and are imported by EstimatorScreen through Vite's CJS interop (the exact scope.cjs precedent), so the fixture tests exercise the code the app ships, not a re-implementation.
+
+Why: reps lose estimates they start and abandon mid-driveway (nothing persisted until full Save), and the salesperson defaulting to the first list entry mis-attributed estimates when a rep forgot to change it.
+
+Files touched: supabase/migrations/2026-07-22_sales_member_auth_user.sql (new), production/estimate-draft.cjs (new), production/estimate-draft.test.cjs (new), apps/estimator/src/features/estimator/EstimatorScreen.tsx, apps/estimator/src/lib/catalog.ts, apps/estimator/src/offline/estimates.ts, apps/estimator/src/types/calculator.d.ts, index.html, package.json, features.json, help/whats-new.json, PROJECT-LOG.md.
+
+Next steps: Cowork applies the migration + regenerates SCHEMA.md + maps the 2 existing members; Dylan pushes.
+
+## Handoff to Cowork
+1. Apply `supabase/migrations/2026-07-22_sales_member_auth_user.sql` to PROD ("HQ Dashboard", zdfpzmmrgotynrwkeakd) and run its verify block (auth_user_id column exists nullable, unique partial index uq_pec_sales_team_members_auth_user, FK to auth.users).
+2. Regenerate SCHEMA.md (pec_sales_team_members gains auth_user_id + the new index).
+3. After Dylan deploys, use Settings > General > Sales Team > Edit to link the 2 existing sales-team members to their logins (ask Dylan which login is which; the Login dropdown lists the admin_users accounts). Capture the 2 member->login mappings in your PROJECT-LOG entry.
+4. Smoke: sign in as a mapped rep, start a new estimate from a lead, make one edit (for example pick a system), then close WITHOUT saving; confirm the estimate appears in the Estimates list as an In Draft card with that rep as salesperson (intake.salesperson_name in the row), and that opening a lead estimate and backing out with NO edit creates nothing.
+
+## Handoff to Dylan
+1. `git push` to deploy (commits 020a76e, 66c8278 + this docs commit are local; the push also carries Cowork's 2026-07-25 audit entry). Netlify rebuilds the estimator from source.
+2. After deploy + migration, confirm both reps are mapped in Settings > Sales Team (Cowork does the clicking, you supply which login belongs to which member) so the current-user default works for both.
+
+---
+
 ## [2026-07-25 MST] Cowork: audited which build prompts were actually shipped (two unrun, one numbering collision)
 By: Cowork
 
