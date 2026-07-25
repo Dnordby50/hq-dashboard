@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node production/calculator.test.js && node production/estimate15b.test.js"
+    "test": "node production/calculator.test.js && node production/estimate15b.test.js && node production/estimate-draft.test.cjs"
   },
   "engines": {
     "node": ">=18"

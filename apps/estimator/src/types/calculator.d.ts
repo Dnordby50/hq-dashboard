@@ -136,3 +136,34 @@ declare module '*/production/scope.cjs' {
   ): ScopeQuestion[];
   export function stableKey(contextLabel: string, context: string, ordinal?: number): string;
 }
+
+// Card-first draft + salesperson default rules (repo-root
+// production/estimate-draft.cjs, prompt 47), shared with the fixture tests so
+// the tested logic is the logic the screen runs.
+declare module '*/production/estimate-draft.cjs' {
+  export interface DraftFields {
+    isCommercial: boolean;
+    company: string;
+    lastName: string;
+    phone: string;
+    email: string;
+    address1: string;
+    salespersonId: string;
+  }
+  export function missingDraftFields(fields: DraftFields): string[];
+  export function draftReady(fields: DraftFields): boolean;
+  export function createDraftTrigger(opts?: { alreadyPersisted?: boolean }): {
+    signal(fields: DraftFields, opts?: { initial?: boolean }): boolean;
+    reset(): void;
+  };
+  export function defaultSalespersonId(args: {
+    editingSalespersonId?: string | null;
+    salespeople: Array<{ id: string; auth_user_id?: string | null }>;
+    currentUserId?: string | null;
+  }): string;
+  export function userUnmapped(
+    salespeople: Array<{ id: string; auth_user_id?: string | null }>,
+    currentUserId?: string | null,
+  ): boolean;
+  export function estimateIdForSave(editingId: string | null | undefined, draftId: string): string;
+}

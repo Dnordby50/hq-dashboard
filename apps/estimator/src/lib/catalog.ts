@@ -4,7 +4,10 @@ import { idbGet, idbPut } from '../offline/idb';
 
 const CATALOG_CACHE_KEY = 'catalog';
 
-export type SalesPerson = { id: string; name: string; commission_pct: number; active: boolean };
+// auth_user_id (prompt 47): the member's auth login, mapped by an admin in
+// Settings > Sales Team. Drives the current-user salesperson default; null =
+// unmapped (and a catalog cached before the migration has no key at all).
+export type SalesPerson = { id: string; name: string; commission_pct: number; active: boolean; auth_user_id?: string | null };
 
 // One add-on catalog row (pec_prod_addons). Dylan manages the catalog; the
 // estimator only picks from it. system_type_id null = applies to any system.
@@ -67,7 +70,11 @@ export async function loadCatalog(): Promise<Catalog> {
       .order('order_index', { ascending: true }),
     supabase
       .from('pec_sales_team_members')
-      .select('id,name,commission_pct,active')
+      // select('*') (not an explicit list) so this keeps working before the
+      // auth_user_id migration lands; the column reads undefined until then
+      // and the current-user default simply finds no match. Same forward-
+      // compat pattern estimateLoad.ts uses for the split customer columns.
+      .select('*')
       .eq('active', true)
       .order('name', { ascending: true }),
     supabase

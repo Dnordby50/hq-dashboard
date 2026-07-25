@@ -62,7 +62,9 @@ export type LineItemInput = {
 // rep's override) PLUS non-optional add-on lines, with GP net of add-on costs
 // and commission. Optional lines stay out until the customer ticks them.
 export type EstimateTotals = {
-  price: number;
+  // Null on the EARLY draft save (prompt 47): the card exists before a price
+  // does. The full Save always writes a real number.
+  price: number | null;
   gpDollars: number | null;
   gpPct: number | null;
   gpPerHour: number | null;

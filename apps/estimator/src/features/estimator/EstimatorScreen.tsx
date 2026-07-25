@@ -34,6 +34,10 @@ import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
 import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank, openQuestions as scopeOpenQuestions, type ScopeQuestion } from '../../../../../production/scope.cjs';
+// Card-first draft + salesperson default rules (prompt 47): shared CJS module
+// (the scope.cjs pattern) so the fixture tests exercise the exact logic the
+// screen runs.
+import { createDraftTrigger, defaultSalespersonId, draftReady, estimateIdForSave, userUnmapped } from '../../../../../production/estimate-draft.cjs';
 
 type AreaForm = { name: string; sqft: string; systemTypeId: string; mvb: boolean; slotValues: Record<string, string> };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
@@ -174,11 +178,17 @@ export default function EstimatorScreen({
   );
 
   const fallbackSystemId = editing?.systemTypeId ?? systemTypes[0]?.id ?? '';
-  const [salespersonId, setSalespersonId] = useState<string>(() => {
-    const fromEdit = editing ? String(editing.intake.salesperson_id ?? '') : '';
-    if (fromEdit && salespeople.some((s) => s.id === fromEdit)) return fromEdit;
-    return salespeople[0]?.id ?? '';
-  });
+  // Salesperson default (prompt 47): the edited estimate's pick if still
+  // valid, else the member mapped to THIS login (auth_user_id), else blank.
+  // Never salespeople[0]: an unmapped login gets a prompt, not a guess. Stays
+  // freely editable (creating on another rep's behalf is normal).
+  const [salespersonId, setSalespersonId] = useState<string>(() =>
+    defaultSalespersonId({
+      editingSalespersonId: editing ? String(editing.intake.salesperson_id ?? '') : '',
+      salespeople,
+      currentUserId: createdBy,
+    }),
+  );
   // Split customer shape (build 23): Residential/Commercial toggle, split
   // name / company, split address. Prefill priority: the estimate being
   // edited (estimateLoad already mapped split columns, with legacy fallback),
@@ -344,6 +354,23 @@ export default function EstimatorScreen({
   const [pending, setPending] = useState(0);
 
   const salesperson: SalesPerson | undefined = salespeople.find((s) => s.id === salespersonId);
+  // Card-first draft (prompt 47): the estimate id is minted ONCE per screen so
+  // the early draft save and every later Save upsert the SAME row (the outbox
+  // upserts by id). draftTrigger owns the fire-once-on-first-real-edit
+  // semantics (estimate-draft.cjs); draftWriteRef records that the parent row
+  // exists so the draft never writes twice.
+  const [draftId] = useState<string>(() => uuid());
+  const [draftTrigger] = useState(() => createDraftTrigger({ alreadyPersisted: !!editing }));
+  const draftWriteRef = useRef(false);
+  // Blank-salesperson copy: an unmapped login gets the get-yourself-mapped
+  // prompt (never a silent salespeople[0] fallback); a mapped user who cleared
+  // the field gets the plain pick-one hint.
+  const salespersonUnmapped = !salesperson && userUnmapped(salespeople, createdBy);
+  const salespersonPrompt = !salesperson
+    ? (salespersonUnmapped
+      ? 'Your login is not linked to a salesperson yet. Ask an admin to map you in Settings > Sales Team, or pick a salesperson to continue.'
+      : 'Pick a salesperson to price the job.')
+    : null;
 
   const mvbProduct = useMemo(
     () => Object.values(productsById).find((p) => p.name === MVB_PRODUCT_NAME) ?? null,
@@ -814,6 +841,108 @@ export default function EstimatorScreen({
     setSaveState('idle');
   }, [areas, salespersonId, intake, customer, finalSell, addonForms, scopeAnswers, overrideReason, isCustom, customScope, customPriceInput, customSqftInput]);
 
+  // ---- Card-first early draft save (prompt 47) -----------------------------
+  // Writes the PARENT estimate row only (no areas, line items, or pricing) as
+  // an "In Draft" card the moment the rep makes their first real edit, so the
+  // estimate exists in the Estimates list before the full Save. Requires the
+  // locked basics (name, phone, email, address, salesperson), all prefilled in
+  // the lead flow. Silent by design: a failure re-arms the trigger and the
+  // explicit Save button stays the loud path.
+  const saveDraft = useCallback(async () => {
+    if (draftWriteRef.current || savedEstimateId || editing) return;
+    if (!salesperson) return;
+    if (!draftReady({
+      isCommercial: customer.isCommercial,
+      company: customer.company,
+      lastName: customer.lastName,
+      phone: customer.phone,
+      email: customer.email,
+      address1: customer.address1,
+      salespersonId: salesperson.id,
+    })) {
+      // The debounce ran but an edit since emptied a required field: let the
+      // edit that completes the fields fire the trigger again.
+      draftTrigger.reset();
+      return;
+    }
+    draftWriteRef.current = true;
+    try {
+      await saveEstimateOffline({
+        estimateId: draftId,
+        status: 'draft',
+        systemTypeId: null,
+        salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
+        intake: {
+          gate_code: intake.gate_code || null,
+          coat_past_garage: intake.coat_past_garage,
+          stem_walls: intake.stem_walls,
+          moisture: intake.moisture ? Number(intake.moisture) : null,
+          mohs_hardness: intake.mohs_hardness ? Number(intake.mohs_hardness) : null,
+          additional_non_slip: intake.additional_non_slip || null,
+          grinder_tooling_grit: intake.grinder_tooling_grit || null,
+          special_notes: intake.special_notes || null,
+          base_price: null,
+          discount_pct: null,
+        },
+        customer,
+        flakeColor: null,
+        scopeAnswers,
+        lineItems: [],
+        pricingSnapshot: null,
+        areas: [],
+        pricing: null,
+        totals: { price: null, gpDollars: null, gpPct: null, gpPerHour: null, laborBudget: null, commissionDollars: null, budgetedHours: null },
+        calcPrice: null,
+        priceOverride: null,
+        createdBy,
+        leadId: linkedLead?.id ?? leadLink?.id ?? null,
+        isCustom,
+        customScope: isCustom ? customScope : null,
+        customPrice: null,
+        customSqft: isCustom ? customSqft : null,
+        crewNotes,
+      });
+      if (navigator.onLine) drainOutbox().then(refreshPending).catch(() => {});
+      else void refreshPending();
+    } catch {
+      draftTrigger.reset();
+      draftWriteRef.current = false;
+    }
+  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customSqft, crewNotes, draftId, draftTrigger, refreshPending]);
+  const saveDraftRef = useRef(saveDraft);
+  useEffect(() => { saveDraftRef.current = saveDraft; }, [saveDraft]);
+
+  // First-real-edit watcher: the same inputs that mark the form dirty. The
+  // initial-state check (reference compare against the mount snapshot) makes
+  // the open itself, including StrictMode's dev double-run, a non-edit, so
+  // opening a lead estimate and backing out writes nothing. The debounce
+  // collapses a keystroke burst into one write; the trigger guarantees once.
+  const draftInitialDepsRef = useRef<unknown[] | null>(null);
+  useEffect(() => {
+    const deps: unknown[] = [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, discInput, overrideReason];
+    let initial = false;
+    if (draftInitialDepsRef.current == null) {
+      draftInitialDepsRef.current = deps;
+      initial = true;
+    } else if (draftInitialDepsRef.current.every((v, i) => Object.is(v, deps[i]))) {
+      initial = true;
+    }
+    const fields = {
+      isCommercial: customer.isCommercial,
+      company: customer.company,
+      lastName: customer.lastName,
+      phone: customer.phone,
+      email: customer.email,
+      address1: customer.address1,
+      salespersonId,
+    };
+    if (!draftTrigger.signal(fields, { initial })) return;
+    // NOT cleared on re-run: a second edit inside the window must not cancel
+    // the (already consumed) trigger; saveDraft re-checks the live state.
+    window.setTimeout(() => { void saveDraftRef.current(); }, 800);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [areas, salespersonId, intake, customer, addonForms, scopeAnswers, isCustom, customScope, customPriceInput, customSqftInput, crewNotes, sellInput, discInput, overrideReason]);
+
   const setArea = (i: number, patch: Partial<AreaForm>) =>
     setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, ...patch } : a)));
   const setSlot = (i: number, slotId: string, value: string) =>
@@ -1018,6 +1147,15 @@ export default function EstimatorScreen({
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
       return null;
     }
+    // Same-id upsert (prompt 47) means a SECOND full save of a new estimate
+    // rewrites the same row's children, which needs the live delete below:
+    // same online rule as editing. (A draft-only row has no children, so the
+    // FIRST full save after an offline draft still works offline.)
+    if (!editing && savedEstimateId && !online) {
+      setSaveState('error');
+      setSaveError('Saving again rewrites this estimate\'s saved areas, which needs a connection. Reconnect and save again.');
+      return null;
+    }
     // Floor-GP guard (build 17): warn, do not block. Same philosophy as the 15c
     // BLANK-scope send gate.
     if (belowFloor && !window.confirm(`Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor. Save this estimate anyway?`)) {
@@ -1208,15 +1346,20 @@ export default function EstimatorScreen({
       };
 
       // Edit-in-place: rewrite the child rows (line items first, then areas;
-      // the materials rows cascade). Online-only, checked above.
+      // the materials rows cascade). Online-only, checked above. A re-save of
+      // a NEW estimate (same draft id, prompt 47) needs the same rewrite; the
+      // draft-only row wrote no children, so its first full save skips this.
       if (editing) await deleteEstimateChildren(editing.id);
+      else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
 
       // Live proposal (build 25): a panel edit rides this save under the
       // hand-edited lock; otherwise an already-written document (edited or
       // machine-made) is marked stale, because saves no longer regenerate.
       const editedScopeText = !isCustom && panelEdited && scopeText.trim() ? scopeText : null;
       const { id } = await saveEstimateOffline({
-        estimateId: editing?.id ?? null,
+        // The screen's pre-minted id (or the edit's), NEVER a fresh one: the
+        // early draft card and every Save upsert the same row (prompt 47).
+        estimateId: estimateIdForSave(editing?.id ?? null, draftId),
         status: editing?.status ?? 'draft',
         // A custom estimate has no system; writing the dominant one would be
         // a lie the metrics attribute revenue to.
@@ -1291,6 +1434,7 @@ export default function EstimatorScreen({
         }
       }
       setSavedEstimateId(id);
+      draftWriteRef.current = true; // the row exists; the early draft must never fire after a full save
       await refreshPending();
       setSavedOffline(!navigator.onLine);
       setSaveState('saved');
@@ -1305,7 +1449,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -1509,6 +1653,8 @@ export default function EstimatorScreen({
                 ))}
               </select>
             </label>
+
+            {salespersonUnmapped && <p className="warn">{salespersonPrompt}</p>}
 
             {!isCustom && mvbMissing && (
               <p className="error">The product "{MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it (Price &amp; Material Catalog) or uncheck MVB on the areas.</p>
@@ -1790,7 +1936,7 @@ export default function EstimatorScreen({
 
         <div className="right">
           <section className="card result" aria-live="polite">
-            {!salesperson && <p className="hint">Pick a salesperson to price the job.</p>}
+            {salespersonPrompt && <p className="hint">{salespersonPrompt}</p>}
             {/* Custom mode: the typed price IS the sell price. No engine, no
                 GP basis, no blockers beyond customer + price. */}
             {isCustom && salesperson && (

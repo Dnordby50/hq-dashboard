@@ -16549,7 +16549,7 @@ async function renderSettings() {
   if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
-  const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes] = await withFreshSession(() => Promise.all([
+  const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes, adminUsersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_lead_sources').select('*').order('name'),
@@ -16557,12 +16557,17 @@ async function renderSettings() {
     // select('*') (not an explicit column list) so this keeps working before the
     // hourly_wage migration lands; the column simply reads undefined until then.
     supabase.from('pec_prod_crew_members').select('*').order('name'),
+    // Eligible logins for the sales-member mapping (prompt 47): admin_users
+    // already links auth_user_id -> auth.users.id, so it doubles as the roster
+    // of logins an admin can attach to a pec_sales_team_members row.
+    supabase.from('admin_users').select('id,name,email,auth_user_id').order('name'),
   ]), { label: 'renderSettings' });
   const map = Object.fromEntries((settingsRows||[]).map(s => [s.key, s.value]));
   state.crews = crewsRes.data || [];
   state.leadSources = leadRes.data || [];
   state.salesTeam = salesRes.data || [];
   state.crewMembers = crewMembersRes.data || [];
+  state.adminUsers = adminUsersRes.data || [];
 
   root.innerHTML = `
     ${settingsTabBar('general')}
@@ -16611,16 +16616,26 @@ async function renderSettings() {
         </div>
         ${salesOpen ? `
           <table class="pec-table">
-            <thead><tr><th>Name</th><th>Commission %</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Commission %</th><th>Login</th><th>Active</th><th>Notes</th><th></th></tr></thead>
             <tbody>
-              ${state.salesTeam.map(s => `
+              ${state.salesTeam.map(s => {
+                // Login mapping (prompt 47): which auth login this member is.
+                // Drives the estimator's current-user salesperson default. The
+                // column may predate its migration; undefined reads as unmapped.
+                const login = s.auth_user_id ? (state.adminUsers || []).find(u => u.auth_user_id === s.auth_user_id) : null;
+                const loginTxt = s.auth_user_id
+                  ? esc(login ? (login.email || login.name || 'linked') : 'linked')
+                  : '<span style="color:#b45309" title="This member gets no current-user default in the estimator until an admin links their login (Edit).">Not linked</span>';
+                return `
                 <tr data-sales-id="${esc(s.id)}">
                   <td><strong>${esc(s.name)}</strong></td>
                   <td>${s.commission_pct != null ? esc(Number(s.commission_pct)) + '%' : '0%'}</td>
+                  <td style="font-size:.78rem">${loginTxt}</td>
                   <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
                   <td>${esc(s.notes || '')}</td>
                   <td><button class="pec-btn sm ghost" data-edit-sales="${esc(s.id)}">Edit</button></td>
-                </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No sales team members yet.</td></tr>'}
+                </tr>`;
+              }).join('') || '<tr class="nohover"><td colspan="6" class="pec-empty">No sales team members yet.</td></tr>'}
             </tbody>
           </table>
         ` : ''}
@@ -18695,6 +18710,17 @@ function openSalesTeamModal(salesId) {
       <input type="checkbox" id="salesExcludeComm" ${s.exclude_from_commission ? 'checked' : ''} style="width:auto">
       Exclude from commission <span style="color:var(--muted);font-size:.72rem">(owner / non-commission seller: their jobs never appear in the Commission report)</span>
     </label>
+    ${/* Login mapping (prompt 47): explicit auth_user_id link, chosen over
+         name-matching (fragile). The estimator uses it to default new
+         estimates to the signed-in rep. Options come from admin_users, which
+         already carries auth_user_id -> auth.users.id. */''}
+    <div class="pec-field"><label>Login <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">this member's sign-in; new estimates default to them</span></label>
+      <select id="salesAuthUser">
+        <option value="">Not linked</option>
+        ${(state.adminUsers || []).filter(u => u.auth_user_id).map(u =>
+          `<option value="${esc(u.auth_user_id)}" ${s.auth_user_id === u.auth_user_id ? 'selected' : ''}>${esc(u.name || u.email)}${u.email && u.name ? ` (${esc(u.email)})` : ''}</option>`).join('')}
+      </select>
+    </div>
     <div class="pec-field"><label>Notes</label><input id="salesNotes" value="${esc(s.notes || '')}"></div>
     <div class="pec-modal-actions">
       ${existing ? '<button class="pec-btn danger" id="salesDelete">Delete</button>' : ''}
@@ -18721,6 +18747,7 @@ function openSalesTeamModal(salesId) {
           active: modal.querySelector('#salesActive').value === 'true',
           commission_pct: Number.isFinite(commVal) && commVal >= 0 ? commVal : 0,
           exclude_from_commission: modal.querySelector('#salesExcludeComm').checked,
+          auth_user_id: modal.querySelector('#salesAuthUser').value || null,
           notes: modal.querySelector('#salesNotes').value || null,
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
@@ -18735,6 +18762,17 @@ function openSalesTeamModal(salesId) {
             const { exclude_from_commission, ...rest } = payload;
             ({ error } = await saveOnce(rest));
             if (!error) showToast('Saved. "Exclude from commission" needs the 2026-06-15_exclude_from_commission.sql migration applied first.', { ttl: 6000 });
+          }
+          // Same fallback for the login mapping (prompt 47): pre-migration,
+          // save the rest so ordinary sales-team edits are never blocked.
+          if (error && /auth_user_id/.test(error.message || '')) {
+            const { auth_user_id, ...rest } = payload;
+            ({ error } = await saveOnce(rest));
+            if (!error) showToast('Saved, but the Login link needs the 2026-07-22_sales_member_auth_user.sql migration applied first.', { ttl: 6000 });
+          }
+          // One login maps to at most one member (partial unique index).
+          if (error && error.code === '23505' && /auth_user/.test(error.message || '')) {
+            return errEl.textContent = 'That login is already linked to another sales team member. Unlink it there first.';
           }
           if (error) return showSupabaseError(errEl, error);
         } catch (err) {
@@ -22070,7 +22108,12 @@ async function renderLeadDetail(leadId) {
 // ============================================================
 
 const EST_STATUS_META = {
-  draft:            ['Draft', '#64748b'],
+  // "In Draft" (prompt 47): estimates now appear here the moment a rep makes
+  // the first edit in the estimator (card-first draft save), so the draft
+  // label reads as an explicit state, not an afterthought. ONE meta entry
+  // covers every surface that shows estimate status (list rows, the detail
+  // header, the lead card summary), which is what keeps it single-labeled.
+  draft:            ['In Draft', '#64748b'],
   sent:             ['Sent', '#2563eb'],
   signed:           ['Signed', '#7c3aed'],
   accepted:         ['Accepted', '#16a34a'],
