@@ -1,3 +1,6 @@
+-- @artifacts
+--   column: public.pec_prod_products.default_basecoat_product_id
+-- @end
 -- Move flake->basecoat pairing onto the flake product itself.
 -- Single default basecoat per flake. Additive + idempotent. Backfills from
 -- the existing default color pairings. Does NOT drop pec_prod_color_pairings.

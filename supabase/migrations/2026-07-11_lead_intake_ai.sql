@@ -1,3 +1,12 @@
+-- @artifacts
+--   column: public.leads.campaign
+--   column: public.leads.ad_meta
+--   column: public.leads.ai_analysis
+--   column: public.leads.ai_analyzed_at
+--   index: idx_leads_phone_live
+--   index: idx_leads_email_live
+--   index: idx_lead_events_type
+-- @end
 -- ============================================================================
 -- 2026-07-11: Lead intake + AI framework (weekend leads/pipeline build, phase 0).
 -- Author: Cowork. Idempotent. NOT yet applied to prod; apply before the Zapier

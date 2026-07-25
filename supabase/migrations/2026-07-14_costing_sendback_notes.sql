@@ -1,3 +1,7 @@
+-- @artifacts
+--   table: public.pec_prod_costing_sendbacks
+--   index: pec_prod_costing_sendbacks_job_id_idx
+-- @end
 -- ============================================================================
 -- 2026-07-14: Job Costing "send back with a note". Author: Claude Code.
 -- RUN BY COWORK on the PEC Supabase project ("HQ Dashboard",

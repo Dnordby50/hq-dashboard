@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.pec_sales_team_members.auth_user_id
+--   index: uq_pec_sales_team_members_auth_user
+-- @end
 -- ============================================================================
 -- 2026-07-22 (prompt 47): link sales team members to their auth logins.
 -- Author: Claude Code. Idempotent. Written for Cowork to apply (standing rule).

@@ -1,3 +1,10 @@
+-- @artifacts
+--   table: public.pec_change_order_batches
+--   column: public.pec_change_order_signatures.batch_id
+--   index: idx_pec_co_batch_one_pending
+--   index: idx_pec_co_batch_job
+--   index: idx_pec_co_sig_batch
+-- @end
 -- ============================================================================
 -- 2026-07-17: batch change-order approval (prompt 31)
 -- ============================================================================

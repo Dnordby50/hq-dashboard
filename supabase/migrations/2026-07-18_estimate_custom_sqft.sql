@@ -1,3 +1,6 @@
+-- @artifacts
+--   column: public.estimates.custom_sqft
+-- @end
 -- Custom estimate square footage (prompt 32, Part A).
 -- A custom estimate persists no area rows, so it has no sqft anywhere today
 -- and every $/sqft readout shows "no sqft on file". This column holds the

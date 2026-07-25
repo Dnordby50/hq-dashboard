@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: functions and triggers only
+-- @end
 -- ============================================================================
 -- 2026-07-14: commission is now a rate-derived cost on job costing.
 -- Author: Claude Code. Idempotent. Applied to prod from the build session.

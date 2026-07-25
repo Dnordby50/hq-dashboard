@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.pec_prod_tasks.crew_id
+--   column: public.pec_prod_tasks.time_slot
+-- @end
 -- ============================================================================
 -- 2026-07-01: crew tasks join the Next Day Schedule board
 -- ============================================================================

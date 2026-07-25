@@ -1,3 +1,10 @@
+-- @artifacts
+--   index: uq_pec_drip_sends_pending_leg
+--   setting: drip_approval_required
+--   setting: drip_quiet_start
+--   setting: drip_quiet_end
+--   setting: drip_quiet_days
+-- @end
 -- Prompt 42: drip go-live with a human approval gate.
 --
 -- WHY: all three drip campaigns are about to go live, but for the first week

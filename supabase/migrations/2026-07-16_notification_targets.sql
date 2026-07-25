@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.pec_notifications.target_view
+--   column: public.pec_notifications.target_id
+-- @end
 -- ============================================================================
 -- 2026-07-16: clickable bell notifications (routing targets)
 -- ============================================================================

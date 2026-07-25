@@ -1,3 +1,8 @@
+-- @artifacts
+--   table: public.pec_prod_job_sub_expenses
+--   column: public.pec_prod_jobs.subcontracted
+--   index: idx_pec_prod_job_sub_expenses_job
+-- @end
 -- ============================================================================
 -- 2026-07-09: itemized subcontractor expenses + subcontracted-job flag.
 -- Author: Claude Code (prompt 10). RUN BY COWORK on the PROD Supabase project.

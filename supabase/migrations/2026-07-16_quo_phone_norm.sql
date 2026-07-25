@@ -1,3 +1,9 @@
+-- @artifacts
+--   column: public.customers.phone_norm
+--   column: public.leads.phone_norm
+--   index: idx_customers_phone_norm
+--   index: idx_leads_phone_norm
+-- @end
 -- ============================================================================
 -- 2026-07-16 (build 18): normalized phone matching for calls + texts.
 -- Author: Claude Code. Idempotent. Applied to prod from the build session.

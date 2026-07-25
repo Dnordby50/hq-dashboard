@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: check-constraint changes only
+-- @end
 -- 2026-07-16: add 'Polycoat' as an allowed material_type.
 --
 -- Why: the Polycoat category was shipped front-end-only (dropdowns in

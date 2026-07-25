@@ -44,6 +44,15 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
 12. Every major feature ships with a settings surface. Its key parameters (on/off, timing, limits, thresholds, quiet hours) must be adjustable from company Settings, backed by the `settings` table, with no code change required. (Hardwired by Dylan, 2026-07-21.)
 
+13. Every migration file starts with a machine-readable `@artifacts` header declaring what it creates, so the drift checker (pec-migration-drift) can probe the live schema for it. Derive the lines from the file's own SQL. Exactly four kinds (`table: public.<name>`, `column: public.<table>.<column>`, `index: <indexname>`, `setting: <settings.key>`); a migration whose changes are not expressible in those kinds (views, triggers, functions, constraints, data-only) declares `none: <reason>` instead and is reported as unverifiable, never guessed. Format:
+
+   ```sql
+   -- @artifacts
+   --   column: public.estimates.crew_notes
+   --   column: public.jobs.crew_notes
+   -- @end
+   ```
+
 ## Cowork Handoff Prompt Format
 
 Cowork prompts go to a separate operator with no chat history, no familiarity with the current session's reasoning, and no access to this conversation. They MUST be self-contained. When you write one, print it in chat as a fenced code block in this shape:

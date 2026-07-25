@@ -1,3 +1,9 @@
+-- @artifacts
+--   table: public.pec_estimate_views
+--   index: idx_pec_estimate_views_estimate
+--   setting: estimate_view_notifications_enabled
+--   setting: estimate_view_notify_first_per_day
+-- @end
 -- ============================================================================
 -- 2026-07-23 (prompt 44): estimate view logging.
 -- Author: Claude Code. Idempotent. Written for Cowork to apply (standing rule).

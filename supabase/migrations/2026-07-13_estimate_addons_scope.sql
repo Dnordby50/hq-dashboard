@@ -1,3 +1,16 @@
+-- @artifacts
+--   table: public.pec_prod_addons
+--   table: public.estimate_line_items
+--   column: public.pec_prod_system_types.scope_template
+--   column: public.pec_prod_system_types.scope_template_mvb
+--   column: public.pec_prod_system_types.deposit_pct
+--   column: public.estimates.scope_edited_at
+--   column: public.estimates.scope_stale
+--   column: public.estimates.scope_generated_at
+--   column: public.estimates.scope_model
+--   index: pec_prod_addons_name_key
+--   index: idx_estimate_line_items_estimate
+-- @end
 -- ============================================================================
 -- 2026-07-13: Add-on catalog, line items as real rows, scope templates and the
 -- AI-assembled scope document (build prompt 15b). Author: Claude Code.

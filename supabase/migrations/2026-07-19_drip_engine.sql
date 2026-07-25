@@ -1,3 +1,15 @@
+-- @artifacts
+--   table: public.pec_drip_campaigns
+--   table: public.pec_drip_steps
+--   table: public.pec_drip_enrollments
+--   table: public.pec_drip_sends
+--   index: idx_pec_drip_steps_campaign
+--   index: idx_pec_drip_enroll_one_active
+--   index: idx_pec_drip_enroll_due
+--   index: idx_pec_drip_sends_lead
+--   index: idx_pec_drip_sends_enrollment
+--   setting: drip_sending_enabled
+-- @end
 -- ============================================================================
 -- 2026-07-19: lead drip engine (prompt 34, Phase 2 of the leads-robustness build)
 -- ============================================================================

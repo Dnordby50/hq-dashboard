@@ -1,3 +1,6 @@
+-- @artifacts
+--   column: public.user_permissions.can_finalize_costing
+-- @end
 -- ============================================================================
 -- 2026-07-06: can_finalize_costing (the Job Costing review gate)
 -- ============================================================================

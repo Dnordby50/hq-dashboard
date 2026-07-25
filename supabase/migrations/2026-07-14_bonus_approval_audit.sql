@@ -1,3 +1,8 @@
+-- @artifacts
+--   column: public.pec_prod_job_bonuses.suggested_amount
+--   column: public.pec_prod_job_bonuses.approved_by
+--   column: public.pec_prod_job_bonuses.approved_at
+-- @end
 -- ============================================================================
 -- 2026-07-14: Crew-bonus approval audit trail. Author: Claude Code.
 -- RUN BY COWORK on the PEC Supabase project ("HQ Dashboard",

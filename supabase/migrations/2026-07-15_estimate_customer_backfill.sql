@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: data-only backfill of estimates customer fields
+-- @end
 -- ============================================================================
 -- 2026-07-15 (build 23, estimator phase 1): conservative backfill of the new
 -- split customer fields from the combined columns. Author: Claude Code.

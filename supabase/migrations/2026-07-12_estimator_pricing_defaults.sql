@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: data-only catalog/pricing updates
+-- @end
 -- Estimator pricing fixes (Dylan, 2026-07-12): price on system alone, count
 -- flake cost when no color is picked, and target 52% GP on Standard Flake.
 --

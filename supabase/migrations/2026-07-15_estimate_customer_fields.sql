@@ -1,3 +1,14 @@
+-- @artifacts
+--   column: public.estimates.customer_first_name
+--   column: public.estimates.customer_last_name
+--   column: public.estimates.customer_company
+--   column: public.estimates.customer_is_commercial
+--   column: public.estimates.customer_address1
+--   column: public.estimates.customer_address2
+--   column: public.estimates.customer_city
+--   column: public.estimates.customer_state
+--   column: public.estimates.customer_zip
+-- @end
 -- ============================================================================
 -- 2026-07-15 (build 23, estimator phase 1): split customer identity + address
 -- on estimates. Author: Claude Code. Idempotent, additive only. NOT applied

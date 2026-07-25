@@ -1,3 +1,8 @@
+-- @artifacts
+--   column: public.estimates.is_custom
+--   column: public.estimates.custom_scope
+--   column: public.estimates.custom_price
+-- @end
 -- ============================================================================
 -- 2026-07-16 (build 24, estimator phase 2): custom estimate mode.
 -- Author: Claude Code. Idempotent, additive only. NOT applied from the build

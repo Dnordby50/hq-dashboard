@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.estimates.scope_answers
+--   column: public.estimates.scope_questions
+-- @end
 -- ============================================================================
 -- 2026-07-13 (15c): scope BLANK answers + open questions on the estimate.
 -- Author: Claude Code. Idempotent. Applied to prod from the build session.

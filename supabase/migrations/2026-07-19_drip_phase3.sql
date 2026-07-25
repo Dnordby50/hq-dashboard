@@ -1,3 +1,14 @@
+-- @artifacts
+--   table: public.pec_blasts
+--   column: public.pec_drip_enrollments.subject_type
+--   column: public.pec_drip_enrollments.subject_id
+--   column: public.pec_drip_sends.subject_type
+--   column: public.pec_drip_sends.subject_id
+--   column: public.pec_drip_sends.blast_id
+--   index: idx_pec_drip_enroll_one_active_subj
+--   index: idx_pec_drip_sends_blast
+--   index: idx_pec_drip_sends_subject
+-- @end
 -- ============================================================================
 -- 2026-07-19: drip engine Phase 3 (prompt 35): subject generalization,
 -- estimate + invoice campaigns, blast tool tables

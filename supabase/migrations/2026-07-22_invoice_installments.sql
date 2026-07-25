@@ -1,3 +1,12 @@
+-- @artifacts
+--   table: public.pec_invoice_installments
+--   index: idx_pec_invoice_installments_job
+--   index: idx_pec_invoice_installments_status
+--   index: uq_pec_invoice_installments_deposit
+--   setting: default_deposit_pct
+--   setting: payment_schedules_enabled
+--   setting: installment_approval_required
+-- @end
 -- ============================================================================
 -- 2026-07-22: pec_invoice_installments + deposit/schedule settings (prompt 45:
 -- partial invoicing, required deposits, payment schedules).

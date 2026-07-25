@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: data-only renumber of pec_prod_job_schedule_days.day_index
+-- @end
 -- One-time backfill: renumber day_index chronologically for ALL existing
 -- schedule rows.
 --

@@ -1,3 +1,7 @@
+-- @artifacts
+--   table: public.pec_call_log
+--   index: idx_pec_call_log_customer
+-- @end
 -- ============================================================================
 -- 2026-07-06: Quo call log (AI summaries + transcripts on the customer profile)
 -- ============================================================================

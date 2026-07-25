@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.pec_prod_jobs.reschedule_days_owed
+--   column: public.pec_prod_jobs.rescheduled_from
+-- @end
 -- Reschedule limbo flag on production jobs.
 --
 -- The Job Schedule modal's "Reschedule" flow pulls some (or all) of a job's

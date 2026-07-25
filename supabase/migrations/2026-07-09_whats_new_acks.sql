@@ -1,3 +1,7 @@
+-- @artifacts
+--   table: public.pec_whats_new_acks
+--   index: idx_pec_whats_new_acks_user
+-- @end
 -- ============================================================================
 -- 2026-07-09: What's New acknowledgments (prompt 14).
 -- Author: Claude Code. RUN BY COWORK on the PROD Supabase project. Idempotent.

@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.pec_appointments.routemize_appt_id
+--   index: uq_pec_appointments_routemize_appt
+-- @end
 -- ============================================================================
 -- 2026-07-21: Routemize appointment intake (prompt 43) schema support.
 -- ============================================================================

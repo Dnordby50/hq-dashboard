@@ -1,3 +1,6 @@
+-- @artifacts
+--   column: public.pec_email_log.body_html
+-- @end
 -- 2026-07-20_email_log_body.sql
 -- Email Log (prompt 36): store the final wrapped HTML of every transactional
 -- send so staff can open a log row and read exactly what the customer got.

@@ -1,3 +1,7 @@
+-- @artifacts
+--   table: public.pec_user_todos
+--   index: idx_pec_user_todos_user
+-- @end
 -- ============================================================================
 -- 2026-07-16: Personal to-dos (prompt 28).
 -- Author: Claude Code. RUN BY COWORK on the PROD Supabase project. Idempotent.

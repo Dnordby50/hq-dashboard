@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: view change only (pec_job_ar), not probeable
+-- @end
 -- ============================================================================
 -- 2026-07-10: archived jobs drop out of pec_job_ar (and therefore out of
 -- every Invoicing bucket, Metrics, Commission's job map, and the public

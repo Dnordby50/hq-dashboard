@@ -1,3 +1,17 @@
+-- @artifacts
+--   table: public.pec_appointments
+--   table: public.pec_sales_member_google_tokens
+--   table: public.pec_appointment_reminder_rules
+--   table: public.pec_appointment_reminder_sends
+--   column: public.pec_sales_team_members.google_connected
+--   column: public.pec_sales_team_members.google_email
+--   column: public.pec_sales_team_members.google_calendar_id
+--   column: public.pec_sales_team_members.google_connected_at
+--   index: idx_pec_appointments_start_at
+--   index: idx_pec_appointments_sales_member
+--   index: uq_pec_appointments_google_event
+--   index: uq_pec_appt_reminder_send
+-- @end
 -- ============================================================================
 -- 2026-07-20: Appointments calendar (prompt 37): pec_appointments, per-member
 -- Google connection state + token vault, reminder rules + sends ledger, and

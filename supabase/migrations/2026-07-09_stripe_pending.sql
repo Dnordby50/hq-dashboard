@@ -1,3 +1,7 @@
+-- @artifacts
+--   table: public.pec_stripe_pending
+--   index: idx_pec_stripe_pending_job
+-- @end
 -- ============================================================================
 -- 2026-07-09: pec_stripe_pending, the ACH async-settlement marker (prompt 11).
 -- Author: Claude Code. RUN BY COWORK on the PROD Supabase project. Idempotent.

@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: column default change + backfill only
+-- @end
 -- Estimate public_token: mint at creation (prompt 16, customer-facing estimate).
 --
 -- WHY: the /e/<token> public estimate page keys on estimates.public_token, but

@@ -1,3 +1,6 @@
+-- @artifacts
+--   setting: estimator_customer_search_enabled
+-- @end
 -- ============================================================================
 -- 2026-07-23 (prompt 44): estimator duplicate-customer search setting.
 -- Author: Claude Code. Idempotent. Written for Cowork to apply (standing rule).

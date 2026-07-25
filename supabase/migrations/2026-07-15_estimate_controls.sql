@@ -1,3 +1,14 @@
+-- @artifacts
+--   column: public.estimate_areas.mvb
+--   column: public.pec_prod_areas.mvb
+--   column: public.estimates.calc_price
+--   column: public.estimates.price_override_reason
+--   column: public.estimates.price_overridden_by
+--   column: public.estimates.price_overridden_at
+--   column: public.estimates.deleted_by
+--   setting: estimator_sundries_pct
+--   setting: estimator_floor_gp_pct
+-- @end
 -- ============================================================================
 -- 2026-07-15 (build 17): estimate controls.
 -- Author: Claude Code. Idempotent. Applied to prod from the build session.

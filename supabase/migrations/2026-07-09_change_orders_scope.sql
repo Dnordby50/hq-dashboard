@@ -1,3 +1,9 @@
+-- @artifacts
+--   table: public.pec_change_order_signatures
+--   column: public.job_areas.is_change_order
+--   index: idx_job_areas_change_order
+--   index: idx_pec_co_sig_job
+-- @end
 -- ============================================================================
 -- 2026-07-09: change orders carry SCOPE (prompt 12)
 -- ============================================================================

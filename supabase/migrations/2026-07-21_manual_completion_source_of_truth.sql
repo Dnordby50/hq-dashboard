@@ -1,3 +1,6 @@
+-- @artifacts
+--   none: function and trigger only
+-- @end
 -- ============================================================================
 -- 2026-07-21: manual completion is the source of truth (no schedule
 -- auto-complete)

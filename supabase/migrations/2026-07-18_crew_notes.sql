@@ -1,3 +1,7 @@
+-- @artifacts
+--   column: public.estimates.crew_notes
+--   column: public.jobs.crew_notes
+-- @end
 -- Crew notes (prompt 32, Part B): a short INTERNAL crew brief (cliff notes +
 -- watch-outs), separate from the customer-facing scope. Typed or AI-drafted on
 -- the estimator, carried to the job on accept, editable on the job page, and

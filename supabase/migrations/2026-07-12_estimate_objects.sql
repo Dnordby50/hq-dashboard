@@ -1,3 +1,21 @@
+-- @artifacts
+--   column: public.estimates.estimate_number
+--   column: public.estimates.line_items
+--   column: public.estimates.mvb
+--   column: public.estimates.flake_color
+--   column: public.estimates.customer_name
+--   column: public.estimates.customer_email
+--   column: public.estimates.customer_phone
+--   column: public.estimates.customer_address
+--   column: public.estimates.change_request_note
+--   column: public.estimates.rejected_reason
+--   column: public.estimates.rejected_at
+--   column: public.estimates.pricing_snapshot
+--   index: estimates_estimate_number_key
+--   index: idx_estimates_lead
+--   index: idx_estimates_status
+--   index: idx_estimates_created_at
+-- @end
 -- ============================================================================
 -- 2026-07-12: Estimates become first-class numbered objects (build prompt 15).
 -- Author: Claude Code. Idempotent. Applied to prod from the build session via
