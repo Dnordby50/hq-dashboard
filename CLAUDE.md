@@ -44,7 +44,7 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
 
 12. Every major feature ships with a settings surface. Its key parameters (on/off, timing, limits, thresholds, quiet hours) must be adjustable from company Settings, backed by the `settings` table, with no code change required. (Hardwired by Dylan, 2026-07-21.)
 
-13. Every migration file starts with a machine-readable `@artifacts` header declaring what it creates, so the drift checker (pec-migration-drift) can probe the live schema for it. Derive the lines from the file's own SQL. Exactly four kinds (`table: public.<name>`, `column: public.<table>.<column>`, `index: <indexname>`, `setting: <settings.key>`); a migration whose changes are not expressible in those kinds (views, triggers, functions, constraints, data-only) declares `none: <reason>` instead and is reported as unverifiable, never guessed. Format:
+13. Every migration file starts with a machine-readable `@artifacts` header declaring what it creates, so the drift checker (pec-migration-drift) can probe the live schema for it. Derive the lines from the file's own SQL. Exactly four kinds (`table: public.<name>`, `column: public.<table>.<column>`, `index: <indexname>`, `setting: <settings.key>`); a migration whose changes are not expressible in those kinds (views, triggers, functions, constraints, data-only) declares `none: <reason>` instead and is reported as unverifiable, never guessed. If a LATER migration intentionally drops/replaces an artifact, do not delete the header line (a fresh-database replay still creates it); append ` (superseded-by: <that-file>.sql)` to it, and the checker accepts its absence only while the superseding migration is fully applied. Format:
 
    ```sql
    -- @artifacts

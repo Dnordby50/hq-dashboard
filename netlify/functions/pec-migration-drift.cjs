@@ -96,6 +96,21 @@ exports.handler = async (event) => {
     for (const r of (probe && probe.results) || []) present.set(`${r.kind}:${r.name}`, !!r.present);
     const has = (a) => present.get(`${a.kind}:${a.name.replace(/^public\./, '')}`) === true;
 
+    // Supersession (Cowork's 2026-07-25 finding): a later migration may
+    // intentionally DROP an artifact an earlier one created (drip_phase3
+    // replacing drip_engine's one-active index), which raw probing reads as
+    // a false "partial" -- the cry-wolf failure this checker must never have.
+    // An artifact marked `(superseded-by: <file>)` counts as satisfied when
+    // absent ONLY IF the superseding migration's own probeable artifacts are
+    // ALL raw-present, so the case where the superseding migration never ran
+    // is still caught. Raw presence (no supersession chains) keeps this
+    // non-circular; the manifest has exactly one supersession today.
+    const rawApplied = new Map(); // file -> every declared artifact physically present
+    for (const m of manifest.migrations) {
+      if (m.artifacts.length) rawApplied.set(m.file, m.artifacts.every(has));
+    }
+    const satisfied = (a) => has(a) || (!!a.supersededBy && rawApplied.get(a.supersededBy) === true);
+
     // Classify each in-scope migration:
     //   applied  -- every declared artifact exists
     //   missing  -- none exist (the migration never ran)
@@ -115,8 +130,8 @@ exports.handler = async (event) => {
         unknown.push({ file: m.file, reason: m.none || 'header declares no artifacts' });
         continue;
       }
-      const absent = m.artifacts.filter((a) => !has(a)).map((a) => `${a.kind}: ${a.name}`);
-      const found = m.artifacts.filter(has).map((a) => `${a.kind}: ${a.name}`);
+      const absent = m.artifacts.filter((a) => !satisfied(a)).map((a) => `${a.kind}: ${a.name}${a.supersededBy ? ` (superseded-by ${a.supersededBy}, which is not fully applied)` : ''}`);
+      const found = m.artifacts.filter(satisfied).map((a) => `${a.kind}: ${a.name}`);
       if (!absent.length) applied.push(m.file);
       else if (!found.length) missing.push({ file: m.file, absent });
       else partial.push({ file: m.file, absent, present: found });

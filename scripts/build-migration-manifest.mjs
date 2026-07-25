@@ -18,11 +18,18 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const migDir = path.join(root, 'supabase', 'migrations');
 const outFile = path.join(root, 'netlify', 'functions', '_migration-manifest.json');
 
-const ARTIFACT_RE = /^--\s+(table|column|index|setting):\s+(\S+)\s*$/;
+// An artifact line may carry a supersession marker when a LATER migration
+// intentionally drops/replaces it (e.g. drip_phase3 replacing drip_engine's
+// one-active index):
+//   --   index: idx_pec_drip_enroll_one_active (superseded-by: 2026-07-19_drip_phase3.sql)
+// The header stays truthful about what THIS file creates (a fresh-database
+// replay has the artifact); the checker treats its absence as fine only when
+// the superseding migration is itself fully applied.
+const ARTIFACT_RE = /^--\s+(table|column|index|setting):\s+(\S+)(?:\s+\(superseded-by:\s+(\S+)\))?\s*$/;
 const NONE_RE = /^--\s+none:\s+(.+?)\s*$/;
 
 // Parse the @artifacts header block. Returns:
-//   { artifacts: [{kind,name}], none: string|null, hasHeader: boolean }
+//   { artifacts: [{kind,name,supersededBy?}], none: string|null, hasHeader: boolean }
 function parseHeader(sql) {
   const lines = sql.split('\n');
   const start = lines.findIndex((l) => l.trim() === '-- @artifacts');
@@ -33,7 +40,7 @@ function parseHeader(sql) {
     const line = lines[i];
     if (line.trim() === '-- @end') break;
     const a = line.match(ARTIFACT_RE);
-    if (a) { artifacts.push({ kind: a[1], name: a[2] }); continue; }
+    if (a) { artifacts.push(a[3] ? { kind: a[1], name: a[2], supersededBy: a[3] } : { kind: a[1], name: a[2] }); continue; }
     const n = line.match(NONE_RE);
     if (n) none = n[1];
   }

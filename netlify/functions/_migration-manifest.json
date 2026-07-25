@@ -1217,7 +1217,8 @@
         },
         {
           "kind": "index",
-          "name": "idx_pec_drip_enroll_one_active"
+          "name": "idx_pec_drip_enroll_one_active",
+          "supersededBy": "2026-07-19_drip_phase3.sql"
         },
         {
           "kind": "index",

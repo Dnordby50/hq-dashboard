@@ -4,7 +4,7 @@
 --   table: public.pec_drip_enrollments
 --   table: public.pec_drip_sends
 --   index: idx_pec_drip_steps_campaign
---   index: idx_pec_drip_enroll_one_active
+--   index: idx_pec_drip_enroll_one_active (superseded-by: 2026-07-19_drip_phase3.sql)
 --   index: idx_pec_drip_enroll_due
 --   index: idx_pec_drip_sends_lead
 --   index: idx_pec_drip_sends_enrollment

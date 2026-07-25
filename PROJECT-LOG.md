@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Drift checker: superseded-by notation (fixes the one false-positive partial before the first daily bell)
+By: Claude Code
+
+Changed: The @artifacts convention now expresses intentional supersession, closing the false positive Cowork found on the checker's first run (entry below): 2026-07-19_drip_engine.sql creates idx_pec_drip_enroll_one_active, 2026-07-19_drip_phase3.sql intentionally drops and replaces it, and raw probing read that as "partial". Prod was always correct; the model could not say "a later migration removed this on purpose".
+
+HOW IT WORKS: an artifact line may carry ` (superseded-by: <file>.sql)` (drip_engine's index line now does; CLAUDE.md rule 13 documents it). The manifest builder parses it into the artifact entry, and pec-migration-drift.cjs counts a superseded artifact as satisfied when absent ONLY IF the superseding migration's own probeable artifacts are all present, so the case where the superseding migration never ran is still caught (verified in the harness: with drip_phase3's artifacts absent, drip_engine reads partial again and drip_phase3 reads missing). The header line was deliberately NOT deleted: the file genuinely creates that index and a fresh-database replay would have it. Exactly one supersession exists in the whole 2026-07+ set today (Cowork's sweep).
+
+Timing mattered: the daily 07:00 MST run was NOT notify-gated, so without this the checker's first-ever scheduled bell would have been a false alarm, the exact cry-wolf failure prompt 48's guardrails call out. With the fix, mock-probe reality reads checked 45 / applied 37 / missing 0 / partial 0 / unknown 8.
+
+Why: Cowork's recommended fix from the first-run investigation (entry below); code edits are Claude Code's lane.
+Files touched: supabase/migrations/2026-07-19_drip_engine.sql (header line only, no SQL), scripts/build-migration-manifest.mjs, netlify/functions/pec-migration-drift.cjs, netlify/functions/_migration-manifest.json (regenerated), CLAUDE.md (rule 13), PROJECT-LOG.md (this entry).
+Next steps: after Netlify deploys, re-run the on-demand check against live prod and confirm 37/0/0 (Claude Code is doing this in-session right after the push; independently, Settings > Diagnostics > Schema Drift should now show the green all-applied banner).
+
+---
+
 ## [2026-07-25 MST] Cowork: applied both prompt 48 migrations to PROD, regenerated SCHEMA.md, ran the drift checker (1 PARTIAL, investigated: false positive, header bug not drift)
 By: Cowork
 
