@@ -4,6 +4,67 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Cowork: scoped migration drift detection + estimator stuck-sync visibility (prompt 48 written)
+By: Cowork
+
+Changed: No repo code beyond docs. Wrote claude-code-prompt-48-migration-drift-and-estimator-errors.md to the repo root. Scoped through 12 multiple-choice questions across 3 rounds, grounded in the live outbox/sync source and the live schema rather than in the log.
+
+Why: the 2026-07-25 incident (five unapplied migrations, one silently breaking every estimator save for a week, see the entry below). Two independent failures combined: a migration handed to Cowork can go unapplied forever with no signal, and the estimator swallows repeated write failures into a "N to sync" counter that reads like normal progress. Dylan asked for both fixed as one build.
+
+LOCKED DECISIONS (Dylan). Part A: scheduled daily function PLUS an on-demand Settings > Diagnostics panel; ARTIFACT PROBING not filename matching; baseline 2026-07-01; bell notification to admins, de-duped so a long-pending migration cannot generate daily noise; reverse drift (objects in prod with no migration file) reported separately at lower severity. Part B: red state after 2 failed attempts; red banner + expandable per-item detail + "Retry now"; KEEP RETRYING FOREVER with backoff and explicitly NO attempts cap; skip children of a failed parent within a drain pass; escalate server-side to a new table + bell so a stuck save does not depend on a rep understanding a banner. Packaging: one prompt, five commits, each part revertable alone.
+
+THE KEY FINDING that shaped Part A: `supabase_migrations.schema_migrations` exists and is service-role readable, but its `name` column does NOT match repo filenames. Live examples: `2026-07-19_drip_engine` (matches the file), `2026_07_20_appointments` (underscored), `invoice_installments` and `webhook_ingest_log` (bare stems, no date). Filename matching would report APPLIED migrations as missing, and a checker that cries wolf gets muted, which is the exact failure this feature exists to prevent. So the prompt specifies an `@artifacts` header convention (table/column/index/setting declarations in each migration file) probed against the live schema, which also catches a PARTIALLY applied migration that name matching structurally cannot. A migration with no header is bucketed `unknown`, never guessed.
+
+OTHER GROUNDED FINDINGS baked into the prompt: (1) Netlify functions have no repo working tree at runtime, so the migration list has to be a build-time manifest (`scripts/build-migration-manifest.mjs` -> `netlify/functions/_migration-manifest.json`, wired into the Netlify build command), not an fs.readdir. (2) `outbox.ts` ALREADY stores `attempts`, `status`, and `lastError`; nothing reads them for display, so Part B is mostly a display and policy problem, not a data-model one. (3) `drainOutbox()` in `sync.ts` has no cap and no backoff and walks straight past a failed parent into its children, which is why one bad estimate showed as three stuck ops (the estimate plus its estimate_areas and estimate_line_items failing on FK). (4) The threshold setting must reach the estimator through the existing `catalog.ts` settings key list (the `customerSearchEnabled` pattern), not a hardcoded constant. (5) Backward compatibility called out explicitly: ops queued by the currently deployed build must still drain, so `nextAttemptAt` is optional and absent-means-due.
+
+DELIBERATE NON-DECISION worth remembering: no maximum-attempts cap, even though a cap is the conventional design. The real incident self-healed precisely because the poison ops were still retrying when the missing column landed. A cap would have left a real $4,950 estimate permanently dead in a rep's browser.
+
+Settings keys the prompt specifies (standing rule 12): migration_drift_check_enabled (true), migration_drift_baseline (2026-07-01), sync_stuck_threshold_attempts (2), sync_stuck_escalation_enabled (true).
+
+Files touched: claude-code-prompt-48-migration-drift-and-estimator-errors.md (new, repo root), PROJECT-LOG.md (this entry).
+Next steps: Dylan hands prompt 48 to Claude Code. After it ships, Cowork applies the pec_sync_stuck_reports migration, regenerates SCHEMA.md, and runs the drift checker on demand; a non-empty result on that first run means the artifact headers are wrong (Cowork applied all five known-missing migrations on 2026-07-25), which is itself the acceptance test.
+Handoff to Dylan: git add claude-code-prompt-48-migration-drift-and-estimator-errors.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit), then hand prompt 48 to Claude Code. Note prompt 34 (metrics/costing/bonus) is still unrun and still needs its two open questions answered.
+
+---
+
+## [2026-07-25 MST] Cowork: prompt 47 tasks 3-4 done (mapping + smoke PASS), and found FIVE unapplied prod migrations, one of which was silently breaking every estimator save
+By: Cowork
+
+Changed: No repo code. Finished the prompt 47 handoff (tasks 3-4) on the live deploy, then applied five migrations that had never reached PROD. SCHEMA.md updated for all of them.
+
+TASK 3 (member -> login mapping), DONE via Settings > General > Sales Team > Edit, the UI path the handoff specified:
+- Aron Bronson -> aron@prescottepoxy.com (auth dee08f72-1d9b-4b8a-9aa9-f3cd58733f9d)
+- Dylan Nordby -> dylan@prescottepoxy.com (auth 3a2d77f7-cfeb-44cb-af4d-2669ee480567; Dylan confirmed this over office@prescottepoxy.com, he holds both admin logins)
+Both rows now show the login email in the LOGIN column, no "Not linked". Verified in the DB by joining pec_sales_team_members to admin_users on auth_user_id.
+
+THE BLOCKER FOUND MID-SMOKE. The first smoke attempt looked like a silent failure: one edit (500 sq ft) in the estimator produced NO new estimates row. It was not a failure of prompt 47. The estimator is offline-first, and the draft went into its IndexedDB outbox (pec-estimator > outbox), where it sat with the error `Could not find the 'crew_notes' column of 'estimates' in the schema cache`. THREE OLDER ITEMS WERE ALREADY STUCK IN THAT SAME OUTBOX at 4 retries each: one estimates insert with the identical crew_notes error, plus its estimate_areas and estimate_line_items rows failing on FK because their parent estimate never landed. Root cause: supabase/migrations/2026-07-18_crew_notes.sql (prompt 32, shipped 2026-07-18) was NEVER APPLIED to prod, so every estimator save that includes crew_notes has been failing for a week, visible only as a "N to sync" counter in the estimator header. One of the stranded items was a REAL customer estimate (Chris Lopez, Polydeck System, 500 sqft, $4,950), not a test.
+
+AUDIT: checked every migration file from 2026-07-18 onward against the live schema. FIVE were entirely unapplied. Dylan approved applying all five; each is additive and idempotent:
+1. 2026-07-18_crew_notes.sql -> estimates.crew_notes, jobs.crew_notes (both text). THE ESTIMATOR BLOCKER.
+2. 2026-07-18_estimate_custom_sqft.sql -> estimates.custom_sqft (numeric). Custom-mode estimates could not persist their typed sqft.
+3. 2026-07-21_drip_approval_gate.sql -> pec_drip_sends status CHECK extended to allow 'pending', partial unique index uq_pec_drip_sends_pending_leg, and the 4 gate settings rows (drip_approval_required, drip_quiet_start/end/days). The prompt-42 approval gate had NO settings rows and could not write a 'pending' send; the gate was shipped but inert.
+4. 2026-07-23_estimate_views.sql -> pec_estimate_views table + index + staff-read RLS policy + 2 settings rows. Prompt 46 view tracking was writing to a table that did not exist.
+5. 2026-07-23_estimator_customer_search_setting.sql -> estimator_customer_search_enabled settings row.
+All six artifacts re-verified present after apply (2 crew_notes columns, custom_sqft, pec_estimate_views, uq_pec_drip_sends_pending_leg, and all 7 settings rows).
+
+OUTBOX DRAINED ON ITS OWN once the columns existed: reopening /estimator/ flushed all 4 queued items to zero with no manual intervention. Both stranded estimates landed, including the real Chris Lopez one (EST-102033). No data was lost, it was only stuck.
+
+TASK 4 (card-first smoke), BOTH HALVES PASS, run on a throwaway lead (ZZ Test Draft, 925f7345-7f98-412b-9b75-99a617a55378, created manually for this test, safe to delete):
+- POSITIVE: one edit in the estimator, then closed WITHOUT saving -> EST-102034 exists, status draft, lead_id linked to the test lead, intake salesperson_name = "Dylan Nordby" (auto-defaulted from the login, never picked by hand). The "IN DRAFT" badge renders BOTH on the Estimates list row and at the top of the estimate detail page, as prompt 47 specified.
+- NEGATIVE: opened the estimator fresh on the same lead ("Create new anyway"), touched nothing, closed -> estimates count stayed at 7 and the outbox stayed empty. Opening alone creates nothing.
+- BONUS FINDING (good): starting a second estimate on a lead that already has an open one raises a "This lead already has an open estimate" dialog with Open / Cancel / Create new anyway. Not in the prompt; it is a sensible duplicate guard.
+- Drip safety confirmed while testing: the test lead auto-enrolled in the 8-step nurture campaign but the lead card reads "dry run: messages are for review here, nothing sends" (drip_sending_enabled = false). Nothing was sent to the fake number.
+
+Why: prompt 47 Cowork handoff tasks 3-4; the migration audit was an approved expansion after task 4 surfaced the crew_notes blocker.
+Files touched: SCHEMA.md (estimates +crew_notes +custom_sqft, jobs +crew_notes, new pec_estimate_views section), PROJECT-LOG.md (this entry).
+
+PROCESS PROBLEM WORTH FIXING (for Dylan and Claude Code): five migrations sat unapplied for up to a week with no signal. The pattern is always the same, Claude Code writes the migration and logs a Cowork handoff, and if that handoff is never executed nothing tells anyone. The estimator's offline outbox makes it worse by swallowing the failure into a small "N to sync" counter instead of surfacing an error. Two suggestions: (1) a startup or scheduled check that compares supabase/migrations/*.sql against a migrations-applied table and warns on drift, and (2) make the estimator surface a visible error state (not just a counter) when an outbox item has failed more than twice.
+
+Next steps: Dylan commits SCHEMA.md + PROJECT-LOG.md and deletes the ZZ Test Draft lead plus EST-102034 when convenient. The recovered Chris Lopez estimate (EST-102033) should be reviewed, it is a week old and its owner may have assumed it was lost.
+Handoff to Dylan: (1) git add SCHEMA.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). (2) Delete the ZZ Test Draft lead and EST-102034 (Cowork cannot delete). (3) Look at EST-102033 (Chris Lopez), it just reappeared after being stuck since 2026-07-18.
+
+---
+
 ## [2026-07-25 MST] Cowork: applied the sales-member auth_user_id migration to PROD + regenerated SCHEMA.md (prompt 47 handoff, tasks 1-2 done; 3-4 blocked on deploy)
 By: Cowork
 

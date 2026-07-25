@@ -221,6 +221,8 @@ RLS: enabled · rows: 5
 | deleted_at | timestamptz | yes |  |
 | estimate_number | integer | yes | nextval('estimates_estimate_number_seq') |
 | line_items | jsonb | yes |  |
+| crew_notes | text | yes |  |
+| custom_sqft | numeric | yes |  |
 | mvb | text | no | 'none' |
 | flake_color | text | yes |  |
 | customer_name | text | yes |  |
@@ -369,6 +371,7 @@ RLS: enabled · rows: 86
 | line_items_manual_override | boolean | no | false |
 | colors_confirmed_by_customer_at | timestamptz | yes |  |
 | invoice_first_sent_at | timestamptz | yes |  |
+| crew_notes | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; system_type_id → pec_prod_system_types.id
@@ -753,6 +756,21 @@ RLS: enabled · rows: 16
 PK: id
 FK: campaign_id → pec_drip_campaigns.id
 Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. 16 rows across the 3 campaigns. RLS staff-only.
+
+### pec_estimate_views
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| estimate_id | uuid | no |  |
+| viewed_at | timestamptz | no | now() |
+| user_agent | text | yes |  |
+| ip | text | yes |  |
+
+PK: id
+FK: estimate_id → estimates.id (on delete cascade)
+Index: (estimate_id, viewed_at desc). RLS: staff read only via is_admin_staff(); inserts are service-role (the public estimate page logs the view server-side). Feeds the estimate view bell + card summary (prompt 46).
 
 ### pec_email_log
 RLS: enabled · rows: 25
