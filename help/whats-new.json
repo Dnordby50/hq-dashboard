@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-stuck-sync-red-banner",
+    "date": "2026-07-25",
+    "title": "The estimator now tells you clearly when a save is not uploading",
+    "summary": "Before, a save that kept failing to upload only showed as a small 'to sync' counter, which looked like normal progress. Now, if a save fails to upload twice, the top of the estimator turns red and says how many saves are stuck and for how long. Your work is not lost. It is saved on your phone and keeps retrying on its own, and the office is notified automatically. The red banner is just telling you the office has not received it yet.",
+    "howto": [
+      "If you see a red 'saves not syncing' banner, tap it to see what is stuck and why.",
+      "Tap Retry now if you think the problem is fixed (for example, you are back on good signal).",
+      "If it stays red, tell Dylan and read him the error message shown under the stuck item."
+    ]
+  },
+  {
     "id": "estimate-card-first-salesperson-default",
     "date": "2026-07-25",
     "title": "Estimates save as an In Draft card the moment you start, and default to you as the salesperson",

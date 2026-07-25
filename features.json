@@ -1482,6 +1482,59 @@
         "pec_appointments"
       ],
       "since": "2026-07"
+    },
+    {
+      "name": "Migration drift detection",
+      "area": "diagnostics",
+      "description": "Detects repo migrations that were never applied to prod (the failure that let 2026-07-18_crew_notes.sql silently break every estimator save for a week). Every migration dated 2026-07-01+ carries a machine-readable @artifacts header (CLAUDE.md rule 13) declaring the tables/columns/indexes/settings it creates; scripts/build-migration-manifest.mjs compiles the headers into netlify/functions/_migration-manifest.json at build time (wired into netlify.toml's build command), and pec-migration-drift.cjs probes every declared artifact against the LIVE schema in one batched pec_schema_probe RPC call (migration 2026-07-25_migration_drift_probe.sql; read-only SECURITY DEFINER, service-role-only). Artifact probing, not filename matching, because schema_migrations names do not match repo filenames, and it also catches PARTIALLY applied migrations. Runs daily at 07:00 MST plus on demand from Settings > Diagnostics > Schema Drift (four buckets: applied / missing / partial / not-verifiable, plus informational reverse drift = live tables no repo SQL creates). Missing/partial raise de-duped admin bells (never re-notifies while one is unread); reverse drift never notifies. Knobs: migration_drift_check_enabled, migration_drift_baseline.",
+      "code": {
+        "indexHtml": [
+          "renderSchemaDrift",
+          "notifTarget"
+        ],
+        "netlifyFunctions": [
+          "pec-migration-drift.cjs",
+          "_migration-manifest.json"
+        ],
+        "other": [
+          "scripts/build-migration-manifest.mjs",
+          "supabase/migrations/2026-07-25_migration_drift_probe.sql"
+        ]
+      },
+      "tables": [
+        "settings",
+        "pec_notifications"
+      ],
+      "since": "2026-07"
+    },
+    {
+      "name": "Estimator stuck-sync visibility",
+      "area": "estimator",
+      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online · N to sync, or a RED 'N saves not syncing · oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
+      "code": {
+        "indexHtml": [
+          "renderSettingsEstimates",
+          "notifTarget"
+        ],
+        "netlifyFunctions": [
+          "pec-sync-stuck.cjs"
+        ],
+        "other": [
+          "production/outbox-drain.cjs",
+          "production/outbox-backoff.test.cjs",
+          "apps/estimator/src/offline/sync.ts",
+          "apps/estimator/src/offline/outbox.ts",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx",
+          "apps/estimator/src/lib/catalog.ts",
+          "supabase/migrations/2026-07-25_sync_stuck_reports.sql"
+        ]
+      },
+      "tables": [
+        "pec_sync_stuck_reports",
+        "pec_notifications",
+        "settings"
+      ],
+      "since": "2026-07"
     }
   ]
 }

@@ -4,6 +4,41 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Prompt 48 shipped: migration drift detection + estimator stuck-sync visibility
+By: Claude Code
+
+Changed: Both parts of prompt 48, five commits (964ec59, f28a9ea, d652ffa, ec6a8c6, plus this docs commit), each part revertable alone. Fixes the two failures behind the 2026-07-25 incident: a migration could sit unapplied in prod forever with no signal, and the estimator swallowed a week of failing saves into a "3 to sync" counter.
+
+PART A, migration drift detection (964ec59 + f28a9ea):
+- Every migration dated 2026-07-01+ (44 files) now starts with a machine-readable `@artifacts` header declaring the tables/columns/indexes/settings it creates, derived from each file's own SQL so the check is a genuine comparison, not a tautology. Files with nothing probeable (views, triggers, data-only; 8 of them) declare `none: <reason>` and are bucketed "not verifiable", never guessed. CLAUDE.md standing rule 13 makes the header mandatory going forward.
+- HOW IT WORKS: Netlify functions have no repo tree at runtime, so scripts/build-migration-manifest.mjs compiles the headers into netlify/functions/_migration-manifest.json as the FIRST step of the netlify.toml build command (also committed, so local runs work). pec-migration-drift.cjs then probes every declared artifact against the LIVE schema in one batched RPC call and classifies each migration applied / missing / partial / unknown. Artifact probing, not filename matching, because schema_migrations names don't match repo filenames (Cowork's key finding), and it also catches a HALF-applied migration. Reverse drift (live tables no repo SQL creates) is a separate informational list built from a whole-repo create-table scan, so pre-baseline tables never false-positive.
+- WHY A NEW RPC: PostgREST cannot see pg_indexes/pg_tables and cannot run raw SQL, so the one union-all existence query ships as a read-only SECURITY DEFINER function (2026-07-25_migration_drift_probe.sql, EXECUTE service-role-only). Bootstrap chicken-and-egg handled by failing LOUDLY: until that migration is applied, the checker returns an error naming the file and raises a de-duped high-priority bell, so the checker's own dependency cannot silently drift. The probe SELECT was validated read-only against live prod before committing (real artifacts true, fakes false; nothing was applied).
+- Surfaces: daily schedule 14:00 UTC (07:00 MST) + Settings > Diagnostics > Schema Drift (admin-only, artifact-level detail, run-now button). Bells: one per migration per detection, de-duped against UNREAD rows of the same type mentioning the same file, so a known-pending migration never generates daily noise. partial = high priority, missing = normal, reverse drift never notifies.
+
+PART B, estimator stuck-sync visibility (d652ffa + ec6a8c6):
+- Retry policy extracted to production/outbox-drain.cjs (the estimate-draft.cjs sharing pattern) so the 25 new fixture tests in production/outbox-backoff.test.cjs (wired into npm test) drive the exact code the sync loop runs. Backoff per op: 1m, 5m, 30m, then hourly FOREVER; deliberately no attempts cap, because the incident self-healed only because the stranded ops were still retrying when the columns landed. nextAttemptAt is optional and absent-means-due, so ops queued by the currently deployed build keep draining (guardrail honored). Children of a failed or deferred parent are skipped for the pass, transitively, attempts untouched: one bad estimate reads as one problem, not three.
+- The header is now three-state: Online / "Online · N to sync" / a RED "N saves not syncing · oldest 6 days" once any op hits sync_stuck_threshold_attempts (default 2; reaches the PWA through catalog.ts's settings key list, not hardcoded). Expanding it shows each stuck op (customer name where derivable), attempts, stuck-for, and lastError VERBATIM (the raw string is what solves the problem), plus a "Retry now" that force-clears every backoff timer. Wording never implies data loss ("Saved on this device, not yet uploaded").
+- Server escalation: once per session, on first crossing the threshold, the PWA POSTs stuck-op metadata (op/table/row ids, attempts, first-queued, error; NO row bodies or PII) to the new pec-sync-stuck.cjs, which upserts public.pec_sync_stuck_reports on op_id and raises ONE high-priority bell per op (re-bells only if a resolved report re-breaks). Gated by sync_stuck_escalation_enabled on both client and server.
+
+Settings keys (rule 12): migration_drift_check_enabled (true) + migration_drift_baseline (2026-07-01), knobs on the Schema Drift panel, seeded by the probe migration; sync_stuck_threshold_attempts (2) + sync_stuck_escalation_enabled (true), knobs in Settings > Estimates, seeded by the sync_stuck migration. NOTE, small deviation from the prompt's B5: the two drift keys are seeded by the Part A migration rather than the Part B one, so each part stays revertable alone.
+
+Why: prompt 48 (see Cowork's scoping entry below and the incident entry below that).
+Files touched: 45 supabase/migrations/*.sql (headers + 2 new), CLAUDE.md, scripts/build-migration-manifest.mjs, netlify/functions/{pec-migration-drift.cjs,pec-sync-stuck.cjs,_migration-manifest.json}, netlify.toml, index.html (renderSchemaDrift, renderSettingsEstimates, notifTarget, nav), production/{outbox-drain.cjs,outbox-backoff.test.cjs}, package.json, apps/estimator/src/{offline/outbox.ts,offline/sync.ts,lib/catalog.ts,features/estimator/EstimatorScreen.tsx,styles.css,types/calculator.d.ts}, features.json, help/whats-new.json.
+Next steps: Cowork handoff below; after it lands, the drift bell + panel and the estimator escalation are fully live.
+
+## Handoff to Cowork
+1. Apply BOTH new migrations to PROD, in this order (each is additive, idempotent, one transaction):
+   - supabase/migrations/2026-07-25_migration_drift_probe.sql (the pec_schema_probe RPC + 2 drift settings)
+   - supabase/migrations/2026-07-25_sync_stuck_reports.sql (pec_sync_stuck_reports table + 2 sync settings)
+   Run each file's "Verify after running" block; every check is listed in the file's footer comment.
+2. Regenerate SCHEMA.md (new table pec_sync_stuck_reports, new function pec_schema_probe, 4 new settings rows).
+3. Run the drift checker on demand and confirm ZERO missing/partial:
+   curl 'https://prescottepoxy.netlify.app/.netlify/functions/pec-migration-drift?manual=1&notify=0'
+   Expected: missing=[] and partial=[], checked=45, applied=37, unknown=8 (the none-header files), reverse near-empty. Cowork applied all five known-missing migrations on 2026-07-25, so a NON-EMPTY missing/partial on this first run means either an @artifacts header is wrong or something else drifted; investigate rather than dismiss. (Step 1 must land first or the checker returns its own "probe RPC missing" error, which is the expected pre-apply behavior, not a bug.)
+4. Optional smoke for Part B: in the estimator, DevTools > Application > IndexedDB > pec-estimator > outbox has no easy fault injection; simplest live check is Settings > Estimates > set the stuck threshold to 1, then briefly break connectivity mid-save. Skippable; the policy is covered by 25 fixture tests.
+
+---
+
 ## [2026-07-25 MST] Cowork: scoped migration drift detection + estimator stuck-sync visibility (prompt 48 written)
 By: Cowork
 
