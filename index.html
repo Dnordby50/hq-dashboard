@@ -16171,12 +16171,14 @@ async function renderSettingsDrips() {
 async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled']),
+    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
   const firstPerDayOn = (map.estimate_view_notify_first_per_day || 'false') === 'true';
   const dedupOn = (map.estimator_customer_search_enabled || 'true') !== 'false';
+  const stuckEscOn = (map.sync_stuck_escalation_enabled || 'true') !== 'false';
+  const stuckThreshold = Math.max(1, Number(map.sync_stuck_threshold_attempts) || 2);
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -16200,7 +16202,21 @@ async function renderSettingsEstimates() {
     ${toggleCard('Only notify on the first view each day', firstPerDayOn,
       'On: at most one bell per estimate per day, even if the customer opens it ten times. Off: a bell for every open.', 'setEstViewDaily')}
     ${toggleCard('Duplicate-customer search in the estimator', dedupOn,
-      'Shows a search box on the estimator customer form that finds existing customers and leads (by name, phone, email, or address) so reps link to them instead of creating duplicates.', 'setEstDedup')}`;
+      'Shows a search box on the estimator customer form that finds existing customers and leads (by name, phone, email, or address) so reps link to them instead of creating duplicates.', 'setEstDedup')}
+    ${toggleCard('Stuck-save escalation', stuckEscOn,
+      'When an estimator save keeps failing to upload, the office gets a bell notification with the error, so a stuck save never depends on the rep reporting their red banner. The banner itself always shows.', 'setSyncEsc')}
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Stuck-save threshold: ${stuckThreshold} failed attempts</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">How many failed upload attempts before the estimator shows the red "not syncing" state (and escalates). One failure is usually a blip; two is real.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="setSyncThreshold" min="1" max="20" value="${stuckThreshold}" style="width:70px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          <button type="button" class="pec-btn ghost sm" id="setSyncThresholdSave">Save</button>
+        </div>
+      </div>
+    </div>`;
   wireSettingsTabs(root);
 
   const wire = (id, key, cur) => $(id).addEventListener('click', async () => {
@@ -16211,6 +16227,14 @@ async function renderSettingsEstimates() {
   wire('setEstViewNotifs', 'estimate_view_notifications_enabled', viewNotifsOn);
   wire('setEstViewDaily', 'estimate_view_notify_first_per_day', firstPerDayOn);
   wire('setEstDedup', 'estimator_customer_search_enabled', dedupOn);
+  wire('setSyncEsc', 'sync_stuck_escalation_enabled', stuckEscOn);
+  $('setSyncThresholdSave').addEventListener('click', async () => {
+    const btn = $('setSyncThresholdSave'); btn.disabled = true;
+    const v = Math.floor(Number($('setSyncThreshold').value));
+    if (!Number.isFinite(v) || v < 1 || v > 20) { showToast('Threshold must be between 1 and 20.', { ttl: 4000 }); btn.disabled = false; return; }
+    try { await saveSetting('sync_stuck_threshold_attempts', v); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
 }
 
 // Settings > Appointments (prompt 37): per-member Google Calendar connect

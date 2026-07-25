@@ -38,6 +38,8 @@ export type PricingConfig = {
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
   customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
+  syncStuckThreshold: number; // sync_stuck_threshold_attempts: failed attempts before a queued save shows the red not-syncing state (prompt 48)
+  syncStuckEscalationEnabled: boolean; // sync_stuck_escalation_enabled: report stuck saves to the office (bell notification) (prompt 48)
 };
 
 export type Catalog = {
@@ -97,6 +99,8 @@ export async function loadCatalog(): Promise<Catalog> {
         'estimator_sundries_pct',
         'estimator_floor_gp_pct',
         'estimator_customer_search_enabled',
+        'sync_stuck_threshold_attempts',
+        'sync_stuck_escalation_enabled',
       ]),
   ]);
 
@@ -135,6 +139,10 @@ export async function loadCatalog(): Promise<Catalog> {
       settings['estimator_default_commission_pct'] != null &&
       settings['estimator_default_commission_pct'] !== '',
     customerSearchEnabled: String(settings['estimator_customer_search_enabled'] ?? 'true').toLowerCase() !== 'false',
+    // Guard against a zero/negative row making every queued op instantly
+    // "broken": anything unparseable or < 1 falls back to 2.
+    syncStuckThreshold: Math.max(1, num('sync_stuck_threshold_attempts', 2)) || 2,
+    syncStuckEscalationEnabled: String(settings['sync_stuck_escalation_enabled'] ?? 'true').toLowerCase() !== 'false',
   };
 
   const catalog: Catalog = {

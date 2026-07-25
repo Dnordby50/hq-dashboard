@@ -26,7 +26,7 @@ import { emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/cus
 import AddressAutocomplete from './AddressAutocomplete';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
-import { listOps } from '../../offline/outbox';
+import { listOps, type OutboxOp } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
 import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
 import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
@@ -351,7 +351,14 @@ export default function EstimatorScreen({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
-  const [pending, setPending] = useState(0);
+  // Full queued ops, not just a count (prompt 48): the header needs attempt
+  // counts and errors to tell "syncing" from "stuck". `pending` stays derived
+  // so the quiet counter path is unchanged.
+  const [pendingOps, setPendingOps] = useState<OutboxOp[]>([]);
+  const pending = pendingOps.length;
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  const [retryState, setRetryState] = useState<'idle' | 'running' | 'done'>('idle');
+  const [retryOutcome, setRetryOutcome] = useState('');
 
   const salesperson: SalesPerson | undefined = salespeople.find((s) => s.id === salespersonId);
   // Card-first draft (prompt 47): the estimate id is minted ONCE per screen so
@@ -811,7 +818,7 @@ export default function EstimatorScreen({
 
   const refreshPending = useCallback(async () => {
     try {
-      setPending((await listOps()).length);
+      setPendingOps(await listOps());
     } catch {
       /* IndexedDB unavailable */
     }
@@ -820,6 +827,95 @@ export default function EstimatorScreen({
   useEffect(() => {
     refreshPending();
   }, [refreshPending]);
+
+  // ---- Stuck-sync visibility (prompt 48) -----------------------------------
+  // A queued op that failed sync_stuck_threshold_attempts times (default 2:
+  // one failure is a blip, two is real) is BROKEN, not "syncing": the header
+  // goes red instead of showing the quiet counter that hid the crew_notes
+  // incident for a week. Threshold comes from Settings via the catalog, and
+  // a pre-48 cached catalog (no field) falls back to 2.
+  const stuckThreshold = Math.max(1, Number(config.syncStuckThreshold) || 2);
+  const stuckOps = pendingOps.filter((op) => op.attempts >= stuckThreshold);
+  const opQueuedAtMs = (op: OutboxOp) => {
+    // queuedAt is a prompt-48 field; older ops fall back to the opId's ISO
+    // prefix (nextOpId embeds it), else "now" (age simply reads 0).
+    const t = Date.parse(op.queuedAt || op.opId.slice(0, 24));
+    return Number.isFinite(t) ? t : Date.now();
+  };
+  const fmtAge = (ms: number) => {
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'under a minute';
+    if (min < 60) return `${min} min`;
+    const h = Math.floor(min / 60);
+    if (h < 48) return `${h} hour${h === 1 ? '' : 's'}`;
+    const d = Math.floor(h / 24);
+    return `${d} days`;
+  };
+  const oldestStuckAge = stuckOps.length
+    ? fmtAge(Date.now() - Math.min(...stuckOps.map(opQueuedAtMs)))
+    : '';
+  const opLabel = (op: OutboxOp) => {
+    const row = op.row as Record<string, unknown>;
+    if (op.table === 'estimates') {
+      const name = typeof row.customer_name === 'string' && row.customer_name ? row.customer_name : null;
+      return name ? `Estimate for ${name}` : `Estimate ${op.id.slice(0, 8)}`;
+    }
+    if (op.table === 'leads') return `Lead ${op.id.slice(0, 8)}`;
+    return `${op.table.replace(/_/g, ' ')} ${op.id.slice(0, 8)}`;
+  };
+
+  // Server escalation (prompt 48): report stuck-item metadata ONCE per screen
+  // session, the first time anything crosses the threshold, so the office gets
+  // a bell even when the rep does not read the red banner. Ids and errors
+  // only, no row bodies. Gated by sync_stuck_escalation_enabled (checked
+  // server-side too). Best-effort: a report failure changes nothing here.
+  const stuckReportedRef = useRef(false);
+  const stuckCount = stuckOps.length;
+  useEffect(() => {
+    if (!stuckCount || stuckReportedRef.current || !online) return;
+    if (config.syncStuckEscalationEnabled === false) return;
+    stuckReportedRef.current = true;
+    const payload = {
+      ops: stuckOps.map((op) => ({
+        opId: op.opId,
+        table: op.table,
+        id: op.id,
+        attempts: op.attempts,
+        firstQueuedAt: new Date(opQueuedAtMs(op)).toISOString(),
+        lastError: (op.lastError || '').slice(0, 500),
+        estimateId: op.table === 'estimates' ? op.id
+          : typeof (op.row as Record<string, unknown>).estimate_id === 'string'
+            ? String((op.row as Record<string, unknown>).estimate_id) : null,
+      })),
+    };
+    fetch('/.netlify/functions/pec-sync-stuck', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => { /* best-effort */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stuckCount, online]);
+
+  // Manual "Retry now": clears every backoff timer (force) and drains, then
+  // reports the outcome in the panel so the rep sees whether it worked.
+  const retryNow = useCallback(async () => {
+    setRetryState('running');
+    setRetryOutcome('');
+    try {
+      const r = await drainOutbox({ force: true });
+      await refreshPending();
+      setRetryOutcome(
+        r.synced > 0 && r.remaining === 0 ? 'All saved to the office.'
+          : r.synced > 0 ? `${r.synced} uploaded, ${r.remaining} still waiting.`
+            : r.failed > 0 ? 'Still not uploading. The office has been notified; your work stays saved on this device.'
+              : 'Nothing was due to retry.',
+      );
+    } catch (e) {
+      setRetryOutcome(e instanceof Error ? e.message : String(e));
+    }
+    setRetryState('done');
+  }, [refreshPending]);
+
   useEffect(() => {
     if (!online) return;
     drainOutbox()
@@ -1503,12 +1599,30 @@ export default function EstimatorScreen({
           )}
         </div>
         <div className="status">
-          <span className={online ? 'dot online' : 'dot offline'} title={online ? 'Online' : 'Offline'} />
-          <span className="status-text">
-            {online ? 'Online' : 'Offline'}
-            {pending > 0 && ` · ${pending} to sync`}
-            {catalogFromCache && ' · cached catalog'}
-          </span>
+          {/* Three states (prompt 48): normal, quietly syncing, or BROKEN.
+              The red state replaces the counter that let failed saves read
+              as normal progress for a week; the age is what makes a rep
+              escalate ("6 days" reads very differently from "3 to sync"). */}
+          {stuckOps.length > 0 ? (
+            <button
+              type="button"
+              className="sync-broken"
+              onClick={() => { setSyncPanelOpen((o) => !o); setRetryState('idle'); setRetryOutcome(''); }}
+              aria-expanded={syncPanelOpen}
+            >
+              <span className="dot broken" />
+              {stuckOps.length === 1 ? '1 save not syncing' : `${stuckOps.length} saves not syncing`} · oldest {oldestStuckAge} ▾
+            </button>
+          ) : (
+            <>
+              <span className={online ? 'dot online' : 'dot offline'} title={online ? 'Online' : 'Offline'} />
+              <span className="status-text">
+                {online ? 'Online' : 'Offline'}
+                {pending > 0 && ` · ${pending} to sync`}
+                {catalogFromCache && ' · cached catalog'}
+              </span>
+            </>
+          )}
           {/* Inside the dashboard's iframe modal a Back/Dashboard control is
               redundant (and navigating INSIDE the iframe would strand the
               user); a Close button that messages the parent replaces it. The
@@ -1524,6 +1638,41 @@ export default function EstimatorScreen({
           )}
         </div>
       </header>
+
+      {syncPanelOpen && stuckOps.length > 0 && (
+        <div className="sync-panel" role="region" aria-label="Saves not syncing">
+          <div className="sync-panel-head">
+            <strong>Saved on this device, not yet uploaded</strong>
+            <p>
+              Your work is safe here and keeps retrying on its own. It has not reached the office yet.
+              If this stays red after Retry, tell Dylan and read him the message below.
+            </p>
+          </div>
+          <ul>
+            {stuckOps.map((op) => (
+              <li key={op.opId}>
+                <div className="sync-op-title">
+                  {opLabel(op)}
+                  <span className="sync-op-meta">
+                    {op.attempts} tries · stuck {fmtAge(Date.now() - opQueuedAtMs(op))}
+                  </span>
+                </div>
+                {/* The raw error verbatim: "Could not find the 'crew_notes'
+                    column" is exactly the string that solves the problem for
+                    whoever the rep reads it to. Never prettified. */}
+                {op.lastError && <code className="sync-op-error">{op.lastError}</code>}
+              </li>
+            ))}
+          </ul>
+          <div className="sync-panel-actions">
+            <button type="button" className="as-btn" onClick={retryNow} disabled={retryState === 'running' || !online}>
+              {retryState === 'running' ? 'Retrying…' : 'Retry now'}
+            </button>
+            {!online && <span className="sync-op-meta">You are offline. Retry becomes available once you are back online.</span>}
+            {retryState === 'done' && retryOutcome && <span className="sync-retry-outcome">{retryOutcome}</span>}
+          </div>
+        </div>
+      )}
 
       <main className="cols">
         <div className="left">

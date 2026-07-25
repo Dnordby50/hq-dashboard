@@ -1515,6 +1515,30 @@
           "name": "migration_drift_baseline"
         }
       ]
+    },
+    {
+      "file": "2026-07-25_sync_stuck_reports.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_sync_stuck_reports"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_sync_stuck_reports_open"
+        },
+        {
+          "kind": "setting",
+          "name": "sync_stuck_threshold_attempts"
+        },
+        {
+          "kind": "setting",
+          "name": "sync_stuck_escalation_enabled"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -1584,6 +1608,7 @@
     "pec_sms_senders",
     "pec_status_descriptions",
     "pec_stripe_pending",
+    "pec_sync_stuck_reports",
     "pec_user_todos",
     "pec_webhook_ingest_log",
     "pec_whats_new_acks",
