@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P3d: scheduled security monitor (new-location sign-in alerts)
+By: Claude Code
+
+Changed: Added the monitoring half of Phase 3 (audit + monitoring). audit_log was already made append-only in P3a; this adds proactive alerting.
+
+- New scheduled function netlify/functions/pec-security-monitor.cjs (netlify.toml: every 15 min). Each run scans the last ~20 min of sign_in_log and, for any staff sign-in from an IP that user has NEVER used before, posts an out-of-band Slack alert to SLACK_OFFICE_WEBHOOK ("X signed in from a new IP ..."). New-first-IP is the highest-signal account-takeover indicator derivable from data we already collect, and Slack is out-of-band so it lands even if the in-app bell is tampered with. Best-effort: never throws.
+- Gated by settings security_alerts_enabled (default true) + security_alerts_lookback_min (default 20, kept >= the 15m interval so nothing is missed), per standing rule 12. Applied migration 2026_07_25_security_alerts_settings (both keys, @artifacts setting lines).
+- features.json: added entries for "Two-factor authentication (2FA)" and "Security hardening & monitoring" (rule 9).
+
+Scheduled-only, no HTTP input, so no requireStaff gate needed; documented in the file that one must be added if it is ever made HTTP-triggerable.
+
+Why: approved security remediation plan, Phase 3 (audit + monitoring priority).
+Files touched: netlify/functions/pec-security-monitor.cjs (new), netlify.toml (schedule), supabase/migrations/2026-07-25_security_alerts_settings.sql (new), features.json, PROJECT-LOG.md.
+Note: signal is limited to successful sign-ins (failed-auth and read-access are not logged by Supabase without auth hooks / read auditing); a future enhancement could add those. Internal-only for the monitor itself; the 2FA What's New already covers the user-visible piece.
+
+---
+
 ## [2026-07-25 MST] Security remediation P3c: opt-in two-factor authentication (TOTP)
 By: Claude Code
 

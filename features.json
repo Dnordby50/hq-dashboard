@@ -1535,6 +1535,52 @@
         "settings"
       ],
       "since": "2026-07"
+    },
+    {
+      "name": "Two-factor authentication (2FA)",
+      "area": "auth",
+      "description": "Opt-in TOTP two-factor authentication for staff logins. A shield button in the topbar (next to logout, visible to every signed-in staff member) opens an enroll/manage modal: scan a QR into an authenticator app, verify a 6-digit code, and 2FA turns on; it can also be turned back off. Enrolled users are challenged for a code at sign-in (passwordSignIn -> pecMfaLoginChallenge); users without a factor pass straight through, so it is inert until someone opts in. Uses the Supabase GoTrue MFA API (no app tables). Enforcement for everyone (gating on AAL2) is a deliberate later step. Requires TOTP enabled in the Supabase Auth dashboard.",
+      "code": {
+        "indexHtml": [
+          "pecMfaSetup",
+          "pecMfaLoginChallenge",
+          "passwordSignIn",
+          "openModal"
+        ],
+        "other": []
+      },
+      "tables": [],
+      "spec": "security remediation plan (wild-meandering-dijkstra), Phase 3",
+      "since": "2026-07-25"
+    },
+    {
+      "name": "Security hardening & monitoring",
+      "area": "security",
+      "description": "Server-side authorization and monitoring from the 2026-07-25 security review. requireStaff() (in _pec-supabase.cjs) validates a caller's Supabase JWT AND confirms an admin_users row before any service-role endpoint acts (send-sms/email, blast-run, metrics-ai, estimate-*, lead-ai, drip-approve, appt-notify, sheets-proxy, sync-stuck, sop-chat, log-signin, notify-costing-sendback, migration-drift manual). safeEqual() gives constant-time secret compares. DB-side: log_* notification RPCs guard on is_admin_staff and anon EXECUTE revoked; RLS RBAC via has_permission() on commissions/costing/catalog; audit_log made append-only. pec-security-monitor.cjs (scheduled every 15m) Slacks an alert on a staff sign-in from a never-before-seen IP, gated by security_alerts_enabled.",
+      "code": {
+        "indexHtml": [
+          "sheetsAuthHeaders"
+        ],
+        "other": [
+          "netlify/functions/_pec-supabase.cjs",
+          "netlify/functions/sheets-proxy.cjs",
+          "netlify/functions/pec-security-monitor.cjs",
+          "supabase/migrations/2026-07-25_security_hardening_rpcs.sql",
+          "supabase/migrations/2026-07-25_rbac_helper_and_audit_appendonly.sql",
+          "supabase/migrations/2026-07-25_rbac_policy_enforcement.sql",
+          "supabase/migrations/2026-07-25_security_alerts_settings.sql"
+        ]
+      },
+      "tables": [
+        "sign_in_log",
+        "audit_log",
+        "admin_users",
+        "user_permissions",
+        "pec_commission_payouts",
+        "pec_prod_job_costing"
+      ],
+      "spec": "security remediation plan (wild-meandering-dijkstra), Phases 1-3",
+      "since": "2026-07-25"
     }
   ]
 }

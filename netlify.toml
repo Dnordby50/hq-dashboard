@@ -62,6 +62,14 @@
 [functions."pec-migration-drift"]
   schedule = "0 14 * * *"
 
+# Security monitor (security remediation Phase 3). Every 15 minutes: scans the
+# last ~20 min of sign_in_log and Slacks an alert when a staff member signs in
+# from an IP they have never used before (account-takeover signal). Gated by the
+# security_alerts_enabled setting; best-effort and never throws. Lookback (20m)
+# is kept >= the 15m interval so no sign-in is missed between runs.
+[functions."pec-security-monitor"]
+  schedule = "*/15 * * * *"
+
 # Google -> TopCoat appointment pull (prompt 37 Phase B). Every 15 minutes;
 # incremental syncToken polling per connected member (410 = drop token and
 # full-resync). No-op until GOOGLE_OAUTH_* env vars are set and a member
