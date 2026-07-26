@@ -5084,6 +5084,9 @@ if (document.readyState === 'loading') {
             <div class="rd-user-name" id="rdUserName">Owner</div>
             <div class="rd-user-sub" id="rdUserSub">Command Center</div>
           </div>
+          <button class="rd-icon-btn" id="rdBtnSecurity" title="Two-factor authentication" style="margin-left:6px" onclick="window.pecMfaSetup && window.pecMfaSetup()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+          </button>
           <button class="rd-icon-btn" id="rdBtnLogout" title="Logout" style="margin-left:6px">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
           </button>
@@ -6825,6 +6828,16 @@ async function passwordSignIn(email, password, errEl) {
   if (err) { err.textContent = ''; err.style.color = 'var(--danger)'; }
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) { if (err) err.textContent = error.message; return; }
+  // If this user has enrolled 2FA, require the code now. Opt-in: users without a
+  // factor pass straight through. A cancel/failure signs them back out.
+  const mfaOk = await pecMfaLoginChallenge();
+  if (!mfaOk) {
+    await supabase.auth.signOut();
+    state.session = null; state.adminUser = null;
+    try { renderGlobalAuthGate(); } catch (_) {}
+    if (err) err.textContent = 'Two-factor verification is required to sign in.';
+    return;
+  }
   // Fire-and-forget sign-in audit (IP + timestamp) via Netlify Function
   try {
     fetch('/.netlify/functions/pec-log-signin', {
@@ -6851,6 +6864,131 @@ async function signOut() {
   renderGlobalAuthGate();
 }
 window.pecAuthSignOut = signOut;
+
+// ============================================================
+// Two-factor authentication (TOTP) -- OPT-IN per staff member.
+// Reached from the topbar shield button (window.pecMfaSetup). Nothing REQUIRES
+// a factor yet; a staff member who enrolls will be challenged at sign-in (see
+// passwordSignIn -> pecMfaLoginChallenge). Enforcing 2FA for everyone is a later
+// step (it would gate renderAuthUI/renderGlobalAuthGate on AAL2). Requires TOTP
+// to be enabled in the Supabase Auth dashboard; until then enroll() errors and
+// the modal surfaces that message.
+// ============================================================
+async function pecMfaSetup() {
+  let factors;
+  try {
+    const { data, error } = await supabase.auth.mfa.listFactors();
+    if (error) throw error;
+    factors = data || {};
+  } catch (e) {
+    openModal(`<h3 style="margin-top:0">Two-factor authentication</h3><p style="color:var(--danger)">Could not load 2FA status: ${esc(e.message || String(e))}</p><div style="text-align:right"><button class="pec-btn" onclick="window.pecCloseModal()">Close</button></div>`);
+    return;
+  }
+  const verified = (factors.totp || []).find(f => f.status === 'verified');
+  if (verified) {
+    openModal(`
+      <h3 style="margin-top:0">Two-factor authentication</h3>
+      <p style="font-size:.9rem">2FA is <strong style="color:var(--success)">on</strong> for your account. You enter a code from your authenticator app each time you sign in.</p>
+      <div id="mfaMsg" style="min-height:18px;font-size:.8rem;color:var(--danger)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="pec-btn danger" id="mfaRemove">Turn off 2FA</button>
+        <button class="pec-btn" onclick="window.pecCloseModal()">Close</button>
+      </div>`, { onMount(root) {
+        root.querySelector('#mfaRemove').addEventListener('click', async () => {
+          const msg = root.querySelector('#mfaMsg'); msg.textContent = '';
+          const { error } = await supabase.auth.mfa.unenroll({ factorId: verified.id });
+          if (error) { msg.textContent = error.message; return; }
+          closeModal();
+        });
+      } });
+    return;
+  }
+  // Not enrolled: clear any half-finished factors, then start enrollment.
+  let enroll;
+  try {
+    for (const f of (factors.totp || [])) { if (f.status !== 'verified') { try { await supabase.auth.mfa.unenroll({ factorId: f.id }); } catch (_) {} } }
+    const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp' });
+    if (error) throw error;
+    enroll = data;
+  } catch (e) {
+    openModal(`<h3 style="margin-top:0">Set up 2FA</h3><p style="color:var(--danger)">Could not start setup: ${esc(e.message || String(e))}</p><p style="font-size:.78rem;color:var(--muted)">If this says 2FA is not enabled, an admin needs to turn on TOTP in the Supabase Auth settings first.</p><div style="text-align:right"><button class="pec-btn" onclick="window.pecCloseModal()">Close</button></div>`);
+    return;
+  }
+  const qr = enroll.totp && enroll.totp.qr_code;
+  const secret = enroll.totp && enroll.totp.secret;
+  openModal(`
+    <h3 style="margin-top:0">Set up 2FA</h3>
+    <p style="font-size:.85rem">Scan this with an authenticator app (Google Authenticator, Authy, 1Password), then enter the 6-digit code to turn on two-factor sign-in.</p>
+    <div style="text-align:center;margin:10px 0">${qr ? `<img src="${esc(qr)}" alt="2FA QR code" style="width:180px;height:180px">` : ''}</div>
+    <div style="font-size:.72rem;color:var(--muted);text-align:center;margin-bottom:10px">Can't scan? Enter this key by hand: <code>${esc(secret || '')}</code></div>
+    <input id="mfaCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="width:100%;text-align:center;font-size:1.2rem;letter-spacing:4px;padding:10px">
+    <div id="mfaMsg" style="min-height:18px;font-size:.8rem;color:var(--danger);margin-top:6px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button class="pec-btn ghost" id="mfaCancel">Cancel</button>
+      <button class="pec-btn primary" id="mfaVerify">Turn on 2FA</button>
+    </div>`, { onMount(root) {
+      const msg = root.querySelector('#mfaMsg');
+      root.querySelector('#mfaCancel').addEventListener('click', async () => {
+        try { await supabase.auth.mfa.unenroll({ factorId: enroll.id }); } catch (_) {}
+        closeModal();
+      });
+      root.querySelector('#mfaVerify').addEventListener('click', async () => {
+        const code = (root.querySelector('#mfaCode').value || '').trim();
+        msg.textContent = ''; msg.style.color = 'var(--danger)';
+        if (!/^\d{6}$/.test(code)) { msg.textContent = 'Enter the 6-digit code.'; return; }
+        const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: enroll.id, code });
+        if (error) { msg.textContent = error.message; return; }
+        msg.style.color = 'var(--success)'; msg.textContent = '2FA is now on.';
+        setTimeout(closeModal, 900);
+      });
+    } });
+}
+window.pecMfaSetup = pecMfaSetup;
+
+// Called right after a successful password sign-in. If the user has a verified
+// TOTP factor, block until they enter a valid code. Returns true when satisfied
+// (no factor enrolled, already AAL2, or verified), false if they cancel/fail so
+// the caller signs them back out. Fails OPEN on an API error so a Supabase hiccup
+// never locks a staff member out during the opt-in stage.
+async function pecMfaLoginChallenge() {
+  let aal;
+  try {
+    const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    if (error) return true;
+    aal = data;
+  } catch (_) { return true; }
+  if (!aal || aal.nextLevel !== 'aal2' || aal.currentLevel === 'aal2') return true;
+  let factorId = null;
+  try {
+    const { data } = await supabase.auth.mfa.listFactors();
+    const f = ((data && data.totp) || []).find(x => x.status === 'verified');
+    factorId = f && f.id;
+  } catch (_) {}
+  if (!factorId) return true;
+  return new Promise((resolve) => {
+    openModal(`
+      <h3 style="margin-top:0">Two-factor authentication</h3>
+      <p style="font-size:.85rem">Enter the 6-digit code from your authenticator app.</p>
+      <input id="mfaChalCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" style="width:100%;text-align:center;font-size:1.2rem;letter-spacing:4px;padding:10px">
+      <div id="mfaChalMsg" style="min-height:18px;font-size:.8rem;color:var(--danger);margin-top:6px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button class="pec-btn ghost" id="mfaChalCancel">Cancel</button>
+        <button class="pec-btn primary" id="mfaChalVerify">Verify</button>
+      </div>`, { onMount(root) {
+        const msg = root.querySelector('#mfaChalMsg');
+        const finish = (ok) => { closeModal(); resolve(ok); };
+        root.querySelector('#mfaChalCancel').addEventListener('click', () => finish(false));
+        root.querySelector('#mfaChalVerify').addEventListener('click', async () => {
+          const code = (root.querySelector('#mfaChalCode').value || '').trim();
+          msg.textContent = '';
+          if (!/^\d{6}$/.test(code)) { msg.textContent = 'Enter the 6-digit code.'; return; }
+          const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
+          if (error) { msg.textContent = error.message; return; }
+          finish(true);
+        });
+      } });
+  });
+}
 
 function renderAuthUI() {
   // Boot diagnostics for the blank-CRM bug. Cowork's 2026-05-24 diagnosis

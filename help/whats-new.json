@@ -1,5 +1,16 @@
 [
   {
+    "id": "two-factor-authentication",
+    "date": "2026-07-25",
+    "title": "Turn on two-factor sign-in for your account",
+    "summary": "You can now add a second step to your login for extra security. There is a new shield button at the top right, next to the logout button. Tap it, scan the code with an authenticator app on your phone (Google Authenticator, Authy, or 1Password), and enter the 6-digit code to turn it on. After that, each time you sign in you will enter a fresh code from the app. This is optional for now, but recommended. You can turn it back off from the same shield button.",
+    "howto": [
+      "Tap the shield button at the top right of the screen.",
+      "Scan the square code with an authenticator app on your phone, then type the 6-digit code it shows and tap Turn on 2FA.",
+      "Next time you sign in, enter the current 6-digit code from that app when asked."
+    ]
+  },
+  {
     "id": "estimator-stuck-sync-red-banner",
     "date": "2026-07-25",
     "title": "The estimator now tells you clearly when a save is not uploading",

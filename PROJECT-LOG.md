@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P3c: opt-in two-factor authentication (TOTP)
+By: Claude Code
+
+Changed: Added opt-in 2FA for staff logins (Dylan chose "build opt-in enrollment now, enforce later"). No one is required to enroll; a staff member who does will be challenged for a TOTP code at sign-in.
+
+- New shield button in the topbar user area (#rdBtnSecurity, next to logout) -> window.pecMfaSetup(). Visible to ALL signed-in staff (not just admins), because 2FA enrollment is per-user. It enrolls a TOTP factor (supabase.auth.mfa.enroll), shows the QR + manual key, verifies the 6-digit code (challengeAndVerify), and lets an enrolled user turn 2FA back off (unenroll).
+- passwordSignIn now calls pecMfaLoginChallenge() right after a successful password sign-in: if the user has a verified TOTP factor (getAuthenticatorAssuranceLevel nextLevel=aal2 > current), it blocks with a code prompt; cancel/failure signs them back out. It FAILS OPEN on an API error so a Supabase hiccup never locks anyone out during the opt-in stage. Users with no factor pass straight through, so this is inert for all six current users on deploy.
+- What's New entry added (two-factor-authentication), no em dashes.
+
+HOW IT WORKS: uses the standard Supabase GoTrue MFA API (mfa.enroll/listFactors/challengeAndVerify/unenroll), no new tables. All UI via the existing openModal/closeModal + esc() helpers.
+
+NOT done (by design): enforcement for everyone. That later step would gate renderAuthUI/renderGlobalAuthGate on AAL2 once all staff have enrolled, and is a deliberate follow-up.
+
+REQUIRED HANDOFF TO DYLAN: enable TOTP MFA in the Supabase Auth dashboard (Authentication > settings, enable TOTP/MFA). Until that toggle is on, enroll() returns an error and the setup modal shows it. Everything else is already live.
+
+Why: approved security remediation plan, Phase 3 (MFA), opt-in option chosen by Dylan.
+Files touched: index.html (topbar shield button, pecMfaSetup + pecMfaLoginChallenge, passwordSignIn hook), help/whats-new.json, PROJECT-LOG.md.
+
+---
+
 ## [2026-07-25 MST] Security remediation P3b: DB-enforced RBAC on sensitive tables (applied to PROD)
 By: Claude Code
 
