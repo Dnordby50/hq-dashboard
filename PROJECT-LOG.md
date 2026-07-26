@@ -4,6 +4,72 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-26 MST] Cowork: rewrote the never-run prompt 34 as prompt 50 (metrics + costing + bonus), correcting three factual errors the original shipped with
+By: Cowork
+
+Changed: No repo code. Wrote claude-code-prompt-50-metrics-costing-bonus.md to the repo root. This REPLACES claude-code-prompt-34-metrics-costing-bonus.md, which was scoped 2026-07-19 and never run (confirmed unshipped again today: all anchors still present, none of its three migrations in prod, state.metricsWindow still '4w' with the old [4w,12w,ytd] control at index.html:12334). Renumbered to 50, NOT 49: "prompt 34" already means the shipped lead-drip-engine Phase 2 in git history and this log, and while this rewrite was being written Claude Code independently created claude-code-prompt-49-followup-queue.md (21:50, vs 22:29 for this file) for Dylan's leads follow-up-queue ask. Caught the collision before delivery and renamed. THIS IS THE THIRD PROMPT-NUMBER COLLISION IN THREE DAYS (prompt 34 twice, prompt 44 shadowing the card-first spec, now 49); the numbering scheme has no allocation step, so any two authors working the same evening collide. Worth a real fix: allocate the number by checking BOTH the repo root and git log immediately before naming a file, or drop sequential numbers for date-slugs. Prompt 50 tells Claude Code to delete the old prompt-34 file in commit 5 so both do not sit in the root.
+
+Asked FOUR questions, not the usual ten-plus. Most of prompt 34's decisions were already locked and re-verified against live code, and the project instruction forbids padding the count with questions the code or log already answers. DYLAN'S ANSWERS: (1) Part B AI insights = MANUAL "Generate insights" button (this was prompt 34's one flagged unconfirmed default, now closed). (2) Part A default window = MTD as originally scoped, despite him having used 4w for a week. (3) Scope = all five parts, one prompt, five commits. (4) Part E clawback = he has NOT identified the wood job; build the generic reversal tool and reverse NOTHING.
+
+THREE CORRECTIONS baked into prompt 50, each one a factual error in prompt 34 that would have produced broken or silently-inert code:
+
+CORRECTION 1 (the serious one): prompt 34 asserted "pec_prod_jobs already has completed_at (the real lock anchor)" for the 2-week bonus lock. The column exists but NOTHING POPULATES IT: completed_at is NULL on all 87 pec_prod_jobs rows. Completion actually lives on public.jobs (93 rows, status='completed' on 53, completed_date not null on 49), stamped by markJobComplete under the 2026-07-21 manual-completion-as-source-of-truth model from prompt 40. Built on the original anchor, the lock would have evaluated every bonus against NULL, i.e. either locked everything forever or unlocked everything forever depending on null handling, and the failure would have looked like a payroll bug rather than a wrong column. Prompt 50 re-anchors on public.jobs.completed_date via the existing dripjobs_deal_id-then-name+address bridge, and specifies explicit behavior for the 8 rows that are status='completed' with completed_date NULL (locked + labeled "Completion date missing" + a set-date affordance + a count surfaced on the report, so they get cleaned up instead of hidden).
+
+CORRECTION 2: prompt 34 told Claude Code to grep which of callback vs is_callback is authoritative. Answered here instead of punting a guess into the build: across 87 rows, callback is true on 0, is_callback is true on 2, and original_job_id is set on exactly those same 2. is_callback + original_job_id is the live model; callback is vestigial (flagged as dead, not removed, out of scope).
+
+CORRECTION 3: prompt 34 predates yesterday's security batch (commit 122b426), which put DB-enforced RBAC RLS on all three tables Parts C/D/E write to. Live expressions captured in the prompt: pec_prod_job_costing read/ins/upd/del all require is_admin_staff() AND has_permission('can_view_job_costing'); pec_bonus_payouts bp_write requires is_admin_role() with NO permission-flag escape hatch. Consequences the prompt now designs around: Part C's whole purpose is "so Anne can see and change them" and Anne is role admin so she passes (has_permission short-circuits on is_admin_role), but the non-admin office path must be VERIFIED not assumed, especially given the supabase-js gotcha where a failed write returns without throwing; and Part E's reversal tool is admin-only by database policy, so the UI must hide or disable the control for non-admins rather than let them click into an RLS failure. The prompt explicitly forbids widening any of those policies to make the feature easier.
+
+Also refreshed every anchor (prompt 33's Chart.js redesign moved all of Metrics): renderMetrics 11599, openMetricsDrill 12565, winOpts 12334, select listener 12499, state.metricsWindow 6718, invBuildWeeks 8946 consumed at 11743, renderJobCosting 28499, loadCostingData 26210, computeCostingRow 26465, openCostingDetail 26859, saveCostingField 26773, renderUnifiedJob 27182, jobEffectiveSqft 8913, canFinalizeCosting 5878, renderBonusReport 15729, openBonusHandouts 16086, buildBonusHandoutMemberPage 16031, saveBonusField 27115, computeCrewBonus 26584, renderCrewBonus 26636. Verified pec-metrics-ai.cjs ALREADY has requireStaff, a cache-first path with CACHE_TTL_DAYS and a force flag, and returns { text, generated_at, model }, so prompt 50 says extend it (and key the cache by window + salesperson) rather than build the sibling endpoint prompt 34 allowed.
+
+Payout inventory captured in the prompt for Dylan's wood-job hunt: 16 payouts, all paid_on 2026-07-15 / payroll_date 2026-07-17, across 7 jobs. Mike Long $413.58, Jon Loyd $402.12 (MANUAL), Michelle Herod $398.80, Cory Poole $334.46, Jeff Walker $202.75, Brandon Campos $192.08 (MANUAL), Brian Wirick $149.34 (MANUAL).
+
+Settings the prompt specifies (rule 12): bonus_lock_days (14), metrics_default_window (mtd), metrics_ai_cache_days (from the endpoint's current hardcoded TTL).
+
+Why: prompt 34 had sat unrun since 2026-07-19, surfaced by the 2026-07-25 audit; Dylan asked to run it, which required a rewrite first because the spec had drifted out of correctness.
+Files touched: claude-code-prompt-49-metrics-costing-bonus.md (new, repo root), PROJECT-LOG.md (this entry).
+Next steps: Dylan hands prompt 50 to Claude Code (note: 49 is the separate follow-up-queue build). After it ships, Cowork applies the three migrations, regenerates SCHEMA.md, and verifies the non-admin office-notes write plus the admin-only reverse control.
+Handoff to Dylan: git add claude-code-prompt-50-metrics-costing-bonus.md PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). Also still open: the ZZ Test Draft lead (925f7345-7f98-412b-9b75-99a617a55378) and EST-102034 need deleting, which Cowork cannot do.
+
+---
+
+## [2026-07-26 MST] Cowork: scoped prompt 49 (leads follow-up queue, human-touch tracking, AI priority ranking)
+By: Cowork
+
+Changed: No code, no migrations. Discovery + spec pass. Dylan asked for a way to track who needs to be contacted, a better count of how many times he has contacted them, and an AI suggestion of which leads are hottest to follow up on. Wrote the build spec to claude-code-prompt-49-followup-queue.md at the repo root.
+
+FINDING WORTH RECORDING: two thirds of the ask already ships. leadContactStats/loadOutboundTouchLogs (index.html ~20369) already derive a lifetime Contacted Nx per lead, and leadScoreBadge/leadScoreBand (~20261) already render Hot/Warm/Cold off leads.score at 70/40. The real gap is the word "needs": nothing computes overdue-for-a-HUMAN-touch. leads.score is an intake snapshot that never moves, the contact count has no decay clock, and every count is derived read-only from Quo plus the drip ledger, so a call from Dylan's personal cell or an in-person conversation is invisible and makes a worked lead look neglected. Scoped as a follow-up QUEUE with recency-aware ranking, not another badge.
+
+DECISIONS LOCKED (12 multiple-choice questions, Dylan answered all): rules are the floor and AI reorders within them (queue coverage never depends on the AI); new top-level Follow-ups view in the Leads nav group; manual "Log a touch" action (new pec_lead_touches table) that resets the overdue clock; drips do NOT count toward that clock but the existing lifetime chip keeps counting them unchanged; AI ranks on intent + value + decay; nightly rank run at 06:15 MST plus a manual re-rank button; full working rows (why-now, opener, one-tap Call/Text/Log/Open); one shared queue, no per-owner default; scope is open leads AND sent-undecided estimates, de-duped so a lead and its estimate never both appear; in-app nav badge plus a daily Slack digest on SLACK_OFFICE_WEBHOOK, no bell rows and no email digest; cold tail ages into a collapsed section after a configurable number of days; ships as one build, not blocked by prompt 34.
+
+SPEC SHAPE: two new tables (pec_lead_touches, pec_followup_ranks), 11 new settings keys behind a new Settings > Follow-ups panel (standing rule 12), a pure production/followup-rules.cjs required by the new scheduled function with a mirrored copy in index.html (same precedent as pecInstallmentAsk mirroring _pec-installments.cjs), netlify/functions/pec-followup-rank.cjs on a 15 13 * * * schedule, and production/followup.test.cjs. The rank function batches ~25 subjects per Claude call rather than one call per lead (deliberate cost decision) and falls back to a deterministic formula so the queue is never empty when the AI fails. Snooze is written up as an optional Part F for Dylan to keep or delete; without it a "call me in October" lead stays permanently overdue.
+
+Why: Dylan's request, 2026-07-26.
+Files touched: claude-code-prompt-49-followup-queue.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan pastes prompt 49 into Claude Code (decide Part F snooze first). Still open from prior days: prompt 34 (metrics/costing/bonus) has never run and needs Dylan's two answers; the ZZ Test Draft lead (925f7345-7f98-412b-9b75-99a617a55378) and EST-102034 still need deleting.
+Handoff to Dylan: git add the two files and commit (the Cowork cloud sandbox cannot git commit).
+
+---
+
+## [2026-07-26 MST] Cowork: verified the drift checker reads CLEAN after the superseded-by fix (49/38/0/0/11), and confirmed the new auth gate does not break the scheduled run
+By: Cowork
+
+Changed: No repo code, no migrations. Verification pass only, requested as "run handoff". Two of the three things that handoff would have covered turned out to be already done, so this entry records what was actually verified instead of repeating work.
+
+1. THE SUPERSEDED-BY FIX ALREADY SHIPPED. Cowork's 2026-07-25 entry recommended a `(superseded-by: <file>)` notation for the drift checker's false positive on 2026-07-19_drip_engine.sql. Claude Code shipped it as commit b70e755 ("diagnostics: superseded-by notation so an intentionally dropped artifact is not drift"). Verified in three places: the header line in 2026-07-19_drip_engine.sql now reads `--   index: idx_pec_drip_enroll_one_active (superseded-by: 2026-07-19_drip_phase3.sql)`; the build-time manifest (netlify/functions/_migration-manifest.json) carries `"supersededBy": "2026-07-19_drip_phase3.sql"` on that artifact; and pec-migration-drift.cjs implements the guarded rule Cowork asked for, treating a superseded artifact as satisfied when absent ONLY IF the superseding migration's own artifacts are all raw-present, so the case where the superseding migration never ran is still caught. No Cowork prompt was needed.
+
+2. DRIFT CHECKER RE-RUN, CLEAN. Run from Settings > Diagnostics > Schema Drift ("Run check now") as Dylan (admin), on the live deploy:
+   Checked (since 2026-07-01) 49 | Applied 38 | Missing 0 | Partial 0 | Not verifiable 11 | checked at Jul 26 2026 2:42 PM
+   Panel renders green with "Every checked migration is fully applied to prod." The one false-positive partial from yesterday is gone. Counts moved from yesterday's 45/36/0/1/8 because the security-remediation batch (commits b54650a through 0ae6082) added four more migrations, all applied: rbac_helper_and_audit_appendonly, rbac_policy_enforcement, security_alerts_settings, security_hardening_rpcs. Spot-checked prod directly: public.has_permission() exists, settings security_alerts_enabled and security_alerts_lookback_min exist. Three of those four declare `none:` headers (function/policy/grant-only) so they land in Not verifiable by design, which is why that bucket went 8 -> 11.
+
+3. THE PASTED HANDOFF'S TASK-4 COMMAND IS NOW OBSOLETE, and this is worth recording so a future handoff does not repeat it. `curl '.../pec-migration-drift?manual=1&notify=0'` now returns HTTP 401 {"ok":false,"error":"Not authenticated"}. That is CORRECT, not a regression: the security pass closed the old ?manual=1 path that let any unauthenticated caller trigger a run, read live schema details, and fire notifications. VERIFIED the scheduled run is not collateral damage: pec-migration-drift.cjs detects Netlify's scheduled invocation by its `{ next_run }` body and skips the staff-JWT requirement for that path only, so the 07:00 MST daily tick still runs. The on-demand check must now go through the Diagnostics panel as a signed-in staff user (or a request carrying a staff JWT). Future Cowork handoffs should say "run it from Settings > Diagnostics > Schema Drift", not "curl it".
+
+Why: Dylan asked to run the outstanding handoff. Verification found the code half already shipped.
+Files touched: PROJECT-LOG.md (this entry) only. Nothing else to commit from this pass.
+Next steps: none for the drift checker; it is green and self-monitoring. Still genuinely open (carried forward, third day): prompt 34 (metrics/costing/bonus) has never run and needs Dylan's two answers (prompt-33 re-anchor confirmation, and the AI-insights manual-vs-auto trigger); the ZZ Test Draft lead (925f7345-7f98-412b-9b75-99a617a55378) and EST-102034 still need deleting, which Cowork cannot do.
+Handoff to Dylan: git add PROJECT-LOG.md && git commit (the Cowork cloud sandbox cannot git commit). Nothing else is blocked.
+
+---
+
 ## [2026-07-25 MST] Security remediation P3d: scheduled security monitor (new-location sign-in alerts)
 By: Claude Code
 
