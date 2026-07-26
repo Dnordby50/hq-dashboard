@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P3a: RBAC helper + audit_log append-only (applied to PROD)
+By: Claude Code
+
+Changed: Applied migration 2026_07_25_rbac_helper_and_audit_appendonly to PROD. Two safe Phase-3 foundations.
+
+1. Added public.has_permission(p_perm text) -> boolean (SECURITY DEFINER, search_path pinned, executable by authenticated + anon so it can be used inside RLS policies, mirroring is_admin_staff). It returns true if the current user is role='admin' (admins implicitly hold every permission, matching the client PERMS_ALL_TRUE) OR their user_permissions row has the named flag; false for anon/unknown. Nothing references it yet -- it is the groundwork for moving role enforcement from client JS into the database.
+
+2. audit_log is now explicitly append-only: revoked UPDATE/DELETE from anon + authenticated. It was already effectively append-only (its only RLS policies are SELECT + INSERT, so UPDATE/DELETE were already denied), so this is defense-in-depth at the privilege layer. Verified: auth UPDATE/DELETE=false, INSERT=true. service_role (server) unaffected.
+
+CONTEXT for the RBAC decision: pulled the live permission data first. All 6 staff currently have every user_permissions flag = true (roles are 3 admin / 1 office / 2 pm, but permissions are uniformly granted; only anne lacks can_finalize_costing). So enforcing RBAC in RLS would NOT lock out any current user -- it would only make the DB honor a FUTURE restriction that today lives only in client JS.
+
+NOT done in this migration (deliberate): the broad RLS policy rewrite (swapping is_admin_staff() for has_permission('...') on payments/commissions/settings/catalog). It touches many live policies and needs per-table verification that no direct staff write path breaks. Foundation is now in place; activation is a separate, verified change (see next steps / handoff).
+
+Why: from the approved security remediation plan (Phase 3, chosen priorities RBAC + audit).
+Files touched: supabase/migrations/2026-07-25_rbac_helper_and_audit_appendonly.sql (new), PROJECT-LOG.md.
+Next steps: decide rollout for the two lockout-risky Phase-3 activations (MFA login-flow UI + enforcement; RBAC policy flip) with Dylan before deploying to the live 6-user system. Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P2b: backend hardening (M9/M10/L13/L15)
 By: Claude Code
 
