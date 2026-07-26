@@ -22,7 +22,7 @@
 // screen). Idempotent: read-only apart from de-duped pec_notifications
 // inserts, so repeated runs while a migration stays pending add nothing.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, requireStaff } = require('./_pec-supabase.cjs');
 const manifest = require('./_migration-manifest.json');
 
 const PROBE_MIGRATION = '2026-07-25_migration_drift_probe.sql';
@@ -48,6 +48,18 @@ async function notifyDeduped({ type, subject, body, priority }) {
 
 exports.handler = async (event) => {
   try {
+    // Netlify delivers a scheduled run with a { next_run } body and no HTTP
+    // caller. Any OTHER invocation is a real HTTP call (the Diagnostics panel
+    // or an attacker), so it must present a staff JWT. This closes the old
+    // ?manual=1 path that let anyone bypass the enabled-gate, trigger a run,
+    // read live schema/drift details, and fire notifications with no auth.
+    let isScheduled = false;
+    try { isScheduled = !!JSON.parse(event.body || '{}').next_run; } catch (_) { isScheduled = false; }
+    if (!isScheduled) {
+      const auth = await requireStaff(event);
+      if (!auth.ok) return json(auth.status, { ok: false, error: auth.error });
+    }
+
     const qs = (event && event.queryStringParameters) || {};
     const manual = qs.manual === '1';
     const notify = qs.notify !== '0';

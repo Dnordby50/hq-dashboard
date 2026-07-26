@@ -16,7 +16,7 @@
 // lands, the insert fails and this returns ok:false -- the estimator treats
 // the report as best-effort, so nothing user-facing breaks.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, requireStaff } = require('./_pec-supabase.cjs');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuidOrNull = (v) => (typeof v === 'string' && UUID_RE.test(v) ? v : null);
@@ -24,6 +24,11 @@ const MAX_OPS = 25;
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return json(405, { ok: false, error: 'POST only' });
+  // Staff-only: this writes to pec_notifications with a caller-influenced body.
+  // Unauthenticated it was a spoofing / notification-spam vector. The estimator
+  // sends the rep's staff JWT.
+  const auth = await requireStaff(event);
+  if (!auth.ok) return json(auth.status, { ok: false, error: auth.error });
   try {
     let body;
     try {

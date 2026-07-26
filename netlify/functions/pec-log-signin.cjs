@@ -1,9 +1,14 @@
 // Log a staff sign-in event (IP + timestamp).
-// Called by the browser immediately after supabase.auth.signInWithPassword() succeeds.
-// No secret needed — the only data collected is the caller's own sign-in event;
-// the service-role key stays server-side.
+// Called by the browser immediately after supabase.auth.signInWithPassword() succeeds,
+// passing the freshly-minted session token as a Bearer header.
+//
+// SECURITY: the identity is taken from the VERIFIED token (requireStaff), never
+// from the request body. Previously auth_user_id/email came from the body with
+// no auth at all, so anyone could POST forged sign-in rows for any email/IP and
+// pollute the audit trail. Now an anonymous or non-staff caller is rejected and
+// a caller can only log a sign-in as themselves.
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, requireStaff } = require('./_pec-supabase.cjs');
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -11,12 +16,10 @@ exports.handler = async (event) => {
   }
   if (event.httpMethod !== 'POST') return json(405, { error: 'Method not allowed' });
 
-  let body;
-  try { body = JSON.parse(event.body || '{}'); }
-  catch { return json(400, { error: 'Invalid JSON' }); }
-
-  const { auth_user_id, email } = body;
-  if (!auth_user_id && !email) return json(400, { error: 'auth_user_id or email required' });
+  const auth = await requireStaff(event);
+  if (!auth.ok) return json(auth.status, { error: auth.error });
+  const auth_user_id = auth.user.id;
+  const email = auth.staff.email || auth.user.email || null;
 
   const ip = event.headers['x-nf-client-connection-ip']
           || (event.headers['x-forwarded-for'] || '').split(',')[0].trim()

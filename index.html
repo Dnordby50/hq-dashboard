@@ -3696,7 +3696,7 @@ async function sendSOPChat(view) {
   try {
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
       body: JSON.stringify({
         system: sopSystemPrompt,
         messages: sopChatHistory,
@@ -4087,7 +4087,7 @@ async function sendCoach() {
   try {
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
       body: JSON.stringify({
         system: COACH_SYSTEM,
         messages: coachHistory,
@@ -6829,8 +6829,8 @@ async function passwordSignIn(email, password, errEl) {
   try {
     fetch('/.netlify/functions/pec-log-signin', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ auth_user_id: data.user.id, email: data.user.email }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${data.session?.access_token || ''}` },
+      body: '{}',
     }).catch(() => {});
   } catch (_) {}
 }
@@ -28150,7 +28150,7 @@ async function renderUnifiedJob(jobId) {
           if (r && r.error) await supabase.rpc('log_costing_sent_back', { p_customer: job.customer_name || '', p_note: note });
         } catch (_) { /* RPC may not be live yet */ }
         // 4) Slack #epoxysales (best-effort; a Slack failure never blocks send-back).
-        try { await fetch('/.netlify/functions/pec-notify-costing-sendback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer: job.customer_name || '', sentBackBy: by, note }) }); } catch (_) { /* best-effort */ }
+        try { await fetch('/.netlify/functions/pec-notify-costing-sendback', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` }, body: JSON.stringify({ customer: job.customer_name || '', sentBackBy: by, note }) }); } catch (_) { /* best-effort */ }
         // 5) Close the dialog and re-render the job.
         closeModal();
         renderUnifiedJob(jobId);
@@ -28880,7 +28880,9 @@ async function renderSchemaDrift() {
 
   let data = null, fetchErr = null;
   try {
-    const res = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0');
+    const res = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0', {
+      headers: { Authorization: `Bearer ${state.session?.access_token || ''}` },
+    });
     data = await res.json();
   } catch (err) {
     fetchErr = err && err.message ? err.message : String(err);
@@ -32673,7 +32675,7 @@ ${doc || '(The CRM help doc could not be loaded. Answer from general CRM knowled
       const system = await buildSystemPrompt();
       const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
         method:'POST',
-        headers:{ 'Content-Type':'application/json' },
+        headers:{ 'Content-Type':'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
         body: JSON.stringify({ system, messages: history, model: CONFIG.COACH_MODEL, max_tokens: 1024 })
       });
       typing.remove();

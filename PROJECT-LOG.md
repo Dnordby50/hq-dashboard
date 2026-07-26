@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P1b: gated five unauthenticated side-effect endpoints
+By: Claude Code
+
+Changed: Closed the remaining public write/relay endpoints from the audit (H3/H4/M7). Each now requires a logged-in staff JWT; the browser and estimator callers were updated to send the session token.
+
+- pec-sync-stuck.cjs (H3): wrote to pec_notifications with a caller-influenced body while fully unauthenticated (spoofing / notification-spam, possible stored-XSS lure). Now requireStaff. Estimator caller (apps/estimator/src/.../EstimatorScreen.tsx) sends the rep's token; still best-effort.
+- sop-chat.js -> sop-chat.cjs (H4): was an OPEN relay to the Anthropic API on our key (anyone could run prompts on our bill, any model/size). Now requireStaff + max_tokens clamped to 4096. Renamed to .cjs so it is unambiguously CommonJS under package type:module (it was the only .js function) and can require the shared helper. Endpoint URL unchanged. Three index.html callers send the token.
+- pec-log-signin.cjs (M7): took auth_user_id/email from the request BODY with no auth, so anyone could forge sign-in audit rows for any email/IP. Now requireStaff and the identity is taken from the VERIFIED token, not the body. Sign-in caller sends the fresh session token.
+- pec-notify-costing-sendback.cjs (M7): open Slack-injection endpoint (posted caller text to #epoxysales). Now requireStaff. Send-back caller sends the token.
+- pec-migration-drift.cjs (M5/M7): ?manual=1 bypassed the enabled-gate with no auth and returned live schema/drift detail + could notify. Now any NON-scheduled invocation (detected by the absence of Netlify's { next_run } body) requires a staff JWT; the daily 14:00 UTC schedule is unaffected. Diagnostics caller sends the token.
+
+HOW IT WORKS: all reuse the requireStaff helper added in P1a. Callers pull the token from state.session.access_token (dashboard) / supabase.auth.getSession() (estimator). Estimator source rebuilt into /estimator (new bundle index-CSzuJV1_.js); tsc --noEmit clean.
+
+Why: from the approved security remediation plan; these were the clear "should never have been open" endpoints.
+Files touched: netlify/functions/{pec-sync-stuck,pec-log-signin,pec-notify-costing-sendback,pec-migration-drift}.cjs, sop-chat.cjs (new, replaces sop-chat.js), index.html (5 caller call-sites), apps/estimator/src/features/estimator/EstimatorScreen.tsx, estimator/ (rebuilt), PROJECT-LOG.md.
+Next steps: P1 header block in netlify.toml, then P2 DB migration. Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P1a: serverless authorization (requireStaff) + closed the open Sheets proxy
 By: Claude Code
 

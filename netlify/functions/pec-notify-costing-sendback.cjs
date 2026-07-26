@@ -12,6 +12,8 @@
 // failure must NEVER surface as a send-back failure, so this ALWAYS returns 200.
 // The caller does not read the body; it only needs the request not to throw.
 
+const { requireStaff } = require('./_pec-supabase.cjs');
+
 const SLACK_OFFICE_WEBHOOK = process.env.SLACK_OFFICE_WEBHOOK;
 
 function cors() {
@@ -30,6 +32,11 @@ exports.handler = async (event) => {
   // Always 200, even on a bad method or bad JSON: a notifier must not report a
   // failure that would make the caller think the send-back itself failed.
   if (event.httpMethod !== 'POST') return jc(200, { ok: true, slacked: false, reason: 'method' });
+
+  // Staff-only: this posts caller-supplied text into the #epoxysales Slack
+  // channel. Unauthenticated it was an open Slack-injection endpoint.
+  const auth = await requireStaff(event);
+  if (!auth.ok) return jc(auth.status, { ok: false, error: auth.error });
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (_) { return jc(200, { ok: true, slacked: false, reason: 'bad-json' }); }

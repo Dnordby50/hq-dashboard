@@ -888,11 +888,21 @@ export default function EstimatorScreen({
             ? String((op.row as Record<string, unknown>).estimate_id) : null,
       })),
     };
-    fetch('/.netlify/functions/pec-sync-stuck', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).catch(() => { /* best-effort */ });
+    // Send the current staff session token: pec-sync-stuck is staff-gated
+    // server-side (it used to be an open endpoint anyone could post fake stuck
+    // reports / notifications to). Best-effort, so a missing session just skips.
+    void (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) return;
+        await fetch('/.netlify/functions/pec-sync-stuck', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload),
+        });
+      } catch { /* best-effort */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stuckCount, online]);
 
