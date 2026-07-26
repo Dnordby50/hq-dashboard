@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P3b: DB-enforced RBAC on sensitive tables (applied to PROD)
+By: Claude Code
+
+Changed: Applied migration 2026_07_25_rbac_policy_enforcement. Moved role/permission enforcement from client JS into RLS using has_permission(), so a staff JWT can no longer read/write restricted data directly via supabase-js even if the UI hides it. Dylan chose the full rewrite (vs read-only) after the lockout analysis.
+
+Principle: TIGHTEN ONLY, never loosen; and since has_permission() returns true for admins and all 6 staff currently have every flag = true, NO current user loses access (verified: staff_missing_any_gated_perm = 0). It only makes the DB honor a FUTURE restriction.
+
+- pec_commission_payouts / pec_bonus_payouts: SELECT now requires can_view_commission (was plain is_admin_staff). Writes unchanged (still is_admin_role).
+- pec_prod_job_costing: split the single ALL policy into read/insert/update/delete, all gated on can_view_job_costing.
+- Catalog (pec_prod_products, _system_types, _recipe_slots, _color_pairings, _addons): reads stay staff-level (everyone builds estimates from the catalog), writes gated on can_edit_catalog. colors keeps its public SELECT; its writes gated on can_edit_catalog.
+- Verified final policy shape per table via pg_policies.
+
+DELIBERATELY unchanged: pec_payments (no finer perm maps to it; core daily data) and settings (writes already is_admin_role, stricter than any perm gate; gating would loosen or be redundant).
+
+Safety notes: writes that flow through Netlify functions (service role) or SECURITY DEFINER RPCs bypass RLS and are unaffected; direct client writes all pass today. If Dylan later sets someone's can_view_commission / can_view_job_costing / can_edit_catalog to false, the DB will enforce it, not just the UI.
+
+Why: approved security remediation plan, Phase 3 (RBAC), full rewrite option chosen by Dylan.
+Files touched: supabase/migrations/2026-07-25_rbac_policy_enforcement.sql (new), PROJECT-LOG.md.
+Next steps: MFA opt-in enrollment + challenge UI (build, do not enforce). Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P3a: RBAC helper + audit_log append-only (applied to PROD)
 By: Claude Code
 
