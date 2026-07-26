@@ -11663,7 +11663,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window']),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights']),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -12383,6 +12383,57 @@ async function renderMetrics() {
   })]));
   const blastOptOuts = (b) => blastLedger.filter(r => r.blast_id === b.id && r.status === 'skipped' && r.error_message === 'opted_out_after_queue').length;
 
+  // ---- AI insights panel (prompt 50 Part B) --------------------------------
+  // A dedicated whole-tab read, distinct from the weekly pipeline read below
+  // (which stays). Render NEVER calls the API; it shows the cached entry for
+  // THIS window + salesperson from the metrics_tab_ai_insights settings row.
+  // Only the Generate button hits the endpoint, sending the COMPUTED values
+  // above (never raw tables) so the model cannot invent numbers.
+  const rnd = v => v == null ? null : Math.round(v * 100) / 100;
+  const tabWinLabel = state.metricsWindow === 'mtd' ? 'Month to date'
+    : state.metricsWindow === 'ytd' ? 'Year to date'
+    : state.metricsWindow === '4w' ? 'Last 4 weeks'
+    : `Custom range ${invFmtDate(wStart)} to ${invFmtDate(wEnd)}`;
+  const tabCacheId = [state.metricsWindow, wStart, wEnd, sp || 'all'].join('|');
+  let tabAiCached = null;
+  try {
+    const row = metSettingsRows.find(r => r.key === 'metrics_tab_ai_insights');
+    tabAiCached = row ? (JSON.parse(row.value) || {})[tabCacheId] || null : null;
+  } catch (_) { tabAiCached = null; }
+  const tabAiPayload = {
+    kpis: {
+      sales_volume_signed: rnd(salesVolume), sales_volume_prior_period: rnd(prevSalesVolume),
+      revenue_collected: rnd(revCollectedTotal), revenue_collected_prior_period: rnd(prevRevCollected),
+      avg_job_size: rnd(avgJobSize), avg_job_size_prior_period: rnd(prevAvgJobSize),
+      jobs_completed: compInWin.length, jobs_completed_prior_period: prevJobsCompleted,
+      jobs_signed: soldInWin.length,
+      callback_rate_all_time: rnd(callbackPct), callbacks_all_time: totalCallbacks, completed_production_jobs_all_time: totalProdCompleted,
+      pct_invoiced_before_completion: rnd(pctInvAhead), completed_without_invoice_on_record: invNoSendCount,
+      ar_aged_30plus_days: rnd(arAged30),
+      avg_days_sign_to_deposit: rnd(avgSignToDep), avg_days_completion_to_paid: rnd(avgComplToFinal),
+      pct_paid_in_full_on_completion_day: rnd(pctPaidOnDay),
+      avg_review_rating: rnd(avgRating), reviews_in_window: ratingN,
+    },
+    sales_by_salesperson: spRows.map(([name, g]) => ({ name, signed_value: rnd(g.sum), jobs: g.jobs.length })),
+    gp_by_crew_lead: gpRows.map(([lead, g]) => ({ lead, gp: rnd(g.gp), price: rnd(g.price), cost: rnd(g.cost), jobs: g.jobs.length })),
+    price_per_sqft_by_system: dpsfSystemRows.map(([name, g]) => ({ system: name, avg: rnd(g.sum / g.n), median: rnd(dpsfMedian(g.vals)), jobs: g.n })),
+    speed_to_lead: { median_minutes: rnd(s2lMedian), leads_contacted: s2lMins.length, leads_created_in_window: leadsInWin.length },
+    conversion_by_source: convBySource.map(([name, g]) => ({ source: name, leads: g.leads, accepted: g.accepted, accepted_value: rnd(g.value) })),
+    conversion_by_campaign: convByCampaign.map(([name, g]) => ({ campaign: name, leads: g.leads, accepted: g.accepted, accepted_value: rnd(g.value) })),
+    open_pipeline: { total_leads: openLeads.length, total_value: rnd(openPipeValue), by_stage: pipeByStage.map(r => ({ stage: r.title, leads: r.n, value: rnd(r.value) })) },
+    outbound_touches: { avg_touches_to_win: rnd(avgTouchesToWin), avg_touches_to_estimate_out: rnd(avgTouchesToEst), open_leads_never_contacted: openNeverContacted },
+    drip_performance: dripKindRows.map(r => ({ sequence: KIND_LABEL[r.kind], active_now: r.active, sent: r.sent, previews: r.dryRun, replies: r.replied, converted: r.converted, ended: r.endedN })),
+  };
+  const tabAiPanel = `
+    <div class="pec-card" style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div class="pec-metric-h" style="margin:0">AI insights <span style="color:var(--muted);font-weight:400;font-size:.72rem;text-transform:none;letter-spacing:0">reads the cards below for the selected window</span></div>
+        <button type="button" class="pec-btn primary sm" id="pecMetInsightsBtn" data-force="${tabAiCached ? '1' : '0'}" ${navigator.onLine ? '' : 'disabled title="Offline"'}>${tabAiCached ? 'Regenerate' : 'Generate insights'}</button>
+      </div>
+      <div id="pecMetInsightsText" style="font-size:.84rem;line-height:1.55;margin-top:8px">${tabAiCached && tabAiCached.text ? esc(tabAiCached.text) : '<span style="color:var(--muted)">No insights for this window yet. Click Generate insights for a plain-language read of what moved and what to act on.</span>'}</div>
+      <div id="pecMetInsightsMeta" style="color:var(--muted);font-size:.68rem;margin-top:6px">${tabAiCached && tabAiCached.generated_at ? `Generated ${esc(fmtRelativeTime(tabAiCached.generated_at))} for ${esc(tabAiCached.window_label || tabWinLabel)}.` : ''}</div>
+    </div>`;
+
   // Window presets (prompt 50 Part A). The old 12-week preset folded into
   // Custom (pick any range); the active preset drives EVERY consumer below,
   // not just the KPI cards, because they all read wStart/wEnd/weeks.
@@ -12403,6 +12454,7 @@ async function renderMetrics() {
       <select id="pecMetSp"><option value="">All salespeople</option>${spList.map(n => `<option value="${esc(n)}" ${sp === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
       <span style="color:var(--muted);font-size:.72rem;margin-left:auto">Click any card, row, or bar for the records behind it.</span>
     </div>
+    ${tabAiPanel}
     <div class="pec-m-group-h" style="margin-top:2px">Revenue &amp; wins</div>
     <div class="pec-m-kpis">
       ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume), salesVolWeekly)}
@@ -12582,6 +12634,45 @@ async function renderMetrics() {
     renderMetrics();
   });
   $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
+  // AI insights panel (prompt 50 Part B): manual generate only. First click
+  // honors the server cache (force:false); once an insight is on screen the
+  // button reads Regenerate and forces a fresh model call. Updates in place
+  // rather than re-rendering the whole tab.
+  const tabAiBtn = $('pecMetInsightsBtn');
+  if (tabAiBtn) tabAiBtn.addEventListener('click', async () => {
+    if (!navigator.onLine) { showToast('You are offline. Insights need a connection.'); return; }
+    const force = tabAiBtn.dataset.force === '1';
+    const prevLabel = tabAiBtn.textContent;
+    tabAiBtn.disabled = true; tabAiBtn.textContent = 'Reading the tab…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session && session.access_token;
+      if (!token) throw new Error('Not signed in.');
+      const res = await fetch('/.netlify/functions/pec-metrics-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          mode: 'tab', force,
+          window_key: state.metricsWindow, window_label: tabWinLabel,
+          window_start: wStart, window_end: wEnd,
+          salesperson: sp || '',
+          metrics: tabAiPayload,
+        }),
+      });
+      let body = {}; try { body = await res.json(); } catch (_) {}
+      if (!res.ok || !body.success || !body.insight) throw new Error(body.error || `Insight failed (${res.status})`);
+      const ins = body.insight;
+      const textEl = $('pecMetInsightsText'), metaEl = $('pecMetInsightsMeta');
+      if (textEl) textEl.textContent = ins.text || '';
+      if (metaEl) metaEl.textContent = `Generated ${fmtRelativeTime(ins.generated_at)} for ${ins.window_label || tabWinLabel}.${body.cached ? ' (cached)' : ''}`;
+      tabAiBtn.dataset.force = '1';
+      tabAiBtn.disabled = false; tabAiBtn.textContent = 'Regenerate';
+    } catch (err) {
+      tabAiBtn.disabled = false; tabAiBtn.textContent = prevLabel;
+      console.error('[pec] metrics tab insights:', err);
+      showToast('Could not generate insights: ' + esc(err.message || String(err)), { ttl: 6000 });
+    }
+  });
   // AI weekly read: render NEVER calls the API (the cached settings row above
   // is all it shows); only this button does, force-regenerating and recaching
   // server-side, then re-rendering to pick up the new settings row.
@@ -16973,6 +17064,7 @@ async function renderSettings() {
             ${[['mtd', 'Month to date'], ['ytd', 'Year to date'], ['4w', 'Last 4 weeks']].map(([v, l]) => `<option value="${v}" ${(map.metrics_default_window || 'mtd') === v ? 'selected' : ''}>${l}</option>`).join('')}
           </select>
         </div>
+        <div class="pec-field"><label>Metrics AI insight cache (days)</label><input name="metrics_ai_cache_days" type="number" min="1" step="1" value="${esc(map.metrics_ai_cache_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How long a generated AI read is reused before Generate calls the model again. Regenerate always forces a fresh one.</span></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>
