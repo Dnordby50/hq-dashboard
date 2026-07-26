@@ -62,7 +62,7 @@ exports.handler = async (event) => {
     return { statusCode: 200, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, email: target[0].email }) };
   } catch (err) {
     console.error('pec-reset-password error:', err);
-    return json(500, { error: err.message });
+    return json(500, { error: 'Internal error' });
   }
 };
 

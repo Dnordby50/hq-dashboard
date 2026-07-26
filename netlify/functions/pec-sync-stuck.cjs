@@ -91,6 +91,9 @@ exports.handler = async (event) => {
     }
     return json(200, { ok: failures.length === 0, reported, notified, failures });
   } catch (err) {
-    return json(500, { ok: false, error: err.message || String(err) });
+    // Log the detail server-side; return a generic message so a raw Supabase
+    // response body (table/column names, filters) never reaches the client.
+    console.error('pec-sync-stuck error:', err && err.message ? err.message : err);
+    return json(500, { ok: false, error: 'Internal error' });
   }
 };

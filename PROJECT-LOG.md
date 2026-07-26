@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P2b: backend hardening (M9/M10/L13/L15)
+By: Claude Code
+
+Changed:
+- M9: mcp.cjs bearer-token check switched from `presented !== expected` to a constant-time crypto.timingSafeEqual (safeEqual helper), removing the timing side-channel that could leak MCP_BEARER_TOKEN byte-by-byte. (The webhook-secret path in _pec-supabase.cjs was already done in P1a.)
+- M10: three handlers that returned raw err.message (which for sb() failures includes the Supabase response body -> table/column names) now log the detail server-side and return a generic "Internal error": pec-sync-stuck.cjs, pec-reset-password.cjs, pec-log-signin.cjs.
+- L13: removed the dead .htaccess (HTTP Basic auth pointing at a placeholder /path/to/.htpasswd). Netlify never processes .htaccess, so it protected nothing and implied an auth layer that did not exist.
+- L15: corrected the stale netlify.toml comment (the committed Google key serves BOTH Sheets and Maps, not "Sheets API only"; fixed the stale "index.html line 1845" reference to point at the real occurrences).
+
+NOT done (deliberate, documented follow-up): M11 CORS scoping. The mutating staff endpoints send Access-Control-Allow-Origin *, but the dashboard/estimator call them SAME-origin and they authenticate via Authorization: Bearer (not cookies), so CSRF risk is low; mis-scoping risks breaking a legit cross-origin caller. Left as a low-priority follow-up.
+
+Why: from the approved security remediation plan (P2 hardening).
+Files touched: netlify/functions/mcp.cjs, pec-sync-stuck.cjs, pec-reset-password.cjs, pec-log-signin.cjs, netlify.toml, .htaccess (deleted), PROJECT-LOG.md.
+Next steps: P3 strategic work (MFA, DB-enforced RBAC, audit-log hardening). Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P2a: hardened SECURITY DEFINER RPCs (applied to PROD)
 By: Claude Code
 

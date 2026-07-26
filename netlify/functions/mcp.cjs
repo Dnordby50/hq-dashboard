@@ -524,6 +524,18 @@ function parseBasicAuth(header) {
 
 const crypto = require('crypto');
 
+// Constant-time bearer-token comparison. A plain !== leaks, via timing, how many
+// leading bytes matched, which can let an attacker recover MCP_BEARER_TOKEN one
+// byte at a time. Compare in length-independent time; unequal lengths are an
+// immediate (safe) miss.
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length === 0) return false;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 // Base64url helpers (RFC 4648 §5, no padding).
 function b64uEncode(buf) {
   return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -893,7 +905,7 @@ exports.handler = async (event) => {
   const queryToken = (event.queryStringParameters && event.queryStringParameters.token) || '';
   const presented = headerToken || queryToken;
   const expected = process.env.MCP_BEARER_TOKEN;
-  if (!expected || presented !== expected) {
+  if (!expected || !safeEqual(presented, expected)) {
     return {
       statusCode: 401,
       headers: {

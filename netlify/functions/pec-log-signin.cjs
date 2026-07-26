@@ -37,7 +37,7 @@ exports.handler = async (event) => {
     return { statusCode: 200, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true }) };
   } catch (err) {
     console.error('pec-log-signin error:', err);
-    return json(500, { error: err.message });
+    return json(500, { error: 'Internal error' });
   }
 };
 
