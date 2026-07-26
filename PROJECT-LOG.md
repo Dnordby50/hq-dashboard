@@ -4,6 +4,29 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P2a: hardened SECURITY DEFINER RPCs (applied to PROD)
+By: Claude Code
+
+Changed: Applied two migrations to PROD (project zdfpzmmrgotynrwkeakd) via MCP and verified with the security advisor. Migration file: supabase/migrations/2026-07-25_security_hardening_rpcs.sql.
+
+1. The six log_* notification RPCs (log_payment_edited/_deleted, log_customer_deleted, log_costing_submitted/_sent_back, log_appointment_booked) were anon-executable SECURITY DEFINER functions with NO guard, so anyone with the public anon key could inject forged staff notifications (M6). Each now silently no-ops for a non-staff caller (`if not public.is_admin_staff() then return; end if;` -- SILENT, not raise, because they are best-effort loggers some callers do not try/catch), AND anon/PUBLIC execute was revoked (authenticated + service_role keep it). Verified: anon_exec=false, auth_exec=true, guard present on all six.
+
+2. Defense-in-depth revoke of anon/PUBLIC execute on the guarded staff/trigger RPCs anon never needs: edit_recorded_payment, search_jobs, pec_replace_job_areas, pec_prod_jobs_sync_public_status, rls_auto_enable. Verified anon_exec=false, auth_exec=true. DELIBERATELY kept anon on is_admin_staff/is_admin_role (RLS policies evaluate them under the querying role, so revoking would make anon table queries error instead of returning empty) and on portal_*/get_portal_* (the customer, unauthenticated, must call them; they are 256-bit-token gated).
+
+3. pec_portal_views had RLS on but no policy (deny-all); added a staff-read policy (writes still via the definer RPC). pec_sales_member_google_tokens INTENTIONALLY left with no policy: it holds Google OAuth refresh tokens and must stay service-role-only, so deny-all to client keys is correct (advisor keeps an INFO flag on it, expected).
+
+4. Pinned search_path=public on the 5 functions the advisor flagged (pec_prod_touch_updated_at, phone_digits, pec_costing_commission_for, pec_costing_set_commission, pec_job_recompute_costing_commission) via ALTER (bodies untouched).
+
+Advisor delta: function_search_path_mutable now clears (0), pec_portal_views rls-no-policy clears, all six log_* drop off the anon-executable list. Remaining advisor WARNs are accepted-by-design: token-gated portal_*/get_portal_* and is_admin_* (needed anon), pg_trgm-in-public (WARN, not moved -- see below), pec-photos public bucket listing (product decision, see P2 backend entry), and leaked-password-protection (Supabase Auth dashboard toggle -> Dylan handoff).
+
+NOT done (deliberate): moving pg_trgm out of public (risks the live fuzzy-search indexes for a WARN-level lint). SCHEMA.md not regenerated: no table/column/index/setting changed, only functions/grants/policies.
+
+Why: from the approved security remediation plan (M6/L16). Applied directly (not a Cowork handoff) because this session has Supabase MCP write access and could verify immediately with get_advisors.
+Files touched: supabase/migrations/2026-07-25_security_hardening_rpcs.sql (new), PROJECT-LOG.md. Applied as migrations 2026_07_25_security_hardening_rpcs and 2026_07_25_security_hardening_rpcs_revoke_staff.
+Next steps: P2 backend hardening (mcp.cjs timingSafeEqual, error-message sanitization, remove dead .htaccess). Handoff to Dylan: enable Leaked Password Protection in Supabase Auth settings. Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P1c: HTTP security headers (H5)
 By: Claude Code
 
