@@ -26973,6 +26973,38 @@ function saveCostingField(jobId, field, value, inp) {
     }
   }, 250);
 }
+// Office notes (prompt 50 Part C): a distinct office-facing note on
+// pec_prod_job_costing, stamped with the author's auth uuid + time so the
+// detail can show who wrote it and when. One upsert writes all three columns
+// together (idempotent on job_id, so the one-retry helper is safe). res.error
+// is checked explicitly per the supabase-js gotcha: a write against a missing
+// column (pre-migration) or one silently blocked by RLS comes back as an
+// error/empty response, NOT a throw, and must never look like a save.
+async function saveOfficeNotes(jobId, text, inp) {
+  try {
+    const { data: { user } = {} } = await supabase.auth.getUser();
+    const stampBy = user?.id || null;
+    const stampAt = new Date().toISOString();
+    const res = await withFreshWriteRetry(
+      () => supabase.from('pec_prod_job_costing')
+        .upsert({ job_id: jobId, office_notes: text, office_notes_by: stampBy, office_notes_at: stampAt }, { onConflict: 'job_id' })
+        .select().single(),
+      { label: 'office-notes' });
+    if (res.error) {
+      const hint = /office_notes/.test(res.error.message || '') ? ' (Apply the 2026-07-26_costing_office_notes.sql migration first.)' : '';
+      throw new Error((res.error.message || String(res.error)) + hint);
+    }
+    if (!res.data) throw new Error('The save returned no row (possibly blocked by permissions). The note was NOT saved.');
+    let c = state.costing.find(c => c.job_id === jobId);
+    if (c) { Object.assign(c, res.data); c.office_notes = text; }
+    else state.costing.push(res.data);
+    costingSaveOk(inp);
+    return res.data;
+  } catch (err) {
+    costingSaveFailed(err, inp, 'office notes');
+    return null;
+  }
+}
 async function saveJobField(jobId, field, value, inp) {
   try {
     const { error } = await withFreshWriteRetry(
@@ -27454,6 +27486,16 @@ async function renderUnifiedJob(jobId) {
       .order('created_at', { ascending: false }), { label: 'costing-sendbacks' });
     if (!sbRes.error) sendbacks = sbRes.data || [];
   } catch (_) { /* table not live yet */ }
+  // Staff-name map for the office-notes author stamp (prompt 50 Part C).
+  // Cached for the page life by qoStaffNames; degrades to {} on error.
+  const officeStaffNames = await qoStaffNames();
+  const officeNoteStamp = (c) => {
+    if (!c || !c.office_notes_at) return '';
+    const d = new Date(c.office_notes_at);
+    const when = isNaN(d.getTime()) ? String(c.office_notes_at)
+      : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return `${officeStaffNames[c.office_notes_by] || 'Staff'}, ${when}`;
+  };
   const memberByIdAll = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
   const bonusMemberLookup = (key) => {
     if (key.startsWith('bb:')) return { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null };
@@ -28006,6 +28048,11 @@ async function renderUnifiedJob(jobId) {
         <h3>Notes</h3>
         <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
         <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="4" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
+        <div class="pec-field" style="margin-top:10px">
+          <label>Office notes <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">office only, kept separate from the notes above</span></label>
+          <textarea id="pecOfficeNotes" rows="3" style="width:100%" placeholder="Billing quirks, customer conversations, anything the office needs on this job.">${esc(cost?.office_notes || '')}</textarea>
+          <div id="pecOfficeNotesStamp" style="color:var(--muted);font-size:.68rem;margin-top:4px">${cost?.office_notes_at ? esc(officeNoteStamp(cost)) : ''}</div>
+        </div>
       </div>
 
       ${finalizeCardHtml}`;
@@ -28110,6 +28157,26 @@ async function renderUnifiedJob(jobId) {
     inp.addEventListener('change', handler);
     if (inp.type !== 'checkbox' && inp.type !== 'number') inp.addEventListener('blur', handler);
   });
+
+  // Office notes (prompt 50 Part C): its own save path (three columns written
+  // together with the author stamp), not the single-field data-cost route.
+  // Only saves when the text actually changed, so tabbing through never
+  // rewrites the author stamp onto someone else's untouched note.
+  const officeNotesEl = root.querySelector('#pecOfficeNotes');
+  if (officeNotesEl) {
+    const officeHandler = async () => {
+      const text = officeNotesEl.value;
+      const cur = state.costing.find(c => c.job_id === jobId);
+      if ((cur?.office_notes || '') === text) return;
+      const saved = await saveOfficeNotes(jobId, text, officeNotesEl);
+      if (saved) {
+        const stampEl = root.querySelector('#pecOfficeNotesStamp');
+        if (stampEl) stampEl.textContent = officeNoteStamp(saved);
+      }
+    };
+    officeNotesEl.addEventListener('change', officeHandler);
+    officeNotesEl.addEventListener('blur', officeHandler);
+  }
 
   // Material line actual_used_qty inputs
   root.querySelectorAll('input[data-line-used]').forEach(inp => {
