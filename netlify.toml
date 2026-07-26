@@ -272,3 +272,26 @@
   for = "/index.html"
   [headers.values]
     Cache-Control = "public, max-age=0, must-revalidate"
+
+# Security headers (added 2026-07-25, security remediation P1). Applied to every
+# path; the cache rules above still apply per-path (Netlify merges header rules).
+#
+# The clickjacking / sniffing / transport / referrer / feature headers are
+# ENFORCED immediately -- they cannot break a normal app. The Content-Security-
+# Policy is intentionally REPORT-ONLY for now: index.html is one ~28k-line inline
+# <script> plus inline styles, so an enforced policy needs 'unsafe-inline' (and
+# Google Maps needs 'unsafe-eval'), which blunts CSP's anti-XSS value. Report-only
+# lets us watch DevTools console for violations against the real allow-list below
+# for a few days, tighten it, and only then flip to the enforced
+# `Content-Security-Policy` key. Origins allowed: self, Supabase (REST/auth/realtime),
+# Google Fonts, Google Maps + gstatic tiles, Stripe Checkout (form redirect),
+# and https:/data:/blob: images (Supabase Storage photos, CompanyCam, map tiles).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Permissions-Policy = "accelerometer=(), gyroscope=(), magnetometer=(), microphone=(), usb=()"
+    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://maps.googleapis.com https://*.gstatic.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self' https://checkout.stripe.com"

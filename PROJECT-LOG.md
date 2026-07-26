@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P1c: HTTP security headers (H5)
+By: Claude Code
+
+Changed: Added a global [[headers]] for="/*" block to netlify.toml. The app previously sent NO security headers (only Cache-Control). Now enforced on every static path: X-Frame-Options DENY (clickjacking), X-Content-Type-Options nosniff, Referrer-Policy strict-origin-when-cross-origin, Strict-Transport-Security (1yr + includeSubDomains), and a conservative Permissions-Policy (disables accelerometer/gyroscope/magnetometer/microphone/usb, leaves camera+geolocation for Maps/CompanyCam).
+
+CSP is REPORT-ONLY on purpose: index.html is one ~28k-line inline <script> plus inline styles, so an enforced policy would need 'unsafe-inline' (and Maps needs 'unsafe-eval'), which guts CSP's anti-XSS value. Report-only surfaces violations in DevTools console against the real allow-list (self, Supabase REST/auth/realtime, Google Fonts, Maps+gstatic, Stripe Checkout form-action, https:/data:/blob: images) without breaking anything. Plan: watch violations, tighten, then rename the key to Content-Security-Policy to enforce.
+
+HOW IT WORKS: Netlify merges multiple [[headers]] rules, so the existing per-path Cache-Control rules still apply alongside the new /* security block.
+
+Why: from the approved security remediation plan (H5, the audit's top client-layer issue).
+Files touched: netlify.toml, PROJECT-LOG.md.
+Follow-up: the customer-facing function pages (/e/, /pay/, /co/ -> pec-public-*) emit their own headers and are NOT covered by netlify.toml [[headers]]; add the same headers to those function responses in a later pass. Internal-only, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Security remediation P1b: gated five unauthenticated side-effect endpoints
 By: Claude Code
 
