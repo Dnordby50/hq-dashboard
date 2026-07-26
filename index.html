@@ -6715,7 +6715,10 @@ const state = {
   materialLinesByJob: {}, materialOrderedByJob: {}, materialUsedByJob: {},
   bonusesByJob: {}, scheduleByJob: {}, crewMembers: [], costingLoaded: false,
   // Invoicing & AR module
-  arRows: [], metricsWindow: '4w', metricsSalesperson: '', openInvoiceJobId: null,
+  // metricsWindow '' = not resolved yet; renderMetrics fills it from the
+  // metrics_default_window setting on first render (prompt 50 Part A).
+  arRows: [], metricsWindow: '', metricsSalesperson: '', openInvoiceJobId: null,
+  metricsCustomFrom: '', metricsCustomTo: '',
   // Jobs Pipeline (kanban). Filters apply on Go; window is the changed-date range.
   pipelineFilters: { salesperson: '', crew: '', leadSource: '', window: 'any' },
   pendingWorkOrderJobId: null,
@@ -8953,6 +8956,41 @@ function invBuildWeeks(key) {
   }
   const weeks = [];
   for (let i = n - 1; i >= 0; i--) { const start = invAddDays(todayWeek, -7 * i); weeks.push({ start, end: invAddDays(start, 6), label: invShortDate(start) }); }
+  return weeks;
+}
+// Metrics window preset -> {start, end} ISO dates, MST (prompt 50 Part A).
+// 'mtd' first of month..today, 'ytd' Jan 1..today, '4w' rolling today-28..
+// today, 'custom' reads state.metricsCustomFrom/To (falls back to the 4w
+// range until a valid custom range is applied, so the tab never blanks).
+// This deliberately routes AROUND invBuildWeeks (which keys off calendar
+// week starts); Metrics buckets are plain 7-day chunks from the window
+// start via metricsBuildBuckets below, so MTD starts on the 1st, not the
+// prior Sunday.
+function metricsWindowRange(key) {
+  const today = mstTodayIso();
+  if (key === 'ytd') return { start: today.slice(0, 4) + '-01-01', end: today };
+  if (key === '4w') return { start: invAddDays(today, -28), end: today };
+  if (key === 'custom') {
+    const f = state.metricsCustomFrom, t = state.metricsCustomTo;
+    if (f && t && f <= t) return { start: f, end: t };
+    return { start: invAddDays(today, -28), end: today };
+  }
+  return { start: today.slice(0, 7) + '-01', end: today }; // mtd (default)
+}
+// 7-day chart buckets covering start..end; the last one may be partial and
+// is clamped to the window end. Shape matches invBuildWeeks ({start, end,
+// label}) so every existing chart/drill consumer works unchanged. Capped at
+// 106 buckets (~2 years); the custom-range Apply guard enforces the same cap
+// so no date can fall past the last bucket.
+function metricsBuildBuckets(start, end) {
+  const total = Math.max(1, (invDaysBetween(start, end) ?? 0) + 1);
+  const n = Math.max(1, Math.min(106, Math.ceil(total / 7)));
+  const weeks = [];
+  for (let i = 0; i < n; i++) {
+    const s = invAddDays(start, i * 7);
+    const e = invAddDays(s, 6);
+    weeks.push({ start: s, end: e > end ? end : e, label: invShortDate(s) });
+  }
   return weeks;
 }
 // Month buckets from startIso's month through endIso's month (inclusive),
@@ -11625,7 +11663,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('value').eq('key', 'metrics_sales_ai_insight').maybeSingle(),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window']),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -11642,8 +11680,9 @@ async function renderMetrics() {
     ]), { label: 'renderMetrics' });
   } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
-    leadsRes, leadEstRes, sqftRes, sysRes, insightRes, staffNames, metricsTouchLogs,
+    leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes] = res;
+  const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
   // the view does not have it yet, so the rest of Metrics renders normally.
@@ -11740,8 +11779,17 @@ async function renderMetrics() {
   const jobOk = j => !sp || j.salesperson === sp;
   const payOk = p => !sp || (jobById[p.job_id]?.salesperson === sp);
 
-  const weeks = invBuildWeeks(state.metricsWindow);
-  const wStart = weeks[0].start, wEnd = weeks[weeks.length - 1].end;
+  // Window presets (prompt 50 Part A). First render resolves the landing
+  // preset from the metrics_default_window setting (Settings > General);
+  // after that the in-session choice sticks (no cross-reload persistence).
+  if (!state.metricsWindow) {
+    const defRow = metSettingsRows.find(r => r.key === 'metrics_default_window');
+    const def = defRow ? String(defRow.value || '').trim() : '';
+    state.metricsWindow = ['mtd', 'ytd', '4w'].includes(def) ? def : 'mtd';
+  }
+  const winRange = metricsWindowRange(state.metricsWindow);
+  const wStart = winRange.start, wEnd = winRange.end;
+  const weeks = metricsBuildBuckets(wStart, wEnd);
   const bucketOf = d => { if (!d || d < wStart || d > wEnd) return -1; return Math.min(weeks.length - 1, Math.floor(invDaysBetween(wStart, d) / 7)); };
 
   const revCompleted = Array(weeks.length).fill(0);
@@ -11989,7 +12037,8 @@ async function renderMetrics() {
   // comparison moves with the salesperson filter. Callback rate is all-time
   // and gets no delta. Note the current window includes the partial current
   // week, so an in-progress week reads slightly low against a full prior one.
-  const prevStart = invAddDays(wStart, -7 * weeks.length);
+  const winDays = (invDaysBetween(wStart, wEnd) ?? 0) + 1;
+  const prevStart = invAddDays(wStart, -winDays);
   const prevEnd = invAddDays(wStart, -1);
   const inPrev = d => d && d >= prevStart && d <= prevEnd;
   const prevSold = jobs.filter(j => jobOk(j) && inPrev(j.signed_date));
@@ -11998,7 +12047,7 @@ async function renderMetrics() {
   const prevRevCollected = payments.reduce((s, p) => (payOk(p) && inPrev(p.received_date)) ? s + p.amount : s, 0);
   const prevJobsCompleted = jobs.reduce((s, j) => s + (jobOk(j) && inPrev(j.completed_date) ? 1 : 0), 0);
   const deltaHtml = (cur, prev) => {
-    const win = `prior ${weeks.length} wk${weeks.length === 1 ? '' : 's'}`;
+    const win = `prior ${winDays} day${winDays === 1 ? '' : 's'}`;
     if (cur == null || prev == null || (prev === 0 && cur === 0)) return '<div class="pec-m-kpi-delta flat">no prior-window data</div>';
     if (prev === 0) return `<div class="pec-m-kpi-delta up">▲ new vs ${win}</div>`;
     const pct = Math.round(((cur - prev) / prev) * 100);
@@ -12129,7 +12178,7 @@ async function renderMetrics() {
   // 1. $/sqft of sold jobs by MONTH across the window's months (weeks are too
   // noisy for an average that only moves when jobs sign). Effective sqft per
   // job: manual jobs.sqft wins, else the job_areas sum.
-  const months = invBuildMonths(wStart, invToday());
+  const months = invBuildMonths(wStart, wEnd);
   const monthIdx = Object.fromEntries(months.map((mo, i) => [mo.key, i]));
   const soldForSqft = jobs.filter(j => jobOk(j) && j.signed_date && (String(j.signed_date).slice(0, 7) in monthIdx));
   const dpsfMonthSum = Array(months.length).fill(0), dpsfMonthN = Array(months.length).fill(0);
@@ -12246,7 +12295,10 @@ async function renderMetrics() {
   const fmtAvgTouches = v => v == null ? '—' : (Math.round(v * 10) / 10) + 'x';
 
   let salesInsight = null;
-  try { salesInsight = (insightRes && !insightRes.error && insightRes.data) ? JSON.parse(insightRes.data.value) : null; } catch (_) { salesInsight = null; }
+  try {
+    const row = (metSettingsRows || []).find(r => r.key === 'metrics_sales_ai_insight');
+    salesInsight = row ? JSON.parse(row.value) : null;
+  } catch (_) { salesInsight = null; }
 
   // ---- Drip + blast performance (prompt 35 Part E; fills the PHASE 3 SLOT) --
   // Window rule: SENDS count by when they went out (sent_at, falling back to
@@ -12331,10 +12383,23 @@ async function renderMetrics() {
   })]));
   const blastOptOuts = (b) => blastLedger.filter(r => r.blast_id === b.id && r.status === 'skipped' && r.error_message === 'opted_out_after_queue').length;
 
-  const winOpts = [['4w', 'Last 4 weeks'], ['12w', 'Last 12 weeks'], ['ytd', 'Year to date']];
+  // Window presets (prompt 50 Part A). The old 12-week preset folded into
+  // Custom (pick any range); the active preset drives EVERY consumer below,
+  // not just the KPI cards, because they all read wStart/wEnd/weeks.
+  const winOpts = [['mtd', 'MTD'], ['ytd', 'YTD'], ['4w', 'Last 4 weeks'], ['custom', 'Custom']];
   root.innerHTML = `
-    <div class="pec-toolbar">
-      <select id="pecMetWin">${winOpts.map(([v, l]) => `<option value="${v}" ${state.metricsWindow === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <div class="pec-toolbar" style="flex-wrap:wrap;row-gap:8px">
+      <div style="display:flex;gap:4px" role="group" aria-label="Time window">
+        ${winOpts.map(([v, l]) => `<button type="button" class="pec-btn sm ${state.metricsWindow === v ? 'primary' : 'ghost'}" data-metwin="${v}">${l}</button>`).join('')}
+      </div>
+      ${state.metricsWindow === 'custom' ? `
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="date" id="pecMetFrom" value="${esc(state.metricsCustomFrom || '')}">
+        <span style="color:var(--muted);font-size:.72rem">to</span>
+        <input type="date" id="pecMetTo" value="${esc(state.metricsCustomTo || '')}">
+        <button type="button" class="pec-btn primary sm" id="pecMetApply">Apply</button>
+      </div>` : ''}
+      <span style="color:var(--muted);font-size:.72rem">${invFmtDate(wStart)} to ${invFmtDate(wEnd)}</span>
       <select id="pecMetSp"><option value="">All salespeople</option>${spList.map(n => `<option value="${esc(n)}" ${sp === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
       <span style="color:var(--muted);font-size:.72rem;margin-left:auto">Click any card, row, or bar for the records behind it.</span>
     </div>
@@ -12496,7 +12561,26 @@ async function renderMetrics() {
     </details>
   `;
 
-  $('pecMetWin').addEventListener('change', e => { state.metricsWindow = e.target.value; renderMetrics(); });
+  root.querySelectorAll('[data-metwin]').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.metwin;
+    if (v === state.metricsWindow) return;
+    // Seed the custom inputs with the outgoing window so switching to Custom
+    // shows the range that was just on screen instead of two blank fields.
+    if (v === 'custom' && !(state.metricsCustomFrom && state.metricsCustomTo)) {
+      state.metricsCustomFrom = wStart; state.metricsCustomTo = wEnd;
+    }
+    state.metricsWindow = v;
+    renderMetrics();
+  }));
+  const metApply = $('pecMetApply');
+  if (metApply) metApply.addEventListener('click', () => {
+    const f = $('pecMetFrom').value, t = $('pecMetTo').value;
+    if (!f || !t) return; // an empty range is a no-op
+    if (f > t) { showToast('From date must be on or before the To date.'); return; }
+    if ((invDaysBetween(f, t) ?? 0) + 1 > 742) { showToast('Custom range is capped at two years.'); return; }
+    state.metricsCustomFrom = f; state.metricsCustomTo = t;
+    renderMetrics();
+  });
   $('pecMetSp').addEventListener('change', e => { state.metricsSalesperson = e.target.value; renderMetrics(); });
   // AI weekly read: render NEVER calls the API (the cached settings row above
   // is all it shows); only this button does, force-regenerating and recaching
@@ -16884,6 +16968,11 @@ async function renderSettings() {
         <div class="pec-field"><label>Google review link — Epoxy</label><input name="google_review_link_epoxy" value="${esc(map.google_review_link_epoxy || '')}"></div>
         <div class="pec-field"><label>Google review link — Paint</label><input name="google_review_link_paint" value="${esc(map.google_review_link_paint || '')}"></div>
         <div class="pec-field"><label>Referral reward amount ($)</label><input name="referral_reward_amount" type="number" step="1" value="${esc(map.referral_reward_amount || '50')}"></div>
+        <div class="pec-field"><label>Metrics default time window</label>
+          <select name="metrics_default_window">
+            ${[['mtd', 'Month to date'], ['ytd', 'Year to date'], ['4w', 'Last 4 weeks']].map(([v, l]) => `<option value="${v}" ${(map.metrics_default_window || 'mtd') === v ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+        </div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>
