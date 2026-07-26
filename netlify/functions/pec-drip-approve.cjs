@@ -14,7 +14,7 @@
 // Skip advances without sending. Both are safe against double-clicks and
 // concurrent reviewers (conditional claims inside resolvePendingStep).
 
-const { sb, json } = require('./_pec-supabase.cjs');
+const { sb, json, requireStaff } = require('./_pec-supabase.cjs');
 const { resolvePendingStep } = require('./_pec-drip.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -46,9 +46,9 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
   if (event.httpMethod !== 'POST') return jc(405, { ok: false, error: 'Method not allowed' });
 
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const user = await getUser(authHeader.replace(/^Bearer\s+/i, '').trim());
-  if (!user || !user.id) return jc(401, { ok: false, error: 'Not authenticated' });
+  const gate = await requireStaff(event);
+  if (!gate.ok) return jc(gate.status, { ok: false, error: gate.error });
+  const user = gate.user;
 
   let input;
   try { input = JSON.parse(event.body || '{}'); }

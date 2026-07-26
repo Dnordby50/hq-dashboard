@@ -12,16 +12,50 @@
 // The Apps Script deployment (v5) keeps serving unchanged; only the path the
 // browser hits moved. The /exec URL is the same value that used to live in
 // CONFIG.SHEETS_PROXY in index.html, so it is not a new secret.
+//
+// SECURITY: this used to be an OPEN proxy -- anyone on the internet could GET
+// (read) or POST (write) the company Google Sheets through it, with no auth. It
+// now requires a logged-in staff Supabase JWT (Authorization: Bearer <token>),
+// verified via requireStaff against admin_users. The browser attaches the token
+// through sheetsAuthHeaders() in index.html.
+
+const { requireStaff } = require('./_pec-supabase.cjs');
 
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxvM8U5sKn6B8gKWHG7-JD-fPFyquOlbpjQjDiRDSOUJD2P8XVIKuREGaKkFHCdum-KRA/exec';
 
-exports.handler = async (event) => {
-  const cors = {
-    'Access-Control-Allow-Origin': '*',
+// Only the app's own origins may use this cross-origin. Reflect an allowed
+// Origin (so the browser accepts the response) and fall back to the primary
+// site otherwise. Env URL/DEPLOY_PRIME_URL cover Netlify's prod + preview URLs.
+const ALLOWED_ORIGINS = [
+  process.env.URL,
+  process.env.DEPLOY_PRIME_URL,
+  'https://prescottepoxy.netlify.app',
+].filter(Boolean);
+
+function corsFor(event) {
+  const origin = (event.headers && (event.headers.origin || event.headers.Origin)) || '';
+  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[ALLOWED_ORIGINS.length - 1];
+  return {
+    'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Vary': 'Origin',
   };
+}
+
+exports.handler = async (event) => {
+  const cors = corsFor(event);
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors, body: '' };
+
+  // Require a logged-in staff member. Blocks the old open-proxy access path.
+  const auth = await requireStaff(event);
+  if (!auth.ok) {
+    return {
+      statusCode: auth.status,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: auth.error }),
+    };
+  }
 
   try {
     let res;

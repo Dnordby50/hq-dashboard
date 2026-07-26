@@ -11,7 +11,7 @@
 // Either way the body is wrapped in brand chrome (header/signature/footer) from
 // pec_brand_identity before sending.
 
-const { sb } = require('./_pec-supabase.cjs');
+const { sb, requireStaff } = require('./_pec-supabase.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -136,11 +136,12 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
   if (event.httpMethod !== 'POST') return jc(405, { ok: false, error: 'Method not allowed' });
 
-  // Auth: require a valid Supabase JWT.
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const user = await getUser(token);
-  if (!user || !user.id) return jc(401, { ok: false, error: 'Not authenticated' });
+  // Auth: require a valid Supabase JWT that belongs to a staff member. This
+  // endpoint sends email on the company Resend account, so a valid login alone
+  // is not enough -- the caller must be in admin_users (see requireStaff).
+  const auth = await requireStaff(event);
+  if (!auth.ok) return jc(auth.status, { ok: false, error: auth.error });
+  const user = auth.user;
 
   let body;
   try { body = JSON.parse(event.body || '{}'); }

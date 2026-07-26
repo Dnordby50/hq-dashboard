@@ -29,7 +29,7 @@
 //
 // Env: ANTHROPIC_API_KEY (shared), optional PEC_SCOPE_AI_MODEL.
 
-const { sb, badSecret } = require('./_pec-supabase.cjs');
+const { sb, badSecret, requireStaff } = require('./_pec-supabase.cjs');
 // Canonical BLANK-placeholder logic, shared with the estimator so keys match.
 const { applyAnswers, openQuestions, containsBlank } = require('../../production/scope.cjs');
 
@@ -102,9 +102,8 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return jc(405, { success: false, error: 'Method not allowed' });
 
   if (badSecret(event)) {
-    const auth = event.headers.authorization || event.headers.Authorization || '';
-    const user = await getUser(auth.replace(/^Bearer\s+/i, ''));
-    if (!user || !user.id) return jc(401, { success: false, error: 'Not authorized' });
+    const gate = await requireStaff(event);
+    if (!gate.ok) return jc(gate.status, { success: false, error: gate.error });
   }
 
   let body;

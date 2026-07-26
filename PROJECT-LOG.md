@@ -4,6 +4,23 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-25 MST] Security remediation P1a: serverless authorization (requireStaff) + closed the open Sheets proxy
+By: Claude Code
+
+Changed: First code batch from the security assessment (plan file wild-meandering-dijkstra). Fixes the one Critical and the top High from the serverless audit.
+
+CRITICAL (C1) - sheets-proxy.cjs was an OPEN read/write proxy to the company Google Sheets: anyone on the internet who hit /.netlify/functions/sheets-proxy could GET (read) or POST (write) the Booked Sales/Jobs/Tasks sheets, no auth, CORS *. It now requires a logged-in staff JWT (requireStaff) and reflects only the app's own origins. The browser side (index.html) attaches the session token to every sheets call via a new sheetsAuthHeaders() helper; the three write paths (syncAllTasks, syncBrainDumpToSheet, saveCoachSession) were switched off `mode:'no-cors'` (which silently drops the Authorization header) to normal CORS, which is also more correct now that the browser talks to our function, not Apps Script directly.
+
+HIGH (H2) - authentication was not authorization. Eleven service-role endpoints (send-sms, send-email, blast-run, metrics-ai, estimate-ai/scope/crew-notes/custom-polish, lead-ai, drip-approve, appt-notify) only checked that the caller had a VALID Supabase JWT, never that the JWT belonged to staff. Because these use the RLS-bypassing service role, any authenticated user (and one non-staff auth account exists today) could send SMS/email on the company accounts, run blasts, and read sales aggregates. Added a shared requireStaff(event) helper in _pec-supabase.cjs that validates the JWT AND confirms an admin_users row (mirrors pec-reset-password.cjs), and applied it to all eleven. The dual-auth endpoints keep their webhook-secret bypass for server-to-server calls.
+
+HOW IT WORKS: requireStaff returns {ok,user,staff} or {ok:false,status,error}, so each handler does `const a=await requireStaff(event); if(!a.ok) return jc(a.status,{error:a.error})`. Also hardened badSecret() to constant-time compare via a new safeEqual() (timingSafeEqual) so the shared webhook secret can't be recovered by a timing side-channel (M9, partial - mcp.cjs still to do).
+
+Why: from the approved security remediation plan; external-attack-surface and privilege gaps are the highest-value fixes and were unambiguous.
+Files touched: netlify/functions/_pec-supabase.cjs (safeEqual, requireStaff, exports), sheets-proxy.cjs, pec-send-sms.cjs, pec-send-email.cjs, pec-estimate-ai.cjs, pec-metrics-ai.cjs, pec-blast-run.cjs, pec-estimate-scope.cjs, pec-lead-ai.cjs, pec-drip-approve.cjs, pec-appt-notify.cjs, pec-estimate-crew-notes.cjs, pec-estimate-custom-polish.cjs, index.html (sheetsAuthHeaders + 4 call sites), PROJECT-LOG.md.
+Next steps: continue P1 (gate the remaining unauthenticated side-effect endpoints; add HTTP security headers to netlify.toml). Handoff to Dylan: confirm Supabase self-signup is disabled and identify/remove the 1 non-staff auth account, else it can still reach any endpoint a staff JWT can (it just can't self-provision). Internal-only change, no What's New entry.
+
+---
+
 ## [2026-07-25 MST] Drift checker: superseded-by notation (fixes the one false-positive partial before the first daily bell)
 By: Claude Code
 

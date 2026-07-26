@@ -6,7 +6,7 @@
 // with the service role inside runApptReminders. Always safe to re-kick: the
 // reminder-sends ledger's unique index makes every leg exactly-once.
 
-const { sb } = require('./_pec-supabase.cjs');
+const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { runApptReminders, apptBookingLeadEffects } = require('./_pec-appt.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -38,9 +38,8 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
   if (event.httpMethod !== 'POST') return jc(405, { ok: false, error: 'Method not allowed' });
 
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const user = await getUser(authHeader.replace(/^Bearer\s+/i, '').trim());
-  if (!user || !user.id) return jc(401, { ok: false, error: 'Not authenticated' });
+  const gate = await requireStaff(event);
+  if (!gate.ok) return jc(gate.status, { ok: false, error: gate.error });
 
   let input;
   try { input = JSON.parse(event.body || '{}'); }

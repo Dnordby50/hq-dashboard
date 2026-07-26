@@ -2703,6 +2703,16 @@ function showSetup(el, msg) {
 // ============================================================
 // GOOGLE SHEETS (via Apps Script proxy)
 // ============================================================
+// The sheets-proxy Netlify function now requires a logged-in staff JWT (it used
+// to be an open proxy anyone on the internet could read/write the company sheets
+// through). Every call from here must carry the current session token. state.session
+// is kept current by the onAuthStateChange handler, so this is always available
+// once a staff member is signed in.
+function sheetsAuthHeaders(extra) {
+  const t = state.session && state.session.access_token;
+  return Object.assign({}, extra || {}, t ? { Authorization: 'Bearer ' + t } : {});
+}
+
 async function fetchSheet(sheetId, range) {
   const url = `${CONFIG.SHEETS_PROXY}?id=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}`;
   // Single retry on 5xx with 500ms backoff. The Sheets proxy occasionally
@@ -2713,7 +2723,7 @@ async function fetchSheet(sheetId, range) {
   // any caller. Permanent failures still surface as a clean Error.
   let res, ct, text;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    res = await fetch(url);
+    res = await fetch(url, { headers: sheetsAuthHeaders() });
     ct = (res.headers.get('content-type') || '').toLowerCase();
     text = await res.text();
     if (res.status >= 500 && attempt === 1) {
@@ -3857,8 +3867,7 @@ async function syncAllTasks() {
   try {
     await fetch(CONFIG.SHEETS_PROXY, {
       method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
+      headers: sheetsAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'syncTasks',
         tasks: tasksCache.map(t => ({
@@ -4365,8 +4374,7 @@ async function syncBrainDumpToSheet(item) {
     const writeUrl = CONFIG.SHEETS_PROXY.replace('/exec', '/exec');
     await fetch(writeUrl, {
       method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
+      headers: sheetsAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'braindump',
         timestamp: new Date().toLocaleString('en-US'),
@@ -4392,8 +4400,7 @@ async function saveCoachSession() {
     try {
       await fetch(proxyUrl, {
         method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
+        headers: sheetsAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ action: 'coachlog', timestamp, transcript })
       });
       $('saveStatus').textContent = 'Logged, sir.';

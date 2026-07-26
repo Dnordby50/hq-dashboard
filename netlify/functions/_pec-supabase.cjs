@@ -24,10 +24,68 @@ function json(statusCode, body) {
   };
 }
 
+// Constant-time string comparison. A plain `a !== b` short-circuits on the first
+// differing byte, so its timing leaks how many leading bytes matched, which lets
+// an attacker recover a shared secret byte-by-byte. timingSafeEqual compares in
+// time independent of content. Lengths must match first (and comparing the length
+// is not itself a meaningful leak). Any secret/token equality check in this repo
+// should route through here.
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 function badSecret(event) {
   const got = event.headers['x-webhook-secret'] || event.headers['X-Webhook-Secret'];
   if (!PEC_WEBHOOK_SECRET || !got) return true;
-  return got !== PEC_WEBHOOK_SECRET;
+  return !safeEqual(got, PEC_WEBHOOK_SECRET);
+}
+
+// Authorization gate for service-role endpoints. getUser-style checks only prove
+// the Bearer JWT is a valid Supabase user; they do NOT prove the caller is staff.
+// Because these endpoints use the RLS-bypassing service role, "is a valid login"
+// is not enough: any Supabase auth user (including one created outside the staff
+// flow, or via self-signup if that is ever enabled) would otherwise be able to
+// send SMS/email on the company accounts, run blasts, read metrics, etc. This
+// verifies the caller has a row in admin_users, mirroring pec-reset-password.cjs.
+// Returns { ok:true, user, staff } or { ok:false, status, error } so callers can
+// do: `const a = await requireStaff(event); if(!a.ok) return jc(a.status,{error:a.error});`
+// Pass { adminOnly:true } to additionally require role='admin'.
+async function requireStaff(event, opts) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    return { ok: false, status: 500, error: 'Server auth not configured' };
+  }
+  const authHeader = (event.headers && (event.headers.authorization || event.headers.Authorization)) || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return { ok: false, status: 401, error: 'Not authenticated' };
+
+  let user;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return { ok: false, status: 401, error: 'Invalid session' };
+    user = await res.json();
+  } catch (_) {
+    return { ok: false, status: 401, error: 'Invalid session' };
+  }
+  if (!user || !user.id) return { ok: false, status: 401, error: 'Invalid session' };
+
+  let staff;
+  try {
+    const rows = await sb('GET', `/admin_users?auth_user_id=eq.${encodeURIComponent(user.id)}&select=id,email,name,role&limit=1`);
+    staff = Array.isArray(rows) && rows[0] ? rows[0] : null;
+  } catch (_) {
+    return { ok: false, status: 500, error: 'Authorization check failed' };
+  }
+  if (!staff) return { ok: false, status: 403, error: 'Staff only' };
+  if (opts && opts.adminOnly && staff.role !== 'admin') {
+    return { ok: false, status: 403, error: 'Admins only' };
+  }
+  return { ok: true, user, staff };
 }
 
 function randomToken() {
@@ -107,4 +165,4 @@ async function logIngest(fields) {
   }
 }
 
-module.exports = { sb, json, badSecret, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest };
+module.exports = { sb, json, badSecret, safeEqual, requireStaff, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest };

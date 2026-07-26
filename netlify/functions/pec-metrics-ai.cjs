@@ -16,7 +16,7 @@
 // Env: ANTHROPIC_API_KEY (shared with sop-chat / pec-lead-ai), optional
 // PEC_METRICS_AI_MODEL.
 
-const { sb, json, badSecret } = require('./_pec-supabase.cjs');
+const { sb, json, badSecret, requireStaff } = require('./_pec-supabase.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -117,9 +117,8 @@ exports.handler = async (event) => {
 
   // Auth: staff JWT OR webhook secret (server-to-server), like pec-lead-ai.
   if (badSecret(event)) {
-    const auth = event.headers.authorization || event.headers.Authorization || '';
-    const user = await getUser(auth.replace(/^Bearer\s+/i, ''));
-    if (!user || !user.id) return jc(401, { success: false, error: 'Not authorized' });
+    const gate = await requireStaff(event);
+    if (!gate.ok) return jc(gate.status, { success: false, error: gate.error });
   }
 
   let body;

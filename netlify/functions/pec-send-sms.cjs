@@ -17,7 +17,7 @@
 // code concern, but the opt-out guard below is non-negotiable and every send
 // carries a "Reply STOP to opt out" line.
 
-const { sb } = require('./_pec-supabase.cjs');
+const { sb, requireStaff } = require('./_pec-supabase.cjs');
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -94,11 +94,12 @@ exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
   if (event.httpMethod !== 'POST') return jc(405, { ok: false, error: 'Method not allowed' });
 
-  // Auth: require a valid Supabase JWT.
-  const authHeader = event.headers.authorization || event.headers.Authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const user = await getUser(token);
-  if (!user || !user.id) return jc(401, { ok: false, error: 'Not authenticated' });
+  // Auth: require a valid Supabase JWT that belongs to a staff member. This
+  // endpoint sends SMS on the company Quo account, so a valid login is not
+  // enough -- the caller must be in admin_users (see requireStaff).
+  const auth = await requireStaff(event);
+  if (!auth.ok) return jc(auth.status, { ok: false, error: auth.error });
+  const user = auth.user;
 
   let input;
   try { input = JSON.parse(event.body || '{}'); }
