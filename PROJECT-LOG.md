@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: wrote prompt 52 (BusyBusy Payroll Export as the job-costing hours source)
+By: Cowork
+
+Changed: added claude-code-prompt-52-busybusy-payroll-export.md at the repo root. No code, no schema, no migration applied. Closes the scoping arc that began with the AlignOps doc this morning: 16 decision questions, one live discovery pull, two read-only PROD verifications, four corrections to Cowork's own earlier conclusions.
+
+THE BUILD IN ONE LINE: an admin-triggered, preview-then-commit, weekly two-week import from https://export.busybusy.io/ that replaces manual crew-hour entry as the source of truth for job costing, and retires the dead GraphQL proxy.
+
+SEVEN PARTS. A schema (drop and recreate the empty pec_prod_busybusy_time_entries around snapshot semantics, plus imports / projects / employees tables, plus an atomic security-definer RPC), B the fetch+parse Netlify function pec-busybusy-export.cjs with explicit handling for all four response cases, C the Settings panel with preview, commit, and import history, D the employee mapping screen, E the unlinked-projects screen, F the job costing integration and the finalized-job safety rule, G retirement of pec-busybusy.cjs plus features.json and What's New.
+
+THE FOUR DESIGN CALLS WORTH RECORDING, because each rejects an obvious simpler option.
+
+1. ROWS ARE STORED VERBATIM, ONE PER CSV ROW, and hours/ot_hours are aggregated at READ time. The tempting alternative is collapsing each split REG/OT1 pair into a single row carrying hours plus ot_hours. Rejected: collapsing bakes an interpretation into storage, and the split pairs are exactly where a parsing mistake would hide. Verbatim storage keeps delete-then-insert trivially faithful and makes the anomaly display show what BusyBusy actually said. The existing 2026-06-19 convention (hours is TOTAL, regular = hours - ot_hours) is preserved at the read layer, so computeCrewBonus needs no change.
+
+2. THE REPLACE IS AN RPC, NOT TWO SUPABASE-JS CALLS. Delete-then-insert across two round trips means a failure between them empties a payroll window. Prompt 52 specifies a security-definer function doing insert-batch-plus-delete in ONE transaction, gated on is_admin_staff(). Standing rule 13 cannot express a function in the four @artifacts kinds, so the migration declares none: with that reason and declares the tables, columns, indexes, and settings keys that it can.
+
+3. THE FINALIZED-JOB RULE IS DISPLAY-ONLY, WHICH CORRECTS AN EARLIER COWORK ENTRY. The 2026-07-27 scoping entry said a finalized-but-unpaid bonus whose hours moved would be flagged through prompt 50's review_status. Prompt 52 does NOT do that. The import writes nothing to pec_prod_job_bonuses or pec_bonus_payouts, ever. A finalized job's ledger rows already hold their amounts, so a paid bonus cannot move, and that safety is structural rather than conditional. What the build adds is a "Hours changed since finalize: was X, now Y" note comparing live BusyBusy hours to the bonuses.hours_actual snapshot, leaving prompt 50's manual Pay full / Reduce / Void gate as the only lever. Safer, and it keeps callback-review semantics uncorrupted.
+
+4. NO WAGE OR COST COLUMN EXISTS IN THE NEW TABLE AT ALL, and the migration comments say why so a future session does not helpfully add one. Their Cost does include the OT premium (Cowork's earlier claim to the contrary was wrong and is corrected in the entry below), but it carries no 25 percent burden, so it is not loaded labor. Keeping wages out of the table is also the better privacy posture for a table read by any admin staff.
+
+DYLAN'S OVERTIME CHOICE IS RECORDED AS A DELIBERATE TRADEOFF, not a default. BusyBusy caps REG at 40 per person per week across all projects, so the premium lands on whatever job the person was on at hour 40, in practice Thursday and Friday work. Cowork recommended costing jobs at base rate and pooling the premium as overhead, on the grounds that a crew should not lose bonus because its job fell late in the week. Dylan chose to accept BusyBusy's attribution because it matches payroll exactly and every figure traces to a punch. Prompt 52 states the consequence in writing so that when a Friday job's GP looks bad in three months, the reason is on the record rather than being rediscovered as a bug.
+
+Why: Dylan's task, per the project's scope-then-write-the-prompt workflow.
+Files touched: claude-code-prompt-52-busybusy-payroll-export.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan pastes prompt 52 into Claude Code. Claude Code writes 2026-07-27_busybusy_export.sql and hands it to Cowork to apply, then SCHEMA.md gets refreshed. Still open from prior days: prompt 49 (leads follow-up queue) written and unrun; the Kathy Carmack name+address bridge decision (5 blocked bonuses); the callback-review gate is UI-only, not DB-enforced; ZZ Test Draft lead and EST-102034 need deleting.
+Handoff to Dylan: (1) set BUSYBUSY_EXPORT_TOKEN in Netlify env, never in the repo; (2) FIX ARON BRONSON'S 47.78-HOUR PUNCH in BusyBusy before the first real import, since any re-pull keeps importing it; (3) identify what the Matt Scharrer 27.25 hours belong to, because that project will land in the unlinked-projects queue on day one.
+
+---
+
 ## [2026-07-27 MST] Cowork: discovery findings received, THREE Cowork conclusions corrected, shop-time prompt rewritten on the real numbers
 By: Cowork
 
