@@ -24,6 +24,38 @@ Handoff to Dylan: ask AlignOps whether a long-lived integration token exists for
 
 ---
 
+## [2026-07-27 MST] Claude Code: prompt 52 built, BusyBusy Payroll Export is now the hours source for job costing
+By: Claude Code
+
+Changed: seven commits, one per part (610331c A schema, 77541fe B fetch function, a6c0374 C settings panel, 5731442 D employee mapping, 69b6dc8 E unlinked projects, c7824a5 F costing reads, 25c442f G retirement). The migration is WRITTEN, NOT APPLIED; nothing works until Cowork runs it. npm test 25/25 green before and after every commit. Not pushed yet (will push with this entry).
+
+WHAT SHIPPED. Settings has a new BusyBusy tab (admin only): a date window prefilled to the last two full Monday-Sunday weeks, Fetch preview, a summary (rows, employees, total/REG/OT1 hours, overhead vs job hours, per-job hours, unmapped names, unlinked projects, anomaly table rendered ABOVE the Import button, which stays enabled per locked decision 9), Import, and the last ten imports as history. Below it: the employee mapping screen (every exported name against a crew-member dropdown plus an Ignore toggle, unmapped sorted first, hours-seen column, a standing warning that surname-less "Preston" can never auto-match) and the unlinked projects screen (job search picker reusing the touch-up modal pattern, Mark as overhead). Both re-resolve stored rows in place on change: attribution only, hours untouched.
+
+HOW THE STORAGE HOLDS THE SNAPSHOT PROBLEM. pec_prod_busybusy_time_entries was dropped and recreated (it had zero rows and its upsert/soft-delete design is exactly what a snapshot API forbids): one row per CSV row, verbatim, keyed to an import_id; no wage or cost column AT ALL, with migration comments saying that is a decision, not an oversight. The replace is the security-definer RPC pec_busybusy_import: audit row + delete window + insert rows in ONE transaction, gated on is_admin_staff(). The Netlify commit path calls the RPC with the CALLER'S JWT, not the service key, so auth.uid() is the real admin and imported_by is honest. One additive liberty against the prompt-52 signature, documented in the migration: an OPTIONAL fifth p_summary jsonb param carries the two audit fields SQL cannot derive from the rows (anomaly_count, notes); everything derivable (row_count, hour sums, employees_seen, unmapped/unlinked arrays) is computed inside the function FROM p_rows so the audit row cannot disagree with what was stored. The function stays callable with the four documented args.
+
+THE FAILURE RULE, WIRED AS SPECIFIED. All four response cases are explicit in pec-busybusy-export.cjs: 200-with-rows parses, 200-header-only is zero rows (the observed empty-range behavior), 404 is zero rows (defensive, the doc claims it), and 401 / 5xx / network / drifted-header / wrong-field-count are hard failures that name the cause and NEVER reach the delete step. 401's message says outright that the member session died and Dylan must paste a fresh BUSYBUSY_EXPORT_TOKEN. Commit re-fetches rather than trusting the client, and reports drift if the counts moved between preview and commit.
+
+COSTING NOW READS THE NEW SHAPE in three places (unified detail, the superseded renderCrewBonus, the costing-queue pool preview): OT is the wage_type='OT1' rows (preserving the 2026-06-19 convention that hours is TOTAL), rows with null crew_member_id (unmapped/ignored names) never reach costing, and split REG/OT1 pairs display as ONE punch (deduped on start/end) while summing correctly. renderCrewBonus's old explicit select list included busybusy_member_id and deleted_at, which no longer exist and would have 400'd; fixed even though that path is superseded. Manual labor: BusyBusy wins when a job has imported rows (that precedence already existed); manual entries now render greyed with a kept-for-reference label. A finalized job whose live BusyBusy hours drift from the recorded hours_actual snapshot shows a display-only "Hours changed since finalize: was X, now Y" note; the import writes NOTHING to pec_prod_job_bonuses or pec_bonus_payouts and never touches review_status, per the corrected Part F rule. Also fixed a small pre-existing mislabel: the Actual Hours field said "(BusyBusy)" whenever any hours existed, even manual ones; it now reads the actual source.
+
+RETIRED: pec-busybusy.cjs deleted (grep confirmed zero live callers; index.html always read the table directly, never the proxy). features.json rewritten for the BusyBusy entry (now points at prompt 52 and the new function/tables) and amended for Job costing and Crew bonus. What's New entry busybusy-hours-import appended (plain language, no em dashes). The Team Members card no longer shows the dead "(no BusyBusy link)" GUID chip.
+
+Why: Dylan ran claude-code-prompt-52-busybusy-payroll-export.md.
+Files touched: supabase/migrations/2026-07-27_busybusy_export.sql (new), netlify/functions/pec-busybusy-export.cjs (new), netlify/functions/pec-busybusy.cjs (deleted), index.html, features.json, help/whats-new.json, PROJECT-LOG.md (this entry).
+Next steps: Cowork applies the migration and refreshes SCHEMA.md; Dylan sets the token; first real import after Aron's punch is fixed.
+
+## Handoff to Cowork
+1. Apply supabase/migrations/2026-07-27_busybusy_export.sql to the PROD Supabase project (zdfpzmmrgotynrwkeakd). It drops and recreates pec_prod_busybusy_time_entries (verified zero rows in prod on 2026-07-27) and is wrapped in one transaction.
+2. Run the Verify queries at the bottom of the migration file: 0 time-entry rows, the 3 named columns present, the Shop seed row with is_overhead true, the 4 busybusy_% settings keys, and pg_proc showing pec_busybusy_import.
+3. Regenerate SCHEMA.md (standing rule 9) so the four busybusy tables and the new settings keys are in the reference.
+4. Confirm in the Netlify dashboard that BUSYBUSY_EXPORT_TOKEN exists in the Production context once Dylan sets it (task for him below); the function returns a named 500 without it.
+
+## Handoff to Dylan
+1. Set BUSYBUSY_EXPORT_TOKEN in Netlify env (Production): the full member-session JWT that worked on 2026-07-27. Never in the repo.
+2. Fix Aron Bronson's 47.78-hour punch in BusyBusy (2026-07-22 07:52 through 2026-07-24 07:39, all Shop) BEFORE the first real import; any pull of that window keeps importing it and it manufactured most of his 25.80 OT1 hours. (His name should also be Ignored on the mapping screen; he is a salesperson.)
+3. Decide what the Matt Scharrer 27.25 hours belong to. That project (#2227346) will sit in the unlinked projects list on day one because no such job exists in the system; link it or get the job created.
+
+---
+
 ## [2026-07-27 MST] Cowork: wrote prompt 52 (BusyBusy Payroll Export as the job-costing hours source)
 By: Cowork
 
