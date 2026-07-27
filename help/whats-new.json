@@ -1,5 +1,38 @@
 [
   {
+    "id": "metrics-window-presets-ai-insights",
+    "date": "2026-07-26",
+    "title": "Metrics: pick your time window (MTD, YTD, 4 weeks, custom) and get an AI read of it",
+    "summary": "The Metrics tab now opens to Month to date, with one-tap buttons for Year to date, Last 4 weeks, or a Custom date range. The window you pick drives everything on the tab, including the charts, the Sales section, and every drill-down. At the top there is a new AI insights panel: tap Generate insights and it writes a short plain-language read of what moved in the selected window and what to act on. It only runs when you tap the button, and it remembers the last read per window so repeat taps are instant.",
+    "howto": [
+      "Open Metrics and tap MTD, YTD, Last 4 weeks, or Custom at the top left.",
+      "For Custom, pick a From and To date and tap Apply.",
+      "Tap Generate insights in the AI insights panel for a written summary of the window you are looking at. Tap Regenerate for a fresh one."
+    ]
+  },
+  {
+    "id": "costing-office-notes-and-accordion",
+    "date": "2026-07-26",
+    "title": "Job costing: a cleaner page and a new Office notes box",
+    "summary": "The job costing detail now opens to a compact summary (revenue, costs, gross profit, bonus pool) with each section folded up below it. Tap a section header to open just what you need; the totals still show on the closed headers. There is also a new Office notes box in the Notes section, separate from the regular notes, for things like billing quirks or customer conversations. It shows who wrote the note and when.",
+    "howto": [
+      "Open a job from Job Costing. The profit summary is at the top; tap any section header (Materials, Costs, Notes, and so on) to open it.",
+      "To leave an office note, open the Notes section and type in the Office notes box. It saves when you click away.",
+      "The name and time under the box show who last updated it."
+    ]
+  },
+  {
+    "id": "bonus-two-week-lock-callback-review",
+    "date": "2026-07-26",
+    "title": "Crew bonuses now wait 14 days after job completion before they can be paid",
+    "summary": "This is on purpose, payroll is not broken. A bonus becomes payable 14 days after the job's completion date, so any callback has time to surface first. The Bonus Report shows each waiting bonus with its unlock date. If a job gets a callback visit, its bonuses are held for a manual decision: pay in full, reduce, or void, with a required reason. Admins also get a Reverse button on paid bonuses to claw one back with a reason on record, without deleting any history.",
+    "howto": [
+      "Open Bonus Report. Locked bonuses show their payable date; they cannot be selected until then.",
+      "If a row says Callback review needed, choose Pay full, Reduce, or Void.",
+      "If a row says Completion date missing, use Set completion date on it so the clock can start."
+    ]
+  },
+  {
     "id": "two-factor-authentication",
     "date": "2026-07-25",
     "title": "Turn on two-factor sign-in for your account",

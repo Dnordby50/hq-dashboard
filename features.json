@@ -669,14 +669,14 @@
     {
       "name": "Job costing",
       "area": "dashboard",
-      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings.",
+      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings. Prompt 50: the unified detail is an accordion (always-visible profit summary card, collapsible Revenue & Job Info / Labor & Bonus Payout / Materials / Subcontractors / Crew Bonuses / Costs / Notes sections, session-remembered via _unifiedSecOpen, layout only), and the Notes section carries an Office notes box (office_notes/_by/_at on pec_prod_job_costing, saved via saveOfficeNotes with an author+time stamp, separate from the crew-adjacent notes column). openCostingDetail is the superseded modal with no remaining callers.",
       "code": {
         "indexHtml": [
           "renderJobCosting",
           "renderUnifiedJob",
           "loadCostingData",
           "computeCostingRow",
-          "openCostingDetail",
+          "saveOfficeNotes",
           "saveCostingField",
           "jobEffectiveSqft"
         ],
@@ -713,7 +713,7 @@
     {
       "name": "Crew bonus and Bonus Report",
       "area": "dashboard",
-      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member.",
+      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted.",
       "code": {
         "indexHtml": [
           "renderCrewBonus",
@@ -729,7 +729,10 @@
         "pec_prod_job_manual_labor",
         "pec_bonus_payouts"
       ],
-      "since": "2026-06"
+      "since": "2026-06",
+      "settings": [
+        "bonus_lock_days"
+      ]
     },
     {
       "name": "Commission tracking",
@@ -816,11 +819,13 @@
     {
       "name": "Metrics and analytics",
       "area": "dashboard",
-      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card (avg touches to win / to estimate out, open leads never contacted, from the same comms-log matcher as the Leads board), the open pipeline with an AI-written weekly read, and the Phase 3 drip/blast performance cards (see the Drip and blast performance metrics entry).",
+      "description": "A Metrics dashboard of DripJobs-style KPI cards where every metric is drillable to the jobs behind it, filtered by time window and salesperson. Prompt 50: the window control is four presets (MTD default via the metrics_default_window setting, YTD, Last 4 weeks = rolling 28 days, Custom with native date inputs); metricsWindowRange/metricsBuildBuckets drive the WHOLE tab (KPIs, deltas vs an equal-length prior period, charts, Sales section, drip/blast cards, drills), routing around invBuildWeeks; the 12-week preset folded into Custom. A manual-generate AI insights panel at the top writes a plain-language read of the computed values for the selected window (pec-metrics-ai.cjs mode:'tab', cache keyed by window+salesperson in the metrics_tab_ai_insights settings row, TTL from metrics_ai_cache_days), distinct from the weekly pipeline read which stays. Main weekly charts render as Chart.js (lazy CDN, pinned, CSS-bar fallback) with theme-aware ink; speed-to-lead and price-per-sqft draw as gradient-area trend lines, conversion by source gets a rate bar chart, and the Sales volume / Revenue collected / Jobs completed cards carry SVG sparklines. Includes AR-timing KPIs and a Sales section: price per square foot by month and system, speed to lead, conversion by source and campaign, an Outbound touches card, the open pipeline with the AI weekly read, and the Phase 3 drip/blast performance cards.",
       "code": {
         "indexHtml": [
           "renderMetrics",
           "openMetricsDrill",
+          "metricsWindowRange",
+          "metricsBuildBuckets",
           "initMetricsCharts",
           "metricsChartInk",
           "kpiSparkSvg",
@@ -835,7 +840,11 @@
         "pec_sms_log",
         "pec_email_log"
       ],
-      "since": "2026-05"
+      "since": "2026-05",
+      "settings": [
+        "metrics_default_window",
+        "metrics_ai_cache_days"
+      ]
     },
     {
       "name": "Change orders",
