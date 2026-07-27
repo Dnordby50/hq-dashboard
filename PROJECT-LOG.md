@@ -4,6 +4,26 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: created BUSYBUSY_EXPORT_TOKEN in Netlify (Dylan pasted the value)
+By: Cowork
+
+Changed: one Netlify environment variable on the prescottepoxy project (prescottepoxy.netlify.app). No repo code, no schema.
+
+Staged the variable through the Netlify UI and handed the value entry to Dylan, who pasted the token himself. Cowork never saw, stored, or transmitted the token, which is the standing rule for credentials.
+
+Final state, verified by filtering the env var list after creation: key BUSYBUSY_EXPORT_TOKEN, marked Secret (lock icon shown), scoped to Builds / Functions / Runtime, 5 values in 5 deploy contexts. The scope set is not a choice, Netlify applies it automatically when Secret is checked (Post processing is disabled for secrets), and it matches how the existing BUSYBUSY_API_TOKEN is scoped. Checking Secret also forces per-deploy-context values, which is why there are five rather than one; Production is the only one the live weekly import needs. Worth knowing: Netlify states the Local development value "is available to the CLI, and is not considered secret," so that one context is readable by anyone who can run the Netlify CLI against this site.
+
+NOT YET LIVE, and this is expected. Nothing in the codebase reads BUSYBUSY_EXPORT_TOKEN yet; the function that will (pec-busybusy-export.cjs) is specified in prompt 52 and not written. Netlify functions pick up environment variables at deploy time, so the variable does nothing until prompt 52 ships and a deploy runs.
+
+The three GraphQL-era variables (BUSYBUSY_API_TOKEN, BUSYBUSY_API_URL, BUSYBUSY_AUTH_HEADER) were deliberately left in place. Prompt 52 Part G deletes the function that reads them; clearing them before that would only remove the ability to diagnose the old 401.
+
+Why: step 2 of the "wire BusyBusy up permanently" sequence Dylan asked for.
+Files touched: PROJECT-LOG.md (this entry). Netlify config changed outside the repo.
+Next steps: Dylan runs prompt 52 in Claude Code. Before the first real import: fix Aron Bronson's 47.78-hour punch in BusyBusy, and identify what the Matt Scharrer 27.25 hours belong to. Still open from prior days: prompt 49 unrun; Kathy Carmack bridge decision; callback-review gate not DB-enforced; ZZ Test Draft lead and EST-102034 need deleting.
+Handoff to Dylan: ask AlignOps whether a long-lived integration token exists for export.busybusy.io. The credential now in Netlify is a member-session JWT with no exp claim, so it will keep working until the session is revoked server-side, at which point every import returns 401 with no warning.
+
+---
+
 ## [2026-07-27 MST] Cowork: wrote prompt 52 (BusyBusy Payroll Export as the job-costing hours source)
 By: Cowork
 
