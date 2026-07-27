@@ -13672,6 +13672,7 @@ async function renderJobDetailInner(id) {
       ${job.customers?.token
         ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
         : `<button class="pec-btn sm" disabled title="This customer has no portal token yet">View customer portal</button>`}
+      <button class="pec-btn sm" id="pecJobAddTouchup" title="Log a touch-up / warranty visit for this job; it lands in the Job Schedule's Touch-ups list">+ Touch-up</button>
       <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : ''}" id="pecJobTabBtnComms" title="${activeTab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Messages &amp; Calls</button>
       <div style="font-size:.8rem;color:var(--muted)">Total <strong id="estimateTotal" style="font-size:1rem">${invUSD(areaPriceSum())}</strong></div>
       <button type="button" class="pec-btn sm" id="estAddChangeOrder">Add change order</button>
@@ -13870,6 +13871,33 @@ async function renderJobDetailInner(id) {
   // throw on a specific record shows the error block + Retry button instead
   // of a silent spinner hang. Reported by Dylan: clicking "Back to jobs"
   // from Kathy Carmack's job detail did nothing.
+  // + Touch-up (prompt 51 F2): resolve THIS CRM job's production row (deal id
+  // first, then the tested name+address key, the same two-way bridge the
+  // schedule sync uses) and open the intake modal prefilled. A CRM job with no
+  // production row cannot anchor a touch-up (the callback links by
+  // original_job_id), so that case gets an explanatory toast, not a crash.
+  const addTouchupBtn = $('pecJobAddTouchup');
+  if (addTouchupBtn) addTouchupBtn.addEventListener('click', async () => {
+    addTouchupBtn.disabled = true;
+    let prod = null;
+    try {
+      if (job.dripjobs_deal_id) {
+        const r = await supabase.from('pec_prod_jobs').select('*')
+          .eq('dripjobs_deal_id', job.dripjobs_deal_id).eq('is_callback', false).is('archived_at', null).limit(1);
+        if (!r.error && r.data && r.data[0]) prod = r.data[0];
+      }
+      if (!prod && typeof window.jobNameAddrKey === 'function') {
+        const key = window.jobNameAddrKey(job.customers?.name, job.address);
+        if (key) {
+          const cand = await supabase.from('pec_prod_jobs').select('*').eq('is_callback', false).is('archived_at', null);
+          if (!cand.error) prod = (cand.data || []).find(p => window.jobNameAddrKey(p.customer_name, p.address) === key) || null;
+        }
+      }
+    } catch (_) { /* falls through to the toast */ }
+    addTouchupBtn.disabled = false;
+    if (!prod) { showToast('No production row found for this job (it may never have reached the Job Schedule), so a touch-up cannot link to it.', { ttl: 6500 }); return; }
+    openTouchupAddModal({ parentJob: prod });
+  });
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
 
@@ -18105,6 +18133,13 @@ async function mountJobComms(card, job) {
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (sendBtn && !sendBtn.disabled) sendBtn.click(); }
     });
+    // One-shot prefilled draft (prompt 51 Touch-ups Text button). Behaves like
+    // typed text: sits in the compose box, sends only on an explicit click.
+    if (window.__pecCommsPrefill) {
+      ta.value = window.__pecCommsPrefill;
+      window.__pecCommsPrefill = null;
+      ta.dispatchEvent(new Event('input'));
+    }
   }
   if (sendBtn) sendBtn.addEventListener('click', async () => {
     const body = (ta.value || '').trim();
@@ -23748,12 +23783,19 @@ async function renderNextDay() {
     const shared = splitJobIds.has(d.job_id);
     const canSplit = !!d.crew_id && rowsToday.length < 2 && crews.some(c => c.id !== d.crew_id);
     const badge = shared ? ` <span style="font-size:.6rem;font-weight:700;background:var(--rd-accent,#D8531C);color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">2 teams</span>` : '';
+    // Touch-ups are badged so a crew never mistakes one for a new install
+    // (prompt 51 F4). Same sky blue as the calendar's callback bars. The
+    // description (the callback's notes) rides the card; the address is the
+    // original job's (copied at creation).
+    const tuBadge = j.is_callback ? ` <span style="font-size:.6rem;font-weight:700;background:#0ea5e9;color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">TOUCHUP</span>` : '';
+    const tuDesc = (j.is_callback && j.notes) ? `<div style="font-size:.7rem;color:var(--rd-muted,#6b7280)">${esc(String(j.notes).split('\n')[0])}</div>` : '';
     const splitBtn = canSplit ? `<button type="button" data-split-day="${esc(d.id)}" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">Split to 2nd crew</button>` : '';
     const removeBtn = (shared && isSecondRow(d)) ? `<button type="button" data-unsplit-day="${esc(d.id)}" title="Remove this second team; the other team's card stays" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">✕ Remove 2nd team</button>` : '';
     return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
         style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
-      <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}
+      <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}${tuBadge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
+      ${tuDesc}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
       ${splitBtn || removeBtn ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${splitBtn}${removeBtn}</div>` : ''}
     </div>`;
@@ -23807,9 +23849,15 @@ async function renderNextDay() {
       // each crew on paper that the other team is on site too. Plain hyphen
       // on purpose (print-side markers stay plain text).
       const teams = splitJobIds.has(d.job_id) ? ' - 2 teams' : '';
+      // TOUCHUP marker on paper (prompt 51 F4): plain text like the 2-teams
+      // marker, plus the description line, so a touch-up can never read as a
+      // new install on the printed sheet. Revenue prints $0 unless billable.
+      const touchup = j.is_callback ? ' - TOUCHUP' : '';
+      const tuDescLine = (j.is_callback && j.notes) ? `<div class="addr">${esc(String(j.notes).split('\n')[0])}</div>` : '';
       return `<div class="job">
-        <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}</div>
+        <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}${esc(touchup)}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
+        ${tuDescLine}
         <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
       </div>`;
     };
@@ -24352,6 +24400,136 @@ function openTouchupCloseModal(job) {
       renderSchedule();
     });
   } });
+}
+
+// Intake (prompt 51 Part F): the "customer just called" path. Search completed
+// and past jobs by customer name or address WITHOUT leaving the schedule, add
+// a description and who reported it, and the touch-up lands in the panel as
+// 'open' (no auto-scheduler from this path; scheduling is a separate decision).
+// With opts.parentJob (the job-detail entry point) the picker is skipped and
+// the job comes prefilled. Office-only by placement; no new permission flag
+// (locked decision: any staff can create, schedule, and close).
+async function openTouchupAddModal(opts = {}) {
+  if (!opts.parentJob && !(state.prodJobs || []).length) {
+    try { await loadProdCore(); } catch (_) {}
+  }
+  const candidates = (state.prodJobs || [])
+    .filter(j => !j.is_callback && !j.archived_at)
+    .slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+  let picked = opts.parentJob || null;
+  const rowHtml = (j) => `<div class="pec-sched-pcard" data-tu-pick="${esc(j.id)}" style="padding:7px 10px">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+        <strong style="font-size:.82rem">${esc(j.customer_name || '(no name)')}</strong>
+        <span style="font-size:.66rem;color:var(--muted)">${j.install_date ? 'Installed ' + esc(fmtDate(j.install_date)) : esc(j.status || '')}</span>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted)">${esc(j.address || 'No address')} · #${esc(j.proposal_number || '')}</div>
+    </div>`;
+  openModal(`
+    <h3 style="margin:0 0 6px">New touch-up</h3>
+    <div style="font-size:.82rem;color:var(--muted);margin-bottom:10px">A no-charge return visit tied to the original job. It goes to the Touch-ups list on the Job Schedule; schedule it from there when ready.</div>
+    <div id="tuAddPickWrap" style="${picked ? 'display:none' : ''}">
+      <div class="pec-field"><label>Find the original job</label>
+        <input id="tuAddSearch" placeholder="Customer name or address…" autocomplete="off">
+      </div>
+      <div id="tuAddResults" style="display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;margin-bottom:10px"></div>
+    </div>
+    <div id="tuAddPicked" style="${picked ? '' : 'display:none'};margin-bottom:10px"></div>
+    <div class="pec-field"><label>What needs touching up</label>
+      <textarea id="tuAddDesc" rows="2" style="width:100%" placeholder="e.g. Peeling spot by the garage door"></textarea>
+    </div>
+    <div class="pec-field"><label>Reported by</label>
+      <input id="tuAddReqBy" placeholder="e.g. Customer call, crew lead, final inspection" autocomplete="off">
+    </div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="tuAddSave" ${picked ? '' : 'disabled'}>Add touch-up</button>
+    </div>
+    <div class="prod-msg-err" id="tuAddErr"></div>`, { onMount(modal) {
+    const searchEl = modal.querySelector('#tuAddSearch');
+    const resultsEl = modal.querySelector('#tuAddResults');
+    const pickedEl = modal.querySelector('#tuAddPicked');
+    const pickWrap = modal.querySelector('#tuAddPickWrap');
+    const saveBtn = modal.querySelector('#tuAddSave');
+    const showPicked = () => {
+      if (!picked) return;
+      pickedEl.style.display = '';
+      pickWrap.style.display = 'none';
+      pickedEl.innerHTML = `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rd-line,var(--border));border-radius:8px;background:var(--rd-soft,#f5f6f8)">
+          <div style="flex:1"><strong style="font-size:.85rem">${esc(picked.customer_name || '')}</strong><div style="font-size:.7rem;color:var(--muted)">${esc(picked.address || 'No address')} · #${esc(picked.proposal_number || '')}</div></div>
+          ${opts.parentJob ? '' : '<button type="button" class="pec-btn ghost sm" id="tuAddRepick">Change</button>'}
+        </div>`;
+      const repick = pickedEl.querySelector('#tuAddRepick');
+      if (repick) repick.addEventListener('click', () => { picked = null; pickedEl.style.display = 'none'; pickWrap.style.display = ''; saveBtn.disabled = true; searchEl.focus(); });
+      saveBtn.disabled = false;
+    };
+    const renderResults = () => {
+      const q = (searchEl.value || '').trim().toLowerCase();
+      const hits = !q ? candidates.slice(0, 12)
+        : candidates.filter(j => String(j.customer_name || '').toLowerCase().includes(q) || String(j.address || '').toLowerCase().includes(q)).slice(0, 25);
+      resultsEl.innerHTML = hits.length ? hits.map(rowHtml).join('')
+        : '<div class="pec-empty" style="padding:8px;font-size:.75rem">No job matches. Try fewer letters.</div>';
+      resultsEl.querySelectorAll('[data-tu-pick]').forEach(el => el.addEventListener('click', () => {
+        picked = candidates.find(j => j.id === el.dataset.tuPick) || null;
+        showPicked();
+      }));
+    };
+    if (searchEl) { searchEl.addEventListener('input', renderResults); renderResults(); }
+    if (picked) showPicked();
+    saveBtn.addEventListener('click', async () => {
+      const errEl = modal.querySelector('#tuAddErr'); errEl.textContent = '';
+      if (!picked) return;
+      saveBtn.disabled = true;
+      const desc = (modal.querySelector('#tuAddDesc').value || '').trim();
+      const reqBy = (modal.querySelector('#tuAddReqBy').value || '').trim();
+      const newId = await addTouchupCallback(picked, {
+        skipConfirm: true,
+        openScheduler: false,
+        description: desc ? 'Touch-up: ' + desc : 'Touch-up / warranty callback',
+        requestedBy: reqBy,
+      });
+      if (!newId) { saveBtn.disabled = false; return; }
+      showToast(`Touch-up added for <strong>${esc(picked.customer_name || '')}</strong>. It is in the Touch-ups list as Open.`);
+      if (state.view === 'schedule') renderSchedule();
+    });
+  } });
+}
+
+// Text button (Part F3): route to the customer's Messages thread on the
+// ORIGINAL job's detail page (touch-up rows have no public.jobs row of their
+// own by design) with a prefilled draft. Nothing sends automatically; the
+// draft sits in the compose box like typed text. Prompt-38 pattern.
+async function openTouchupText(touchup) {
+  const parent = (state.prodJobs || []).find(p => p.id === touchup.original_job_id) || null;
+  const deal = (parent && parent.dripjobs_deal_id) || touchup.dripjobs_deal_id || null;
+  let crmId = null;
+  try {
+    if (deal) {
+      const r = await supabase.from('jobs').select('id').eq('dripjobs_deal_id', deal).is('archived_at', null).limit(1);
+      if (!r.error && r.data && r.data[0]) crmId = r.data[0].id;
+    }
+    if (!crmId && typeof window.jobNameAddrKey === 'function') {
+      const key = window.jobNameAddrKey(touchup.customer_name, touchup.address);
+      if (key) {
+        const cand = await supabase.from('jobs').select('id,address,customers(name)').is('archived_at', null);
+        if (!cand.error) {
+          const hit = (cand.data || []).find(row => window.jobNameAddrKey(row.customers && row.customers.name, row.address) === key);
+          if (hit) crmId = hit.id;
+        }
+      }
+    }
+  } catch (_) { /* falls through to the toast below */ }
+  if (!crmId) {
+    showToast('No CRM job found for this customer, so there is no Messages thread to open. Manual schedule entries have no job page.', { ttl: 6000 });
+    return;
+  }
+  const first = String(touchup.customer_name || '').trim().split(/\s+/)[0] || 'there';
+  // Customer-facing copy: no em dashes (standing rule 6).
+  window.__pecCommsPrefill = `Hi ${first}, this is Prescott Epoxy Company about the touch-up visit for ${touchup.address || 'your floor'}. We would like to get it on the schedule. What days work for you this week or next?`;
+  state.openJobId = crmId;
+  state.jobDetailTabFor = crmId;
+  state.jobDetailTab = 'comms';
+  state.openInvoiceJobId = null;
+  switchView('jobs');
 }
 
 // Build the panel's render context once per renderSchedule pass: badge lookups
