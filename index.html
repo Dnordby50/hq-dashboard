@@ -17708,14 +17708,14 @@ async function renderSettings() {
       <div class="pec-card">
         <div style="margin-bottom:8px">
           <h3 style="margin:0">Team Members</h3>
-          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Per-member hourly wage drives the Crew Bonus math (actual labor = hours x wage x 1.25 burden). A blank wage falls back to the default labor rate. Add team members below; BusyBusy-linked members get their hours synced automatically.</div>
+          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Per-member hourly wage drives the Crew Bonus math (actual labor = hours x wage x 1.25 burden). A blank wage falls back to the default labor rate. Add team members below; hours arrive from the BusyBusy import (Settings, BusyBusy tab), where each exported name is mapped to a member.</div>
         </div>
         <table class="pec-table">
           <thead><tr><th>Name</th><th>Crew</th><th style="width:150px">Hourly wage ($)</th><th style="width:80px">Active</th></tr></thead>
           <tbody>
             ${members.map(m => `
               <tr data-member-id="${esc(m.id)}">
-                <td><strong>${esc(m.name || '')}</strong>${m.busybusy_member_id ? '' : ' <span style="color:var(--muted);font-size:.65rem">(no BusyBusy link)</span>'}</td>
+                <td><strong>${esc(m.name || '')}</strong></td>
                 <td>${m.crew_id && crewById[m.crew_id] ? esc(crewById[m.crew_id].name) : '<span style="color:var(--muted)">—</span>'}</td>
                 <td><input class="prod-num" type="number" min="0" step="0.01" data-member-wage value="${esc(m.hourly_wage ?? '')}" placeholder="default rate" style="width:130px"></td>
                 <td><input type="checkbox" data-member-active ${m.active !== false ? 'checked' : ''} style="width:auto"></td>
@@ -28237,15 +28237,17 @@ async function renderCrewBonus() {
   try {
     const res = await withFreshSession(() => supabase
       .from('pec_prod_busybusy_time_entries')
-      .select('job_id,crew_member_id,busybusy_member_id,hours,deleted_at'), { label: 'crewBonusTime' });
+      // Prompt 52 shape: one row per Payroll Export CSV row; wage_type REG|OT1.
+      // Rows with a null crew_member_id (unmapped or ignored name) never reach
+      // costing, and overhead rows carry no job_id.
+      .select('job_id,crew_member_id,hours,wage_type'), { label: 'crewBonusTime' });
     if (res.error) throw res.error;
     for (const e of (res.data || [])) {
-      if (e.deleted_at || !e.job_id) continue;
+      if (!e.job_id || !e.crew_member_id) continue;
       const h = Number(e.hours || 0);
       if (!(h > 0)) continue;
       hoursByJob[e.job_id] = (hoursByJob[e.job_id] || 0) + h;
-      const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
-      (hoursByJobMember[e.job_id] ||= {})[key] = (hoursByJobMember[e.job_id]?.[key] || 0) + h;
+      (hoursByJobMember[e.job_id] ||= {})[e.crew_member_id] = (hoursByJobMember[e.job_id]?.[e.crew_member_id] || 0) + h;
     }
   } catch (err) { timeError = err && err.message ? err.message : String(err); }
 
@@ -28891,12 +28893,12 @@ async function renderUnifiedJob(jobId) {
   let r = recomputeR();
 
   // BusyBusy actual hours for THIS job, per crew member, for the Bonus Payout
-  // box. Same source + graceful-empty handling as renderCrewBonus: if the table
-  // is missing or the sync has not run, bbError/empty -> "awaiting BusyBusy
-  // hours" and no bonus is invented on zero actuals.
-  // bbHoursByKey: key -> { total, ot } so OT flows into the OT-aware bonus math.
-  // select('*') so ot_hours is read once the 2026-06-19 migration lands without
-  // 400ing before it does (the table exists; an explicit ot_hours would 400).
+  // box. Prompt 52 storage shape (Payroll Export import): one row per export
+  // CSV row, wage_type REG|OT1; OT hours are the OT1-tagged rows, preserving
+  // the 2026-06-19 convention that `hours` is TOTAL and regular = total - OT.
+  // Rows with a null crew_member_id (unmapped or ignored name in Settings >
+  // BusyBusy) never reach costing. Graceful-empty as before: table missing or
+  // no import yet -> "awaiting hours", no bonus invented on zero actuals.
   const bbHoursByKey = {}; const bbPunchesByKey = {}; let bbError = null;
   try {
     const res = await withFreshSession(() => supabase
@@ -28904,15 +28906,21 @@ async function renderUnifiedJob(jobId) {
       .select('*')
       .eq('job_id', jobId), { label: 'unifiedJobTime' });
     if (res.error) throw res.error;
+    const seenPunch = new Set();
     for (const e of (res.data || [])) {
-      if (e.deleted_at) continue;
+      if (!e.crew_member_id || e.is_overhead) continue;
       const h = Number(e.hours || 0);
       if (!(h > 0)) continue;
-      const ot = Number(e.ot_hours || 0) || 0;
-      const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
-      const cur = (bbHoursByKey[key] ||= { total: 0, ot: 0 });
-      cur.total += h; cur.ot += ot;
-      (bbPunchesByKey[key] ||= []).push({ start: e.started_at, end: e.ended_at });
+      const cur = (bbHoursByKey[e.crew_member_id] ||= { total: 0, ot: 0 });
+      cur.total += h;
+      if (e.wage_type === 'OT1') cur.ot += h;
+      // A punch that crosses the weekly 40-hour line arrives as TWO rows with
+      // the SAME start/end (a REG + OT1 split pair); show the window once.
+      const pk = `${e.crew_member_id}|${e.started_at}|${e.ended_at}`;
+      if (!seenPunch.has(pk)) {
+        seenPunch.add(pk);
+        (bbPunchesByKey[e.crew_member_id] ||= []).push({ start: e.started_at, end: e.ended_at });
+      }
     }
   } catch (err) { bbError = err && err.message ? err.message : String(err); }
   // Send-back history (Feature A). Newest first. Degrades to [] if the table is not
@@ -29225,10 +29233,14 @@ async function renderUnifiedJob(jobId) {
   const manualMemberOpts = activeMembers.length
     ? activeMembers.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')
     : '<option value="">No team members yet (add them in Settings)</option>';
+  // Precedence (prompt 52, locked decision 10): a job with ANY imported
+  // BusyBusy rows uses them; its manual entries stay VISIBLE but greyed and
+  // labeled (never deleted, never counted) so the before/after is legible.
+  // Manual entry remains the path for jobs with no BusyBusy coverage.
   const manualLaborEditorHtml = `
-        <div style="margin-top:14px">
-          <h3 style="font-size:.85rem;margin:0 0 6px">Team member hours${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">BusyBusy is live for this job; manual hours are ignored</span>' : ''}</h3>
-          <div style="font-size:.72rem;color:var(--rd-ink-2,var(--text));margin:0 0 4px">Enter hours per team member to calculate the bonus and GP/hr. BusyBusy will fill this automatically once connected.</div>
+        <div style="margin-top:14px${hasBB ? ';opacity:.55' : ''}">
+          <h3 style="font-size:.85rem;margin:0 0 6px">Manual team member hours${hasBB ? ' <span style="color:var(--muted);font-size:.7rem;font-weight:400">not counted: this job has imported BusyBusy hours, which win. Kept for reference.</span>' : ''}</h3>
+          <div style="font-size:.72rem;color:var(--rd-ink-2,var(--text));margin:0 0 4px">${hasBB ? 'These were entered by hand before BusyBusy hours were imported for this job.' : 'Enter hours per team member to calculate the bonus and GP/hr. Jobs covered by a BusyBusy import (Settings, BusyBusy tab) fill in automatically and win over manual entry.'}</div>
           <div style="font-size:.68rem;color:var(--muted);margin:0 0 6px">Enter Regular hrs and OT hrs separately. OT is paid at ${OT_MULTIPLIER}x (Arizona = federal >40/week). Total = Regular + OT.</div>
           ${manualRows.length ? `<table class="pec-table" style="font-size:.78rem">
             <thead><tr><th>Team member</th><th style="width:120px">Regular hrs</th><th style="width:120px">OT hrs</th><th style="width:40px"></th></tr></thead>
@@ -29262,7 +29274,7 @@ async function renderUnifiedJob(jobId) {
         <h3 style="margin-top:18px">Hours</h3>
         <div class="pec-row-3">
           ${derivedField('Estimated Hours', isSubbed ? 'n/a (subcontracted)' : (r.estHrs ? r.estHrs.toFixed(1) + ' hrs' : '&mdash;'))}
-          ${derivedField('Actual Hours' + (bonusCalc.hasActuals ? ' (BusyBusy)' : ' (manual)'), actHrsEffDisplay, '', 'actHrsEff')}
+          ${derivedField('Actual Hours' + (bonusSource === 'busybusy' ? ' (BusyBusy)' : bonusSource === 'manual' ? ' (manual)' : ''), actHrsEffDisplay, '', 'actHrsEff')}
           ${derivedField('Over / Under', overUnderEffDisplay, overUnderEffCls, 'overUnderEff')}
         </div>
         <div class="pec-row-3" style="margin-top:8px">
@@ -29290,6 +29302,31 @@ async function renderUnifiedJob(jobId) {
   const lsRecapRows = bonuses.filter(b => b.note === 'Labor-savings bonus');
   const recapApprover = (lsRecapRows.find(b => b.approved_by) || {}).approved_by || null;
   const recordedPool = lsRecapRows.reduce((s, b) => s + Number(b.amount || 0), 0);
+  // Prompt 52 Part F, the money rule: on a FINALIZED job whose live BusyBusy
+  // hours no longer match the hours_actual snapshot recorded at finalize
+  // (a punch was corrected and the window re-imported), SAY so, plainly.
+  // DISPLAY ONLY. The import never writes to pec_prod_job_bonuses or
+  // pec_bonus_payouts and never sets review_status: the ledger rows already
+  // hold their amounts, so a changed hour count structurally cannot move a
+  // paid bonus. Dylan decides what, if anything, changes, using prompt 50's
+  // existing Pay full / Reduce / Void review gate on the Bonus Report.
+  let bonusHoursDriftHtml = '';
+  if (costingIsFinalized(job) && hasBB) {
+    const drifted = lsRecapRows
+      .filter(b => b.crew_member_id && b.hours_actual != null && bbHoursByKey[b.crew_member_id])
+      .map(b => {
+        const was = Number(b.hours_actual);
+        const now = Math.round(bbHoursByKey[b.crew_member_id].total * 100) / 100;
+        return Math.abs(now - was) > 0.05 ? `${esc(b.crew_member_name || 'Crew')}: was ${fmtNum(was)}, now ${fmtNum(now)}` : null;
+      })
+      .filter(Boolean);
+    if (drifted.length) {
+      bonusHoursDriftHtml = `<div style="margin-top:8px;padding:8px 10px;background:var(--bg-soft);border-left:3px solid var(--rd-warn,#b45309);border-radius:6px;font-size:.76rem">
+        <strong>Hours changed since finalize:</strong> ${drifted.join(' · ')}.
+        <span style="color:var(--muted)">The recorded bonus amounts are unchanged. If this should change a bonus, use Pay full / Reduce / Void on the Bonus Report.</span>
+      </div>`;
+    }
+  }
   const bonusRecapHtml = isSubbed
     ? `<div style="margin-top:10px;font-size:.8rem;color:var(--muted)">Crew bonus: $0, skipped (subcontracted job).</div>`
     : lsRecapRows.length
@@ -29345,7 +29382,7 @@ async function renderUnifiedJob(jobId) {
                <span style="color:var(--rd-success,#16a34a);font-weight:600">✓ Job costing finalized by ${esc(job.costing_finalized_by || 'Admin')} on ${esc(fmtStamp(job.costing_finalized_at))}</span>
                ${costAdmin ? '<button class="pec-btn ghost sm" id="costingUnfinalizeBtn">Re-open costing</button>' : ''}
              </div>
-             <div style="margin-top:6px"><h3 style="font-size:.85rem;margin:0 0 4px">Bonus (recorded)</h3>${bonusRecapHtml}</div>`
+             <div style="margin-top:6px"><h3 style="font-size:.85rem;margin:0 0 4px">Bonus (recorded)</h3>${bonusRecapHtml}${bonusHoursDriftHtml}</div>`
           : costSubmitted
             ? (costAdmin
               ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
@@ -30342,11 +30379,14 @@ async function renderJobCosting() {
     try {
       const res = await withFreshSession(() => supabase.from('pec_prod_busybusy_time_entries').select('*').in('job_id', submittedReview.map(j => j.id)), { label: 'costing-queue-hours' });
       if (!res.error) for (const e of (res.data || [])) {
-        if (e.deleted_at) continue;
+        // Prompt 52 storage shape: one row per Payroll Export CSV row. OT is
+        // the rows tagged wage_type OT1 (not a column); unmapped or ignored
+        // people carry a null crew_member_id and never reach costing; overhead
+        // (Shop) rows carry no job_id at all.
+        if (!e.crew_member_id || e.is_overhead) continue;
         const h = Number(e.hours || 0); if (!(h > 0)) continue;
-        const key = e.crew_member_id || ('bb:' + (e.busybusy_member_id || 'unknown'));
-        const cur = ((hoursByJobKey[e.job_id] ||= {})[key] ||= { total: 0, ot: 0 });
-        cur.total += h; cur.ot += Number(e.ot_hours || 0) || 0;
+        const cur = ((hoursByJobKey[e.job_id] ||= {})[e.crew_member_id] ||= { total: 0, ot: 0 });
+        cur.total += h; if (e.wage_type === 'OT1') cur.ot += h;
       }
     } catch (_) { /* hours table not live yet -> every job awaiting */ }
     for (const j of submittedReview) {
