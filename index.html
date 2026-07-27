@@ -24755,6 +24755,81 @@ function wireTouchupPanel(root, ctx) {
   });
 }
 
+// Callback report (prompt 51 Part G): the readout that makes the cause data
+// worth collecting. Read-only, computed client-side from the schedule's
+// already-loaded rows (no endpoint, no AI). Counts closed touch-ups by cause
+// and by the ORIGINAL job's crew (accountability points at who built it, not
+// who ran the revisit), over Last 90 days (default) or YTD, plus a callback
+// rate. Deliberately the smallest useful readout; Metrics trending is a later
+// prompt if wanted.
+function openTouchupReportModal() {
+  const crews = Object.fromEntries((state.crews || []).map(c => [c.id, c.name]));
+  const jobsById = Object.fromEntries((state.prodJobs || []).map(j => [j.id, j]));
+  const touchups = (state.prodJobs || []).filter(j => j.is_callback);
+  const lastDayByJob = {};
+  for (const d of (state.scheduleDays || [])) {
+    if (!lastDayByJob[d.job_id] || d.scheduled_date > lastDayByJob[d.job_id]) lastDayByJob[d.job_id] = d.scheduled_date;
+  }
+  const todayIso = mstTodayIso();
+  const windows = {
+    d90: { label: 'Last 90 days', start: isoDate(addDays(new Date(), -90)) },
+    ytd: { label: 'Year to date', start: todayIso.slice(0, 4) + '-01-01' },
+  };
+  const build = (winKey) => {
+    const start = windows[winKey].start;
+    const inWin = (iso) => iso && String(iso).slice(0, 10) >= start && String(iso).slice(0, 10) <= todayIso;
+    const closed = touchups.filter(t => touchupEffState(t) === 'done' && inWin(t.touchup_closed_at));
+    const opened = touchups.filter(t => inWin(t.touchup_opened_at || t.created_at));
+    // "Completed jobs" for the rate denominator: non-callback jobs whose LAST
+    // calendar day fell inside the window (finished installing in the window).
+    const completedJobs = (state.prodJobs || []).filter(j => !j.is_callback && inWin(lastDayByJob[j.id]));
+    const byCause = {};
+    for (const t of closed) {
+      const k = t.touchup_cause ? (TOUCHUP_CAUSES[t.touchup_cause] || t.touchup_cause) : 'No cause recorded (pre-tracking)';
+      byCause[k] = (byCause[k] || 0) + 1;
+    }
+    const byCrew = {};
+    for (const t of closed) {
+      const parent = jobsById[t.original_job_id];
+      const k = (parent && parent.crew_id && crews[parent.crew_id]) || 'Unknown crew';
+      byCrew[k] = (byCrew[k] || 0) + 1;
+    }
+    const rate = completedJobs.length ? (opened.length / completedJobs.length) : null;
+    const rows = (obj) => Object.entries(obj).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid var(--rd-line,var(--border))"><span>${esc(k)}</span><strong>${n}</strong></div>`)
+      .join('') || '<div class="pec-empty" style="padding:8px;font-size:.78rem">None in this window</div>';
+    return `
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px">
+        <div class="pec-stat"><div class="pec-stat-label">Opened</div><div class="pec-stat-val">${opened.length}</div></div>
+        <div class="pec-stat"><div class="pec-stat-label">Closed</div><div class="pec-stat-val">${closed.length}</div></div>
+        <div class="pec-stat"><div class="pec-stat-label">Completed jobs</div><div class="pec-stat-val">${completedJobs.length}</div></div>
+        <div class="pec-stat"><div class="pec-stat-label">Callback rate</div><div class="pec-stat-val">${rate == null ? '—' : (rate * 100).toFixed(1) + '%'}</div></div>
+      </div>
+      <div class="pec-row-2">
+        <div><h4 style="margin:0 0 6px;font-size:.8rem">Closed by cause</h4>${rows(byCause)}</div>
+        <div><h4 style="margin:0 0 6px;font-size:.8rem">Closed by crew (original job's crew)</h4>${rows(byCrew)}</div>
+      </div>
+      <div style="font-size:.68rem;color:var(--muted);margin-top:12px">How these count: Opened = touch-ups requested in the window. Closed = touch-ups closed in the window, bucketed by the cause picked at close and by the crew on the ORIGINAL job. Callback rate = opened touch-ups divided by jobs whose last scheduled day fell in the window. Touch-ups closed before cause tracking shipped show as "No cause recorded".</div>`;
+  };
+  let winKey = 'd90';
+  openModal(`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <h3 style="margin:0;flex:1">Callback report</h3>
+      <div class="pec-sched-modeseg">
+        <button class="pec-btn sm primary" data-tu-win="d90" style="border:none;border-radius:0">Last 90 days</button>
+        <button class="pec-btn sm ghost" data-tu-win="ytd" style="border:none;border-radius:0">YTD</button>
+      </div>
+      <button class="pec-btn ghost sm" onclick="window.pecCloseModal()">Close</button>
+    </div>
+    <div id="tuReportBody">${build(winKey)}</div>`, { onMount(modal) {
+    modal.querySelectorAll('[data-tu-win]').forEach(b => b.addEventListener('click', () => {
+      winKey = b.dataset.tuWin;
+      modal.querySelectorAll('[data-tu-win]').forEach(x => { x.classList.toggle('primary', x === b); x.classList.toggle('ghost', x !== b); });
+      modal.querySelector('#tuReportBody').innerHTML = build(winKey);
+    }));
+  } });
+}
+
 // Live refs for the pending-panel height sync (Task 3). Kept at module scope so a
 // re-render can tear the previous ones down before wiring new ones (no listener /
 // observer accumulation across the many renderSchedule re-runs).
