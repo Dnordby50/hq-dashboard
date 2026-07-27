@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: verified the BusyBusy name-to-job join against PROD (8 of 9 resolve uniquely), wrote the Claude Code discovery prompt
+By: Cowork
+
+Changed: added busybusy-discovery-prompt.md at the repo root. Two read-only PROD queries run (project zdfpzmmrgotynrwkeakd). No code, no schema, no writes.
+
+THE JOIN WORKS, AND IT IS SIMPLER THAN THE SCOPING FEARED. Normalizing customer names by lowercasing and collapsing whitespace, 8 of the 9 BusyBusy project names from the 2026-07-20..26 export resolve to EXACTLY ONE pec_prod_jobs row today, with zero ambiguity:
+  Al Weikart 6571b6a7 scheduled, days 07-20..07-20
+  Bobby Priest 57c185ed scheduled, days 07-22..07-24
+  Bobette Weiss 50405d44 completed, days 07-21..07-22
+  Jamy Myrmel 654c8b20 scheduled, days 07-23..07-24
+  Martin Trout 8f4da806 completed, days 07-15..07-31
+  Nathan Rhodes dc42f075 scheduled, days 06-29..07-24
+  Scott Gordon 4ce3b08a scheduled, days 06-24..07-29
+  Will Lewis c2b30e02 scheduled, days 07-07..08-04
+MATT SCHARRER (27.3 hours, the third largest job of the week) MATCHES NOTHING. There is no pec_prod_jobs row and no public.customers row for that name. Either it is an FTP job, a job that never got entered, or a name spelled differently in one of the two systems. Worth Dylan's eyes: a week's third-biggest labor block has no job to attach to.
+
+FUZZY MATCHING IS DANGEROUS HERE, PROVEN NOT ASSUMED. A surname-only LIKE returns false positives on this very data: 'Gordon' also hits "Gordon  Clarry" (two rows, and note the double space in the stored name), and 'Rhodes' also hits "Wayne Rhodes" (completed). So the rule is EXACT normalized full-name match, with the work date used only to break ties when a name returns more than one job. No customer has two jobs today, but repeat customers and prompt-51 touch-ups will create that case, so the tiebreak gets built now rather than later.
+
+CREW MEMBER REALITY CHECK. pec_prod_crew_members has 7 active rows: Allen Adamo, Caden Maier, Davey Milligan, Kyle Floyd, Landen Johnson, Matthew Hamby, Preston. Four carry a busybusy_member_id GUID (Caden, Davey, Kyle, Landen), which is now dead weight because the export's EmployeeId column is empty. Five of the six names in the export match a crew member exactly; Aron Bronson does not, correctly, he is a salesperson. "Preston" is stored as a single name with no surname, which is exactly the case that would break exact-name matching the moment BusyBusy spells him "Preston <surname>". That single row justifies the Settings mapping screen on its own.
+
+THE DISCOVERY PROMPT. busybusy-discovery-prompt.md tells Claude Code to answer only what Cowork cannot reach from the cloud sandbox: whether the session JWT carries an exp claim (leading question, it decides whether the integration can ever run unattended), the verbatim CSV header and the Date/Start/End formats plus a timezone proof, the literal ProjectNumber values, exact employee name spellings, HOW OT is represented per row (separate OT1 row alongside REG, or a reclassified segment) since that decides how hours and ot_hours are populated, whether Hours is already net of BreakHours, the Shop time-of-day profile, and four behavioral tests: same-window idempotency compared both with and without the Id column (to prove on our own data that the Id moves), single-day versus week-window boundary behavior (to validate delete-then-insert), empty-range response handling (a 404 must read as zero rows, never as a reason to wipe a stored window), and data hygiene counts. It carries hard rules: never print or commit the token, no wage or dollar figures in the findings file, read-only, roughly 6 API calls maximum. It also lists what Cowork has already established so Claude Code does not burn tokens re-deriving it.
+
+Why: Dylan asked for a prompt that gets Claude Code to collect the remaining unknowns.
+Files touched: busybusy-discovery-prompt.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs the discovery prompt in Claude Code, which writes busybusy-discovery-findings.md. Cowork then writes claude-code-prompt-52-busybusy-payroll-export.md.
+Handoff to Dylan: find out what the Matt Scharrer 27.3 hours belong to. Also still open from prior days: prompt 49 unrun; Kathy Carmack bridge decision; callback-review gate not DB-enforced; ZZ Test Draft lead and EST-102034 need deleting.
+
+---
+
 ## [2026-07-27 MST] Cowork: first live BusyBusy Payroll Export pull analyzed, three locked decisions changed by the data, shop-time prompt written
 By: Cowork
 
