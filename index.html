@@ -17428,9 +17428,141 @@ function renderBbEmployeeCard(root, bbEmployees, crewMembers, hoursByName) {
     });
   });
 }
+// Settings > BusyBusy: unlinked projects (prompt 52 Part E). A BusyBusy project
+// links to a pec_prod_jobs row ONCE (by exact normalized customer name at first
+// sight, or by a human here), and from then on its 7-digit ProjectNumber is the
+// key, so a rename never breaks the link. Anything the auto-link could not
+// resolve to exactly one job lands here: genuinely missing jobs (Matt Scharrer,
+// 27.25 hours, is expected on day one; that job does not exist in the system),
+// ambiguous names, and misspellings. Linking or marking overhead re-resolves
+// the stored rows in place (attribution only, hours untouched).
 function renderBbProjectsCard(root, bbProjects, unlinkedAgg) {
   const card = $('bbProjectsCard');
-  if (card) card.innerHTML = '<h3 style="margin-top:0">Unlinked projects</h3><div class="pec-empty" style="font-size:.78rem">Coming in the next commit.</div>';
+  if (!card) return;
+  const fmtH = (n) => (Math.round(Number(n || 0) * 100) / 100).toLocaleString();
+  const unlinked = bbProjects.filter(p => !p.job_id && !p.is_overhead);
+  const aggFor = (p) => unlinkedAgg[`${p.project_number || ''}|${p.project_name}`] || { hours: 0, firstSeen: null };
+  card.innerHTML = `
+    <h3 style="margin-top:0">Unlinked BusyBusy projects</h3>
+    <div style="color:var(--muted);font-size:.76rem;margin-bottom:8px">Projects BusyBusy exported that could not be matched to exactly one job by customer name. Their hours are stored but reach no job costing until linked. If a project is shop or office time, mark it overhead instead.</div>
+    ${unlinked.length ? `
+      <table class="pec-table" style="font-size:.78rem">
+        <thead><tr><th>Project #</th><th>Name</th><th style="text-align:right">Hours stored</th><th>First seen</th><th></th></tr></thead>
+        <tbody>${unlinked.map(p => {
+          const a = aggFor(p);
+          return `
+          <tr class="nohover" data-bb-proj="${esc(p.id)}">
+            <td>${esc(p.project_number || '')}${p.project_number ? '' : '<span style="color:var(--muted)">none</span>'}</td>
+            <td><strong>${esc(p.project_name)}</strong></td>
+            <td style="text-align:right">${fmtH(a.hours)}</td>
+            <td>${a.firstSeen ? esc(new Date(a.firstSeen + 'T12:00:00').toLocaleDateString([], { month: 'short', day: 'numeric' })) : '<span style="color:var(--muted)">no rows yet</span>'}</td>
+            <td style="white-space:nowrap">
+              <button type="button" class="pec-btn sm" data-bb-proj-link>Link to job</button>
+              <button type="button" class="pec-btn ghost sm" data-bb-proj-overhead>Mark as overhead</button>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>`
+    : '<div class="pec-empty" style="font-size:.78rem">Nothing unlinked. Every project BusyBusy has exported is tied to a job or marked overhead.</div>'}
+  `;
+  // Re-resolve stored rows for one project: match by number when it has one,
+  // else by exact name among number-less rows. UPDATE only; hours untouched.
+  const reresolveEntries = async (p, patch) => {
+    let q = supabase.from('pec_prod_busybusy_time_entries').update(patch);
+    q = p.project_number
+      ? q.eq('busybusy_project_number', p.project_number)
+      : q.is('busybusy_project_number', null).eq('busybusy_project_name', p.project_name);
+    const res = await withFreshWriteRetry(() => q, { label: 'bb-proj-reresolve' });
+    if (res && res.error) throw res.error;
+  };
+  card.querySelectorAll('tr[data-bb-proj]').forEach(tr => {
+    const proj = bbProjects.find(p => p.id === tr.dataset.bbProj);
+    tr.querySelector('[data-bb-proj-link]').addEventListener('click', () => openBbProjectLinkModal(proj));
+    tr.querySelector('[data-bb-proj-overhead]').addEventListener('click', async () => {
+      if (!confirm(`Mark "${proj.project_name}" as overhead?\n\nIts hours (past and future) stay stored and reported but never charge a job and never feed a crew bonus.`)) return;
+      const btn = tr.querySelector('[data-bb-proj-overhead]'); btn.disabled = true;
+      try {
+        const up = await withFreshWriteRetry(() => supabase.from('pec_prod_busybusy_projects')
+          .update({ is_overhead: true, job_id: null, linked_by: state.session?.user?.id || null, linked_at: new Date().toISOString() })
+          .eq('id', proj.id), { label: 'bb-proj-overhead' });
+        if (up && up.error) throw up.error;
+        await reresolveEntries(proj, { is_overhead: true, job_id: null });
+        showToast(`${proj.project_name} marked as overhead.`, { ttl: 3500 });
+        renderSettings();
+      } catch (err) { btn.disabled = false; showToast('Could not mark overhead: ' + (err.message || err), { ttl: 6000 }); }
+    });
+  });
+}
+
+// The job picker for linking a BusyBusy project (same search UX as the
+// touch-up intake: filter state.prodJobs by name/address, click to pick).
+async function openBbProjectLinkModal(proj) {
+  if (!(state.prodJobs || []).length) { try { await loadProdCore(); } catch (_) {} }
+  const candidates = (state.prodJobs || [])
+    .filter(j => !j.archived_at)
+    .slice().sort((a, b) => String(b.install_date || '').localeCompare(String(a.install_date || '')));
+  let picked = null;
+  const rowHtml = (j) => `<div class="pec-sched-pcard" data-bbl-pick="${esc(j.id)}" style="padding:7px 10px">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+        <strong style="font-size:.82rem">${esc(j.customer_name || '(no name)')}</strong>
+        <span style="font-size:.66rem;color:var(--muted)">${j.install_date ? 'Installed ' + esc(fmtDate(j.install_date)) : esc(j.status || '')}</span>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted)">${esc(j.address || 'No address')} · #${esc(j.proposal_number || '')}</div>
+    </div>`;
+  openModal(`
+    <h3 style="margin:0 0 6px">Link BusyBusy project to a job</h3>
+    <div style="font-size:.82rem;color:var(--muted);margin-bottom:10px"><strong>${esc(proj.project_name)}</strong>${proj.project_number ? ' (#' + esc(proj.project_number) + ')' : ''} will send its hours, past and future, to the job you pick.</div>
+    <div class="pec-field"><label>Find the job</label>
+      <input id="bblSearch" placeholder="Customer name or address…" autocomplete="off">
+    </div>
+    <div id="bblResults" style="display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto;margin-bottom:10px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="bblSave" disabled>Link project</button>
+    </div>
+    <div class="prod-msg-err" id="bblErr"></div>`, { onMount(modal) {
+    const searchEl = modal.querySelector('#bblSearch');
+    const resultsEl = modal.querySelector('#bblResults');
+    const saveBtn = modal.querySelector('#bblSave');
+    const renderResults = () => {
+      const q = (searchEl.value || '').trim().toLowerCase();
+      const hits = !q ? candidates.slice(0, 12)
+        : candidates.filter(j => String(j.customer_name || '').toLowerCase().includes(q) || String(j.address || '').toLowerCase().includes(q)).slice(0, 25);
+      resultsEl.innerHTML = hits.length ? hits.map(rowHtml).join('')
+        : '<div class="pec-empty" style="padding:8px;font-size:.75rem">No job matches. Try fewer letters.</div>';
+      resultsEl.querySelectorAll('[data-bbl-pick]').forEach(el => el.addEventListener('click', () => {
+        picked = candidates.find(j => j.id === el.dataset.bblPick) || null;
+        resultsEl.querySelectorAll('[data-bbl-pick]').forEach(x => x.style.outline = x === el ? '2px solid var(--rd-accent,#2563eb)' : '');
+        saveBtn.disabled = !picked;
+      }));
+    };
+    searchEl.addEventListener('input', renderResults);
+    searchEl.value = proj.project_name || '';
+    renderResults();
+    saveBtn.addEventListener('click', async () => {
+      const errEl = modal.querySelector('#bblErr'); errEl.textContent = '';
+      if (!picked) return;
+      saveBtn.disabled = true;
+      try {
+        const up = await withFreshWriteRetry(() => supabase.from('pec_prod_busybusy_projects')
+          .update({ job_id: picked.id, is_overhead: false, linked_by: state.session?.user?.id || null, linked_at: new Date().toISOString() })
+          .eq('id', proj.id), { label: 'bb-proj-link' });
+        if (up && up.error) throw up.error;
+        let q = supabase.from('pec_prod_busybusy_time_entries').update({ job_id: picked.id, is_overhead: false });
+        q = proj.project_number
+          ? q.eq('busybusy_project_number', proj.project_number)
+          : q.is('busybusy_project_number', null).eq('busybusy_project_name', proj.project_name);
+        const up2 = await withFreshWriteRetry(() => q, { label: 'bb-proj-link-entries' });
+        if (up2 && up2.error) throw up2.error;
+        window.pecCloseModal();
+        showToast(`${proj.project_name} linked to ${picked.customer_name}. Stored hours now count on that job.`, { ttl: 4000 });
+        renderSettings();
+      } catch (err) {
+        saveBtn.disabled = false;
+        errEl.textContent = 'Could not link: ' + (err.message || err);
+      }
+    });
+  } });
 }
 
 async function renderSettings() {
