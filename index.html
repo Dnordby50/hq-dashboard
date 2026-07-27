@@ -16589,6 +16589,7 @@ function settingsTabBar(active) {
     <button class="pec-btn ${active === 'drips' ? 'primary' : 'ghost'} sm" data-settings-tab="drips">Drips</button>
     <button class="pec-btn ${active === 'estimates' ? 'primary' : 'ghost'} sm" data-settings-tab="estimates">Estimates</button>
     <button class="pec-btn ${active === 'invoicing' ? 'primary' : 'ghost'} sm" data-settings-tab="invoicing">Invoicing</button>
+    <button class="pec-btn ${active === 'busybusy' ? 'primary' : 'ghost'} sm" data-settings-tab="busybusy">BusyBusy</button>
     <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
   </div>`;
 }
@@ -17104,6 +17105,260 @@ async function renderSettingsInvoicing() {
   });
 }
 
+// Settings > BusyBusy (prompt 52): the admin-triggered, preview-then-commit
+// import from the BusyBusy Payroll Export API, plus the employee mapping and
+// unlinked-project screens that make name-only identity workable. The API is a
+// SNAPSHOT (no updatedSince, no deletion feed, calculated Ids), so the server
+// replaces the whole date window atomically on every Import; re-importing a
+// window is safe and expected. Anomalies are displayed ABOVE the Import button
+// but never block it (locked decision 9: import and flag, fix in BusyBusy).
+async function renderSettingsBusybusy() {
+  const root = $('pecViewRoot');
+  const [setRes, importsRes, employeesRes, projectsRes, entriesRes, membersRes] = await withFreshSession(() => Promise.all([
+    supabase.from('settings').select('key,value').like('key', 'busybusy_%'),
+    supabase.from('pec_prod_busybusy_imports').select('*').order('imported_at', { ascending: false }).limit(10),
+    supabase.from('pec_prod_busybusy_employees').select('*').order('busybusy_name'),
+    supabase.from('pec_prod_busybusy_projects').select('*').order('created_at'),
+    // Aggregates for "total hours seen" per name / per unlinked project. Light
+    // columns only; grouped client-side.
+    supabase.from('pec_prod_busybusy_time_entries').select('employee_name,busybusy_project_number,busybusy_project_name,job_id,is_overhead,hours,work_date'),
+    supabase.from('pec_prod_crew_members').select('id,name,active').order('name'),
+  ]), { label: 'settings-busybusy' });
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const tablesMissing = !!(importsRes && importsRes.error);
+  const imports = (importsRes && importsRes.data) || [];
+  const bbEmployees = (employeesRes && employeesRes.data) || [];
+  const bbProjects = (projectsRes && projectsRes.data) || [];
+  const bbEntries = (entriesRes && entriesRes.data) || [];
+  const crewMembers = (membersRes && membersRes.data) || [];
+
+  const windowWeeks = Number(map.busybusy_import_window_weeks) > 0 ? Number(map.busybusy_import_window_weeks) : 2;
+  const anomalyThreshold = map.busybusy_anomaly_hours_threshold || '16';
+  const overheadNames = map.busybusy_overhead_project_names || 'Shop';
+
+  // Default window: the last `windowWeeks` FULL weeks, Monday through Sunday
+  // (the week being costed plus the one before, per the locked cadence).
+  const today = new Date();
+  const dow = today.getDay(); // 0 = Sunday
+  const lastSunday = new Date(today);
+  lastSunday.setDate(today.getDate() - (dow === 0 ? 7 : dow));
+  const winEnd = new Date(lastSunday);
+  const winStart = new Date(lastSunday);
+  winStart.setDate(winStart.getDate() - (windowWeeks * 7 - 1));
+  const dstr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const prevWin = state._bbPreview && state._bbPreview.window;
+
+  // Hours seen per BusyBusy name and per unlinked project, from stored rows.
+  const hoursByName = {};
+  const unlinkedAgg = {}; // key -> { project_number, project_name, hours, firstSeen }
+  for (const e of bbEntries) {
+    hoursByName[e.employee_name] = (hoursByName[e.employee_name] || 0) + Number(e.hours || 0);
+    if (!e.job_id && !e.is_overhead && e.busybusy_project_name) {
+      const k = `${e.busybusy_project_number || ''}|${e.busybusy_project_name}`;
+      const cur = (unlinkedAgg[k] ||= { project_number: e.busybusy_project_number, project_name: e.busybusy_project_name, hours: 0, firstSeen: e.work_date });
+      cur.hours += Number(e.hours || 0);
+      if (e.work_date < cur.firstSeen) cur.firstSeen = e.work_date;
+    }
+  }
+  const fmtH = (n) => (Math.round(Number(n || 0) * 100) / 100).toLocaleString();
+  const fmtDateShort = (iso) => { if (!iso) return ''; const d = new Date(iso); return isNaN(d.getTime()) ? String(iso) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
+
+  const historyHtml = imports.length ? `
+      <table class="pec-table" style="font-size:.76rem">
+        <thead><tr><th>Window</th><th>When</th><th style="text-align:right">Rows</th><th style="text-align:right">Hours</th><th style="text-align:right">OT</th><th style="text-align:right">Overhead</th><th style="text-align:right">Anomalies</th></tr></thead>
+        <tbody>${imports.map(im => `
+          <tr class="nohover">
+            <td>${esc(fmtDateShort(im.window_start))} to ${esc(fmtDateShort(im.window_end))}</td>
+            <td>${esc(new Date(im.imported_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</td>
+            <td style="text-align:right">${esc(im.row_count ?? '')}</td>
+            <td style="text-align:right">${fmtH(im.total_hours)}</td>
+            <td style="text-align:right">${fmtH(im.ot_hours)}</td>
+            <td style="text-align:right">${fmtH(im.overhead_hours)}</td>
+            <td style="text-align:right">${esc(im.anomaly_count ?? 0)}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:6px">Re-importing a window is safe: each import replaces everything stored for those dates with the fresh pull, in one transaction. Nothing outside the window is touched.</div>`
+    : '<div class="pec-empty" style="font-size:.78rem">No imports yet. Fetch a preview above to run the first one.</div>';
+
+  root.innerHTML = `
+    ${settingsTabBar('busybusy')}
+    ${tablesMissing ? `<div class="pec-card" style="border-color:var(--rd-warn,#b45309)"><strong>Migration not applied yet.</strong><div style="color:var(--muted);font-size:.78rem;margin-top:4px">The BusyBusy import tables are missing (run supabase/migrations/2026-07-27_busybusy_export.sql). This screen will light up once Cowork applies it.</div></div>` : ''}
+    <div class="pec-card">
+      <h3 style="margin-top:0">BusyBusy hours import</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">Pulls crew punches from the BusyBusy Payroll Export for a date window, shows you exactly what came back, and imports only when you press Import. Each import replaces the stored window whole, so pulling again after punch corrections is the normal workflow. Hours on overhead projects (${esc(overheadNames)}) are stored and reported but never charged to a job.</div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="pec-field" style="margin:0"><label>From</label><input type="date" id="bbWinStart" value="${esc((prevWin && prevWin.start) || dstr(winStart))}"></div>
+        <div class="pec-field" style="margin:0"><label>To</label><input type="date" id="bbWinEnd" value="${esc((prevWin && prevWin.end) || dstr(winEnd))}"></div>
+        <button type="button" class="pec-btn primary sm" id="bbPreviewBtn">Fetch preview</button>
+        <span id="bbFetchErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+      <div id="bbPreviewBox" style="margin-top:12px"></div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:12px">
+        <button type="button" class="pec-btn primary" id="bbImportBtn" disabled>Import</button>
+        <span style="color:var(--muted);font-size:.72rem">Import is enabled after a preview. It re-fetches from BusyBusy and replaces the stored window in one step.</span>
+      </div>
+    </div>
+
+    <div class="pec-card" id="bbEmployeeCard"></div>
+    <div class="pec-card" id="bbProjectsCard"></div>
+
+    <div class="pec-card">
+      <h3 style="margin-top:0">Import history</h3>
+      ${historyHtml}
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin-top:0">Import settings</h3>
+      <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div class="pec-field" style="margin:0"><label>Default window (weeks)</label><input type="number" id="bbSetWeeks" min="1" max="8" step="1" value="${esc(String(windowWeeks))}" style="width:90px"></div>
+        <div class="pec-field" style="margin:0"><label>Anomaly threshold (hours per row)</label><input type="number" id="bbSetThreshold" min="1" step="0.5" value="${esc(anomalyThreshold)}" style="width:110px"></div>
+        <div class="pec-field" style="margin:0"><label>Overhead project names (comma separated)</label><input id="bbSetOverhead" value="${esc(overheadNames)}" style="min-width:220px"></div>
+        <button type="button" class="pec-btn primary sm" id="bbSetSave">Save</button>
+        <span id="bbSetErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:8px">The API token lives in the Netlify env var BUSYBUSY_EXPORT_TOKEN, never here. If a pull starts failing with a 401, the BusyBusy session died (logout or password change) and Dylan pastes a fresh token into Netlify.</div>
+    </div>`;
+  wireSettingsTabs(root);
+  renderBbEmployeeCard(root, bbEmployees, crewMembers, hoursByName);
+  renderBbProjectsCard(root, bbProjects, unlinkedAgg);
+
+  // ---- Preview / Import wiring -------------------------------------------
+  const bbFn = async (mode, payload) => {
+    const res = await fetch(`/.netlify/functions/pec-busybusy-export?mode=${mode}`, {
+      method: 'POST',
+      headers: sheetsAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  };
+  const punchTime = (ts) => (ts && ts.length >= 16) ? ts.slice(11, 16) : '?';
+
+  const renderPreview = (s) => {
+    const box = $('bbPreviewBox');
+    const anomaliesHtml = s.anomalies.length ? `
+        <div style="margin-top:10px;padding:10px 12px;background:var(--bg-soft);border-left:3px solid var(--rd-warn,#b45309);border-radius:6px">
+          <strong style="font-size:.8rem">${s.anomalies.length} anomal${s.anomalies.length === 1 ? 'y' : 'ies'} to eyeball before importing</strong>
+          <div style="color:var(--muted);font-size:.7rem;margin:2px 0 6px">These import as-is and are never auto-corrected. Fix wrong punches in BusyBusy, then pull again; the re-import replaces the window.</div>
+          <table class="pec-table" style="font-size:.72rem">
+            <thead><tr><th>Who</th><th>Date</th><th>Times</th><th>Project</th><th style="text-align:right">Hours</th><th>What</th></tr></thead>
+            <tbody>${s.anomalies.map(a => `
+              <tr class="nohover">
+                <td>${esc(a.employee)}</td><td>${esc(fmtDateShort(a.date))}</td>
+                <td>${esc(punchTime(a.start))} to ${esc(punchTime(a.end))}</td>
+                <td>${esc(a.project || 'Shop')}</td>
+                <td style="text-align:right">${fmtH(a.hours)}</td>
+                <td>${esc(a.detail)}</td>
+              </tr>`).join('')}</tbody>
+          </table>
+        </div>` : '';
+    const unmappedHtml = s.unmappedEmployees.length
+      ? `<div style="margin-top:8px;font-size:.76rem;color:var(--rd-warn,#b45309)">Unmapped employees (their hours import but reach no costing until mapped below): <strong>${s.unmappedEmployees.map(esc).join(', ')}</strong> <a href="#" data-bb-jump="bbEmployeeCard">Map them</a></div>`
+      : '';
+    const unlinkedHtml = s.unlinkedProjects.length
+      ? `<div style="margin-top:6px;font-size:.76rem;color:var(--rd-warn,#b45309)">Projects with no job (${s.unlinkedProjects.map(p => `${esc(p.project_name)} ${fmtH(p.hours)}h`).join(', ')}) <a href="#" data-bb-jump="bbProjectsCard">Link them</a></div>`
+      : '';
+    box.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;font-size:.8rem">
+        <div><div style="color:var(--muted);font-size:.68rem">Rows</div><strong>${s.rowCount}</strong></div>
+        <div><div style="color:var(--muted);font-size:.68rem">Employees</div><strong>${s.employeeCount}</strong></div>
+        <div><div style="color:var(--muted);font-size:.68rem">Total hours</div><strong>${fmtH(s.totalHours)}</strong></div>
+        <div><div style="color:var(--muted);font-size:.68rem">Regular / OT</div><strong>${fmtH(s.regHours)} / ${fmtH(s.otHours)}</strong></div>
+        <div><div style="color:var(--muted);font-size:.68rem">Job hours</div><strong>${fmtH(s.jobHours)}</strong></div>
+        <div><div style="color:var(--muted);font-size:.68rem">Overhead hours</div><strong>${fmtH(s.overheadHours)}</strong></div>
+      </div>
+      ${s.perJob.length ? `
+        <table class="pec-table" style="font-size:.76rem;margin-top:10px">
+          <thead><tr><th>Job</th><th style="text-align:right">Hours</th><th style="text-align:right">of which OT</th></tr></thead>
+          <tbody>${s.perJob.map(j => `<tr class="nohover"><td>${esc(j.customer || '')}</td><td style="text-align:right">${fmtH(j.hours)}</td><td style="text-align:right">${j.ot_hours ? fmtH(j.ot_hours) : '<span style="color:var(--muted)">none</span>'}</td></tr>`).join('')}</tbody>
+        </table>` : (s.rowCount === 0 ? '<div class="pec-empty" style="margin-top:10px">BusyBusy returned no punches for this window. Importing would clear any stored hours in these dates.</div>' : '')}
+      ${unmappedHtml}
+      ${unlinkedHtml}
+      ${anomaliesHtml}`;
+    box.querySelectorAll('[data-bb-jump]').forEach(a => a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const el = $(a.dataset.bbJump); if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }));
+  };
+
+  $('bbPreviewBtn').addEventListener('click', async () => {
+    const errEl = $('bbFetchErr'); errEl.textContent = '';
+    const start = $('bbWinStart').value, end = $('bbWinEnd').value;
+    if (!start || !end || end < start) { errEl.textContent = 'Pick a valid date window.'; return; }
+    const btn = $('bbPreviewBtn'); btn.disabled = true; btn.textContent = 'Fetching…';
+    $('bbImportBtn').disabled = true;
+    try {
+      const s = await bbFn('preview', { start, end });
+      state._bbPreview = { window: { start, end }, summary: s };
+      renderPreview(s);
+      $('bbImportBtn').disabled = false;
+    } catch (err) {
+      state._bbPreview = null;
+      errEl.textContent = err.message || String(err);
+    }
+    btn.disabled = false; btn.textContent = 'Fetch preview';
+  });
+
+  $('bbImportBtn').addEventListener('click', async () => {
+    const errEl = $('bbFetchErr'); errEl.textContent = '';
+    const p = state._bbPreview;
+    if (!p) { errEl.textContent = 'Fetch a preview first.'; return; }
+    const { start, end } = p.window;
+    if (!confirm(`Import BusyBusy hours for ${start} to ${end}?\n\nThis replaces everything stored for those dates with a fresh pull. Dates outside the window are untouched.`)) return;
+    const btn = $('bbImportBtn'); btn.disabled = true; btn.textContent = 'Importing…';
+    try {
+      const res = await bbFn('commit', {
+        start, end,
+        previewRowCount: p.summary.rowCount,
+        previewTotalHours: p.summary.totalHours,
+      });
+      state._bbPreview = null;
+      showToast(`Imported ${res.rowCount} rows (${fmtH(res.totalHours)} hours).${res.driftFromPreview ? ' Note: ' + res.driftFromPreview : ''}`, { ttl: 6000 });
+      renderSettings();
+      return;
+    } catch (err) {
+      errEl.textContent = 'Import failed, nothing was changed: ' + (err.message || String(err));
+      btn.disabled = false; btn.textContent = 'Import';
+    }
+  });
+
+  // ---- Settings knobs ----------------------------------------------------
+  $('bbSetSave').addEventListener('click', async () => {
+    const errEl = $('bbSetErr'); errEl.textContent = '';
+    const weeks = Number($('bbSetWeeks').value);
+    const th = Number($('bbSetThreshold').value);
+    const oh = ($('bbSetOverhead').value || '').trim();
+    if (!Number.isInteger(weeks) || weeks < 1 || weeks > 8) { errEl.textContent = 'Window must be 1 to 8 weeks.'; return; }
+    if (!Number.isFinite(th) || th <= 0) { errEl.textContent = 'Threshold must be a positive number of hours.'; return; }
+    if (!oh) { errEl.textContent = 'Overhead names cannot be empty (Shop at minimum).'; return; }
+    const btn = $('bbSetSave'); btn.disabled = true;
+    try {
+      for (const [key, value] of [
+        ['busybusy_import_window_weeks', String(weeks)],
+        ['busybusy_anomaly_hours_threshold', String(th)],
+        ['busybusy_overhead_project_names', oh],
+      ]) {
+        const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value }, { onConflict: 'key' }), { label: 'settings-busybusy-save' });
+        if (w && w.error) throw w.error;
+      }
+      showToast('BusyBusy import settings saved', { ttl: 2500 });
+    } catch (err) { errEl.textContent = err.message || String(err); }
+    btn.disabled = false;
+  });
+}
+
+// Part D placeholder is filled by renderBbEmployeeCard; Part E by
+// renderBbProjectsCard (separate commits).
+function renderBbEmployeeCard(root, bbEmployees, crewMembers, hoursByName) {
+  const card = $('bbEmployeeCard');
+  if (card) card.innerHTML = '<h3 style="margin-top:0">Employee mapping</h3><div class="pec-empty" style="font-size:.78rem">Coming in the next commit.</div>';
+}
+function renderBbProjectsCard(root, bbProjects, unlinkedAgg) {
+  const card = $('bbProjectsCard');
+  if (card) card.innerHTML = '<h3 style="margin-top:0">Unlinked projects</h3><div class="pec-empty" style="font-size:.78rem">Coming in the next commit.</div>';
+}
+
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
@@ -17116,6 +17371,7 @@ async function renderSettings() {
   if (state.settingsTab === 'drips') return renderSettingsDrips();
   if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
+  if (state.settingsTab === 'busybusy') return renderSettingsBusybusy();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes, adminUsersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
