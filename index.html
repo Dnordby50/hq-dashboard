@@ -27392,6 +27392,11 @@ function syncSubExpenseTotal(jobId, inp) {
   return rounded;
 }
 
+// Accordion open/closed memory for the unified costing detail (prompt 50
+// Part D). Module-scoped so it lasts the session only (a reload resets to
+// the all-collapsed default) and is shared across jobs, per section.
+const _unifiedSecOpen = {};
+
 async function renderUnifiedJob(jobId) {
   const root = $('pecViewRoot');
   if (!can('can_view_job_costing')) {
@@ -27551,6 +27556,22 @@ async function renderUnifiedJob(jobId) {
       <label>${esc(label)} <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">derived</span></label>
       <div class="cost-derived ${cls}"${dataKey ? ` data-uderived="${esc(dataKey)}"` : ''} style="padding:6px 8px;background:var(--bg-soft);border-radius:6px;font-variant-numeric:tabular-nums">${content}</div>
     </div>`;
+
+  // Collapsible accordion section (prompt 50 Part D). LAYOUT ONLY: bodies are
+  // hidden with display:none, never removed, so every existing input wire-up,
+  // data-uderived refresh, and the submitted-lock disable pass work unchanged.
+  // headExtra stays in the clickable header row so per-section totals remain
+  // visible while collapsed. Toggle state lives in _unifiedSecOpen (session).
+  const secOpen = (id) => !!_unifiedSecOpen[id];
+  const collapsibleSec = (id, title, headExtra, bodyHtml) => `
+      <div class="pec-card" id="${id}">
+        <div data-sec-toggle="${id}" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
+          <span class="prod-cat-chevron">${secOpen(id) ? '▼' : '▶'}</span>
+          <h3 style="margin:0">${title}</h3>
+          ${headExtra || ''}
+        </div>
+        <div data-sec-body="${id}" style="margin-top:12px${secOpen(id) ? '' : ';display:none'}">${bodyHtml}</div>
+      </div>`;
 
   const headerMeta = [
     job.address || '',
@@ -27792,9 +27813,7 @@ async function renderUnifiedJob(jobId) {
           </div>
         </div>`;
 
-  const bonusPayoutHtml = `
-      <div class="pec-card" id="sec-bonus-payout">
-        <h3>Bonus Payout</h3>
+  const bonusPayoutBody = `
         <div style="font-size:.95rem;margin:0 0 10px">Bonus earned: <strong style="color:${bonusEarnedColor}">${bonusEarnedText}</strong>${bonusSourceNote ? ` <span style="color:var(--muted);font-size:.72rem;font-weight:400">${bonusSourceNote}</span>` : ''}</div>
         ${formulaHtml}
         ${bbError && !hasManual
@@ -27820,8 +27839,9 @@ async function renderUnifiedJob(jobId) {
              </div>`
           : `<div style="margin-top:14px">
                <button class="pec-btn sm" id="hoursReconcileBtn">Hours for this job have been reconciled and are accurate</button>
-             </div>`}
-      </div>`;
+             </div>`}`;
+  // Short bonus status chip for the collapsed Labor header.
+  const bonusHeadExtra = `<span style="color:${bonusEarnedColor};font-size:.72rem;font-weight:600">${isSubbed ? 'subcontracted' : !bonusCalc.hasActuals ? 'awaiting hours' : (bonusCalc.pool > 0 ? 'bonus earned ' + fmtMoneyOrDash(bonusCalc.pool) : 'no bonus')}</span>`;
 
   // Read-only crew-bonus recap (Phase 4.4): shown on a finalized job so looking
   // up a past job later shows what the crew earned. Same per-member numbers as
@@ -27920,9 +27940,8 @@ async function renderUnifiedJob(jobId) {
   const subExpensesLive = !state.subExpensesError;
   const subLinesSum = subExpenses.reduce((s, x) => s + Number(x.amount || 0), 0);
   const hasSubLines = subExpenses.length > 0;
-  const subsCardHtml = `
-      <div class="pec-card" id="sec-subs">
-        <h3>Subcontractors <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="sub-sum">${fmtMoneyOrDash(subLinesSum)}</span></span></h3>
+  const subsHeadExtra = `<span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="sub-sum">${fmtMoneyOrDash(subLinesSum)}</span></span>`;
+  const subsBody = `
         ${subExpensesLive ? `
         <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;margin:2px 0 12px">
           <input type="checkbox" id="subcontractedToggle" ${isSubbed ? 'checked' : ''} style="width:auto">
@@ -27943,18 +27962,26 @@ async function renderUnifiedJob(jobId) {
           <input id="subExpAmount" class="cost-money" type="number" min="0" step="0.01" placeholder="Amount" style="width:120px">
           <button class="pec-btn sm" id="subExpAdd">+ Add expense</button>
         </div>`
-        : `<div class="pec-empty">Itemized subcontractor expenses need the 2026-07-09 sub expenses migration (Cowork applies it). Until then, keep using the single Subcontractor field in Costs below, exactly as before.</div>`}
+        : `<div class="pec-empty">Itemized subcontractor expenses need the 2026-07-09 sub expenses migration (Cowork applies it). Until then, keep using the single Subcontractor field in Costs below, exactly as before.</div>`}`;
+
+  // Part D (prompt 50): compact profit summary, ALWAYS visible above the
+  // accordion sections. Reuses the same data-uderived keys the Costs card
+  // uses, so refreshUnifiedTotals (querySelectorAll) updates both for free.
+  // Zero math changes: every number here is the same r.* the page already computed.
+  const profitSummaryHtml = `
+      <div class="pec-card" id="sec-summary">
+        <h3 style="margin:0">${esc(job.customer_name || '')} <span style="color:var(--muted);font-weight:400">#${esc(job.proposal_number || '')}</span></h3>
+        ${headerMeta ? `<div style="color:var(--muted);font-size:.8rem;margin:4px 0 0">${headerMeta}</div>` : ''}
+        <div class="pec-grid-stats" style="margin-top:12px">
+          <div class="pec-stat"><div class="pec-stat-label">Revenue</div><div class="pec-stat-val"><span data-uderived="revenue">${fmtMoneyOrDash(r.revenue)}</span></div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Total Var Expense</div><div class="pec-stat-val"><span data-uderived="totalVar">${fmtMoneyOrDash(r.totalVar)}</span> <span style="font-size:.7rem;color:var(--muted)">(<span data-uderived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</span>)</span></div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Gross Profit</div><div class="pec-stat-val ${r.gp < 0 ? 'cost-neg' : 'cost-pos'}" data-uderived="gp-box"><span data-uderived="gp">${fmtMoneyOrDash(r.gp)}</span> <span style="font-size:.7rem">(<span data-uderived="gpPct">${fmtPct(r.gpPct)}</span>)</span></div></div>
+          <div class="pec-stat"><div class="pec-stat-label">GP / HR · REV / HR</div><div class="pec-stat-val"><span data-uderived="gpHr">${gpHrEff == null ? '—' : fmtMoneyOrDash(gpHrEff)}</span> · <span data-uderived="revHr">${revHrEff == null ? '—' : fmtMoneyOrDash(revHrEff)}</span></div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Crew bonus pool</div><div class="pec-stat-val">${isSubbed ? 'n/a' : poolStr}</div></div>
+        </div>
       </div>`;
 
-  const html = `
-    <div class="pec-toolbar">
-      <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
-      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customer_name || '—')} · #${esc(job.proposal_number || '')} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span></span>
-    </div>
-
-      <div class="pec-card" id="sec-header">
-        <h3>Job Info</h3>
-        ${headerMeta ? `<div style="color:var(--muted);font-size:.8rem;margin:-2px 0 12px">${headerMeta}</div>` : ''}
+  const jobInfoBody = `
         <div class="pec-row-3">
           <div class="pec-field"><label>Sales Team</label>${salesTeamSelectHtml(job.sales_team, 'class="cost-text" data-cost="sales_team" data-table="job"')}</div>
           <!-- Editable here: the wide costing grid (which used to be the only
@@ -27992,25 +28019,19 @@ async function renderUnifiedJob(jobId) {
         <div style="margin-top:14px">
           <h3 style="font-size:.85rem;margin:0 0 6px">Scheduled days</h3>
           ${schedHtml}
-        </div>
-      </div>
+        </div>`;
 
-      ${bonusPayoutHtml}
-
-      <div class="pec-card" id="sec-materials">
-        <h3>Materials <span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · est. <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span></h3>
+  const materialsHeadExtra = `<span style="color:var(--muted);font-weight:400;font-size:.7rem">${lines.length} line${lines.length === 1 ? '' : 's'} · est. <span data-uderived="ordered-sum">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span> · used <span data-uderived="used-sum">${fmtMoneyOrDash(r.buckets.materials_used_cost)}</span></span>`;
+  const materialsBody = `
         ${linesHtml}
         ${lines.length === 0 ? '' : linesDerived
           ? '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">These lines are calculated from the system + colors. Editing <strong>Actual Used</strong> persists them as real lines (qty / supplier / ordered+delivered are still edited in Ordering).</div>'
           : '<div style="color:var(--muted);font-size:.7rem;margin-top:8px">Edit qty / supplier / ordered+delivered in Ordering. In-page editing of those fields is queued for a follow-up commit. <strong>Actual Used</strong> is editable here.</div>'}
         <div style="margin-top:10px"><button class="pec-btn sm" id="addMaterialBtn">+ Add material</button>
-          <span style="color:var(--muted);font-size:.7rem;margin-left:8px">Record a product used on the job but not in the estimate. It counts as Materials Used.</span></div>
-      </div>
+          <span style="color:var(--muted);font-size:.7rem;margin-left:8px">Record a product used on the job but not in the estimate. It counts as Materials Used.</span></div>`;
 
-      ${subsCardHtml}
-
-      <div class="pec-card" id="sec-bonuses">
-        <h3>Crew Bonuses <span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span></h3>
+  const bonusesHeadExtra = `<span style="color:var(--muted);font-weight:400;font-size:.7rem">total <span data-uderived="bonus-sum">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span></span>`;
+  const bonusesBody = `
         <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;margin:2px 0 12px">
           <input type="checkbox" id="bonusReceivedToggle" ${bonuses.some(b => b.note === 'Crew lead bonus') ? 'checked' : ''} style="width:auto">
           Bonus received? Crew lead <strong>${esc(job.crew_lead || '(unset)')}</strong> gets a $50 bonus.
@@ -28020,11 +28041,9 @@ async function renderUnifiedJob(jobId) {
           <select id="bonusAddSelect" style="max-width:240px">${bonusOptions}</select>
           <button class="pec-btn sm" id="bonusAddBtn" ${crewMembers.length === 0 ? 'disabled' : ''}>+ Add bonus row</button>
           <span style="color:var(--muted);font-size:.7rem;margin-left:auto">BusyBusy hours auto-fill is queued for the next commit.</span>
-        </div>
-      </div>
+        </div>`;
 
-      <div class="pec-card" id="sec-costs">
-        <h3>Costs</h3>
+  const costsBody = `
         <div class="pec-row-3">
           ${moneyInput('Equipment Rental', 'equipment_rental_cost', 'cost', cost?.equipment_rental_cost)}
           ${derivedField('Materials (est.)', `<span data-uderived="ordered">${fmtMoneyOrDash(r.buckets.materials_ordered_cost)}</span>`, '', 'ordered-box')}
@@ -28041,21 +28060,38 @@ async function renderUnifiedJob(jobId) {
           ${derivedField('Total Var Expense', `<span data-uderived="totalVar">${fmtMoneyOrDash(r.totalVar)}</span> (<span data-uderived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</span>)`, '', 'totalVar-box')}
           ${derivedField('Gross Profit',      `<span data-uderived="gp">${fmtMoneyOrDash(r.gp)}</span> (<span data-uderived="gpPct">${fmtPct(r.gpPct)}</span>)`, r.gp < 0 ? 'cost-neg' : 'cost-pos', 'gp-box')}
           ${derivedField('GP / HR · REV / HR', `<span data-uderived="gpHr">${gpHrEff == null ? '—' : fmtMoneyOrDash(gpHrEff)}</span> · <span data-uderived="revHr">${revHrEff == null ? '—' : fmtMoneyOrDash(revHrEff)}</span>`)}
-        </div>
-      </div>
+        </div>`;
 
-      <div class="pec-card" id="sec-notes">
-        <h3>Notes</h3>
+  const notesHeadExtra = (cost?.notes || cost?.office_notes) ? '<span style="color:var(--muted);font-weight:400;font-size:.7rem">has notes</span>' : '';
+  const notesBody = `
         <div class="pec-field"><label>Misc</label><input class="cost-text" data-cost="misc_text" data-table="cost" value="${esc(cost?.misc_text || '')}"></div>
         <div class="pec-field"><label>Notes</label><textarea class="cost-text" data-cost="notes" data-table="cost" rows="4" style="width:100%">${esc(cost?.notes || '')}</textarea></div>
         <div class="pec-field" style="margin-top:10px">
           <label>Office notes <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">office only, kept separate from the notes above</span></label>
           <textarea id="pecOfficeNotes" rows="3" style="width:100%" placeholder="Billing quirks, customer conversations, anything the office needs on this job.">${esc(cost?.office_notes || '')}</textarea>
           <div id="pecOfficeNotesStamp" style="color:var(--muted);font-size:.68rem;margin-top:4px">${cost?.office_notes_at ? esc(officeNoteStamp(cost)) : ''}</div>
-        </div>
-      </div>
+        </div>`;
 
-      ${finalizeCardHtml}`;
+  // Assembly (prompt 50 Part D): profit summary always visible, then the
+  // collapsible sections (all default collapsed; _unifiedSecOpen remembers
+  // in-session toggles), then the finalize card, which stays ALWAYS visible
+  // so the canFinalizeCosting-gated affordance never hides behind a fold.
+  // The section ids are unchanged, so the submitted-lock pass and every
+  // wire-up selector keep working.
+  const html = `
+    <div class="pec-toolbar">
+      <button class="pec-btn ghost" data-unified-back>← Back to Job Costing</button>
+      <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${esc(job.customer_name || '—')} · #${esc(job.proposal_number || '')} · <span class="pec-badge ${esc(job.status || '')}">${esc(job.status || '')}</span></span>
+    </div>
+    ${profitSummaryHtml}
+    ${collapsibleSec('sec-header', 'Revenue &amp; Job Info', '', jobInfoBody)}
+    ${collapsibleSec('sec-bonus-payout', 'Labor &amp; Bonus Payout', bonusHeadExtra, bonusPayoutBody)}
+    ${collapsibleSec('sec-materials', 'Materials', materialsHeadExtra, materialsBody)}
+    ${collapsibleSec('sec-subs', 'Subcontractors', subsHeadExtra, subsBody)}
+    ${collapsibleSec('sec-bonuses', 'Crew Bonuses', bonusesHeadExtra, bonusesBody)}
+    ${collapsibleSec('sec-costs', 'Costs', '', costsBody)}
+    ${collapsibleSec('sec-notes', 'Notes', notesHeadExtra, notesBody)}
+    ${finalizeCardHtml}`;
 
   root.innerHTML = html;
 
@@ -28088,6 +28124,7 @@ async function renderUnifiedJob(jobId) {
         }
       });
     };
+    set('[data-uderived="revenue"]', fmtMoneyOrDash(r.revenue));
     set('[data-uderived="ordered"]', fmtMoneyOrDash(r.buckets.materials_ordered_cost));
     set('[data-uderived="ordered-sum"]', fmtMoneyOrDash(r.buckets.materials_ordered_cost));
     set('[data-uderived="used"]', fmtMoneyOrDash(r.buckets.materials_used_cost));
@@ -28132,6 +28169,18 @@ async function renderUnifiedJob(jobId) {
     state.openUnifiedJobId = null;
     renderJobCosting();
   });
+
+  // Accordion toggles (prompt 50 Part D): pure display toggle, no re-render,
+  // so open/close never drops focus or in-flight saves.
+  root.querySelectorAll('[data-sec-toggle]').forEach(head => head.addEventListener('click', () => {
+    const id = head.dataset.secToggle;
+    const open = !_unifiedSecOpen[id];
+    _unifiedSecOpen[id] = open;
+    const body = root.querySelector(`[data-sec-body="${id}"]`);
+    if (body) body.style.display = open ? '' : 'none';
+    const chev = head.querySelector('.prod-cat-chevron');
+    if (chev) chev.textContent = open ? '▼' : '▶';
+  }));
 
   // Header / Hours / Costs / Notes [data-cost] inputs (job table or costing table)
   root.querySelectorAll('[data-cost]').forEach(inp => {
