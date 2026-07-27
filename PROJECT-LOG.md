@@ -4,6 +4,24 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Claude Code: BusyBusy Payroll Export discovery run, five assumptions corrected by live probes
+By: Claude Code
+
+Changed: added busybusy-discovery-findings.md at the repo root. Read-only throughout: 3 API calls against export.busybusy.io (repeat week pull, single-day pull, empty future range), the JWT decoded locally, everything else computed from the existing ~/bb_week.csv. No code, no schema, no writes to BusyBusy, token nowhere in the repo.
+
+THE TOKEN HAS NO EXPIRY CLAIM. The working credential is an HS256 JWT whose payload is only aud=busybusy-v3-member-session, iat=2026-07-27 15:54 UTC (minted this morning), sub=24627523. No exp, no organizationId, no scope. Unattended runs are possible, but it is a member SESSION token: logout, password change, or server-side pruning kills it with no warning, exactly how graphql.busybusy.io died on 2026-06-13. The import must treat 401 as "alert Dylan, touch nothing."
+
+FIVE CONTEXT ASSUMPTIONS DID NOT SURVIVE CONTACT WITH THE DATA. (1) Cost DOES include the OT premium: OT1 rows carry a Wage of exactly 1.5x that employee's REG wage, so "Cost = Wage x Hours with no premium" was true arithmetic but a wrong conclusion. (2) The Id did NOT move between two identical requests, the two week pulls are byte-identical, all 66 Ids included; it is deterministic absent edits (still not a durable key, edits regenerate it, but delete-then-insert is validated and the Id is usable within one run). (3) Empty range returns HTTP 200 with a header-only CSV, not the documented 404. (4) The 45.5% Shop share is mostly one anomaly: Aron Bronson's continuous 47.78-hour forgotten punch (07/22 07:52 through 07/24 07:39, all Shop, split by the export at each midnight, including a literal 24.0-hour row) is 65.80 of the 145.95 Shop hours; excluding him Shop is 25.0% of the week. (5) OT is a weekly-40 model represented TWO ways: when a segment crosses hour 40 the export emits the SAME Start/End twice (a REG row and an OT1 row splitting the span, Ids identical except a 00/01 suffix), and past 40 whole segments come as lone OT1 rows. Every OT employee's REG hours sum to exactly 40.0000.
+
+HOW IT WORKS, FOR THE BUILD: rows never double-count time, so hours per window = sum of its rows and ot_hours = the OT1 rows; dedup must include WageType or the split pairs collapse; Hours reconciles to (End - Start) - BreakHours on all 61 windows once split pairs are summed; BreakHours was 0.0 all week so net-of-breaks is untested; timestamps are local Arizona (first punches 06:32-07:01), Date always equals date(Start), multi-day punches are pre-split at midnight, and a single-day pull returned exactly the week pull's rows for that Date, so day-aligned delete-then-insert is safe. Parser traps: EquipmentMakeModel is a literal single space on every row, Hours is a 6-decimal truncated repeating decimal, and Landen has a 3-minute punch overlapping another punch on 07/22.
+
+Why: Dylan ran busybusy-discovery-prompt.md; these are the unknowns Cowork could not reach from the cloud sandbox, collected for prompt 52.
+Files touched: busybusy-discovery-findings.md (new), PROJECT-LOG.md (this entry).
+Next steps: Cowork writes claude-code-prompt-52-busybusy-payroll-export.md from the findings file. Committed locally, NOT pushed, per the prompt's instruction.
+Handoff to Dylan: Aron's 47.78-hour punch needs fixing in BusyBusy (it also manufactured most of his 25.80 OT1 hours), and the shop-time conversation should use 25%, not 45%. Matt Scharrer job mystery still open from the prior entry.
+
+---
+
 ## [2026-07-27 MST] Cowork: verified the BusyBusy name-to-job join against PROD (8 of 9 resolve uniquely), wrote the Claude Code discovery prompt
 By: Cowork
 
