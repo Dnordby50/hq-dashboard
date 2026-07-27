@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: scoped and wrote prompt 51 (touch-up list on the Job Schedule, callback lifecycle, cause tracking)
+By: Cowork
+
+Changed: added claude-code-prompt-51-touchup-list.md at the repo root. No code, no schema, no migration applied. This entry records the scoping session and the findings that shaped it.
+
+Dylan's ask: "need to add a touchup list to the job schedule so we can prioritize our current and past customers, and track callbacks." Fourteen multiple-choice questions were asked and answered before writing; the prompt's "Locked decisions" section is that transcript.
+
+TWO FINDINGS DROVE THE SCOPE, both from reading the live code rather than taking the ask at face value.
+
+1. TOUCH-UPS ALREADY EXIST AND ARE LEAKING INTO PENDING JOBS. addTouchupCallback (index.html ~25079) and the #schedAddCallback button (~25346) have shipped since the 2026-06-08_touchup_callback.sql migration: a touch-up is already a pec_prod_jobs row with is_callback=true, original_job_id set, revenue null, status 'unscheduled'. But freshPending (index.html 24214) filters on status === 'unscheduled' WITHOUT excluding is_callback, so every open touch-up renders in the Pending Jobs aside as an ordinary job card ("Proposal #MANUAL-...", "No system yet"), indistinguishable from a real booked job. That is why the queue feels missing: it is not missing, it is disguised. Prompt 51 makes the panel and fixes the leak in the same build.
+
+2. THE COSTING ROLLUP COLLIDES WITH PROMPT 50'S BONUS REVIEW. Dylan chose "callback costs roll into the ORIGINAL job's costing." Crew bonus pool is labor budget minus actual loaded labor, so an automatic rollup shrinks the pool on its own, while prompt 50 (2026-07-26) ALSO flags that parent's bonuses for manual Pay full / Reduce / Void review. Applied together the crew is docked twice for one callback. Prompt 51 instructs: the rollup affects GP reporting only and must NOT change computeCrewBonus inputs; the prompt-50 review gate stays the single lever on bonus. If the two cannot be separated cleanly, Claude Code is told to stop and write it up rather than ship a half-separation.
+
+Also specified: billable touch-ups require changing the rule from "is_callback means excluded from revenue" to "a callback with revenue > 0 counts", which touches four hard-coded exclusion sites (index.html 23729, 24514, 29018, 11713-11716); existing null-revenue rows must behave identically. Billable callbacks are explicitly NOT wired to invoicing or public.jobs in this build.
+
+Dylan's answers, condensed: touch-up stays a full callback job; panel in the Job Schedule aside (not a nav item); queued until scheduled, then a real calendar block; office-only intake from the panel and the job detail page; $0 default with billable override; costing rolls to the parent; manual drag order with computed badges plus an optional "Sort by suggested" with undo; lifecycle Open / Scheduled / Waiting on customer / Done; red past a Settings-configurable N days (default 14), no notification; manual prefilled Text button only; cause REQUIRED at close from a six-value enum; badged TOUCHUP on Next Day and the printed run sheet; any staff, no new permission flag; one build.
+
+Why: Dylan's task, per the project's scope-then-write-the-prompt workflow.
+Files touched: claude-code-prompt-51-touchup-list.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan pastes prompt 51 into Claude Code. Claude Code writes 2026-07-27_touchup_queue.sql and hands it back to Cowork to apply, then SCHEMA.md gets refreshed. Still open from prior days: prompt 49 (leads follow-up queue) written and unrun; the Kathy Carmack name+address bridge decision (5 blocked bonuses); the callback-review gate is UI-only, not DB-enforced, awaiting Dylan's call; ZZ Test Draft lead and EST-102034 need deleting.
+Handoff to Dylan: git commit if the sandbox commit below did not land.
+
+---
+
 ## [2026-07-26 MST] Cowork: applied the three prompt-50 migrations to PROD, refreshed SCHEMA.md, verified RBAC at the DB layer, and found the 5 "completion date missing" bonuses are a false block
 By: Cowork
 
