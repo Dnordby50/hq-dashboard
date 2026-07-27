@@ -1,5 +1,16 @@
 [
   {
+    "id": "busybusy-hours-import",
+    "date": "2026-07-27",
+    "title": "Real crew hours now flow into job costing from BusyBusy",
+    "summary": "Job costing no longer waits on hand-typed crew hours. A new BusyBusy tab in Settings pulls the crew's actual punches for a date window, shows you exactly what came back (total hours, overtime, shop time, hours per job, and anything odd like a forgotten clock-out), and imports only when you press Import. Pulling the same window again after a punch is corrected in BusyBusy is safe and normal, the import replaces those dates cleanly. Each BusyBusy worker name is matched to a team member once on the same tab (salespeople can be ignored), and each BusyBusy project links to a job once, then stays linked. Overtime lands on whichever job the person was on when they passed 40 hours for the week, matching payroll exactly. Shop time is tracked as overhead and never charges a job. Jobs with imported hours use them automatically in the bonus math; manual hour entry still works for anything BusyBusy does not cover.",
+    "howto": [
+      "Open Settings and pick the BusyBusy tab. The date window is prefilled with the last two full weeks.",
+      "Press Fetch preview and read the summary. Map any unmapped names and link any unlinked projects right below.",
+      "Press Import. The hours appear on each job's costing page and drive the crew bonus automatically."
+    ]
+  },
+  {
     "id": "touchup-list-job-schedule",
     "date": "2026-07-27",
     "title": "Touch-ups now have their own list on the Job Schedule",
