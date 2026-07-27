@@ -4,6 +4,13 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Claude Code: correction to the prompt-52 build entry (token already set; entry order)
+By: Claude Code
+
+Two small corrections to the "prompt 52 built" entry below. (1) Its Handoff to Dylan item 1 (set BUSYBUSY_EXPORT_TOKEN in Netlify) was ALREADY DONE: Cowork staged the variable and Dylan pasted the value while the build was running (commit 8269edb, the entry directly below this one). The variable is Secret-scoped in all 5 deploy contexts; the next deploy, which includes this build, is the first one whose code reads it. Dylan's remaining items are Aron's punch and the Matt Scharrer job. (2) That same mid-build commit is also why the build entry sits BELOW Cowork's token entry despite being newer; the timestamps in the entries are correct.
+
+---
+
 ## [2026-07-27 MST] Cowork: created BUSYBUSY_EXPORT_TOKEN in Netlify (Dylan pasted the value)
 By: Cowork
 
