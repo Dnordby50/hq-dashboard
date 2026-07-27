@@ -1,5 +1,16 @@
 [
   {
+    "id": "touchup-list-job-schedule",
+    "date": "2026-07-27",
+    "title": "Touch-ups now have their own list on the Job Schedule",
+    "summary": "Touch-up and warranty visits no longer hide among Pending Jobs. The Job Schedule has a new Touch-ups panel that tracks each one from the moment a customer calls to the day it is closed out. Add one right from the panel by searching the original job, or from the job's page. Drag to set the order you want to work them, or tap Sort by suggested to rank by who has an active job, where crews already are, and how long it has been waiting. Rows turn red when a touch-up sits open too long (14 days by default, adjustable in Settings). Closing one asks why it happened, and the Report link totals those causes by crew so you can see what is driving callbacks. Scheduled touch-ups show a TOUCHUP tag on the Next Day board and the printed run sheet, at zero dollars unless you mark one billable.",
+    "howto": [
+      "Open Job Schedule. The Touch-ups panel sits above Pending Jobs on the left.",
+      "Tap + Touch-up and search the customer's name or address to log a new one, then + Schedule on its row when you are ready to book it.",
+      "When the work is done, tap Close on the row and pick the cause. Tap Report in the panel header to see totals by cause and crew."
+    ]
+  },
+  {
     "id": "metrics-window-presets-ai-insights",
     "date": "2026-07-26",
     "title": "Metrics: pick your time window (MTD, YTD, 4 weeks, custom) and get an AI read of it",

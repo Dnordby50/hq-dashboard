@@ -561,7 +561,7 @@
     {
       "name": "Job Schedule calendar",
       "area": "dashboard",
-      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date.",
+      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date. Prompt 51: the left aside is now a column holding the Touch-ups panel (see 'Touch-up list and callback tracking') above Pending Jobs, and BOTH pending sources exclude is_callback rows, so an unscheduled touch-up never renders as an ordinary pending job card. The week-revenue exclusion now tests revenue, not the flag: a billable callback (revenue > 0) prorates like any job.",
       "code": {
         "indexHtml": [
           "renderSchedule",
@@ -583,6 +583,40 @@
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-20-system-on-jobs.md",
       "since": "2026-05"
+    },
+    {
+      "name": "Touch-up list and callback tracking",
+      "area": "dashboard",
+      "description": "A Touch-ups panel in the Job Schedule aside (above Pending Jobs) that tracks every touch-up / warranty callback from request to close. A touch-up stays a full callback job (pec_prod_jobs, is_callback + original_job_id); the panel adds a lifecycle (touchup_state: open / scheduled / waiting_customer / done, a parallel axis to status, which callbacks keep at 'unscheduled'), an age clock (touchup_opened_at; rows go red past touchup_aging_days), manual drag order (touchup_order) with an optional deterministic Sort by suggested (+40 active customer job, +25 crew in the same city in the visible window, +days open capped at 30, -15 waiting; Undo restores touchup_order_prev), and a close flow that REQUIRES a cause from a six-value enum ('other' requires a note) and never deletes anything. Intake is office-only from two places: the panel's + Touch-up (search past jobs by name/address, description + touchup_requested_by) and the job detail toolbar's + Touch-up (prod row resolved by deal id then jobNameAddrKey); both flow through addTouchupCallback (the legacy #schedAddCallback button keeps its confirm + straight-to-scheduler path). Text opens the original job's comms tab with a prefilled draft (one-shot window.__pecCommsPrefill). Billable override: touchup_billable + revenue save together from the schedule modal; the four revenue-exclusion sites test revenue (a null-revenue callback stays $0). The panel's Report modal totals closed touch-ups by cause and by the ORIGINAL job's crew (90 days / YTD) with a callback rate. Callback costs roll up read-only into the parent's unified costing GP display without touching computeCrewBonus inputs (prompt 50's review gate stays the only bonus lever).",
+      "code": {
+        "indexHtml": [
+          "touchupPanelHtml",
+          "wireTouchupPanel",
+          "touchupPanelCtx",
+          "touchupEffState",
+          "openTouchupAddModal",
+          "openTouchupCloseModal",
+          "openTouchupWaitingModal",
+          "openTouchupReportModal",
+          "openTouchupText",
+          "addTouchupCallback",
+          "saveTouchupFields",
+          "touchupSuggestedScore",
+          "loadTouchupSettings"
+        ]
+      },
+      "tables": [
+        "pec_prod_jobs",
+        "pec_prod_job_schedule_days",
+        "settings"
+      ],
+      "settings": [
+        "touchup_aging_days",
+        "touchup_default_duration_hours",
+        "touchup_panel_show_done_days"
+      ],
+      "spec": "claude-code-prompt-51-touchup-list.md",
+      "since": "2026-07"
     },
     {
       "name": "Reschedule / pending flow",
@@ -607,7 +641,7 @@
     {
       "name": "Next Day Schedule and run sheet",
       "area": "dashboard",
-      "description": "A focused next-working-day view that lays out each crew's jobs for tomorrow with prorated revenue, plus a Print run sheet button that produces a paper crew sheet. A big job can be split across two crews so it appears under both crew columns in the same slot with a 2 teams badge and on the printed sheet, while staying one job for revenue and status. It stacks into full-width mobile cards. Clicking a job's name on a run-sheet card opens the read-only quick look; dragging the card still moves it between crews and slots.",
+      "description": "A focused next-working-day view that lays out each crew's jobs for tomorrow with prorated revenue, plus a Print run sheet button that produces a paper crew sheet. A big job can be split across two crews so it appears under both crew columns in the same slot with a 2 teams badge and on the printed sheet, while staying one job for revenue and status. It stacks into full-width mobile cards. Clicking a job's name on a run-sheet card opens the read-only quick look; dragging the card still moves it between crews and slots. Prompt 51: scheduled touch-ups appear in the crew's column badged TOUCHUP (sky blue, the calendar's callback color) with their description, and print on the run sheet with a plain-text ' - TOUCHUP' marker plus the description line; revenue stays $0 unless the touch-up is billable. The day-revenue total excludes only NO-revenue callbacks.",
       "code": {
         "indexHtml": [
           "renderNextDay",
@@ -669,7 +703,7 @@
     {
       "name": "Job costing",
       "area": "dashboard",
-      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings. Prompt 50: the unified detail is an accordion (always-visible profit summary card, collapsible Revenue & Job Info / Labor & Bonus Payout / Materials / Subcontractors / Crew Bonuses / Costs / Notes sections, session-remembered via _unifiedSecOpen, layout only), and the Notes section carries an Office notes box (office_notes/_by/_at on pec_prod_job_costing, saved via saveOfficeNotes with an author+time stamp, separate from the crew-adjacent notes column). openCostingDetail is the superseded modal with no remaining callers.",
+      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings. Prompt 50: the unified detail is an accordion (always-visible profit summary card, collapsible Revenue & Job Info / Labor & Bonus Payout / Materials / Subcontractors / Crew Bonuses / Costs / Notes sections, session-remembered via _unifiedSecOpen, layout only), and the Notes section carries an Office notes box (office_notes/_by/_at on pec_prod_job_costing, saved via saveOfficeNotes with an author+time stamp, separate from the crew-adjacent notes column). openCostingDetail is the superseded modal with no remaining callers. Prompt 51: a parent job's unified detail folds every child touch-up's totalVar into its displayed Total Var and GP via a read-only Callback costs line in the Costs section (clickable through to each touch-up's own costing). Display-layer only: computeCostingRow is untouched, so aggregateCostingRows / Metrics sums count each job's costs once and never double count.",
       "code": {
         "indexHtml": [
           "renderJobCosting",
@@ -713,7 +747,7 @@
     {
       "name": "Crew bonus and Bonus Report",
       "area": "dashboard",
-      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted.",
+      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted. Prompt 51: the callback cost rollup on the parent's costing is GP display only and does NOT change computeCrewBonus inputs, so the bonus pool on a parent with callbacks is numerically unchanged; the prompt-50 review gate stays the single lever on bonus.",
       "code": {
         "indexHtml": [
           "renderCrewBonus",
