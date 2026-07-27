@@ -11646,7 +11646,7 @@ async function renderMetrics() {
     res = await withFreshSession(() => Promise.all([
       supabase.from('pec_job_ar').select(arColsBase + ',invoice_first_sent_at').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback,revenue'),
       supabase.from('reviews').select('created_at,rating,job_id'),
       // Costing data for the GP-by-crew section, same three sources the Job
       // Costing tab derives from (narrow column lists to keep payloads small).
@@ -11710,10 +11710,11 @@ async function renderMetrics() {
   (prodRes.data || []).forEach(r => { if (r.dripjobs_deal_id) dealToProd[r.dripjobs_deal_id] = r; });
   const arByDeal = {};
   for (const j of jobs) { if (j.dripjobs_deal_id) arByDeal[j.dripjobs_deal_id] = j; }
-  // Touch-up callback VISITS (is_callback rows) are no-charge revisits, not
+  // Touch-up callback VISITS with no revenue are $0 warranty revisits, not
   // jobs; they are excluded from every metric here, including the callback-rate
-  // denominator. The `callback` boolean is the quality flag on the real job.
-  const prodJobs = (prodRes.data || []).filter(r => !r.is_callback);
+  // denominator. A BILLABLE callback (revenue > 0, prompt 51 Part D) counts
+  // like a job. The `callback` boolean is the quality flag on the real job.
+  const prodJobs = (prodRes.data || []).filter(r => !(r.is_callback && !(Number(r.revenue) > 0)));
   // Per-prod-job cost aggregates, built exactly like loadCostingData does for
   // the Job Costing tab: ordered = sum(line_cost), used = sum(actual_used_qty
   // * unit_cost_snapshot), bonus = sum(amount). computeCostingRow (the ONE
@@ -23730,7 +23731,9 @@ async function renderNextDay() {
   };
   const dayRevenue = Object.keys(rowsByJobToday).reduce((s, jobId) => {
     const j = jobById[jobId];
-    return (!j || j.is_callback) ? s : s + revSliceFor(jobId);
+    // A callback with NO revenue is the $0 warranty default and stays out; a
+    // BILLABLE callback (revenue set) counts like any job (prompt 51 Part D).
+    return (!j || (j.is_callback && !(Number(j.revenue) > 0))) ? s : s + revSliceFor(jobId);
   }, 0);
 
   const cardHtml = (d) => {
@@ -24929,7 +24932,9 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       const job = state.prodJobs.find(j => j.id === jobId);
       if (!job) continue;
       const totalDays = totalDaysByJob[jobId] || 1;
-      if (job.is_callback) { excluded.push({ job, daysInWeek, totalDays, reason: 'touch-up callback (no charge)' }); continue; }
+      // No-revenue callbacks stay excluded (the $0 warranty default); a
+      // billable callback carries revenue and prorates like any job (Part D).
+      if (job.is_callback && !(Number(job.revenue) > 0)) { excluded.push({ job, daysInWeek, totalDays, reason: 'touch-up callback (no charge)' }); continue; }
       const rev = Number(job.revenue || 0);
       const slice = rev * (daysInWeek / totalDays);
       total += slice;
@@ -25655,6 +25660,9 @@ function openScheduleModal(jobId) {
     estimated_hours: job.estimated_hours || (job.is_callback ? (state.touchupSettings?.defaultHours ?? 2) : ''),
     sales_team: job.sales_team || '',
     revenue: job.revenue ?? '',
+    // Billable touch-up override (prompt 51 Part D): billable and revenue are
+    // set TOGETHER, never one without the other.
+    billable: !!(job.is_callback && job.touchup_billable && Number(job.revenue) > 0),
     // Inline system pick. If the job already has an area its system wins,
     // otherwise the user picks here and Save inserts a default "Main" area.
     system_type_id: sys ? sys.id : '',
@@ -25830,7 +25838,14 @@ function openScheduleModal(jobId) {
         <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
         <div class="pec-field"><label>Sales team</label>${salesTeamSelectHtml(draft.sales_team, 'id="schedSales"')}</div>
       </div>
-      ${job.is_callback ? '' : `
+      ${job.is_callback ? `
+      <div class="pec-row-2">
+        <div class="pec-field"><label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="schedBillable" style="width:auto" ${draft.billable ? 'checked' : ''}> Billable touch-up
+        </label>
+        <div style="font-size:.68rem;color:var(--muted)">Touch-ups are $0 warranty work by default. Check this only when the customer is being charged; the amount then counts in schedule revenue and costing (not invoicing).</div></div>
+        <div class="pec-field"><label>Charge ($)</label><input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.billable ? draft.revenue : '')}" placeholder="required when billable" ${draft.billable ? '' : 'disabled'}></div>
+      </div>` : `
       <div class="pec-row-2">
         <div class="pec-field"><label>Revenue ($)</label><input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.revenue)}" placeholder="required to schedule"></div>
         <div class="pec-field"><div style="font-size:.7rem;color:var(--muted);margin-top:20px">Scheduled jobs must carry revenue (price integrity constraint). The value saves to the job.</div></div>
@@ -25885,6 +25900,14 @@ function openScheduleModal(jobId) {
       modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
       const schedRevEl = modal.querySelector('#schedRevenue');
       if (schedRevEl) schedRevEl.addEventListener('input', e => { draft.revenue = e.target.value; });
+      const schedBillEl = modal.querySelector('#schedBillable');
+      if (schedBillEl) schedBillEl.addEventListener('change', () => {
+        draft.billable = schedBillEl.checked;
+        if (schedRevEl) {
+          schedRevEl.disabled = !draft.billable;
+          if (!draft.billable) { schedRevEl.value = ''; draft.revenue = ''; }
+        }
+      });
       // Site photos (CompanyCam), view-only. The scheduler runs off a
       // pec_prod_jobs row, which has NO companycam_project_id; the link lives
       // on public.jobs, so bridge via dripjobs_deal_id (the same join the
@@ -25967,6 +25990,15 @@ function openScheduleModal(jobId) {
         // Touch-up callbacks are no-charge by design and never get status
         // 'scheduled' (see the update payload below), so they skip this gate.
         let revenue = null;
+        // Billable touch-up (Part D): revenue and the billable flag save
+        // together, never one without the other. Unchecked = $0 warranty
+        // (revenue null), the default. The scheduled_needs_revenue CHECK
+        // already exempts callbacks either way.
+        if (job.is_callback && draft.billable) {
+          revenue = (draft.revenue === '' || draft.revenue == null) ? null : Number(draft.revenue);
+          if (!(revenue > 0)) return errEl.textContent = 'A billable touch-up needs a charge amount. Enter it, or uncheck Billable for a $0 warranty visit.';
+          if (!(revenue <= 100000)) return errEl.textContent = 'The charge must be $100,000 or less.';
+        }
         if (!job.is_callback) {
           revenue = (draft.revenue === '' || draft.revenue == null) ? null : Number(draft.revenue);
           if (!(revenue > 0)) return errEl.textContent = 'This job has no revenue yet. Enter it in the Revenue field above (or in Job Costing) before scheduling; scheduled jobs must carry revenue.';
@@ -25992,6 +26024,10 @@ function openScheduleModal(jobId) {
           sales_team: job.sales_team || null,
           revenue: job.revenue ?? null,
         };
+        // Billable-callback undo: restore the flag with the revenue it pairs
+        // with. Guarded on the column being present (post-migration rows carry
+        // it via select('*'); undefined means pre-migration, skip it).
+        if (job.is_callback && job.touchup_billable !== undefined) undoSnapshot.touchup_billable = !!job.touchup_billable;
         // A flagged job (days pulled for rescheduling) clears its flag on
         // save: saving is a full replace of the day rows, so whatever days
         // were owed are considered handled by the new schedule. Undo restores
@@ -26021,8 +26057,18 @@ function openScheduleModal(jobId) {
             sales_team: draft.sales_team || null,
           };
           if (!job.is_callback) { jobPatch.status = 'scheduled'; jobPatch.revenue = revenue; }
+          // Billable touch-up: flag + revenue land in ONE write. Status stays
+          // 'unscheduled' (the parallel-axis rule); the CHECK exempts callbacks.
+          if (job.is_callback) { jobPatch.touchup_billable = !!draft.billable; jobPatch.revenue = draft.billable ? revenue : null; }
           if (clearsReschedFlag) { jobPatch.reschedule_days_owed = 0; jobPatch.rescheduled_from = null; }
-          const update = await supabase.from('pec_prod_jobs').update(jobPatch).eq('id', job.id);
+          let update = await supabase.from('pec_prod_jobs').update(jobPatch).eq('id', job.id);
+          if (update.error && /touchup_billable/.test(update.error.message || '')) {
+            // Pre-2026-07-27 schema: save the schedule without the flag so the
+            // day placement still lands; the billable override needs the migration.
+            const { touchup_billable, ...noFlag } = jobPatch;
+            update = await supabase.from('pec_prod_jobs').update(noFlag).eq('id', job.id);
+            if (!update.error && draft.billable) showToast('Saved, but the Billable flag needs the 2026-07-27_touchup_queue.sql migration first.', { ttl: 6000 });
+          }
           if (update.error) {
             const m = update.error.message || '';
             return errEl.textContent = /scheduled_needs_revenue/.test(m)
@@ -29471,7 +29517,11 @@ async function renderJobCosting() {
   // are excluded as before.
   const pendingCosting = (state.prodJobs || []).filter(j => {
     if (j.archived_at) return false;
-    if (j.is_callback) return false;
+    // $0 warranty callbacks stay out; a BILLABLE callback (revenue set) may
+    // enter the queue if it ever reads completed (prompt 51 Part D). In
+    // practice callbacks keep status 'unscheduled' and have no CRM row, so
+    // today this changes nothing for existing rows (all revenue null).
+    if (j.is_callback && !(Number(j.revenue) > 0)) return false;
     if (costingIsFinalized(j)) return false; // finalized jobs live in Completed Job Costing
     if (j.costing_submitted_at) return false; // submitted jobs live in the review queue below
     return costingIsCompleted(j);
