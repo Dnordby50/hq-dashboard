@@ -24176,6 +24176,404 @@ function openNextDaySplitModal(row, onSaved) {
   } });
 }
 
+// ============================================================
+// Touch-ups panel (prompt 51)
+// ============================================================
+// A touch-up IS a callback pec_prod_jobs row (is_callback=true, original_job_id
+// set, from addTouchupCallback). The panel is a tracking layer over those rows:
+// lifecycle (touchup_state), age, manual order, and a close-with-cause flow.
+// It lives in the Job Schedule aside next to Pending Jobs; the calendar and
+// scheduler are untouched (a scheduled touch-up is a normal calendar block).
+
+const TOUCHUP_CAUSES = {
+  crew_workmanship: 'Crew workmanship',
+  material_failure: 'Material failure',
+  customer_expectation: 'Customer expectation',
+  damage_after_install: 'Damage after install',
+  sales_spec_error: 'Sales / spec error',
+  other: 'Other',
+};
+
+// Panel knobs from settings (rule 12), cached per render pass on state so the
+// schedule modal's hours prefill can read them without a second fetch. Every
+// failure path degrades to the defaults; the panel never blanks on a settings error.
+async function loadTouchupSettings() {
+  const def = { agingDays: 14, defaultHours: 2, showDoneDays: 30 };
+  try {
+    const res = await supabase.from('settings').select('key,value')
+      .in('key', ['touchup_aging_days', 'touchup_default_duration_hours', 'touchup_panel_show_done_days']);
+    if (res.error) throw res.error;
+    const map = Object.fromEntries((res.data || []).map(r => [r.key, r.value]));
+    const num = (v, d) => Number(v) > 0 ? Number(v) : d;
+    state.touchupSettings = {
+      agingDays: num(map.touchup_aging_days, def.agingDays),
+      defaultHours: num(map.touchup_default_duration_hours, def.defaultHours),
+      showDoneDays: num(map.touchup_panel_show_done_days, def.showDoneDays),
+    };
+  } catch (_) { state.touchupSettings = def; }
+  return state.touchupSettings;
+}
+
+// Effective lifecycle state. Stored touchup_state wins; rows that predate the
+// 2026-07-27 migration (column undefined) derive it from their day rows the
+// same way the migration's backfill does, so the panel works pre-apply.
+function touchupEffState(j) {
+  if (j.touchup_state) return j.touchup_state;
+  const days = (state.scheduleDays || []).filter(d => d.job_id === j.id).map(d => d.scheduled_date);
+  if (!days.length) return 'open';
+  const today = mstTodayIso();
+  return days.some(iso => iso >= today) ? 'scheduled' : 'done';
+}
+
+function touchupDaysOpen(j) {
+  const t = Date.parse(j.touchup_opened_at || j.created_at || '');
+  if (!Number.isFinite(t)) return 0;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+
+// Best-effort city from a free-text address ("street, City, ST zip" or
+// "street, City ST zip"): second comma segment, minus state/zip tokens.
+// Deliberately no geocoder (locked decision); an unparseable address just
+// means no "Crew nearby" badge, never an error.
+function touchupCityOf(addr) {
+  const parts = String(addr || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (parts.length < 2) return '';
+  return parts[1].replace(/\b[A-Z]{2}\b\.?/g, '').replace(/\d{5}(-\d{4})?/g, '').trim().toLowerCase();
+}
+
+// One patch write for touchup_* fields. Pre-migration (columns missing) the
+// update 400s mentioning the column; surface the run-the-migration hint once
+// instead of a raw error. Idempotent full-value update, safe to retry by hand.
+async function saveTouchupFields(jobId, patch, label) {
+  const upd = await supabase.from('pec_prod_jobs').update(patch).eq('id', jobId);
+  if (upd.error) {
+    const msg = upd.error.message || String(upd.error);
+    showToast(/touchup_/.test(msg)
+      ? 'Touch-up tracking is not live yet: apply the 2026-07-27_touchup_queue.sql migration first.'
+      : `Could not save (${label}): ` + msg, { ttl: 6000 });
+    return false;
+  }
+  const j = (state.prodJobs || []).find(x => x.id === jobId);
+  if (j) Object.assign(j, patch);
+  return true;
+}
+
+// Suggested-sort score (locked decision 7). Deterministic, no AI call; the
+// breakdown renders as the row tooltip so the ranking is explainable. Weights
+// are a starting point, tunable here in code.
+function touchupSuggestedScore(j, ctx) {
+  const parts = [];
+  let score = 0;
+  if (ctx.activeJobById[j.id]) { score += 40; parts.push('active/upcoming job +40'); }
+  if (ctx.nearbyById[j.id]) { score += 25; parts.push(`crew in ${ctx.nearbyById[j.id].city} this window +25`); }
+  const age = Math.min(touchupDaysOpen(j), 30);
+  score += age; parts.push(`days open +${age}`);
+  if (touchupEffState(j) === 'waiting_customer') { score -= 15; parts.push('waiting on customer -15'); }
+  return { score, why: `Suggested score ${score}: ` + parts.join(', ') };
+}
+
+// "Waiting on customer" toggle. Sets the state by hand with an optional note
+// appended to the job's notes. The age clock keeps running on purpose (Dylan
+// wants the total wait visible); waiting only de-prioritizes visually and in
+// the suggested score.
+function openTouchupWaitingModal(job) {
+  openModal(`
+    <h3 style="margin:0 0 6px">Waiting on customer</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px"><strong>${esc(job.customer_name || '')}</strong> · ${esc(job.address || 'No address')}<br>
+      Parks this touch-up as waiting on the customer. The days-open clock keeps counting so the total wait stays visible.</div>
+    <div class="pec-field"><label>Note (optional, added to the job notes)</label><textarea id="tuWaitNote" rows="2" style="width:100%" placeholder="e.g. Customer traveling until August, call after the 10th"></textarea></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="tuWaitSave">Mark waiting</button>
+    </div>`, { onMount(modal) {
+    modal.querySelector('#tuWaitSave').addEventListener('click', async () => {
+      const note = (modal.querySelector('#tuWaitNote').value || '').trim();
+      const patch = { touchup_state: 'waiting_customer' };
+      if (note) patch.notes = (job.notes ? job.notes + '\n' : '') + `Waiting on customer (${mstTodayIso()}): ${note}`;
+      if (await saveTouchupFields(job.id, patch, 'waiting')) { closeModal(); renderSchedule(); }
+    });
+  } });
+}
+
+// Close flow (Part C). Cause is REQUIRED here (not at open); 'other' also
+// requires a note. Closing stamps done/when/who and leaves the row and its
+// schedule days intact -- nothing is ever deleted. Deliberately does NOT touch
+// the parent job's bonus review state: prompt 50's Pay full / Reduce / Void
+// gate is an admin decision on the Bonus Report and stays the single lever.
+function openTouchupCloseModal(job) {
+  openModal(`
+    <h3 style="margin:0 0 6px">Close touch-up</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:10px"><strong>${esc(job.customer_name || '')}</strong> · ${esc(job.address || 'No address')}<br>
+      Pick why this touch-up happened. This feeds the callback report; the job row and any schedule days stay on record.</div>
+    <div class="pec-field"><label>Cause <span style="color:var(--danger,#dc2626)">required</span></label>
+      <select id="tuCloseCause">
+        <option value="">Pick a cause…</option>
+        ${Object.entries(TOUCHUP_CAUSES).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="pec-field"><label>Note <span id="tuCloseNoteReq" style="color:var(--danger,#dc2626);display:none">required for Other</span></label>
+      <textarea id="tuCloseNote" rows="2" style="width:100%" placeholder="What was done / what caused it"></textarea>
+    </div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="tuCloseSave" disabled>Close touch-up</button>
+    </div>
+    <div class="prod-msg-err" id="tuCloseErr"></div>`, { onMount(modal) {
+    const causeEl = modal.querySelector('#tuCloseCause');
+    const noteEl = modal.querySelector('#tuCloseNote');
+    const saveBtn = modal.querySelector('#tuCloseSave');
+    const noteReq = modal.querySelector('#tuCloseNoteReq');
+    const validate = () => {
+      const cause = causeEl.value;
+      const needsNote = cause === 'other';
+      noteReq.style.display = needsNote ? '' : 'none';
+      saveBtn.disabled = !cause || (needsNote && !(noteEl.value || '').trim());
+    };
+    causeEl.addEventListener('change', validate);
+    noteEl.addEventListener('input', validate);
+    saveBtn.addEventListener('click', async () => {
+      const errEl = modal.querySelector('#tuCloseErr'); errEl.textContent = '';
+      saveBtn.disabled = true;
+      let uid = null;
+      try { const { data: { user } = {} } = await supabase.auth.getUser(); uid = user?.id || null; } catch (_) {}
+      const ok = await saveTouchupFields(job.id, {
+        touchup_state: 'done',
+        touchup_closed_at: new Date().toISOString(),
+        touchup_closed_by: uid,
+        touchup_cause: causeEl.value,
+        touchup_cause_note: (noteEl.value || '').trim() || null,
+      }, 'close');
+      if (!ok) { saveBtn.disabled = false; return; }
+      closeModal();
+      showToast(`Closed touch-up for <strong>${esc(job.customer_name || 'job')}</strong> (${esc(TOUCHUP_CAUSES[causeEl.value] || causeEl.value)}).`);
+      renderSchedule();
+    });
+  } });
+}
+
+// Build the panel's render context once per renderSchedule pass: badge lookups
+// (active/upcoming sibling job, crew nearby in the visible calendar window)
+// computed from data loadScheduleData already loaded -- no extra queries.
+function touchupPanelCtx(tuSettings) {
+  const touchups = (state.prodJobs || []).filter(j => j.is_callback);
+  const nonCallback = (state.prodJobs || []).filter(j => !j.is_callback);
+  const daysByJob = {};
+  for (const d of (state.scheduleDays || [])) (daysByJob[d.job_id] ||= []).push(d.scheduled_date);
+  // "Active job": the customer has another (non-callback) job on the calendar
+  // in the current or next week (today's week start + 14 days).
+  const wk0 = isoDate(startOfWeek(new Date()));
+  const wk1 = isoDate(addDays(startOfWeek(new Date()), 13));
+  const sameCustomer = (a, b) => (a.customer_id && b.customer_id)
+    ? a.customer_id === b.customer_id
+    : !!String(a.customer_name || '').trim() && String(a.customer_name || '').trim().toLowerCase() === String(b.customer_name || '').trim().toLowerCase();
+  // "Crew nearby": any job scheduled inside the VISIBLE calendar window whose
+  // parsed city matches the touch-up's. Window = the rendered period (anchor
+  // week, 7 or 21 days per view mode).
+  const visStart = isoDate(startOfWeek(parseISO(state.scheduleAnchor || isoDate(new Date()))));
+  const visEnd = isoDate(addDays(parseISO(visStart), state.scheduleMode === 'week' ? 6 : 20));
+  const activeJobById = {}, nearbyById = {};
+  for (const t of touchups) {
+    const tCity = touchupCityOf(t.address);
+    for (const j of nonCallback) {
+      const days = daysByJob[j.id] || [];
+      if (!activeJobById[t.id] && sameCustomer(t, j) && days.some(iso => iso >= wk0 && iso <= wk1)) activeJobById[t.id] = j;
+      if (!nearbyById[t.id] && tCity && j.id !== t.original_job_id && touchupCityOf(j.address) === tCity) {
+        const hit = days.filter(iso => iso >= visStart && iso <= visEnd).sort()[0];
+        if (hit) nearbyById[t.id] = { job: j, iso: hit, city: parseISO(hit) ? (String(t.address).split(',')[1] || '').trim() : tCity };
+      }
+    }
+  }
+  return { touchups, daysByJob, activeJobById, nearbyById, visStart, visEnd, ...tuSettings };
+}
+
+// Panel HTML. Sections: Open (includes Waiting on customer, visually distinct),
+// Scheduled, Done (collapsed, windowed by touchup_panel_show_done_days). Open
+// sorts by the saved manual order (touchup_order, nulls last, then oldest
+// first); Scheduled by next calendar day; Done by close date, newest first.
+function touchupPanelHtml(ctx) {
+  const byState = { open: [], scheduled: [], done: [] };
+  for (const t of ctx.touchups) {
+    const s = touchupEffState(t);
+    (byState[s === 'waiting_customer' ? 'open' : s] || byState.open).push(t);
+  }
+  byState.open.sort((a, b) =>
+    (a.touchup_order == null ? 1e9 : a.touchup_order) - (b.touchup_order == null ? 1e9 : b.touchup_order)
+    || String(a.touchup_opened_at || a.created_at || '').localeCompare(String(b.touchup_opened_at || b.created_at || '')));
+  const nextDay = (t) => ((ctx.daysByJob[t.id] || []).filter(iso => iso >= mstTodayIso()).sort()[0]) || ((ctx.daysByJob[t.id] || []).sort()[0]) || '';
+  byState.scheduled.sort((a, b) => nextDay(a).localeCompare(nextDay(b)));
+  const doneCutoff = isoDate(addDays(new Date(), -ctx.showDoneDays));
+  byState.done = byState.done
+    .filter(t => String(t.touchup_closed_at || '').slice(0, 10) >= doneCutoff)
+    .sort((a, b) => String(b.touchup_closed_at || '').localeCompare(String(a.touchup_closed_at || '')));
+
+  const descOf = (t) => String(t.notes || '').split('\n')[0];
+  const badge = (txt, color, title) => `<span class="tu-badge" style="--tu-badge:${color}" title="${esc(title || '')}">${esc(txt)}</span>`;
+  const card = (t, section) => {
+    const st = touchupEffState(t);
+    const waiting = st === 'waiting_customer';
+    const days = touchupDaysOpen(t);
+    const overdue = st !== 'done' && days > ctx.agingDays;
+    const badges = [];
+    if (ctx.activeJobById[t.id]) badges.push(badge('Active job', '#16a34a', 'This customer has another job on the calendar in the current or next week'));
+    if (ctx.nearbyById[t.id]) badges.push(badge('Crew nearby ' + parseISO(ctx.nearbyById[t.id].iso).toLocaleDateString('en-US', { weekday: 'short' }), '#2563eb', 'A crew is scheduled in the same city inside the visible calendar window'));
+    if (waiting) {
+      badges.push(badge('Waiting on customer', '#a855f7', 'Parked by hand; the age clock keeps running'));
+    }
+    if (t.touchup_billable && Number(t.revenue) > 0) badges.push(badge('Billable ' + fmtMoney(t.revenue), '#d97706', 'Billable touch-up; counts in schedule revenue'));
+    const score = section === 'open' ? touchupSuggestedScore(t, ctx) : null;
+    const causeLine = section === 'done' && t.touchup_cause
+      ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px">${esc(TOUCHUP_CAUSES[t.touchup_cause] || t.touchup_cause)}${t.touchup_cause_note ? ' · ' + esc(t.touchup_cause_note) : ''}</div>` : '';
+    const ageChip = section === 'done'
+      ? `<span style="font-size:.66rem;color:var(--muted)">closed ${t.touchup_closed_at ? esc(fmtDate(String(t.touchup_closed_at).slice(0, 10))) : ''}</span>`
+      : `<span style="font-size:.66rem;font-weight:600;color:${overdue ? '#dc2626' : 'var(--muted)'}">${days}d open</span>`;
+    const actions = section === 'done' ? '' : `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        <button class="pec-btn primary sm" data-tu-schedule="${esc(t.id)}" style="flex:1;min-width:90px">${section === 'scheduled' ? 'Reschedule' : '+ Schedule'}</button>
+        <button class="pec-btn ghost sm" data-tu-text="${esc(t.id)}" title="Open the customer's Messages thread with a prefilled draft">Text</button>
+        ${section === 'open' ? `<button class="pec-btn ghost sm" data-tu-wait="${esc(t.id)}" title="${waiting ? 'Put back in the active queue' : 'Park as waiting on the customer'}">${waiting ? 'Resume' : 'Waiting'}</button>` : ''}
+        <button class="pec-btn ghost sm" data-tu-close="${esc(t.id)}" title="Close with a cause">Close</button>
+      </div>`;
+    return `<div class="pec-sched-pcard tu-card ${overdue ? 'tu-overdue' : ''} ${waiting ? 'tu-waiting' : ''}" data-tu-card="${esc(t.id)}" data-tu-section="${section}"
+        ${section === 'open' ? 'draggable="true"' : ''} title="${score ? esc(score.why) : ''}">
+      <div style="display:flex;align-items:baseline;gap:6px;justify-content:space-between">
+        <h4 style="margin:0" data-tu-open="${esc(t.id)}">${esc(t.customer_name || '(no name)')}</h4>
+        ${ageChip}
+      </div>
+      <div class="meta" style="margin:3px 0 4px">${esc(t.address || 'No address')}${descOf(t) ? '<br>' + esc(descOf(t)) : ''}${t.touchup_requested_by ? `<br><span style="font-size:.64rem">Reported by ${esc(t.touchup_requested_by)}</span>` : ''}</div>
+      ${section === 'scheduled' && nextDay(t) ? `<div style="font-size:.68rem;color:var(--muted);margin-bottom:2px">On the calendar ${esc(fmtDate(nextDay(t)))}</div>` : ''}
+      ${causeLine}
+      ${badges.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">${badges.join('')}</div>` : ''}
+      ${actions}
+    </div>`;
+  };
+
+  const secHead = (label, count, extra = '') => `
+    <div style="display:flex;align-items:center;gap:6px;margin:8px 0 6px">
+      <span style="font-size:.66rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)">${label} · ${count}</span>
+      <span style="flex:1"></span>${extra}
+    </div>`;
+  const openExtra = byState.open.length > 1 ? `
+      <button class="pec-btn ghost sm" id="tuSortSuggested" style="padding:1px 7px;font-size:.64rem" title="Re-rank the Open list by a transparent score (active job +40, crew nearby +25, days open up to +30, waiting -15). Hover a card for its score. Manual drag order stays the saved default.">Sort by suggested</button>
+      ${byState.open.some(t => t.touchup_order_prev != null) ? `<button class="pec-btn ghost sm" id="tuUndoSort" style="padding:1px 7px;font-size:.64rem" title="Restore the order from before the last Sort by suggested">Undo sort</button>` : ''}` : '';
+
+  return `
+      <details class="pec-sched-aside-details" open>
+        <summary class="pec-sched-aside-sum">Touch-ups <span style="color:var(--muted);font-weight:400">· ${byState.open.length} open</span>
+          <span style="flex:1"></span>
+          <button class="pec-btn ghost sm" id="tuReportLink" style="padding:1px 7px;font-size:.64rem" title="Closed touch-ups by cause and crew, plus the callback rate">Report</button>
+          <button class="pec-btn primary sm" id="tuAddBtn" style="padding:1px 8px;font-size:.68rem" title="Log a touch-up from a customer call: search past jobs by name or address">+ Touch-up</button>
+        </summary>
+        <div class="pec-sched-pending" id="pecSchedTouchups">
+          ${(byState.open.length + byState.scheduled.length + byState.done.length) === 0
+            ? '<div class="pec-empty" style="padding:14px 8px">No touch-ups. Log one with + Touch-up when a customer calls, or from a job page.</div>'
+            : `
+          ${secHead('Open', byState.open.length, openExtra)}
+          ${byState.open.length ? `<div id="tuOpenList" style="display:flex;flex-direction:column;gap:8px">${byState.open.map(t => card(t, 'open')).join('')}</div>` : '<div class="pec-empty" style="padding:6px 8px;font-size:.75rem">Nothing open</div>'}
+          ${secHead('Scheduled', byState.scheduled.length)}
+          ${byState.scheduled.length ? byState.scheduled.map(t => card(t, 'scheduled')).join('') : '<div class="pec-empty" style="padding:6px 8px;font-size:.75rem">Nothing scheduled</div>'}
+          <details style="margin-top:8px" ${state.touchupDoneOpen ? 'open' : ''} id="tuDoneDetails">
+            <summary style="font-size:.66rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);cursor:pointer;list-style:revert">Done · ${byState.done.length} <span style="font-weight:400;text-transform:none;letter-spacing:0">(last ${ctx.showDoneDays} days)</span></summary>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">${byState.done.length ? byState.done.map(t => card(t, 'done')).join('') : '<div class="pec-empty" style="padding:6px 8px;font-size:.75rem">None closed recently</div>'}</div>
+          </details>`}
+        </div>
+      </details>`;
+}
+
+// Wire the panel after renderSchedule paints it. Every action re-renders the
+// schedule (the panel's data is the schedule's data); drag persists the manual
+// order to touchup_order.
+function wireTouchupPanel(root, ctx) {
+  const jobById = Object.fromEntries((state.prodJobs || []).map(j => [j.id, j]));
+  const doneDetails = root.querySelector('#tuDoneDetails');
+  if (doneDetails) doneDetails.addEventListener('toggle', () => { state.touchupDoneOpen = doneDetails.open; });
+  root.querySelectorAll('[data-tu-schedule]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); openScheduleModal(b.dataset.tuSchedule);
+  }));
+  root.querySelectorAll('[data-tu-wait]').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const j = jobById[b.dataset.tuWait]; if (!j) return;
+    if (touchupEffState(j) === 'waiting_customer') {
+      // Resume: back to the plain queue state its day rows imply.
+      const hasDays = (ctx.daysByJob[j.id] || []).length > 0;
+      if (await saveTouchupFields(j.id, { touchup_state: hasDays ? 'scheduled' : 'open' }, 'resume')) renderSchedule();
+    } else openTouchupWaitingModal(j);
+  }));
+  root.querySelectorAll('[data-tu-close]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const j = jobById[b.dataset.tuClose]; if (j) openTouchupCloseModal(j);
+  }));
+  root.querySelectorAll('[data-tu-text]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const j = jobById[b.dataset.tuText];
+    if (j && typeof openTouchupText === 'function') openTouchupText(j);
+  }));
+  root.querySelectorAll('[data-tu-open]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation(); openPendingJobCard(el.dataset.tuOpen);
+  }));
+  const addBtn = root.querySelector('#tuAddBtn');
+  if (addBtn) addBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); e.preventDefault();
+    if (typeof openTouchupAddModal === 'function') openTouchupAddModal();
+  });
+  const reportBtn = root.querySelector('#tuReportLink');
+  if (reportBtn) reportBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); e.preventDefault();
+    if (typeof openTouchupReportModal === 'function') openTouchupReportModal(ctx);
+  });
+
+  // Manual drag order, Open section only: a scheduled touch-up's order IS its
+  // calendar date and Done is chronological, so drag lives where priority is
+  // a human call. Persists touchup_order (0..n) for the whole section; order
+  // is global (one shared queue), not per-user.
+  const openList = root.querySelector('#tuOpenList');
+  if (openList) {
+    let dragEl = null;
+    openList.querySelectorAll('[data-tu-card]').forEach(cardEl => {
+      cardEl.addEventListener('dragstart', (e) => { dragEl = cardEl; cardEl.classList.add('tu-dragging'); e.dataTransfer.effectAllowed = 'move'; });
+      cardEl.addEventListener('dragend', () => { if (dragEl) dragEl.classList.remove('tu-dragging'); dragEl = null; });
+      cardEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (!dragEl || dragEl === cardEl) return;
+        const r = cardEl.getBoundingClientRect();
+        const before = (e.clientY - r.top) < r.height / 2;
+        cardEl.parentNode.insertBefore(dragEl, before ? cardEl : cardEl.nextSibling);
+      });
+    });
+    openList.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const ids = [...openList.querySelectorAll('[data-tu-card]')].map(el => el.dataset.tuCard);
+      for (let i = 0; i < ids.length; i++) {
+        if ((jobById[ids[i]] || {}).touchup_order !== i) {
+          if (!await saveTouchupFields(ids[i], { touchup_order: i }, 'reorder')) return;
+        }
+      }
+    });
+    openList.addEventListener('dragover', (e) => e.preventDefault());
+  }
+  const sortBtn = root.querySelector('#tuSortSuggested');
+  if (sortBtn) sortBtn.addEventListener('click', async () => {
+    sortBtn.disabled = true;
+    const open = ctx.touchups.filter(t => ['open', 'waiting_customer'].includes(touchupEffState(t)));
+    const ranked = open.map(t => ({ t, s: touchupSuggestedScore(t, ctx).score }))
+      .sort((a, b) => b.s - a.s || String(a.t.touchup_opened_at || '').localeCompare(String(b.t.touchup_opened_at || '')));
+    for (let i = 0; i < ranked.length; i++) {
+      // Snapshot the pre-sort order per row so Undo sort can restore it.
+      const prev = ranked[i].t.touchup_order == null ? null : ranked[i].t.touchup_order;
+      if (!await saveTouchupFields(ranked[i].t.id, { touchup_order_prev: prev, touchup_order: i }, 'sort')) { sortBtn.disabled = false; return; }
+    }
+    renderSchedule();
+  });
+  const undoBtn = root.querySelector('#tuUndoSort');
+  if (undoBtn) undoBtn.addEventListener('click', async () => {
+    undoBtn.disabled = true;
+    const open = ctx.touchups.filter(t => ['open', 'waiting_customer'].includes(touchupEffState(t)));
+    for (const t of open) {
+      if (!await saveTouchupFields(t.id, { touchup_order: t.touchup_order_prev ?? null, touchup_order_prev: null }, 'undo-sort')) { undoBtn.disabled = false; return; }
+    }
+    renderSchedule();
+  });
+}
+
 // Live refs for the pending-panel height sync (Task 3). Kept at module scope so a
 // re-render can tear the previous ones down before wiring new ones (no listener /
 // observer accumulation across the many renderSchedule re-runs).
@@ -24214,12 +24612,22 @@ async function renderSchedule() {
   //     NaN > 0 is false), same best-effort posture as the write side.
   const scheduledJobIds = new Set(state.scheduleDays.map(d => d.job_id));
   const owedDays = (j) => Number(j.reschedule_days_owed) > 0 ? Number(j.reschedule_days_owed) : 0;
-  const needsResched = state.prodJobs.filter(j => owedDays(j) > 0 && !j.archived_at);
-  const freshPending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled' && !j.pending_hidden_at && !j.archived_at && !owedDays(j));
+  // Touch-up callbacks are excluded from BOTH pending sources (prompt 51 leak
+  // fix): an unscheduled callback used to render here as an ordinary job card,
+  // and a callback with owed days belongs in the Touch-ups panel, not Pending.
+  const needsResched = state.prodJobs.filter(j => owedDays(j) > 0 && !j.archived_at && !j.is_callback);
+  const freshPending = state.prodJobs.filter(j => !j.install_date && !scheduledJobIds.has(j.id) && j.status === 'unscheduled' && !j.pending_hidden_at && !j.archived_at && !owedDays(j) && !j.is_callback);
   const pending = [...needsResched, ...freshPending];
+
+  // Touch-ups panel context (prompt 51): settings knobs + badge lookups, all
+  // from data already loaded above (plus one cheap settings read).
+  const tuSettings = await loadTouchupSettings();
+  const tuCtx = touchupPanelCtx(tuSettings);
 
   root.innerHTML = `
     <div class="pec-sched-grid">
+      <div class="pec-sched-asidecol">
+      ${touchupPanelHtml(tuCtx)}
       <details class="pec-sched-aside-details" open>
         <summary class="pec-sched-aside-sum">Pending Jobs <span style="color:var(--muted);font-weight:400">· ${pending.length}</span></summary>
         <div class="pec-sched-pending" id="pecSchedPending">
@@ -24242,6 +24650,7 @@ async function renderSchedule() {
           }).join('')}
         </div>
       </details>
+      </div>
       <main>
         <div class="pec-sched-toolbar">
           <!-- Nav cluster: prev / today / next, the period label, then the
@@ -24342,6 +24751,7 @@ async function renderSchedule() {
     }
   }));
 
+  wireTouchupPanel(root, tuCtx);
   renderScheduleCalendar(sysById, crewById, areaSystem);
 
   // Task 3: cap the Pending panel at the CALENDAR's height so it hugs its content
@@ -24355,7 +24765,11 @@ async function renderSchedule() {
   // content > cap -> scrolls inside. Desktop two-column only; mobile clears the cap.
   const grid = root.querySelector('.pec-sched-grid');
   const mainCol = grid && grid.querySelector(':scope > main');
-  const aside = grid && grid.querySelector(':scope > .pec-sched-aside-details');
+  // The aside is now a COLUMN holding two <details> (Touch-ups above Pending,
+  // prompt 51). Measuring "space above the pending list" from the column top
+  // automatically accounts for the Touch-ups panel's height, so the cap math
+  // is unchanged in spirit: pending gets whatever calendar height remains.
+  const aside = grid && grid.querySelector(':scope > .pec-sched-asidecol');
   const summaryEl = aside && aside.querySelector('.pec-sched-aside-sum');
   const pendingEl = $('pecSchedPending');
   if (_schedPendingRO) { _schedPendingRO.disconnect(); _schedPendingRO = null; }
@@ -25084,9 +25498,15 @@ function openDayOffModal() {
 // revenue null), which the widened scheduled_needs_revenue constraint allows. It
 // is excluded from revenue/commission/costing rollups and never reaches the
 // pipeline (it has no public.jobs row).
-async function addTouchupCallback(prodJob) {
+// opts (prompt 51 intake flow): { description, requestedBy, skipConfirm,
+// openScheduler }. The legacy #schedAddCallback path passes nothing and keeps
+// its confirm() + straight-to-scheduler behavior; the panel / job-detail
+// intake passes its own description, skips the confirm (its modal IS the
+// confirmation), and leaves the new touch-up queued as 'open' in the panel.
+async function addTouchupCallback(prodJob, opts = {}) {
   if (!prodJob) return;
-  if (!confirm(`Add a touch-up / warranty callback for ${prodJob.customer_name || 'this job'}? It is a no-charge visit you will then place on the schedule.`)) return;
+  const openScheduler = opts.openScheduler !== false;
+  if (!opts.skipConfirm && !confirm(`Add a touch-up / warranty callback for ${prodJob.customer_name || 'this job'}? It is a no-charge visit you will then place on the schedule.`)) return null;
   const row = {
     customer_id: prodJob.customer_id || null,
     customer_name: prodJob.customer_name,
@@ -25095,21 +25515,39 @@ async function addTouchupCallback(prodJob) {
     original_job_id: prodJob.id,
     revenue: null,
     status: 'unscheduled',
-    notes: 'Touch-up / warranty callback' + (prodJob.proposal_number ? ' for #' + prodJob.proposal_number : ''),
+    notes: (opts.description || 'Touch-up / warranty callback') + (prodJob.proposal_number ? ' (for #' + prodJob.proposal_number + ')' : ''),
+    // Queue lifecycle (prompt 51): every touch-up starts Open with its age
+    // clock anchored at creation.
+    touchup_state: 'open',
+    touchup_opened_at: new Date().toISOString(),
+    touchup_requested_by: (opts.requestedBy || '').trim() || null,
   };
   let newId;
   try {
     newId = await insertManualJob(row);
   } catch (err) {
-    console.error('[pec] add touch-up callback failed', err);
-    const hint = /is_callback|original_job_id/.test(err.message || '') ? ' (Run the 2026-06-08_touchup_callback.sql migration first.)' : '';
-    alert('Could not create the callback: ' + (err.message || err) + hint);
-    return;
+    // Pre-2026-07-27 schema: retry without the queue columns so callback
+    // creation keeps working while the migration is pending.
+    if (/touchup_/.test(err.message || '')) {
+      try {
+        const { touchup_state, touchup_opened_at, touchup_requested_by, ...legacyRow } = row;
+        newId = await insertManualJob(legacyRow);
+      } catch (err2) { err = err2; newId = null; }
+    }
+    if (!newId) {
+      console.error('[pec] add touch-up callback failed', err);
+      const hint = /is_callback|original_job_id/.test(err.message || '') ? ' (Run the 2026-06-08_touchup_callback.sql migration first.)' : '';
+      alert('Could not create the callback: ' + (err.message || err) + hint);
+      return null;
+    }
   }
   closeModal();
   await loadScheduleData(); // refresh state.prodJobs + scheduleDays so the new row is schedulable
-  showToast('Touch-up callback created. Pick the day, crew, and time slot to schedule it.');
-  openScheduleModal(newId);
+  if (openScheduler) {
+    showToast('Touch-up callback created. Pick the day, crew, and time slot to schedule it.');
+    openScheduleModal(newId);
+  }
+  return newId;
 }
 
 // Read-only "quick look" job card, opened by clicking a Pending Jobs card. This is
@@ -25212,7 +25650,9 @@ function openScheduleModal(jobId) {
     pickerMonth: new Date(nowMonth.getFullYear(), nowMonth.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
     time_slot: existingDays[0]?.time_slot || '',
-    estimated_hours: job.estimated_hours || '',
+    // Touch-ups with no hours yet prefill from the touchup_default_duration_hours
+    // setting (loaded by the schedule render; falls back silently if absent).
+    estimated_hours: job.estimated_hours || (job.is_callback ? (state.touchupSettings?.defaultHours ?? 2) : ''),
     sales_team: job.sales_team || '',
     revenue: job.revenue ?? '',
     // Inline system pick. If the job already has an area its system wins,
@@ -25654,6 +26094,11 @@ function openScheduleModal(jobId) {
           // public.jobs row immediately (scheduled / in_progress / completed per
           // deriveJobStatus). Pass the full span so the LAST day drives completion.
           await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, { start: sortedIso[0], end: sortedIso[sortedIso.length - 1] });
+          // Touch-up lifecycle (prompt 51): landing on the calendar moves the
+          // queue state to 'scheduled'. Parallel to status, which callbacks
+          // keep at 'unscheduled' by design. Best-effort (pre-migration the
+          // helper toasts the hint and the schedule itself still saved).
+          if (job.is_callback) await saveTouchupFields(job.id, { touchup_state: 'scheduled' }, 'touchup-scheduled');
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -25676,6 +26121,9 @@ function openScheduleModal(jobId) {
           if (upd.error) return errEl.textContent = upd.error.message;
           // Calendar -> CRM status: clearing the schedule moves the CRM job back to 'signed'.
           await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, { cleared: true });
+          // Touch-up lifecycle (prompt 51): pulling every day off puts the
+          // touch-up back in the Open queue (never 'waiting_customer').
+          if (job.is_callback) await saveTouchupFields(job.id, { touchup_state: 'open' }, 'touchup-clear');
         } catch (err) {
           errEl.textContent = 'Clear failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -25749,6 +26197,10 @@ function openScheduleModal(jobId) {
           // Calendar -> CRM status: a partial pull keeps the remaining span,
           // a full pull reads as cleared.
           await syncPublicJobStatusFromSchedule(job.dripjobs_deal_id, kept.length ? { start: kept[0], end: kept[kept.length - 1] } : { cleared: true });
+          // Touch-up lifecycle (prompt 51): a FULL pull returns the touch-up to
+          // the Open queue; a partial pull still has calendar days, so it stays
+          // 'scheduled'.
+          if (job.is_callback && !kept.length) await saveTouchupFields(job.id, { touchup_state: 'open' }, 'touchup-resched');
         } catch (err) {
           errEl.textContent = 'Reschedule failed: ' + err.message;
           return; // do not close on error so user can retry
@@ -30126,6 +30578,21 @@ if (portalToken) {
      truncated a short 1-week calendar and overshot a tall 3-week one). On mobile
      the JS clears the cap, so the list flows naturally in the collapsed layout. */
   .pec-sched-pending { display:flex; flex-direction:column; gap:8px; overflow-y:auto; padding-right:4px }
+  /* Touch-ups panel (prompt 51). Its list caps itself (viewport-relative) so a
+     long queue scrolls internally and never starves the Pending list below it;
+     the Pending cap (syncSchedPendingHeight) measures from the column top, so
+     it already subtracts whatever height this panel takes. */
+  #pecSchedTouchups { max-height:46vh }
+  .pec-sched-asidecol > .pec-sched-aside-details { margin-bottom:12px }
+  .pec-sched-asidecol .pec-sched-aside-sum { display:flex; align-items:center; gap:6px }
+  .tu-badge { display:inline-block; font-size:.6rem; font-weight:700; letter-spacing:.4px; text-transform:uppercase; border-radius:999px; padding:1px 7px;
+    background:color-mix(in srgb, var(--tu-badge,#6b7280) 14%, transparent); color:var(--tu-badge,#6b7280); border:1px solid color-mix(in srgb, var(--tu-badge,#6b7280) 45%, transparent) }
+  /* Aging: the WHOLE row goes red past touchup_aging_days (visual only). Same
+     visual family as the amber reschedule badge, dialed to danger. */
+  .tu-card.tu-overdue { border-color:#dc2626; background:color-mix(in srgb, #dc2626 7%, var(--rd-card, var(--s2))) }
+  .tu-card.tu-waiting { opacity:.78 }
+  .tu-card.tu-dragging { opacity:.4 }
+  .tu-card[draggable="true"] { cursor:grab }
   .pec-sched-pcard { padding:10px 12px; border:1px solid var(--rd-line, var(--border)); border-radius:8px; background:var(--rd-card, var(--s2)); cursor:pointer; transition:border-color .12s, box-shadow .12s }
   .pec-sched-pcard:hover, .pec-sched-pcard:focus-visible { border-color:var(--accent, #D8531C); box-shadow:0 2px 10px rgba(8,10,18,.10); outline:none }
   /* The whole pending card opens the quick-look; the NAME advertises it
