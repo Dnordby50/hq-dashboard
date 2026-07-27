@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-51 migration: pec_prod_jobs (ten touchup_* columns + idx_pec_prod_jobs_touchup_queue) and the settings key list. Only those changed; every other section is unchanged from the refreshes below.
 Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrations: pec_prod_job_costing (office_notes/_by/_at), pec_prod_job_bonuses (review_status/reviewed_by/reviewed_at/review_note), pec_bonus_payouts (reversed_at/reversed_by/reversal_reason). Only those three tables changed; every other section is unchanged from the 2026-07-21 dump.
 
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
@@ -1217,9 +1218,22 @@ RLS: enabled · rows: 80
 | subcontracted | boolean | no | false |
 | reschedule_days_owed | integer | no | 0 |
 | rescheduled_from | date | yes |  |
+| touchup_state | text | yes |  |
+| touchup_opened_at | timestamptz | yes |  |
+| touchup_closed_at | timestamptz | yes |  |
+| touchup_cause | text | yes |  |
+| touchup_cause_note | text | yes |  |
+| touchup_closed_by | uuid | yes |  |
+| touchup_order | integer | yes |  |
+| touchup_order_prev | integer | yes |  |
+| touchup_billable | boolean | no | false |
+| touchup_requested_by | text | yes |  |
 
 PK: id
 FK: crew_id → pec_prod_crews.id; customer_id → customers.id; original_job_id → pec_prod_jobs.id
+CHECK: `touchup_state` in ('open','scheduled','waiting_customer','done'); `touchup_cause` in ('crew_workmanship','material_failure','customer_expectation','damage_after_install','sales_spec_error','other'). Both NULL on non-callback rows.
+Index: `idx_pec_prod_jobs_touchup_queue` on (is_callback, touchup_state, touchup_order), the Touch-ups panel's filter.
+Touch-up columns added 2026-07-27 (prompt 51). `touchup_state` is a PARALLEL axis to `status`, not a replacement: a callback stays `status = 'unscheduled'` by design (runScheduleStatusSync skips callbacks; the calendar reads day rows), so a touch-up can be status 'unscheduled' AND touchup_state 'waiting_customer' at the same time. `is_callback` (touch-up visit, from 2026-06-08) is a DIFFERENT column from `callback` (legacy crew-lead quality flag): never conflate them. `pec_prod_jobs_scheduled_needs_revenue` still exempts callbacks, so a billable touch-up (touchup_billable + revenue) passes it trivially.
 
 ### pec_prod_labor_entries
 RLS: enabled · rows: 0
@@ -1612,6 +1626,7 @@ RLS: enabled · rows: 21
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-27 (prompt 51): touchup_aging_days ('14', days open before a Touch-ups panel row renders red), touchup_default_duration_hours ('2', prefills Estimated hours when scheduling a touch-up), touchup_panel_show_done_days ('30', how far back the panel's Done section reaches).
 Keys added 2026-07-25 (prompt 48): migration_drift_check_enabled ('true', master switch for the daily drift check; the on-demand Diagnostics run always works), migration_drift_baseline ('2026-07-01', only migrations dated on/after this are probed), sync_stuck_threshold_attempts ('2', failed attempts before the estimator shows the red not-syncing state), sync_stuck_escalation_enabled ('true', whether a stuck save also raises an admin bell).
 
 ### sign_in_log

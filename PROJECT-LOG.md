@@ -4,6 +4,31 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: applied the prompt-51 touch-up queue migration to PROD, verified the backfill, refreshed SCHEMA.md
+By: Cowork
+
+Changed: 2026-07-27_touchup_queue.sql applied to PROD (project zdfpzmmrgotynrwkeakd), SCHEMA.md refreshed for pec_prod_jobs and the settings key list. No repo code changes, no RLS changes, no constraint changes. Handoff came from Claude Code's prompt-51 ship (commits 92589a4..68e8d40 on main).
+
+1. MIGRATION LIVE. Applied via the Supabase MCP with BEGIN/COMMIT stripped (apply_migration wraps its own transaction), everything else verbatim. All ten columns confirmed against information_schema: touchup_state (text, null), touchup_opened_at / touchup_closed_at (timestamptz, null), touchup_cause (text, null), touchup_cause_note (text, null), touchup_closed_by (uuid, null), touchup_order / touchup_order_prev (integer, null), touchup_billable (boolean, NOT NULL default false), touchup_requested_by (text, null). Index idx_pec_prod_jobs_touchup_queue exists on (is_callback, touchup_state, touchup_order). Settings seeded: touchup_aging_days=14, touchup_default_duration_hours=2, touchup_panel_show_done_days=30. The Touch-ups panel is out of degraded mode.
+
+2. BACKFILL MATCHES THE HANDOFF EXACTLY. `select touchup_state, count(*) from pec_prod_jobs where is_callback group by 1` returns done=1, open=1, no 'scheduled', which is the predicted result. Only two callback rows exist in prod, both created 2026-06-12:
+   - Brandon Campos, 7339 E Louie Ln Prescott Valley (934c6955-fee8-4c56-a6dd-92bcee03580c): 1 schedule day, 2026-06-12, all in the past, so 'done'. touchup_opened_at = created_at 2026-06-12 15:34 UTC, touchup_closed_at stamped from the last scheduled day (2026-06-12). touchup_cause NULL, correct: it predates cause capture, and the migration deliberately does not invent one.
+   - Brian Wirick, 1825 Forest Creek Ln Prescott (fed05c68-f0be-406f-9480-2eb494c1d284): zero schedule day rows, so 'open'. touchup_opened_at = created_at 2026-06-12 16:10 UTC. This is the row that has been sitting in the Pending Jobs aside disguised as a real booked job since June; it is now the Touch-ups panel's only open item, and it will render RED immediately (45 days open against a 14-day threshold).
+   touchup_order is NULL on both (the migration does not seed an order; the panel assigns on first drag or first suggested sort). touchup_billable false on both.
+
+3. NOTHING WIDENED, CONFIRMED BY READING THE CATALOG AFTER THE FACT. pec_prod_jobs still has exactly ONE policy, pec_prod_jobs_staff (ALL, is_admin_staff() for both USING and WITH CHECK). pec_prod_jobs_status_check is unchanged (unscheduled/scheduled/ordered/delivered/completed). pec_prod_jobs_scheduled_needs_revenue is unchanged and still reads status <> 'scheduled' OR is_callback = true OR (revenue IS NOT NULL AND revenue > 0), so a billable touch-up passes it without a constraint edit. The two new CHECKs (pec_prod_jobs_touchup_state_check, pec_prod_jobs_touchup_cause_check) are the only constraint additions.
+
+4. SCHEMA.md REFRESHED IN PLACE, NOT REGENERATED (same posture as the 2026-07-26 refresh, and for the same reason: the file is hand-maintained and rewriting 68 sections to capture a 10-column additive change would risk errors in tables nothing touched). The pec_prod_jobs column table gained the ten rows, and the section now carries three notes worth having in the reference: the two new CHECK value lists, the new index, and a warning that touchup_state is a PARALLEL axis to status (a callback stays status 'unscheduled' by design, so status 'unscheduled' + touchup_state 'waiting_customer' is a valid pair) plus the standing is_callback vs callback warning. The settings section gained the three new keys with their meanings. The header's refresh line names exactly what was re-read.
+
+5. DRIFT CHECKER NOT RUN, same reason as 2026-07-26: it needs a signed-in staff JWT (Settings > Diagnostics > Schema Drift) and Cowork has none. All 14 declared @artifacts (10 columns, 1 index, 3 settings) were verified directly against information_schema / pg_indexes / settings, which is what the checker probes, so a clean green run is expected.
+
+Why: Claude Code's prompt-51 handoff to Cowork.
+Files touched: SCHEMA.md, PROJECT-LOG.md (this entry). Migration applied to prod; the .sql file itself was not modified.
+Next steps: Dylan runs Settings > Diagnostics > Schema Drift to confirm green. Dylan opens the Job Schedule and confirms Brian Wirick now appears in Touch-ups (red, 45 days) and NOT in Pending Jobs, and that the Pending count dropped by exactly one. Still open from prior days: prompt 49 (leads follow-up queue) written and unrun; the Kathy Carmack name+address bridge decision (5 blocked bonuses); the callback-review gate is UI-only, not DB-enforced, awaiting Dylan's call; ZZ Test Draft lead and EST-102034 need deleting.
+Handoff to Dylan: git add SCHEMA.md PROJECT-LOG.md && git commit (the sandbox cannot commit; a stale .git/index.lock is still sitting in the repo and needs deleting first, same one as 2026-07-26).
+
+---
+
 ## [2026-07-27 MST] Prompt 51 shipped: Touch-ups panel on the Job Schedule, callback lifecycle + cause tracking, billable override, costing rollup, callback report
 By: Claude Code
 
