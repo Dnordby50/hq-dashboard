@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: first live BusyBusy Payroll Export pull analyzed, three locked decisions changed by the data, shop-time prompt written
+By: Cowork
+
+Changed: added shop-time-reduction-prompt.md at the repo root (an OPS prompt for a separate session, not a Claude Code build prompt). No code, no schema. Follow-on to the scoping entry below (commit 174ec74).
+
+THE PULL. Dylan ran the export for 2026-07-20 through 2026-07-26 via Claude Code. 66 rows, 320.50 hours, 6 employees. Auth note that matters: the short integration key did NOT work; the endpoint accepted a full BusyBusy member-session JWT in Key-Authorization. Whether that JWT carries an exp claim is STILL UNANSWERED and is a live risk to the whole design (a session token that expires turns a weekly pull into a weekly silent failure). Nothing is built until that is settled.
+
+FOUR FINDINGS FROM THE REAL DATA, three of which overturn a decision made blind.
+
+1. OT EXISTS, BUT THEIR COST COLUMN IS WRONG. WageType OT1 appears on 17 rows, 84.78 hours, so BusyBusy DOES classify overtime and the "BusyBusy decides OT" decision holds; the 2026-06-19 per-person-per-week vs per-job attribution question is genuinely closed. HOWEVER every single row's Cost equals Wage x Hours exactly, including the OT1 rows, so their Cost pays overtime at straight time and understates that week's labor by roughly $1,000. The earlier decision to keep pec_prod_crew_members.hourly_wage plus our 25 percent burden and ignore their Wage/Cost columns was made before this was known and is now evidence-backed. NOTHING from their Cost column may ever touch a dollar figure in costing.
+
+2. SHOP TIME IS 45.5 PERCENT OF THE WEEK. 145.95 of 320.50 hours are logged to a project named "Shop" with no customer, no project number, no cost code. Only 174.55 hours reach a customer job (9 customers: Bobette Weiss 29.5, Nathan Rhodes 29.4, Matt Scharrer 27.3, Scott Gordon 21.3, Will Lewis 20.7, Bobby Priest 19.1, Jamy Myrmel 18.1, Martin Trout 5.2, Al Weikart 4.0). CONSEQUENCE FOR THIS BUILD, stated so nobody is surprised later: job costing under BusyBusy will see only about 55 percent of paid labor, so a job's GP will read BETTER under BusyBusy than under manual entry if crews were previously hand-entering prep time against jobs. That is a comparability break, not an improvement. Dylan's decision: shop hours are OVERHEAD, stored and reported but never charged to a job.
+
+3. IDENTITY IS NAME-ONLY. EmployeeId, EmployeeGroup, and CostCode are EMPTY on all 66 rows. That kills three things planned blind: the join on pec_prod_crew_members.busybusy_member_id, segmenting PEC from FTP by EmployeeGroup, and storing cost codes (there are none). Matching must run on FirstName + LastName through an explicit office-controlled mapping table. Also relevant: Aron Bronson (a SALESPERSON on commission, not a production crew member) logged 65.80 hours in this export, so the "import only mapped crew" rule is load-bearing, and a chunk of the Shop total may simply be non-production people whose whole week has nowhere else to go.
+
+4. PROJECTS ARE CUSTOMER NAMES. Not addresses, not proposal numbers. This collides with prompt 51 (shipped today): a touch-up callback for a repeat customer would share one BusyBusy project with the original job and the hours could not be told apart on name alone.
+
+DECISIONS UPDATED BY THE DATA (superseding the corresponding lines in the entry below):
+- Job matching: customer name PLUS work date. Resolve the project name to a customer, then pick the job whose scheduled days contain that work date. This is what disambiguates repeat customers and touch-ups.
+- People mapping: a mapping screen in Settings listing every distinct BusyBusy name seen in imports next to a crew member dropdown, with an explicit Ignore option (Aron and anyone non-production). Unmapped names surface at the top of every import summary.
+- Shop hours: overhead, excluded from job cost.
+- Cost codes: nothing to store, the decision is moot.
+
+THE SHOP-TIME PROMPT. Dylan asked for a prompt he can take to a separate session to attack the 146 hours. Written to shop-time-reduction-prompt.md. It deliberately DIAGNOSES BEFORE PRESCRIBING, because Dylan's stated cause (everyone shows up in the morning to load up) does not survive arithmetic: 145.95 hours over 29 person-days is about 5.0 hours per person per day, which is not a morning load-out. The prompt names three competing hypotheses (Shop is the un-switched default project in BusyBusy; the load-out is genuinely that long; drive time is landing in Shop), gives six concrete diagnostics against the raw CSV (time-of-day distribution of Shop blocks, blocks per person per day, WageType cross-tabbed against project, per-person shop percentage, ordering of shop vs job blocks, and the Description field), and only then works the fix. The sharpest of those: if the 84.78 OT hours are disproportionately Shop hours, PEC is paying time and a half for its least productive hours and cutting shop time is the cheapest overtime reduction available.
+
+Why: Dylan ran the first live export and asked how to cut the shop-time number.
+Files touched: shop-time-reduction-prompt.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan pastes the raw PROJECTS block (the num= values, to see whether ProjectNumber is a real identifier) and the JWT exp-claim result. Cowork then writes claude-code-prompt-52-busybusy-payroll-export.md. Separately, Dylan runs shop-time-reduction-prompt.md in a fresh session.
+Handoff to Dylan: two outstanding data answers above. Do not put the session JWT anywhere until we know whether it expires.
+
+---
+
 ## [2026-07-27 MST] Cowork: scoped the BusyBusy Payroll Export API (v2.1 doc, 2026-07-10), 16 decisions locked, prompt BLOCKED on a live test pull
 By: Cowork
 
