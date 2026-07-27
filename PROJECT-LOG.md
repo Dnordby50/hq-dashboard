@@ -4,6 +4,53 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: scoped the BusyBusy Payroll Export API (v2.1 doc, 2026-07-10), 16 decisions locked, prompt BLOCKED on a live test pull
+By: Cowork
+
+Changed: no code, no schema, no migration. This entry records the scoping session for the BusyBusy rebuild. The Claude Code prompt is deliberately NOT written yet, see "Why the prompt is not written" below.
+
+WHAT DYLAN BROUGHT: an email from AlignOps/BusyBusy with "BusyBusy Payroll Export API Documentation v2.1" (updated 2026-07-10), a Postman collection, and an API token in a Bitwarden Send. The token was NOT recorded here and must live only in a Netlify env var (BUSYBUSY_EXPORT_TOKEN). The doc's own section 17 says the same.
+
+FOUR FINDINGS THAT SHAPED THE SCOPE, all from reading the doc against the repo rather than taking the ask at face value.
+
+1. THIS IS A DIFFERENT ENDPOINT FROM THE ONE THAT HAS BEEN DEAD SINCE 2026-06-13. netlify/functions/pec-busybusy.cjs proxies graphql.busybusy.io and has 401'd since commit df4113f, which is why pec_prod_busybusy_time_entries has 0 rows and every job still reads "awaiting BusyBusy hours". The new API is GET https://export.busybusy.io/?start=&end= with a Key-Authorization header returning CSV. Different host, different auth, almost certainly a different credential. It is an unblock, not a fix to the 401.
+
+2. OUR EXISTING TABLE IS BUILT ON EXACTLY THE PATTERN THE DOC FORBIDS. The 2026-06-13_busybusy_time.sql design is "upsert by busybusy_entry_id (unique), soft-delete what BusyBusy stops reporting". Doc section 6 states the returned Id is a CALCULATED payroll export record, regenerated per request, and that it changes when anyone edits a work date, start time, end time, or adds/removes/edits a break (one row can become three, each with a new Id). Section 11 lists "using the Payroll Export Id as a permanent foreign key" as explicitly not supported, and section 14 confirms there is no updatedSince, no deletion feed, and no guarantee a previously returned row appears again. Keeping the upsert key would double-count hours every time a foreman edits a punch, and the symptom would read as a costing bug rather than a sync bug. Storage must become DELETE-THEN-INSERT by date range (the doc's own recommendation, 9.2 and 10).
+
+3. IT ANSWERS THE OT ATTRIBUTION QUESTION THAT HAS BLOCKED OT BONUS PAYOUTS SINCE 2026-06-19. Each CSV row carries WageType (REG in the sample) and the export splits the timeline into calculated segments. BusyBusy has therefore already decided which hours are premium and on which segment, so the open "OT is per-person-per-week but costing is per-job, which job eats the OT" modeling question stops being ours to answer. Confirm against real data: if only REG ever appears for this account, the question is still open.
+
+4. TWO MAPPING UNKNOWNS DECIDE WHETHER ANY OF THIS WORKS. The CSV identifies people by EmployeeId ("103" in the sample) plus first/last name, and jobs by ProjectNumber ("92082") plus Project title ("1302-311 Silver Door"). Our schema stores pec_prod_crew_members.busybusy_member_id (text, captured for the GraphQL API's GUIDs, population unknown) and pec_prod_jobs.busybusy_project_id (same). If those hold GUIDs or nothing, neither join works and every imported hour lands unattributed. Also unknown and material: whether PEC crews clock into one BusyBusy project per job at all, or into generic buckets like "Epoxy Install". If it is buckets, per-job costing from BusyBusy is impossible without changing field behavior, and that finding outranks the whole build.
+
+LOCKED DECISIONS (16 questions asked and answered).
+- Scope: job costing hours ONLY. No payroll processing surface, no payroll review screen in this build.
+- Trigger: manual button only, in Settings, ADMIN ONLY. No scheduled function.
+- Cadence and window: weekly. Each pull covers TWO weeks (the week being costed plus the prior week) because delete-replace is idempotent and late punch edits are the most common way hours go stale.
+- Duplicates: prevented STRUCTURALLY, not detected. Delete every stored row whose work date falls inside the requested window, then insert the fresh CSV. Re-pulling the same week any number of times yields identical data. There is no stable key to dedupe against, so an append-and-check design would eventually double-count.
+- Job mapping: undecided, resolved from data. The first pull prints distinct Project / ProjectNumber values.
+- Unmatched projects: stored with job_id null and surfaced in an "Unlinked hours" review panel where the office links a project to a job once; the link is remembered so the same project auto-matches on later pulls. Nothing is ever dropped.
+- Employee mapping: undecided, resolved from data (read the 7 crew member rows against the CSV's EmployeeId values side by side).
+- Non-crew rows (FTP, office, Dylan): import ONLY rows mapped to a PEC crew member. Consequence Dylan accepted: an unmapped new hire's hours silently do not count until someone maps them, so the import summary must report the count of skipped unmapped employees loudly.
+- Wage source: KEEP pec_prod_crew_members.hourly_wage and the existing 25 percent burden. BusyBusy's Wage and Cost columns are NOT wired into any math. (Their Cost is raw wage times hours with no burden; using it would understate labor cost by roughly 25 percent and inflate every bonus pool.)
+- Overtime: BusyBusy decides. WageType rows drive ot_hours. The manual OT input stays as an emergency override.
+- Manual hours: BusyBusy is the single source of truth going forward. Manual entry survives as an explicit, labeled override for the rare case. Dylan asked for a suggestion here, see below.
+- Finalized jobs: Dylan asked for a suggestion, answered "freeze bonus payout and recalculate", see below.
+- Old GraphQL proxy: RETIRE in this build. Delete pec-busybusy.cjs and rebuild the empty pec_prod_busybusy_time_entries table around snapshot semantics. Zero rows, so nothing is lost, and leaving two BusyBusy paths in the repo invites a future session wiring the wrong one.
+- Cost codes: store CostCode / CostCodeDescription on each row, do not use them in costing math yet.
+- Validation: preview-then-commit. The pull shows rows, distinct employees, total hours, REG vs OT split, unmatched project count, and unmapped employee count, and the admin presses Import to commit. Matches doc section 12.
+
+THE TWO "YOUR SUGGESTION" ANSWERS, as I intend to write them into the prompt (Dylan to confirm):
+- Manual vs BusyBusy: BusyBusy hours win on any job that has BusyBusy rows in its date span. The old manual entry is not deleted, it renders greyed out and labeled so the before/after is visible. Manual entry stays available on jobs with no BusyBusy coverage and as a marked override elsewhere. Jobs costed before the integration keep their manual hours because no BusyBusy data will ever exist for them.
+- Finalized jobs: split the two things that "finalized" currently bundles. GP and costing numbers DO refresh to the true hours (that is the point of the integration). A bonus that already has a pec_bonus_payouts row is FROZEN and never recalculated. A finalized-but-unpaid bonus whose hours moved gets flagged for review, reusing the prompt-50 review_status mechanism rather than inventing a second gate, so Dylan decides Pay full / Reduce / Void with the delta shown. Never let an import silently change a number someone was already paid on.
+
+WHY THE PROMPT IS NOT WRITTEN. Three locked answers are "tell me from the data" (job mapping, employee mapping, and whether OT even appears), and those three decide the join keys, which is the load-bearing part of the whole build. Writing the prompt now would mean guessing them and then rewriting it after first contact. Dylan is running one curl against a real week (2026-07-20 through 2026-07-26) and pasting back the status line, row count, header row, and 2-3 scrubbed rows. The prompt gets written from that.
+
+Why: Dylan forwarded the AlignOps/BusyBusy payroll export documentation and asked to scope the integration.
+Files touched: PROJECT-LOG.md (this entry).
+Next steps: Dylan runs the test curl and pastes the CSV shape. Cowork then writes claude-code-prompt-52-busybusy-payroll-export.md. Still open from prior days: prompt 49 (leads follow-up queue) written and unrun; the Kathy Carmack name+address bridge decision (5 blocked bonuses); the callback-review gate is UI-only, not DB-enforced; ZZ Test Draft lead and EST-102034 need deleting.
+Handoff to Dylan: run the curl (command is in the Cowork chat). Do NOT paste the token anywhere; it goes into Netlify env as BUSYBUSY_EXPORT_TOKEN when the build starts. Confirm or correct the two "your suggestion" interpretations above.
+
+---
+
 ## [2026-07-27 MST] Cowork: applied the prompt-51 touch-up queue migration to PROD, verified the backfill, refreshed SCHEMA.md
 By: Cowork
 
