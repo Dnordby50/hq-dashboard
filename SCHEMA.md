@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrations: pec_prod_job_costing (office_notes/_by/_at), pec_prod_job_bonuses (review_status/reviewed_by/reviewed_at/review_note), pec_bonus_payouts (reversed_at/reversed_by/reversal_reason). Only those three tables changed; every other section is unchanged from the 2026-07-21 dump.
 
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
@@ -530,6 +531,9 @@ RLS: enabled · rows: 16
 | paid_by | text | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| reversed_at | timestamptz | yes |  |
+| reversed_by | uuid | yes |  |
+| reversal_reason | text | yes |  |
 
 PK: bonus_id
 FK: bonus_id → pec_prod_job_bonuses.id
@@ -1084,6 +1088,10 @@ RLS: enabled · rows: 36
 | suggested_amount | numeric | yes |  |
 | approved_by | text | yes |  |
 | approved_at | timestamptz | yes |  |
+| review_status | text | yes |  |
+| reviewed_by | uuid | yes |  |
+| reviewed_at | timestamptz | yes |  |
+| review_note | text | yes |  |
 
 PK: id
 FK: crew_member_id → pec_prod_crew_members.id; job_id → pec_prod_jobs.id
@@ -1107,6 +1115,9 @@ RLS: enabled · rows: 38
 | notes | text | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| office_notes | text | yes |  |
+| office_notes_by | uuid | yes |  |
+| office_notes_at | timestamptz | yes |  |
 
 PK: id
 FK: job_id → pec_prod_jobs.id
