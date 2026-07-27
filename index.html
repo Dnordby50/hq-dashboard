@@ -28133,14 +28133,45 @@ async function renderUnifiedJob(jobId) {
   const sched    = (state.scheduleByJob?.[jobId] || []).slice().sort((a, b) => String(a.scheduled_date).localeCompare(String(b.scheduled_date)));
   const crewMembers = (state.crewMembers || []).filter(m => m.active !== false);
 
+  // Callback cost rollup (prompt 51 Part E): every child touch-up's real cost
+  // (its own computeCostingRow totalVar: labor, materials, misc entered ON the
+  // callback row, where they were spent) lands on THIS parent's displayed
+  // Total Var and GP, so the parent stops reporting a profit that never
+  // happened. Display-layer only, in this detail view:
+  //  - computeCostingRow itself is untouched, so aggregateCostingRows /
+  //    Metrics GP sums still count each job's costs exactly once (the callback
+  //    keeps its own standalone costing row there) -- no double counting.
+  //  - DELIBERATE (prompt 51 locked decision): the rollup must NOT change the
+  //    inputs to computeCrewBonus. The crew bonus pool reads jobLaborBudget +
+  //    this job's OWN hours (bonusCalc below), neither of which sees the
+  //    rollup, so the pool is numerically unchanged. Docking the crew for a
+  //    callback is prompt 50's manual review gate (Pay full / Reduce / Void)
+  //    and stays the single lever; an automatic pool shrink here would dock
+  //    them twice for one callback.
+  const callbackKidRows = (state.prodJobs || [])
+    .filter(k => k.is_callback && k.original_job_id === jobId)
+    .map(k => ({ k, r: computeCostingRow(k, state.costing.find(c => c.job_id === k.id), '',
+      state.materialOrderedByJob?.[k.id], state.materialUsedByJob?.[k.id], bonusTotalForJob(k.id)) }));
+  const callbackCost = callbackKidRows.reduce((s, x) => s + x.r.totalVar, 0);
+
   // Helper closures
-  const recomputeR = () => computeCostingRow(
-    job, state.costing.find(c => c.job_id === jobId),
-    sys ? sys.name : '',
-    state.materialOrderedByJob?.[jobId],
-    state.materialUsedByJob?.[jobId],
-    bonusTotalForJob(jobId)
-  );
+  const recomputeR = () => {
+    const base = computeCostingRow(
+      job, state.costing.find(c => c.job_id === jobId),
+      sys ? sys.name : '',
+      state.materialOrderedByJob?.[jobId],
+      state.materialUsedByJob?.[jobId],
+      bonusTotalForJob(jobId)
+    );
+    if (callbackCost > 0) {
+      base.callbackCost = callbackCost;
+      base.totalVar += callbackCost;
+      base.gp = base.revenue - base.totalVar;
+      base.gpPct = base.revenue > 0 ? base.gp / base.revenue : null;
+      base.gpHr = base.actHrs > 0 ? base.gp / base.actHrs : null;
+    }
+    return base;
+  };
 
   let r = recomputeR();
 
@@ -28745,6 +28776,10 @@ async function renderUnifiedJob(jobId) {
           ${derivedField('Bonus',           `<span data-uderived="bonus">${fmtMoneyOrDash(r.buckets.bonus_cost)}</span>`, '', 'bonus-box')}
           ${commissionDerivedField(r, derivedField)}
           ${moneyInput('Misc Expense',      'misc_cost',          'cost', cost?.misc_cost)}
+          ${callbackKidRows.length ? derivedField('Callback costs',
+            `${fmtMoneyOrDash(callbackCost)} <span style="color:var(--muted);font-size:.65rem">from ${callbackKidRows.length} touch-up${callbackKidRows.length === 1 ? '' : 's'}: ${callbackKidRows.map(x =>
+              `<a href="#" data-open-callback="${esc(x.k.id)}" style="color:var(--rd-accent,var(--accent))" title="Open this touch-up's costing">${esc(String(x.k.notes || 'touch-up').split('\n')[0].slice(0, 40) || 'touch-up')} (${fmtMoneyOrDash(x.r.totalVar)})</a>`).join(', ')}</span>`,
+            '', 'callback-cost-box') : ''}
         </div>
         <div class="pec-row-3" style="margin-top:10px">
           ${derivedField('Total Var Expense', `<span data-uderived="totalVar">${fmtMoneyOrDash(r.totalVar)}</span> (<span data-uderived="totalVarPct">${fmtPct(r.pct(r.totalVar))}</span>)`, '', 'totalVar-box')}
@@ -28859,6 +28894,13 @@ async function renderUnifiedJob(jobId) {
     state.openUnifiedJobId = null;
     renderJobCosting();
   });
+
+  // Callback-costs line: click through to the child touch-up's own costing.
+  root.querySelectorAll('[data-open-callback]').forEach(a => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.openUnifiedJobId = a.dataset.openCallback;
+    renderUnifiedJob(a.dataset.openCallback);
+  }));
 
   // Accordion toggles (prompt 50 Part D): pure display toggle, no re-render,
   // so open/close never drops focus or in-flight saves.
