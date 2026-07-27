@@ -17348,11 +17348,85 @@ async function renderSettingsBusybusy() {
   });
 }
 
-// Part D placeholder is filled by renderBbEmployeeCard; Part E by
-// renderBbProjectsCard (separate commits).
+// Settings > BusyBusy: employee mapping (prompt 52 Part D). BusyBusy's export
+// has an EMPTY EmployeeId on every row, so FirstName+LastName is the only
+// identity and this screen is the single place it is resolved. Every distinct
+// exported name gets a row; an admin maps it to a crew member or Ignores it
+// (Aron Bronson is a salesperson: ignored, his hours never reach costing).
+// NO fuzzy matching anywhere, by design: surname-only matching is proven
+// dangerous on this data, and "Preston" has no surname in pec_prod_crew_members
+// so he can never auto-match a full BusyBusy name. This screen is the fix.
+// Changing a mapping applies to future imports AND re-resolves stored rows in
+// place (a plain UPDATE of crew_member_id on rows matching the name), which is
+// safe because it changes attribution, not hours.
 function renderBbEmployeeCard(root, bbEmployees, crewMembers, hoursByName) {
   const card = $('bbEmployeeCard');
-  if (card) card.innerHTML = '<h3 style="margin-top:0">Employee mapping</h3><div class="pec-empty" style="font-size:.78rem">Coming in the next commit.</div>';
+  if (!card) return;
+  const activeMembers = crewMembers.filter(m => m.active !== false);
+  // Crew members stored without a surname can never exact-match a full
+  // "First Last" BusyBusy name; call them out so the manual map happens once.
+  const noSurname = activeMembers.filter(m => !/\s/.test(String(m.name || '').trim())).map(m => m.name);
+  // New unmapped names sort to the top; then mapped; ignored last.
+  const rows = [...bbEmployees].sort((a, b) => {
+    const rank = (e) => e.ignored ? 2 : (e.crew_member_id ? 1 : 0);
+    return rank(a) - rank(b) || String(a.busybusy_name).localeCompare(String(b.busybusy_name));
+  });
+  const fmtH = (n) => (Math.round(Number(n || 0) * 100) / 100).toLocaleString();
+  card.innerHTML = `
+    <h3 style="margin-top:0">Employee mapping</h3>
+    <div style="color:var(--muted);font-size:.76rem;margin-bottom:8px">Every name BusyBusy has ever exported, matched to a team member by hand. Only mapped names feed job costing and the crew bonus; Ignored names (salespeople, office) import for the record but never reach a job. Changing a mapping also fixes the hours already imported under that name.</div>
+    ${noSurname.length ? `<div style="font-size:.72rem;color:var(--rd-warn,#b45309);margin-bottom:8px">Heads up: ${noSurname.map(esc).join(', ')} ${noSurname.length === 1 ? 'is' : 'are'} stored without a surname in Team Members, so ${noSurname.length === 1 ? 'his BusyBusy name' : 'their BusyBusy names'} will never match automatically. Map ${noSurname.length === 1 ? 'him' : 'them'} here when ${noSurname.length === 1 ? 'he appears' : 'they appear'}.</div>` : ''}
+    ${rows.length ? `
+      <table class="pec-table" style="font-size:.78rem">
+        <thead><tr><th>BusyBusy name</th><th>Maps to team member</th><th style="width:90px">Ignore</th><th style="text-align:right">Hours seen</th></tr></thead>
+        <tbody>${rows.map(e => `
+          <tr class="nohover" data-bb-emp="${esc(e.id)}" data-bb-emp-name="${esc(e.busybusy_name)}"${e.ignored ? ' style="opacity:.55"' : ''}>
+            <td><strong>${esc(e.busybusy_name)}</strong>${!e.ignored && !e.crew_member_id ? ' <span style="color:var(--rd-warn,#b45309);font-size:.65rem">unmapped</span>' : ''}</td>
+            <td>
+              <select data-bb-emp-member${e.ignored ? ' disabled' : ''} style="max-width:220px">
+                <option value="">Not mapped</option>
+                ${activeMembers.map(m => `<option value="${esc(m.id)}"${m.id === e.crew_member_id ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}
+              </select>
+            </td>
+            <td><input type="checkbox" data-bb-emp-ignore${e.ignored ? ' checked' : ''} style="width:auto"></td>
+            <td style="text-align:right">${fmtH(hoursByName[e.busybusy_name])}</td>
+          </tr>`).join('')}</tbody>
+      </table>`
+    : '<div class="pec-empty" style="font-size:.78rem">No BusyBusy names seen yet. Names appear here automatically after the first preview or import.</div>'}
+  `;
+
+  // Persist the mapping, then re-resolve every stored row for that name.
+  // Both updates are idempotent, so withFreshWriteRetry is safe.
+  const applyMapping = async (tr, { crewMemberId, ignored }) => {
+    const id = tr.dataset.bbEmp, name = tr.dataset.bbEmpName;
+    const up1 = await withFreshWriteRetry(() => supabase.from('pec_prod_busybusy_employees')
+      .update({ crew_member_id: crewMemberId, ignored, updated_at: new Date().toISOString() }).eq('id', id), { label: 'bb-emp-map' });
+    if (up1 && up1.error) throw up1.error;
+    const effective = ignored ? null : crewMemberId;
+    const up2 = await withFreshWriteRetry(() => supabase.from('pec_prod_busybusy_time_entries')
+      .update({ crew_member_id: effective }).eq('employee_name', name), { label: 'bb-emp-reresolve' });
+    if (up2 && up2.error) throw up2.error;
+  };
+  card.querySelectorAll('tr[data-bb-emp]').forEach(tr => {
+    const sel = tr.querySelector('[data-bb-emp-member]');
+    const ign = tr.querySelector('[data-bb-emp-ignore]');
+    sel.addEventListener('change', async () => {
+      sel.disabled = true;
+      try {
+        await applyMapping(tr, { crewMemberId: sel.value || null, ignored: ign.checked });
+        showToast(`${tr.dataset.bbEmpName} ${sel.value ? 'mapped' : 'unmapped'}; stored hours re-attributed.`, { ttl: 3500 });
+        renderSettings();
+      } catch (err) { sel.disabled = false; showToast('Could not save mapping: ' + (err.message || err), { ttl: 6000 }); }
+    });
+    ign.addEventListener('change', async () => {
+      ign.disabled = true;
+      try {
+        await applyMapping(tr, { crewMemberId: sel.value || null, ignored: ign.checked });
+        showToast(`${tr.dataset.bbEmpName} ${ign.checked ? 'ignored; hours stay stored but reach no job costing.' : 'no longer ignored.'}`, { ttl: 3500 });
+        renderSettings();
+      } catch (err) { ign.disabled = false; ign.checked = !ign.checked; showToast('Could not save: ' + (err.message || err), { ttl: 6000 }); }
+    });
+  });
 }
 function renderBbProjectsCard(root, bbProjects, unlinkedAgg) {
   const card = $('bbProjectsCard');
