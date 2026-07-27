@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-27 MST] Cowork: discovery findings received, THREE Cowork conclusions corrected, shop-time prompt rewritten on the real numbers
+By: Cowork
+
+Changed: rewrote shop-time-reduction-prompt.md (its headline number was wrong). No code, no schema. Follow-on to 92bb66b.
+
+Claude Code ran busybusy-discovery-prompt.md and produced busybusy-discovery-findings.md. Three of Cowork's stated conclusions were wrong and are corrected here so nobody builds on them.
+
+CORRECTION 1, THE COST COLUMN. Cowork wrote (entry of 2026-07-27, "first live pull analyzed") that BusyBusy's Cost pays overtime at straight time and understates that week's labor by roughly $1,000. WRONG. OT1 rows carry a Wage of exactly 1.5x that employee's REG wage (verified for all five employees with OT), so Cost = Wage x Hours DOES include the premium. The arithmetic Cowork relied on (Cost equals Wage times Hours on every row) was true; the interpretation was not. THE DECISION IS UNCHANGED, but only one reason survives: their Cost carries no 25 percent burden, so it is not loaded labor and still must not drive costing. Use hours from BusyBusy, wages from pec_prod_crew_members, burden from our own math.
+
+CORRECTION 2, THE EXPORT ID. Cowork predicted the Id would drift between identical requests. It did not: two pulls of the same window 30 minutes apart were BYTE-IDENTICAL, 21,145 bytes each, all 66 Ids matching row for row. The Id is deterministic while the underlying data is unchanged. Delete-then-insert is still correct, but for the documented reason (an edit regenerates the Id) rather than spontaneous drift, and the Id CAN be used within a single import run for logging or change detection.
+
+CORRECTION 3, EMPTY RANGE. The doc claims 404 for no data. Reality is HTTP 200 with a header-only CSV (662 bytes, 45 columns, zero data rows). The import must read "200 plus header only" as zero rows, still handle 404 defensively, and must treat 401 and 5xx as failures that do NOT wipe a stored window.
+
+CORRECTION 4, THE SHOP-TIME HEADLINE. Cowork reported 145.95 hours (45.5% of the week) on Shop and flagged Aron Bronson as a possible confound. The confound WAS the finding: Aron has one continuous unbroken punch from 07-22 07:52 to 07-24 07:39, 47.78 hours, all Shop, an obvious forgotten clock-out, and his whole week (65.80 h) is Shop because as a salesperson he has no job to clock into. Excluding him, Shop is 80.15 hours = 31.5% of the five field crew's hours. The real shape: a morning load-out block per person per day (06:32-07:01 start, 45 min to 2 h, then they DO switch to a job, so the "default project never switched" hypothesis is disproven), roughly 25 h/week; plus WHOLE DAYS on Shop (three people all day 07/21, Davey all day 07/22, Matthew until 13:10 on 07/23), roughly 45-50 h, which is the larger and unexplained share. shop-time-reduction-prompt.md was rewritten to lead with the whole-day pattern and to ask whether those days are really a scheduling/backlog problem wearing a shop-time costume.
+
+NEW FACTS THAT CHANGE THE BUILD.
+- ProjectNumber is a stable 7-digit string, present on all 9 job projects, empty only on Shop, identical across every row of a project and across both pulls. It is a better durable link than the customer name. Design implication: auto-link ONCE by exact normalized customer name, persist the number on the job, then match by number forever after.
+- OT model confirmed: REG caps at exactly 40.0000 per employee per week across ALL projects, then BusyBusy emits either (a) a split pair, two rows sharing the same Start/End, one REG one OT1, Ids differing only in the last two chars, or (b) whole-segment OT1 rows thereafter. CONSEQUENCE: the overtime premium lands on whatever the person happened to be doing when they crossed hour 40, which in practice means Thursday and Friday jobs eat it. 30.55 of the 84.78 OT hours were on Shop.
+- Uniqueness/dedup MUST include WageType. A split pair shares (person, Start, End, Project); keying without WageType silently drops half the hours.
+- Timezone is local Arizona (first punches cluster 06:32-07:01). Multi-day punches are pre-split at exactly 00:00:00 and Date always equals the date part of Start, on all 66 rows. A single-day pull matched the week pull row for row, so delete-then-insert keyed on Date is validated.
+- Hours reconciles to (End - Start) - BreakHours per WINDOW (61 of 61), not per row (56 of 66; the 10 exceptions are the split pairs). BreakHours was 0.0 on every row this week, so break handling is untested.
+- Parser traps: EquipmentMakeModel is a single space on every row (trim before empty checks); Hours is a 6-decimal truncated repeating decimal (compare with tolerance, never equality); overlapping punches exist (Landen 07/22 Shop 06:43-07:45 overlaps Nathan Rhodes 07:42-07:45); long rows are legitimate (one 24.00 h row) and must be flagged, never clamped or rejected.
+- Token: 3-segment JWT, aud busybusy-v3-member-session, sub 24627523, iat 2026-07-27 08:54 AZ, and NO exp claim. It does not self-expire, so unattended running is possible, but it is a member session: a logout, password change, or server-side session prune kills it with no warning. 401 must mean "credential dead, alert Dylan, touch nothing."
+- Matt Scharrer (2227346, 27.25 h) still has no matching job or customer in prod.
+
+Why: Claude Code returned the discovery findings.
+Files touched: shop-time-reduction-prompt.md (rewritten), PROJECT-LOG.md (this entry).
+Next steps: three build decisions go to Dylan (project link key, OT premium attribution, anomaly handling), then Cowork writes claude-code-prompt-52-busybusy-payroll-export.md.
+Handoff to Dylan: FIX ARON'S 47.78-HOUR PUNCH IN BUSYBUSY before prompt 52 ships, because any re-pull of that window will keep importing it and it manufactured most of his 25.80 OT hours. Also identify what the Matt Scharrer 27.25 hours belong to.
+
+---
+
 ## [2026-07-27 MST] Claude Code: BusyBusy Payroll Export discovery run, five assumptions corrected by live probes
 By: Claude Code
 
