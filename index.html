@@ -13174,35 +13174,13 @@ function scheduleLabelFromState(s) {
   if (s.crewName) label += ' · ' + esc(s.crewName) + ' crew';
   return label;
 }
-async function renderWorkOrder(ctx) {
-  const { job, areasFromState, systemTypes, productById, recipeSlots, defaultLaborRate } = ctx;
-  // Resolve the matching pec_prod_jobs row for install date + crew, plus
-  // the crew name (separate table). Misses are silent: the work order
-  // just shows blank for those fields, exactly like the paper sheet.
-  let installDate = null, crewName = null;
-  try {
-    if (job.dripjobs_deal_id) {
-      // List (NOT maybeSingle, which errors on duplicate deal-id rows), then
-      // resolve install date(s) + crew through the shared resolver so the work
-      // order matches the job detail (incl. schedule-day-only jobs).
-      const [pjRes, crewsRes] = await Promise.all([
-        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id),
-        supabase.from('pec_prod_crews').select('id,name'),
-      ]);
-      if (!pjRes.error && (pjRes.data || []).length) {
-        const prodJob = (pjRes.data || []).find(p => p.install_date) || pjRes.data[0];
-        const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
-        const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
-        const s = deriveScheduleState([prodJob], days, crewsRes.error ? [] : (crewsRes.data || []));
-        installDate = s.installDate;
-        crewName = s.crewName || null;
-      }
-    }
-  } catch (e) { /* silent: work order still renders */ }
-
-  // Compute the material plan using the same calculator the Budget card +
-  // ordering surfaces use. Mirror the legacy area shape: in-memory picks
-  // carry flake/basecoat ids, so derive them via the same firstPick walk.
+// Shared material-plan resolution for the work order AND the job-detail Data
+// sheets modal (prompt 53): one path from the job's area picks to material
+// lines, so the sheets list can never disagree with the printed materials
+// table. Extracted verbatim from renderWorkOrder. Mirrors the legacy area
+// shape: in-memory picks carry flake/basecoat ids, so they are derived via
+// the same firstPick walk the Budget card uses.
+function computeJobMaterialLines({ areasFromState, productById, recipeSlots }) {
   const areas = (areasFromState ? areasFromState() : []) || [];
   const slotsBySystem = {};
   for (const s of recipeSlots) (slotsBySystem[s.system_type_id] ||= []).push(s);
@@ -13232,7 +13210,39 @@ async function renderWorkOrder(ctx) {
   try {
     const plan = window.computeMaterialPlan({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake });
     lines = (plan && plan.lines) || [];
-  } catch (e) { /* show blank materials table if the plan throws */ }
+  } catch (e) { /* callers show a blank materials list if the plan throws */ }
+  return { lines, planAreas };
+}
+async function renderWorkOrder(ctx) {
+  const { job, areasFromState, systemTypes, productById, recipeSlots, defaultLaborRate } = ctx;
+  // Resolve the matching pec_prod_jobs row for install date + crew, plus
+  // the crew name (separate table). Misses are silent: the work order
+  // just shows blank for those fields, exactly like the paper sheet.
+  let installDate = null, crewName = null;
+  try {
+    if (job.dripjobs_deal_id) {
+      // List (NOT maybeSingle, which errors on duplicate deal-id rows), then
+      // resolve install date(s) + crew through the shared resolver so the work
+      // order matches the job detail (incl. schedule-day-only jobs).
+      const [pjRes, crewsRes] = await Promise.all([
+        supabase.from('pec_prod_jobs').select('id,install_date,crew_id').eq('dripjobs_deal_id', job.dripjobs_deal_id),
+        supabase.from('pec_prod_crews').select('id,name'),
+      ]);
+      if (!pjRes.error && (pjRes.data || []).length) {
+        const prodJob = (pjRes.data || []).find(p => p.install_date) || pjRes.data[0];
+        const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
+        const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
+        const s = deriveScheduleState([prodJob], days, crewsRes.error ? [] : (crewsRes.data || []));
+        installDate = s.installDate;
+        crewName = s.crewName || null;
+      }
+    }
+  } catch (e) { /* silent: work order still renders */ }
+
+  // Compute the material plan using the same calculator the Budget card +
+  // ordering surfaces use (shared with the Data sheets modal; see
+  // computeJobMaterialLines above).
+  const { lines, planAreas } = computeJobMaterialLines({ areasFromState, productById, recipeSlots });
 
   // Hour Budget: always computed (revenue x system.labor_budget_pct / hourly_rate)
   // per Dylan's plan answer. Picks the FIRST area's system as the basis.
@@ -13680,6 +13690,23 @@ async function renderJobDetailInner(id) {
   const headerEffSqft = jobEffectiveSqft(job.sqft, areas.map(a => a.sqft));
   const headerPerSqft = (headerEffSqft > 0 && areaPriceSum() > 0) ? areaPriceSum() / headerEffSqft : null;
 
+  // Data sheets (prompt 53): the distinct products in this job's material plan
+  // that carry a TDS or MSDS/SDS PDF, via the SAME resolution the printed work
+  // order uses (computeJobMaterialLines). The button below renders ONLY when
+  // this is non-empty, per Dylan: a job whose materials have no sheets shows
+  // no button at all, not a disabled one and not an empty modal.
+  const jobSheetProducts = (() => {
+    try {
+      const { lines } = computeJobMaterialLines({ areasFromState: () => areas, productById, recipeSlots });
+      const seen = new Set(); const out = [];
+      for (const l of lines) {
+        const prod = l.product_id ? productById[l.product_id] : null;
+        if (prod && !seen.has(prod.id) && (prod.datasheet_path || prod.msds_path)) { seen.add(prod.id); out.push(prod); }
+      }
+      return out;
+    } catch (_) { return []; }
+  })();
+
   root.innerHTML = `
     <div class="pec-toolbar pec-job-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
@@ -13730,7 +13757,10 @@ async function renderJobDetailInner(id) {
             <input id="jobSqft" type="number" min="0" step="1" value="${esc(job.sqft ?? '')}" placeholder="${headerAreasSqft > 0 ? 'areas: ' + headerAreasSqft.toLocaleString() : 'e.g. 850'}" title="Manual square footage (wins over the estimate areas sum). Used for the $/sqft metric." style="max-width:130px">
             ${headerPerSqft != null ? `<span class="pec-age" title="Price divided by effective sqft (manual sqft if set, else the areas sum)">$${headerPerSqft.toFixed(1)}/sqft</span>` : ''}
           </div>
-          <button class="pec-btn sm" id="pecJobPrintWO" style="margin-top:4px">View Work Order</button>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="pec-btn sm" id="pecJobPrintWO">View Work Order</button>
+            ${jobSheetProducts.length ? '<button class="pec-btn sm" id="pecJobDataSheets" title="TDS / SDS PDFs for this job\'s materials">Data sheets</button>' : ''}
+          </div>
         </div>
         <div class="pec-field" style="margin-bottom:0;min-width:190px">
           <label>Status <span id="pecJobStatusSaved" style="font-size:.62rem;letter-spacing:0;text-transform:none;color:var(--muted)"></span></label>
@@ -14048,6 +14078,27 @@ async function renderJobDetailInner(id) {
     job, areasFromState: () => areas, systemTypes, products, productById,
     recipeSlots, defaultLaborRate,
   }));
+  // Data sheets modal (prompt 53): every product in the material plan that has
+  // a sheet, with its TDS / SDS public links. Goes through openModal /
+  // #pecModalRoot (job detail is the pec-modal-bg side of the two-root split);
+  // the catalog's #prodModalRoot flow is not involved here. The button only
+  // exists when jobSheetProducts is non-empty (see the render above).
+  $('pecJobDataSheets')?.addEventListener('click', () => {
+    openModal(`
+      <h3>Data sheets</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:6px">TDS and safety sheets for the products in this job's material plan. The links are public PDFs, fine to text or print for the crew.</div>
+      ${jobSheetProducts.map(p => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border))">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${esc(p.name)}</div>
+            ${p.color ? `<div style="color:var(--muted);font-size:.75rem">${esc(p.color)}</div>` : ''}
+          </div>
+          ${p.datasheet_path ? `<a class="pec-btn ghost sm" href="${esc(window.pecDatasheetUrl(p.datasheet_path))}" target="_blank" rel="noopener">Data sheet (TDS)</a>` : ''}
+          ${p.msds_path ? `<a class="pec-btn ghost sm" href="${esc(window.pecDatasheetUrl(p.msds_path))}" target="_blank" rel="noopener">MSDS / SDS</a>` : ''}
+        </div>`).join('')}
+      <div class="pec-modal-actions"><span style="flex:1"></span><button type="button" class="pec-btn ghost" onclick="pecCloseModal()">Close</button></div>
+    `);
+  });
   // Pipeline card "Work Order" button navigates here with this flag set, then
   // fires the exact same work-order flow once the area draft is built. Reuses
   // the existing flow instead of duplicating its data assembly on the card.
