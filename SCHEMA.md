@@ -10,9 +10,11 @@ Refreshed 2026-07-28 (Cowork) against the live schema after the prompt-53 migrat
 
 Refreshed 2026-07-28 (Cowork, second pass) after the prompt-54 People model migration: new `people` table (81st), `pec_sales_team_members.name_aliases`, and three settings keys (people_mirror_enabled, birthday_reminder_enabled, birthday_reminder_lead_days). No legacy table changed shape beyond that one added column.
 
+Refreshed 2026-07-28 (Cowork, third pass) after the prompt-55 Ops Queue migration: new `pec_ops_items` table (the 82nd) with its shape CHECK, two indexes, four policies and the `pec_ops_item_notify` RPC, plus twelve `ops_*` settings keys (settings 45 rows to 57). Additive only: no existing table, policy, or permission changed.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-81 tables documented, 81 live, all in `public`, all with RLS enabled. No gaps.
+82 tables documented, 82 live, all in `public`, all with RLS enabled. No gaps.
 
 ## Key relationships
 
@@ -902,6 +904,34 @@ RLS: enabled · rows: 20
 PK: id
 FK: job_id → jobs.id
 
+### pec_ops_items
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| source | text | no |  |
+| title | text | yes |  |
+| body | text | yes |  |
+| assigned_to | uuid | yes |  |
+| created_by | uuid | yes |  |
+| due_date | date | yes |  |
+| status | text | no | 'open' |
+| link_view | text | yes |  |
+| link_id | uuid | yes |  |
+| check_key | text | yes |  |
+| created_at | timestamptz | no | now() |
+| done_at | timestamptz | yes |  |
+| done_by | uuid | yes |  |
+
+PK: id
+FK: assigned_to → admin_users.id (ON DELETE SET NULL); created_by → admin_users.id (ON DELETE SET NULL); done_by → admin_users.id (ON DELETE SET NULL). Deliberately `admin_users` and NOT `people`: prompt 54's People migration was unapplied when prompt 55 was written, and admin logins are the assignees anyway. Nothing in this feature reads or writes `people`.
+CHECK: `source` in ('manual','auto'); `status` in ('open','done','dismissed'); plus the shape constraint `pec_ops_items_shape` — a 'manual' row MUST carry a title and MUST NOT carry a check_key, an 'auto' row MUST carry a check_key. Verified live 2026-07-28: `insert into pec_ops_items (source) values ('manual')` fails with 23514.
+Index: `idx_pec_ops_items_auto_check_key` UNIQUE on (check_key) WHERE source = 'auto' — one dismissal per derived item, ever; manual rows have no check_key so they are unaffected (verified live: a second identical 'auto' insert fails with 23505). `idx_pec_ops_items_badge` on (status, assigned_to), which serves the nav badge's open-manual-item count and per-assignee filtering.
+Policies (4, on THIS table only, reusing existing helpers with no new permission concept): `pec_ops_items_staff_read` SELECT using `is_admin_staff()`; `pec_ops_items_admin_insert` INSERT with check `is_admin_role()`; `pec_ops_items_admin_update` UPDATE using/with check `is_admin_role()`; `pec_ops_items_admin_delete` DELETE using `is_admin_role()`.
+RPC: `pec_ops_item_notify(p_item_id uuid, p_title text, p_assignee text default null)` returns void, SECURITY DEFINER, `search_path = public`, EXECUTE granted to `authenticated`. Raises `admin only` unless `is_admin_role()`; otherwise inserts exactly ONE `pec_notifications` row (type 'ops_item', target_view 'ops', target_id = the item id). It exists because staff sessions cannot insert into pec_notifications directly (that table grants SELECT/UPDATE only), the same pattern as `log_costing_submitted`. Derived Ops Queue checks NEVER call it: they re-derive on every render and would re-fire the bell forever.
+WHAT THIS TABLE IS NOT: it is not the queue. The ten Ops Queue checks are DERIVED at render time from tables that already exist, so they self-clear when the underlying data is fixed. This table stores only the two things that cannot be derived — manual items (source='manual') and dismissals of a single derived row (source='auto', keyed by check_key such as 'job_missing_revenue:<uuid>').
+
 ### pec_payments
 RLS: enabled · rows: 123
 
@@ -1780,7 +1810,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 45
+RLS: enabled · rows: 57
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1789,6 +1819,7 @@ RLS: enabled · rows: 45
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-28 (prompt 55): twelve `ops_*` keys, all surfaced in Settings > General under "Ops Queue". Ten on/off switches, one per derived check (ops_check_busybusy_unmapped, ops_check_costing_unfinalized, ops_check_missing_revenue, ops_check_never_invoiced, ops_check_missing_salesperson, ops_check_missing_system, ops_check_drip_approvals, ops_check_touchup_age, ops_check_deposit_uncollected, ops_check_system_health, each 'true'), plus two day thresholds: ops_touchup_age_days ('7', a touch-up open longer than this lands on the queue, NOT the same knob as touchup_aging_days '14', which only reddens the Touch-ups panel row) and ops_deposit_age_days ('7', days after signing before an uncollected deposit is flagged). Inserted insert-only, so live edits are never clobbered by a re-run.
 Keys added 2026-07-28 (prompt 54): people_mirror_enabled ('true'; set to 'false' and EVERY people sync trigger becomes a no-op, which is the build's real rollback, no deploy needed), birthday_reminder_enabled ('true', master switch for the dashboard banner and the daily bell), birthday_reminder_lead_days ('7', how many days ahead a birthday surfaces).
 Keys added 2026-07-28 (prompt 53): datasheet_max_upload_mb ('10', the max PDF size the catalog's data-sheet upload accepts, in MB; the pec-datasheets bucket enforces 10 MB server-side regardless, so raising this above 10 needs a bucket change too).
 Keys added 2026-07-27 (prompt 52): busybusy_import_window_weeks ('2', how many full weeks back the Settings > BusyBusy window picker defaults to), busybusy_anomaly_hours_threshold ('16', a single time-entry row longer than this is flagged for review, never dropped), busybusy_overhead_project_names ('Shop', comma-separated BusyBusy project names treated as overhead and never charged to a job), busybusy_export_base_url ('https://export.busybusy.io/', the Payroll Export endpoint).
