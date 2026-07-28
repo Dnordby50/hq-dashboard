@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: wrote prompt 55 from Dylan's four-item list (scheduler autofill, locked salesperson, Ops Queue)
+
+By: Cowork
+
+Changed: one new file, claude-code-prompt-55-scheduler-autofill-salesperson-ops-queue.md. No code, no schema, no prod change.
+
+Dylan pasted four items: system type on the job scheduler auto-populating from the estimate, estimated hours on the schedule popup doing the same, salesperson shown on job detail and the work order and locked from the start of the estimate, and "a delegation way we can have Anne help integrate topcoat easier". Twelve multiple-choice questions were asked before writing (project rule); the answers are the locked-decisions block at the top of the prompt file. Packaging answer: ONE prompt with all four parts, committed part by part.
+
+WHAT THE INVESTIGATION FOUND, and why the prompt is shaped the way it is:
+
+- Items 1 and 2 are not missing features, they are a resolution mismatch. openScheduleModal already HAS a System type dropdown and an Estimated hours input; they read pec_prod_areas (an empty stub on DripJobs-bridged and manual jobs) and pec_prod_jobs.estimated_hours (null on the same jobs). loadCostingData already resolves both correctly through window.resolveCrmForProdJob / jobNameAddrKey / crmPlanAreas / computeJobEstimate, and the schedule never calls any of it. So Part A is an EXTRACTION, explicitly forbidden from forking the chain, with the acceptance test being that the schedule modal, the Budget card, and Job Costing show the same hours for the same job. Derived at read time, no column, no migration, no backfill (Dylan's answer).
+- Two follow-up answers tightened Part A after the first draft. SYSTEM is live-but-manual-pick-wins: it re-resolves from the estimate on every render, but an explicit pick in the schedule modal is a sticky override, implemented through the existing pec_prod_areas write rather than a new flag, and a Save that does not touch the dropdown must not write (or every Save would silently freeze the derived value). HOURS are scheduling-only: the editable field still writes pec_prod_jobs.estimated_hours and affects only the schedule surfaces, while costing and crew bonus keep using the computed number. The prompt says explicitly that this does NOT reverse prompt 50, and the verify list checks that a typed override leaves Job Costing's estimated hours unchanged.
+- Item 3 REVERSES a locked decision from prompt 47, which made salesperson freely editable so a rep could estimate on behalf of another rep. Dylan chose: locked at estimate creation, admin can override, override recorded. The prompt flags the reversal so Claude Code does not "fix" it back. Two edge cases are called out as required behavior: the blank/unmapped-login case must stay EDITABLE (else prompt 47's block-on-save path becomes a dead end and an unmapped rep can never save), and the is-admin lookup must FAIL CLOSED. jobs.salesperson is the display source, pec_prod_jobs.sales_team follows it, and the schedule modal's sales_team field goes read-only when a CRM card carries the name, because a second editable copy is the drift being killed.
+- Work order placement: the Job Identity intake grid has a genuinely empty label/value pair at the end of it, so Salesperson fills an existing hole and the row count and page count cannot change. NOT a fourth hero box, which would re-open the two-line-wrap problem 8c6a0a3 just fixed. Blank prints "Unassigned" (Dylan's answer), deliberately unlike the CREW and DATE boxes, which print empty because a crew member handwrites them.
+- Item 4 was the vague one, and the useful finding is that it is NOT a permissions problem: Anne's login is already role admin and passes every gate except can_finalize_costing. So no access change is in the prompt at all. Dylan picked an Admin Ops Queue: one admin-only screen of everything stalled or incomplete, auto checks plus manual assignable items, nav badge plus the existing bell for manual items only. Ten derived checks are specified, each reusing the source screen's own query and linking to it. Only manual items and dismissals are stored (pec_ops_items, one small migration); derived items are computed at render, so nothing goes stale.
+- Deploy-order landmine written into the prompt: prompt 54's people migration is NOT applied, so public.people does not exist in prod. The Ops Queue assignee picker therefore reads admin_users, deliberately, and the prompt forbids touching people anywhere. Without this the new table's FK would have shipped against a table that is not there.
+- Badge cost: the nav badge counts MANUAL open items only, one cheap query at boot. The prompt says so in a comment-worthy way because the obvious later "make the badge count everything" change would put ten queries on every sign-in.
+
+Why: Dylan's four-item list, this session.
+Files touched: claude-code-prompt-55-scheduler-autofill-salesperson-ops-queue.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 55 in Claude Code. It writes supabase/migrations/2026-07-28_ops_queue.sql but does NOT apply it; applying it, running its Verify block, regenerating SCHEMA.md, and exercising the queue live are the Cowork handoff at the bottom of the prompt file. Still open from prior entries: prompt 54's people migration unapplied, and Aron Bronson's 47.78-hour punch plus the Matt Scharrer job (#2227346) gating the first real hours import.
+
+---
+
 ## [2026-07-28 MST] Cowork: applied the People model migration, all preflight checks green, SCHEMA.md to 81 of 81
 By: Cowork
 
