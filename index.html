@@ -11733,7 +11733,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate']),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate', ...COSTING_BONUS_SETTING_KEYS]),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -11760,6 +11760,9 @@ async function renderMetrics() {
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
+  // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
+  // any labor math below; missing keys keep the shipped defaults.
+  applyCostingBonusSettings(metSettingsRows);
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
   // the view does not have it yet, so the rest of Metrics renders normally.
@@ -11814,7 +11817,7 @@ async function renderMetrics() {
   // only once it is approved or finalized, via the pec_prod_job_bonuses read
   // above — the estimate-based labor budget is not loaded on this tab).
   const laborByProd = {};
-  if (!(bbTimeRes && bbTimeRes.error) && !(crewMemRes && crewMemRes.error)) {
+  if (COSTING_LABOR_FROM_HOURS && !(bbTimeRes && bbTimeRes.error) && !(crewMemRes && crewMemRes.error)) {
     const bbMap = bbAccumulateEntries((bbTimeRes && bbTimeRes.data) || []).hoursByJobMember;
     const manualMap = {};
     for (const m of ((metManualLaborRes && !metManualLaborRes.error && metManualLaborRes.data) || [])) {
@@ -16198,7 +16201,10 @@ async function renderBonusReport() {
       // pec_prod_jobs.completed_at, which nothing populates. Bridged deal-id
       // first, then normalized name+address, same as loadCostingData.
       supabase.from('jobs').select('id,completed_date,status,dripjobs_deal_id,address,customers(name)'),
-      supabase.from('settings').select('key,value').eq('key', 'bonus_lock_days'),
+      // bonus_lock_days plus the Job Costing & Bonus knobs (prompt 56 Part E):
+      // this report shows the crew-share % and reverse-derives savings from it,
+      // so it hydrates the same settings the costing surfaces read.
+      supabase.from('settings').select('key,value').in('key', ['bonus_lock_days', ...COSTING_BONUS_SETTING_KEYS]),
     ]), { label: 'renderBonusReport' });
   } catch (e) { res = [{ error: e }, {}, {}, {}, {}]; }
   const [bonRes, poRes, jobRes, crmRes, lockSetRes] = res;
@@ -16213,7 +16219,9 @@ async function renderBonusReport() {
   const round2 = n => Math.round(n * 100) / 100;
 
   // ---- 2-week lock inputs (prompt 50 Part E1) -------------------------------
-  const lockDaysRaw = Number((((lockSetRes && lockSetRes.data) || [])[0] || {}).value);
+  const lockSetRows = (lockSetRes && lockSetRes.data) || [];
+  applyCostingBonusSettings(lockSetRows);
+  const lockDaysRaw = Number((lockSetRows.find(s => s.key === 'bonus_lock_days') || {}).value);
   const lockDays = Number.isFinite(lockDaysRaw) && lockDaysRaw >= 0 ? lockDaysRaw : 14;
   const today = invToday();
   // CRM identity maps, deal-id first then name+address (the ONE tested
@@ -18758,6 +18766,26 @@ async function renderSettings() {
             <option value="false" ${(map.people_mirror_enabled || 'true') === 'false' ? 'selected' : ''}>Off (rollback)</option>
           </select>
           <span style="color:var(--muted);font-size:.68rem">Keeps Users, Sales Team, and Team Members in sync with the People directory. Turn off ONLY if People edits are misbehaving; the legacy cards then work standalone exactly as before the People build.</span>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Job Costing &amp; Bonus</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">These drive the crew bonus formula and the derived labor cost on Job Costing. Defaults match the shipped behavior; a blank or invalid number falls back to the default rather than zeroing the math.</div>
+        <div class="pec-field"><label>Crew share of labor savings (%)</label><input name="bonus_crew_fraction_pct" type="number" min="0" step="1" value="${esc(map.bonus_crew_fraction_pct || '75')}"><span style="color:var(--muted);font-size:.68rem">The crew pool is this percent of (labor budget minus actual loaded labor).</span></div>
+        <div class="pec-field"><label>Labor burden on wages (%)</label><input name="bonus_labor_burden_pct" type="number" min="0" step="1" value="${esc(map.bonus_labor_burden_pct || '25')}"><span style="color:var(--muted);font-size:.68rem">Loaded labor = wages x (1 + this percent). Used by both the bonus math and the derived Salary and Wages cost.</span></div>
+        <div class="pec-field"><label>Overtime multiplier</label><input name="bonus_ot_multiplier" type="number" min="1" step="0.1" value="${esc(map.bonus_ot_multiplier || '1.5')}"><span style="color:var(--muted);font-size:.68rem">OT hours are paid at this multiple of base wage.</span></div>
+        <div class="pec-field"><label>Fallback labor budget (% of revenue)</label><input name="costing_default_labor_budget_pct" type="number" min="0" step="1" value="${esc(map.costing_default_labor_budget_pct || '20')}"><span style="color:var(--muted);font-size:.68rem">Used only when a job has no computed estimate and its system type has no labor budget percent.</span></div>
+        <div class="pec-field"><label>Derive labor cost from crew hours</label>
+          <select name="costing_labor_from_hours">
+            <option value="true" ${(map.costing_labor_from_hours || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.costing_labor_from_hours || 'true') === 'false' ? 'selected' : ''}>Off (rollback)</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">Off reverts Job Costing, Rollups, and Metrics to the hand-typed Salary and Wages field and typed hours, exactly the pre-fix behavior.</span>
+        </div>
+        <div class="pec-field"><label>Count an unapproved bonus in gross profit</label>
+          <select name="costing_count_pending_bonus">
+            <option value="true" ${(map.costing_count_pending_bonus || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.costing_count_pending_bonus || 'true') === 'false' ? 'selected' : ''}>Off</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">On, the suggested crew bonus counts against GP as pending before approval, so GP does not drop later when it is approved.</span>
         </div>
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Ops Queue</div>
         <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">Each derived check on the Ops Queue can be switched off here. Off hides the whole section on the queue; nothing is deleted.</div>
@@ -29082,8 +29110,11 @@ async function loadCostingData() {
     // migration lands, without 400ing before it does. The finalized Bonus (recorded)
     // recap reads them to show approved vs originally suggested.
     supabase.from('pec_prod_job_bonuses').select('*').order('created_at'),
-    // Same hourly rate the front-end Budget card reads, so estimated hours match.
-    supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
+    // Same hourly rate the front-end Budget card reads, so estimated hours
+    // match, plus the Job Costing & Bonus knobs (prompt 56 Part E) in the same
+    // read: burden / fraction / OT / fallback-budget-pct and the two kill
+    // switches hydrate the module lets before any costing math runs.
+    supabase.from('settings').select('key,value').in('key', ['default_labor_hourly_rate', ...COSTING_BONUS_SETTING_KEYS]),
     // Manual per-member hours that drive the bonus while BusyBusy is offline. A
     // supabase query RESOLVES with { error } on a missing table (never rejects),
     // so this is safe to include before the migration lands; we default to [].
@@ -29156,7 +29187,10 @@ async function loadCostingData() {
   //    lines for jobs with NO saved pec_prod_material_lines. Jobs WITH saved
   //    lines keep those (the ordered/actual side; estimate vs actuals stay
   //    separate per the plan).
-  const defaultLaborRate = Number(rateRes?.data?.value) > 0 ? Number(rateRes.data.value) : 35;
+  const settingRows = (rateRes && rateRes.data) || [];
+  applyCostingBonusSettings(settingRows);
+  const rateVal = (settingRows.find(s => s.key === 'default_labor_hourly_rate') || {}).value;
+  const defaultLaborRate = Number(rateVal) > 0 ? Number(rateVal) : 35;
   state.costingLaborRate = defaultLaborRate;
   state.estimateByJob = {};
   state.systemIdByJob = {};
@@ -29399,6 +29433,7 @@ function crewLaborForJob(job, sys) {
 // (derivedBonusCost) carries the money and pending must read 0, so approving
 // never double-counts and GP does not move on approval.
 function pendingBonusForJob(job, labor) {
+  if (!COSTING_COUNT_PENDING_BONUS) return 0; // kill switch (Settings > General)
   const rows = state.bonusesByJob?.[job.id] || [];
   if (rows.some(b => b.note === 'Labor-savings bonus')) return 0;
   return (labor && labor.suggestedPool) || 0;
@@ -29409,6 +29444,10 @@ function pendingBonusForJob(job, labor) {
 // Metrics builds its own equivalent from its own reads (it does not hydrate
 // this module's costing state) but uses the same computeCrewBonus math.
 function costingDerivedForJob(job, sys) {
+  // costing_labor_from_hours off = the rollback path (prompt 56 verify 12):
+  // no derived labor, hours, or pending bonus anywhere, so every surface
+  // reverts to the pre-fix stored-fields behavior without a deploy.
+  if (!COSTING_LABOR_FROM_HOURS) return {};
   const labor = crewLaborForJob(job, sys);
   return { laborCost: labor.laborCost, actHrs: labor.hours, pendingBonus: pendingBonusForJob(job, labor), labor };
 }
@@ -29448,14 +29487,37 @@ function costingIsFinalized(job) {
 // entries reads as "awaiting hours" and pays nothing (never a bonus on zero
 // actuals). This tab is read-only: it computes and displays, it does not write
 // to the pec_prod_job_bonuses ledger until the payout path is greenlit.
-const CREW_BONUS_FRACTION = 0.75;
-const CREW_BONUS_BURDEN = 0.25; // labor burden on wages (Dylan, locked 2026-06-14)
-const OT_MULTIPLIER = 1.5; // overtime paid at 1.5x base wage (assumption — confirm with Dylan)
+// Settings-backed since prompt 56 (standing rule 12): the shipped constants
+// below are the DEFAULTS and the fallback whenever a key is missing or
+// invalid, so a blank settings row can never zero out the bonus math. Live
+// values hydrate from the `settings` table via applyCostingBonusSettings,
+// called by every loader that reads settings anyway (loadCostingData,
+// renderMetrics, renderBonusReport), so no extra query is spent.
+let CREW_BONUS_FRACTION = 0.75; // bonus_crew_fraction_pct / 100
+let CREW_BONUS_BURDEN = 0.25; // bonus_labor_burden_pct / 100 (Dylan, locked 2026-06-14)
+let OT_MULTIPLIER = 1.5; // bonus_ot_multiplier: overtime paid at 1.5x base wage
 // Fallback labor-budget % of revenue when a job has no computed estimate AND its
 // system type has no labor_budget_pct. Dylan's chosen default (2026-06-27). Only a
 // last resort: the real estimate, then the system %, then this. Bonus formula itself
 // is unchanged (still 75% of (labor budget - actual loaded labor)).
-const DEFAULT_LABOR_BUDGET_PCT = 20;
+let DEFAULT_LABOR_BUDGET_PCT = 20; // costing_default_labor_budget_pct
+// The two kill switches (prompt 56 Parts B2/B4): flip in Settings > General >
+// Job Costing & Bonus to turn off derived labor/hours (reverting the costing
+// card to the pre-fix stored-fields behavior) or the pending-bonus GP charge,
+// without a deploy.
+let COSTING_LABOR_FROM_HOURS = true; // costing_labor_from_hours
+let COSTING_COUNT_PENDING_BONUS = true; // costing_count_pending_bonus
+const COSTING_BONUS_SETTING_KEYS = ['bonus_crew_fraction_pct', 'bonus_labor_burden_pct', 'bonus_ot_multiplier', 'costing_default_labor_budget_pct', 'costing_labor_from_hours', 'costing_count_pending_bonus'];
+function applyCostingBonusSettings(rows) {
+  const map = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
+  const pos = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  if (pos(map.bonus_crew_fraction_pct) != null) CREW_BONUS_FRACTION = pos(map.bonus_crew_fraction_pct) / 100;
+  if (pos(map.bonus_labor_burden_pct) != null) CREW_BONUS_BURDEN = pos(map.bonus_labor_burden_pct) / 100;
+  if (pos(map.bonus_ot_multiplier) != null) OT_MULTIPLIER = pos(map.bonus_ot_multiplier);
+  if (pos(map.costing_default_labor_budget_pct) != null) DEFAULT_LABOR_BUDGET_PCT = pos(map.costing_default_labor_budget_pct);
+  if (map.costing_labor_from_hours != null) COSTING_LABOR_FROM_HOURS = String(map.costing_labor_from_hours) !== 'false';
+  if (map.costing_count_pending_bonus != null) COSTING_COUNT_PENDING_BONUS = String(map.costing_count_pending_bonus) !== 'false';
+}
 
 // Crew bonus math, shared by the Crew Bonus tab and the costing detail's Bonus
 // Payout box so the two can never disagree. Locked by Dylan 2026-06-14, made
