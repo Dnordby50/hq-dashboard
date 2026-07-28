@@ -1,5 +1,38 @@
 [
   {
+    "id": "schedule-autofill-estimate",
+    "date": "2026-07-28",
+    "title": "The scheduler fills in system type and estimated hours for you",
+    "summary": "Scheduling a job used to start with a blank System type and blank Estimated hours, even when the estimate already knew both. Now the schedule popup, the Pending Jobs cards, the calendar bars, and the Next Day board all read the job's estimate and show its system and hours automatically, the same numbers Job Costing uses. Both fields stay editable: type your own hours and your number wins on the schedule, and if the estimate later disagrees the popup shows what the estimate now says with a one-click Use it. Picking a system in the popup makes that choice stick; leaving it alone keeps following the estimate.",
+    "howto": [
+      "Open Job Schedule and click + Schedule on a pending job. System type and Estimated hours arrive pre-filled from the estimate.",
+      "Type over the hours to override them for scheduling. Job Costing and crew bonus keep using the estimate's number.",
+      "Pick a different system only if the estimate is wrong; your pick sticks from then on."
+    ]
+  },
+  {
+    "id": "salesperson-locked-visible",
+    "date": "2026-07-28",
+    "title": "Salesperson is locked in at the estimate and shown everywhere",
+    "summary": "The salesperson on an estimate is now set when the estimate is started and can only be changed by an admin afterward, which protects commission tracking. The job page shows the salesperson (admins can change it there, and the change is recorded in the job's activity log), and the printed work order now lists the salesperson in its Job Identity section. A job with nobody assigned shows Unassigned and appears on the new Ops Queue so it gets fixed.",
+    "howto": [
+      "Open any job to see its salesperson in the header. Admins can change it right there.",
+      "Print a work order: the salesperson appears under Job Identity.",
+      "Reps whose login is not yet linked to a sales team member can still pick a name when starting an estimate."
+    ]
+  },
+  {
+    "id": "admin-ops-queue",
+    "date": "2026-07-28",
+    "title": "New Ops Queue: everything that needs a human, on one screen",
+    "summary": "Admins get a new Ops Queue view (Overview group) that scans the live data for anything stalled or incomplete: unmapped BusyBusy names, costings waiting to be finalized, scheduled jobs with no revenue, completed jobs never invoiced, jobs missing a salesperson or a system, drips held for approval, touch-ups open too long, deposits not collected, and system health. Every row links straight to the screen where it gets fixed. You can also add your own items, assign them to a teammate with a due date, and mark them done; new manual items ring the bell and show a count on the nav button. Each check can be switched off and its thresholds adjusted in Settings, General tab.",
+    "howto": [
+      "Open Ops Queue in the Overview group of the nav.",
+      "Click Open on any row to jump to the screen that fixes it, or Dismiss to hide that one item for good.",
+      "Use + Add item to assign a task to a teammate, with an optional due date. It appears with a badge on the nav and a bell notification."
+    ]
+  },
+  {
     "id": "people-directory",
     "date": "2026-07-28",
     "title": "One People directory, with team birthdays",
