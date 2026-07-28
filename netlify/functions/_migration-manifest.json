@@ -1518,6 +1518,43 @@
       ]
     },
     {
+      "file": "2026-07-25_rbac_helper_and_audit_appendonly.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": "function + grant/revoke only; no table/column/index/setting to probe",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-25_rbac_policy_enforcement.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": "RLS policy changes only; no table/column/index/setting to probe",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-25_security_alerts_settings.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "security_alerts_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "security_alerts_lookback_min"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-25_security_hardening_rpcs.sql",
+      "date": "2026-07-25",
+      "hasHeader": true,
+      "none": "guards/grants/policies/search_path only; no table/column/index/setting to probe",
+      "artifacts": []
+    },
+    {
       "file": "2026-07-25_sync_stuck_reports.sql",
       "date": "2026-07-25",
       "hasHeader": true,
@@ -1538,6 +1575,346 @@
         {
           "kind": "setting",
           "name": "sync_stuck_escalation_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-26_bonus_payout_reversal.sql",
+      "date": "2026-07-26",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_bonus_payouts.reversed_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_bonus_payouts.reversed_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_bonus_payouts.reversal_reason"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-26_bonus_review_status.sql",
+      "date": "2026-07-26",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.review_status"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.reviewed_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.reviewed_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_bonuses.review_note"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-26_costing_office_notes.sql",
+      "date": "2026-07-26",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_costing.office_notes"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_costing.office_notes_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_job_costing.office_notes_at"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-27_busybusy_export.sql",
+      "date": "2026-07-27",
+      "hasHeader": true,
+      "none": "function public.pec_busybusy_import (a function is not expressible in the four artifact kinds)",
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_prod_busybusy_imports"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_prod_busybusy_time_entries"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_prod_busybusy_projects"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_prod_busybusy_employees"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_busybusy_time_entries.import_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_busybusy_time_entries.employee_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_busybusy_time_entries.wage_type"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_busybusy_time_entries.is_overhead"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_busybusy_time_entries.source_export_id"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_bb_entries_work_date"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_bb_entries_job"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_bb_entries_crew_member"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_bb_entries_import"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_bb_projects_number"
+        },
+        {
+          "kind": "index",
+          "name": "uq_pec_bb_projects_name"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_import_window_weeks"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_anomaly_hours_threshold"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_overhead_project_names"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_export_base_url"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-27_touchup_queue.sql",
+      "date": "2026-07-27",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_state"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_opened_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_closed_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_cause"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_cause_note"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_closed_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_order"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_order_prev"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_billable"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_jobs.touchup_requested_by"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_prod_jobs_touchup_queue"
+        },
+        {
+          "kind": "setting",
+          "name": "touchup_aging_days"
+        },
+        {
+          "kind": "setting",
+          "name": "touchup_default_duration_hours"
+        },
+        {
+          "kind": "setting",
+          "name": "touchup_panel_show_done_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-28_ops_queue.sql",
+      "date": "2026-07-28",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_ops_items"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_ops_items_auto_check_key"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_ops_items_badge"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_busybusy_unmapped"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_costing_unfinalized"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_missing_revenue"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_never_invoiced"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_missing_salesperson"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_missing_system"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_drip_approvals"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_touchup_age"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_touchup_age_days"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_deposit_uncollected"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_deposit_age_days"
+        },
+        {
+          "kind": "setting",
+          "name": "ops_check_system_health"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-28_people_model.sql",
+      "date": "2026-07-28",
+      "hasHeader": true,
+      "none": "triggers, sync/RPC functions, and RLS policies are not expressible in the four artifact kinds",
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.people"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.name_aliases"
+        },
+        {
+          "kind": "index",
+          "name": "uq_people_admin_user_id"
+        },
+        {
+          "kind": "index",
+          "name": "uq_people_sales_team_member_id"
+        },
+        {
+          "kind": "index",
+          "name": "uq_people_crew_member_id"
+        },
+        {
+          "kind": "setting",
+          "name": "people_mirror_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "birthday_reminder_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "birthday_reminder_lead_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-07-28_product_datasheets.sql",
+      "date": "2026-07-28",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_products.datasheet_path"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_products.msds_path"
+        },
+        {
+          "kind": "setting",
+          "name": "datasheet_max_upload_mb"
         }
       ]
     }
@@ -1578,11 +1955,15 @@
     "pec_invoice_installments",
     "pec_lead_sources",
     "pec_notifications",
+    "pec_ops_items",
     "pec_payments",
     "pec_portal_views",
     "pec_prod_addons",
     "pec_prod_area_tints",
     "pec_prod_areas",
+    "pec_prod_busybusy_employees",
+    "pec_prod_busybusy_imports",
+    "pec_prod_busybusy_projects",
     "pec_prod_busybusy_time_entries",
     "pec_prod_color_pairings",
     "pec_prod_costing_sendbacks",
@@ -1613,6 +1994,7 @@
     "pec_user_todos",
     "pec_webhook_ingest_log",
     "pec_whats_new_acks",
+    "people",
     "photos",
     "referrals",
     "reviews",

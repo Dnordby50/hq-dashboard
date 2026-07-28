@@ -2486,6 +2486,11 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                actual privacy boundary. Lives in Overview because the build-19
                rail renders every destination inside a group flyout. -->
           <button data-pec-view="todos">To-dos</button>
+          <!-- Admin Ops Queue (prompt 55): one screen of everything stalled or
+               incomplete (derived data checks + manual assignable items), so
+               Anne can run the admin side without being told what to look at.
+               Admin-gated like Job Costing / Settings. -->
+          <button data-pec-view="ops" class="pec-role-admin">Ops Queue</button>
           <!-- Prompt 44 nav reorg: Leads/Estimates/Drips/Settings became their
                own rail groups and Jobs pipeline moved under Production. Only
                the markup ORDER changed; every data-pec-view and all routing is
@@ -6249,6 +6254,9 @@ function notifTarget(n) {
   // admin-only, so for everyone else the bell row stays text-only (which is
   // the point: every user sees the reminder, only admins land somewhere).
   if (n.target_view === 'people') return isAdmin() ? { view: 'settings', id: 'people' } : null;
+  // Manual Ops Queue items (prompt 55): whole-view destination, admin-gated
+  // like the view itself; for everyone else the bell row stays text-only.
+  if (n.target_view === 'ops') return isAdmin() ? { view: 'ops', id: n.target_id || 'panel' } : null;
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
@@ -6300,6 +6308,7 @@ function renderBellPanel(rows) {
       else if (navView === 'appointments') state.openAppointmentId = navId;
       else if (navView === 'estimates') state.openEstimateId = navId;
       else if (navView === 'schema-drift') { /* whole-view destination, no open-id */ }
+      else if (navView === 'ops') { /* whole-view destination; the queue lists the item */ }
       else if (navView === 'settings') state.settingsTab = navId;   // birthday bells land on Settings > People
       else state.openJobId = navId;
       panel.style.display = 'none';
@@ -7073,6 +7082,8 @@ function renderAuthUI() {
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
   refreshBell();
+  // Ops Queue nav badge (prompt 55): one cheap count, best-effort.
+  refreshOpsNavBadge();
 }
 
 // The standalone Estimator (Beta) rail button and its wireEstimatorNav()
@@ -7495,6 +7506,7 @@ function switchView(v) {
       'dripjobs-sync-health': renderDripJobsSyncHealth,
       'schema-drift': renderSchemaDrift,
       todos: renderTodos,
+      ops: renderOpsQueue,
       settings: renderSettings,
     })[v] || renderDashboard;
     try {
@@ -13835,6 +13847,7 @@ async function renderJobDetailInner(id) {
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="pec-btn sm" id="pecJobPrintWO">View Work Order</button>
             ${jobSheetProducts.length ? '<button class="pec-btn sm" id="pecJobDataSheets" title="TDS / SDS PDFs for this job\'s materials">Data sheets</button>' : ''}
+            ${isAdmin() ? '<button class="pec-btn sm" id="pecJobOpsAdd" title="Add a manual Ops Queue item that links back to this job">+ Ops Queue</button>' : ''}
           </div>
         </div>
         <div class="pec-field" style="margin-bottom:0;min-width:190px">
@@ -14956,6 +14969,15 @@ async function renderJobDetailInner(id) {
       alert(isSessionStale(err) ? 'The session briefly stalled — tap the button again.' : 'Could not update: ' + (err.message || err));
     }
   });
+
+  // --- Add to Ops Queue (prompt 55 Part C): manual item prefilled with this
+  // job's deep link (link_view/link_id, the same shape notifications use).
+  // The job detail is the ONLY record with this action in v1.
+  const opsAddBtn = $('pecJobOpsAdd');
+  if (opsAddBtn) opsAddBtn.addEventListener('click', () => openOpsItemModal({
+    linkView: 'jobs', linkId: id,
+    titlePrefill: (job.customers?.name ? job.customers.name + ': ' : ''),
+  }));
 
   // --- Salesperson admin edit (prompt 55 Part B) ----------------------------
   // The select only exists for admins (non-admins render plain text). A change
@@ -18109,6 +18131,395 @@ function openPersonModal(personId) {
   }});
 }
 
+// ============================================================
+// Admin Ops Queue (prompt 55 Part C)
+// ============================================================
+// One admin screen of everything stalled or incomplete: TEN derived checks
+// computed at render time from data that already exists (nothing stored, so
+// nothing goes stale), plus manual assignable items and per-record dismissals
+// in pec_ops_items (the one small table). This is NOT the prompt-49 follow-up
+// queue — that is sales-side (leads overdue for a human touch) and lives in
+// Leads; this is admin data hygiene and workflow. The two share no checks.
+//
+// Derived rows carry a stable check_key containing the record id; Dismiss
+// stores that key as an 'auto' row (unique per key, forever), so dismissing
+// one job's missing revenue never hides another's. Derived rows have no Done:
+// they disappear when the underlying data is actually fixed, which is the
+// point. The System-health lines are aggregates with their own screens and
+// deliberately offer no Dismiss (permanently hiding "migrations missing"
+// would swallow real future drift).
+
+// Nav badge: count of OPEN MANUAL items — ONE cheap head-count query at boot.
+// Deliberately NOT the derived checks: those need the whole prod-core load
+// plus ~8 more queries and a schema probe, and the obvious "make the badge
+// show everything" change would put all of that on every sign-in. Derived
+// items are page-load work on the Ops Queue view only.
+async function refreshOpsNavBadge() {
+  if (state.adminUser?.role !== 'admin') return;
+  let count = 0;
+  try {
+    const r = await supabase.from('pec_ops_items').select('id', { count: 'exact', head: true })
+      .eq('source', 'manual').eq('status', 'open');
+    if (r.error) return; // pre-migration: table missing, no badge
+    count = r.count || 0;
+  } catch (_) { return; }
+  // Both the #pecSubnav source button and its rail flyout mirror carry
+  // data-pec-view, so one selector updates them together.
+  document.querySelectorAll('button[data-pec-view="ops"]').forEach(btn => {
+    let b = btn.querySelector('.pec-ops-navbadge');
+    if (!count) { if (b) b.remove(); return; }
+    if (!b) {
+      b = document.createElement('span');
+      b.className = 'pec-ops-navbadge';
+      b.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;margin-left:6px;border-radius:999px;background:var(--rd-accent,#D8531C);color:#fff;font-size:.62rem;font-weight:700;vertical-align:middle';
+      btn.appendChild(b);
+    }
+    b.textContent = count > 99 ? '99+' : String(count);
+  });
+}
+
+// Shared "+ Add item" modal, used by the queue and by the CRM job detail's
+// "Add to Ops Queue" action (which prefills the deep link). Assignees are
+// admin_users — NOT people, deliberately: prompt 54's people migration was
+// unapplied when this shipped (the deploy-order warning in prompt 55).
+async function openOpsItemModal({ linkView = null, linkId = null, titlePrefill = '', onSaved = null } = {}) {
+  let admins = state.adminUsers || [];
+  if (!admins.length) {
+    try { const r = await supabase.from('admin_users').select('id,name,email').order('name'); admins = r.data || []; } catch (_) {}
+  }
+  openModal(`
+    <h3>Add Ops Queue item</h3>
+    <div class="pec-field"><label>Title</label><input id="opsTitle" maxlength="200" value="${esc(titlePrefill)}" placeholder="What needs doing?"></div>
+    <div class="pec-field"><label>Note (optional)</label><textarea id="opsBody" rows="3" style="width:100%"></textarea></div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Assign to</label>
+        <select id="opsAssignee">
+          <option value="">Unassigned</option>
+          ${admins.map(a => `<option value="${esc(a.id)}">${esc(a.name || a.email)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="pec-field"><label>Due date (optional)</label><input id="opsDue" type="date"></div>
+    </div>
+    ${linkView ? '<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px">This item will link straight back to the record you came from.</div>' : ''}
+    <div class="prod-msg-err" id="opsErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="opsSave">Add item</button>
+    </div>
+  `, { onMount: modal => {
+    modal.querySelector('#opsTitle').focus();
+    modal.querySelector('#opsSave').addEventListener('click', async () => {
+      const errEl = modal.querySelector('#opsErr'); errEl.textContent = '';
+      const title = modal.querySelector('#opsTitle').value.trim();
+      if (!title) { errEl.textContent = 'Enter a title.'; return; }
+      const btn = modal.querySelector('#opsSave'); btn.disabled = true; btn.textContent = 'Adding…';
+      const assignee = modal.querySelector('#opsAssignee').value || null;
+      const assigneeRow = assignee ? admins.find(a => a.id === assignee) : null;
+      try {
+        // Non-idempotent insert: bounded write, NO auto-retry (a retried
+        // insert could double the item), button disabled against double-click.
+        const ins = await withFreshWrite(() => supabase.from('pec_ops_items').insert({
+          source: 'manual',
+          title,
+          body: modal.querySelector('#opsBody').value.trim() || null,
+          assigned_to: assignee,
+          created_by: state.adminUser?.id || null,
+          due_date: modal.querySelector('#opsDue').value || null,
+          link_view: linkView,
+          link_id: linkId,
+        }).select('id').single(), { label: 'ops-item-add' });
+        if (ins.error) throw ins.error;
+        // Bell for NEW MANUAL items only (decision 12). Goes through the
+        // SECURITY DEFINER RPC because client JS cannot insert
+        // pec_notifications directly (staff have SELECT/UPDATE only).
+        // Derived checks never write to the bell, ever — they re-derive every
+        // day and would re-fire forever.
+        try {
+          const rp = await supabase.rpc('pec_ops_item_notify', {
+            p_item_id: ins.data.id, p_title: title,
+            p_assignee: assigneeRow ? (assigneeRow.name || assigneeRow.email) : null,
+          });
+          if (rp.error) console.warn('[pec] ops bell skipped:', rp.error.message);
+          else { invalidateRefCache('notifs'); refreshBell(); }
+        } catch (e) { console.warn('[pec] ops bell threw:', e); }
+        closeModal();
+        showToast('Ops Queue item added', { ttl: 2500 });
+        refreshOpsNavBadge();
+        if (typeof onSaved === 'function') onSaved();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Add item';
+        const hint = /pec_ops_items|does not exist/i.test(err.message || '') ? ' (Run the 2026-07-28_ops_queue.sql migration first.)' : '';
+        errEl.textContent = 'Could not add: ' + (err.message || err) + hint;
+      }
+    });
+  }});
+}
+
+async function renderOpsQueue() {
+  const root = $('pecViewRoot');
+  if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading the Ops Queue…</div>';
+
+  // Knobs (Settings > General > Ops Queue, standing rule 12). Defaults: every
+  // check on, both thresholds 7 days.
+  let cfg = {};
+  try {
+    const r = await withFreshSession(() => supabase.from('settings').select('key,value').like('key', 'ops_%'), { label: 'ops-settings' });
+    cfg = Object.fromEntries(((r && r.data) || []).map(x => [x.key, x.value]));
+  } catch (_) { /* defaults */ }
+  const on = k => (cfg[k] || 'true') !== 'false';
+  const daysOf = (k, d) => { const n = parseInt(cfg[k], 10); return Number.isFinite(n) && n >= 0 ? n : d; };
+  const tuDays = daysOf('ops_touchup_age_days', 7);
+  const depDays = daysOf('ops_deposit_age_days', 7);
+
+  // Prod core + the shared estimate facts: checks 2/3/6/8 read state.prodJobs
+  // and the Part A helper (prodJobEstimateFacts) — the SAME loaders the
+  // schedule uses, no bespoke resolution chain here. A failure degrades those
+  // checks to empty instead of blanking the view.
+  try { await loadScheduleData(); } catch (e) { console.warn('[pec] ops prod load skipped:', e); }
+
+  let res;
+  try {
+    res = await withFreshSession(() => Promise.all([
+      supabase.from('pec_ops_items').select('*').order('created_at', { ascending: false }),
+      supabase.from('admin_users').select('id,name,email').order('name'),
+      supabase.from('jobs').select('id,status,salesperson,signed_date,completed_date,invoice_first_sent_at,deposit_collected,deposit_waived,voided_at,address,customers(name)').is('archived_at', null),
+      supabase.from('pec_prod_busybusy_employees').select('busybusy_name,crew_member_id,ignored'),
+      supabase.from('pec_prod_busybusy_time_entries').select('employee_name'),
+      // Reused source-screen queries: the Drip Approvals held count and the
+      // open stuck-sync reports, both as cheap head-counts.
+      supabase.from('pec_drip_sends').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('pec_sync_stuck_reports').select('id', { count: 'exact', head: true }).is('resolved_at', null),
+    ]), { label: 'renderOpsQueue' });
+  } catch (e) {
+    root.innerHTML = `<div class="pec-empty">Could not load the Ops Queue: ${esc(e.message || e)}</div>`;
+    return;
+  }
+  if (state.view !== 'ops') return; // user navigated away mid-read
+  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes] = res;
+  const admins = adminsRes.error ? [] : (adminsRes.data || []);
+  if (admins.length) state.adminUsers = admins;
+  const adminName = id => { const a = admins.find(x => x.id === id); return a ? (a.name || a.email) : ''; };
+
+  // Schema Drift signal (check 10a): the SAME probe the Schema Drift screen
+  // runs, with notify=0 so surfacing it here never double-bells. Best-effort;
+  // an unreachable probe shows as an "unavailable" line, never a blank.
+  let drift = null;
+  if (on('ops_check_system_health')) {
+    try {
+      const dr = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0', {
+        headers: { Authorization: `Bearer ${state.session?.access_token || ''}` },
+      });
+      const dj = await dr.json();
+      if (dj && dj.ok !== false && Array.isArray(dj.missing)) drift = { missing: dj.missing.length, partial: (dj.partial || []).length };
+    } catch (_) { /* line renders as unavailable */ }
+  }
+
+  const opsTableMissing = !!itemsRes.error;
+  const items = opsTableMissing ? [] : (itemsRes.data || []);
+  const dismissed = new Set(items.filter(i => i.source === 'auto' && i.status === 'dismissed' && i.check_key).map(i => i.check_key));
+  const manualOpen = items.filter(i => i.source === 'manual' && i.status === 'open');
+  const todayIsoStr = isoDate(new Date());
+  const overdue = manualOpen.filter(i => i.due_date && i.due_date < todayIsoStr);
+  const rest = manualOpen.filter(i => !(i.due_date && i.due_date < todayIsoStr));
+
+  const cutoffIso = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return isoDate(d); };
+  const cutoffTs = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.getTime(); };
+  const prodJobs = (state.prodJobs || []).filter(j => !j.archived_at);
+  const crmJobs = (jobsRes.error ? [] : (jobsRes.data || [])).filter(j => !j.voided_at);
+  const jobName = j => (j.customers && j.customers.name) || j.address || 'Job';
+
+  // ---- The ten derived checks, in the prompt's C2 order ---------------------
+  const sections = [];
+  const push = (key, title, note, rows) => sections.push({ key, title, note, rows: rows.filter(r => !r.key || !dismissed.has(r.key)) });
+
+  // 1. Unmapped BusyBusy names: map rows with no crew member (not ignored),
+  //    plus imported names with no map row at all. Their hours never reach
+  //    costing (SCHEMA.md).
+  if (on('ops_check_busybusy_unmapped')) {
+    const emps = bbEmpRes.error ? [] : (bbEmpRes.data || []);
+    const known = new Set(emps.map(e => e.busybusy_name));
+    const rows = emps.filter(e => !e.crew_member_id && !e.ignored)
+      .map(e => ({ key: `bb_unmapped:${e.busybusy_name}`, label: `${esc(e.busybusy_name)} has no crew member mapped`, nav: { view: 'settings', tab: 'busybusy' } }));
+    const seen = new Set();
+    for (const r of (bbNamesRes.error ? [] : (bbNamesRes.data || []))) {
+      if (!r.employee_name || known.has(r.employee_name) || seen.has(r.employee_name)) continue;
+      seen.add(r.employee_name);
+      rows.push({ key: `bb_unmapped:${r.employee_name}`, label: `${esc(r.employee_name)} was imported but has no mapping row`, nav: { view: 'settings', tab: 'busybusy' } });
+    }
+    push('busybusy', 'Unmapped BusyBusy names', 'Hours under these names never reach Job Costing until they are mapped or ignored in Settings > BusyBusy.', rows);
+  }
+  // 2. Costings submitted, not finalized. NOTE: these columns live on
+  //    pec_prod_jobs (SCHEMA.md), not pec_prod_job_costing as the prompt text
+  //    said — verified per standing rule 9.
+  if (on('ops_check_costing_unfinalized')) {
+    push('costing', 'Costings waiting to be finalized',
+      'Submitted for review. Only an admin with the Finalize Costing permission can clear these.',
+      prodJobs.filter(j => j.costing_submitted_at && !j.costing_finalized_at)
+        .map(j => ({ key: `costing_unfinalized:${j.id}`, label: `${esc(j.customer_name)} · submitted ${esc(fmtDate(j.costing_submitted_at))}`, nav: { view: 'costing', unifiedId: j.id } })));
+  }
+  // 3. Scheduled / in-progress / completed with no revenue (callbacks exempt,
+  //    matching the pec_prod_jobs_scheduled_needs_revenue constraint).
+  if (on('ops_check_missing_revenue')) {
+    push('revenue', 'Scheduled or completed jobs with no revenue',
+      'On the calendar or done, but revenue is empty or $0. Callbacks are exempt ($0 warranty work).',
+      prodJobs.filter(j => ['scheduled', 'in_progress', 'completed'].includes(j.status) && !(Number(j.revenue) > 0) && !j.is_callback)
+        .map(j => ({ key: `job_missing_revenue:${j.id}`, label: `${esc(j.customer_name)} (${esc(String(j.status).replace('_', ' '))})`, nav: { view: 'costing', unifiedId: j.id } })));
+  }
+  // 4. Completed, never invoiced.
+  if (on('ops_check_never_invoiced')) {
+    push('invoiced', 'Completed jobs never invoiced', 'Marked complete but no invoice was ever sent.',
+      crmJobs.filter(j => j.completed_date && !j.invoice_first_sent_at)
+        .map(j => ({ key: `job_never_invoiced:${j.id}`, label: `${esc(jobName(j))} · completed ${esc(fmtDate(j.completed_date))}`, nav: { view: 'invoicing', invoiceId: j.id } })));
+  }
+  // 5. Signed jobs with no salesperson (the Part B feeder: the admin edit on
+  //    the job page fixes these).
+  if (on('ops_check_missing_salesperson')) {
+    push('salesperson', 'Jobs with no salesperson', 'Commission attribution depends on this. An admin can set it on the job page.',
+      crmJobs.filter(j => !((j.salesperson || '').trim()))
+        .map(j => ({ key: `job_missing_salesperson:${j.id}`, label: `${esc(jobName(j))}${j.status ? ` (${esc(String(j.status).replace('_', ' '))})` : ''}`, nav: { view: 'jobs', jobId: j.id } })));
+  }
+  // 6. Jobs with no system anywhere — the Part A helper returns null.
+  if (on('ops_check_missing_system')) {
+    push('system', 'Jobs with no system',
+      'No system on the job card, the estimate, or the schedule. Calendar color, materials, and per-system metrics stay blank until one is set.',
+      prodJobs.filter(j => !j.is_callback && !prodJobEstimateFacts(j).systemTypeId)
+        .map(j => {
+          const crmId = (state.crmIdByProdJob || {})[j.id];
+          return { key: `job_missing_system:${j.id}`, label: esc(j.customer_name), nav: crmId ? { view: 'jobs', jobId: crmId } : { view: 'costing', unifiedId: j.id } };
+        }));
+  }
+  // 7. Drips held for approval (aggregate; the approvals screen is the fix).
+  if (on('ops_check_drip_approvals')) {
+    const n = (dripCntRes && !dripCntRes.error) ? (dripCntRes.count || 0) : 0;
+    push('drips', 'Drips held for approval', 'Messages waiting for a human in Drip Approvals.',
+      n ? [{ key: null, label: `${n} message${n === 1 ? '' : 's'} held`, nav: { view: 'drip-approvals' } }] : []);
+  }
+  // 8. Touch-ups open past the threshold.
+  if (on('ops_check_touchup_age')) {
+    push('touchups', `Touch-ups open longer than ${tuDays} day${tuDays === 1 ? '' : 's'}`,
+      'Open in the Touch-ups panel with no schedule date yet.',
+      prodJobs.filter(j => j.touchup_state === 'open' && j.touchup_opened_at && new Date(j.touchup_opened_at).getTime() < cutoffTs(tuDays))
+        .map(j => ({ key: `touchup_stale:${j.id}`, label: `${esc(j.customer_name)} · open since ${esc(fmtDate(j.touchup_opened_at))}`, nav: { view: 'schedule' } })));
+  }
+  // 9. Deposits not collected past the threshold. Active jobs only: a
+  //    completed job's money is check 4's domain.
+  if (on('ops_check_deposit_uncollected')) {
+    const cut = cutoffIso(depDays);
+    push('deposits', `Deposits not collected after ${depDays} day${depDays === 1 ? '' : 's'}`,
+      'Signed, deposit not waived, and no deposit recorded.',
+      crmJobs.filter(j => ['signed', 'scheduled', 'in_progress'].includes(j.status) && j.signed_date && j.signed_date <= cut && !j.deposit_collected && !j.deposit_waived)
+        .map(j => ({ key: `deposit_uncollected:${j.id}`, label: `${esc(jobName(j))} · signed ${esc(fmtDate(j.signed_date))}`, nav: { view: 'invoicing', invoiceId: j.id } })));
+  }
+  // 10. System health: unapplied migrations + stuck estimator syncs. One line
+  //     each, straight to their own screens. No Dismiss (aggregates).
+  if (on('ops_check_system_health')) {
+    const rows = [];
+    if (drift) {
+      const bad = drift.missing + drift.partial;
+      if (bad) rows.push({ key: null, label: `${bad} migration${bad === 1 ? '' : 's'} not fully applied to prod`, nav: { view: 'schema-drift' } });
+    } else {
+      rows.push({ key: null, label: 'Schema drift check unavailable right now', nav: { view: 'schema-drift' }, muted: true });
+    }
+    const stuck = (stuckCntRes && !stuckCntRes.error) ? (stuckCntRes.count || 0) : 0;
+    if (stuck) rows.push({ key: null, label: `${stuck} estimator save${stuck === 1 ? '' : 's'} stuck syncing`, nav: { view: 'settings', tab: 'estimates' } });
+    push('health', 'System health', 'Aggregate signals with their own screens.', rows);
+  }
+
+  const derivedCount = sections.reduce((s, x) => s + x.rows.length, 0);
+  const total = manualOpen.length + derivedCount;
+
+  const navAttrs = (nav) => `data-ops-view="${esc(nav.view)}"${nav.jobId ? ` data-ops-job="${esc(nav.jobId)}"` : ''}${nav.unifiedId ? ` data-ops-unified="${esc(nav.unifiedId)}"` : ''}${nav.invoiceId ? ` data-ops-invoice="${esc(nav.invoiceId)}"` : ''}${nav.tab ? ` data-ops-tab="${esc(nav.tab)}"` : ''}`;
+  const rowHtml = (r) => `<tr class="nohover">
+      <td style="font-size:.85rem">${r.muted ? `<span style="color:var(--muted)">${r.label}</span>` : r.label}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="pec-btn sm" ${navAttrs(r.nav)}>Open</button>
+        ${(r.key && !opsTableMissing) ? `<button class="pec-btn ghost sm" data-ops-dismiss="${esc(r.key)}" title="Hide this one item permanently. Other records of the same check stay listed.">Dismiss</button>` : ''}
+      </td>
+    </tr>`;
+  const manualRow = (i) => {
+    const od = i.due_date && i.due_date < todayIsoStr;
+    return `<tr class="nohover">
+      <td style="font-size:.85rem">
+        <strong>${esc(i.title)}</strong>
+        ${od ? `<span style="display:inline-block;margin-left:6px;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:color-mix(in srgb, #f59e0b 16%, transparent);color:#b45309;border:1px solid color-mix(in srgb, #f59e0b 45%, transparent);border-radius:999px;padding:2px 8px">Overdue · due ${esc(fmtDate(i.due_date))}</span>`
+             : (i.due_date ? `<span style="color:var(--muted);font-size:.72rem"> · due ${esc(fmtDate(i.due_date))}</span>` : '')}
+        <div style="font-size:.72rem;color:var(--muted)">${i.assigned_to ? `Assigned to ${esc(adminName(i.assigned_to) || 'a removed user')}` : 'Unassigned'}${i.created_at ? ` · added ${esc(fmtDate(i.created_at))}` : ''}</div>
+        ${i.body ? `<div style="font-size:.78rem;margin-top:2px;white-space:pre-wrap">${esc(i.body)}</div>` : ''}
+      </td>
+      <td style="text-align:right;white-space:nowrap">
+        ${(i.link_view === 'jobs' && i.link_id) ? `<button class="pec-btn sm" data-ops-view="jobs" data-ops-job="${esc(i.link_id)}">Open</button>` : ''}
+        <button class="pec-btn primary sm" data-ops-done="${esc(i.id)}">Done</button>
+      </td>
+    </tr>`;
+  };
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div>
+        <h2 style="margin:0">Ops Queue</h2>
+        <div style="color:var(--muted);font-size:.78rem;margin-top:2px">${total} item${total === 1 ? '' : 's'} waiting on a human. Checks and thresholds live in Settings under Ops Queue.</div>
+      </div>
+      <button class="pec-btn primary" id="opsAddBtn" ${opsTableMissing ? 'disabled title="Run the 2026-07-28_ops_queue.sql migration first"' : ''}>+ Add item</button>
+    </div>
+    ${opsTableMissing ? `<div class="pec-card" style="border-left:4px solid #d97706">
+      <strong>Manual items need the migration.</strong>
+      <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Run supabase/migrations/2026-07-28_ops_queue.sql, then reload. The derived checks below work either way; Dismiss also needs the migration.</div>
+    </div>` : `<div class="pec-card">
+      <h3>Manual items <span style="color:var(--muted);font-size:.72rem;font-weight:400">· ${manualOpen.length} open${overdue.length ? `, ${overdue.length} overdue` : ''}</span></h3>
+      ${manualOpen.length
+        ? `<div class="pec-table-wrap"><table class="pec-table"><tbody>${[...overdue, ...rest].map(manualRow).join('')}</tbody></table></div>`
+        : '<div class="pec-empty" style="padding:8px">No open manual items. Use + Add item to assign one.</div>'}
+    </div>`}
+    ${sections.map(s => `<div class="pec-card">
+      <h3>${s.title} <span style="color:${s.rows.length ? 'var(--rd-accent,#D8531C)' : 'var(--muted)'};font-size:.78rem;font-weight:${s.rows.length ? '700' : '400'}">· ${s.rows.length}</span></h3>
+      ${s.note ? `<div style="font-size:.72rem;color:var(--muted);margin:2px 0 8px">${s.note}</div>` : ''}
+      ${s.rows.length ? `<div class="pec-table-wrap"><table class="pec-table"><tbody>${s.rows.map(rowHtml).join('')}</tbody></table></div>` : '<div class="pec-empty" style="padding:8px">Nothing waiting.</div>'}
+    </div>`).join('')}
+  `;
+
+  const addBtn = $('opsAddBtn');
+  if (addBtn && !opsTableMissing) addBtn.addEventListener('click', () => openOpsItemModal({ onSaved: renderOpsQueue }));
+  root.querySelectorAll('[data-ops-view]').forEach(el => el.addEventListener('click', () => {
+    const view = el.dataset.opsView;
+    if (el.dataset.opsTab) state.settingsTab = el.dataset.opsTab;
+    if (el.dataset.opsJob) { state.openUnifiedJobId = null; state.openJobId = el.dataset.opsJob; }
+    if (el.dataset.opsUnified) { state.openJobId = null; state.openUnifiedJobId = el.dataset.opsUnified; }
+    if (el.dataset.opsInvoice) state.openInvoiceJobId = el.dataset.opsInvoice;
+    switchView(view);
+  }));
+  root.querySelectorAll('[data-ops-dismiss]').forEach(el => el.addEventListener('click', async () => {
+    const key = el.dataset.opsDismiss;
+    if (!confirm('Dismiss this item? It stays hidden permanently, even if the data is never fixed.')) return;
+    el.disabled = true;
+    try {
+      const ins = await withFreshWrite(() => supabase.from('pec_ops_items').insert({
+        source: 'auto', check_key: key, status: 'dismissed', created_by: state.adminUser?.id || null,
+      }), { label: 'ops-dismiss' });
+      // A unique-key violation means someone else dismissed it first — same outcome.
+      if (ins.error && !/duplicate|unique/i.test(ins.error.message || '')) throw ins.error;
+      renderOpsQueue();
+    } catch (err) {
+      el.disabled = false;
+      showToast('Could not dismiss: ' + (err.message || err), { ttl: 5000 });
+    }
+  }));
+  root.querySelectorAll('[data-ops-done]').forEach(el => el.addEventListener('click', async () => {
+    el.disabled = true;
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('pec_ops_items').update({
+        status: 'done', done_at: new Date().toISOString(), done_by: state.adminUser?.id || null,
+      }).eq('id', el.dataset.opsDone), { label: 'ops-done' });
+      if (upd.error) throw upd.error;
+      refreshOpsNavBadge();
+      renderOpsQueue();
+    } catch (err) {
+      el.disabled = false;
+      showToast('Could not mark done: ' + (err.message || err), { ttl: 5000 });
+    }
+  }));
+}
+
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
@@ -18311,6 +18722,26 @@ async function renderSettings() {
           </select>
           <span style="color:var(--muted);font-size:.68rem">Keeps Users, Sales Team, and Team Members in sync with the People directory. Turn off ONLY if People edits are misbehaving; the legacy cards then work standalone exactly as before the People build.</span>
         </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Ops Queue</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">Each derived check on the Ops Queue can be switched off here. Off hides the whole section on the queue; nothing is deleted.</div>
+        ${[
+          ['ops_check_busybusy_unmapped', 'Unmapped BusyBusy names'],
+          ['ops_check_costing_unfinalized', 'Costings waiting to be finalized'],
+          ['ops_check_missing_revenue', 'Jobs with no revenue'],
+          ['ops_check_never_invoiced', 'Completed jobs never invoiced'],
+          ['ops_check_missing_salesperson', 'Jobs with no salesperson'],
+          ['ops_check_missing_system', 'Jobs with no system'],
+          ['ops_check_drip_approvals', 'Drips held for approval'],
+          ['ops_check_touchup_age', 'Touch-ups open too long'],
+          ['ops_check_deposit_uncollected', 'Deposits not collected'],
+          ['ops_check_system_health', 'System health (drift + stuck syncs)'],
+        ].map(([k, l]) => `<div class="pec-field"><label>${l}</label>
+          <select name="${k}">
+            <option value="true" ${(map[k] || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map[k] || 'true') === 'false' ? 'selected' : ''}>Off</option>
+          </select></div>`).join('')}
+        <div class="pec-field"><label>Touch-up open threshold (days)</label><input name="ops_touchup_age_days" type="number" min="0" step="1" value="${esc(map.ops_touchup_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">An open touch-up appears on the Ops Queue after this many days.</span></div>
+        <div class="pec-field"><label>Deposit threshold (days)</label><input name="ops_deposit_age_days" type="number" min="0" step="1" value="${esc(map.ops_deposit_age_days || '7')}"><span style="color:var(--muted);font-size:.68rem">A signed job with no deposit collected (and not waived) appears on the Ops Queue after this many days.</span></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>
@@ -28448,7 +28879,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, products: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmIdByProd: {}, products: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -28495,6 +28926,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
     if (ident) {
       resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
+      out.crmIdByProd[job.id] = ident.id;
       if (ident.status) out.crmStatusByProd[job.id] = ident.status;
       if (ident.sqft != null) out.crmSqftByProd[job.id] = ident.sqft;
       // The CRM job's salesperson (prompt 55 Part B): jobs.salesperson is the
@@ -28554,6 +28986,7 @@ async function loadScheduleEstimates() {
     state.crmStatusByProdJob = facts.crmStatusByProd;
     state.crmSqftByProdJob = facts.crmSqftByProd;
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
+    state.crmIdByProdJob = facts.crmIdByProd;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
 }
