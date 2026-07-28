@@ -13409,21 +13409,23 @@ async function renderWorkOrder(ctx) {
   <div class="wo-toolbar"><button onclick="window.print()">Print work order</button></div>
   <div class="wo-banner">MAKE SURE TO ACCURATELY FILL OUT ALL SECTIONS OF THIS SHEET. INCOMPLETE SHEETS = NO BONUS</div>
   <div class="wo-header">
-    <div class="wo-title">Crew Work Order</div>
+    <div class="wo-hero">
+      <div class="hbox job"><div class="cap">Job</div><div class="big">${e(job.customers?.name || '')}</div></div>
+      <div class="hbox crew"><div class="cap">Crew</div><div class="big">${e(crewName || '')}</div></div>
+      <div class="hbox date"><div class="cap">Date</div><div class="big num">${e(dateFmt(installDate))}</div></div>
+    </div>
     <div class="wo-brandwrap">
       <img class="wo-logo" src="${location.origin}/assets/pec-logo.png" alt="Prescott Epoxy Company">
     </div>
   </div>
   <div class="intake">
     <div class="grp">Job Identity</div>
-    <div class="lbl">Crew:</div>           <div class="val">${e(crewName || '')}</div>
-    <div class="lbl">Date:</div>           <div class="val">${e(dateFmt(installDate))}</div>
-    <div class="lbl">Job Name:</div>       <div class="val">${e(job.customers?.name || '')}</div>
     <div class="lbl">DJ #:</div>           <div class="val num">${e(job.dripjobs_deal_id || '')}</div>
     <div class="lbl">Address:</div>        <div class="val">${e(job.address || '')}</div>
     <div class="lbl">Location:</div>       <div class="val"></div>
     <div class="lbl">Gate Code#:</div>     <div class="val num">${e(job.gate_code || '')}</div>
     <div class="lbl">Phone:</div>          <div class="val num">${job.customers?.phone ? `<a href="${e(qoTelHref(job.customers.phone))}" style="color:inherit;text-decoration:none">${e(qoFmtPhone(job.customers.phone))}</a>` : ''}</div>
+    <div class="lbl"></div>                <div class="val"></div>
     <div class="grp">Site Conditions</div>
     <div class="lbl">Sqft:</div>           <div class="val num">${e(totalSqft || '')}</div>
     <div class="lbl">Moisture:</div>       <div class="val">${e(job.moisture ?? '')}</div>
