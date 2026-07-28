@@ -62,6 +62,14 @@
 [functions."pec-migration-drift"]
   schedule = "0 14 * * *"
 
+# Birthday reminder tick (prompt 54). Daily at 14:30 UTC = 07:30 MST, after
+# the drift check. One bell per person per year when their birthday is within
+# birthday_reminder_lead_days; the 60-day per-person dedupe makes reruns and
+# missed days harmless. No-op until the people-model migration is applied,
+# and gated by the birthday_reminder_enabled setting.
+[functions."pec-birthday-reminders"]
+  schedule = "30 14 * * *"
+
 # Security monitor (security remediation Phase 3). Every 15 minutes: scans the
 # last ~20 min of sign_in_log and Slacks an alert when a staff member signs in
 # from an IP they have never used before (account-takeover signal). Gated by the

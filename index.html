@@ -6245,6 +6245,10 @@ function notifTarget(n) {
   // (admin-gated like the panel itself). 'panel' is a placeholder nav id; the
   // click handler has an explicit schema-drift branch that sets no open-id.
   if (n.target_view === 'schema-drift') return isAdmin() ? { view: 'schema-drift', id: 'panel' } : null;
+  // Birthday bells (prompt 54) target the Settings > People tab. Settings is
+  // admin-only, so for everyone else the bell row stays text-only (which is
+  // the point: every user sees the reminder, only admins land somewhere).
+  if (n.target_view === 'people') return isAdmin() ? { view: 'settings', id: 'people' } : null;
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
@@ -6296,6 +6300,7 @@ function renderBellPanel(rows) {
       else if (navView === 'appointments') state.openAppointmentId = navId;
       else if (navView === 'estimates') state.openEstimateId = navId;
       else if (navView === 'schema-drift') { /* whole-view destination, no open-id */ }
+      else if (navView === 'settings') state.settingsTab = navId;   // birthday bells land on Settings > People
       else state.openJobId = navId;
       panel.style.display = 'none';
       switchView(navView);
@@ -7854,7 +7859,7 @@ function randomToken() {
 // ============================================================
 async function renderDashboard() {
   const root = $('pecViewRoot');
-  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc, prodInstall] = await withFreshSession(() => Promise.all([
+  const [custCount, jobsAll, refsNew, reviews, sysRes, colorsCnc, prodInstall, peopleRes, bdaySettings] = await withFreshSession(() => Promise.all([
     supabase.from('customers').select('id', { count: 'exact', head: true }).is('archived_at', null),
     supabase.from('jobs').select('id,status,confirmed,created_at,address,type,price,dripjobs_deal_id,customer_id,customers(name,company),job_areas(system_type_id,order_index)').is('archived_at', null).order('created_at', { ascending: false }),
     supabase.from('referrals').select('id', { count: 'exact', head: true }).eq('status', 'submitted'),
@@ -7868,6 +7873,11 @@ async function renderDashboard() {
     supabase.from('jobs').select('id,address,status,created_at,dripjobs_deal_id,customers(name)').eq('colors_confirmed', false).is('archived_at', null).in('status', ['confirmed', 'scheduled', 'in_progress']).order('created_at', { ascending: false }),
     // Install dates for joining onto jobs (same bridge pattern renderInvoicing uses).
     supabase.from('pec_prod_jobs').select('dripjobs_deal_id,install_date').not('dripjobs_deal_id', 'is', null),
+    // Birthdays (prompt 54). Its own guarded query, same pattern as colorsCnc:
+    // before the people-model migration the table is missing, ONLY this query
+    // errors, and the banners simply don't render.
+    supabase.from('people').select('id,full_name,display_name,birth_month,birth_day,active'),
+    supabase.from('settings').select('key,value').in('key', ['birthday_reminder_enabled', 'birthday_reminder_lead_days']),
   ]), { label: 'renderDashboard' });
   const jobs = jobsAll.data || [];
   const installByDeal = {};
@@ -7890,7 +7900,40 @@ async function renderDashboard() {
   const pending = jobs.filter(j => !j.confirmed).length;
   const avgRating = reviews.data?.length ? (reviews.data.reduce((a,b)=>a+b.rating,0) / reviews.data.length).toFixed(1) : '—';
 
+  // Birthday banners (prompt 54, admin-only, dismiss = this session only via
+  // sessionStorage so they return next sign-in until acted on). Upcoming =
+  // within birthday_reminder_lead_days; the bell leg is the scheduled
+  // pec-birthday-reminders function, this is the on-screen leg.
+  let bdayBanners = '';
+  if (isAdmin() && peopleRes && !peopleRes.error) {
+    const ppl = (peopleRes.data || []).filter(p => p.active !== false);
+    const bmap = Object.fromEntries(((bdaySettings && bdaySettings.data) || []).map(r => [r.key, r.value]));
+    const lead = Math.max(0, parseInt(bmap.birthday_reminder_lead_days, 10) || 7);
+    const remindersOn = String(bmap.birthday_reminder_enabled || 'true') !== 'false';
+    const upcoming = remindersOn && sessionStorage.getItem('pecBdayUpcomingHide') !== '1'
+      ? ppl.map(p => ({ p, du: pecDaysToBirthday(p.birth_month, p.birth_day, cncToday) }))
+          .filter(x => x.du != null && x.du <= lead).sort((a, b) => a.du - b.du)
+      : [];
+    const missing = sessionStorage.getItem('pecBdayNagHide') !== '1'
+      ? ppl.filter(p => p.birth_month == null || p.birth_day == null)
+      : [];
+    if (upcoming.length) bdayBanners += `
+      <div class="pec-card" style="border-left:4px solid #047857;display:flex;align-items:center;gap:10px">
+        <div style="flex:1">🎂 <strong>${upcoming.map(x => `${esc(x.p.display_name || x.p.full_name)} ${x.du === 0 ? 'today!' : x.du === 1 ? 'tomorrow' : 'on ' + pecBirthdayLabel(x.p.birth_month, x.p.birth_day)}`).join(' · ')}</strong>
+          <span style="color:var(--muted);font-size:.78rem">upcoming birthday${upcoming.length === 1 ? '' : 's'}</span></div>
+        <button class="pec-btn sm ghost" data-bday-dismiss="pecBdayUpcomingHide">Dismiss</button>
+      </div>`;
+    if (missing.length) bdayBanners += `
+      <div class="pec-card" style="border-left:4px solid #1d4ed8;display:flex;align-items:center;gap:10px">
+        <div style="flex:1">🎂 <strong>${missing.length} ${missing.length === 1 ? 'person is' : 'people are'} missing a birthday</strong>
+          <span style="color:var(--muted);font-size:.78rem">${esc(missing.slice(0, 6).map(p => p.full_name).join(', '))}${missing.length > 6 ? '…' : ''}</span></div>
+        <button class="pec-btn sm primary" data-bday-open-people>Set them</button>
+        <button class="pec-btn sm ghost" data-bday-dismiss="pecBdayNagHide">Dismiss</button>
+      </div>`;
+  }
+
   root.innerHTML = `
+    ${bdayBanners}
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Customers</div><div class="pec-stat-val">${custCount.count ?? 0}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Active Jobs</div><div class="pec-stat-val">${active}</div></div>
@@ -7935,6 +7978,12 @@ async function renderDashboard() {
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
     tr.addEventListener('click', () => { state.view = 'jobs'; state.openJobId = tr.dataset.jobId; switchView('jobs'); })
   );
+  root.querySelectorAll('[data-bday-dismiss]').forEach(b => b.addEventListener('click', () => {
+    sessionStorage.setItem(b.dataset.bdayDismiss, '1');
+    renderDashboard();
+  }));
+  const bdayOpen = root.querySelector('[data-bday-open-people]');
+  if (bdayOpen) bdayOpen.addEventListener('click', () => { state.settingsTab = 'people'; switchView('settings'); });
 }
 
 // ============================================================
@@ -15672,13 +15721,24 @@ async function renderCommission() {
   const payoutMissing = poRes && poRes.error && /pec_commission_payouts/.test(poRes.error.message || '');
   // job_id -> { salesperson, customer_name }
   const arById = Object.fromEntries((arRes.data || []).map(r => [r.id, r]));
-  // commission_pct by lowercased salesperson name (the canonical rate source)
+  // commission_pct by lowercased salesperson name (the canonical rate source).
+  // pec_job_ar.salesperson is free text frozen at estimate time, so a renamed
+  // member's OLD names (name_aliases, captured by the people-model rename
+  // trigger) must resolve to the same rate or history silently loses its
+  // attribution. Current names are loaded first and always win; an alias never
+  // overrides another member's live name.
   const pctByName = {};
   for (const m of (teamRes.data || [])) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
+  for (const m of (teamRes.data || [])) for (const a of (m.name_aliases || [])) {
+    const k = String(a || '').toLowerCase();
+    if (k && !(k in pctByName)) pctByName[k] = Number(m.commission_pct || 0);
+  }
   // Sellers flagged exclude_from_commission (e.g. the owner) never appear in this
   // report: filtered out of the payment lines, the sold-jobs list, and the
   // salesperson dropdown. By the flag, not a hardcoded name, so Dylan sets it.
-  const excludedNames = new Set((teamRes.data || []).filter(m => m.exclude_from_commission).map(m => String(m.name || '').toLowerCase()));
+  // Aliases inherit the exclusion for the same rename-safety reason.
+  const excludedNames = new Set((teamRes.data || []).filter(m => m.exclude_from_commission)
+    .flatMap(m => [m.name, ...(m.name_aliases || [])]).map(n => String(n || '').toLowerCase()));
   const isExcluded = name => excludedNames.has(String(name || '').toLowerCase());
   // payment_id -> payout row ({ amount, paid_on }); empty if the table is missing.
   const payoutByPid = Object.fromEntries(((poRes && poRes.data) || []).map(r => [r.payment_id, r]));
@@ -16655,6 +16715,7 @@ function settingsTabBar(active) {
   return `<div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
     <strong style="margin-right:6px">Settings</strong>
     <button class="pec-btn ${active === 'general' ? 'primary' : 'ghost'} sm" data-settings-tab="general">General</button>
+    <button class="pec-btn ${active === 'people' ? 'primary' : 'ghost'} sm" data-settings-tab="people">People</button>
     <button class="pec-btn ${active === 'users' ? 'primary' : 'ghost'} sm" data-settings-tab="users">Users</button>
     <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
     <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
@@ -17637,12 +17698,370 @@ async function openBbProjectLinkModal(proj) {
   } });
 }
 
+// ============================================================
+// Settings > People (prompt 54): ONE person = one record across logins
+// (admin_users), sales reps (pec_sales_team_members), and crew members
+// (pec_prod_crew_members). public.people is the source of truth for IDENTITY
+// (name, contact, month/day birthday, active); role attributes (wage,
+// commission %, crew assignment) stay on the legacy tables and are edited
+// THERE from this screen, so their readers (bonus math, commission,
+// BusyBusy attribution) are untouched. Mirroring is server-side triggers;
+// this screen only ever writes ordinary rows.
+// ============================================================
+const PEC_MONTH_ABBR = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function pecBirthdayLabel(m, d) { return (m && d) ? `${PEC_MONTH_ABBR[m-1]} ${d}` : ''; }
+// Days from today (Phoenix) to the next occurrence of month/day. Feb 29 in a
+// non-leap year rolls to Mar 1 via Date.UTC's overflow, which is the behavior
+// we want (celebrate on the 1st, never skip a person).
+function pecDaysToBirthday(m, d, todayStr) {
+  if (!m || !d) return null;
+  const ty = Number(todayStr.slice(0, 4));
+  const mk = yy => new Date(Date.UTC(yy, m - 1, d)).toISOString().slice(0, 10);
+  let cand = mk(ty);
+  if (cand < todayStr) cand = mk(ty + 1);
+  return invDaysBetween(todayStr, cand);
+}
+// Dedupe suggestions (Part B). Pairs are SUGGESTIONS ONLY, resolved by a human
+// with Merge / Keep separate; nothing ever merges automatically. Pairs whose
+// people hold the SAME role are never suggested (two crew members with one
+// name are two real workers, not a duplicate). "Same first name where one has
+// no surname" exists for exactly the Preston shape from prompt 52.
+function pecPeopleMergeSuggestions(people, dismissedSet) {
+  const norm = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const out = [];
+  for (let i = 0; i < people.length; i++) for (let j = i + 1; j < people.length; j++) {
+    const a = people[i], b = people[j];
+    if ((a.admin_user_id && b.admin_user_id) || (a.sales_team_member_id && b.sales_team_member_id)
+      || (a.crew_member_id && b.crew_member_id)) continue;
+    const key = [a.id, b.id].sort().join(':');
+    if (dismissedSet.has(key)) continue;
+    const na = norm(a.full_name), nb = norm(b.full_name);
+    let why = null;
+    if (na && na === nb) why = 'identical name';
+    else if (a.email && b.email && norm(a.email) === norm(b.email)) why = 'identical email';
+    else if ((!na.includes(' ') || !nb.includes(' ')) && na.split(' ')[0] && na.split(' ')[0] === nb.split(' ')[0]) {
+      why = 'same first name, one record has no surname';
+    }
+    if (why) out.push({ a, b, key, why });
+  }
+  return out;
+}
+function pecPersonRoleChips(p) {
+  const chips = [];
+  if (p.admin_user_id) chips.push('<span class="pec-badge" style="background:#1d4ed8;color:#fff">Login</span>');
+  if (p.sales_team_member_id) chips.push('<span class="pec-badge" style="background:#047857;color:#fff">Sales</span>');
+  if (p.crew_member_id) chips.push('<span class="pec-badge" style="background:#b45309;color:#fff">Crew</span>');
+  return chips.join(' ') || '<span style="color:var(--muted)">—</span>';
+}
+async function renderSettingsPeople() {
+  const root = $('pecViewRoot');
+  if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
+  const [peopleRes, crewsRes, salesRes, crewMembersRes, adminUsersRes, settingsRes] = await withFreshSession(() => Promise.all([
+    supabase.from('people').select('*').order('full_name'),
+    supabase.from('pec_prod_crews').select('*').order('name'),
+    supabase.from('pec_sales_team_members').select('*'),
+    supabase.from('pec_prod_crew_members').select('*'),
+    supabase.from('admin_users').select('id,name,email,role,auth_user_id').order('name'),
+    supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days']),
+  ]), { label: 'renderSettingsPeople' });
+  if (peopleRes.error) {
+    const missing = /relation .*people|people.*does not exist|schema cache/i.test(peopleRes.error.message || '');
+    root.innerHTML = settingsTabBar('people') + `<div class="pec-card"><div class="pec-empty">${missing
+      ? 'Run the 2026-07-28_people_model.sql migration to enable the People directory. Until then, Sales Team, Crews, Team Members (General tab) and Users keep working as before.'
+      : esc(peopleRes.error.message)}</div></div>`;
+    wireSettingsTabs(root);
+    return;
+  }
+  const people = peopleRes.data || [];
+  state.people = people;
+  const crews = crewsRes.data || [];
+  const salesById = Object.fromEntries((salesRes.data || []).map(s => [s.id, s]));
+  const crewMemberById = Object.fromEntries((crewMembersRes.data || []).map(m => [m.id, m]));
+  const adminById = Object.fromEntries((adminUsersRes.data || []).map(u => [u.id, u]));
+  state.peopleAdminUsers = adminUsersRes.data || [];
+  const settingsMap = Object.fromEntries((settingsRes.data || []).map(r => [r.key, r.value]));
+  let dismissed;
+  try { dismissed = new Set(JSON.parse(settingsMap.people_merge_dismissed || '[]')); } catch (_) { dismissed = new Set(); }
+  const mirrorOff = String(settingsMap.people_mirror_enabled || 'true') === 'false';
+  const suggestions = pecPeopleMergeSuggestions(people, dismissed);
+  const noBirthday = people.filter(p => p.active !== false && (p.birth_month == null || p.birth_day == null));
+
+  root.innerHTML = `
+    ${settingsTabBar('people')}
+    ${mirrorOff ? `<div class="pec-card" style="border-left:4px solid #dc2626"><strong>People mirror is OFF</strong> <span style="color:var(--muted);font-size:.8rem">(people_mirror_enabled = false). Edits here no longer write through to Users / Sales Team / Team Members; use those legacy cards until the mirror is back on.</span></div>` : ''}
+    ${suggestions.length ? `
+    <div class="pec-card" style="border-left:4px solid #b45309">
+      <h3 style="margin:0 0 4px">Possible duplicates <span style="color:var(--muted);font-weight:400;font-size:.8rem">${suggestions.length} pair${suggestions.length === 1 ? '' : 's'} to review</span></h3>
+      <div style="color:var(--muted);font-size:.72rem;margin-bottom:10px">One-time reconciliation: these records LOOK like the same person appearing in more than one of the old tables. Nothing merges on its own. Merge combines the roles onto one person; Keep separate hides the pair for good. When unsure, Keep separate.</div>
+      <div class="pec-table-wrap"><table class="pec-table">
+        <thead><tr><th>Keep</th><th>Absorb</th><th>Why suggested</th><th style="width:220px"></th></tr></thead>
+        <tbody>
+          ${suggestions.map(sug => {
+            // Deterministic direction: keep the record with a login, else the
+            // sales one, else the first. Roles union onto the kept person.
+            const keepA = sug.a.admin_user_id ? true : sug.b.admin_user_id ? false : sug.a.sales_team_member_id ? true : !sug.b.sales_team_member_id;
+            const keep = keepA ? sug.a : sug.b, rem = keepA ? sug.b : sug.a;
+            return `<tr data-merge-key="${esc(sug.key)}" data-merge-keep="${esc(keep.id)}" data-merge-remove="${esc(rem.id)}">
+              <td><strong>${esc(keep.full_name)}</strong><br>${pecPersonRoleChips(keep)}</td>
+              <td>${esc(rem.full_name)}<br>${pecPersonRoleChips(rem)}</td>
+              <td style="font-size:.78rem;color:var(--muted)">${esc(sug.why)}</td>
+              <td style="white-space:nowrap">
+                <button class="pec-btn sm primary" data-merge-do>Merge</button>
+                <button class="pec-btn sm ghost" data-merge-dismiss>Keep separate</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>` : ''}
+    ${noBirthday.length ? `
+    <div class="pec-card" style="border-left:4px solid #1d4ed8">
+      <strong>🎂 ${noBirthday.length} ${noBirthday.length === 1 ? 'person is' : 'people are'} missing a birthday:</strong>
+      <span style="font-size:.85rem">${noBirthday.map(p => esc(p.full_name)).join(', ')}</span>
+      <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Month and day only, no year. Click Edit on a row to set it. Reminders (dashboard banner + bell for everyone) fire ${esc(settingsMap.birthday_reminder_lead_days || '7')} days out.</div>
+    </div>` : ''}
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <div style="flex:1">
+          <h3 style="margin:0">People</h3>
+          <div style="color:var(--muted);font-size:.72rem;margin-top:4px">Everyone once, whatever mix of roles they hold. Edits here write through to Users, Sales Team, and Team Members automatically. Wage, crew, and commission % are edited inline below and live on the same records the Bonus Report, schedule, and Commission view read.</div>
+        </div>
+        <button class="pec-btn primary sm" id="pecPersonAddBtn">+ Add person</button>
+      </div>
+      <div class="pec-table-wrap"><table class="pec-table">
+        <thead><tr><th>Name</th><th>Roles</th><th>Crew</th><th style="width:120px">Wage ($/hr)</th><th style="width:110px">Commission %</th><th>Login</th><th>Birthday</th><th style="width:60px">Active</th><th></th></tr></thead>
+        <tbody>
+          ${people.map(p => {
+            const cm = p.crew_member_id ? crewMemberById[p.crew_member_id] : null;
+            const sm = p.sales_team_member_id ? salesById[p.sales_team_member_id] : null;
+            const au = p.admin_user_id ? adminById[p.admin_user_id] : null;
+            return `<tr data-person-id="${esc(p.id)}">
+              <td><strong>${esc(p.full_name)}</strong>${p.display_name ? ` <span style="color:var(--muted);font-size:.75rem">“${esc(p.display_name)}”</span>` : ''}</td>
+              <td>${pecPersonRoleChips(p)}</td>
+              <td>${cm ? `<select data-person-crew style="min-width:110px"><option value="">No crew</option>${crews.map(c => `<option value="${esc(c.id)}" ${cm.crew_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '<span style="color:var(--muted)">—</span>'}</td>
+              <td>${cm ? `<input class="prod-num" type="number" min="0" step="0.01" data-person-wage value="${esc(cm.hourly_wage ?? '')}" placeholder="default rate" style="width:100px">` : '<span style="color:var(--muted)">—</span>'}</td>
+              <td>${sm ? `<input class="prod-num" type="number" min="0" max="100" step="0.5" data-person-pct value="${esc(sm.commission_pct ?? 0)}" style="width:80px">${sm.exclude_from_commission ? ' <span title="Excluded from the Commission report" style="font-size:.7rem;color:var(--muted)">excl.</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
+              <td style="font-size:.78rem">${au ? esc(au.email || au.name || 'linked') : '<span style="color:var(--muted)">—</span>'}</td>
+              <td>${pecBirthdayLabel(p.birth_month, p.birth_day) || '<span style="color:#b45309" title="No birthday set. Edit to add one.">Not set</span>'}</td>
+              <td><input type="checkbox" data-person-active ${p.active !== false ? 'checked' : ''} style="width:auto"></td>
+              <td><button class="pec-btn sm ghost" data-person-edit>Edit</button></td>
+            </tr>`;
+          }).join('') || '<tr class="nohover"><td colspan="9" class="pec-empty">No people yet. The migration backfill creates them from Users, Sales Team, and Team Members.</td></tr>'}
+        </tbody>
+      </table></div>
+      <p style="color:var(--muted);font-size:.7rem;margin:10px 0 0">The old cards (General tab: Sales Team, Crews, Team Members; the Users tab) keep working and stay in sync; they are the fallback if anything here misbehaves. Crews themselves are still managed on the General tab; here you assign people to them.</p>
+    </div>
+  `;
+  wireSettingsTabs(root);
+  $('pecPersonAddBtn').addEventListener('click', () => openPersonModal(null));
+  root.querySelectorAll('[data-person-edit]').forEach(b => b.addEventListener('click', () => {
+    openPersonModal(b.closest('tr[data-person-id]').dataset.personId);
+  }));
+  // Inline role-attribute edits write the LEGACY tables directly (idempotent
+  // updates -> withFreshWriteRetry), exactly like the legacy cards do; the
+  // mirror has nothing to do because these fields live only there.
+  const personOf = el => people.find(p => p.id === el.closest('tr[data-person-id]')?.dataset.personId);
+  root.querySelectorAll('[data-person-wage]').forEach(inp => inp.addEventListener('change', async () => {
+    const p = personOf(inp); if (!p?.crew_member_id) return;
+    const wage = inp.value === '' ? null : Number(inp.value);
+    if (wage != null && (!Number.isFinite(wage) || wage < 0)) { showToast('Wage must be 0 or more (or blank for the default rate).'); return; }
+    try {
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_crew_members').update({ hourly_wage: wage }).eq('id', p.crew_member_id), { label: 'person-wage' });
+      if (error) throw error;
+      inp.classList.remove('cost-save-failed'); inp.removeAttribute('title');
+    } catch (err) {
+      inp.classList.add('cost-save-failed'); inp.title = 'NOT SAVED: ' + (err.message || err);
+      showToast('Could not save wage: ' + (err.message || err), { ttl: 6000 });
+    }
+  }));
+  root.querySelectorAll('[data-person-pct]').forEach(inp => inp.addEventListener('change', async () => {
+    const p = personOf(inp); if (!p?.sales_team_member_id) return;
+    const pct = Number(inp.value);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) { showToast('Commission % must be between 0 and 100.'); return; }
+    try {
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_sales_team_members').update({ commission_pct: pct }).eq('id', p.sales_team_member_id), { label: 'person-pct' });
+      if (error) throw error;
+      inp.classList.remove('cost-save-failed'); inp.removeAttribute('title');
+    } catch (err) {
+      inp.classList.add('cost-save-failed'); inp.title = 'NOT SAVED: ' + (err.message || err);
+      showToast('Could not save commission %: ' + (err.message || err), { ttl: 6000 });
+    }
+  }));
+  root.querySelectorAll('[data-person-crew]').forEach(sel => sel.addEventListener('change', async () => {
+    const p = personOf(sel); if (!p?.crew_member_id) return;
+    const crewId = sel.value || null;
+    try {
+      const { error } = await withFreshWriteRetry(() => supabase.from('pec_prod_crew_members').update({ crew_id: crewId }).eq('id', p.crew_member_id), { label: 'person-crew' });
+      if (error) throw error;
+    } catch (err) {
+      showToast('Could not save crew assignment: ' + (err.message || err), { ttl: 6000 });
+      renderSettings();
+    }
+  }));
+  // Person-level active: writes people.active; the mirror carries it to the
+  // sales and crew rows. Login disablement stays in Settings > Users.
+  root.querySelectorAll('[data-person-active]').forEach(inp => inp.addEventListener('change', async () => {
+    const p = personOf(inp); if (!p) return;
+    const active = inp.checked;
+    try {
+      const { error } = await withFreshWriteRetry(() => supabase.from('people').update({ active }).eq('id', p.id), { label: 'person-active' });
+      if (error) throw error;
+      p.active = active;
+    } catch (err) {
+      inp.checked = !active;
+      showToast('Could not save active state: ' + (err.message || err), { ttl: 6000 });
+    }
+  }));
+  // Dedupe review actions.
+  root.querySelectorAll('[data-merge-do]').forEach(b => b.addEventListener('click', async () => {
+    const tr = b.closest('tr'); const keepId = tr.dataset.mergeKeep, removeId = tr.dataset.mergeRemove;
+    const keep = people.find(p => p.id === keepId), rem = people.find(p => p.id === removeId);
+    if (!confirm(`Merge "${rem?.full_name}" into "${keep?.full_name}"? The kept record takes over every role; the duplicate disappears from this list. The old tables are not touched.`)) return;
+    b.disabled = true; b.textContent = 'Merging…';
+    try {
+      const { error } = await withFreshWrite(() => supabase.rpc('pec_people_merge', { p_keep: keepId, p_remove: removeId }), { label: 'people-merge' });
+      if (error) throw error;
+      showToast('Merged.');
+      renderSettings();
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Merge';
+      showToast('Merge failed: ' + (err.message || err), { ttl: 6000 });
+    }
+  }));
+  root.querySelectorAll('[data-merge-dismiss]').forEach(b => b.addEventListener('click', async () => {
+    const key = b.closest('tr').dataset.mergeKey;
+    dismissed.add(key);
+    try {
+      await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'people_merge_dismissed', value: JSON.stringify([...dismissed]) }, { onConflict: 'key' }), { label: 'people-merge-dismiss' });
+    } catch (_) { /* worst case the pair is suggested again next render */ }
+    renderSettings();
+  }));
+}
+
+// Add / edit one person. Identity + birthday live on people; role GRANTS go
+// through the pec_people_grant_role RPC (which creates the legacy row without
+// the adopt trigger spawning a duplicate person); the login link sets
+// people.admin_user_id. Birthday is REQUIRED on new adds (locked decision 5)
+// but not retroactively blocking on edits (that is what the nag is for).
+function openPersonModal(personId) {
+  const existing = personId ? (state.people || []).find(p => p.id === personId) : null;
+  const p = existing || { full_name: '', display_name: '', email: '', phone: '', active: true, birth_month: null, birth_day: null };
+  const claimedAdminIds = new Set((state.people || []).filter(x => x.admin_user_id && x.id !== personId).map(x => x.admin_user_id));
+  const loginOptions = (state.peopleAdminUsers || []).filter(u => !claimedAdminIds.has(u.id));
+  openModal(`
+    <h3>${existing ? 'Edit person' : 'New person'}</h3>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Full name</label><input id="personName" value="${esc(p.full_name)}" placeholder="First Last"></div>
+      <div class="pec-field"><label>Preferred name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input id="personDisplay" value="${esc(p.display_name || '')}"></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Email <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input id="personEmail" type="email" value="${esc(p.email || '')}"></div>
+      <div class="pec-field"><label>Phone <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input id="personPhone" value="${esc(p.phone || '')}"></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label>Birthday month${existing ? '' : ' *'}</label>
+        <select id="personBMonth"><option value="">—</option>${PEC_MONTH_ABBR.map((m, i) => `<option value="${i + 1}" ${p.birth_month === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>
+      </div>
+      <div class="pec-field"><label>Birthday day${existing ? '' : ' *'} <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">no year, ever</span></label>
+        <input id="personBDay" type="number" min="1" max="31" step="1" value="${esc(p.birth_day ?? '')}">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;margin:2px 0 10px">
+      <input type="checkbox" id="personActive" ${p.active !== false ? 'checked' : ''} style="width:auto"> Active
+    </label>
+    <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;padding-top:8px;border-top:1px solid var(--rd-line,var(--border))">Roles</div>
+    ${existing ? `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        ${p.sales_team_member_id ? '<span class="pec-badge" style="background:#047857;color:#fff">Sales rep</span>' : '<button type="button" class="pec-btn sm ghost" id="personGrantSales">+ Make sales rep</button>'}
+        ${p.crew_member_id ? '<span class="pec-badge" style="background:#b45309;color:#fff">Crew member</span>' : '<button type="button" class="pec-btn sm ghost" id="personGrantCrew">+ Make crew member</button>'}
+      </div>` : `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:.85rem">
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="personRoleSales" style="width:auto"> Sales rep</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="personRoleCrew" style="width:auto"> Crew member</label>
+      </div>`}
+    <div class="pec-field"><label>Login <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">link to a CRM sign-in; create new logins in Settings &gt; Users</span></label>
+      <select id="personLogin">
+        <option value="">No login</option>
+        ${loginOptions.map(u => `<option value="${esc(u.id)}" ${p.admin_user_id === u.id ? 'selected' : ''}>${esc(u.name || u.email)}${u.email && u.name ? ` (${esc(u.email)})` : ''}</option>`).join('')}
+      </select>
+    </div>
+    ${existing && p.sales_team_member_id ? '<div style="color:var(--muted);font-size:.7rem;margin:4px 0 8px">Renaming is safe for commission: the old name is kept as an alias, so past jobs stay attributed to this person.</div>' : ''}
+    <div class="pec-modal-actions">
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn primary" id="personSave">${existing ? 'Save' : 'Add person'}</button>
+    </div>
+    <div class="prod-msg-err" id="personErr"></div>
+  `, { onMount(modal) {
+    const err = modal.querySelector('#personErr');
+    const grant = async (role) => {
+      err.textContent = '';
+      try {
+        const { error } = await withFreshWrite(() => supabase.rpc('pec_people_grant_role', { p_person_id: personId, p_role: role }), { label: 'person-grant-' + role });
+        if (error) throw error;
+        closeModal(); renderSettings();
+      } catch (e) { err.textContent = 'Could not add role: ' + (e.message || e); }
+    };
+    modal.querySelector('#personGrantSales')?.addEventListener('click', () => grant('sales'));
+    modal.querySelector('#personGrantCrew')?.addEventListener('click', () => grant('crew'));
+    modal.querySelector('#personSave').addEventListener('click', async () => {
+      err.textContent = '';
+      const full_name = modal.querySelector('#personName').value.trim();
+      const bMonth = modal.querySelector('#personBMonth').value ? Number(modal.querySelector('#personBMonth').value) : null;
+      const bDayRaw = modal.querySelector('#personBDay').value;
+      const bDay = bDayRaw === '' ? null : Number(bDayRaw);
+      if (!full_name) return err.textContent = 'Full name is required.';
+      if ((bMonth == null) !== (bDay == null)) return err.textContent = 'Birthday needs both a month and a day (or neither).';
+      if (bDay != null && (!Number.isInteger(bDay) || bDay < 1 || bDay > 31)) return err.textContent = 'Birthday day must be 1 to 31.';
+      if (!existing && bMonth == null) return err.textContent = 'Birthday (month and day) is required for new people.';
+      const body = {
+        full_name,
+        display_name: modal.querySelector('#personDisplay').value.trim() || null,
+        email: modal.querySelector('#personEmail').value.trim() || null,
+        phone: modal.querySelector('#personPhone').value.trim() || null,
+        birth_month: bMonth, birth_day: bDay,
+        active: modal.querySelector('#personActive').checked,
+        admin_user_id: modal.querySelector('#personLogin').value || null,
+      };
+      const saveBtn = modal.querySelector('#personSave');
+      saveBtn.disabled = true;
+      try {
+        if (existing) {
+          const { error } = await withFreshWrite(() => supabase.from('people').update(body).eq('id', personId), { label: 'person-save' });
+          if (error) throw error;
+          if (existing.sales_team_member_id && existing.full_name !== full_name) {
+            showToast('Renamed. The old name stays as a commission alias, so history keeps its attribution.', { ttl: 6000 });
+          }
+        } else {
+          // Non-idempotent insert: no auto-retry (a retry could double-add).
+          const ins = await withFreshWrite(() => supabase.from('people').insert(body).select('id').single(), { label: 'person-add' });
+          if (ins.error) throw ins.error;
+          const newId = ins.data.id;
+          if (modal.querySelector('#personRoleSales')?.checked) {
+            const g = await withFreshWrite(() => supabase.rpc('pec_people_grant_role', { p_person_id: newId, p_role: 'sales' }), { label: 'person-grant-sales' });
+            if (g.error) throw g.error;
+          }
+          if (modal.querySelector('#personRoleCrew')?.checked) {
+            const g = await withFreshWrite(() => supabase.rpc('pec_people_grant_role', { p_person_id: newId, p_role: 'crew' }), { label: 'person-grant-crew' });
+            if (g.error) throw g.error;
+          }
+        }
+      } catch (e) {
+        saveBtn.disabled = false;
+        err.textContent = 'Save failed: ' + (e.message || e);
+        return;
+      }
+      closeModal(); renderSettings();
+    });
+  }});
+}
+
 async function renderSettings() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
   // Clear any email-log auto-refresh timer from a previous render (avoids leaks
   // when leaving the Email tab or the Settings view).
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
+  if (state.settingsTab === 'people') return renderSettingsPeople();
   if (state.settingsTab === 'users') return renderSettingsUsers();
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
@@ -17822,6 +18241,22 @@ async function renderSettings() {
         <div class="pec-field"><label>Touch-ups: show Done for (days)</label><input name="touchup_panel_show_done_days" type="number" min="1" step="1" value="${esc(map.touchup_panel_show_done_days || '30')}"><span style="color:var(--muted);font-size:.68rem">How far back the panel's Done section reaches. Older closed touch-ups stay in the data and the callback report.</span></div>
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Catalog · Data sheets</div>
         <div class="pec-field"><label>Data sheet max upload (MB)</label><input name="datasheet_max_upload_mb" type="number" min="1" step="1" value="${esc(map.datasheet_max_upload_mb || '10')}"><span style="color:var(--muted);font-size:.68rem">Largest PDF the catalog's TDS / MSDS upload accepts. The storage bucket also enforces a hard 10 MB server-side, so raising this above 10 needs a bucket change too.</span></div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">People · Birthdays</div>
+        <div class="pec-field"><label>Birthday reminders</label>
+          <select name="birthday_reminder_enabled">
+            <option value="true" ${(map.birthday_reminder_enabled || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.birthday_reminder_enabled || 'true') === 'false' ? 'selected' : ''}>Off</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">Admin dashboard banner plus a bell notification for every user. In-app only, nothing is emailed or texted.</span>
+        </div>
+        <div class="pec-field"><label>Birthday reminder lead (days)</label><input name="birthday_reminder_lead_days" type="number" min="0" step="1" value="${esc(map.birthday_reminder_lead_days || '7')}"><span style="color:var(--muted);font-size:.68rem">How many days before the birthday the reminder fires.</span></div>
+        <div class="pec-field"><label>People mirror</label>
+          <select name="people_mirror_enabled">
+            <option value="true" ${(map.people_mirror_enabled || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.people_mirror_enabled || 'true') === 'false' ? 'selected' : ''}>Off (rollback)</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">Keeps Users, Sales Team, and Team Members in sync with the People directory. Turn off ONLY if People edits are misbehaving; the legacy cards then work standalone exactly as before the People build.</span>
+        </div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>
