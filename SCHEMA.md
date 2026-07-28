@@ -4,9 +4,11 @@ Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via 
 Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-51 migration: pec_prod_jobs (ten touchup_* columns + idx_pec_prod_jobs_touchup_queue) and the settings key list. Only those changed; every other section is unchanged from the refreshes below.
 Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrations: pec_prod_job_costing (office_notes/_by/_at), pec_prod_job_bonuses (review_status/reviewed_by/reviewed_at/review_note), pec_bonus_payouts (reversed_at/reversed_by/reversal_reason). Only those three tables changed; every other section is unchanged from the 2026-07-21 dump.
 
+Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-52 migration: pec_prod_busybusy_time_entries was DROPPED and RECREATED with a new shape, and pec_prod_busybusy_imports / pec_prod_busybusy_projects / pec_prod_busybusy_employees are new, plus four busybusy_* settings keys and the pec_busybusy_import() function. Only those sections changed.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-68 tables, all in `public`, all with RLS enabled.
+79 tables documented, 80 live, all in `public`, all with RLS enabled. The one undocumented table is `pec_invoice_installments` (live since 2026-07-22_invoice_installments.sql; its section has not been written yet).
 
 ## Key relationships
 
@@ -963,28 +965,105 @@ RLS: enabled · rows: 43
 PK: id
 FK: basecoat_product_id → pec_prod_products.id; flake_product_id → pec_prod_products.id; job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id; topcoat_product_id → pec_prod_products.id
 
+### pec_prod_busybusy_employees
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| busybusy_name | text | no |  |
+| crew_member_id | uuid | yes |  |
+| ignored | boolean | no | false |
+| first_seen_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id · UNIQUE: busybusy_name
+FK: crew_member_id → pec_prod_crew_members.id
+Policy: bb_employees_admin_all (ALL, is_admin_staff() both USING and WITH CHECK).
+The employee mapping screen's table (Settings > BusyBusy). The payroll export's `EmployeeId` column comes back EMPTY on every row, so `FirstName + ' ' + LastName` is the only identity BusyBusy gives us and this table is how a name becomes a crew member. `ignored = true` means deliberately not production (Aron Bronson is a salesperson). A name with no row, or a row with a null `crew_member_id` and `ignored = false`, is reported as unmapped on every import and its hours never reach costing. No fuzzy matching exists anywhere by design: `pec_prod_crew_members` contains "Preston" with no surname, which would break any auto-match heuristic.
+
+### pec_prod_busybusy_imports
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| window_start | date | no |  |
+| window_end | date | no |  |
+| imported_by | uuid | yes |  |
+| imported_at | timestamptz | no | now() |
+| row_count | integer | yes |  |
+| total_hours | numeric | yes |  |
+| ot_hours | numeric | yes |  |
+| overhead_hours | numeric | yes |  |
+| employees_seen | integer | yes |  |
+| unmapped_employees | text[] | yes |  |
+| unlinked_projects | text[] | yes |  |
+| anomaly_count | integer | yes |  |
+| notes | text | yes |  |
+
+PK: id
+Policy: bb_imports_admin_read (SELECT, is_admin_staff()). No write policy: rows are created only inside `pec_busybusy_import()`.
+One row per committed pull, and the unit of replacement: `pec_prod_busybusy_time_entries.import_id` cascade-deletes with it. Every derivable summary column is computed inside the function from the rows actually stored, so the audit row cannot disagree with the data.
+
+### pec_prod_busybusy_projects
+RLS: enabled · rows: 1
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| project_number | text | yes |  |
+| project_name | text | no |  |
+| job_id | uuid | yes |  |
+| is_overhead | boolean | no | false |
+| linked_by | uuid | yes |  |
+| linked_at | timestamptz | yes |  |
+| created_at | timestamptz | no | now() |
+
+PK: id
+FK: job_id → pec_prod_jobs.id
+UNIQUE (partial): uq_pec_bb_projects_number on (project_number) WHERE project_number IS NOT NULL AND project_number <> ''; uq_pec_bb_projects_name on (lower(project_name)) WHERE project_number IS NULL OR project_number = ''. Two schemes that cannot collide: numbered projects key on the number, number-less ones (Shop) on the lowercased name.
+Policy: bb_projects_admin_all (ALL, is_admin_staff() both USING and WITH CHECK).
+The remembered BusyBusy-project-to-job link. Rule is NAME ONCE, THEN NUMBER: on first sight the import auto-links by exact normalized (lowercased, whitespace-collapsed) `pec_prod_jobs.customer_name` and persists the 7-digit `ProjectNumber`; thereafter the number is the key, so a rename in either system never breaks an established link. BusyBusy project names ARE customer names. Seeded with one row: project_name 'Shop', is_overhead true, so the first import classifies shop time as overhead with no human step. `is_overhead` rows never carry a `job_id`.
+NOTE: `pec_prod_jobs.busybusy_project_id` (added 2026-06-13 for the GraphQL API's project GUIDs) is DEAD and superseded by this table. It is left in place so migration replays still work. Do not read it.
+
 ### pec_prod_busybusy_time_entries
 RLS: enabled · rows: 0
 
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
-| busybusy_entry_id | text | no |  |
-| busybusy_member_id | text | yes |  |
+| import_id | uuid | no |  |
+| work_date | date | no |  |
+| employee_name | text | no |  |
 | crew_member_id | uuid | yes |  |
-| busybusy_project_id | text | yes |  |
+| busybusy_project_number | text | yes |  |
+| busybusy_project_name | text | yes |  |
 | job_id | uuid | yes |  |
-| work_date | date | yes |  |
-| hours | numeric | no | 0 |
+| is_overhead | boolean | no | false |
 | started_at | timestamptz | yes |  |
 | ended_at | timestamptz | yes |  |
-| deleted_at | timestamptz | yes |  |
-| updated_at | timestamptz | no | now() |
+| hours | numeric(10,4) | no | 0 |
+| wage_type | text | no |  |
+| break_hours | numeric(10,4) | no | 0 |
+| description | text | yes |  |
+| source_export_id | text | yes |  |
 | created_at | timestamptz | no | now() |
-| ot_hours | numeric | no | 0 |
 
 PK: id
-FK: crew_member_id → pec_prod_crew_members.id; job_id → pec_prod_jobs.id
+FK: import_id → pec_prod_busybusy_imports.id (ON DELETE CASCADE); crew_member_id → pec_prod_crew_members.id (SET NULL); job_id → pec_prod_jobs.id (SET NULL)
+Indexes: idx_pec_bb_entries_work_date, idx_pec_bb_entries_job, idx_pec_bb_entries_crew_member, idx_pec_bb_entries_import
+Policies: bb_entries_admin_read (SELECT, is_admin_staff()); bb_entries_admin_update (UPDATE, is_admin_staff() both clauses, so the mapping and link screens can re-resolve crew_member_id / job_id / is_overhead in place). NO insert or delete policy from the browser: only `pec_busybusy_import()` writes rows.
+
+REPLACED 2026-07-27 (prompt 52). The prior shape (unique `busybusy_entry_id`, `busybusy_member_id`, `busybusy_project_id`, `deleted_at`, `updated_at`, `ot_hours`, upsert-and-soft-delete) is GONE. It was built for the GraphQL sync that never ran, held zero rows, and its design is the exact pattern the Payroll Export API forbids.
+
+Four things to know before writing any query against this table:
+1. **Snapshot, not sync.** Storage is DELETE-THEN-INSERT BY DATE RANGE inside `pec_busybusy_import()`. `source_export_id` is the export's calculated Id: deterministic while data is unchanged, but any punch edit regenerates it and one row can split into three. It is for logging and within-run change detection ONLY. Never upsert, join, or dedup on it.
+2. **OT lives in `wage_type`, not a column.** Values are 'REG' and 'OT1' verbatim. `hours` is that row's own hours. **Overtime hours for a job or member = sum(hours) WHERE wage_type = 'OT1'**, and total hours = sum(hours) over all rows. This differs from the old `hours` TOTAL plus `ot_hours` convention on `pec_prod_job_manual_labor`, which still applies there.
+3. **Split REG/OT1 pairs share a punch.** When a segment crosses the employee's 40th hour of the week, BusyBusy emits two rows with the SAME `started_at`/`ended_at` and project, one REG and one OT1, whose hours divide the span. Each hour of wall time appears in exactly one row so summing never double counts, but there is deliberately NO uniqueness constraint on punch shape: any dedup that ignores `wage_type` silently drops half a pair.
+4. **Not every row is costable.** Rows with `is_overhead = true` (Shop) or a null `crew_member_id` (unmapped or ignored person) are stored and reported but MUST be excluded from job labor cost and bonus math. `started_at`/`ended_at` are built with an explicit -07:00 offset (Arizona, no DST); `work_date` comes from the export's own Date column and is authoritative.
+
+Function: `public.pec_busybusy_import(p_window_start date, p_window_end date, p_rows jsonb, p_user uuid, p_summary jsonb DEFAULT '{}')` returns the new import id. SECURITY DEFINER, `search_path` pinned to public, gated on `is_admin_staff()`, EXECUTE granted to `authenticated` only (revoked from public and anon). Does insert-audit-row, delete-window, insert-rows in one atomic body so a mid-import failure can never empty a payroll window.
 
 ### pec_prod_color_pairings
 RLS: enabled · rows: 20
@@ -1617,7 +1696,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 21
+RLS: enabled · rows: 25
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1626,6 +1705,7 @@ RLS: enabled · rows: 21
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-27 (prompt 52): busybusy_import_window_weeks ('2', how many full weeks back the Settings > BusyBusy window picker defaults to), busybusy_anomaly_hours_threshold ('16', a single time-entry row longer than this is flagged for review, never dropped), busybusy_overhead_project_names ('Shop', comma-separated BusyBusy project names treated as overhead and never charged to a job), busybusy_export_base_url ('https://export.busybusy.io/', the Payroll Export endpoint).
 Keys added 2026-07-27 (prompt 51): touchup_aging_days ('14', days open before a Touch-ups panel row renders red), touchup_default_duration_hours ('2', prefills Estimated hours when scheduling a touch-up), touchup_panel_show_done_days ('30', how far back the panel's Done section reaches).
 Keys added 2026-07-25 (prompt 48): migration_drift_check_enabled ('true', master switch for the daily drift check; the on-demand Diagnostics run always works), migration_drift_baseline ('2026-07-01', only migrations dated on/after this are probed), sync_stuck_threshold_attempts ('2', failed attempts before the estimator shows the red not-syncing state), sync_stuck_escalation_enabled ('true', whether a stuck save also raises an admin bell).
 

@@ -4,6 +4,21 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Claude Code: prompt-52 migration verified live, SCHEMA.md refresh committed
+By: Claude Code
+
+Changed: committed Cowork's SCHEMA.md refresh (done outside a repo commit) after verifying it against the live schema, and fixed its stale header count. No code, no schema changes from this session.
+
+VERIFIED LIVE via MCP list_tables on project zdfpzmmrgotynrwkeakd: all four busybusy tables exist with RLS enabled (pec_prod_busybusy_imports 0 rows, pec_prod_busybusy_time_entries 0 rows, pec_prod_busybusy_employees 0 rows, and pec_prod_busybusy_projects exactly 1 row, which is the seeded Shop overhead row). So 2026-07-27_busybusy_export.sql is applied and its seed ran. The settings table went from 21 to 41 rows across recent migrations, consistent with the four busybusy_* keys landing among them.
+
+THE COUNT LINE: Cowork's refresh added the four busybusy sections and the refresh note but left the 2026-07-21 header reading "68 tables". Actual state, reconciled table-by-table: 79 documented sections, 80 live tables, and the ONE gap is pec_invoice_installments (live since 2026-07-22_invoice_installments.sql, never given a SCHEMA.md section). Nothing is documented that does not exist. The header now states 79-of-80 and names the gap.
+
+Why: Dylan asked for the Cowork refresh to be checked (his grep expected "79 documented, 80 live") and committed. The check failed as written, which is what surfaced the stale header.
+Files touched: SCHEMA.md (count line fix, on top of Cowork's refresh), PROJECT-LOG.md (this entry).
+Next steps: write the pec_invoice_installments section into SCHEMA.md some session (small, one table). First real import still waits on Dylan's two items: fix Aron Bronson's 47.78-hour punch in BusyBusy (then Ignore him on the mapping screen), and link or create the Matt Scharrer job (#2227346, 27.25 hours).
+
+---
+
 ## [2026-07-27 MST] Claude Code: correction to the prompt-52 build entry (token already set; entry order)
 By: Claude Code
 
