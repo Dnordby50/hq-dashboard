@@ -25395,7 +25395,7 @@ async function renderNextDay() {
     const tuDesc = (j.is_callback && j.notes) ? `<div style="font-size:.7rem;color:var(--rd-muted,#6b7280)">${esc(String(j.notes).split('\n')[0])}</div>` : '';
     const splitBtn = canSplit ? `<button type="button" data-split-day="${esc(d.id)}" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">Split to 2nd crew</button>` : '';
     const removeBtn = (shared && isSecondRow(d)) ? `<button type="button" data-unsplit-day="${esc(d.id)}" title="Remove this second team; the other team's card stays" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">✕ Remove 2nd team</button>` : '';
-    return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}"
+    return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}" data-card-job="${esc(d.job_id)}"
         style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
       <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}${tuBadge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
@@ -25611,17 +25611,35 @@ async function renderNextDay() {
   });
 
   // Clicking a job NAME opens the same read-only quick-look the Pending panel
-  // uses. data-open-pcard carries the pec_prod_jobs id (what openPendingJobCard
+  // uses. data-open-pcard carries the pec_prod_jobs id (what openJobQuickLook
   // looks up in state.prodJobs), NOT this row's schedule-day id. stopPropagation
   // keeps a click from reaching the card's drag/drop machinery; a DRAG that
   // starts on the name still moves the whole card (dragstart binds on
   // .nextday-card above and a drag never fires click). Task cards are not jobs
   // and carry no data-open-pcard, so they stay unclickable on purpose.
   root.querySelectorAll('[data-open-pcard]').forEach(el => {
-    const open = () => openPendingJobCard(el.dataset.openPcard);
+    const open = () => openJobQuickLook(el.dataset.openPcard);
     el.addEventListener('click', (e) => { e.stopPropagation(); open(); });
     el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); open(); }
+    });
+  });
+
+  // Prompt 57 Part E: the WHOLE job card opens the quick look, not just the
+  // name — but drag-to-move must survive. A completed HTML5 drag suppresses
+  // the click on its own; the dragstart flag plus the pointer-distance check
+  // guard the aborted-drag edge (press, wiggle, release) so a drag attempt
+  // never pops the modal. Split/remove buttons keep their own actions; task
+  // cards carry no data-card-job and stay unclickable on purpose.
+  root.querySelectorAll('.nextday-card[data-card-job]').forEach(card => {
+    let justDragged = false, px = 0, py = 0;
+    card.addEventListener('pointerdown', e => { px = e.clientX; py = e.clientY; justDragged = false; });
+    card.addEventListener('dragstart', () => { justDragged = true; });
+    card.addEventListener('click', e => {
+      if (justDragged) { justDragged = false; return; }
+      if (Math.abs(e.clientX - px) > 6 || Math.abs(e.clientY - py) > 6) return;
+      if (e.target.closest('button, a')) return;
+      openJobQuickLook(card.dataset.cardJob);
     });
   });
 
@@ -26293,7 +26311,7 @@ function wireTouchupPanel(root, ctx) {
     if (j && typeof openTouchupText === 'function') openTouchupText(j);
   }));
   root.querySelectorAll('[data-tu-open]').forEach(el => el.addEventListener('click', (e) => {
-    e.stopPropagation(); openPendingJobCard(el.dataset.tuOpen);
+    e.stopPropagation(); openJobQuickLook(el.dataset.tuOpen);
   }));
   const addBtn = root.querySelector('#tuAddBtn');
   if (addBtn) addBtn.addEventListener('click', (e) => {
@@ -26593,7 +26611,7 @@ async function renderSchedule() {
   // buttons (+ Schedule, x remove) stopPropagation so they do not ALSO open the
   // card; the card itself is a role=button and opens on Enter/Space too.
   root.querySelectorAll('[data-open-pcard]').forEach(card => {
-    const open = () => openPendingJobCard(card.dataset.openPcard);
+    const open = () => openJobQuickLook(card.dataset.openPcard);
     card.addEventListener('click', open);
     card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   });
@@ -27047,7 +27065,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     periodEl.textContent = `Week of ${wStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${wDays[6].toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
     const dayCols = wDays.map(dayCardHtml).join('');
     host.innerHTML = `<div class="pec-cal-daycols">${dayCols}</div>`;
-    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    // Prompt 57 Part E: a bar click opens the READ-ONLY quick look; its Schedule
+    // button is the deliberate path into the edit modal (a click used to land
+    // straight in an editable form, one stray keystroke from changing a job).
+    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openJobQuickLook(el.dataset.eventJob)));
     wireTaskClicks(host);
     return;
   }
@@ -27076,7 +27097,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       <div class="pec-cal-weekrev-host" data-weekrev-panel="${wi}" hidden>${weekRevPanelHtml(w.days)}</div>
       ${w.days.map(dayCardHtml).join('')}
     `).join('')}</div>`;
-    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+    // Prompt 57 Part E: a bar click opens the READ-ONLY quick look; its Schedule
+    // button is the deliberate path into the edit modal (a click used to land
+    // straight in an editable form, one stray keystroke from changing a job).
+    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openJobQuickLook(el.dataset.eventJob)));
     wireWeekRevPanels(host);
     wireTaskClicks(host);
     return;
@@ -27101,7 +27125,10 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     </div>
   `;
 
-  host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openScheduleModal(el.dataset.eventJob)));
+  // Prompt 57 Part E: a bar click opens the READ-ONLY quick look; its Schedule
+    // button is the deliberate path into the edit modal (a click used to land
+    // straight in an editable form, one stray keystroke from changing a job).
+    host.querySelectorAll('[data-event-job]').forEach(el => el.addEventListener('click', () => openJobQuickLook(el.dataset.eventJob)));
   wireWeekRevPanels(host);
   wireTaskClicks(host);
 }
@@ -27428,7 +27455,13 @@ async function addTouchupCallback(prodJob, opts = {}) {
 // (cost-focused, editable margins, admin-shaped). Nothing here edits or persists;
 // the only action is + Schedule, which closes and hands off to the scheduler. Uses
 // openModal / #pecModalRoot per the two-modal-root rule (helper-driven modal).
-function openPendingJobCard(jobId) {
+// The one read-only job quick look (prompt 57 Part E; formerly
+// openPendingJobCard). Opened from Pending cards, Next Day cards, run-sheet
+// cards, the Touch-ups panel, AND the calendar bars; the Schedule button
+// inside it is the sole path to the edit modal, so a stray click can never
+// land in an editable form. Uses openModal (#pecModalRoot) on purpose — do
+// not migrate to #prodModalRoot (CLAUDE.md two-modal-roots gotcha).
+function openJobQuickLook(jobId) {
   const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
@@ -27451,6 +27484,32 @@ function openPendingJobCard(jobId) {
   // a separate scope from, so notes IS the scope. Section omitted cleanly if empty.
   const scope = (job.notes || '').trim();
 
+  // Crew + scheduled dates from state.scheduleDays (distinct dates; a Next Day
+  // split puts two rows on one date and must still read as one day). Crew
+  // prefers the crews actually on the days, else the job-level crew.
+  const days = (state.scheduleDays || []).filter(d => d.job_id === jobId);
+  const dates = [...new Set(days.map(d => d.scheduled_date))].sort();
+  const crewById = Object.fromEntries((state.crews || []).map(c => [c.id, c]));
+  const crewNames = [...new Set(days.map(d => d.crew_id).filter(Boolean).map(id => (crewById[id] || {}).name).filter(Boolean))];
+  if (!crewNames.length && job.crew_id && crewById[job.crew_id]) crewNames.push(crewById[job.crew_id].name);
+  const shortD = (s) => { const d = parseISO(s); return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : s; };
+  const datesHtml = dates.length
+    ? (dates.length === 1
+      ? `${esc(shortD(dates[0]))}, 1 day`
+      : `${esc(shortD(dates[0]))} to ${esc(shortD(dates[dates.length - 1]))}, ${dates.length} days`)
+    : null;
+  // Phone from the CRM bridge already resolved in state; omitted (never a
+  // fresh query) when the bridge has nothing.
+  const phone = (state.crmPhoneByProdJob || {})[jobId] || null;
+  // Material picks from the job's own pec_prod_areas rows when present.
+  const prodById = Object.fromEntries((state.products || []).map(p => [p.id, p]));
+  const pickNames = (field, useColor) => [...new Set(areas.map(a => a[field]).filter(Boolean)
+    .map(id => { const p = prodById[id]; return p ? ((useColor && p.color) || p.name) : null; }).filter(Boolean))];
+  const flakePicks = pickNames('flake_product_id', true);
+  const basecoatPicks = pickNames('basecoat_product_id', false);
+  const topcoatPicks = pickNames('topcoat_product_id', false);
+  const flakeSizes = [...new Set(areas.map(a => a.flake_size).filter(Boolean))];
+
   const dash = '<span style="color:var(--muted)">—</span>';
   const row = (label, valueHtml) => `<div style="display:flex;gap:12px;padding:7px 0;border-top:1px solid var(--rd-line,var(--border))">
       <div style="flex:0 0 118px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)">${esc(label)}</div>
@@ -27464,7 +27523,7 @@ function openPendingJobCard(jobId) {
   const html = `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
       <div>
-        <h3 style="margin:0;font-size:1.1rem">${esc(job.customer_name || 'Job')}</h3>
+        <h3 style="margin:0;font-size:1.1rem">${esc(job.customer_name || 'Job')}${job.is_callback ? ' <span style="font-size:.6rem;font-weight:700;background:#0ea5e9;color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">TOUCHUP</span>' : ''}</h3>
         <div style="font-size:.8rem;color:var(--muted);margin-top:2px">${esc(job.address || 'No address')}</div>
       </div>
       <button type="button" class="pec-btn ghost sm" onclick="window.pecCloseModal()" aria-label="Close">✕</button>
@@ -27473,8 +27532,14 @@ function openPendingJobCard(jobId) {
       ${row('Proposal', job.proposal_number ? esc(job.proposal_number) : dash)}
       ${row('Revenue', job.revenue != null ? fmtMoney(job.revenue) : dash)}
       ${row('System', systemHtml)}
+      ${crewNames.length ? row('Crew', esc(crewNames.join(', '))) : ''}
+      ${datesHtml ? row('Scheduled', datesHtml) : ''}
+      ${phone ? row('Phone', `<a href="tel:${esc(String(phone).replace(/[^\d+]/g, ''))}" style="color:var(--rd-accent,var(--accent))">${esc(phone)}</a>`) : ''}
       ${row('Total sqft', sqft ? sqft.toLocaleString() + ' sqft' : dash)}
       ${row('Est. hours', factsHrs ? esc(factsHrs) + ' hrs' : dash)}
+      ${flakePicks.length ? row('Flake', esc(flakePicks.join(', ')) + (flakeSizes.length ? ` <span style="color:var(--muted)">(${esc(flakeSizes.join(', '))})</span>` : '')) : ''}
+      ${basecoatPicks.length ? row('Basecoat', esc(basecoatPicks.join(', '))) : ''}
+      ${topcoatPicks.length ? row('Topcoat', esc(topcoatPicks.join(', '))) : ''}
       ${row('Sales team', job.sales_team ? esc(job.sales_team) : dash)}
       ${row('Status', statusLabel ? esc(statusLabel) : dash)}
       ${owed ? row('Reschedule', rescheduleHtml) : ''}
@@ -29031,7 +29096,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmIdByProd: {}, products: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, products: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -29045,7 +29110,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
     cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
     cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
-    supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,salesperson,customers(name)').is('archived_at', null),
+    supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,salesperson,customers(name,phone)').is('archived_at', null),
     laborRate == null
       ? cachedRef('laborRate', () => supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle())
       : Promise.resolve(null),
@@ -29063,7 +29128,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   // Deal + name|address indexes of CRM job identities (first row wins).
   const crmByDeal = {}, crmByNameAddr = {};
   for (const row of (crmIdentRes.data || [])) {
-    const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft, salesperson: row.salesperson || null };
+    const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft, salesperson: row.salesperson || null, phone: (row.customers && row.customers.phone) || null };
     if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
     const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
     if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
@@ -29085,6 +29150,9 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
       // single display source; the schedule modal locks its sales_team field
       // when the resolved CRM job carries one.
       if (ident.salesperson) out.crmSalespersonByProd[job.id] = ident.salesperson;
+      // Customer phone for the read-only quick look (prompt 57 Part E): rides
+      // the identity read already being made, never a second query.
+      if (ident.phone) out.crmPhoneByProd[job.id] = ident.phone;
     }
   }
   // Phase 2: areas + materials for only the resolved CRM jobs.
@@ -29138,6 +29206,7 @@ async function loadScheduleEstimates() {
     state.crmStatusByProdJob = facts.crmStatusByProd;
     state.crmSqftByProdJob = facts.crmSqftByProd;
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
+    state.crmPhoneByProdJob = facts.crmPhoneByProd;
     state.crmIdByProdJob = facts.crmIdByProd;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
@@ -29305,6 +29374,7 @@ async function loadCostingData() {
     state.systemIdByJob = facts.systemIdByJob;
     state.crmStatusByProdJob = facts.crmStatusByProd;
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
+    state.crmPhoneByProdJob = facts.crmPhoneByProd;
     // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
     // column, so the unified $/sqft readout needs the CRM job's manual sqft
     // (set on accept for custom estimates, or backfilled on the job header)
