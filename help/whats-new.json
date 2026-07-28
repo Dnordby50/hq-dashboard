@@ -1,5 +1,26 @@
 [
   {
+    "id": "product-data-sheets",
+    "date": "2026-07-28",
+    "title": "Attach data sheets and safety sheets to catalog products",
+    "summary": "Every product in the Price & Material Catalog can now carry two PDFs: the manufacturer's data sheet (TDS) and its safety sheet (MSDS/SDS). Attach them in the product editor and they show up as TDS and SDS chips on the catalog list, where clicking a chip opens the PDF. On a job page, a Data sheets button appears next to View Work Order whenever that job's materials actually have sheets attached, and it lists every sheet for the job in one place. The links are public PDFs, so they can be texted or printed for the crew without a login. The maximum upload size is adjustable in Settings, General tab.",
+    "howto": [
+      "Open Production, Price & Material Catalog, and click a product to edit it.",
+      "In the Data sheets section, pick a PDF for the TDS or the MSDS/SDS. It uploads right away; then press Save.",
+      "On a job whose materials have sheets, click the Data sheets button next to View Work Order to see them all."
+    ]
+  },
+  {
+    "id": "workorder-header-boxes",
+    "date": "2026-07-28",
+    "title": "The work order now prints job, crew, and date big at the top",
+    "summary": "The printed crew work order replaces the small Crew Work Order title with three large boxes: Job, Crew, and Date. They are the biggest text on the sheet, so anyone can tell whose job it is and who runs it at a glance. If the job is not on the calendar yet, the Crew and Date boxes print empty with room to write them in by hand, matching how the rest of the sheet is filled out on paper. The small Crew, Date, and Job Name rows lower on the sheet were removed because the same facts now print once, large.",
+    "howto": [
+      "Open a job and click View Work Order.",
+      "The Job, Crew, and Date boxes are at the top, next to the logo. Print as usual."
+    ]
+  },
+  {
     "id": "busybusy-hours-import",
     "date": "2026-07-27",
     "title": "Real crew hours now flow into job costing from BusyBusy",

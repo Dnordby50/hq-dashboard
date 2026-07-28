@@ -680,7 +680,7 @@
     {
       "name": "Price & Material Catalog",
       "area": "dashboard",
-      "description": "The single catalog of products, materials, flake colors, add-ons, and system-type recipes with pricing that feeds estimating, ordering, and costing. Products carry an explicit cost basis (per gallon/box/pack versus per kit, auto-converted by kit size), each flake carries its own default basecoat, systems show a collapsible one-line recipe summary, and material categories include liquids, flake, quartz, and Polycoat. Admins tune per-system target gross profit and the sundries rate here.",
+      "description": "The single catalog of products, materials, flake colors, add-ons, and system-type recipes with pricing that feeds estimating, ordering, and costing. Products carry an explicit cost basis (per gallon/box/pack versus per kit, auto-converted by kit size), each flake carries its own default basecoat, systems show a collapsible one-line recipe summary, and material categories include liquids, flake, quartz, and Polycoat. Admins tune per-system target gross profit and the sundries rate here. Prompt 53: each product can carry two uploaded PDFs, a data sheet (TDS) and an MSDS/SDS, stored as object paths in the public pec-datasheets Supabase Storage bucket (the app's first Storage feature); the list shows TDS/SDS chips and the editor uploads on file pick under a random UUID name so an unsaved product can carry a file.",
       "code": {
         "indexHtml": [
           "renderCatalog",
@@ -689,16 +689,43 @@
           "openProductModal",
           "openSystemTypeModal",
           "openRecipeSlotModal"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-28_product_datasheets.sql"
         ]
       },
       "tables": [
         "pec_prod_products",
         "pec_prod_system_types",
         "pec_prod_recipe_slots",
-        "pec_prod_addons"
+        "pec_prod_addons",
+        "settings"
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-30-product-cost-basis.md",
       "since": "2026-04"
+    },
+    {
+      "name": "Product data sheets (TDS / MSDS)",
+      "area": "dashboard",
+      "description": "Two PDFs per catalog product, a technical data sheet (TDS) and an MSDS/SDS, uploaded from the product editor into the PUBLIC pec-datasheets Supabase Storage bucket (public by decision: crews have no login, and a public URL survives being printed or texted). Rows store the storage object PATH, never a URL; the browser builds links with getPublicUrl. Uploads happen on file pick (object named crypto.randomUUID() + '.pdf'), Save persists the paths, and replaced/removed objects are deleted only after a successful save so a saved row never points at a deleted file. The catalog list shows clickable TDS/SDS chips (dimmed when missing), and the job detail header shows a Data sheets button ONLY when a product in the job's material plan has a sheet, opening a modal of every sheet for the job (material resolution shared with the printed work order via computeJobMaterialLines). Max upload size is the datasheet_max_upload_mb setting (Settings > General); the bucket enforces 10 MB + PDF-only server-side.",
+      "code": {
+        "indexHtml": [
+          "openProductModal",
+          "renderProducts",
+          "computeJobMaterialLines",
+          "renderJobDetailInner",
+          "renderSettings"
+        ],
+        "other": [
+          "supabase/migrations/2026-07-28_product_datasheets.sql"
+        ]
+      },
+      "tables": [
+        "pec_prod_products",
+        "settings"
+      ],
+      "spec": "claude-code-prompt-53-wo-header-datasheets-tablescroll.md",
+      "since": "2026-07"
     },
     {
       "name": "Job costing",
