@@ -4,6 +4,25 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: verified the Settings > BusyBusy tab is live (stale browser page, not a bug)
+By: Cowork
+
+Dylan reported he could not see the BusyBusy tab in Settings to pull hours. Checked, and nothing is broken: the tab is deployed, rendered, and visible.
+
+What was verified, in order:
+1. Repo state: local main == origin/main at 4b7be66, working tree clean apart from the two untracked _to_delete/git-locks folders. All seven prompt-52 commits (610331c through 25c442f) are on main.
+2. Netlify (prescottepoxy project, deploys page): Published main@4b7be66, "cowork: apply prompt 52 busybusy migration, refresh SCHEMA.md", deployed today at 9:00 AM in 23s. No failed builds in the last 12 deploys.
+3. Live asset: fetched https://prescottepoxy.netlify.app/index.html with cache:'reload' from the page context. Both `data-settings-tab="busybusy"` and `renderSettingsBusybusy` are present in the served file (2,108,786 bytes, Cache-Control public,max-age=0,must-revalidate).
+4. Live UI: opened the app in Dylan's own logged-in Chrome (Dylan Nordby, Admin), navigated Settings > Settings. The tab bar renders all nine tabs in order: General, Users, Email, Appointments, Drips, Estimates, Invoicing, BusyBusy, Brand. Measured the bar: scrollWidth 973 == clientWidth 973, so nothing is clipped or overflowing at that width either.
+
+Conclusion: Dylan's browser tab is holding an index.html from before the prompt-52 deploy. index.html is served must-revalidate, so a plain reload (Cmd+Shift+R to be certain) picks it up. The only service worker registered on the origin is scoped to /estimator/, so it is not caching the root app.
+
+Why: Dylan asked where the BusyBusy tab was.
+Files touched: PROJECT-LOG.md (this entry). No code, no schema, no third-party config changed.
+Next steps: unchanged from the entries below. Before the first real import Dylan still needs to fix Aron Bronson's 47.78-hour punch in BusyBusy (and Ignore him on the mapping screen), and decide what the Matt Scharrer 27.25 hours (project #2227346) belong to.
+
+---
+
 ## [2026-07-28 MST] Claude Code: prompt-52 migration verified live, SCHEMA.md refresh committed
 By: Claude Code
 
