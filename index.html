@@ -29034,7 +29034,7 @@ function fmtFactsHours(h) { return h == null ? '' : String(Math.round(Number(h) 
 
 async function loadCostingData() {
   await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
-  const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes, subExpRes] = await withFreshSession(() => Promise.all([
+  const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes, subExpRes, bbRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_prod_job_costing').select('*'),
     // select('*') (not an explicit list) so hourly_wage is included once the
     // migration lands, without 400ing before it does. Needed for the bonus math.
@@ -29058,9 +29058,18 @@ async function loadCostingData() {
     // to include before the 2026-07-09 migration lands; the Subcontractors card
     // degrades to a run-the-migration note off state.subExpensesError.
     supabase.from('pec_prod_job_sub_expenses').select('*').order('created_at'),
+    // Per-job crew labor from the BusyBusy mirror (prompt 52 shape: one row per
+    // export CSV row, wage_type REG|OT1, `hours` is that row's hours). Rows with a
+    // null crew_member_id (unmapped or ignored in Settings > BusyBusy) and overhead
+    // rows never reach costing. A missing table resolves with { error } rather than
+    // throwing, so this is safe pre-migration and degrades to no labor at all.
+    supabase.from('pec_prod_busybusy_time_entries').select('job_id,crew_member_id,hours,wage_type,is_overhead'),
   ]), { label: 'loadCostingData' });
   state.costing = costRes.data || [];
   state.crewMembers = membersRes.data || [];
+  // BusyBusy hours per job per member, the shared map every costing surface
+  // reads (crewLaborForJob). Empty pre-migration or before the first import.
+  state.bbHoursByJobMember = bbAccumulateEntries((bbRes && bbRes.data) || []).hoursByJobMember;
   // Manual labor grouped per job (empty if the table is not live yet).
   const manualLaborByJob = {};
   for (const m of (manualLaborRes && manualLaborRes.data) || []) (manualLaborByJob[m.job_id] ||= []).push(m);
@@ -29262,6 +29271,76 @@ function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCo
 
 function bonusTotalForJob(jobId) {
   return (state.bonusesByJob?.[jobId] || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+}
+
+// The ONE accumulation of imported BusyBusy rows into per-job per-member hours
+// (prompt 56 Part A). Prompt 52 shape: one row per Payroll Export CSV row,
+// wage_type REG|OT1, `hours` is TOTAL for that row and OT is the OT1-tagged
+// slice. Rows with no job, an unmapped/ignored name (null crew_member_id),
+// overhead rows, and non-positive hours never reach costing. Punch windows are
+// deduped (a punch crossing the weekly 40-hour line arrives as a REG + OT1
+// split pair sharing start/end) and only built when the rows carry started_at,
+// so the narrow loadCostingData select skips them for free.
+function bbAccumulateEntries(rows) {
+  const hoursByJobMember = {};   // job_id -> { crew_member_id -> { total, ot } }
+  const punchesByJobMember = {}; // job_id -> { crew_member_id -> [{ start, end }] }
+  const seenPunch = new Set();
+  for (const e of rows || []) {
+    if (!e.job_id || !e.crew_member_id || e.is_overhead) continue;
+    const h = Number(e.hours || 0);
+    if (!(h > 0)) continue;
+    const cur = ((hoursByJobMember[e.job_id] ||= {})[e.crew_member_id] ||= { total: 0, ot: 0 });
+    cur.total += h;
+    if (e.wage_type === 'OT1') cur.ot += h;
+    if (e.started_at !== undefined) {
+      const pk = `${e.job_id}|${e.crew_member_id}|${e.started_at}|${e.ended_at}`;
+      if (!seenPunch.has(pk)) {
+        seenPunch.add(pk);
+        (((punchesByJobMember[e.job_id] ||= {})[e.crew_member_id]) ||= []).push({ start: e.started_at, end: e.ended_at });
+      }
+    }
+  }
+  return { hoursByJobMember, punchesByJobMember };
+}
+
+// The ONE crew-labor number for a job: hours, loaded cost (incl. burden), and
+// the suggested bonus pool, all from computeCrewBonus so the Costs card and the
+// Bonus Payout box can never disagree. Precedence: BusyBusy hours, else the
+// manual per-member hours editor, else nothing. Returns zeros when neither
+// exists, so a job with no hours never invents labor. A subcontracted job
+// still gets a real laborCost when crew hours exist; only the bonus POOL is
+// suppressed for it (null budget into computeCrewBonus, same as the detail).
+function crewLaborForJob(job, sys) {
+  const bb = (state.bbHoursByJobMember || {})[job.id];
+  const hasBB = !!(bb && Object.keys(bb).length);
+  let hoursByKey = hasBB ? bb : null;
+  if (!hoursByKey) {
+    const manual = (state.manualLaborByJob?.[job.id] || []).filter(m => m.crew_member_id);
+    if (manual.length) {
+      hoursByKey = {};
+      for (const m of manual) {
+        const cur = (hoursByKey[m.crew_member_id] ||= { total: 0, ot: 0 });
+        cur.total += Number(m.hours || 0); cur.ot += Number(m.ot_hours || 0);
+      }
+    }
+  }
+  if (!hoursByKey || !Object.keys(hoursByKey).length) {
+    return { hours: 0, otHours: 0, laborCost: 0, suggestedPool: 0, source: 'none' };
+  }
+  const memberById = Object.fromEntries((state.crewMembers || []).map(m => [m.id, m]));
+  const lookup = (key) => key.startsWith('bb:')
+    ? { name: 'BusyBusy member ' + key.slice(3) + ' (unmapped)', wage: null }
+    : { name: memberById[key]?.name || 'Team member', wage: memberById[key]?.hourly_wage ?? null };
+  const rate = Number(state.costingLaborRate) > 0 ? Number(state.costingLaborRate) : 35;
+  const budget = job.subcontracted ? null : effectiveLaborBudget(job, sys).budget;
+  const calc = computeCrewBonus(budget, hoursByKey, lookup, rate);
+  return {
+    hours: calc.totalHours,
+    otHours: calc.totalOtHours,
+    laborCost: calc.actualLabor || 0,
+    suggestedPool: (!job.subcontracted && calc.pool > 0) ? calc.pool : 0,
+    source: hasBB ? 'busybusy' : 'manual',
+  };
 }
 
 // Effective completion for Job Costing. The prod row's own status is usually
@@ -30062,29 +30141,24 @@ async function renderUnifiedJob(jobId) {
   // Rows with a null crew_member_id (unmapped or ignored name in Settings >
   // BusyBusy) never reach costing. Graceful-empty as before: table missing or
   // no import yet -> "awaiting hours", no bonus invented on zero actuals.
-  const bbHoursByKey = {}; const bbPunchesByKey = {}; let bbError = null;
+  let bbHoursByKey = {}; let bbPunchesByKey = {}; let bbError = null;
   try {
     const res = await withFreshSession(() => supabase
       .from('pec_prod_busybusy_time_entries')
       .select('*')
       .eq('job_id', jobId), { label: 'unifiedJobTime' });
     if (res.error) throw res.error;
-    const seenPunch = new Set();
-    for (const e of (res.data || [])) {
-      if (!e.crew_member_id || e.is_overhead) continue;
-      const h = Number(e.hours || 0);
-      if (!(h > 0)) continue;
-      const cur = (bbHoursByKey[e.crew_member_id] ||= { total: 0, ot: 0 });
-      cur.total += h;
-      if (e.wage_type === 'OT1') cur.ot += h;
-      // A punch that crosses the weekly 40-hour line arrives as TWO rows with
-      // the SAME start/end (a REG + OT1 split pair); show the window once.
-      const pk = `${e.crew_member_id}|${e.started_at}|${e.ended_at}`;
-      if (!seenPunch.has(pk)) {
-        seenPunch.add(pk);
-        (bbPunchesByKey[e.crew_member_id] ||= []).push({ start: e.started_at, end: e.ended_at });
-      }
-    }
+    // Same accumulation as loadCostingData (bbAccumulateEntries, the ONE
+    // shared rule), just scoped to this job's fresh rows. The shared per-job
+    // map is refreshed with this result so crewLaborForJob (the Costs card's
+    // labor + the pending bonus) reads the same hours the Bonus Payout box
+    // shows, even if an import happened after loadCostingData ran.
+    const acc = bbAccumulateEntries(res.data || []);
+    bbHoursByKey = acc.hoursByJobMember[jobId] || {};
+    bbPunchesByKey = acc.punchesByJobMember[jobId] || {};
+    (state.bbHoursByJobMember ||= {});
+    if (Object.keys(bbHoursByKey).length) state.bbHoursByJobMember[jobId] = bbHoursByKey;
+    else delete state.bbHoursByJobMember[jobId];
   } catch (err) { bbError = err && err.message ? err.message : String(err); }
   // Send-back history (Feature A). Newest first. Degrades to [] if the table is not
   // live yet (same graceful pattern as pec_prod_tasks), so a pre-migration job page
