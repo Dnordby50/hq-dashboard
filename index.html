@@ -11733,7 +11733,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights']),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate']),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -11747,11 +11747,18 @@ async function renderMetrics() {
       supabase.from('pec_drip_enrollments').select('id,campaign_id,status,stop_reason,enrolled_at,stopped_at,subject_type'),
       supabase.from('pec_drip_sends').select('campaign_id,blast_id,channel,status,step_index,sent_at,created_at,error_message'),
       supabase.from('pec_blasts').select('*').order('created_at', { ascending: false }).limit(12),
+      // Crew labor for GP by crew lead (prompt 56 Part D): the BusyBusy mirror
+      // plus crew wages plus the manual per-member fallback, so completed jobs
+      // carry the same loaded labor cost the Job Costing card shows. Each
+      // degrades independently (missing table -> no labor, never a blank tab).
+      supabase.from('pec_prod_busybusy_time_entries').select('job_id,crew_member_id,hours,wage_type,is_overhead'),
+      supabase.from('pec_prod_crew_members').select('id,name,hourly_wage'),
+      supabase.from('pec_prod_job_manual_labor').select('*'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
-    dripCampRes, dripEnrRes, dripSendRes, blastHdrRes] = res;
+    dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   let jobsRes = jobsRes0;
   // Pre-migration fallback: re-fetch the AR rows without invoice_first_sent_at if
@@ -11798,6 +11805,33 @@ async function renderMetrics() {
   }
   for (const b of (bonusRes.data || [])) bonusByJob[b.job_id] = (bonusByJob[b.job_id] || 0) + Number(b.amount || 0);
   const costByProdJob = Object.fromEntries((costRes.data || []).map(c => [c.job_id, c]));
+  // Crew labor per prod job (prompt 56 Part D): the SAME computeCrewBonus math
+  // the costing card uses (loaded cost = wages + OT premium + burden), fed by
+  // bbAccumulateEntries over the BusyBusy mirror, with the manual per-member
+  // editor as the fallback source, per job. The budget is passed null because
+  // only actualLabor and totalHours are consumed here; the bonus POOL is not
+  // computed in Metrics (a suggested-but-unapproved bonus reaches Metrics GP
+  // only once it is approved or finalized, via the pec_prod_job_bonuses read
+  // above — the estimate-based labor budget is not loaded on this tab).
+  const laborByProd = {};
+  if (!(bbTimeRes && bbTimeRes.error) && !(crewMemRes && crewMemRes.error)) {
+    const bbMap = bbAccumulateEntries((bbTimeRes && bbTimeRes.data) || []).hoursByJobMember;
+    const manualMap = {};
+    for (const m of ((metManualLaborRes && !metManualLaborRes.error && metManualLaborRes.data) || [])) {
+      if (!m.job_id || !m.crew_member_id) continue;
+      const cur = ((manualMap[m.job_id] ||= {})[m.crew_member_id] ||= { total: 0, ot: 0 });
+      cur.total += Number(m.hours || 0); cur.ot += Number(m.ot_hours || 0);
+    }
+    const memberById = Object.fromEntries(((crewMemRes && crewMemRes.data) || []).map(m => [m.id, m]));
+    const rateRow = metSettingsRows.find(r => r.key === 'default_labor_hourly_rate');
+    const laborRate = Number(rateRow && rateRow.value) > 0 ? Number(rateRow.value) : 35;
+    const lookup = (key) => ({ name: memberById[key]?.name || 'Crew member', wage: memberById[key]?.hourly_wage ?? null });
+    for (const jid of new Set([...Object.keys(bbMap), ...Object.keys(manualMap)])) {
+      const hoursByKey = (bbMap[jid] && Object.keys(bbMap[jid]).length) ? bbMap[jid] : manualMap[jid];
+      const calc = computeCrewBonus(null, hoursByKey, lookup, laborRate);
+      if (calc.actualLabor > 0) laborByProd[jid] = { laborCost: calc.actualLabor, actHrs: calc.totalHours };
+    }
+  }
   // Reviews are PEC-only by virtue of their job being in jobById (the AR view is
   // already filtered to prescott-epoxy). created_at is UTC; bucket in America/Phoenix.
   const mstDay = ts => ts ? new Date(new Date(ts).getTime() - 7 * 3600e3).toISOString().slice(0, 10) : null;
@@ -11966,16 +12000,19 @@ async function renderMetrics() {
   // materials USED, not ordered, plus equipment/wages/subs/bonus/commission/
   // misc) rather than inventing a second GP definition. A completed job with
   // NO costing signal at all is EXCLUDED and counted in gpMissing, never
-  // treated as cost 0. Deliberately skips the Job Costing tab's derived-plan
-  // fallback (recomputing a material plan from areas for jobs with no
-  // persisted lines); such jobs land in the gpMissing footnote instead.
+  // treated as cost 0. Crew labor from BusyBusy/manual hours IS a costing
+  // signal (prompt 56): a job with crew hours but no pec_prod_job_costing row
+  // is included, with its loaded labor as the cost. Deliberately skips the Job
+  // Costing tab's derived-plan fallback (recomputing a material plan from
+  // areas for jobs with no persisted lines); such jobs land in the gpMissing
+  // footnote instead.
   const gpByLead = {};
   let gpMissing = 0;
   if (costingOk) {
     for (const j of compInWin) {
       const prod = j.dripjobs_deal_id ? dealToProd[j.dripjobs_deal_id] : null;
-      if (!prod || (!costByProdJob[prod.id] && !usedByJob[prod.id] && !bonusByJob[prod.id])) { gpMissing++; continue; }
-      const row = computeCostingRow({ revenue: j.price }, costByProdJob[prod.id], null, orderedByJob[prod.id], usedByJob[prod.id], bonusByJob[prod.id]);
+      if (!prod || (!costByProdJob[prod.id] && !usedByJob[prod.id] && !bonusByJob[prod.id] && !laborByProd[prod.id])) { gpMissing++; continue; }
+      const row = computeCostingRow({ revenue: j.price }, costByProdJob[prod.id], null, orderedByJob[prod.id], usedByJob[prod.id], bonusByJob[prod.id], laborByProd[prod.id] || {});
       const lead = prod.crew_lead || 'Unassigned';
       (gpByLead[lead] ||= { price: 0, cost: 0, gp: 0, jobs: [] });
       gpByLead[lead].price += j.price;
@@ -12546,9 +12583,9 @@ async function renderMetrics() {
         ${rankRows(crewRankRows, 'No payments in this window.')}
       </div>
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
-        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, wages, subs, bonuses, commission, misc. Labor hours are not costed unless entered as wages.</div>
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, crew labor (loaded from BusyBusy or manual hours, incl. burden), subs, bonuses, commission, misc.</div>
         ${costingOk ? rankRows(gpRankRows, 'No completed jobs with costing data in this window.')
-          + (gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data.</div>` : '')
+          + (gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data (no costing entry, materials, bonus, or crew hours).</div>` : '')
           : '<div class="pec-empty">Costing data could not be loaded; GP is unavailable right now.</div>'}
       </div>
       <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
