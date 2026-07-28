@@ -1,5 +1,16 @@
 [
   {
+    "id": "people-directory",
+    "date": "2026-07-28",
+    "title": "One People directory, with team birthdays",
+    "summary": "Team members, sales reps, and CRM users used to live in separate lists, so the same person could appear three times. The new Settings, People tab shows every person once, with badges for the roles they hold (Login, Sales, Crew), their crew assignment, hourly wage, commission rate, and birthday, all editable in one place. Edits flow through to the old lists automatically, so nothing else changes. Birthdays are month and day only (no year, no age anywhere), and the app reminds everyone a week ahead with a dashboard banner and a bell notification. Reminder timing is adjustable in Settings, General tab.",
+    "howto": [
+      "Open Settings and click the People tab to see everyone in one list.",
+      "If the same person shows up twice from the old lists, use the Possible duplicates card to merge them (or keep them separate).",
+      "Click Edit on a row to set a birthday. New people require one; existing people are listed in a reminder until theirs is set."
+    ]
+  },
+  {
     "id": "product-data-sheets",
     "date": "2026-07-28",
     "title": "Attach data sheets and safety sheets to catalog products",

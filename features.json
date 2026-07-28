@@ -561,7 +561,7 @@
     {
       "name": "Job Schedule calendar",
       "area": "dashboard",
-      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date. Prompt 51: the left aside is now a column holding the Touch-ups panel (see 'Touch-up list and callback tracking') above Pending Jobs, and BOTH pending sources exclude is_callback rows, so an unscheduled touch-up never renders as an ordinary pending job card. The week-revenue exclusion now tests revenue, not the flag: a billable callback (revenue > 0) prorates like any job.",
+      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date. Prompt 51: the left aside is now a column holding the Touch-ups panel (see 'Touch-up list and callback tracking') above Pending Jobs, and BOTH pending sources exclude is_callback rows, so an unscheduled touch-up never renders as an ordinary pending job card. The week-revenue exclusion now tests revenue, not the flag: a billable callback (revenue > 0) prorates like any job. Prompt 54: crews themselves stay pec_prod_crews (a crew is a grouping, not a person); people are assigned to crews from Settings > People, writing pec_prod_crew_members.crew_id.",
       "code": {
         "indexHtml": [
           "renderSchedule",
@@ -774,7 +774,7 @@
     {
       "name": "Crew bonus and Bonus Report",
       "area": "dashboard",
-      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted. Prompt 51: the callback cost rollup on the parent's costing is GP display only and does NOT change computeCrewBonus inputs, so the bonus pool on a parent with callbacks is numerically unchanged; the prompt-50 review gate stays the single lever on bonus. Prompt 52: actual hours now come from the BusyBusy Payroll Export import (BusyBusy wins over manual entry when a job has imported rows); OT is BusyBusy's weekly-40 attribution accepted deliberately (the premium lands on whatever job the person was on at hour 40, Dylan's documented tradeoff), and the import never writes to pec_prod_job_bonuses or pec_bonus_payouts.",
+      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted. Prompt 51: the callback cost rollup on the parent's costing is GP display only and does NOT change computeCrewBonus inputs, so the bonus pool on a parent with callbacks is numerically unchanged; the prompt-50 review gate stays the single lever on bonus. Prompt 52: actual hours now come from the BusyBusy Payroll Export import (BusyBusy wins over manual entry when a job has imported rows); OT is BusyBusy's weekly-40 attribution accepted deliberately (the premium lands on whatever job the person was on at hour 40, Dylan's documented tradeoff), and the import never writes to pec_prod_job_bonuses or pec_bonus_payouts. Prompt 54: pec_prod_crew_members rows (ids and hourly_wage) are unchanged and remain the wage source, but they are now mirrored from public.people; wages are editable from Settings > People as well as the legacy Team Members card, both writing the same rows.",
       "code": {
         "indexHtml": [
           "renderCrewBonus",
@@ -798,7 +798,7 @@
     {
       "name": "Commission tracking",
       "area": "dashboard",
-      "description": "A Commission view showing per-salesperson commission as a rate-derived cost baked into the price, with payouts driven off the payment-received date on a Sunday-Saturday period with a Friday payroll check date. Owner-sold jobs are excluded via a per-seller flag, each commission clicks through to its job, and results filter by date range and salesperson.",
+      "description": "A Commission view showing per-salesperson commission as a rate-derived cost baked into the price, with payouts driven off the payment-received date on a Sunday-Saturday period with a Friday payroll check date. Owner-sold jobs are excluded via a per-seller flag, each commission clicks through to its job, and results filter by date range and salesperson. Prompt 54: rates still come from pec_sales_team_members, but pctByName and the exclusion set now also resolve name_aliases (former names captured automatically on any rename by a trigger on pec_sales_team_members), so renaming a rep in the People directory or anywhere else can never silently detach historical pec_job_ar salesperson strings from their rate or exclusion.",
       "code": {
         "indexHtml": [
           "renderCommission",
@@ -981,9 +981,43 @@
       "since": "2026-07"
     },
     {
+      "name": "People directory and birthdays",
+      "area": "platform",
+      "description": "One person = one record (prompt 54). public.people is the source of truth for a person's IDENTITY (name, preferred name, email, phone, month/day birthday, active) across the three legacy person tables: admin_users (logins), pec_sales_team_members (sales reps), pec_prod_crew_members (crew). Roles are the three nullable pointer columns on people; a role is held iff its pointer is set, so the role flag and the identity map can never disagree. Wage, commission %, exclude_from_commission, and crew assignment deliberately STAY on the legacy tables with their readers; Settings > People edits them there inline. Server-side triggers mirror both ways: people edits write through to the legacy rows (name/active, changed fields only), and legacy inserts/renames (pec-create-staff, the legacy cards) auto-adopt/follow so the old surfaces cannot diverge the model. The mirror is switch-off-able via the people_mirror_enabled setting (real rollback, no deploy). Renames are commission-safe: pec_sales_team_members.name_aliases captures every former name via a trigger on that table, and renderCommission resolves aliases (see Commission tracking). Dedupe across the old tables is HUMAN-CONFIRMED only: auto-merge happened solely on matching auth_user_id in the migration backfill; everything else is a suggestion on the Possible duplicates card with Merge (pec_people_merge RPC) / Keep separate (dismissals in the people_merge_dismissed setting). Birthdays: month/day only, NO year stored and no age shown anywhere, required on new adds, backfill nag (dashboard banner + People tab list) until every active person has one, and a reminder at birthday_reminder_lead_days (default 7) as an admin dashboard banner plus a global bell (daily scheduled pec-birthday-reminders.cjs, type 'birthday', target_view 'people' deep-links admins to Settings > People). In-app only; nothing is emailed or texted.",
+      "code": {
+        "indexHtml": [
+          "renderSettingsPeople",
+          "openPersonModal",
+          "pecPeopleMergeSuggestions",
+          "pecDaysToBirthday",
+          "renderDashboard",
+          "notifTarget"
+        ],
+        "netlifyFunctions": [
+          "pec-birthday-reminders.cjs"
+        ]
+      },
+      "tables": [
+        "people",
+        "admin_users",
+        "pec_sales_team_members",
+        "pec_prod_crew_members",
+        "pec_prod_crews",
+        "pec_notifications"
+      ],
+      "spec": "claude-code-prompt-54-people-model.md",
+      "since": "2026-07",
+      "settings": [
+        "people_mirror_enabled",
+        "birthday_reminder_enabled",
+        "birthday_reminder_lead_days",
+        "people_merge_dismissed"
+      ]
+    },
+    {
       "name": "Per-user permissions",
       "area": "platform",
-      "description": "Role and per-view access controls managed in Settings, defaulting all-on with an admin super-role, so each staff account only sees the views it should (Job Costing, Bonus Report, Commission, Catalog, and Settings are admin-only). Staff accounts, roles, and access are added and managed in the Settings Users area.",
+      "description": "Role and per-view access controls managed in Settings, defaulting all-on with an admin super-role, so each staff account only sees the views it should (Job Costing, Bonus Report, Commission, Catalog, and Settings are admin-only). Staff accounts, roles, and access are added and managed in the Settings Users area. Prompt 54: staff identity now also lives on public.people (one record per person across logins, sales, crew); admin_users remains the auth/RLS record and is mirrored from people by triggers, and a new admin_users row (pec-create-staff) is auto-adopted as a person. Settings > People is the unified surface; Users stays the place for logins, roles, permissions, and password resets.",
       "code": {
         "indexHtml": [
           "renderSettings",
@@ -1256,7 +1290,7 @@
     {
       "name": "BusyBusy hours import (Payroll Export)",
       "area": "integrations",
-      "description": "Crew hours reach job costing through an admin-triggered, preview-then-commit import from the BusyBusy Payroll Export API (Settings > BusyBusy). The API is a snapshot, not a sync (calculated Ids, no updatedSince, no deletion feed), so each import atomically replaces the stored date window via the pec_busybusy_import RPC; re-importing after punch corrections is the normal workflow. Identity is name-only (the export's EmployeeId is empty): every exported name is mapped to a crew member or Ignored on the mapping screen, and projects link to jobs once by exact normalized customer name, then by their stable 7-digit ProjectNumber (no fuzzy matching, ever). Overtime is BusyBusy's weekly-40 attribution, stored verbatim as REG/OT1 rows (a punch crossing hour 40 arrives as a split pair sharing Start/End); hours aggregate at read time, and BusyBusy's Wage/Cost columns are deliberately never imported. Overhead projects (Shop) are stored and reported but never charge a job. Anomalies (long punches, overlaps, punch notes) import and are flagged in the preview, never auto-corrected. Manual labor entry remains for jobs with no BusyBusy coverage; a job with imported rows uses them and shows its manual entries greyed. The earlier GraphQL proxy (pec-busybusy.cjs, 401 since 2026-06-13, spec docs/archive/prompts/claude-code-prompt-busybusy-overtime-costing.md) was retired by this build.",
+      "description": "Crew hours reach job costing through an admin-triggered, preview-then-commit import from the BusyBusy Payroll Export API (Settings > BusyBusy). The API is a snapshot, not a sync (calculated Ids, no updatedSince, no deletion feed), so each import atomically replaces the stored date window via the pec_busybusy_import RPC; re-importing after punch corrections is the normal workflow. Identity is name-only (the export's EmployeeId is empty): every exported name is mapped to a crew member or Ignored on the mapping screen, and projects link to jobs once by exact normalized customer name, then by their stable 7-digit ProjectNumber (no fuzzy matching, ever). Overtime is BusyBusy's weekly-40 attribution, stored verbatim as REG/OT1 rows (a punch crossing hour 40 arrives as a split pair sharing Start/End); hours aggregate at read time, and BusyBusy's Wage/Cost columns are deliberately never imported. Overhead projects (Shop) are stored and reported but never charge a job. Anomalies (long punches, overlaps, punch notes) import and are flagged in the preview, never auto-corrected. Manual labor entry remains for jobs with no BusyBusy coverage; a job with imported rows uses them and shows its manual entries greyed. The earlier GraphQL proxy (pec-busybusy.cjs, 401 since 2026-06-13, spec docs/archive/prompts/claude-code-prompt-busybusy-overtime-costing.md) was retired by this build. Prompt 54: crew-member identity (pec_prod_crew_members.id, which pec_prod_busybusy_employees.crew_member_id maps to) is untouched by the People model; the mirror only writes name/active and never rewrites ids, so imported-hour attribution is stable.",
       "code": {
         "indexHtml": [
           "renderSettingsBusybusy",
