@@ -733,7 +733,7 @@
     {
       "name": "Job costing",
       "area": "dashboard",
-      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings. Prompt 50: the unified detail is an accordion (always-visible profit summary card, collapsible Revenue & Job Info / Labor & Bonus Payout / Materials / Subcontractors / Crew Bonuses / Costs / Notes sections, session-remembered via _unifiedSecOpen, layout only), and the Notes section carries an Office notes box (office_notes/_by/_at on pec_prod_job_costing, saved via saveOfficeNotes with an author+time stamp, separate from the crew-adjacent notes column). openCostingDetail is the superseded modal with no remaining callers. Prompt 51: a parent job's unified detail folds every child touch-up's totalVar into its displayed Total Var and GP via a read-only Callback costs line in the Costs section (clickable through to each touch-up's own costing). Display-layer only: computeCostingRow is untouched, so aggregateCostingRows / Metrics sums count each job's costs once and never double count. Prompt 52: actual crew hours come from the imported BusyBusy Payroll Export rows (wage_type OT1 rows are the OT slice; rows with an unmapped or ignored name never count); a job with imported rows uses them and shows its manual hours greyed for reference, and a finalized job whose live hours drift from the recorded hours_actual snapshot shows a display-only 'Hours changed since finalize' note (the import never writes to bonus tables).",
+      "description": "Where a completed job's real costs, materials used, crew hours, and revenue are entered to calculate gross profit, GP/hr, REV/hr, price per square foot (manual job sqft when there are no areas, e.g. custom jobs), and the crew bonus pool. It derives materials from the job card when production lines are empty, supports ad-hoc material lines and editable revenue, and includes a live search across active and completed costings. Prompt 50: the unified detail is an accordion (always-visible profit summary card, collapsible Revenue & Job Info / Labor & Bonus Payout / Materials / Subcontractors / Crew Bonuses / Costs / Notes sections, session-remembered via _unifiedSecOpen, layout only), and the Notes section carries an Office notes box (office_notes/_by/_at on pec_prod_job_costing, saved via saveOfficeNotes with an author+time stamp, separate from the crew-adjacent notes column). openCostingDetail is the superseded modal with no remaining callers. Prompt 51: a parent job's unified detail folds every child touch-up's totalVar into its displayed Total Var and GP via a read-only Callback costs line in the Costs section (clickable through to each touch-up's own costing). Display-layer only: computeCostingRow is untouched, so aggregateCostingRows / Metrics sums count each job's costs once and never double count. Prompt 52: actual crew hours come from the imported BusyBusy Payroll Export rows (wage_type OT1 rows are the OT slice; rows with an unmapped or ignored name never count); a job with imported rows uses them and shows its manual hours greyed for reference, and a finalized job whose live hours drift from the recorded hours_actual snapshot shows a display-only 'Hours changed since finalize' note (the import never writes to bonus tables). Prompt 56: crew labor finally hits GP. loadCostingData reads the BusyBusy mirror once and bbAccumulateEntries builds state.bbHoursByJobMember; crewLaborForJob turns it (BusyBusy first, manual per-member hours second) into ONE loaded labor cost via computeCrewBonus.actualLabor, and costingDerivedForJob feeds it to computeCostingRow's new trailing derived arg ({ laborCost, actHrs, pendingBonus }) on the detail, the callback rollup, the finalized list + Rollups, and Metrics. Salary & Wages renders derived (read-only, hours + wages + burden note; a hand-typed value stays visible as unused), the Hrs column and GP/hr populate from crew hours, and a suggested-but-unapproved bonus counts against GP as pending (pendingBonusForJob returns 0 once a Labor-savings ledger row exists, so approval never double-counts). The Crew Bonuses accordion section was removed (the free-form + Add bonus row path is gone); the $50 crew lead checkbox and a read-only Recorded bonuses list live on the Labor & Bonus Payout card. Kill switches: costing_labor_from_hours (rollback to stored fields) and costing_count_pending_bonus.",
       "code": {
         "indexHtml": [
           "renderJobCosting",
@@ -742,7 +742,11 @@
           "computeCostingRow",
           "saveOfficeNotes",
           "saveCostingField",
-          "jobEffectiveSqft"
+          "jobEffectiveSqft",
+          "crewLaborForJob",
+          "costingDerivedForJob",
+          "pendingBonusForJob",
+          "bbAccumulateEntries"
         ],
         "netlifyFunctions": [
           "pec-busybusy-export.cjs"
@@ -750,18 +754,26 @@
       },
       "tables": [
         "pec_prod_job_costing",
-        "pec_prod_material_lines"
+        "pec_prod_material_lines",
+        "pec_prod_busybusy_time_entries"
       ],
-      "since": "2026-05"
+      "since": "2026-05",
+      "settings": [
+        "costing_labor_from_hours",
+        "costing_count_pending_bonus",
+        "costing_default_labor_budget_pct"
+      ]
     },
     {
       "name": "Costing submit-for-review approval",
       "area": "dashboard",
-      "description": "Non-admin office staff submit a finished costing for review, which locks the numbers, and an admin finalizes it from a Submitted-for-review queue. Admins can send a costing back with a required reason that reaches the submitter three ways (a banner on the job, a bell notification, and a Slack message) and is kept as a history, and finalizing opens a per-member bonus approval step showing each crew member's suggested bonus for adjustment before it is recorded with a full audit trail.",
+      "description": "Non-admin office staff submit a finished costing for review, which locks the numbers, and an admin finalizes it from a Submitted-for-review queue. Admins can send a costing back with a required reason that reaches the submitter three ways (a banner on the job, a bell notification, and a Slack message) and is kept as a history, and finalizing opens a per-member bonus approval step showing each crew member's suggested bonus for adjustment before it is recorded with a full audit trail. Prompt 56: approving the crew bonus is its own one-click button on the Labor & Bonus Payout card (suggested amount exactly, no per-member editing; writeLaborSavingsLedger is the single ledger write path shared with Finalize, incl. the pre-migration audit-column retry). When a job's bonus is already approved, the finalize dialog shows the recorded rows read-only and leaves them untouched, so approved_by/approved_at are never overwritten by the finalizer; Unapprove deletes only the Labor-savings rows.",
       "code": {
         "indexHtml": [
           "canFinalizeCosting",
-          "openCostingDetail"
+          "openCostingDetail",
+          "writeLaborSavingsLedger",
+          "deleteLaborSavingsLedger"
         ],
         "netlifyFunctions": [
           "pec-notify-costing-sendback.cjs"
@@ -777,15 +789,17 @@
     {
       "name": "Crew bonus and Bonus Report",
       "area": "dashboard",
-      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted. Prompt 51: the callback cost rollup on the parent's costing is GP display only and does NOT change computeCrewBonus inputs, so the bonus pool on a parent with callbacks is numerically unchanged; the prompt-50 review gate stays the single lever on bonus. Prompt 52: actual hours now come from the BusyBusy Payroll Export import (BusyBusy wins over manual entry when a job has imported rows); OT is BusyBusy's weekly-40 attribution accepted deliberately (the premium lands on whatever job the person was on at hour 40, Dylan's documented tradeoff), and the import never writes to pec_prod_job_bonuses or pec_bonus_payouts. Prompt 54: pec_prod_crew_members rows (ids and hourly_wage) are unchanged and remain the wage source, but they are now mirrored from public.people; wages are editable from Settings > People as well as the legacy Team Members card, both writing the same rows.",
+      "description": "Crew bonuses are computed from the labor budget minus actual loaded labor using per-member wages set in Settings, recorded to a ledger on finalize, and tracked as paid or pending in a Bonus Report. Branded one-page print/PDF payout handout sheets can be generated per crew member. Prompt 50 Part E: a bonus becomes payable only bonus_lock_days (default 14) days after the job's completion date on public.jobs.completed_date, bridged from pec_prod_jobs by dripjobs_deal_id then name+address (jobNameAddrKey); a missing completion date reads as LOCKED with a Set completion date affordance, never unlocked. A callback (is_callback + original_job_id) flags the parent job's bonuses for manual review (Pay full / Reduce / Void with review_status/reviewed_by/reviewed_at/review_note; unreviewed = not payable). Paid payouts can be Reversed (admin-only, matching the bp_write is_admin_role() policy): reversed_at/_by/_reason mark the row, it stops counting as paid in every sum and on handouts, and nothing is ever deleted. Prompt 51: the callback cost rollup on the parent's costing is GP display only and does NOT change computeCrewBonus inputs, so the bonus pool on a parent with callbacks is numerically unchanged; the prompt-50 review gate stays the single lever on bonus. Prompt 52: actual hours now come from the BusyBusy Payroll Export import (BusyBusy wins over manual entry when a job has imported rows); OT is BusyBusy's weekly-40 attribution accepted deliberately (the premium lands on whatever job the person was on at hour 40, Dylan's documented tradeoff), and the import never writes to pec_prod_job_bonuses or pec_bonus_payouts. Prompt 54: pec_prod_crew_members rows (ids and hourly_wage) are unchanged and remain the wage source, but they are now mirrored from public.people; wages are editable from Settings > People as well as the legacy Team Members card, both writing the same rows. Prompt 56: the four formula constants are settings-backed (bonus_crew_fraction_pct, bonus_labor_burden_pct, bonus_ot_multiplier, costing_default_labor_budget_pct; shipped values stay the fallback, hydrated by applyCostingBonusSettings from the loaders' existing settings reads) under Settings > General > Job Costing & Bonus. The same computeCrewBonus actualLabor is now the job's Salary & Wages cost everywhere via crewLaborForJob, so the labor line and the bonus math structurally cannot disagree. saveBonusField/addBonusRow (the free-form editable bonus rows) were removed with the Crew Bonuses card.",
       "code": {
         "indexHtml": [
           "renderCrewBonus",
           "computeCrewBonus",
-          "saveBonusField",
           "renderBonusReport",
           "buildBonusHandoutMemberPage",
-          "openBonusHandouts"
+          "openBonusHandouts",
+          "crewLaborForJob",
+          "writeLaborSavingsLedger",
+          "applyCostingBonusSettings"
         ]
       },
       "tables": [
@@ -795,7 +809,11 @@
       ],
       "since": "2026-06",
       "settings": [
-        "bonus_lock_days"
+        "bonus_lock_days",
+        "bonus_crew_fraction_pct",
+        "bonus_labor_burden_pct",
+        "bonus_ot_multiplier",
+        "costing_default_labor_budget_pct"
       ]
     },
     {
@@ -1336,7 +1354,7 @@
     {
       "name": "BusyBusy hours import (Payroll Export)",
       "area": "integrations",
-      "description": "Crew hours reach job costing through an admin-triggered, preview-then-commit import from the BusyBusy Payroll Export API (Settings > BusyBusy). The API is a snapshot, not a sync (calculated Ids, no updatedSince, no deletion feed), so each import atomically replaces the stored date window via the pec_busybusy_import RPC; re-importing after punch corrections is the normal workflow. Identity is name-only (the export's EmployeeId is empty): every exported name is mapped to a crew member or Ignored on the mapping screen, and projects link to jobs once by exact normalized customer name, then by their stable 7-digit ProjectNumber (no fuzzy matching, ever). Overtime is BusyBusy's weekly-40 attribution, stored verbatim as REG/OT1 rows (a punch crossing hour 40 arrives as a split pair sharing Start/End); hours aggregate at read time, and BusyBusy's Wage/Cost columns are deliberately never imported. Overhead projects (Shop) are stored and reported but never charge a job. Anomalies (long punches, overlaps, punch notes) import and are flagged in the preview, never auto-corrected. Manual labor entry remains for jobs with no BusyBusy coverage; a job with imported rows uses them and shows its manual entries greyed. The earlier GraphQL proxy (pec-busybusy.cjs, 401 since 2026-06-13, spec docs/archive/prompts/claude-code-prompt-busybusy-overtime-costing.md) was retired by this build. Prompt 54: crew-member identity (pec_prod_crew_members.id, which pec_prod_busybusy_employees.crew_member_id maps to) is untouched by the People model; the mirror only writes name/active and never rewrites ids, so imported-hour attribution is stable.",
+      "description": "Crew hours reach job costing through an admin-triggered, preview-then-commit import from the BusyBusy Payroll Export API (Settings > BusyBusy). The API is a snapshot, not a sync (calculated Ids, no updatedSince, no deletion feed), so each import atomically replaces the stored date window via the pec_busybusy_import RPC; re-importing after punch corrections is the normal workflow. Identity is name-only (the export's EmployeeId is empty): every exported name is mapped to a crew member or Ignored on the mapping screen, and projects link to jobs once by exact normalized customer name, then by their stable 7-digit ProjectNumber (no fuzzy matching, ever). Overtime is BusyBusy's weekly-40 attribution, stored verbatim as REG/OT1 rows (a punch crossing hour 40 arrives as a split pair sharing Start/End); hours aggregate at read time, and BusyBusy's Wage/Cost columns are deliberately never imported. Overhead projects (Shop) are stored and reported but never charge a job. Anomalies (long punches, overlaps, punch notes) import and are flagged in the preview, never auto-corrected. Manual labor entry remains for jobs with no BusyBusy coverage; a job with imported rows uses them and shows its manual entries greyed. The earlier GraphQL proxy (pec-busybusy.cjs, 401 since 2026-06-13, spec docs/archive/prompts/claude-code-prompt-busybusy-overtime-costing.md) was retired by this build. Prompt 54: crew-member identity (pec_prod_crew_members.id, which pec_prod_busybusy_employees.crew_member_id maps to) is untouched by the People model; the mirror only writes name/active and never rewrites ids, so imported-hour attribution is stable. Prompt 56: imported hours now reach gross profit, not just the Bonus Payout box. bbAccumulateEntries is the one accumulation rule, loadCostingData builds the shared per-job map, and crewLaborForJob turns it into the loaded labor cost that computeCostingRow charges against GP on the costing card, the Rollups, and Metrics.",
       "code": {
         "indexHtml": [
           "renderSettingsBusybusy",
@@ -1344,7 +1362,9 @@
           "renderBbProjectsCard",
           "openBbProjectLinkModal",
           "loadCostingData",
-          "renderUnifiedJob"
+          "renderUnifiedJob",
+          "bbAccumulateEntries",
+          "crewLaborForJob"
         ],
         "netlifyFunctions": [
           "pec-busybusy-export.cjs"

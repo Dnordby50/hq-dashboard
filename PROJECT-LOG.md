@@ -4,6 +4,53 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Claude Code: prompt 56 built (crew labor into GP everywhere, one-click bonus approval)
+By: Claude Code
+
+Changed: five commits on main, all pushed, one per part as the prompt required. 4da0bc5 (Part A, the shared labor number), 5e71b68 (Part B, derived labor/hours/pending bonus into computeCostingRow), aeb8e32 (Part C, Approve button + Crew Bonuses card deleted), 73a8aff (Part D, Metrics), ac362e6 (Part E, settings), plus this docs commit. npm test 25/25 green before every commit; every script block node-checked. NO migration (settings is key/value, exactly as the prompt said). NOTE: Cowork was working in this same checkout concurrently (applied the ops_queue migration 6e2d65c, wrote prompt 57 c663c1f); two stale 0-byte git lock files from racing commits were verified process-free and removed, and Cowork's pending PROJECT-LOG correction entry below rides along in this docs commit unchanged.
+
+THE FIX, one sentence: the loaded BusyBusy labor that computeCrewBonus already computed for the Bonus Payout box now also lands in computeCostingRow, so Salary & Wages, Total Var, GP, GP%, the Hrs column, and GP/hr all agree with the bonus math by construction. crewLaborForJob returns computeCrewBonus(...).actualLabor as THE labor cost (there is no second computation of loaded labor anywhere), costingDerivedForJob packages { laborCost, actHrs, pendingBonus } for computeCostingRow's new trailing options arg, and every bucket keeps the existing `derived > 0 ? derived : stored` precedence, which is what keeps the 35 legacy hand-typed jobs numerically identical (they have no crew hours, so every derived value is 0 and the stored fields still win).
+
+HOW THE DOUBLE-COUNT IS STRUCTURALLY BLOCKED: bonus_cost = ledger sum + pending pool, and pendingBonusForJob returns 0 the moment ANY 'Labor-savings bonus' ledger row exists. Approve writes those rows with amount = suggested_amount exactly (decision 6, no per-member editing), so GP is unchanged by approval, only the label moves from pending to recorded. Approve and Finalize share ONE ledger write (writeLaborSavingsLedger, extracted from doFinalize, including the delete-then-insert scoped to that note and the pre-migration audit-column retry). Finalize with an already-approved bonus shows the rows read-only and skips the write entirely, so approved_by / approved_at keep the approver's name, never the finalizer's.
+
+JUDGMENT CALLS, logged because the prompt left them to the session:
+- METRICS GETS LABOR AND HOURS, NOT THE PENDING POOL. Part B4 says one pending-bonus definition for the detail, the list, and Metrics, but the pending pool needs the estimate-based labor budget and renderMetrics deliberately does not load the estimate chain (the prompt itself says Metrics "needs its own read", not loadCostingData). Labor cost and hours in Metrics are exact (same computeCrewBonus, null budget only suppresses the pool, never actualLabor); a suggested-but-unapproved bonus reaches Metrics GP the moment it is approved or finalized, via the pec_prod_job_bonuses read Metrics already had. Computing the pool from the % fallback instead would have shown a DIFFERENT number than the card ($362 vs $141 on Weiss), which is worse than a small honest gap. Verify item 10's "drops by roughly the sum of the 10 jobs' labor" holds.
+- METRICS ALSO READS pec_prod_job_manual_labor. Part D named only BusyBusy + wages, but crewLaborForJob's precedence includes the manual per-member fallback, and decision 4 says scope is everywhere; without it a manual-hours job would carry labor on the card but not in Metrics.
+- deleteBonusRow SURVIVES the C5 deletion list. The prompt listed it as dead, but the kept $50 crew-lead checkbox unchecks by deleting its sentinel row through it. addBonusRow and saveBonusField are gone as ordered.
+- THE COSTING QUEUE'S scoped hours query (:31543 in the prompt) was replaced by the shared map + crewLaborForJob, removing the second per-screen read the root-cause analysis called out. Display unchanged.
+
+Part E: the four constants became settings-backed lets (bonus_crew_fraction_pct 75, bonus_labor_burden_pct 25, bonus_ot_multiplier 1.5, costing_default_labor_budget_pct 20) plus the two kill switches costing_labor_from_hours / costing_count_pending_bonus, all under Settings > General > Job Costing & Bonus. applyCostingBonusSettings hydrates from the settings reads loadCostingData, renderMetrics, and renderBonusReport already make (zero extra queries) and ignores missing or invalid values, so a blank key can never zero the bonus math. costing_labor_from_hours=false makes costingDerivedForJob return {} everywhere, which IS the rollback path (verify item 12).
+
+OPEN QUESTION FOR DYLAN (from the prompt, decision for later, not a task): the 35 legacy jobs' hand-typed salary_wages_cost was almost certainly raw wages, while BusyBusy-era jobs now carry wages plus the 25% burden, so company-level GP trends across that boundary compare apples to oranges. Options when he wants them comparable: backfill legacy rows to loaded cost, or exclude pre-BusyBusy jobs from trend charts. Nothing was retro-adjusted in this build.
+
+Why: Dylan ran claude-code-prompt-56-costing-labor-and-bonus-approval.md (his report on Bobette Weiss #2989725).
+Files touched: index.html, help/whats-new.json, features.json, PROJECT-LOG.md (this entry).
+Next steps: Cowork verifies live per the handoff below. Expected on Bobette Weiss after deploy: Salary & Wages $697 derived, Bonus $141 pending, Total Var $838, GP $5,062 at 85.8%, 24.2 hrs, GP/hr $209.
+
+## Handoff to Cowork
+Per the prompt's handoff section: verify items 2, 3, 6, 7, and 10 of the prompt's Verify list against the LIVE dashboard (not just the code), on the deployed main (docs commit and later).
+1. Bobette Weiss (#2989725) costing detail: Salary & Wages $697 (derived, burden note), Bonus $141 pending, Total Var $838, GP $5,062 / 85.8%, 24.2 hrs, GP/hr $209, Rev/hr $244. Record the actual before/after GP in your log entry.
+2. Click Approve: exactly 3 pec_prod_job_bonuses rows ($48/$47/$46, note 'Labor-savings bonus', suggested_amount = amount, approved_by set) and GP DOES NOT MOVE. Unapprove, confirm the rows delete and GP stays $5,062. Approve again, Finalize, confirm the dialog shows the rows read-only and approved_by is still the approver afterward.
+3. Job Costing Rollups: Hrs populated for the 10 BusyBusy jobs (Al Weikart 4.0, Bobby Priest 35.1, Bobette Weiss 24.2, Haley Construction 6.0, Jamy Myrmel 20.4, Martin Trout 5.2, Nathan Rhodes 29.4, Plaza Bowl 8.9, Scott Gordon 39.0, Will Lewis 20.7), GP/hr no longer a dash.
+4. Spot-check THREE of the 35 legacy jobs with a hand-typed salary_wages_cost and no BusyBusy hours: numerically unchanged. If ANY moves, stop and flag before anyone finalizes another job.
+5. Metrics GP by crew lead: Bobette Weiss appears instead of counting toward gpMissing; record the grand-total GP delta.
+6. Report the Weiss before/after GP and the Metrics delta to Dylan. No migration to apply.
+
+---
+
+## [2026-07-28 MST] Cowork: correction to the prompt-57 entry below (prompt 56 and the Ops Queue migration are already done)
+By: Cowork
+
+Correcting the "Next steps" line of the entry immediately below this one. It says prompt 56 is still unrun and 2026-07-28_ops_queue.sql is still unapplied. Both are wrong; I wrote that line from the top three log entries before checking git log. Actual state on main: prompt 56 shipped in four commits (4da0bc5 Part A, 5e71b68 Part B, aeb8e32 Part C, 73a8aff Part D), and the Ops Queue migration was applied and verified in 6e2d65c with SCHEMA.md regenerated to 82 of 82. Nothing else in the prompt-57 entry or in the prompt file depends on that claim, and prompt 57 still does not collide with any of it.
+
+Also worth knowing before running prompt 57: index.html has UNCOMMITTED changes in the working tree right now (git status shows ` M index.html`). Prompt 57 touches index.html heavily. Commit or stash that work before starting, or the two sets of edits will tangle.
+
+Why: caught while verifying the prompt-57 commit landed.
+Files touched: PROJECT-LOG.md (this entry).
+Next steps: none. This entry is informational.
+
+---
+
 ## [2026-07-28 MST] Cowork: wrote prompt 57 (schedule colors, shared job popup, sqft, ACH pending, 12hr times, settings nav, flake condense, People+Users merge)
 By: Cowork
 

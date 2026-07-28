@@ -1,5 +1,16 @@
 [
   {
+    "id": "costing-labor-and-bonus-approval",
+    "date": "2026-07-28",
+    "title": "Job costing now counts crew labor",
+    "summary": "Hours imported from BusyBusy turn into a real labor cost on the job costing card, so gross profit and GP per hour finally reflect what the job actually cost. The Salary and Wages field fills in automatically from crew hours and wages (including the labor burden), the suggested crew bonus counts against profit as pending, and you approve that bonus with one click, right under the number it is based on. The manual bonus section is gone; the $50 crew lead bonus checkbox moved onto the Labor and Bonus Payout card.",
+    "howto": [
+      "Open a job in Job Costing and expand Labor and Bonus Payout.",
+      "Check the crew hours and the suggested bonus, then click Approve.",
+      "Gross profit at the top of the card now includes labor and the approved bonus."
+    ]
+  },
+  {
     "id": "schedule-autofill-estimate",
     "date": "2026-07-28",
     "title": "The scheduler fills in system type and estimated hours for you",
