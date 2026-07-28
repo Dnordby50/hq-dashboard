@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: wrote prompt 56 (job costing labor cost + one-click bonus approval)
+By: Cowork
+
+Changed: one new file, claude-code-prompt-56-costing-labor-and-bonus-approval.md. No code, no schema, no prod change. Read-only investigation of index.html plus live queries against zdfpzmmrgotynrwkeakd.
+
+Dylan reported three things on the Bobette Weiss job (#2989725): BusyBusy hours are not reaching the percentages at the top of the job costing card, gross profit is wrong, and the costing summary pulls no labor cost. He also wants the automated bonus to be the source of truth, the manual bonus section gone, and a way to approve the suggested amount.
+
+THE FINDING: all three symptoms are ONE bug. BusyBusy loaded labor is computed only inside computeCrewBonus for the Bonus Payout box and is never handed to computeCostingRow.
+- computeCostingRow builds buckets.salary_wages_cost from the hand-typed pec_prod_job_costing column (index.html:29247). No BusyBusy input, so totalVar (:29254) omits labor and GP is overstated by the full labor cost.
+- computeCostingRow reads hours from job.actual_hours (index.html:29234). Live: only 4 of 88 pec_prod_jobs have actual_hours set, and NONE of the 10 BusyBusy-covered jobs does. So r.actHrs is 0 fleet-wide, which blanks the Rollups Hrs column and GP/hr everywhere except the detail card, which patches around it locally with actHrsEff (:30288).
+- loadCostingData (:29034) never queries pec_prod_busybusy_time_entries at all. BusyBusy is read in exactly two screen-scoped places, the detail card (:30068) and the costing queue (:31543), so no shared per-job labor number exists for the list, rollups, or Metrics.
+
+LIVE CONFIRMATION on Bobette Weiss: there is NO pec_prod_job_costing row for that job at all, so cost || {} makes every bucket 0, Total Var reads $0 and GP reads $5,900 at 100%. Her BusyBusy rows (all wage_type REG, no OT) total 24.2 hrs: Davey Milligan 8.1667 at $22, Kyle Floyd 8.1333 at $27, Matthew Hamby 7.9 at $20. Loaded at the 25% burden that is $697, exactly the number the Bonus Payout box shows and exactly what GP is missing. Expected after the fix: labor $697, pending bonus $141, Total Var $838, GP $5,062 at 85.8%.
+
+NO DOUBLE-COUNT RISK ON LIVE DATA: of 40 pec_prod_job_costing rows, 35 carry a hand-typed salary_wages_cost > 0, but none of the 10 jobs with BusyBusy hours has one (nine NULL, one 0.00). The hand-typed era and the BusyBusy era do not overlap on a single job today.
+
+ON THE BONUS ASK: an approval gate already exists. Clicking Finalize opens "Approve crew bonus & finalize" (:31249) with each member's suggested amount pre-filled and editable, writing suggested_amount / approved_by / approved_at. Dylan is not missing a feature, he wants it in the place he reads the number. The prompt puts an Approve button on the Labor & Bonus Payout card, one click on the suggested amount with no per-member editing (his words: the automated bonus is the source of truth), reusing the SAME ledger write so there is only one code path, and makes Finalize show already-approved rows read-only rather than re-inserting them (which would overwrite approved_by with the finalizer's name).
+
+Dylan answered four questions and then declined further rounds, so decisions 5 through 9 in the prompt are Cowork's calls, each flagged in the file as reversible in one line. The two worth naming here: the $50 crew lead bonus checkbox lives inside the Crew Bonuses card Dylan wants deleted, but it is a separate policy rather than a manual override of the automated number, so it MOVES to the Labor card instead of dying with the card; and the "Manual team member hours" editor STAYS, because he objected to a manual bonus, not manual hours, and it is the only path for a job BusyBusy never covered.
+
+Also caught while reading: the hours field at :30447 is labeled "Manual hours (override)" but actHrsEff ignores it whenever per-member hours exist. The label is lying. The prompt corrects the label, not the precedence.
+
+Deliberately NOT in scope, raised in the prompt as a decision for Dylan later: the 35 legacy hand-typed salary_wages_cost rows were almost certainly raw wages while BusyBusy-era jobs now carry wages plus 25% burden, so company GP across that boundary is apples to oranges. No history is touched.
+
+Why: Dylan's report plus screenshots of the Labor & Bonus Payout card and the Crew Bonuses card.
+Files touched: claude-code-prompt-56-costing-labor-and-bonus-approval.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 56 in Claude Code. No migration (the four bonus constants move to the key/value settings table). Cowork then verifies items 2, 3, 6, 7 and 10 of the prompt's Verify list live and records the actual Bobette Weiss before/after GP and the Metrics grand-total GP delta.
+
+---
+
 ## [2026-07-28 MST] Cowork: DripJobs cutover readiness audit (no code change, findings only)
 By: Cowork
 
