@@ -34117,12 +34117,20 @@ function _mergeAcrossAreas(areaPlans) {
         kit_size: Number($('pmKit').value || 1),
         unit_cost: $('pmCost').value === '' ? null : Number($('pmCost').value),
         image_url: $('pmImage').value.trim() || null,
-        datasheet_path: sheetPaths.datasheet_path,
-        msds_path: sheetPaths.msds_path,
         active: $('pmActive').value === 'true',
         notes: $('pmNotes').value || null,
         default_basecoat_product_id: $('pmType').value === 'Flake' ? ($('pmBasecoat').value || null) : null,
       };
+      // Sheet paths join the payload only when the columns are known to exist
+      // (an existing row exposes them through select('*')) or a sheet was
+      // actually attached this session. This keeps every ordinary product save
+      // working in the deploy window BEFORE the 2026-07-28 datasheets
+      // migration lands; sending the keys unconditionally would 400 all saves
+      // until Cowork applies it.
+      if ((existing && 'datasheet_path' in existing) || sheetPaths.datasheet_path || sheetPaths.msds_path) {
+        payload.datasheet_path = sheetPaths.datasheet_path;
+        payload.msds_path = sheetPaths.msds_path;
+      }
       if (!payload.name)             { reenable(); return errEl.textContent = 'Name is required.'; }
       if (!(payload.spread_rate > 0)){ reenable(); return errEl.textContent = 'Spread rate must be > 0.'; }
       if (!(payload.kit_size > 0))   { reenable(); return errEl.textContent = 'Kit size must be > 0.'; }
