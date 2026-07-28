@@ -4,6 +4,28 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: wrote prompts 53 and 54 from Dylan's four-item list
+By: Cowork
+
+Changed: two new prompt files at the repo root. No code, no schema, no third-party config.
+
+Dylan pasted four items: (1) job name and crew name as LARGE boxes replacing the "Crew Work Order" text on the work order, (2) data sheets attachable to products in the catalog, (3) map team members, crew, and users onto one table, (4) the Users table falls off the page, make it scrollable. Ran the dig (12 multiple-choice questions across three rounds), then split the work: item 3 is the People model build locked on 2026-07-16 and got its own prompt, the other three are independent and share one.
+
+claude-code-prompt-53-wo-header-datasheets-tablescroll.md
+- Part A: three large header boxes (Job / Crew / Date) replacing .wo-title at index.html:13398, and REMOVAL of the duplicated Crew, Date, and Job Name rows from the .intake Job Identity grid (index.html:13417-13425). Flagged the grid-pairing consequence: the group pairs two label/value sets per row, so dropping three pairs leaves 2.5 rows and needs rebalancing. Blank crew or date prints an EMPTY box, not "Unassigned"; this is a fillable paper form.
+- Part B: product data sheets. Dylan chose uploaded PDFs over pasted URLs, two per product (TDS + MSDS), reachable from the catalog row/modal and from a job-detail button that only appears when the job's materials actually have sheets. Bucket decision moved during the dig: he first picked private + signed URLs, then reversed to PUBLIC after I pointed out crew members are not admin_users rows and have no login, so a signed URL reaches nobody in the field. This is the app's FIRST Supabase Storage code (grep for storage.from( in index.html returns nothing today; the one existing bucket, pec-photos, is public, unreferenced from this repo, and explicitly not to be reused). Prompt specifies storing the object PATH not the URL, creating the bucket and its policies IN the migration rather than by hand in Studio, uploading on file-pick under a crypto.randomUUID() name so a not-yet-saved product can carry a file, and a datasheet_max_upload_mb setting per standing rule 12.
+- Part C: the Users-table bug, diagnosed rather than described. .pec-table-wrap HAS NO GLOBAL CSS RULE. The only definition in index.html is scoped to .prod-modal-wide (index.html:31394), so the other 14 uses are plain divs with no overflow behavior. Settings > Users is the worst case at 12 columns (colCount at index.html:17884). Fix is one global rule next to the .pec-table block at index.html:479. Dylan chose the global fix over a Users-only patch.
+
+claude-code-prompt-54-people-model.md
+- Written from the 2026-07-16 locked framing (one person record with role labels, crews stay a separate grouping, phased and reversible, birthdays fold in), NOT re-litigated. New answers on top: build the unified table now (he declined the read-only-join-first option I recommended), new table is source of truth with the legacy tables mirrored from it, a view over the old tables is a pre-authorized retreat if the trigger direction proves worse, and birthdays ship in this build.
+- The prompt hands Claude Code five named landmines instead of making it find them: commission is attributed by FREE-TEXT lowercased name (index.html:15603-15605) against pec_job_ar, not by id, so a rename silently rewrites commission history; crew bonus labor is hours x pec_prod_crew_members.hourly_wage x 1.25; BusyBusy now maps via pec_prod_busybusy_employees.crew_member_id and the old busybusy_member_id column is dead; admin_users is load-bearing for ~206 RLS references and must not change shape; pec_sales_team_members.auth_user_id carries a partial unique index the estimator's salesperson default depends on. Dedupe is human-confirmed on a one-time review screen, never automatic (15 legacy rows total, and "Preston" with no surname is exactly the shape that mis-matches). No drops of any legacy table in this build.
+
+Why: Dylan's 2026-07-28 message.
+Files touched: claude-code-prompt-53-wo-header-datasheets-tablescroll.md (new), claude-code-prompt-54-people-model.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs 53 first (it is independent and its global .pec-table-wrap rule is a dependency 54 would otherwise have to duplicate), then 54. Both produce a migration Cowork applies before the behavior is live. Unchanged from prior entries: Aron Bronson's 47.78-hour BusyBusy punch and the Matt Scharrer job (#2227346) still gate the first real hours import.
+
+---
+
 ## [2026-07-28 MST] Cowork: verified the Settings > BusyBusy tab is live (stale browser page, not a bug)
 By: Cowork
 
