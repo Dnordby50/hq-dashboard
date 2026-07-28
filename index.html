@@ -10897,9 +10897,15 @@ async function renderJobInvoice(jobId) {
       // Payment schedule (prompt 45). A missing table pre-migration resolves
       // as an error inside the result and the schedule card shows a hint.
       supabase.from('pec_invoice_installments').select('*').eq('job_id', jobId).order('seq'),
+      // In-flight ACH transfers (prompt 57): the webhook writes pec_stripe_pending
+      // when a bank debit starts and settles/fails it 3-5 business days later.
+      // The AR list already shows these; this read puts them on the one screen
+      // Dylan opens per customer. A failed read degrades to no pending markers.
+      supabase.from('pec_stripe_pending').select('id,payment_intent,kind,amount,status,failure_message,created_at,resolved_at')
+        .eq('job_id', jobId).in('status', ['pending', 'failed']).order('created_at'),
     ]), { label: 'renderJobInvoice' });
-  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }, { error: e }]; }
-  const [arRes, payRes, coSigRes, emLogRes, smLogRes, instRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }, { error: e }, { error: e }]; }
+  const [arRes, payRes, coSigRes, emLogRes, smLogRes, instRes, achRes] = res;
   const coSigRows = (coSigRes && !coSigRes.error) ? (coSigRes.data || []) : [];
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
@@ -10923,6 +10929,34 @@ async function renderJobInvoice(jobId) {
   const instErr = !!(instRes && instRes.error);
   const installments = (instRes && !instRes.error && instRes.data) || [];
   const ask = installments.length ? pecInstallmentAsk(row, installments, payments) : null;
+  // ACH in flight (prompt 57). Pending rows ANNOTATE, never settle: the money
+  // is not ours until the bank clears it (an ACH can still bounce), so Due now
+  // / Balance / Paid to date are deliberately left untouched and no pec_payments
+  // row exists yet (the webhook records one on settle; recording here would
+  // double-count). Failed rows follow the AR list's lifecycle: red until a
+  // later payment lands on/after the failure day, then considered handled.
+  if (achRes && achRes.error) console.warn('[pec] invoice ach pending read skipped:', achRes.error.message);
+  const achRows = (achRes && !achRes.error && achRes.data) || [];
+  const achPhxDay = ts => new Date(ts - 7 * 3600 * 1000).toISOString().slice(0, 10); // same UTC-7 rule as invToday
+  const achPending = achRows.filter(p => p.status === 'pending');
+  const achPendingTotal = achPending.reduce((s, p) => s + invNum(p.amount), 0);
+  const achFailed = achRows.filter(p => {
+    if (p.status !== 'failed') return false;
+    const ts = Date.parse(p.resolved_at || p.created_at); // same failure-day rule as the AR list chip
+    const day = Number.isFinite(ts) ? achPhxDay(ts) : null;
+    return !(day && r.last_payment_date && r.last_payment_date >= day);
+  });
+  const achStartDay = p => { const ts = Date.parse(p.created_at); return Number.isFinite(ts) ? achPhxDay(ts) : null; };
+  const achExpectedBy = p => { // 5 business days out = the far edge of the 3-5 day window
+    const day = achStartDay(p);
+    if (!day) return null;
+    const d = new Date(day + 'T12:00:00Z');
+    let n = 0;
+    while (n < 5) { d.setUTCDate(d.getUTCDate() + 1); if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) n++; }
+    return d.toISOString().slice(0, 10);
+  };
+  // Same copy as the AR list chip so the two screens say the same thing.
+  const ACH_TIP = 'A bank transfer is clearing (3 to 5 business days). No need to chase this customer.';
   const items = Array.isArray(row.line_items) ? row.line_items : [];
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || '—';
   const ageChip = row.completed_date ? invAgeCompleted(invDaysSince(row.completed_date)) : invAgeSigned(invDaysSince(row.signed_date));
@@ -10938,14 +10972,30 @@ async function renderJobInvoice(jobId) {
       <td style="white-space:pre-wrap;font-size:.85rem;color:var(--muted)">${esc(it.description || '')}</td>
       <td style="text-align:right">${invLinePrice(it) != null ? invUSD(invLinePrice(it)) : '—'}</td></tr>`).join('')
     : '<tr class="nohover"><td colspan="3" class="pec-empty">No line items entered yet. The invoice total below comes from the job price.</td></tr>';
-  const payRows = payments.length ? payments.map(p => `<tr class="nohover">
+  // In-flight / bounced transfers render ABOVE recorded payments, visually
+  // muted (or red) so they never read as money in hand.
+  const achPayRows = [
+    ...achFailed.map(p => `<tr class="nohover" style="color:#dc2626">
+      <td>${invFmtDate(achStartDay(p))}</td>
+      <td>Bank transfer (ACH)</td>
+      <td>Failed. The bank returned the debit${p.failure_message ? ': ' + esc(p.failure_message) : ''}. The balance is still owed; arrange payment again.</td>
+      <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
+      <td colspan="2"><span class="pec-badge" style="--pec-badge-bg:#ef4444">ACH failed</span></td></tr>`),
+    ...achPending.map(p => `<tr class="nohover" style="color:var(--muted)" title="${esc(ACH_TIP)}">
+      <td>${invFmtDate(achStartDay(p))}</td>
+      <td>Bank transfer (ACH)</td>
+      <td>Clearing. Started ${invFmtDate(achStartDay(p))}, expected by ${invFmtDate(achExpectedBy(p))} (3 to 5 business days). Not a payment yet.</td>
+      <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
+      <td colspan="2"><span class="pec-badge" style="--pec-badge-bg:#64748b">ACH pending</span></td></tr>`),
+  ].join('');
+  const payRows = achPayRows + (payments.length ? payments.map(p => `<tr class="nohover">
       <td>${invFmtDate(p.received_date)}</td>
       <td>${esc(titleCaseValue(p.method) || '—')}</td>
       <td>${esc(p.reference || '—')}</td>
       <td style="text-align:right">${invUSD(invNum(p.amount))}</td>
       <td>${esc(p.recorded_by || '—')}</td>
       <td><button class="pec-btn sm ghost" data-edit-pay="${esc(p.id)}">Edit</button> <button class="pec-btn sm ghost" data-delete-pay="${esc(p.id)}" style="color:#dc2626">Delete</button></td></tr>`).join('')
-    : '<tr class="nohover"><td colspan="6" class="pec-empty">No payments recorded yet.</td></tr>';
+    : (achPayRows ? '' : '<tr class="nohover"><td colspan="6" class="pec-empty">No payments recorded yet.</td></tr>'));
   // Communication history entries: invoice emails + texts merged, newest
   // first. The top entry doubles as the at-a-glance "last sent" (Dylan: the
   // panel is enough, no separate summary line). Sender names resolve through
@@ -11035,7 +11085,7 @@ async function renderJobInvoice(jobId) {
         : ask.mode === 'balance' ? 'remaining balance'
         : ask.mode === 'none' ? 'waiting on ' + esc(pecInstMilestoneLabel(ask.installment && ask.installment.trigger_kind).toLowerCase())
         : 'paid in full'
-      }</div></div>` : ''}
+      }</div>${achPendingTotal > 0.005 ? `<div class="pec-ar-sub" style="color:var(--muted)" title="${esc(ACH_TIP)}">${invUSD(achPendingTotal)} bank transfer clearing</div>` : ''}</div>` : ''}
     </div>
     ${(() => {
       if (instErr) return `<div class="pec-card"><h3>Payment schedule</h3><div class="pec-empty">Couldn&#39;t load the payment schedule (apply the 2026-07-22_invoice_installments.sql migration first).<br><span style="font-size:.72rem;color:var(--muted)">${esc(instRes.error.message || '')}</span></div></div>`;
@@ -11051,11 +11101,21 @@ async function renderJobInvoice(jobId) {
           <div class="pec-ar-sub">No schedule: this invoice asks for the full remaining balance, exactly as before. Build a schedule to bill a required deposit or milestone installments, one ask at a time.</div>
         </div>`;
       }
+      // Which installment is the in-flight transfer paying? kind='deposit'
+      // marks the deposit row; anything else (installment / balance) marks the
+      // current ask when the amounts agree.
+      const achChip = s => {
+        if (!achPending.length) return '';
+        const covers = achPending.some(p =>
+          (p.kind === 'deposit' && s.inst.is_deposit) ||
+          (p.kind !== 'deposit' && s.isCurrent && Math.abs(invNum(p.amount) - s.amount) < 0.01));
+        return covers ? ` <span class="pec-badge" style="--pec-badge-bg:#64748b" title="${esc(ACH_TIP)}">Bank transfer clearing</span>` : '';
+      };
       const schedRows = ask.schedule.map(s => `<tr class="nohover" ${s.isCurrent ? 'style="background:color-mix(in srgb, var(--rd-accent,#D8531C) 8%, transparent)"' : ''}>
         <td>${s.inst.is_deposit ? '<span class="pec-age pec-age-yellow">Deposit</span> ' : ''}${esc(s.inst.label || (s.inst.is_deposit ? '' : 'Installment'))}${s.isCurrent ? ' <span style="color:var(--rd-accent,#D8531C);font-weight:800;font-size:.68rem;letter-spacing:.5px">DUE NOW</span>' : ''}</td>
         <td style="text-align:right">${invUSD(s.amount)}${s.inst.amount_kind === 'percent' ? `<div class="pec-ar-sub" style="font-size:.68rem">${esc(String(Number(s.inst.amount_value)))}% of total</div>` : ''}${!s.settled && s.applied > PEC_INST_EPS ? `<div class="pec-ar-sub" style="font-size:.68rem">${invUSD(s.applied)} applied</div>` : ''}</td>
         <td>${esc(pecInstMilestoneLabel(s.inst.trigger_kind, s.inst.due_date))}</td>
-        <td>${pecInstStatusChip(s)}${s.inst.sent_at ? `<div class="pec-ar-sub" style="font-size:.68rem">sent ${esc(invFmtDate(String(s.inst.sent_at).slice(0, 10)))}</div>` : ''}</td>
+        <td>${pecInstStatusChip(s)}${achChip(s)}${s.inst.sent_at ? `<div class="pec-ar-sub" style="font-size:.68rem">sent ${esc(invFmtDate(String(s.inst.sent_at).slice(0, 10)))}</div>` : ''}</td>
       </tr>`).join('');
       const modeNote = ask.mode === 'none'
         ? `<div class="pec-ar-sub" style="margin-top:8px">Nothing is due right now: the next installment waits on its milestone (${esc(pecInstMilestoneLabel(ask.installment && ask.installment.trigger_kind).toLowerCase())}).</div>`
