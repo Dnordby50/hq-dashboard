@@ -20499,7 +20499,8 @@ async function loadProdCore() {
   state.productAreasByJob = byJob;
 }
 async function loadScheduleData() {
-  await loadProdCore(); // schedule needs only the shared slots
+  await loadProdCore(); // shared slots first: the estimate builder needs prodJobs + productAreasByJob
+  await loadScheduleEstimates(); // estimate-derived system + hours for every schedule surface (prompt 55 Part A)
 }
 
 // ============================================================
@@ -24684,7 +24685,7 @@ function slotLabel(s) {
 async function renderNextDay() {
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading…</div>';
-  await loadProdCore();
+  await loadScheduleData(); // loadProdCore + the shared estimate facts (the cards' hours read prodJobEstimateFacts)
   if (!state.nextDayAnchor) state.nextDayAnchor = isoDate(addDays(parseISO(mstTodayIso()), 1));
   const target = state.nextDayAnchor;
   const crews = (state.crews || []).filter(c => c.active);
@@ -24769,7 +24770,7 @@ async function renderNextDay() {
       <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}${tuBadge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
       ${tuDesc}
-      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs` : ''}</div>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${(() => { const h = fmtFactsHours(prodJobEstimateFacts(j.id ? j : d.job_id).budgetedHours); return h ? ` · ${esc(h)} hrs` : ''; })()}</div>
       ${splitBtn || removeBtn ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${splitBtn}${removeBtn}</div>` : ''}
     </div>`;
   };
@@ -24831,7 +24832,7 @@ async function renderNextDay() {
         <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}${esc(touchup)}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
         ${tuDescLine}
-        <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${j.estimated_hours ? ' · ' + esc(j.estimated_hours) + ' hrs' : ''}</div>
+        <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${(() => { const h = fmtFactsHours(prodJobEstimateFacts(j.id ? j : d.job_id).budgetedHours); return h ? ' · ' + esc(h) + ' hrs' : ''; })()}</div>
       </div>`;
     };
     // Tasks print in the same block format as jobs; the meta line reading
@@ -25820,8 +25821,13 @@ async function renderSchedule() {
 
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const crewById = Object.fromEntries(state.crews.map(c => [c.id, c]));
+  // System via the shared estimate-facts helper (prompt 55 Part A): a job's own
+  // pec_prod_areas system still wins, but a bridged/manual job with an empty
+  // stub now falls back to the estimate-derived system instead of "No system
+  // yet". Feeds the pending cards AND the calendar bars (renderScheduleCalendar
+  // receives this closure).
   const areaSystem = (job) => {
-    const id = dominantSystemId(state.productAreasByJob[job.id] || []);
+    const id = prodJobEstimateFacts(job).systemTypeId;
     return id ? sysById[id] : null;
   };
   const sumSqft = (job) => (state.productAreasByJob[job.id] || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
@@ -25862,6 +25868,7 @@ async function renderSchedule() {
         <div class="pec-sched-pending" id="pecSchedPending">
           ${pending.length === 0 ? '<div class="pec-empty" style="padding:20px 8px">No pending jobs. New jobs from accepted DripJobs estimates land here automatically.</div>' : pending.map(j => {
             const sys = areaSystem(j);
+            const estHrs = fmtFactsHours(prodJobEstimateFacts(j).budgetedHours);
             const owed = owedDays(j);
             // Flagged cards keep the amber badge instead of the x remove
             // button: hiding a job that still owes days would strand them.
@@ -25873,7 +25880,7 @@ async function renderSchedule() {
                 ${j.rescheduled_from ? `<div style="font-size:.68rem;color:var(--muted);margin-top:3px">was scheduled for ${esc(fmtDate(j.rescheduled_from))}</div>` : ''}
               </div>` : ''}
               <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${j.revenue ? ' · ' + fmtMoney(j.revenue) : ''}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
-              <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${j.estimated_hours ? ` · ${esc(j.estimated_hours)} hrs est` : ''}</div>
+              <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${estHrs ? ` · ${esc(estHrs)} hrs est` : ''}</div>
               <button class="pec-btn primary sm" data-schedule-job="${esc(j.id)}" style="width:100%">+ Schedule</button>
             </div>`;
           }).join('')}
@@ -26791,10 +26798,13 @@ function openPendingJobCard(jobId) {
   const job = state.prodJobs.find(j => j.id === jobId); if (!job) return;
   const sysById = Object.fromEntries(state.systemTypes.map(s => [s.id, s]));
   const areas = (state.productAreasByJob[job.id] || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-  // Dominant system (most sqft), the same rule the badge / calendar band / schedule
-  // dropdown use, so the quick look names the same system as everywhere else.
-  const domId = dominantSystemId(areas);
-  const sys = domId ? sysById[domId] : null;
+  // Shared estimate-facts resolution (prompt 55 Part A): the job's own areas
+  // still win (dominant system, most sqft), with the estimate-derived system
+  // and hours as the live fallback — the same answer as the pending card, the
+  // calendar bar, and the schedule modal.
+  const facts = prodJobEstimateFacts(job);
+  const sys = facts.systemTypeId ? sysById[facts.systemTypeId] : null;
+  const factsHrs = fmtFactsHours(facts.budgetedHours);
   const sqft = areas.reduce((s, a) => s + Number(a.sqft || 0), 0);
   const owed = Number(job.reschedule_days_owed) > 0 ? Number(job.reschedule_days_owed) : 0;
   const statusLabel = job.status ? String(job.status).replace(/_/g, ' ') : '';
@@ -26827,7 +26837,7 @@ function openPendingJobCard(jobId) {
       ${row('Revenue', job.revenue != null ? fmtMoney(job.revenue) : dash)}
       ${row('System', systemHtml)}
       ${row('Total sqft', sqft ? sqft.toLocaleString() + ' sqft' : dash)}
-      ${row('Est. hours', job.estimated_hours ? esc(job.estimated_hours) + ' hrs' : dash)}
+      ${row('Est. hours', factsHrs ? esc(factsHrs) + ' hrs' : dash)}
       ${row('Sales team', job.sales_team ? esc(job.sales_team) : dash)}
       ${row('Status', statusLabel ? esc(statusLabel) : dash)}
       ${owed ? row('Reschedule', rescheduleHtml) : ''}
@@ -26857,6 +26867,15 @@ function openScheduleModal(jobId) {
   // badge and calendar band use, so a multi-area job reads consistently.
   const domSysId = dominantSystemId(areas);
   const sys = domSysId ? sysById[domSysId] : null;
+  // Estimate-derived facts (prompt 55 Part A): the LIVE fallback when the
+  // job's own areas carry no system / no one has typed hours. derivedSys is
+  // display-only — it is deliberately NOT seeded into draft.system_type_id,
+  // because Save persists draft.system_type_id into pec_prod_areas and a
+  // prefilled derived value must never masquerade as an explicit pick (every
+  // Save would silently freeze the live value into an override). Only a real
+  // change event on the dropdown makes the pick stick.
+  const facts = prodJobEstimateFacts(job);
+  const derivedSys = (!sys && facts.systemTypeId) ? sysById[facts.systemTypeId] : null;
   const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
 
   // The picker opens on the CURRENT month, not the job's first scheduled day.
@@ -26881,9 +26900,10 @@ function openScheduleModal(jobId) {
     pickerMonth: new Date(nowMonth.getFullYear(), nowMonth.getMonth(), 1),
     crew_id: existingDays[0]?.crew_id || job.crew_id || '',
     time_slot: existingDays[0]?.time_slot || '',
-    // Touch-ups with no hours yet prefill from the touchup_default_duration_hours
-    // setting (loaded by the schedule render; falls back silently if absent).
-    estimated_hours: job.estimated_hours || (job.is_callback ? (state.touchupSettings?.defaultHours ?? 2) : ''),
+    // Hours prefill via the shared facts helper: a typed override (stored
+    // estimated_hours) first, else the estimate's computed budgetedHours,
+    // else the touch-up default for callbacks. Rounded for DISPLAY only.
+    estimated_hours: fmtFactsHours(facts.budgetedHours),
     sales_team: job.sales_team || '',
     revenue: job.revenue ?? '',
     // Billable touch-up override (prompt 51 Part D): billable and revenue are
@@ -26891,8 +26911,12 @@ function openScheduleModal(jobId) {
     billable: !!(job.is_callback && job.touchup_billable && Number(job.revenue) > 0),
     // Inline system pick. If the job already has an area its system wins,
     // otherwise the user picks here and Save inserts a default "Main" area.
+    // NEVER seeded from derivedSys — see the comment where facts is built.
     system_type_id: sys ? sys.id : '',
   };
+  // The exact prefill the hours field opened with; the save handler writes
+  // estimated_hours only when the field no longer matches it (write-guard).
+  const hoursPrefill = String(draft.estimated_hours ?? '');
 
   // Per-SEGMENT notes: a short label like "flake portion" shown on the
   // calendar. A segment is a contiguous run of consecutive selected dates
@@ -27030,7 +27054,7 @@ function openScheduleModal(jobId) {
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px">System type</div>
         <div style="margin-top:6px">
           <select id="schedSystem" style="width:100%" ${areas.length > 1 ? 'disabled' : ''}>
-            <option value="">${sys ? 'Keep current system' : 'Pick a system'}</option>
+            <option value="">${sys ? 'Keep current system' : derivedSys ? `From the estimate: ${esc(derivedSys.name)}` : 'Pick a system'}</option>
             ${sortSystemTypes(state.systemTypes).filter(s => s.active !== false).map(s => `<option value="${esc(s.id)}" ${sys && sys.id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
           </select>
         </div>
@@ -27038,6 +27062,8 @@ function openScheduleModal(jobId) {
           ? `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">This job has ${areas.length} areas. Showing the dominant system <span class="pec-color-dot" style="background:${esc((sys && sys.color) || '#888')}"></span>${esc(sys ? sys.name : '')} (most sqft). Edit each area's system in Ordering.</div>`
           : sys
           ? `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">Current: <span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}. Change here to add another area in Ordering later.</div>`
+          : derivedSys
+          ? `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">From the estimate: <span class="pec-color-dot" style="background:${esc(derivedSys.color || '#888')}"></span>${esc(derivedSys.name)}. This follows the estimate automatically. Picking a system here overrides the estimate and sticks.</div>`
           : `<div style="margin-top:6px;font-size:.7rem;color:var(--muted)">Pick a system to create a default "Main" area on save so this job can carry material lines from the Unified Job page later.</div>`}
       </div>
       <div class="pec-card" style="padding:14px;margin:0 0 12px">
@@ -27061,7 +27087,13 @@ function openScheduleModal(jobId) {
         </div>
       </div>
       <div class="pec-row-2">
-        <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24"></div>
+        <div class="pec-field"><label>Estimated hours</label><input id="schedHours" type="number" min="0" step="0.5" value="${esc(draft.estimated_hours)}" placeholder="e.g. 24">
+          ${job.is_callback ? '' : `<div style="font-size:.68rem;color:var(--muted);margin-top:4px">From the estimate. Type to override.</div>
+          <div style="font-size:.68rem;color:var(--muted)">Scheduling only. Job Costing and crew bonus use the estimate.</div>`}
+          ${(facts.source === 'manual' && facts.computedHours != null && fmtFactsHours(facts.computedHours) !== fmtFactsHours(facts.budgetedHours))
+            ? `<div style="font-size:.68rem;color:#b45309;margin-top:4px">Estimate now says ${esc(fmtFactsHours(facts.computedHours))} hrs. <button type="button" class="pec-btn sm ghost" id="schedHoursUseEst" style="padding:1px 8px;font-size:.68rem">Use it</button></div>`
+            : ''}
+        </div>
         <div class="pec-field"><label>Sales team</label>${salesTeamSelectHtml(draft.sales_team, 'id="schedSales"')}</div>
       </div>
       ${job.is_callback ? `
@@ -27123,6 +27155,15 @@ function openScheduleModal(jobId) {
       modal.querySelector('#schedCrew').addEventListener('change', e => { draft.crew_id = e.target.value; });
       modal.querySelector('#schedSlot').addEventListener('change', e => { draft.time_slot = e.target.value; });
       modal.querySelector('#schedHours').addEventListener('input', e => { draft.estimated_hours = e.target.value; });
+      // Drift resolver: the stored override disagrees with the live estimate;
+      // one click adopts the estimate's number (still passes through the
+      // write-guard below, so it saves as the new stored value).
+      const useEstBtn = modal.querySelector('#schedHoursUseEst');
+      if (useEstBtn) useEstBtn.addEventListener('click', () => {
+        const v = fmtFactsHours(facts.computedHours);
+        modal.querySelector('#schedHours').value = v;
+        draft.estimated_hours = v;
+      });
       modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
       const schedRevEl = modal.querySelector('#schedRevenue');
       if (schedRevEl) schedRevEl.addEventListener('input', e => { draft.revenue = e.target.value; });
@@ -27235,9 +27276,12 @@ function openScheduleModal(jobId) {
           // job. Blank here would quietly break the calendar color, materials,
           // and per-system metrics downstream. The job has a system if it
           // already carries an area (sys, the dominant) OR the user just picked
-          // one. Touch-up callbacks are exempt (no-charge warranty visits that
-          // inherit their context from the original job's notes).
-          if (!sys && !draft.system_type_id) return errEl.textContent = 'Pick a system type before scheduling. It sets the job\'s calendar color and lets materials and per-system metrics attribute this job.';
+          // one OR the estimate derives one (derivedSys; the live fallback
+          // supplies the calendar color and metrics attribution, so no forced
+          // pick and no frozen "Main" area). Touch-up callbacks are exempt
+          // (no-charge warranty visits that inherit their context from the
+          // original job's notes).
+          if (!sys && !draft.system_type_id && !derivedSys) return errEl.textContent = 'Pick a system type before scheduling. It sets the job\'s calendar color and lets materials and per-system metrics attribute this job.';
         }
         // Snapshot the job state BEFORE save so Undo (in scheduleSaveToast) can
         // revert. Capture only the fields the save handler mutates.
@@ -27279,9 +27323,17 @@ function openScheduleModal(jobId) {
           const jobPatch = {
             install_date: sortedIso[0],
             crew_id: draft.crew_id || null,
-            estimated_hours: draft.estimated_hours === '' ? null : Number(draft.estimated_hours),
             sales_team: draft.sales_team || null,
           };
+          // Hours write-guard (prompt 55): write estimated_hours ONLY when the
+          // field differs from the prefill this modal opened with. The prefill
+          // is usually the estimate's LIVE computed number, and a stored value
+          // is treated as a deliberate override everywhere — so a plain Save
+          // must not silently freeze the derived value into an override.
+          // Clearing the field writes null, which un-overrides (back to live).
+          if (String(draft.estimated_hours ?? '') !== hoursPrefill) {
+            jobPatch.estimated_hours = draft.estimated_hours === '' ? null : Number(draft.estimated_hours);
+          }
           if (!job.is_callback) { jobPatch.status = 'scheduled'; jobPatch.revenue = revenue; }
           // Billable touch-up: flag + revenue land in ONE write. Status stays
           // 'unscheduled' (the parallel-axis rule); the CHECK exempts callbacks.
@@ -28304,6 +28356,175 @@ function openTaskModal(task, opts = {}) {
 // ============================================================
 // Job Costing (full-bleed)
 // ============================================================
+// ============================================================
+// Estimate-derived facts for production jobs (prompt 55 Part A)
+// ============================================================
+// THE ONE builder for "what does the estimate say about this prod job". It is
+// the extracted estimate phase of loadCostingData, now shared by Job Costing
+// AND the schedule surfaces (loadScheduleEstimates), so the two can never
+// disagree: resolve each prod job to its CRM job card (deal id first, then
+// normalized name+address via window.resolveCrmForProdJob), build plan areas
+// with window.crmPlanAreas, and run window.computeJobEstimate — identical to
+// the front-end Budget card. Results land in the returned maps; the callers
+// publish them on state (estimateByJob / systemIdByJob / crmStatusByProdJob /
+// crmSqftByProdJob). Derived at read time: this NEVER writes to the database.
+//
+// linesByJob: saved pec_prod_material_lines per job (costing passes its own;
+// the schedule passes {} since it never loads material lines). It only gates
+// WHICH jobs get a full pec_prod_areas fetch, exactly as the costing phase
+// always did; hours and system come out the same either way because the full
+// row only adds flake/basecoat picks the hour math does not use.
+// laborRate: pass the resolved default_labor_hourly_rate if the caller already
+// fetched it (costing does); otherwise the builder reads the same settings row
+// itself (cached), because budgetedHours = laborBudget / rate, so a different
+// rate would break the modal == Budget card == Job Costing acceptance rule.
+async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, products: [], laborRate: laborRate };
+  if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
+  const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
+  const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
+  // Phase 1: costing inputs + a LIGHTWEIGHT CRM identity for every
+  // non-archived job (id, deal, price, address, name; no areas, so cheap,
+  // the same all-jobs read runScheduleStatusSync already does). Products and
+  // recipe slots go through cachedRef (they are already cached elsewhere), so
+  // a schedule page turn does not re-read a 182-row table and the full slot
+  // table on every render.
+  const [fullAreasRes, prodRes, slotRes, crmIdentRes, rateRes] = await withFreshSession(() => Promise.all([
+    areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
+    cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
+    cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
+    supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,customers(name)').is('archived_at', null),
+    laborRate == null
+      ? cachedRef('laborRate', () => supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle())
+      : Promise.resolve(null),
+  ]), { label: 'prodEstimateFacts' });
+  const defaultLaborRate = laborRate != null ? laborRate : (Number(rateRes?.data?.value) > 0 ? Number(rateRes.data.value) : 35);
+  out.laborRate = defaultLaborRate;
+  const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
+  out.products = prodRes.data || [];
+  const slotsBySystem = {};
+  for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
+  for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
+  const areasByJob = {};
+  for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
+  // Deal + name|address indexes of CRM job identities (first row wins).
+  const crmByDeal = {}, crmByNameAddr = {};
+  for (const row of (crmIdentRes.data || [])) {
+    const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft };
+    if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
+    const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
+    if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
+  }
+  // Resolve prod job -> CRM job (deal first, then name+address; the ONE
+  // tested resolver) and collect the CRM ids whose areas we actually need.
+  // crmStatusByProd lets Job Costing trust the CRM job's status instead
+  // of the prod row's, which is usually stale at 'scheduled' for manual jobs.
+  const resolvedByProd = {};
+  const neededCrmIds = new Set();
+  for (const job of (state.prodJobs || [])) {
+    const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
+    if (ident) {
+      resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
+      if (ident.status) out.crmStatusByProd[job.id] = ident.status;
+      if (ident.sqft != null) out.crmSqftByProd[job.id] = ident.sqft;
+    }
+  }
+  // Phase 2: areas + materials for only the resolved CRM jobs.
+  const crmAreasByCrmId = {};
+  if (neededCrmIds.size) {
+    const areaRes = await withFreshSession(() => supabase
+      .from('job_areas').select('*, materials:job_area_materials(*)')
+      .in('job_id', [...neededCrmIds]), { label: 'prodEstimateFacts:crmAreas' });
+    for (const a of (areaRes.data || [])) (crmAreasByCrmId[a.job_id] ||= []).push(a);
+  }
+  for (const job of (state.prodJobs || [])) {
+    const jid = job.id;
+    const resolved = resolvedByProd[jid];
+    const crmAreas = resolved ? (crmAreasByCrmId[resolved.id] || []) : [];
+    // planAreas: CRM job card picks (source of truth, matches the Budget
+    // card) for any prod job resolved to a CRM job (bridged OR matched by
+    // name+address); else pec_prod_areas with saved picks; else the
+    // schedule-stub areas (system + sqft only, enough for hours).
+    let planAreas;
+    if (crmAreas.length && typeof window.crmPlanAreas === 'function') {
+      planAreas = window.crmPlanAreas(crmAreas, slotsBySystem);
+    } else if ((areasByJob[jid] || []).length) {
+      planAreas = areasByJob[jid].map(a => {
+        const n = Number(a.sqft);
+        return { id: a.id, name: a.name, sqft: Number.isFinite(n) && n >= 0 ? n : 0, system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null };
+      });
+    } else {
+      planAreas = (state.productAreasByJob[jid] || []).map(a => ({ id: a.id, sqft: Number(a.sqft) || 0, system_type_id: a.system_type_id }));
+    }
+    // Revenue = the matched CRM job's price (matches the front-end Budget
+    // card), else the prod job's own revenue.
+    const revenue = resolved ? resolved.price : (Number(job.revenue) || 0);
+    const est = window.computeJobEstimate({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake, systemTypes: state.systemTypes, revenue, laborRate: defaultLaborRate });
+    out.estimateByJob[jid] = est;
+    out.systemIdByJob[jid] = planAreas[0] ? planAreas[0].system_type_id : null;
+  }
+  return out;
+}
+
+// Schedule-side loader for the SAME estimate facts Job Costing builds. Called
+// by loadScheduleData / renderNextDay after loadProdCore (the builder needs
+// state.prodJobs + state.productAreasByJob). Degrades silently, exactly like
+// loadCostingData's estimate phase: if anything throws, the maps keep their
+// previous value and every surface falls back to today's stored-field
+// behavior — the schedule must never fail to render because estimate math did.
+async function loadScheduleEstimates() {
+  try {
+    const facts = await buildProdEstimateFacts({});
+    state.estimateByJob = facts.estimateByJob;
+    state.systemIdByJob = facts.systemIdByJob;
+    state.crmStatusByProdJob = facts.crmStatusByProd;
+    state.crmSqftByProdJob = facts.crmSqftByProd;
+    if (facts.products.length && !(state.products || []).length) state.products = facts.products;
+  } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
+}
+
+// Per-job read of the built facts — THE shared resolution every schedule
+// surface uses (schedule modal, Pending Jobs cards, read-only job popup,
+// calendar bars, Next Day board + run sheet). No surface keeps its own chain.
+//
+// Precedence for SYSTEM: a real pec_prod_areas system (dominantSystemId over
+// the job's own areas — this is also how an explicit schedule-modal pick
+// becomes a sticky override, since the pick writes pec_prod_areas) > the
+// estimate-derived system (state.systemIdByJob, from the CRM job card) > null.
+// This matches the Job Costing System column (renderJobCosting.areaSystem).
+//
+// Precedence for HOURS: stored pec_prod_jobs.estimated_hours (only ever
+// non-null when a human typed it, so it is a deliberate override and wins on
+// the schedule surfaces; Job Costing and crew bonus ignore it per prompt 50) >
+// computed budgetedHours from the estimate (the live source) > the touch-up
+// default (state.touchupSettings.defaultHours) for callbacks > null.
+// Callbacks skip the computed number on purpose: a callback resolves by
+// name+address to the ORIGINAL job's CRM card, so its computed hours would be
+// the whole original install, not the touch-up visit.
+function prodJobEstimateFacts(jobOrId) {
+  const job = (jobOrId && typeof jobOrId === 'object') ? jobOrId : ((state.prodJobs || []).find(j => j.id === jobOrId) || null);
+  const jobId = job ? job.id : jobOrId;
+  const areaSysId = dominantSystemId((state.productAreasByJob || {})[jobId] || []);
+  const crmSysId = (state.systemIdByJob || {})[jobId] || null;
+  const est = (state.estimateByJob || {})[jobId];
+  const computed = (est && Number(est.budgetedHours) > 0) ? Number(est.budgetedHours) : null;
+  const stored = (job && job.estimated_hours != null && job.estimated_hours !== '') ? Number(job.estimated_hours) : null;
+  const tuDefault = (job && job.is_callback) ? (state.touchupSettings?.defaultHours ?? 2) : null;
+  const budgetedHours = stored != null ? stored : (job && job.is_callback ? tuDefault : (computed != null ? computed : null));
+  return {
+    systemTypeId: areaSysId || crmSysId || null,
+    systemSource: areaSysId ? 'areas' : (crmSysId ? 'estimate' : null),
+    budgetedHours,
+    computedHours: computed, // the raw estimate number, for the modal's drift line
+    source: stored != null ? 'manual' : (job && job.is_callback ? (tuDefault != null ? 'touchup-default' : null) : (computed != null ? 'estimate' : null)),
+  };
+}
+window.prodJobEstimateFacts = prodJobEstimateFacts;
+// Display rounding ONLY (one decimal). The stored and costing values are
+// never rounded.
+function fmtFactsHours(h) { return h == null ? '' : String(Math.round(Number(h) * 10) / 10); }
+
 async function loadCostingData() {
   await loadProdCore(); // shared slots (superset shape, incl. area.sqft)
   const [costRes, membersRes, linesRes, bonusesRes, rateRes, manualLaborRes, subExpRes] = await withFreshSession(() => Promise.all([
@@ -28384,127 +28605,50 @@ async function loadCostingData() {
   //    separate per the plan).
   const defaultLaborRate = Number(rateRes?.data?.value) > 0 ? Number(rateRes.data.value) : 35;
   state.costingLaborRate = defaultLaborRate;
-  const estimateByJob = {};
-  state.estimateByJob = estimateByJob;
-  // Primary system per prod job, resolved the SAME way as the estimate (CRM job
-  // card by deal-or-name+address, else pec_prod_areas, else schedule stub). The
-  // costing System columns fall back to this when pec_prod_areas is an empty stub
-  // (DripJobs-bridged jobs), so System never disagrees with the Jobs tag.
-  const systemIdByJob = {};
-  state.systemIdByJob = systemIdByJob;
+  state.estimateByJob = {};
+  state.systemIdByJob = {};
   state.crmStatusByProdJob = {};
   state.crmSqftByProdJob = {};
   try {
-    if ((state.prodJobs || []).length && typeof window.computeJobEstimate === 'function') {
-      // Resolve each prod job to its CRM job card. The reliable bridge is
-      // dripjobs_deal_id, but a MANUAL "+ Add Job" prod row has none (deal NULL)
-      // even when the same customer exists as a bridged CRM job (the two-
-      // parallel-job-tables shape in CLAUDE.md). Lisa Santana was exactly this:
-      // her prod row is deal-null, her CRM job (with the real estimate) is
-      // bridged, so the old deal-only lookup never found her materials and the
-      // costing Materials card was empty. So we ALSO match by normalized
-      // name+address (the same _nameAddrKey mirrorProdStatus uses), which fixes
-      // EVERY manual prod job at once, not just Santana. Deal match takes
-      // priority; name+address is the fallback. _nameAddrKey requires BOTH
-      // fields, so a blank name or address can never produce a false match.
-      const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
-      const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
-      const needSet = new Set(noSavedLines.map(j => j.id));
-      // Phase 1: costing inputs + a LIGHTWEIGHT CRM identity for every
-      // non-archived job (id, deal, price, address, name; no areas, so cheap,
-      // the same all-jobs read runScheduleStatusSync already does).
-      const [fullAreasRes, prodRes, slotRes, crmIdentRes] = await withFreshSession(() => Promise.all([
-        areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
-        supabase.from('pec_prod_products').select('*'),
-        supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
-        supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,customers(name)').is('archived_at', null),
-      ]), { label: 'loadCostingData:estimate' });
-      const productById = Object.fromEntries((prodRes.data || []).map(p => [p.id, p]));
-      // Publish the catalog on THIS module's state for openAddMaterialModal.
-      // The modal used to read state.products, which only the PRODUCTION
-      // module's loadCatalog ever filled, and that is a separate <script
-      // type="module"> with its OWN state object, so the CRM module's copy was
-      // never populated no matter what the user visited first and "+ Add
-      // material" always toasted "No catalog products". Same fetch as the
-      // estimate above, so this costs zero extra queries.
-      state.products = prodRes.data || [];
-      const slotsBySystem = {};
-      for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
-      for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
-      const defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
-      const areasByJob = {};
-      for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
-      // Deal + name|address indexes of CRM job identities (first row wins).
-      const crmByDeal = {}, crmByNameAddr = {};
-      for (const row of (crmIdentRes.data || [])) {
-        const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft };
-        if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
-        const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
-        if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
+    // The resolution chain (deal-or-name+address -> CRM areas -> compute) lives
+    // ONCE, in buildProdEstimateFacts — shared with the schedule surfaces so
+    // the modal, the Budget card, and Job Costing always show the same numbers.
+    const facts = await buildProdEstimateFacts({ linesByJob, laborRate: defaultLaborRate });
+    state.estimateByJob = facts.estimateByJob;
+    // Primary system per prod job, resolved the SAME way as the estimate (CRM
+    // job card by deal-or-name+address, else pec_prod_areas, else schedule
+    // stub). The costing System columns fall back to this when pec_prod_areas
+    // is an empty stub (DripJobs-bridged jobs), so System never disagrees with
+    // the Jobs tag.
+    state.systemIdByJob = facts.systemIdByJob;
+    state.crmStatusByProdJob = facts.crmStatusByProd;
+    // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
+    // column, so the unified $/sqft readout needs the CRM job's manual sqft
+    // (set on accept for custom estimates, or backfilled on the job header)
+    // to fall back on when pec_prod_areas is empty.
+    state.crmSqftByProdJob = facts.crmSqftByProd;
+    // Publish the catalog on THIS module's state for openAddMaterialModal.
+    // The modal used to read state.products, which only the PRODUCTION
+    // module's loadCatalog ever filled, and that is a separate <script
+    // type="module"> with its OWN state object, so the CRM module's copy was
+    // never populated no matter what the user visited first and "+ Add
+    // material" always toasted "No catalog products". Same fetch as the
+    // estimate above, so this costs zero extra queries.
+    if (facts.products.length) state.products = facts.products;
+    // Estimated MATERIALS become the display lines for jobs with NO saved
+    // pec_prod_material_lines. Jobs WITH saved lines keep those (the
+    // ordered/actual side; estimate vs actuals stay separate per the plan).
+    const needSet = new Set((state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length)).map(j => j.id));
+    for (const job of (state.prodJobs || [])) {
+      const jid = job.id;
+      const est = facts.estimateByJob[jid];
+      if (est && needSet.has(jid) && est.materialLines.length) {
+        linesByJob[jid] = est.materialLines.map((l, i) => ({ ...l, id: `derived-${jid}-${i}`, _derived: true }));
+        ordered[jid] = est.materialsBudget;
       }
-      // Resolve prod job -> CRM job (deal first, then name+address; the ONE
-      // tested resolver) and collect the CRM ids whose areas we actually need.
-      // crmStatusByProdJob lets Job Costing trust the CRM job's status instead
-      // of the prod row's, which is usually stale at 'scheduled' for manual jobs.
-      const resolvedByProd = {};
-      const crmStatusByProd = {};
-      // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
-      // column, so the unified $/sqft readout needs the CRM job's manual sqft
-      // (set on accept for custom estimates, or backfilled on the job header)
-      // to fall back on when pec_prod_areas is empty.
-      const crmSqftByProd = {};
-      const neededCrmIds = new Set();
-      for (const job of (state.prodJobs || [])) {
-        const ident = window.resolveCrmForProdJob(job, { byDeal: crmByDeal, byNameAddr: crmByNameAddr });
-        if (ident) {
-          resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
-          if (ident.status) crmStatusByProd[job.id] = ident.status;
-          if (ident.sqft != null) crmSqftByProd[job.id] = ident.sqft;
-        }
-      }
-      state.crmStatusByProdJob = crmStatusByProd;
-      state.crmSqftByProdJob = crmSqftByProd;
-      // Phase 2: areas + materials for only the resolved CRM jobs.
-      const crmAreasByCrmId = {};
-      if (neededCrmIds.size) {
-        const areaRes = await withFreshSession(() => supabase
-          .from('job_areas').select('*, materials:job_area_materials(*)')
-          .in('job_id', [...neededCrmIds]), { label: 'loadCostingData:crmAreas' });
-        for (const a of (areaRes.data || [])) (crmAreasByCrmId[a.job_id] ||= []).push(a);
-      }
-      for (const job of (state.prodJobs || [])) {
-        const jid = job.id;
-        const resolved = resolvedByProd[jid];
-        const crmAreas = resolved ? (crmAreasByCrmId[resolved.id] || []) : [];
-        // planAreas: CRM job card picks (source of truth, matches the Budget
-        // card) for any prod job resolved to a CRM job (bridged OR matched by
-        // name+address); else pec_prod_areas with saved picks; else the
-        // schedule-stub areas (system + sqft only, enough for hours).
-        let planAreas;
-        if (crmAreas.length && typeof window.crmPlanAreas === 'function') {
-          planAreas = window.crmPlanAreas(crmAreas, slotsBySystem);
-        } else if ((areasByJob[jid] || []).length) {
-          planAreas = areasByJob[jid].map(a => {
-            const n = Number(a.sqft);
-            return { id: a.id, name: a.name, sqft: Number.isFinite(n) && n >= 0 ? n : 0, system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null };
-          });
-        } else {
-          planAreas = (state.productAreasByJob[jid] || []).map(a => ({ id: a.id, sqft: Number(a.sqft) || 0, system_type_id: a.system_type_id }));
-        }
-        // Revenue = the matched CRM job's price (matches the front-end Budget
-        // card), else the prod job's own revenue.
-        const revenue = resolved ? resolved.price : (Number(job.revenue) || 0);
-        const est = window.computeJobEstimate({ areas: planAreas, productsById: productById, recipeSlotsBySystemType: slotsBySystem, defaultBasecoatByFlake, systemTypes: state.systemTypes, revenue, laborRate: defaultLaborRate });
-        estimateByJob[jid] = est;
-        systemIdByJob[jid] = planAreas[0] ? planAreas[0].system_type_id : null;
-        if (needSet.has(jid) && est.materialLines.length) {
-          linesByJob[jid] = est.materialLines.map((l, i) => ({ ...l, id: `derived-${jid}-${i}`, _derived: true }));
-          ordered[jid] = est.materialsBudget;
-        }
-      }
-      state.materialLinesByJob = linesByJob;
-      state.materialOrderedByJob = ordered;
     }
+    state.materialLinesByJob = linesByJob;
+    state.materialOrderedByJob = ordered;
   } catch (e) { console.warn('[pec] costing estimate/derivation skipped:', e); }
   // Catalog fallback for "+ Add material": if the estimate phase was skipped
   // or died early (no prod jobs is moot, but a mid-phase fetch error is not),
