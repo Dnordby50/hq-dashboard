@@ -17764,6 +17764,8 @@ async function renderSettings() {
         <div class="pec-field"><label>Touch-up aging (days)</label><input name="touchup_aging_days" type="number" min="1" step="1" value="${esc(map.touchup_aging_days || '14')}"><span style="color:var(--muted);font-size:.68rem">An open touch-up turns red in the Touch-ups panel after this many days. Visual only, no notification.</span></div>
         <div class="pec-field"><label>Touch-up default duration (hours)</label><input name="touchup_default_duration_hours" type="number" min="0" step="0.5" value="${esc(map.touchup_default_duration_hours || '2')}"><span style="color:var(--muted);font-size:.68rem">Prefills Estimated hours in the schedule modal when scheduling a touch-up.</span></div>
         <div class="pec-field"><label>Touch-ups: show Done for (days)</label><input name="touchup_panel_show_done_days" type="number" min="1" step="1" value="${esc(map.touchup_panel_show_done_days || '30')}"><span style="color:var(--muted);font-size:.68rem">How far back the panel's Done section reaches. Older closed touch-ups stay in the data and the callback report.</span></div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Catalog · Data sheets</div>
+        <div class="pec-field"><label>Data sheet max upload (MB)</label><input name="datasheet_max_upload_mb" type="number" min="1" step="1" value="${esc(map.datasheet_max_upload_mb || '10')}"><span style="color:var(--muted);font-size:.68rem">Largest PDF the catalog's TDS / MSDS upload accepts. The storage bucket also enforces a hard 10 MB server-side, so raising this above 10 needs a bucket change too.</span></div>
         <div><button class="pec-btn primary" type="submit">Save</button></div>
       </form>
       <p style="font-size:.75rem;color:var(--muted);margin-top:12px">Webhook secret lives in Netlify env vars (PEC_WEBHOOK_SECRET) — not editable here.</p>
@@ -31416,6 +31418,11 @@ if (portalToken) {
   .prod-cat-chevron { display:inline-block; font-size:.6rem; color:var(--muted); width:10px }
   .prod-chip-thumb { width:48px; height:48px; border-radius:6px; object-fit:cover; border:1px solid var(--border); background:rgba(255,255,255,.04); display:block }
   .prod-chip-empty { width:48px; height:48px; border-radius:6px; border:1px dashed var(--border); display:flex; align-items:center; justify-content:center; font-size:.55rem; color:var(--muted); text-align:center; line-height:1 }
+  /* TDS / SDS chips (prompt 53): a link when the sheet is attached, dimmed
+     and non-clickable when missing. */
+  .prod-sheet-chip { display:inline-block; padding:2px 7px; border-radius:6px; border:1px solid var(--border); font-size:.62rem; font-weight:700; letter-spacing:.5px; color:var(--accent); text-decoration:none }
+  a.prod-sheet-chip:hover { border-color:var(--accent) }
+  .prod-sheet-chip.off { color:var(--muted); opacity:.45; border-style:dashed; cursor:default }
   .pec-pull-table tbody tr.pull-detail { font-size:.72rem; color:var(--muted) }
   .pec-pull-table tbody tr.pull-detail td { padding-top:0; padding-bottom:6px }
   .pec-pull-supplier { margin-top:18px; font-weight:600; font-size:.85rem; padding:8px 4px; border-bottom:1px solid var(--border) }
@@ -32095,6 +32102,14 @@ function _mergeAcrossAreas(areaPlans) {
 (function bootProd() {
   const supabase = window.pecSupabase;
   if (!supabase) { setTimeout(bootProd, 200); return; }
+
+  // Public URL for a pec-datasheets object path (prompt 53). Rows store only
+  // the object PATH (pec_prod_products.datasheet_path / msds_path); the URL is
+  // always built here so a file can be replaced or deleted without the public
+  // base URL ever being baked into a row. Bridged to window for the CRM
+  // module's job-detail Data sheets modal (isolated scope).
+  const datasheetPublicUrl = (path) => path ? supabase.storage.from('pec-datasheets').getPublicUrl(path).data.publicUrl : '';
+  window.pecDatasheetUrl = datasheetPublicUrl;
 
   const state = {
     view: 'jobs', // 'jobs' | 'new-job' | 'catalog'
@@ -33760,6 +33775,7 @@ function _mergeAcrossAreas(areaPlans) {
         <td style="text-align:right;font-variant-numeric:tabular-nums">${esc(p.kit_size)} <span style="color:var(--muted);font-size:.65rem">${esc(u.kit)}${Number(p.kit_size) === 1 ? '' : 's'} / kit</span></td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${spreadPerKit == null ? '<span style="color:var(--muted)">—</span>' : esc(spreadPerKit) + ' <span style="color:var(--muted);font-size:.65rem">sqft / kit</span>'}</td>
         <td style="text-align:right;font-variant-numeric:tabular-nums">${p.unit_cost == null ? '<span style="color:var(--muted)">—</span>' : '$' + Number(p.unit_cost).toLocaleString() + ' <span style="color:var(--muted);font-size:.65rem">/ kit</span>' + (perUnit == null ? '' : `<div style="color:var(--muted);font-size:.65rem">$${perUnit.toLocaleString()} / ${esc(u.per)}</div>`)}</td>
+        <td style="white-space:nowrap">${p.datasheet_path ? `<a class="prod-sheet-chip" data-sheet-link href="${esc(datasheetPublicUrl(p.datasheet_path))}" target="_blank" rel="noopener" title="Open the data sheet (TDS)">TDS</a>` : '<span class="prod-sheet-chip off" title="No data sheet attached">TDS</span>'} ${p.msds_path ? `<a class="prod-sheet-chip" data-sheet-link href="${esc(datasheetPublicUrl(p.msds_path))}" target="_blank" rel="noopener" title="Open the MSDS / SDS">SDS</a>` : '<span class="prod-sheet-chip off" title="No MSDS / SDS attached">SDS</span>'}</td>
         <td>${p.active ? 'Yes' : 'No'}</td>
         <td><span style="color:var(--accent);font-size:.7rem">Edit ›</span></td>
       </tr>`;
@@ -33785,7 +33801,7 @@ function _mergeAcrossAreas(areaPlans) {
               <thead><tr>
                 <th style="width:60px">Chip</th><th>Name</th><th>Color</th><th>Manufacturer</th><th>Supplier</th>
                 <th style="text-align:right">Spread Rate</th><th style="text-align:right">Kit Size</th><th style="text-align:right">Spread / Kit</th>
-                <th style="text-align:right">Cost / Kit</th><th>Active</th><th></th>
+                <th style="text-align:right">Cost / Kit</th><th>Sheets</th><th>Active</th><th></th>
               </tr></thead>
               <tbody>${g.rows.map(renderRow).join('')}</tbody>
             </table>
@@ -33795,6 +33811,9 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     $('prodAddProductBtn').addEventListener('click', () => openProductModal(null));
     host.querySelectorAll('[data-edit-product]').forEach(b => b.addEventListener('click', () => openProductModal(b.dataset.editProduct)));
+    // A TDS/SDS chip click opens the PDF, not the row's edit modal (the click
+    // handler lives on the whole <tr>).
+    host.querySelectorAll('a[data-sheet-link]').forEach(a => a.addEventListener('click', e => e.stopPropagation()));
     host.querySelectorAll('[data-cat-toggle]').forEach(btn => {
       btn.addEventListener('click', () => {
         const t = btn.dataset.catToggle;
@@ -33816,7 +33835,7 @@ function _mergeAcrossAreas(areaPlans) {
       modalRoot.innerHTML = '';
     }
     const existing = productId ? state.products.find(p => p.id === productId) : null;
-    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '', default_basecoat_product_id: null };
+    const p = existing ? { ...existing } : { name: '', material_type: 'Basecoat', manufacturer: '', supplier: '', color: '', spread_rate: '', kit_size: 1, unit_cost: '', image_url: '', active: true, notes: '', default_basecoat_product_id: null, datasheet_path: null, msds_path: null };
     // Default basecoat options for a Flake product: active basecoats, minus
     // Special Order placeholders. If the flake's saved basecoat has since gone
     // inactive it's appended anyway so an edit doesn't silently drop it.
@@ -33874,11 +33893,15 @@ function _mergeAcrossAreas(areaPlans) {
             <div class="pec-field"><label>Cost per kit <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">what job costing uses</span></label><input id="pmCost" type="number" min="0" step="0.01" value="${esc(p.unit_cost ?? '')}" placeholder="optional"></div>
           </div>
           <div class="pec-field">
-            <label>Product image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a URL; uploads coming later)</span></label>
+            <label>Product image URL <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">(paste a link to an image hosted elsewhere)</span></label>
             <div style="display:flex;gap:10px;align-items:center">
               <input id="pmImage" value="${esc(p.image_url || '')}" placeholder="https://..." style="flex:1">
               <div id="pmImagePreview">${p.image_url ? `<img class="prod-chip-thumb" src="${esc(p.image_url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`}</div>
             </div>
+          </div>
+          <div class="pec-field">
+            <label>Data sheets <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">PDF only; the file uploads as soon as you pick it</span></label>
+            <div id="pmSheets"></div>
           </div>
           <div class="pec-field"><label>Notes</label><input id="pmNotes" value="${esc(p.notes || '')}"></div>
           <div class="pec-modal-actions">
@@ -33933,6 +33956,95 @@ function _mergeAcrossAreas(areaPlans) {
       const host = $('pmImagePreview');
       host.innerHTML = url ? `<img class="prod-chip-thumb" src="${esc(url)}" alt="">` : `<div class="prod-chip-empty">no chip</div>`;
     });
+    // --- Data sheets (prompt 53): TDS + MSDS/SDS PDFs in the public
+    // pec-datasheets bucket. The upload happens ON FILE PICK, not on Save: a
+    // new product has no id yet, so objects are named crypto.randomUUID() +
+    // '.pdf' and the row only ever stores that path. A Replace or Remove of a
+    // sheet the SAVED row still references defers the storage delete until
+    // after a successful save persists the change, so a saved row can never
+    // point at a deleted object (an orphaned object is a cleanup problem; a
+    // dangling path is a broken link). A sheet uploaded in THIS modal session
+    // is deleted immediately on Replace/Remove since no row references it.
+    const sheetPaths = { datasheet_path: p.datasheet_path || null, msds_path: p.msds_path || null };
+    const sheetDeletesOnSave = [];
+    let sheetUploadsInFlight = 0;
+    // Max size is the datasheet_max_upload_mb setting (standing rule 12); the
+    // bucket enforces 10 MB + PDF-only server-side regardless, so a stale or
+    // failed read here can only make the client-side gate stricter/looser, not
+    // bypass the real limit.
+    let sheetMaxMb = 10;
+    supabase.from('settings').select('value').eq('key', 'datasheet_max_upload_mb').maybeSingle()
+      .then(r => { const n = Number(r?.data?.value); if (n > 0) sheetMaxMb = n; }, () => {});
+    const sheetOrphanDelete = (path) => supabase.storage.from('pec-datasheets').remove([path])
+      .then(({ error }) => { if (error) console.warn('[prod] datasheet object delete failed (orphan left in bucket):', error.message); });
+    const sheetRetire = (col) => {
+      const old = sheetPaths[col];
+      if (!old) return;
+      if (existing && existing[col] === old) sheetDeletesOnSave.push(old);
+      else sheetOrphanDelete(old);
+    };
+    const renderSheetRows = () => {
+      const host = $('pmSheets'); if (!host) return;
+      host.innerHTML = [
+        { col: 'datasheet_path', label: 'Data sheet (TDS)' },
+        { col: 'msds_path', label: 'MSDS / SDS' },
+      ].map(({ col, label }) => {
+        const path = sheetPaths[col];
+        return `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0" data-sheet-row="${col}">
+          <span style="min-width:130px;font-size:.75rem;color:var(--muted)">${label}</span>
+          ${path ? `
+            <a class="prod-sheet-chip" href="${esc(datasheetPublicUrl(path))}" target="_blank" rel="noopener">View</a>
+            <span style="font-size:.66rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px" title="${esc(path)}">${esc(path)}</span>
+            <span style="flex:1"></span>
+            <button type="button" class="pec-btn ghost sm" data-sheet-replace="${col}">Replace</button>
+            <button type="button" class="pec-btn ghost sm" data-sheet-remove="${col}">Remove</button>
+            <input type="file" accept="application/pdf" data-sheet-file="${col}" style="display:none">
+          ` : `
+            <input type="file" accept="application/pdf" data-sheet-file="${col}" style="font-size:.72rem">
+          `}
+        </div>`;
+      }).join('');
+      host.querySelectorAll('[data-sheet-replace]').forEach(b => b.addEventListener('click', () =>
+        host.querySelector(`input[data-sheet-file="${b.dataset.sheetReplace}"]`)?.click()));
+      host.querySelectorAll('[data-sheet-remove]').forEach(b => b.addEventListener('click', () => {
+        sheetRetire(b.dataset.sheetRemove);
+        sheetPaths[b.dataset.sheetRemove] = null;
+        renderSheetRows();
+      }));
+      host.querySelectorAll('input[data-sheet-file]').forEach(inp => inp.addEventListener('change', async () => {
+        const col = inp.dataset.sheetFile;
+        const file = inp.files && inp.files[0];
+        if (!file) return;
+        const errEl = $('pmError'); errEl.textContent = '';
+        if (file.type !== 'application/pdf') { errEl.textContent = 'Data sheets must be PDF files.'; inp.value = ''; return; }
+        if (file.size > sheetMaxMb * 1024 * 1024) { errEl.textContent = `That PDF is ${(file.size / 1048576).toFixed(1)} MB; the limit is ${sheetMaxMb} MB.`; inp.value = ''; return; }
+        const row = inp.closest('[data-sheet-row]');
+        if (row) { row.style.opacity = '.5'; row.querySelectorAll('input,button').forEach(el => { el.disabled = true; }); }
+        sheetUploadsInFlight++;
+        try {
+          const path = crypto.randomUUID() + '.pdf';
+          const { error } = await supabase.storage.from('pec-datasheets').upload(path, file, { contentType: 'application/pdf' });
+          if (error) throw error;
+          sheetRetire(col);
+          sheetPaths[col] = path;
+        } catch (err) {
+          errEl.textContent = 'Upload failed: ' + (err?.message || err);
+        } finally {
+          sheetUploadsInFlight--;
+          renderSheetRows();
+        }
+      }));
+    };
+    renderSheetRows();
+    // Fired only AFTER a successful save has persisted the new paths (all
+    // three success exits of pmSave). Fire-and-forget: a failed delete leaves
+    // an orphaned object, never a broken link.
+    const flushSheetDeletes = () => {
+      if (!sheetDeletesOnSave.length) return;
+      supabase.storage.from('pec-datasheets').remove(sheetDeletesOnSave.splice(0))
+        .then(({ error }) => { if (error) console.warn('[prod] replaced datasheet delete failed (orphan left in bucket):', error.message); });
+    };
     $('pmSave').addEventListener('click', async () => {
       console.log('[prod] pmSave click, existing=', !!existing);
       const errEl = $('pmError'); errEl.textContent = '';
@@ -33943,6 +34055,7 @@ function _mergeAcrossAreas(areaPlans) {
       const delBtn = $('pmDelete');
       saveBtn.disabled = true; if (delBtn) delBtn.disabled = true;
       const reenable = () => { saveBtn.disabled = false; if (delBtn) delBtn.disabled = false; };
+      if (sheetUploadsInFlight > 0) { reenable(); return errEl.textContent = 'A data sheet is still uploading. Wait for it to finish, then save.'; }
       const payload = {
         name: $('pmName').value.trim(),
         material_type: $('pmType').value,
@@ -33953,6 +34066,8 @@ function _mergeAcrossAreas(areaPlans) {
         kit_size: Number($('pmKit').value || 1),
         unit_cost: $('pmCost').value === '' ? null : Number($('pmCost').value),
         image_url: $('pmImage').value.trim() || null,
+        datasheet_path: sheetPaths.datasheet_path,
+        msds_path: sheetPaths.msds_path,
         active: $('pmActive').value === 'true',
         notes: $('pmNotes').value || null,
         default_basecoat_product_id: $('pmType').value === 'Flake' ? ($('pmBasecoat').value || null) : null,
@@ -34014,14 +34129,14 @@ function _mergeAcrossAreas(areaPlans) {
           if (isDuplicateErr(error)) { reenable(); showDuplicate(); return; }
           // Any other error on an INSERT may still have LANDED before failing, so
           // verify by name before letting the user retry (avoids a second row).
-          if (isInsert && await findExistingByName()) { closer(); await refreshAfterSave(); return; }
+          if (isInsert && await findExistingByName()) { closer(); flushSheetDeletes(); await refreshAfterSave(); return; }
           reenable(); return errEl.textContent = error.message;
         }
       } catch (err) {
         console.error('[prod] pmSave caught:', err);
         // Timeout or network throw. For an INSERT the row may have landed despite
         // the client-side failure; confirm before inviting a retry.
-        if (isInsert && await findExistingByName()) { closer(); await refreshAfterSave(); return; }
+        if (isInsert && await findExistingByName()) { closer(); flushSheetDeletes(); await refreshAfterSave(); return; }
         reenable();
         return errEl.textContent = err.message === 'TIMEOUT'
           ? 'Save timed out. The request may not have gone through, so check the list before trying again.'
@@ -34029,6 +34144,7 @@ function _mergeAcrossAreas(areaPlans) {
       }
       console.log('[prod] pmSave: supabase ok, calling closer()');
       closer();
+      flushSheetDeletes();
       await refreshAfterSave();
       console.log('[prod] pmSave: post-close refresh complete');
     });
@@ -34046,6 +34162,11 @@ function _mergeAcrossAreas(areaPlans) {
         reenable();
         return $('pmError').textContent = 'Delete failed: ' + err.message;
       }
+      // Best-effort: the row is gone, so its sheet objects are orphans; a
+      // failed remove just leaves them in the bucket.
+      const sheetOrphans = [existing.datasheet_path, existing.msds_path].filter(Boolean);
+      if (sheetOrphans.length) supabase.storage.from('pec-datasheets').remove(sheetOrphans)
+        .then(({ error: e2 }) => { if (e2) console.warn('[prod] datasheet cleanup after product delete failed:', e2.message); });
       closer();
       try { await loadCatalog(); render(); }
       catch (err) {
