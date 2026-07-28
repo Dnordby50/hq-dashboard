@@ -16833,22 +16833,35 @@ async function openBonusHandouts(bonusIds, payInfo) {
 // Settings tab shell. General = the existing config sections; Email = the
 // transactional-email panel. state.settingsTab persists the active tab.
 function settingsTabBar(active) {
+  // The "Settings" label sits OUTSIDE the scrolling strip so it stays pinned;
+  // the strip scrolls horizontally on narrow windows (no wrap, no dropdown) with
+  // a static right-edge fade as the "there's more" affordance. Buttons are
+  // flex:0 0 auto so they never squash into ellipses.
+  const btn = (key, label) => `<button class="pec-btn ${active === key ? 'primary' : 'ghost'} sm" data-settings-tab="${key}" style="flex:0 0 auto;white-space:nowrap">${label}</button>`;
   return `<div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
-    <strong style="margin-right:6px">Settings</strong>
-    <button class="pec-btn ${active === 'general' ? 'primary' : 'ghost'} sm" data-settings-tab="general">General</button>
-    <button class="pec-btn ${active === 'people' ? 'primary' : 'ghost'} sm" data-settings-tab="people">People</button>
-    <button class="pec-btn ${active === 'users' ? 'primary' : 'ghost'} sm" data-settings-tab="users">Users</button>
-    <button class="pec-btn ${active === 'email' ? 'primary' : 'ghost'} sm" data-settings-tab="email">Email</button>
-    <button class="pec-btn ${active === 'appointments' ? 'primary' : 'ghost'} sm" data-settings-tab="appointments">Appointments</button>
-    <button class="pec-btn ${active === 'drips' ? 'primary' : 'ghost'} sm" data-settings-tab="drips">Drips</button>
-    <button class="pec-btn ${active === 'estimates' ? 'primary' : 'ghost'} sm" data-settings-tab="estimates">Estimates</button>
-    <button class="pec-btn ${active === 'invoicing' ? 'primary' : 'ghost'} sm" data-settings-tab="invoicing">Invoicing</button>
-    <button class="pec-btn ${active === 'busybusy' ? 'primary' : 'ghost'} sm" data-settings-tab="busybusy">BusyBusy</button>
-    <button class="pec-btn ${active === 'brand' ? 'primary' : 'ghost'} sm" data-settings-tab="brand">Brand</button>
+    <strong style="margin-right:6px;flex:0 0 auto">Settings</strong>
+    <div data-settings-tabstrip style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:thin;-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);padding-bottom:2px">
+    ${btn('general', 'General')}
+    ${btn('people', 'People')}
+    ${btn('users', 'Users')}
+    ${btn('email', 'Email')}
+    ${btn('appointments', 'Appointments')}
+    ${btn('drips', 'Drips')}
+    ${btn('estimates', 'Estimates')}
+    ${btn('invoicing', 'Invoicing')}
+    ${btn('busybusy', 'BusyBusy')}
+    ${btn('brand', 'Brand')}
+    </div>
   </div>`;
 }
 function wireSettingsTabs(root) {
   root.querySelectorAll('[data-settings-tab]').forEach(b => b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); }));
+  // Deep links (birthday bell -> People, drift banner -> General) may land on a
+  // tab that sits off-screen in the scroll strip; bring it into view.
+  try {
+    const act = root.querySelector('[data-settings-tabstrip] .pec-btn.primary');
+    if (act) act.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  } catch (_) {}
 }
 
 // Settings > Drips (prompt 42, and the new standing rule: every major
