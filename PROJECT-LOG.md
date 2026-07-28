@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: wrote prompt 57 (schedule colors, shared job popup, sqft, ACH pending, 12hr times, settings nav, flake condense, People+Users merge)
+By: Cowork
+
+Changed: one new file, claude-code-prompt-57-schedule-colors-catalog-ach.md. No code, no schema, no prod change. Read-only investigation of index.html and the Netlify functions plus live queries against zdfpzmmrgotynrwkeakd.
+
+Dylan brought eight items in one paste: crew-colored schedule bars with a system banner, sq footage on Next Day and the job popup, a detail popup on Next Day and the Job Schedule, merging People and Users in Settings, a Settings tab bar that clips on narrow windows, 12-hour times in the BusyBusy import, condensing the standard Simiron/Torginol flake to one product, and pulling started-but-not-settled Stripe ACH payments onto the invoice (Tiffany Muenks, paid 7/28, invisible unless he opens Stripe).
+
+FOUR FINDINGS THAT CHANGED THE PROMPT:
+
+1. THE ACH ITEM IS A DISPLAY GAP, NOT A DATA GAP. pec_stripe_pending already holds Tiffany Muenks' row: pi_3TyH5685aAKLOAgM1DajHMTU, job 35a79918-4eb6-488f-a4bb-2a185f630702, kind deposit, amount 8625, status pending, created 2026-07-28 19:56 UTC. The webhook did its job. renderInvoicing reads the table and renders an "ACH pending" chip on the AR list (index.html:9286-9318), and pecInvoiceSendKit reads it to avoid dunning a clearing transfer (:10681), but renderJobInvoice (:10854) never queries the table at all. The one screen Dylan opens per customer is the only one blind to it. Prompt says do NOT subtract pending from Due now (an ACH can bounce), only annotate.
+
+2. SQ FOOTAGE ALREADY EXISTS ON THE POPUP AND IS BROKEN BY DESIGN. openPendingJobCard (:27293) sums pec_prod_areas only, so every DripJobs-bridged job (the overwhelming majority) renders a dash. jobEffectiveSqft (:8986) already solves this for Job Costing, and buildProdEstimateFacts already loads jobs.sqft into state.crmSqftByProdJob (:28987). Fix is to return sqft from prodJobEstimateFacts, same three-surfaces-one-number rule prompt 55 established for system and hours.
+
+3. CALENDAR BARS OPEN THE EDIT MODAL, NOT A POPUP. All three bar click handlers (:26901, :26930, :26955) call openScheduleModal. That is what Dylan means by wanting the popup on the Job Schedule too. The prompt makes a bar click open the read-only quick look with the existing Schedule button as the path into the editable form, which also removes a standing risk (a stray keystroke has been one input away from changing a scheduled job).
+
+4. THE FLAKE CONDENSE HAS TWO HIDDEN COSTS. Live: 25 Flake products, 21 of them Torginol named colors. Only 18 are actually identical ($87.44 / 325 rate); Obsidian ($120 / 300), Autumn Brown ($91.64) and Stonewash (300 rate) are not, so Dylan chose to keep those three standalone. Worse, all 21 carry their own default_basecoat_product_id across four distinct basecoats, and the estimator's flake dropdown (:34256-34258) lists PRODUCTS displaying p.color || p.name, so today "pick a product" and "pick a color" are the same act. Collapsing products would delete both the color list and the basecoat pairing. Locked answer: the colors table (which already holds 15 of these blends with hex and real Simiron SKUs) becomes the picker, gaining product_id, default_basecoat_product_id and active; pec_prod_areas and job_areas gain flake_color_id; the six missing blends (Garnet, Obsidian, Pumice, Schist, Stonewash, Wombat) get inserted; the 18 collapsed products are DEACTIVATED, never deleted, because historical areas still FK to them.
+
+TWELVE QUESTIONS ASKED, ALL ANSWERED. Locked: crew color as a new pec_prod_crews.color column with a picker in openCrewModal (the table has no color column today); system color as a thin top banner; crew colors on the calendar, Next Day board AND the printed run sheet (Dylan overrode Cowork's suggestion to leave print alone); sqft via jobEffectiveSqft; one enriched popup wired to every surface; horizontal scroll strip for the settings tabs (settingsTabBar at :16790 is ten buttons in a non-wrapping flex row, clipped under about 1150px); 12-hour times everywhere including the server-built anomaly detail strings in pec-busybusy-export.cjs, not just punchTime at :17445; flake collapse with three outliers preserved; pairing on the color record; deactivate not delete; People and Users merged into one People tab with login as a section on the person; and all eight in ONE prompt with a commit per part (Dylan overrode the recommended two-prompt split).
+
+DELIBERATELY LEFT AS AN OPEN QUESTION IN THE PROMPT: the colors rows carry type='simiron' while the products carry manufacturer='Torginol'. Torginol makes the flake, Simiron is the supplier. Both may be right; the two tables disagree in a way that will confuse the next reader. Flagged, not fixed.
+
+RISK NOTED FOR DYLAN: Part G is the only part that can leave the catalog in a half-migrated state, and Part H touches the auth surface. The prompt tells Claude Code to revert Part G's commit rather than ship it partially, and Parts A through E are worth shipping on their own if the session stalls.
+
+Why: Dylan's eight-item paste, 2026-07-28.
+Files touched: claude-code-prompt-57-schedule-colors-catalog-ach.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 57 in Claude Code. Two migrations will come out of it (2026-07-29_crew_colors.sql, 2026-07-29_flake_color_model.sql), both written-not-applied, with a Cowork handoff to run them in order and regenerate SCHEMA.md. Note prompt 56 is still unrun and the 2026-07-28_ops_queue.sql migration is still unapplied; neither collides with prompt 57.
+
+---
+
 ## [2026-07-28 MST] Cowork: applied the Ops Queue migration, ran the Verify block, exercised the queue live, SCHEMA.md to 82 of 82
 
 By: Cowork
