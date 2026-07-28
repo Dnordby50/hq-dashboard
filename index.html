@@ -25400,7 +25400,7 @@ async function renderNextDay() {
       <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}${tuBadge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
       ${tuDesc}
-      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${(() => { const h = fmtFactsHours(prodJobEstimateFacts(j.id ? j : d.job_id).budgetedHours); return h ? ` · ${esc(h)} hrs` : ''; })()}</div>
+      <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${invUSD(revSliceFor(d.job_id))}${(() => { const f = prodJobEstimateFacts(j.id ? j : d.job_id); const h = fmtFactsHours(f.budgetedHours); return (h ? ` · ${esc(h)} hrs` : '') + (f.sqft ? ` · ${f.sqft.toLocaleString()} sqft` : ''); })()}</div>
       ${splitBtn || removeBtn ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${splitBtn}${removeBtn}</div>` : ''}
     </div>`;
   };
@@ -25462,7 +25462,7 @@ async function renderNextDay() {
         <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}${esc(touchup)}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
         ${tuDescLine}
-        <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${(() => { const h = fmtFactsHours(prodJobEstimateFacts(j.id ? j : d.job_id).budgetedHours); return h ? ' · ' + esc(h) + ' hrs' : ''; })()}</div>
+        <div class="meta">${esc(invUSD(revSliceFor(d.job_id)))}${(() => { const f = prodJobEstimateFacts(j.id ? j : d.job_id); const h = fmtFactsHours(f.budgetedHours); return (h ? ' · ' + esc(h) + ' hrs' : '') + (f.sqft ? ' · ' + f.sqft.toLocaleString() + ' sqft' : ''); })()}</div>
       </div>`;
     };
     // Tasks print in the same block format as jobs; the meta line reading
@@ -26745,10 +26745,14 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     // Base tooltip carries the non-money context; callers append the revenue
     // line (contract + prorated slice) so the bar/card and tooltip never look
     // like they contradict each other.
+    // Sq footage rides the tooltip, not the bar text — the bars are already
+    // tight (prompt 57 Part D).
+    const evSqft = prodJobEstimateFacts(job).sqft;
     const tooltipBase = [
       isCallback ? 'TOUCH-UP CALLBACK' : '',
       job.customer_name || '',
       sys ? sys.name : '',
+      evSqft ? evSqft.toLocaleString() + ' sqft' : '',
       crew ? crew + ' crew' : '',
       job.proposal_number ? '#' + job.proposal_number : '',
     ].filter(Boolean).join(' · ');
@@ -27010,7 +27014,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
               </div>
               ${dayRevLabel ? `<div style="font-size:.8rem;font-weight:700;color:var(--rd-ink,var(--text));margin-top:3px">${esc(dayRevLabel)}${totalDays > 1 ? `<span style="font-weight:500;color:var(--rd-muted,var(--muted))"> · of ${esc(ev.revFull)} total</span>` : ''}</div>` : ''}
               ${sd.notes ? `<div style="${muted};font-style:italic">${esc(sd.notes)}</div>` : ''}
-              <div style="${muted}">${ev.sys && ev.sys.name ? `<span class="pec-color-dot" style="background:${esc(ev.sys.color || '#888')}"></span>${esc(ev.sys.name)}` : 'No system yet'}</div>
+              <div style="${muted}">${ev.sys && ev.sys.name ? `<span class="pec-color-dot" style="background:${esc(ev.sys.color || '#888')}"></span>${esc(ev.sys.name)}` : 'No system yet'}${(() => { const f = prodJobEstimateFacts(job.id ? job : sd.job_id); return f.sqft ? ` · ${f.sqft.toLocaleString()} sqft` : ''; })()}</div>
               ${job.address ? `<div style="${muted}">${esc(job.address)}</div>` : ''}
               ${job.crew_lead ? `<div style="${muted}">Lead: ${esc(job.crew_lead)}</div>` : ''}
               ${job.proposal_number ? `<div style="${muted}">#${esc(job.proposal_number)}</div>` : ''}
@@ -27435,7 +27439,10 @@ function openPendingJobCard(jobId) {
   const facts = prodJobEstimateFacts(job);
   const sys = facts.systemTypeId ? sysById[facts.systemTypeId] : null;
   const factsHrs = fmtFactsHours(facts.budgetedHours);
-  const sqft = areas.reduce((s, a) => s + Number(a.sqft || 0), 0);
+  // Prompt 57 Part D: sqft comes from the shared helper (manual jobs.sqft via
+  // jobEffectiveSqft, else the area sum), not a local reduce, so DripJobs-bridged
+  // jobs with no pec_prod_areas rows stop rendering a dash.
+  const sqft = facts.sqft;
   const owed = Number(job.reschedule_days_owed) > 0 ? Number(job.reschedule_days_owed) : 0;
   const statusLabel = job.status ? String(job.status).replace(/_/g, ' ') : '';
   // Scope/notes: pec_prod_jobs.notes already holds the estimate scope of work
@@ -29164,12 +29171,20 @@ function prodJobEstimateFacts(jobOrId) {
   const stored = (job && job.estimated_hours != null && job.estimated_hours !== '') ? Number(job.estimated_hours) : null;
   const tuDefault = (job && job.is_callback) ? (state.touchupSettings?.defaultHours ?? 2) : null;
   const budgetedHours = stored != null ? stored : (job && job.is_callback ? tuDefault : (computed != null ? computed : null));
+  // Sq footage through the SAME jobEffectiveSqft rule Job Costing uses
+  // (manual jobs.sqft wins, else the pec_prod_areas sum), so the popup, the
+  // Next Day board, and the costing card can never disagree about a job's size.
+  const crmSqft = (state.crmSqftByProdJob || {})[jobId];
+  const areaSqfts = ((state.productAreasByJob || {})[jobId] || []).map(a => a.sqft);
+  const sqft = jobEffectiveSqft(crmSqft, areaSqfts);
   return {
     systemTypeId: areaSysId || crmSysId || null,
     systemSource: areaSysId ? 'areas' : (crmSysId ? 'estimate' : null),
     budgetedHours,
     computedHours: computed, // the raw estimate number, for the modal's drift line
     source: stored != null ? 'manual' : (job && job.is_callback ? (tuDefault != null ? 'touchup-default' : null) : (computed != null ? 'estimate' : null)),
+    sqft: sqft > 0 ? sqft : null,
+    sqftSource: (Number.isFinite(Number(crmSqft)) && Number(crmSqft) > 0) ? 'manual' : (sqft > 0 ? 'areas' : null),
   };
 }
 window.prodJobEstimateFacts = prodJobEstimateFacts;
