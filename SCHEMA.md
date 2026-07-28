@@ -8,9 +8,11 @@ Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-52 migrat
 
 Refreshed 2026-07-28 (Cowork) against the live schema after the prompt-53 migration: pec_prod_products gained datasheet_path + msds_path, settings gained datasheet_max_upload_mb, and the previously-undocumented pec_invoice_installments section was written. Also new and NOT a public-schema table: the `pec-datasheets` Storage bucket (public, PDF-only, 10 MB), created by that migration.
 
+Refreshed 2026-07-28 (Cowork, second pass) after the prompt-54 People model migration: new `people` table (81st), `pec_sales_team_members.name_aliases`, and three settings keys (people_mirror_enabled, birthday_reminder_enabled, birthday_reminder_lead_days). No legacy table changed shape beyond that one added column.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-80 tables documented, 80 live, all in `public`, all with RLS enabled. No gaps: `pec_invoice_installments` (live since 2026-07-22_invoice_installments.sql) finally got its section on 2026-07-28.
+81 tables documented, 81 live, all in `public`, all with RLS enabled. No gaps.
 
 ## Key relationships
 
@@ -1542,10 +1544,12 @@ RLS: enabled · rows: 2
 | google_calendar_id | text | yes |  |
 | google_connected_at | timestamptz | yes |  |
 | auth_user_id | uuid | yes |  |
+| name_aliases | text[] | no | '{}' |
 
 PK: id
 FK: auth_user_id → auth.users.id
 Unique: (auth_user_id) WHERE auth_user_id IS NOT NULL — partial index uq_pec_sales_team_members_auth_user; one login maps to at most one member, any number of unmapped (NULL) rows allowed. Set from Settings > Sales Team; drives the estimator's current-user salesperson default (prompt 47).
+name_aliases (added 2026-07-28, prompt 54) is the commission rename safety net. Commission is attributed by FREE-TEXT lowercased name against pec_job_ar.salesperson, not by id, so a rename would otherwise orphan a rep's history. The BEFORE UPDATE trigger `pec_sales_capture_name_alias` captures the OLD name into this array on any rename, whatever path wrote it (People screen, the legacy Sales Team card, or Studio), and removes the current name from the array when a name is reused. renderCommission folds aliases into both the rate lookup and the excluded-names set, current names winning. The trigger is deliberately NOT gated on people_mirror_enabled: it is a safety net, not part of the mirror.
 
 ### pec_sms_log
 RLS: enabled · rows: 68
@@ -1682,6 +1686,50 @@ RLS: enabled · rows: 236
 PK: id
 FK: admin_user_id → admin_users.id
 
+### people
+RLS: enabled · rows: 13
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| full_name | text | no |  |
+| display_name | text | yes |  |
+| email | text | yes |  |
+| phone | text | yes |  |
+| birth_month | smallint | yes |  |
+| birth_day | smallint | yes |  |
+| active | boolean | no | true |
+| admin_user_id | uuid | yes |  |
+| sales_team_member_id | uuid | yes |  |
+| crew_member_id | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: admin_user_id → admin_users.id ON DELETE SET NULL; sales_team_member_id → pec_sales_team_members.id ON DELETE SET NULL; crew_member_id → pec_prod_crew_members.id ON DELETE SET NULL
+CHECK: birth_month between 1 and 12; birth_day between 1 and 31; people_birthday_both_or_neither ((birth_month IS NULL) = (birth_day IS NULL))
+Unique: uq_people_admin_user_id / uq_people_sales_team_member_id / uq_people_crew_member_id, each partial WHERE the column IS NOT NULL — a legacy row belongs to at most one person.
+Policies: 4 (staff read via is_admin_staff(); insert/update/delete additionally require has_permission('can_manage_team')).
+
+Live since 2026-07-28_people_model.sql (prompt 54). The unified person record: one row per human across logins, sales reps, and crew members.
+
+**The three pointer columns ARE the roles.** A person holds the Login role iff admin_user_id is set, Sales iff sales_team_member_id is set, Crew iff crew_member_id is set. There is no role table and no role boolean; the pointer is simultaneously the role flag and the identity map, so the two cannot disagree.
+
+**What this table does NOT hold:** hourly_wage, commission_pct, and crew assignment stay on pec_prod_crew_members / pec_sales_team_members. Every existing reader (crew bonus math, the Commission view, schedule capacity, BusyBusy attribution) is unchanged and still reads the legacy tables. `people` carries identity only. Settings > People edits the legacy fields inline, writing the same rows the legacy Settings cards write.
+
+**No year is stored.** birth_month / birth_day only, and no age is computed anywhere in the app.
+
+Mirror (8 triggers, all no-ops when settings.people_mirror_enabled = 'false'):
+- people_touch_updated_at — BEFORE UPDATE on people.
+- people_mirror_forward — AFTER UPDATE on people; full_name and active write through to the pointed-at legacy rows, changed fields only. No pg_trigger_depth guard, so a reverse-initiated rename still reaches sibling role rows.
+- people_adopt_admin_user / people_adopt_sales_member / people_adopt_crew_member — AFTER INSERT on each legacy table, WHEN pg_trigger_depth() = 0; an insert by an existing writer (pec-create-staff.cjs, "+ Add team member") auto-creates its person so no new scatter appears.
+- people_follow_admin_rename / people_follow_sales_rename / people_follow_crew_rename — AFTER UPDATE on each legacy table, WHEN pg_trigger_depth() = 0 AND the name changed.
+The chain terminates at depth 2. The RPCs suppress echo with the transaction-local GUC `pec.people_sync = 'off'`.
+
+RPCs (both SECURITY DEFINER, both require is_admin_staff() AND can_manage_team):
+- pec_people_grant_role(p_person_id uuid, p_role text) — adds a 'sales' or 'crew' role by inserting the legacy row with sync suppressed, then setting the pointer. 'login' is not grantable (creating a login means creating an auth user; that is pec-create-staff.cjs's job).
+- pec_people_merge(p_keep uuid, p_remove uuid) — the dedupe screen's Merge. Moves pointers onto the kept person, coalesces identity fields, deletes the losing people row. RAISEs if both people hold the same role (two real records, not a duplicate). Touches no legacy table.
+
 ### photos
 RLS: enabled · rows: 0
 
@@ -1732,7 +1780,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 42
+RLS: enabled · rows: 45
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1741,6 +1789,7 @@ RLS: enabled · rows: 42
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-28 (prompt 54): people_mirror_enabled ('true'; set to 'false' and EVERY people sync trigger becomes a no-op, which is the build's real rollback, no deploy needed), birthday_reminder_enabled ('true', master switch for the dashboard banner and the daily bell), birthday_reminder_lead_days ('7', how many days ahead a birthday surfaces).
 Keys added 2026-07-28 (prompt 53): datasheet_max_upload_mb ('10', the max PDF size the catalog's data-sheet upload accepts, in MB; the pec-datasheets bucket enforces 10 MB server-side regardless, so raising this above 10 needs a bucket change too).
 Keys added 2026-07-27 (prompt 52): busybusy_import_window_weeks ('2', how many full weeks back the Settings > BusyBusy window picker defaults to), busybusy_anomaly_hours_threshold ('16', a single time-entry row longer than this is flagged for review, never dropped), busybusy_overhead_project_names ('Shop', comma-separated BusyBusy project names treated as overhead and never charged to a job), busybusy_export_base_url ('https://export.busybusy.io/', the Payroll Export endpoint).
 Keys added 2026-07-27 (prompt 51): touchup_aging_days ('14', days open before a Touch-ups panel row renders red), touchup_default_duration_hours ('2', prefills Estimated hours when scheduling a touch-up), touchup_panel_show_done_days ('30', how far back the panel's Done section reaches).

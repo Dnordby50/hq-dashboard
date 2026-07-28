@@ -4,6 +4,44 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: applied the People model migration, all preflight checks green, SCHEMA.md to 81 of 81
+By: Cowork
+
+Changed: prod schema (zdfpzmmrgotynrwkeakd) and SCHEMA.md. Settings > People is LIVE.
+
+BASELINES, captured BEFORE applying (task 1): hourly_wage sum 158.00 across 7 non-null rows; commission_pct sum 6.00 across 2 rows; admin_users 6, pec_sales_team_members 2, pec_prod_crew_members 7. Bonus Report and Commission screenshotted, and their full rendered text captured (Bonus Report 3,339 chars: paid out 2,092.73 / 16 bonuses / 8,529.47 payable. Commission 7,505 chars: paid out 2,037.30 / 41 payments / 578.70 pending, Aron Bronson 6% 2,037.30 on 20 payments).
+
+MIGRATION APPLIED, one transaction, COMMIT succeeded. The executable Verify block did not fire: no sum drift, no legacy row-count change, no personless legacy row.
+
+ON THE RAISE NOTICE, stated plainly: the Supabase MCP apply path does not surface NOTICE output, so I did not capture the literal line. I re-ran the exact expressions the NOTICE prints, from the same tables, immediately after commit: **13 people rows for 6 logins + 2 sales + 7 crew, 2 auto-merged on auth_user_id.** 6 + 2 + 7 - 2 = 13, which is the arithmetic the handoff asked me to check, so the number is confirmed rather than quoted.
+
+VERIFY (task 3), all green:
+- people = 13, matching the expected 15 - 2 auto-merges.
+- hourly_wage sum 158.00 / 7 rows, commission_pct sum 6.00. IDENTICAL to the pre-migration baselines.
+- Legacy row counts unchanged: 6 / 2 / 7.
+- Uncovered legacy rows: 0.
+- Triggers: 9 present, exactly the 8 people_* plus pec_sales_capture_name_alias.
+- Settings: people_mirror_enabled=true, birthday_reminder_enabled=true, birthday_reminder_lead_days=7.
+- Extra evidence the migration never wrote a legacy row: max(updated_at) on pec_prod_crew_members is still 2026-07-15 and on pec_sales_team_members still 2026-07-25, both long before the 2026-07-28 19:16 UTC apply. Wages and crew ids were read, never touched, which is the landmine-2 and landmine-3 guarantee in one query.
+
+TASK 4 IN THE LIVE APP:
+(a) Bonus Report and Commission after the migration: 3,339 and 7,505 characters, byte-identical lengths to the pre-migration capture, and both verified to start with the exact same header-through-totals block character for character. Nothing moved.
+(b) **Could not be performed as written, and this is not a failure of the build.** There are ZERO rows in pec_prod_busybusy_time_entries, so no costed job has BusyBusy-imported hours to open. The first real import is still blocked on Aron's 47.78-hour punch and the Matt Scharrer job, as it has been since 2026-07-27. What I checked instead, since the actual risk is the mapping key moving: pec_prod_busybusy_employees holds 7 rows keyed to pec_prod_crew_members.id, no crew id changed, and no crew row was updated at all (see the updated_at evidence above). This check must be redone for real after the first import.
+(c) Settings > People renders every record exactly once per role: 13 people, role chips as expected (Aron Bronson and Dylan Nordby carry LOGIN+SALES from the auto-merge; the 7 crew members and the remaining logins stand alone). "Possible duplicates" lists **2 pairs, both suggestions only, nothing merged**: Kyle Floyd (LOGIN) vs Kyle Floyd (CREW), and Landen Johnson (LOGIN) vs Landen Johnson (CREW), both flagged "identical name". Those are Dylan's to decide. The birthday nag correctly lists all 13.
+
+TASK 5, THE RENAME SAFETY CHECK, and it is the result worth reading:
+Renamed Aron Bronson to "Aron Bronson TEST" from Settings > People. The rename propagated correctly (people -> pec_sales_team_members.name AND admin_users.name), commission_pct stayed 6.00, and name_aliases captured ["Aron Bronson"]. Then the Commission view, with every historical pec_job_ar row still carrying the string "Aron Bronson": **he still showed 6%, $2,037.30, 20 payments.** Without the alias fold-in his rate would have read 0% and his history would have fallen to Unassigned. Landmine 1 is genuinely handled, not just described. The view's text grew by exactly 18 characters, which is the salesperson dropdown gaining the line "Aron Bronson TEST" and nothing else. Renamed back; name_aliases now holds ["Aron Bronson TEST"] (harmless, and the trigger correctly dropped "Aron Bronson" from the aliases when it became the live name again). Post-check sums: 158.00 / 6.00 / 13 people, unchanged.
+
+TASK 6: pec-birthday-reminders returned 200 with {"ok":true,"candidates":0,"created":0,"lead":7}. Zero candidates is correct, nobody has a birthday set yet. Triggered from inside the signed-in app page using the live session token, so the JWT never left the browser.
+
+SCHEMA.md, now 81 documented of 81 live (was 80 of 80): full `people` section (columns, the three partial unique indexes, the both-or-neither birthday CHECK, all 4 policies, the 8 mirror triggers and their depth guards, and both RPCs), `name_aliases` added to pec_sales_team_members with the free-text-attribution explanation, settings rows 42 -> 45 with the three new keys documented (including that people_mirror_enabled='false' is the real rollback).
+
+Why: Dylan's handoff after prompt 54 shipped (2099a7b / fe01e4f / 829fb77).
+Files touched: SCHEMA.md, PROJECT-LOG.md (this entry). Prod schema changed outside the repo.
+Next steps: Dylan's two jobs are the Possible duplicates review (2 pairs, Keep separate when unsure) and filling in 13 birthdays. Redo check 4(b) for real after the first BusyBusy import. Still open: Aron's 47.78-hour punch and the Matt Scharrer job (#2227346) gating that import.
+
+---
+
 ## [2026-07-28 MST] Claude Code: prompt 54 built (the People model: one person record + birthdays)
 By: Claude Code
 
