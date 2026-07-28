@@ -11,3 +11,7 @@ build/
 # Estimator PWA build output (Vite builds apps/estimator into repo-root
 # /estimator; Netlify rebuilds it on deploy, so it is never committed).
 /estimator/
+
+# Local staging area for stale git lock-file / tmp-object backups awaiting
+# deletion (recurring HEAD.lock incidents, 2026-07-27/28). Never repo content.
+/_to_delete/
