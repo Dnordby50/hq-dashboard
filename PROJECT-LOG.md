@@ -4,6 +4,45 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: prompt 56 live verification, PASSES on the feature, FAILS verify item 7 (STOP flagged)
+By: Cowork
+
+Changed: nothing in code or schema. One real data write on the live DB: the Bobette Weiss crew bonus was APPROVED (3 rows in pec_prod_job_bonuses), which is the verification the handoff asked for. Bobette Weiss is NOT finalized; the remaining live steps were stopped on purpose, see the STOP below.
+
+VERIFY ITEM 2, BOBETTE WEISS (#2989725), PASSES, but the acceptance NUMBERS in the prompt-56 file were WRONG. Cowork wrote them, not Claude Code. The prompt asserted materials used was $0 on that job; it is $1,298.30 (three lines with real actual_used_qty: 2 of 3 Simiron 1100 SL at $144.27 = $288.54, 4 of 4 Outback Flake at $87.44 = $349.76, 5 of 5 Simiron Polyaspartic at $132.00 = $660.00). Cowork never checked actual_used_qty before writing the acceptance block. The build is correct; the expected value was not.
+
+  ACTUAL BEFORE (pre-56): Total Var $1,298, GP $4,602, 78.0%
+  ACTUAL AFTER  (live):   Total Var $2,136, GP $3,764, 63.8%
+  DELTA: exactly $838 = $697 loaded labor + $141 pending bonus, which is precisely what prompt 56 was built to add.
+
+Live card reads: Salary & Wages $697 derived, note "from 24.2 hrs of BusyBusy time, wages $557 plus 25% burden" (no em dashes, rule 6 holds); Bonus $141 derived with "incl. $141 suggested bonus pending approval"; Actual Hours (BusyBusy) 24.2; Estimated 25.3; Over/Under -1.1 (-4.3%); GP/hr $156; Rev/hr $244. The hours field is relabeled "MANUAL HOURS (FALLBACK) used only when there are no per member hours" as specified. The Crew Bonuses card is gone and the $50 crew-lead checkbox is on the Labor card. Manual hours editor present, greyed, labeled not counted. GP/hr is $156 not the $209 the prompt predicted, for the same materials reason.
+
+VERIFY ITEM 3, APPROVE, PASSES. Clicking Approve $141 crew bonus wrote exactly 3 rows to pec_prod_job_bonuses: Davey Milligan 47.69 (8.17 hrs), Kyle Floyd 47.49 (8.13), Matthew Hamby 46.13 (7.90), sum 141.31, every row note='Labor-savings bonus', suggested_amount = amount, approved_by='Dylan Nordby', approved_at 2026-07-28 23:24:49Z. The card flipped to "Approved $141 by Dylan Nordby" with an Unapprove button. THE CRITICAL CHECK PASSED: Total Var stayed $2,136 and GP stayed $3,764 across the approval, which is the no-double-count proof (pendingBonusForJob flips to 0 the moment a 'Labor-savings bonus' row exists).
+
+UNAPPROVE AND FINALIZE, NOT RUN. The Unapprove handler (index.html:31338) uses a native confirm(), which freezes the tab to browser automation; a human has to click it. Left for Dylan. Not a defect, just not automatable from here.
+
+*** STOP: VERIFY ITEM 7 FAILS. 34 LEGACY JOBS MOVED. ***
+
+The prompt's guardrail was "a job with a hand-typed salary_wages_cost and NO BusyBusy hours is numerically unchanged." It is not. 34 of the 35 such jobs ALSO carry rows in pec_prod_job_manual_labor, and crewLaborForJob (index.html:29397) falls back to manual per-member hours when BusyBusy is empty, so those manual hours now derive a loaded labor cost that OVERRIDES the typed salary_wages_cost via the `derived.laborCost > 0 ? derived : stored` rule at :29335.
+
+  Typed labor across the 34 jobs:   $30,237.92
+  Derived labor across the same 34: $25,452.58
+  Net effect: labor DROPS $4,785.34, so GP RISES $4,785.34 across 34 historical jobs, 31 of them ALREADY FINALIZED.
+
+Movement runs both directions and is dominated by one job: Steve Bruns typed $5,478.60 vs derived $1,276.63, a single $4,201.98 GP increase. Strip him out and the other 33 net to about +$583, with individual swings from -$95 (Ed Lawson) to +$386 (Greg Gutierrez). Every call site passes the derived object (detail :30031, callback kids :30425/:30433, list and rollups :31945, Metrics :12078), so these numbers have already moved in the Job Costing list, the Rollups grand total, and Metrics GP by crew lead.
+
+WHOSE FAULT: Cowork's, in the prompt. Locked decision 2 said "BusyBusy wins over a hand-typed salary_wages_cost" while Part A3 independently specified the precedence "BusyBusy hours, else the manual per-member hours editor, else nothing." Those two instructions collide for exactly the population item 7 was written to protect, and the prompt never noticed. Claude Code implemented what was written, correctly and with the guard comments intact.
+
+WORTH SAYING: the derived number is arguably the more DEFENSIBLE one going forward (hours x wage x 1.25, consistent with the new loaded-labor rule), while the typed values are inconsistent legacy entries of unknown provenance. But it silently rewrote the GP of 31 finalized jobs, and it moves GP UP, which reads as profit appearing from nowhere. That is Dylan's decision, not a silent side effect, which is why this is a STOP.
+
+VERIFY ITEMS 6 AND 10 NOT RUN. Rollups hours and the Metrics GP delta were not measured, because any grand-total number taken now would bake in the item-7 regression and be meaningless until Dylan rules on it.
+
+Why: the prompt-56 build handoff assigned Cowork verify items 2, 3, 6, 7, 10.
+Files touched: PROJECT-LOG.md (this entry). No code, no schema.
+Next steps for Dylan, in order: (1) decide the legacy-labor precedence, the three options being (a) typed salary_wages_cost beats manual hours so legacy jobs freeze, (b) manual hours win as shipped and the 34 jobs' GP is accepted as restated, (c) manual-hours fallback applies only to jobs with NO typed value, which freezes history and still lights up new jobs; (2) if (a) or (c), that is a one-condition change in crewLaborForJob plus a re-verify; (3) dismiss the confirm() dialog left open on the TopCoat tab and run Unapprove / re-Approve / Finalize on Bobette Weiss; (4) then items 6 and 10 can be measured meaningfully. Bobette Weiss currently sits approved-not-finalized, which is a safe state; Unapprove reverses it cleanly. Also still open from the build entry: legacy hand-typed labor is raw wages while BusyBusy-era labor is loaded (wages + 25% burden), so cross-era GP trends are apples to oranges until backfill or exclusion is chosen. Note that option (b) above would largely SOLVE that open question by putting every job on the loaded-labor basis.
+
+---
+
 ## [2026-07-28 MST] Claude Code: prompt 56 built (crew labor into GP everywhere, one-click bonus approval)
 By: Claude Code
 
