@@ -6,9 +6,11 @@ Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrat
 
 Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-52 migration: pec_prod_busybusy_time_entries was DROPPED and RECREATED with a new shape, and pec_prod_busybusy_imports / pec_prod_busybusy_projects / pec_prod_busybusy_employees are new, plus four busybusy_* settings keys and the pec_busybusy_import() function. Only those sections changed.
 
+Refreshed 2026-07-28 (Cowork) against the live schema after the prompt-53 migration: pec_prod_products gained datasheet_path + msds_path, settings gained datasheet_max_upload_mb, and the previously-undocumented pec_invoice_installments section was written. Also new and NOT a public-schema table: the `pec-datasheets` Storage bucket (public, PDF-only, 10 MB), created by that migration.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-79 tables documented, 80 live, all in `public`, all with RLS enabled. The one undocumented table is `pec_invoice_installments` (live since 2026-07-22_invoice_installments.sql; its section has not been written yet).
+80 tables documented, 80 live, all in `public`, all with RLS enabled. No gaps: `pec_invoice_installments` (live since 2026-07-22_invoice_installments.sql) finally got its section on 2026-07-28.
 
 ## Key relationships
 
@@ -835,6 +837,37 @@ RLS: enabled · rows: 2
 
 PK: id
 
+### pec_invoice_installments
+RLS: enabled · rows: 2
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| job_id | uuid | no |  |
+| seq | integer | no | 0 |
+| label | text | no | ''::text |
+| amount_kind | text | no | 'fixed' |
+| amount_value | numeric | no |  |
+| computed_amount | numeric | no | 0 |
+| trigger_kind | text | no | 'manual' |
+| due_date | date | yes |  |
+| status | text | no | 'planned' |
+| is_deposit | boolean | no | false |
+| standalone | boolean | no | false |
+| note | text | yes |  |
+| queued_at | timestamptz | yes |  |
+| sent_at | timestamptz | yes |  |
+| paid_at | timestamptz | yes |  |
+| payment_id | uuid | yes |  |
+| created_at | timestamptz | no | now() |
+| created_by | uuid | yes |  |
+
+PK: id
+FK: job_id → jobs.id ON DELETE CASCADE; payment_id → pec_payments.id ON DELETE SET NULL
+CHECK: amount_kind in ('fixed','percent'); trigger_kind in ('on_acceptance','on_start','on_completion','manual','date'); status in ('planned','queued','pending_approval','sent','paid','skipped','canceled'); amount_value >= 0; computed_amount >= 0
+Indexes: idx_pec_invoice_installments_job (job_id, seq); idx_pec_invoice_installments_status (status) WHERE status in ('planned','pending_approval'); uq_pec_invoice_installments_deposit UNIQUE (job_id) WHERE is_deposit — at most ONE deposit installment per job, enforced in the database.
+Live since 2026-07-22_invoice_installments.sql (partial invoicing, prompt 45). Documented 2026-07-28; it was the one live-but-undocumented table called out in this file's header from 2026-07-27 to 2026-07-28.
+
 ### pec_lead_sources
 RLS: enabled · rows: 19
 
@@ -1381,7 +1414,7 @@ RLS: enabled · rows: 0
 PK: id
 
 ### pec_prod_products
-RLS: enabled · rows: 181
+RLS: enabled · rows: 182
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1401,9 +1434,12 @@ RLS: enabled · rows: 181
 | manufacturer | text | yes |  |
 | image_url | text | yes |  |
 | default_basecoat_product_id | uuid | yes |  |
+| datasheet_path | text | yes |  |
+| msds_path | text | yes |  |
 
 PK: id
 FK: default_basecoat_product_id → pec_prod_products.id
+Added 2026-07-28 (prompt 53): datasheet_path (TDS) and msds_path (MSDS/SDS) hold the Storage OBJECT PATH inside the `pec-datasheets` bucket, never a full URL. The browser builds the link with supabase.storage.from('pec-datasheets').getPublicUrl(path). The bucket is public, PDF-only, 10 MB, with public read and is_admin_staff() writes; it is the app's first Storage feature and was created in SQL by 2026-07-28_product_datasheets.sql.
 
 ### pec_prod_recipe_slots
 RLS: enabled · rows: 24
@@ -1696,7 +1732,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 25
+RLS: enabled · rows: 42
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1705,6 +1741,7 @@ RLS: enabled · rows: 25
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-28 (prompt 53): datasheet_max_upload_mb ('10', the max PDF size the catalog's data-sheet upload accepts, in MB; the pec-datasheets bucket enforces 10 MB server-side regardless, so raising this above 10 needs a bucket change too).
 Keys added 2026-07-27 (prompt 52): busybusy_import_window_weeks ('2', how many full weeks back the Settings > BusyBusy window picker defaults to), busybusy_anomaly_hours_threshold ('16', a single time-entry row longer than this is flagged for review, never dropped), busybusy_overhead_project_names ('Shop', comma-separated BusyBusy project names treated as overhead and never charged to a job), busybusy_export_base_url ('https://export.busybusy.io/', the Payroll Export endpoint).
 Keys added 2026-07-27 (prompt 51): touchup_aging_days ('14', days open before a Touch-ups panel row renders red), touchup_default_duration_hours ('2', prefills Estimated hours when scheduling a touch-up), touchup_panel_show_done_days ('30', how far back the panel's Done section reaches).
 Keys added 2026-07-25 (prompt 48): migration_drift_check_enabled ('true', master switch for the daily drift check; the on-demand Diagnostics run always works), migration_drift_baseline ('2026-07-01', only migrations dated on/after this are probed), sync_stuck_threshold_attempts ('2', failed attempts before the estimator shows the red not-syncing state), sync_stuck_escalation_enabled ('true', whether a stuck save also raises an admin bell).

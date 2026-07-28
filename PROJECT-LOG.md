@@ -4,6 +4,40 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: applied the prompt-53 data sheets migration, tested the upload flow end to end, SCHEMA.md now 80 of 80
+By: Cowork
+
+Changed: prod schema (zdfpzmmrgotynrwkeakd) and SCHEMA.md. Product data sheets are LIVE.
+
+MIGRATION APPLIED. supabase/migrations/2026-07-28_product_datasheets.sql ran clean in one transaction via MCP apply_migration (recorded in supabase_migrations as `product_datasheets`; the repo file keeps its dated name). Additive only, all 182 existing product rows untouched.
+
+VERIFY, all four queries from the bottom of the migration file:
+1. columns: datasheet_path, msds_path both present on public.pec_prod_products.
+2. bucket: pec-datasheets | public=true | file_size_limit=10485760 | allowed_mime_types={application/pdf}.
+3. policies: 4 on storage.objects, named pec_datasheets_public_read, pec_datasheets_staff_insert, pec_datasheets_staff_update, pec_datasheets_staff_delete.
+4. setting: datasheet_max_upload_mb = 10.
+pec-photos was not touched (still 0 objects, unchanged config).
+
+END-TO-END TEST, in the live app as Dylan (admin), Production > Price & Material Catalog > Products. Test product: **Autumn Brown Flake**. A small generated PDF was used for every step, and the product was left with NO sheets attached.
+- Attach: uploaded as TDS, object c6f0c688-e9ad-4473-bc9e-32dbb8266636.pdf, Save closed the modal with no error, the row's TDS chip went live, and the row in pec_prod_products carried the path.
+- Public URL: fetched the chip's href with no auth headers. 200, content-type application/pdf, body starts %PDF-1.4. The public bucket does what the decision intended: the link works without a TopCoat login.
+- Replace: second upload landed as e5807f5d-27b5-4ed3-aaea-1adfde798fdd.pdf, and after the save the OLD object was gone from the bucket. The deferred-delete design (retire on save, not on pick) works: one object in the bucket, one path on the row, no orphan and no dangling path at any point.
+- Remove: row went back to a bare file input, Save closed clean, the list chip dimmed to the off state.
+- Final state, confirmed by query: 0 products with sheets, 0 objects in pec-datasheets, 0 in pec-photos, 182 products. Nothing left behind.
+- pmError stayed empty through all five operations. No console errors surfaced.
+
+SCHEMA.md, now 80 documented of 80 live (was 79 of 80). Three edits plus the gap close:
+- pec_prod_products: rows 181 -> 182, datasheet_path and msds_path added, plus a note that these hold the Storage OBJECT PATH and never a URL, and that the bucket is public/PDF-only/10 MB with is_admin_staff() writes.
+- settings: rows 25 -> 42 (it had drifted well past 25 across several migrations, not just this one), and the datasheet_max_upload_mb key documented with the caveat that raising it above 10 also needs a bucket change.
+- pec_invoice_installments: full section written from the live schema (19 columns, both FKs, all five CHECKs, all four indexes). Worth knowing about it: uq_pec_invoice_installments_deposit is a partial unique index on job_id WHERE is_deposit, so at most ONE deposit installment per job is enforced in the database, not just in app code.
+- Header: refresh note for 2026-07-28, and the count line no longer names an undocumented table.
+
+Why: Dylan's handoff after prompt 53 shipped (commits 020201c through a9e5e88).
+Files touched: SCHEMA.md, PROJECT-LOG.md (this entry). Prod schema changed outside the repo (migration + storage bucket + policies + one settings row).
+Next steps: real TDS and MSDS PDFs can be attached now, one product at a time, from the catalog. The job-detail Data sheets button stays hidden until a job's materials actually carry a sheet, so it will look like nothing changed there until the first few products are filled in. Still open from prior entries: prompt 54 (People model) unrun; Aron Bronson's 47.78-hour BusyBusy punch and the Matt Scharrer job (#2227346) still gate the first real hours import.
+
+---
+
 ## [2026-07-28 MST] Claude Code: prompt 53 built (work order header boxes, product data sheets, global table scroll)
 By: Claude Code
 
