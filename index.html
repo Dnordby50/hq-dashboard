@@ -17500,7 +17500,14 @@ async function renderSettingsBusybusy() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   };
-  const punchTime = (ts) => (ts && ts.length >= 16) ? ts.slice(11, 16) : '?';
+  // Pure string reformat: azTimestamp already wrote these as Arizona-local
+  // (-07:00) strings, so new Date() here would re-shift by the browser offset.
+  const punchTime = (ts) => {
+    if (!(ts && ts.length >= 16)) return '?';
+    const h = Number(ts.slice(11, 13)), m = ts.slice(14, 16);
+    if (!Number.isFinite(h) || h > 23) return '?';
+    return `${h % 12 === 0 ? 12 : h % 12}:${m} ${h >= 12 ? 'pm' : 'am'}`;
+  };
 
   const renderPreview = (s) => {
     const box = $('bbPreviewBox');

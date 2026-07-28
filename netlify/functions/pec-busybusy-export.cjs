@@ -91,6 +91,16 @@ function azTimestamp(s) {
   return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s || '') ? s.replace(' ', 'T') + '-07:00' : null;
 }
 
+// Human-readable punch time for anomaly detail strings only. The input is an
+// azTimestamp string (already Arizona local), so this is a pure string
+// reformat; the stored started_at / ended_at values are never touched.
+function fmtPunch(ts) {
+  if (!ts || String(ts).length < 16) return '?';
+  const h = Number(String(ts).slice(11, 13)), m = String(ts).slice(14, 16);
+  if (!Number.isFinite(h) || h > 23) return '?';
+  return `${h % 12 === 0 ? 12 : h % 12}:${m} ${h >= 12 ? 'pm' : 'am'}`;
+}
+
 async function fetchExport(baseUrl, startDate, endDate) {
   const url = `${baseUrl.replace(/\/+$/, '')}/?start=${encodeURIComponent(startDate + ' 00:00:00')}&end=${encodeURIComponent(endDate + ' 23:59:59')}`;
   const ctrl = new AbortController();
@@ -305,7 +315,7 @@ async function classify(csvRows, ctx) {
     ws.sort((a, b) => a.started_at < b.started_at ? -1 : 1);
     for (let i = 1; i < ws.length; i++) {
       if (ws[i].started_at < ws[i - 1].ended_at) {
-        out.anomalies.push({ type: 'overlap', employee: emp, date: ws[i].work_date, project: ws[i].busybusy_project_name, start: ws[i].started_at, end: ws[i].ended_at, hours: ws[i].hours, detail: `Overlaps the previous punch (${ws[i - 1].started_at} to ${ws[i - 1].ended_at} on ${ws[i - 1].busybusy_project_name || 'Shop'})` });
+        out.anomalies.push({ type: 'overlap', employee: emp, date: ws[i].work_date, project: ws[i].busybusy_project_name, start: ws[i].started_at, end: ws[i].ended_at, hours: ws[i].hours, detail: `Overlaps the previous punch (${fmtPunch(ws[i - 1].started_at)} to ${fmtPunch(ws[i - 1].ended_at)} on ${ws[i - 1].busybusy_project_name || 'Shop'})` });
       }
     }
   }
