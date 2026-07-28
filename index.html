@@ -29434,6 +29434,11 @@ function crewLaborForJob(job, sys) {
 // never double-counts and GP does not move on approval.
 function pendingBonusForJob(job, labor) {
   if (!COSTING_COUNT_PENDING_BONUS) return 0; // kill switch (Settings > General)
+  // A finalized job's ledger is the closed record: no rows means the reviewer
+  // recorded zero bonus (or the job predates the ledger), not that one is
+  // pending. Without this guard a finalized job with hours and savings would
+  // charge GP a "pending" bonus that will never be approved.
+  if (costingIsFinalized(job)) return 0;
   const rows = state.bonusesByJob?.[job.id] || [];
   if (rows.some(b => b.note === 'Labor-savings bonus')) return 0;
   return (labor && labor.suggestedPool) || 0;
