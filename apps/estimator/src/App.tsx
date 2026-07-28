@@ -14,6 +14,7 @@ type State =
       phase: 'ready';
       catalog: Catalog;
       createdBy: string | null;
+      viewerIsAdmin: boolean;
       fromCache: boolean;
       leadLink: LeadLink | null;
       editing: LoadedEstimate | null;
@@ -35,6 +36,25 @@ export default function App() {
         return;
       }
       const createdBy = sess.session.user?.id ?? null;
+
+      // Admin check for the salesperson lock (prompt 55 Part B): only an
+      // admin may change the salesperson once one is set. FAIL CLOSED: if
+      // this read errors, returns nothing, or we are offline, the user is
+      // treated as NOT an admin. A rep briefly unable to reassign is a much
+      // smaller problem than a silently editable commission attribution.
+      let viewerIsAdmin = false;
+      try {
+        if (createdBy) {
+          const { data, error } = await supabase
+            .from('admin_users')
+            .select('role')
+            .eq('auth_user_id', createdBy)
+            .maybeSingle();
+          if (!error && data?.role === 'admin') viewerIsAdmin = true;
+        }
+      } catch {
+        /* fail closed: locked */
+      }
 
       let catalog: Catalog | undefined;
       let fromCache = false;
@@ -82,7 +102,7 @@ export default function App() {
       const leadLink = await loadLeadLink(editing?.leadId ?? leadIdFromUrl());
 
       if (!alive || !catalog) return;
-      setState({ phase: 'ready', catalog, createdBy, fromCache, leadLink, editing });
+      setState({ phase: 'ready', catalog, createdBy, viewerIsAdmin, fromCache, leadLink, editing });
 
       // Best-effort: push anything queued from a previous offline session.
       if (navigator.onLine) drainOutbox().catch(() => {});
@@ -120,6 +140,7 @@ export default function App() {
     <EstimatorScreen
       catalog={state.catalog}
       createdBy={state.createdBy}
+      viewerIsAdmin={state.viewerIsAdmin}
       catalogFromCache={state.fromCache}
       leadLink={state.leadLink}
       embed={embed}

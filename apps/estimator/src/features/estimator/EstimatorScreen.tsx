@@ -133,6 +133,7 @@ function intakeFromLoaded(raw: Record<string, unknown>): Intake {
 export default function EstimatorScreen({
   catalog,
   createdBy,
+  viewerIsAdmin,
   catalogFromCache,
   leadLink,
   embed,
@@ -140,6 +141,7 @@ export default function EstimatorScreen({
 }: {
   catalog: Catalog;
   createdBy: string | null;
+  viewerIsAdmin: boolean;
   catalogFromCache: boolean;
   leadLink: LeadLink | null;
   embed: boolean;
@@ -189,6 +191,15 @@ export default function EstimatorScreen({
       currentUserId: createdBy,
     }),
   );
+  // Salesperson lock (prompt 55 Part B, narrowing prompt 47's freely-editable
+  // decision): once a salesperson is set, only an admin can change it. The
+  // lock is captured at OPEN (useState initializer runs once), with one
+  // deliberate exception: a BLANK salespersonId (an unmapped login, prompt
+  // 47's fallback) keeps the select enabled for everyone for this session,
+  // otherwise an unmapped rep could never save an estimate and the
+  // block-with-a-clear-message path would be a dead end.
+  const [salespersonSetAtOpen] = useState<boolean>(() => salespersonId !== '');
+  const salespersonLocked = salespersonSetAtOpen && !viewerIsAdmin;
   // Split customer shape (build 23): Residential/Commercial toggle, split
   // name / company, split address. Prefill priority: the estimate being
   // edited (estimateLoad already mapped split columns, with legacy fallback),
@@ -1803,14 +1814,23 @@ export default function EstimatorScreen({
           <section className="card inputs">
             <label className="field">
               <span>Salesperson</span>
-              <select value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
-                <option value="">Select…</option>
-                {salespeople.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.commission_pct ?? 0}% commission)
-                  </option>
-                ))}
-              </select>
+              {salespersonLocked ? (
+                <>
+                  <input value={salesperson ? salesperson.name : 'Unassigned'} readOnly disabled />
+                  <p className="muted" style={{ fontSize: '.75rem', margin: '4px 0 0' }}>
+                    Set when the estimate was started. An admin can change it.
+                  </p>
+                </>
+              ) : (
+                <select value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {salespeople.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.commission_pct ?? 0}% commission)
+                    </option>
+                  ))}
+                </select>
+              )}
             </label>
 
             {salespersonUnmapped && <p className="warn">{salespersonPrompt}</p>}

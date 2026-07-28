@@ -13489,7 +13489,13 @@ async function renderWorkOrder(ctx) {
     <div class="lbl">Location:</div>       <div class="val"></div>
     <div class="lbl">Gate Code#:</div>     <div class="val num">${e(job.gate_code || '')}</div>
     <div class="lbl">Phone:</div>          <div class="val num">${job.customers?.phone ? `<a href="${e(qoTelHref(job.customers.phone))}" style="color:inherit;text-decoration:none">${e(qoFmtPhone(job.customers.phone))}</a>` : ''}</div>
-    <div class="lbl"></div>                <div class="val"></div>
+    <!-- Salesperson (prompt 55 Part B) fills the grid's former empty pair, so
+         the 2-pairs-per-row layout and the header height math (verified by
+         prompt 53) are untouched. Deliberately UNLIKE the CREW and DATE hero
+         boxes, which print empty for the crew to handwrite: salesperson is not
+         a crew field, so a blank one prints "Unassigned" and gets fixed in the
+         office (Ops Queue check 5). -->
+    <div class="lbl">Salesperson:</div>    <div class="val">${e(job.salesperson || 'Unassigned')}</div>
     <div class="grp">Site Conditions</div>
     <div class="lbl">Sqft:</div>           <div class="val num">${e(totalSqft || '')}</div>
     <div class="lbl">Moisture:</div>       <div class="val">${e(job.moisture ?? '')}</div>
@@ -13566,7 +13572,7 @@ async function renderJobDetailInner(id) {
   // details by click time (the click opens the print window synchronously).
   fetchBrandIdentity().catch(() => {});
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
-  const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes] = await withFreshSession(() => Promise.all([
+  const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
       .select('*,customers(id,name,first_name,last_name,company_name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
@@ -13575,6 +13581,9 @@ async function renderJobDetailInner(id) {
     cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
     cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
     supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle(),
+    // Sales team for the admin Salesperson editor (prompt 55 Part B). Cached:
+    // the table is tiny and salesTeamSelectHtml reads state.salesTeam.
+    cachedRef('salesTeam', () => supabase.from('pec_sales_team_members').select('*').order('name')),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
     console.warn('[pec] job fetch failed; clearing openJobId:', jobRes.error.message);
@@ -13642,6 +13651,7 @@ async function renderJobDetailInner(id) {
   const recipeSlots = slotRes.data || [];
   const defaultLaborRate = Number(settingsRes?.data?.value) > 0 ? Number(settingsRes.data.value) : 35;
   const portalLink = `${portalBase()}/?portal=${job.customers?.token || ''}`;
+  if (!salesRes.error && (salesRes.data || []).length) state.salesTeam = salesRes.data;
   const STATUSES = ['signed','scheduled','in_progress','completed'];
   // Only admins can manually override status; everyone else sees it read-only.
   const canEditStatus = can('can_override_status');
@@ -13810,6 +13820,17 @@ async function renderJobDetailInner(id) {
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Sqft</label>
             <input id="jobSqft" type="number" min="0" step="1" value="${esc(job.sqft ?? '')}" placeholder="${headerAreasSqft > 0 ? 'areas: ' + headerAreasSqft.toLocaleString() : 'e.g. 850'}" title="Manual square footage (wins over the estimate areas sum). Used for the $/sqft metric." style="max-width:130px">
             ${headerPerSqft != null ? `<span class="pec-age" title="Price divided by effective sqft (manual sqft if set, else the areas sum)">$${headerPerSqft.toFixed(1)}/sqft</span>` : ''}
+          </div>
+          <!-- Salesperson (prompt 55 Part B): jobs.salesperson, frozen from the
+               estimate on accept, is the single display source. Locked at
+               estimate creation; only an ADMIN can change it here, the change
+               mirrors to pec_prod_jobs.sales_team and lands in the activity
+               log. Non-admins see plain text; blank reads "Unassigned". -->
+          <div style="display:flex;align-items:center;gap:6px">
+            <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Salesperson</label>
+            ${isAdmin()
+              ? salesTeamSelectHtml(job.salesperson || '', 'id="jobSalesperson" style="max-width:160px"')
+              : `<span style="font-size:.82rem;${job.salesperson ? '' : 'color:var(--muted)'}">${esc(job.salesperson || 'Unassigned')}</span>`}
           </div>
           <div style="display:flex;gap:6px;margin-top:4px">
             <button class="pec-btn sm" id="pecJobPrintWO">View Work Order</button>
@@ -14933,6 +14954,39 @@ async function renderJobDetailInner(id) {
       console.error('[pec] colors_confirmed toggle failed', err);
       colorsToggle.disabled = false; colorsToggle.textContent = job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed';
       alert(isSessionStale(err) ? 'The session briefly stalled — tap the button again.' : 'Could not update: ' + (err.message || err));
+    }
+  });
+
+  // --- Salesperson admin edit (prompt 55 Part B) ----------------------------
+  // The select only exists for admins (non-admins render plain text). A change
+  // writes jobs.salesperson (the single display source), mirrors the value to
+  // the linked pec_prod_jobs.sales_team via the dripjobs_deal_id bridge (best
+  // effort: manual prod rows have no bridge and keep their own copy), and
+  // records the change in the job activity log.
+  const spSel = $('jobSalesperson');
+  if (spSel) spSel.addEventListener('change', async () => {
+    const before = job.salesperson || null;
+    const after = spSel.value || null;
+    if (after === before) return;
+    spSel.disabled = true;
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ salesperson: after }).eq('id', id), { label: 'salesperson-edit' });
+      if (upd.error) throw upd.error;
+      if (job.dripjobs_deal_id) {
+        try {
+          const m = await supabase.from('pec_prod_jobs').update({ sales_team: after }).eq('dripjobs_deal_id', job.dripjobs_deal_id);
+          if (m.error) console.warn('[pec] sales_team mirror failed:', m.error.message);
+        } catch (e) { console.warn('[pec] sales_team mirror threw:', e); }
+      }
+      try { await logJobActivity(id, 'save', { salesperson: before }, { salesperson: after }); } catch (_) {}
+      job.salesperson = after;
+      showToast('Salesperson updated', { ttl: 2500 });
+    } catch (err) {
+      console.error('[pec] salesperson edit failed', err);
+      spSel.value = before || '';
+      alert(isSessionStale(err) ? 'The session briefly stalled — try again.' : 'Could not update salesperson: ' + (err.message || err));
+    } finally {
+      spSel.disabled = false;
     }
   });
 
@@ -26876,6 +26930,13 @@ function openScheduleModal(jobId) {
   // change event on the dropdown makes the pick stick.
   const facts = prodJobEstimateFacts(job);
   const derivedSys = (!sys && facts.systemTypeId) ? sysById[facts.systemTypeId] : null;
+  // Salesperson lock (prompt 55 Part B, decision 6): when this prod job
+  // resolves to a CRM job that carries a salesperson, jobs.salesperson is the
+  // single source of truth and the modal shows it read-only — a second freely
+  // editable copy of the name is exactly the drift being killed. The field
+  // stays editable only for prod rows with no CRM card (manual "+ Add Job"),
+  // so a manual row can still record who sold it.
+  const crmSalesperson = (state.crmSalespersonByProdJob || {})[jobId] || null;
   const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
 
   // The picker opens on the CURRENT month, not the job's first scheduled day.
@@ -27094,7 +27155,10 @@ function openScheduleModal(jobId) {
             ? `<div style="font-size:.68rem;color:#b45309;margin-top:4px">Estimate now says ${esc(fmtFactsHours(facts.computedHours))} hrs. <button type="button" class="pec-btn sm ghost" id="schedHoursUseEst" style="padding:1px 8px;font-size:.68rem">Use it</button></div>`
             : ''}
         </div>
-        <div class="pec-field"><label>Sales team</label>${salesTeamSelectHtml(draft.sales_team, 'id="schedSales"')}</div>
+        <div class="pec-field"><label>Sales team</label>${crmSalesperson
+          ? `<input value="${esc(crmSalesperson)}" readonly disabled title="Set on the estimate. An admin can change it on the job page.">
+             <div style="font-size:.68rem;color:var(--muted);margin-top:4px">From the estimate. An admin can change it on the job page.</div>`
+          : salesTeamSelectHtml(draft.sales_team, 'id="schedSales"')}</div>
       </div>
       ${job.is_callback ? `
       <div class="pec-row-2">
@@ -27164,7 +27228,8 @@ function openScheduleModal(jobId) {
         modal.querySelector('#schedHours').value = v;
         draft.estimated_hours = v;
       });
-      modal.querySelector('#schedSales').addEventListener('change', e => { draft.sales_team = e.target.value; });
+      const schedSalesEl = modal.querySelector('#schedSales');
+      if (schedSalesEl) schedSalesEl.addEventListener('change', e => { draft.sales_team = e.target.value; });
       const schedRevEl = modal.querySelector('#schedRevenue');
       if (schedRevEl) schedRevEl.addEventListener('input', e => { draft.revenue = e.target.value; });
       const schedBillEl = modal.querySelector('#schedBillable');
@@ -27323,8 +27388,12 @@ function openScheduleModal(jobId) {
           const jobPatch = {
             install_date: sortedIso[0],
             crew_id: draft.crew_id || null,
-            sales_team: draft.sales_team || null,
           };
+          // sales_team writes only when the field was editable (no CRM
+          // salesperson). When locked, the modal never touches the prod copy:
+          // jobs.salesperson is the display source and disagreements surface
+          // in the Ops Queue instead of being silently re-stamped here.
+          if (!crmSalesperson) jobPatch.sales_team = draft.sales_team || null;
           // Hours write-guard (prompt 55): write estimated_hours ONLY when the
           // field differs from the prefill this modal opened with. The prefill
           // is usually the estimate's LIVE computed number, and a stored value
@@ -28379,7 +28448,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, products: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, products: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -28393,7 +28462,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
     cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
     cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
-    supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,customers(name)').is('archived_at', null),
+    supabase.from('jobs').select('id,dripjobs_deal_id,price,status,sqft,address,salesperson,customers(name)').is('archived_at', null),
     laborRate == null
       ? cachedRef('laborRate', () => supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle())
       : Promise.resolve(null),
@@ -28411,7 +28480,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   // Deal + name|address indexes of CRM job identities (first row wins).
   const crmByDeal = {}, crmByNameAddr = {};
   for (const row of (crmIdentRes.data || [])) {
-    const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft };
+    const ident = { id: row.id, price: Number(row.price) || 0, status: row.status, sqft: row.sqft, salesperson: row.salesperson || null };
     if (row.dripjobs_deal_id && !crmByDeal[row.dripjobs_deal_id]) crmByDeal[row.dripjobs_deal_id] = ident;
     const naKey = window.jobNameAddrKey(row.customers && row.customers.name, row.address);
     if (naKey && !crmByNameAddr[naKey]) crmByNameAddr[naKey] = ident;
@@ -28428,6 +28497,10 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
       resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
       if (ident.status) out.crmStatusByProd[job.id] = ident.status;
       if (ident.sqft != null) out.crmSqftByProd[job.id] = ident.sqft;
+      // The CRM job's salesperson (prompt 55 Part B): jobs.salesperson is the
+      // single display source; the schedule modal locks its sales_team field
+      // when the resolved CRM job carries one.
+      if (ident.salesperson) out.crmSalespersonByProd[job.id] = ident.salesperson;
     }
   }
   // Phase 2: areas + materials for only the resolved CRM jobs.
@@ -28480,6 +28553,7 @@ async function loadScheduleEstimates() {
     state.systemIdByJob = facts.systemIdByJob;
     state.crmStatusByProdJob = facts.crmStatusByProd;
     state.crmSqftByProdJob = facts.crmSqftByProd;
+    state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
 }
@@ -28622,6 +28696,7 @@ async function loadCostingData() {
     // the Jobs tag.
     state.systemIdByJob = facts.systemIdByJob;
     state.crmStatusByProdJob = facts.crmStatusByProd;
+    state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
     // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
     // column, so the unified $/sqft readout needs the CRM job's manual sqft
     // (set on accept for custom estimates, or backfilled on the job header)
