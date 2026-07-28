@@ -2705,11 +2705,15 @@ function showSetup(el, msg) {
 // ============================================================
 // The sheets-proxy Netlify function now requires a logged-in staff JWT (it used
 // to be an open proxy anyone on the internet could read/write the company sheets
-// through). Every call from here must carry the current session token. state.session
-// is kept current by the onAuthStateChange handler, so this is always available
-// once a staff member is signed in.
+// through). Every call from here must carry the current session token. The CRM's
+// `state` object lives in a <script type="module"> (index.html ~5592), whose
+// top-level const bindings are NOT visible to this classic <script> block, so a
+// bare `state` here throws "ReferenceError: state is not defined". Read it through
+// the window bridge (`window.pecState = state`, index.html ~6746) instead. It is the
+// same live object, and its .session is kept current by the onAuthStateChange
+// handler, so the token is always fresh once a staff member is signed in.
 function sheetsAuthHeaders(extra) {
-  const t = state.session && state.session.access_token;
+  const t = window.pecState && window.pecState.session && window.pecState.session.access_token;
   return Object.assign({}, extra || {}, t ? { Authorization: 'Bearer ' + t } : {});
 }
 
@@ -3696,7 +3700,7 @@ async function sendSOPChat(view) {
   try {
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
       body: JSON.stringify({
         system: sopSystemPrompt,
         messages: sopChatHistory,
@@ -4087,7 +4091,7 @@ async function sendCoach() {
   try {
     const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
       body: JSON.stringify({
         system: COACH_SYSTEM,
         messages: coachHistory,
@@ -13339,9 +13343,19 @@ async function renderWorkOrder(ctx) {
   .wo-toolbar { text-align: center; padding: 10px; background: var(--softer); border-bottom: 1px solid var(--line); }
   .wo-toolbar button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 8px 18px; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; }
   .wo-banner { background: var(--accent); color: #fff; text-align: center; padding: 8px; font-weight: 700; font-size: 11px; letter-spacing: 0.6px; }
-  .wo-header { display: flex; justify-content: space-between; align-items: flex-end; margin: 14px 0 10px; }
-  .wo-title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--ink-2); }
-  .wo-brandwrap { display: flex; align-items: center; }
+  .wo-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 12px 0 10px; }
+  /* Job / Crew / Date hero boxes. A blank value stays a blank box on purpose:
+     this is a fillable paper form and an unscheduled job's crew and date get
+     written in by hand, so min-height leaves room for handwriting. */
+  .wo-hero { display: flex; gap: 8px; flex: 1; min-width: 0; }
+  .wo-hero .hbox { border: 1.5px solid var(--line); border-radius: 8px; background: var(--softer); padding: 5px 10px 6px; min-height: 46px; }
+  .wo-hero .hbox.job { flex: 1; min-width: 0; }
+  .wo-hero .hbox.crew { flex: 0 0 auto; width: 140px; }
+  .wo-hero .hbox.date { flex: 0 0 auto; width: 110px; }
+  .wo-hero .cap { font-size: 8px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+  .wo-hero .big { font-weight: 800; font-size: 20px; line-height: 1.15; color: var(--ink); overflow-wrap: anywhere; }
+  .wo-hero .hbox.crew .big, .wo-hero .hbox.date .big { font-size: 18px; }
+  .wo-brandwrap { display: flex; align-items: center; flex-shrink: 0; }
   .wo-logo { width: 104px; height: auto; display: block; }
 
   .intake { display: grid; grid-template-columns: 116px 1fr 116px 1fr; gap: 5px 10px; align-items: stretch; margin-bottom: 14px; }
@@ -34616,7 +34630,7 @@ ${doc || '(The CRM help doc could not be loaded. Answer from general CRM knowled
       const system = await buildSystemPrompt();
       const res = await fetch(CONFIG.SOP_CHAT_ENDPOINT, {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', Authorization: `Bearer ${state.session?.access_token || ''}` },
+        headers:{ 'Content-Type':'application/json', Authorization: `Bearer ${window.pecState?.session?.access_token || ''}` },
         body: JSON.stringify({ system, messages: history, model: CONFIG.COACH_MODEL, max_tokens: 1024 })
       });
       typing.remove();

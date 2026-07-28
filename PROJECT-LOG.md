@@ -4,6 +4,34 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] Cowork: fixed "state is not defined" on the BusyBusy preview (cross-script-block scope bug, also broke Sheets and all three chat panels)
+By: Cowork
+
+Changed: index.html, four call sites. Dylan clicked Fetch preview on Settings > BusyBusy and got "state is not defined" with no network request going out.
+
+ROOT CAUSE, and it is not a BusyBusy bug at all. index.html has both classic `<script>` blocks and `<script type="module">` blocks. `const state` is declared at the top level of the CRM module (index.html ~5592 block, declaration at ~6746), and a top-level `const` in a module is MODULE-scoped, not global: a classic script cannot see it. `sheetsAuthHeaders()` lives in the classic block at index.html:2716 and read a bare `state`, so every call to it threw ReferenceError. The BusyBusy preview handler (index.html ~17234, inside the module) calls that classic function, and scope is lexical, so the throw happened inside sheetsAuthHeaders before the fetch was ever issued. That is why Dylan saw a JS error and not an HTTP error.
+
+Confirmed live rather than reasoned about: in Dylan's own logged-in browser on prescottepoxy.netlify.app, `typeof state` returned "undefined" at page scope and `sheetsAuthHeaders({a:1})` threw "ReferenceError: state is not defined", while `window.pecState.session.access_token` returned a valid 803-char JWT.
+
+BLAST RADIUS, all pre-existing since b54650a (the commit that added the staff-JWT requirement) and none of it BusyBusy-specific. sheetsAuthHeaders has five callers: fetchSheet (index.html:2721, which powers the Booked Jobs pull at 2781 and the Dashboard Data / Tasks pulls at 3827 and 3989), syncAllTasks (3875), the brain dump sync (4382 and 4408), and the BusyBusy preview/import (17234). Three more classic-block sites read `state.session?.access_token` directly inside template literals and threw the same way: the SOP chat (3704), the coach chat (4095), and the help chat (34624).
+
+FIX: use the bridge that already exists. index.html:6746 already does `window.pecState = state`, and other classic-block code (34382, 34562) already reads it. All four sites now read `window.pecState`. It is the same live object, so `.session` stays current through onAuthStateChange; nothing is cached or copied. The comment above sheetsAuthHeaders now spells out the module/classic scope boundary so this does not get rewritten back.
+
+VERIFIED END TO END BEFORE COMMITTING, without deploying: overrode window.sheetsAuthHeaders in the live page with the patched body, then ran a real preview for 2026-07-13 to 2026-07-26. It returned 145 rows, 7 employees, 571.1 total hours (478.52 REG / 92.58 OT), 414.73 job hours, 141.4 overhead hours, 14 jobs, 7 unmapped employees, 1 unlinked project (Matt Scharrer, 14.97h), 2 anomalies (both benign punch notes: Matthew Hamby "Forgot to clock out at 330 monday", Caden Maier "Plaza bowl"). Import button enabled, no error text. So the function, the token, the CSV parse, and the summary all work; the ONLY thing wrong was the scope bug. Worth noting: Aron Bronson's 47.78-hour punch did NOT appear in the anomalies for a window that covers 2026-07-22 to 07-24, which suggests Dylan already corrected it in BusyBusy.
+
+npm test: 104 passed, 4 failed. The same 4 fail on HEAD's index.html (verified by swapping HEAD's copy back in and re-running), so they are pre-existing and unrelated: two "globalThis.__run is not a function" in production/estimate15b.test.js plus the two offline-save/edit-load sections above them. Flagging because recent Claude Code entries claim npm test green.
+
+Why: Dylan reported "state is not defined" when trying to preview BusyBusy hours.
+Files touched: index.html (2716 sheetsAuthHeaders body + its comment, 3704 SOP chat, 4095 coach chat, 34624 help chat), PROJECT-LOG.md (this entry).
+Next steps: NOT DEPLOYED. Committed locally only; the fix reaches the live site on the next push to main. Dylan pushes (or approves a push) per the standing rule.
+
+## Handoff to Dylan
+1. Approve the push (or run `git push`) so the fix deploys. Until then the live site still throws, and the browser tab Cowork used has only an in-memory patch that a reload wipes.
+2. First import: all 7 exported names are currently unmapped, so importing now stores the hours but sends ZERO hours to job costing until the mapping screen is filled in. The mapping rows only appear after the first import populates pec_prod_busybusy_employees, so the order is import, then map (Ignore Aron Bronson), then costing lights up.
+3. Matt Scharrer's project still has no job (14.97h in this window); link it or create the job on the unlinked projects screen.
+
+---
+
 ## [2026-07-28 MST] Cowork: wrote prompts 53 and 54 from Dylan's four-item list
 By: Cowork
 
