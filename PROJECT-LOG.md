@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] SalesAsk integration Phase 2: timeline, customer profile, appointment, and Settings surfaces
+By: Claude Code
+Changed: The SalesAsk data loop now shows up everywhere staff work. (1) Lead timeline: leadEventHtml gained a 'salesask_recording' branch ("Sales visit recorded · Xm · process N/M" with summary, action items, and a Listen link behind a details expander, same collapse instinct as call transcripts). (2) Customer profile: new "Sales visit recordings" card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk) cloned from the Quo Calls card, reading pec_salesask_recordings by customer_id with the same qo-summary AI card styling. (3) Appointment form: editing an existing appointment best-effort loads its matched recording into a read-only #afSalesAskRow section (summary, score, Listen link); silent when nothing recorded or pre-migration. (4) Settings > Appointments: new "SalesAsk recording sync" card with the master toggle (salesask_sync_enabled), push-window and lookback knobs (upsert-on-change, matching the Drips/Estimates settings pattern), and a per-rep salesask_email editor over the roster (placeholder shows the People/Google fallback email that would be used if blank; writes pec_sales_team_members.salesask_email through the existing staff for-all policy). (5) pec-lead-ai's timeline header now names the salesask_recording events so the model knows visit recordings are in the feed (the data already flowed via lead_events, zero query change). Plus a What's New entry and a features.json entry.
+Why: Phase 2 of the SalesAsk plan. WHY THE TIMELINE NEEDED NO QUERY CHANGE: Phase 1 deliberately inserts a lead_events row per processed recording, and renderLeadDetail already fetches all lead_events, so surfacing was purely a render branch. The customer card reads the recordings table directly instead (customers can outlive leads, and the card wants full transcript + coaching fields, not the trimmed event payload).
+Files touched: index.html, netlify/functions/pec-lead-ai.cjs, help/whats-new.json, features.json, PROJECT-LOG.md (this entry).
+Next steps: Phase 3 (Metrics > Sales coaching card), Phase 4 (MCP get_sales_recordings tool + consolidated Cowork/Dylan handoff).
+Handoff to Cowork: None yet (consolidated handoff ships with the final phase).
+Handoff to Dylan: None yet.
+
+---
+
 ## [2026-07-28 MST] SalesAsk integration Phase 1: appointment push + recording ingest (data loop)
 By: Claude Code
 Changed: New SalesAsk integration data loop. Migration 2026-07-31_salesask_integration.sql creates pec_salesask_recordings (recording + AI summary/notes/action items/coaching/process score/transcript, staff-read RLS, service-role-only writes, same trust model as pec_call_log), adds push bookkeeping columns to pec_appointments (salesask_synced_at, salesask_sync_hash), adds pec_sales_team_members.salesask_email, and seeds three settings knobs (salesask_sync_enabled 'false', salesask_push_window_days '14', salesask_pull_lookback_days '3'). Three new Netlify functions: _pec-salesask.cjs (shared helpers), pec-webhook-salesask.cjs (routed /api/salesask/webhook), pec-salesask-sync.cjs (cron */15). netlify.toml gained the redirect and the schedule.

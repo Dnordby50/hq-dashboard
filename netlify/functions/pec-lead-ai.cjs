@@ -73,7 +73,7 @@ function buildUserPrompt(lead, events, estimates) {
     estimate_sent_at: lead.estimate_sent_at, presented_at: lead.presented_at,
   }));
   lines.push('');
-  lines.push(`TIMELINE (newest first, ${events.length} events; call transcripts included where available):`);
+  lines.push(`TIMELINE (newest first, ${events.length} events; phone call transcripts and in-home sales visit recordings (salesask_recording: AI summary, action items, process score, transcript excerpt) included where available):`);
   for (const ev of events) {
     const payload = ev.payload ? JSON.stringify(ev.payload).slice(0, 4000) : '';
     lines.push(`- [${ev.created_at}] ${ev.event_type}${ev.to_stage ? ` -> ${ev.to_stage}` : ''} ${payload}`);

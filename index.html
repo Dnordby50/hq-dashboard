@@ -8231,6 +8231,8 @@ async function renderCustomerDetail(id) {
 
     ${customerCallsCardHtml()}
 
+    ${customerSalesAskCardHtml()}
+
     <div class="pec-card">
       <h3>Lifetime revenue</h3>
       <div class="pec-row-3" style="align-items:flex-end">
@@ -8314,6 +8316,7 @@ async function renderCustomerDetail(id) {
   // Two-way SMS thread for this customer (async so it never blocks the page).
   mountCustomerSmsThread(root.querySelector('#pecCustSmsCard'), c);
   mountCustomerCalls(root.querySelector('#pecCustCallsCard'), c);
+  mountCustomerSalesAsk(root.querySelector('#pecCustSalesAskCard'), c);
   // Email history for this customer (prompt 36; async, read-only).
   mountRecordEmailLog(root.querySelector('#pecCustEmailsCard'), { customerId: c.id });
 }
@@ -17113,12 +17116,19 @@ async function renderSettingsEstimates() {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
+    supabase.from('settings').select('key,value').like('key', 'salesask_%'),
+    supabase.from('people').select('sales_team_member_id,email').not('sales_team_member_id', 'is', null),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   const rules = (rulesRes.error ? [] : rulesRes.data || []);
+  const saSettings = {};
+  for (const s of ((saSetRes && saSetRes.data) || [])) saSettings[s.key] = s.value;
+  const saMigrated = !(saSetRes && saSetRes.error) && ('salesask_sync_enabled' in saSettings);
+  const personEmailByMember = {};
+  for (const p of ((peopleRes && peopleRes.data) || [])) { if (p.email) personEmailByMember[p.sales_team_member_id] = p.email; }
 
   const whenLabel = (r) => {
     if (r.on_book) return 'On booking';
@@ -17151,6 +17161,35 @@ async function renderSettingsAppointments() {
             : `<span style="font-size:.76rem;color:var(--muted)">Not connected</span>
                <button class="pec-btn sm" data-gconn="${esc(m.id)}">Connect Google</button>`}
         </div>`).join('') : '<div class="pec-empty">No sales team members yet. Add them under Settings &gt; General &gt; Sales Team.</div>'}
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">SalesAsk recording sync</h3>
+      ${!saMigrated ? '<div class="pec-empty">Run the 2026-07-31_salesask_integration.sql migration to enable SalesAsk sync.</div>' : `
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Upcoming appointments push to SalesAsk automatically so each rep's recording attaches to the
+        right appointment, lead, and customer. Recordings, AI summaries, and coaching scores flow back
+        within about 15 minutes of processing. Each rep below needs the email they log into SalesAsk
+        with; blank falls back to their People email, then their Google sync email.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="saEnabled" style="width:auto" ${saSettings.salesask_sync_enabled === 'true' ? 'checked' : ''}>
+        Sync appointments and pull recordings</label>
+      <div class="pec-row-2" style="max-width:460px">
+        <div class="pec-field"><label>Push window (days ahead)</label>
+          <input type="number" id="saWindow" min="1" step="1" value="${esc(saSettings.salesask_push_window_days || '14')}"></div>
+        <div class="pec-field"><label>Recording lookback (days)</label>
+          <input type="number" id="saLookback" min="1" step="1" value="${esc(saSettings.salesask_pull_lookback_days || '3')}"></div>
+      </div>
+      <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin:10px 0 2px">Rep SalesAsk emails</div>
+      ${members.map(m => `
+        <div style="display:flex;align-items:center;gap:12px;padding:7px 0;border-bottom:1px solid var(--rd-line,var(--border))">
+          <strong style="flex:1">${esc(m.name)}${m.active === false ? ' <span style="color:var(--muted);font-weight:400">(inactive)</span>' : ''}</strong>
+          <input type="email" data-sa-email="${esc(m.id)}" value="${esc(m.salesask_email || '')}"
+            placeholder="${esc(personEmailByMember[m.id] || m.google_email || 'salesask login email')}"
+            style="max-width:260px;font-size:.8rem">
+        </div>`).join('')}
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="saStatus"></div>`}
     </div>
 
     <div class="pec-card">
@@ -17224,6 +17263,31 @@ async function renderSettingsAppointments() {
       btn.disabled = false; btn.textContent = 'Disconnect';
       showToast('Could not disconnect: ' + (err.message || err), { ttl: 7000 });
     }
+  }));
+
+  // SalesAsk card wiring (rule 12: knobs in the settings table, per-member
+  // emails on the roster row). Saves fire on change, no Save button, matching
+  // the Drips/Estimates settings cards' upsert-on-change pattern.
+  const saStatus = (msg) => { const el = root.querySelector('#saStatus'); if (el) el.textContent = msg; };
+  const saSaveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-salesask-save' });
+    if (w.error) { saStatus('Save failed: ' + w.error.message); return false; }
+    saStatus('Saved.'); setTimeout(() => saStatus(''), 2000); return true;
+  };
+  root.querySelector('#saEnabled')?.addEventListener('change', e => saSaveSetting('salesask_sync_enabled', e.target.checked ? 'true' : 'false'));
+  root.querySelector('#saWindow')?.addEventListener('change', e => {
+    const v = Math.max(1, parseInt(e.target.value, 10) || 14); e.target.value = v;
+    saSaveSetting('salesask_push_window_days', v);
+  });
+  root.querySelector('#saLookback')?.addEventListener('change', e => {
+    const v = Math.max(1, parseInt(e.target.value, 10) || 3); e.target.value = v;
+    saSaveSetting('salesask_pull_lookback_days', v);
+  });
+  root.querySelectorAll('[data-sa-email]').forEach(inp => inp.addEventListener('change', async () => {
+    const email = inp.value.trim() || null;
+    const { error } = await withFreshWriteRetry(() => supabase.from('pec_sales_team_members').update({ salesask_email: email }).eq('id', inp.dataset.saEmail), { label: 'salesask-email-save' });
+    if (error) saStatus('Email save failed: ' + error.message);
+    else { saStatus('Saved.'); setTimeout(() => saStatus(''), 2000); }
   }));
 
   const openRuleModal = (rule) => openApptRuleModal(rule, () => renderSettingsAppointments());
@@ -19629,6 +19693,78 @@ async function mountCustomerCalls(card, c) {
   } catch (e) {
     const needsMigration = /pec_call_log/.test(e.message || '');
     body.innerHTML = `<div class="qo-empty">${needsMigration ? 'Run the 2026-07-06_quo_call_log.sql migration to enable call summaries.' : esc(e.message || 'Could not load calls.')}</div>`;
+  }
+}
+
+// ============================================================
+// SalesAsk sales visit recordings on the customer profile. Same shape as the
+// Calls card above, reading pec_salesask_recordings by customer_id (rows are
+// written only by the service-role webhook/cron; staff have SELECT). Each row
+// shows when/rep/duration/process score, the AI summary + action items behind
+// the same qo-summary card, and the transcript behind an expander. Degrades to
+// a migration note pre-migration and a friendly empty state before recordings
+// start landing.
+function customerSalesAskCardHtml() {
+  return `
+    <div class="pec-card" id="pecCustSalesAskCard">
+      <h3>Sales visit recordings</h3>
+      <div class="qo-mini"><div data-salesask-body class="qo-callist"><div class="qo-empty">Loading recordings…</div></div></div>
+    </div>`;
+}
+function salesAskRowHtml(r) {
+  const fmtDur = (s) => {
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const m = Math.floor(n / 60);
+    return m ? `${m}m` : `${Math.round(n)}s`;
+  };
+  const fmtWhen = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  };
+  const score = (r.process_followed != null && r.process_total != null) ? `process ${r.process_followed}/${r.process_total}` : '';
+  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), score].filter(Boolean).join(' · ');
+  const turns = Array.isArray(r.transcript) ? r.transcript : null;
+  const transcriptHtml = (turns && turns.length)
+    ? `<details class="qo-tr"><summary aria-label="Toggle transcript"></summary>
+         <div class="qo-tr-body">${turns.map(t => `<div style="margin-bottom:5px">${t && t.speaker ? `<strong>${esc(t.speaker)}:</strong> ` : ''}${esc((t && t.text) || '')}</div>`).join('')}</div>
+       </details>`
+    : '';
+  const items = Array.isArray(r.action_items) ? r.action_items.map(i => typeof i === 'string' ? i : (i && (i.text || i.title)) || '').filter(Boolean) : [];
+  const hasCard = !!(r.summary || items.length || transcriptHtml);
+  const cardHtml = hasCard
+    ? `<div class="qo-summary">
+        <div class="qo-summary-head"><span class="qo-summary-title">Visit summary</span><span class="qo-ai">Powered by AI ✦</span></div>
+        ${r.summary ? qoBulletsHtml(r.summary) : '<div class="qo-call-none">No summary yet.</div>'}
+        ${items.length ? `<div class="qo-next-title">Action items</div>${qoBulletsHtml(items.join('\n'))}` : ''}
+        ${r.recording_url ? `<div style="margin-top:6px;font-size:.76rem"><a href="${esc(r.recording_url)}" target="_blank" rel="noopener">Listen in SalesAsk ↗</a></div>` : ''}
+        ${transcriptHtml}
+      </div>`
+    : (r.status === 'processing' ? '<div class="qo-call-none">Still processing in SalesAsk…</div>' : '<div class="qo-call-none">No summary yet.</div>');
+  return `<div class="qo-callwrap">
+    <div class="qo-call-head">
+      <span class="qo-call-ic">${QO_SVG.phone}</span>
+      <span class="qo-call-title">${esc(r.title || 'Sales visit')}</span>
+      <span class="qo-call-meta">${esc(metaBits)}</span>
+    </div>
+    ${cardHtml}
+  </div>`;
+}
+async function mountCustomerSalesAsk(card, c) {
+  if (!card) return;
+  const body = card.querySelector('[data-salesask-body]');
+  try {
+    const { data, error } = await supabase.from('pec_salesask_recordings').select('*')
+      .eq('customer_id', c.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(25);
+    if (error) throw error;
+    if (!data || !data.length) {
+      body.innerHTML = '<div class="qo-empty">No sales visit recordings yet. Recordings land here automatically once SalesAsk sync is on and a rep records at this customer\'s appointment.</div>';
+      return;
+    }
+    body.innerHTML = data.map(salesAskRowHtml).join('');
+  } catch (e) {
+    const needsMigration = /pec_salesask_recordings/.test(e.message || '');
+    body.innerHTML = `<div class="qo-empty">${needsMigration ? 'Run the 2026-07-31_salesask_integration.sql migration to enable sales visit recordings.' : esc(e.message || 'Could not load recordings.')}</div>`;
   }
 }
 
@@ -22172,6 +22308,7 @@ async function openAppointmentForm(existing, prefill = {}) {
       <textarea id="afNotes" rows="3">${esc(a.notes || '')}</textarea>
       <div style="font-size:.68rem;color:var(--muted);margin-top:3px">Private. Shows on the salesperson's Google Calendar event, never sent to the customer.</div></div>
     ${a.google_event_id ? '<div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">Synced with Google Calendar.</div>' : ''}
+    ${isNew ? '' : '<div id="afSalesAskRow"></div>'}
     ${a.status === 'canceled' ? '<div style="font-size:.78rem;color:#b45309;margin-bottom:8px">This appointment is canceled.</div>' : ''}
     <div class="prod-msg-err" id="afErr" style="min-height:16px"></div>
     <div class="pec-modal-actions" style="justify-content:space-between">
@@ -22215,6 +22352,33 @@ async function openAppointmentForm(existing, prefill = {}) {
           });
         }
       } catch (_) { /* contact lookup is decoration */ }
+    })();
+    // SalesAsk recording for this appointment (read-only, best-effort). Shows
+    // only when a recording actually matched this appointment; silent when the
+    // table isn't migrated yet or nothing recorded, so the form never changes
+    // shape for the common case.
+    (async () => {
+      const rowEl = modal.querySelector('#afSalesAskRow');
+      if (!rowEl || isNew) return;
+      try {
+        const { data, error } = await supabase.from('pec_salesask_recordings')
+          .select('title,summary,status,duration_seconds,process_followed,process_total,recording_url,occurred_at')
+          .eq('appointment_id', a.id).order('occurred_at', { ascending: false }).limit(1);
+        if (error || !data || !data.length) return;
+        const r = data[0];
+        const mins = Number(r.duration_seconds) > 0 ? `${Math.round(Number(r.duration_seconds) / 60)}m` : '';
+        const score = (r.process_followed != null && r.process_total != null) ? `process ${r.process_followed}/${r.process_total}` : '';
+        const meta = [mins, score, r.status === 'processing' ? 'still processing' : ''].filter(Boolean).join(' · ');
+        rowEl.innerHTML = `
+          <div style="border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:.8rem">
+            <div style="display:flex;align-items:center;gap:8px">
+              <strong>Sales visit recorded</strong>
+              <span style="color:var(--muted);font-size:.72rem">${esc(meta)}</span>
+              ${r.recording_url ? `<a href="${esc(r.recording_url)}" target="_blank" rel="noopener" style="margin-left:auto;font-size:.76rem">Listen ↗</a>` : ''}
+            </div>
+            ${r.summary ? `<div style="color:var(--muted);margin-top:5px;white-space:pre-wrap;max-height:120px;overflow-y:auto">${esc(String(r.summary).slice(0, 600))}</div>` : ''}
+          </div>`;
+      } catch (_) { /* recording lookup is decoration */ }
     })();
     // Address autocomplete (Places). Attached if the helper is available;
     // absent key / offline the input is just a plain text field.
@@ -23955,6 +24119,23 @@ function leadEventHtml(ev, staffNames) {
     const head = `${p.direction === 'outgoing' ? 'Outbound' : 'Inbound'} call${secs ? ` · ${Math.round(secs / 60)}m ${secs % 60}s` : ''}`;
     body = p.transcript
       ? `<details><summary style="cursor:pointer">${esc(head)} · transcript</summary><div style="white-space:pre-wrap;font-size:.78rem;color:var(--muted);margin-top:6px;max-height:260px;overflow-y:auto">${esc(p.transcript)}</div></details>`
+      : esc(head);
+  } else if (ev.event_type === 'salesask_recording') {
+    // SalesAsk in-home sales recording (pec-salesask-sync inserts these; the
+    // full row lives in pec_salesask_recordings). Summary + action items sit
+    // behind a <details> like call transcripts so a long summary never buries
+    // the timeline; the recording link opens SalesAsk's player.
+    const mins = Number(p.duration_seconds) > 0 ? Math.round(Number(p.duration_seconds) / 60) : 0;
+    const score = (p.process_followed != null && p.process_total != null) ? ` · process ${p.process_followed}/${p.process_total}` : '';
+    const head = `Sales visit recorded${mins ? ` · ${mins}m` : ''}${score}`;
+    const items = Array.isArray(p.action_items) ? p.action_items.map(i => typeof i === 'string' ? i : (i && (i.text || i.title)) || '').filter(Boolean) : [];
+    const inner = [
+      p.summary ? `<div style="white-space:pre-wrap">${esc(p.summary)}</div>` : '',
+      items.length ? `<div style="margin-top:6px"><strong>Action items</strong>${items.map(i => `<div>• ${esc(i)}</div>`).join('')}</div>` : '',
+      p.recording_url ? `<div style="margin-top:6px"><a href="${esc(p.recording_url)}" target="_blank" rel="noopener">Listen in SalesAsk ↗</a></div>` : '',
+    ].filter(Boolean).join('');
+    body = inner
+      ? `<details><summary style="cursor:pointer">${esc(head)} · summary</summary><div style="font-size:.78rem;color:var(--muted);margin-top:6px;max-height:260px;overflow-y:auto">${inner}</div></details>`
       : esc(head);
   } else if (ev.event_type === 'note') {
     body = `<span style="white-space:pre-wrap">${esc(p.text || '')}</span>`;
