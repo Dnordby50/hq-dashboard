@@ -34429,7 +34429,7 @@ function _mergeAcrossAreas(areaPlans) {
         : '<span class="pec-badge" style="background:rgba(245,158,11,.14);color:#b45309;border-color:rgba(245,158,11,.4)">colors NOT confirmed</span>');
       return `
         <tr class="nohover"${gated ? ' style="opacity:.6"' : ''}>
-          <td><input type="checkbox" data-select-job="${esc(j.id)}" ${state.orderSelected.has(j.id) ? 'checked' : ''} ${gated ? 'disabled title="Colors not confirmed on the CRM job card"' : ''}></td>
+          <td><input type="checkbox" data-select-job="${esc(j.id)}" ${state.orderSelected.has(j.id) ? 'checked' : ''} ${gated && !state.orderSelected.has(j.id) ? 'disabled title="Colors not confirmed on the CRM job card"' : ''}></td>
           <td style="white-space:nowrap">${esc(schedLabel(j))}</td>
           <td data-open-job="${esc(j.id)}" style="cursor:pointer">${esc(j.customer_name)} <span style="color:var(--muted);font-size:.7rem">#${esc(j.proposal_number)}</span><div style="color:var(--muted);font-size:.68rem">${esc(j.address || '')}</div></td>
           <td>${esc(crewNameFor(j))}</td>
