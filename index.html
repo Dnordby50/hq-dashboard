@@ -11817,11 +11817,18 @@ async function renderMetrics() {
       supabase.from('pec_prod_busybusy_time_entries').select('job_id,crew_member_id,hours,wage_type,is_overhead'),
       supabase.from('pec_prod_crew_members').select('id,name,hourly_wage'),
       supabase.from('pec_prod_job_manual_labor').select('*'),
+      // SalesAsk coaching sources (SalesAsk integration Phase 3). Recordings +
+      // appointments for the coverage denominator + the roster for rep names.
+      // Each degrades independently (pre-migration 400 -> honest empty card).
+      supabase.from('pec_salesask_recordings').select('id,sales_member_id,lead_id,occurred_at,duration_seconds,process_followed,process_total,status'),
+      supabase.from('pec_appointments').select('id,appt_type,status,sales_member_id,start_at'),
+      cachedRef('salesTeam', () => supabase.from('pec_sales_team_members').select('*').order('name')),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
-    dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes] = res;
+    dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
+    saRecRes, saApptRes, saRosterRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -11977,6 +11984,73 @@ async function renderMetrics() {
   }
   for (const p of payments) { if (!payOk(p)) continue; const b = bucketOf(p.received_date); if (b >= 0) revCollected[b] += p.amount; }
   for (const k in payByJob) { const j = jobById[k]; if (!jobOk(j)) continue; const first = payByJob[k][0]; const b = bucketOf(first.received_date); if (b >= 0) deposits[b] += first.amount; }
+
+  // ---- SalesAsk coaching stats (SalesAsk integration Phase 3) ----
+  // Everything computes from OUR pec_salesask_recordings rows (not SalesAsk's
+  // /v1/stats endpoint) so the card works offline from their API, honors the
+  // window/salesperson filters, and can join estimates for close correlation.
+  const saMigrated = !(saRecRes && saRecRes.error);
+  const saRoster = (saRosterRes && !saRosterRes.error && saRosterRes.data) || [];
+  const saMemberName = {}; for (const m of saRoster) saMemberName[m.id] = m.name;
+  // Salesperson filter matches by roster NAME (the filter's values are the
+  // free-text pec_job_ar salesperson names, which the roster mirrors).
+  const saSpMemberIds = sp ? new Set(saRoster.filter(m => m.name === sp).map(m => m.id)) : null;
+  // wStart/wEnd are ISO date STRINGS ('2026-07-01'); compare date slices.
+  const saInWin = (iso) => { if (!iso) return false; const d = String(iso).slice(0, 10); return d >= wStart && d <= wEnd; };
+  const saRecs = ((saRecRes && saRecRes.data) || []).filter(r =>
+    saInWin(r.occurred_at) && (!saSpMemberIds || (r.sales_member_id && saSpMemberIds.has(r.sales_member_id))));
+  const saAppts = ((saApptRes && !saApptRes.error && saApptRes.data) || []).filter(a =>
+    a.status === 'completed' && saInWin(a.start_at) && (!saSpMemberIds || (a.sales_member_id && saSpMemberIds.has(a.sales_member_id))));
+  // Per-rep rollup: count, avg process score, avg duration, coverage
+  // (= recordings / completed appointments; >100% just means multiple
+  // recordings or recordings on uncompleted appointments, shown as-is).
+  const saByRep = {};
+  for (const r of saRecs) {
+    const k = r.sales_member_id || 'unassigned';
+    const g = saByRep[k] || (saByRep[k] = { n: 0, scoreSum: 0, scoreN: 0, durSum: 0, durN: 0, appts: 0 });
+    g.n++;
+    if (r.process_total > 0 && r.process_followed != null) { g.scoreSum += r.process_followed / r.process_total; g.scoreN++; }
+    if (Number(r.duration_seconds) > 0) { g.durSum += Number(r.duration_seconds); g.durN++; }
+  }
+  for (const a of saAppts) {
+    const k = a.sales_member_id || 'unassigned';
+    if (saByRep[k]) saByRep[k].appts++;
+    else saByRep[k] = { n: 0, scoreSum: 0, scoreN: 0, durSum: 0, durN: 0, appts: 1 };
+  }
+  const saRepRows = Object.entries(saByRep)
+    .map(([k, g]) => ({
+      name: saMemberName[k] || 'Unassigned', n: g.n,
+      avgScore: g.scoreN ? Math.round((g.scoreSum / g.scoreN) * 100) : null,
+      avgMin: g.durN ? Math.round(g.durSum / g.durN / 60) : null,
+      coverage: g.appts ? Math.round((g.n / g.appts) * 100) : null,
+    }))
+    .sort((a, b) => b.n - a.n);
+  // Close correlation: leads with >=1 recording in the window, split at the
+  // median lead-level process score; "closed" = the lead carries accepted_at.
+  // leadsRes is the full live-leads list already loaded for the funnel above.
+  const saLeadScore = {}, saLeadHasRec = new Set();
+  for (const r of saRecs) {
+    if (!r.lead_id) continue;
+    saLeadHasRec.add(r.lead_id);
+    if (r.process_total > 0 && r.process_followed != null) {
+      (saLeadScore[r.lead_id] = saLeadScore[r.lead_id] || []).push(r.process_followed / r.process_total);
+    }
+  }
+  const saLeadById = {}; for (const l of ((leadsRes && leadsRes.data) || [])) saLeadById[l.id] = l;
+  const saScoredLeads = Object.entries(saLeadScore)
+    .filter(([id]) => saLeadById[id])
+    .map(([id, scores]) => ({ score: scores.reduce((a, b) => a + b, 0) / scores.length, closed: !!saLeadById[id].accepted_at }));
+  let saCorr = null;
+  if (saScoredLeads.length >= 4) {
+    const sorted = [...saScoredLeads].sort((a, b) => a.score - b.score);
+    const mid = Math.floor(sorted.length / 2);
+    const lo = sorted.slice(0, mid), hi = sorted.slice(sorted.length - mid);
+    const pct = (arr) => Math.round((arr.filter(x => x.closed).length / arr.length) * 100);
+    saCorr = { hiPct: pct(hi), loPct: pct(lo), n: saScoredLeads.length };
+  }
+  const saRecLeads = saLeadHasRec.size
+    ? { n: saLeadHasRec.size, closed: [...saLeadHasRec].filter(id => saLeadById[id] && saLeadById[id].accepted_at).length }
+    : null;
 
   const inWin = d => d && d >= wStart && d <= wEnd;
   const soldInWin = jobs.filter(j => jobOk(j) && inWin(j.signed_date));
@@ -12704,6 +12778,31 @@ async function renderMetrics() {
         ${avgTouchesToWin == null && avgTouchesToEst == null
           ? '<div style="color:var(--muted);font-size:.72rem;margin-top:8px">Not enough data yet: no leads in this window have both a stage milestone and logged outreach. This fills in as leads get worked through Quo.</div>'
           : `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">Touches counted on or before the milestone. Based on ${wonTouchCounts.length} won lead${wonTouchCounts.length === 1 ? '' : 's'} and ${estTouchCounts.length} lead${estTouchCounts.length === 1 ? '' : 's'} with an estimate out, in this window, that have logged outreach; leads with no logged touches are excluded (logs start at the Quo integration).</div>`}
+        `}
+      </div>
+      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Sales coaching (SalesAsk)</div>
+        ${!saMigrated ? '<div class="pec-empty">Apply the 2026-07-31_salesask_integration.sql migration to enable coaching stats.</div>'
+        : !saRecs.length ? '<div class="pec-empty">No sales visit recordings in this window yet. Turn on SalesAsk sync under Settings, Appointments, and have reps record their visits.</div>'
+        : `
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 6px">From reps' in-home recordings: how closely the sales process is followed, and whether followed process actually closes. Recordings in this window; coverage = recordings vs completed appointments.</div>
+        <div class="pec-scroll-x"><table class="pec-table" style="font-size:.78rem">
+          <thead><tr><th>Rep</th><th style="text-align:right">Recordings</th><th style="text-align:right">Avg process</th><th style="text-align:right">Avg length</th><th style="text-align:right">Coverage</th></tr></thead>
+          <tbody>${saRepRows.map(r => `
+            <tr class="nohover">
+              <td>${esc(r.name)}</td>
+              <td style="text-align:right">${r.n}</td>
+              <td style="text-align:right">${r.avgScore != null ? r.avgScore + '%' : '—'}</td>
+              <td style="text-align:right">${r.avgMin != null ? r.avgMin + 'm' : '—'}</td>
+              <td style="text-align:right">${r.coverage != null ? r.coverage + '%' : '—'}</td>
+            </tr>`).join('')}</tbody>
+        </table></div>
+        ${saCorr ? `
+        <div class="pec-grid-stats" style="margin-top:8px">
+          <div class="pec-stat"><div class="pec-stat-label">Close rate, above-median process</div><div class="pec-stat-val">${saCorr.hiPct}%</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Close rate, below-median process</div><div class="pec-stat-val">${saCorr.loPct}%</div></div>
+        </div>
+        <div style="color:var(--muted);font-size:.68rem;margin-top:6px">Based on ${saCorr.n} leads with a scored recording in this window; closed = lead accepted. Small numbers move this a lot, read it directionally.</div>`
+        : (saRecLeads ? `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">${saRecLeads.closed} of ${saRecLeads.n} recorded lead${saRecLeads.n === 1 ? '' : 's'} in this window closed. The process-score split appears once 4+ leads have scored recordings.</div>` : '')}
         `}
       </div>
       <!-- PHASE 3 SLOT, filled (prompt 35 Part E): drip + blast performance. -->

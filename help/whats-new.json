@@ -3,11 +3,12 @@
     "id": "salesask-recordings",
     "date": "2026-07-28",
     "title": "SalesAsk sales visit recordings are wired in",
-    "summary": "In-home sales appointments now sync to SalesAsk automatically, and the recording your rep makes there flows back with its AI summary, action items, and coaching score. Recordings show on the lead timeline, the customer profile, and the appointment itself, and the lead AI reads what was actually said in the visit.",
+    "summary": "In-home sales appointments now sync to SalesAsk automatically, and the recording your rep makes there flows back with its AI summary, action items, and coaching score. Recordings show on the lead timeline, the customer profile, and the appointment itself, and the lead AI reads what was actually said in the visit. Metrics also gains a Sales coaching card: recordings per rep, average process score, coverage, and close rate split by process score.",
     "howto": [
       "Open Settings, Appointments, and turn on SalesAsk recording sync (enter each rep's SalesAsk login email below the switch).",
       "Book appointments like normal; they appear in the rep's SalesAsk app so the recording attaches itself.",
-      "After the visit, open the lead or customer to see the recording summary, or click Listen to hear it in SalesAsk."
+      "After the visit, open the lead or customer to see the recording summary, or click Listen to hear it in SalesAsk.",
+      "Open Metrics and find the Sales coaching card in the Sales section to compare reps and see whether followed process closes more jobs."
     ]
   },
   {

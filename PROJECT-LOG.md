@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] SalesAsk integration Phase 3: Sales coaching card on Metrics
+By: Claude Code
+Changed: renderMetrics gained three data sources (pec_salesask_recordings, pec_appointments, the cachedRef sales roster) and a "Sales coaching (SalesAsk)" card in the Sales rank grid. Per-rep table: recordings, avg process score (followed/total), avg length, coverage (recordings vs completed appointments in the window). Below it, close-rate split: leads with a scored recording, above- vs below-median process score, closed = lead.accepted_at set; renders only at 4+ scored leads, with a small-n honesty caption (same instinct as the $/sqft coverage note). Honors the window presets and the salesperson filter (matched by roster name, since the filter's values are pec_job_ar's free-text names). Degrades pre-migration to an "apply the migration" empty state and pre-data to a "turn on sync" pointer. What's New entry extended to mention the card.
+Why: Phase 3 of the SalesAsk plan; the point of recording visits is coaching, and coaching needs the loop closed: does following the pitch process actually close jobs? WHY IT COMPUTES LOCALLY instead of calling SalesAsk's /v1/stats: our rows already carry the process fields, local math honors the Metrics window/salesperson filters exactly, and joining leads.accepted_at for the close split is impossible on their side. FIX CAUGHT IN REVIEW: metricsWindowRange returns ISO date STRINGS, not Dates; the window check compares date slices as strings (a Date >= string compare silently returns false always).
+Files touched: index.html, help/whats-new.json, PROJECT-LOG.md (this entry).
+Next steps: Phase 4 (MCP get_sales_recordings tool) + the consolidated Cowork/Dylan handoff.
+Handoff to Cowork: None yet (ships with Phase 4).
+Handoff to Dylan: None yet.
+
+---
+
 ## [2026-07-28 MST] SalesAsk integration Phase 2: timeline, customer profile, appointment, and Settings surfaces
 By: Claude Code
 Changed: The SalesAsk data loop now shows up everywhere staff work. (1) Lead timeline: leadEventHtml gained a 'salesask_recording' branch ("Sales visit recorded · Xm · process N/M" with summary, action items, and a Listen link behind a details expander, same collapse instinct as call transcripts). (2) Customer profile: new "Sales visit recordings" card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk) cloned from the Quo Calls card, reading pec_salesask_recordings by customer_id with the same qo-summary AI card styling. (3) Appointment form: editing an existing appointment best-effort loads its matched recording into a read-only #afSalesAskRow section (summary, score, Listen link); silent when nothing recorded or pre-migration. (4) Settings > Appointments: new "SalesAsk recording sync" card with the master toggle (salesask_sync_enabled), push-window and lookback knobs (upsert-on-change, matching the Drips/Estimates settings pattern), and a per-rep salesask_email editor over the roster (placeholder shows the People/Google fallback email that would be used if blank; writes pec_sales_team_members.salesask_email through the existing staff for-all policy). (5) pec-lead-ai's timeline header now names the salesask_recording events so the model knows visit recordings are in the feed (the data already flowed via lead_events, zero query change). Plus a What's New entry and a features.json entry.
