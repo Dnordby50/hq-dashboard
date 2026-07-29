@@ -31,6 +31,10 @@ function baseTables(over = {}) {
     pec_sales_team_members: [
       { id: 'sm1', name: 'Dylan N', google_email: 'dylan@finishingtouchpaintingaz.com', active: true },
       { id: 'sm2', name: 'Aron S', google_email: null, active: true },
+      { id: 'smA', name: 'Aron Bronson', google_email: 'aron@prescottepoxy.com', active: true },
+    ],
+    settings: [
+      { id: 'setR', key: 'routemize_service_type_map', value: '{"estimate":"on_site_estimate","walkthrough":"project_walkthrough"}' },
     ],
     pec_drip_campaigns: [
       { id: 'camp1', kind: 'lead', status: 'active' },
@@ -208,6 +212,199 @@ const CREATED = {
     });
     ok(out.status === 200 && out.body.created === true, 'missing row on updated inserts instead');
     ok(fx.db.pec_appointments[0].lead_id === 'lead1' && fx.db.pec_appointments[0].source === 'routemize', 'inserted row fully linked');
+  }
+
+  // -------------------------------------------------------------------------
+  // Routemize NATIVE envelope (prompt 56). The shape below mirrors the real
+  // AppointmentCreated captured from Routemize's own DripJobs delivery log.
+  // -------------------------------------------------------------------------
+  function rzEnvelope(over = {}, dataOver = {}) {
+    return {
+      eventId: '58289007-04c2-459e-bfa8-1bd566c06699',
+      eventType: 'AppointmentCreated',
+      timestamp: '2026-07-28T20:32:25.866442Z',
+      tenantId: 'f99ef972-3ac5-cc90-51f5-3a217775511f',
+      apiVersion: 'v1',
+      data: {
+        relatedEntityId: '5ce70ae6-da0e-96da-1729-3a22bc9a90e6',
+        relatedEntityType: 'Appointment',
+        startTime: '2026-07-29T15:00:00Z',
+        endTime: '2026-07-29T16:00:00Z',
+        contactName: 'John Courtis',
+        contact: {
+          contactId: '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001',
+          firstName: 'John', lastName: 'Courtis',
+          email: 'john.courtis@example.com', phoneNumber: '+1 (928) 555-7777',
+          businessName: null, leadSource: 'Other', leadSourceText: 'Google',
+        },
+        address: { addressLine1: '100 Desert Rd', addressLine2: null, city: 'DEWEY', state: 'AZ', zipCode: '86327-5311', latitude: 34.6, longitude: -112.2 },
+        serviceName: 'Estimate',
+        eventTypeId: 'evtype-1',
+        appointmentTitle: 'Meeting with - John',
+        assignedUsers: [{ userId: 'u1', firstName: 'Aron', lastName: 'Bronson', email: 'aron.personal@gmail.com', userName: 'aron@prescottepoxy.com' }],
+        customerAnswers: [
+          { questionId: 'q1', question: 'What type of project?', answer: 'Epoxy Patio / Pool Deck', attachments: [] },
+          { questionId: 'q2', question: 'Anything else?', answer: 'Cool deck on the back patio', attachments: [] },
+        ],
+        customQuestions: [],
+        Template: { AppointmentId: '5ce70ae6-da0e-96da-1729-3a22bc9a90e6', AppointmentNotes: '' },
+        ...dataOver,
+      },
+      metadata: { actorName: 'Booking Form', sourceIp: '1.2.3.4', userAgent: 'Routemize', additionalData: null },
+      ...over,
+    };
+  }
+
+  console.log('# routemize native: create + lead creation + replay idempotency (verify 2/3/5)');
+  {
+    const fx = makeDb(baseTables());
+    const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, rzEnvelope());
+    ok(out.status === 200 && out.body.created === true, 'native AppointmentCreated returns 200 created');
+    const appt = fx.db.pec_appointments[0];
+    ok(appt && appt.source === 'routemize' && appt.routemize_appt_id === '5ce70ae6-da0e-96da-1729-3a22bc9a90e6', 'row lands keyed on relatedEntityId');
+    ok(appt.start_at === '2026-07-29T15:00:00.000Z' && appt.end_at === '2026-07-29T16:00:00.000Z', 'explicit Z trusted: 15:00Z stays 15:00Z, not shifted');
+    ok(appt.appt_type === 'on_site_estimate', 'serviceName Estimate mapped via the settings map');
+    ok(appt.title === 'John Courtis, Estimate', 'our own title, appointmentTitle ignored');
+    ok(appt.sales_member_id === 'smA', 'rep resolved by assignedUsers[0].userName against google_email');
+    ok(/What type of project\?: Epoxy Patio \/ Pool Deck/.test(appt.customer_notes) && /Cool deck/.test(appt.customer_notes), 'customerAnswers land as Q&A pairs in customer_notes');
+    ok(appt.location_address === '100 Desert Rd' && appt.location_city === 'DEWEY' && appt.location_zip === '86327-5311', 'address block carried');
+
+    const lead = fx.db.leads.find(l => l.full_name === 'John Courtis');
+    ok(!!lead && fx.db.leads.length === 2, 'exactly ONE lead created for the unmatched booker (decision 9)');
+    ok(appt.lead_id === lead.id, 'appointment linked to the created lead');
+    ok(lead.source === 'google', "lead source is Routemize's own (leadSourceText slug), person-level");
+    ok(lead.routemize_contact_id === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001' && lead.source_ref === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001', 'contact.contactId stored on the created lead');
+    ok(lead.sms_consent === false, 'consent never inferred from a booking');
+    ok(lead.stage === 'contacted', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
+    ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'routemize_booking'), "created lead_event written with via 'routemize_booking'");
+    ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'stage_change'), 'stage_change event from the booking effects');
+    ok(!fx.db.pec_drip_enrollments.some(e => e.lead_id === lead.id), 'created lead NOT nurture-enrolled (landmine 3: no enroll-then-pause churn)');
+    ok(captured.logs[0].outcome === 'ok' && captured.logs[0].payload.eventType === 'AppointmentCreated', 'ingest log carries the RAW envelope, not the mapping');
+
+    const out2 = await processApptIntake(deps, rzEnvelope());
+    ok(out2.status === 200 && out2.body.updated === true, 'replay of the same envelope updates');
+    ok(fx.db.pec_appointments.length === 1, 'still one appointment');
+    ok(fx.db.leads.length === 2, 'replay did NOT create a second lead (verify 5)');
+    ok(fx.db.lead_events.filter(e => e.event_type === 'created').length === 1, 'no duplicate created event');
+
+    console.log('# routemize native: AppointmentCancelled + dotted-lowercase casing');
+    const out3 = await processApptIntake(deps, rzEnvelope({ eventType: 'appointment.cancelled' }));
+    ok(out3.status === 200 && fx.db.pec_appointments[0].status === 'canceled', 'cancelled (any casing) flips status to canceled');
+  }
+
+  console.log('# routemize native: unknown eventType is a 200 no-op (verify 4)');
+  {
+    const fx = makeDb(baseTables());
+    const { deps, captured } = stubDeps(fx);
+    const out = await processApptIntake(deps, {
+      eventId: 'x', eventType: 'test.webhook', timestamp: '2026-07-29T00:00:00Z',
+      tenantId: 't', apiVersion: 'v1', data: { message: 'This is a test' },
+    });
+    ok(out.status === 200 && out.body.ignored === true, 'test.webhook returns 200 ignored, never a 4xx');
+    ok(fx.db.pec_appointments.length === 0 && fx.db.leads.length === 1, 'nothing written');
+    ok(captured.logs.length === 1 && captured.logs[0].outcome === 'ok', 'still logged for Sync Health');
+    const out2 = await processApptIntake(deps, rzEnvelope({ eventType: 'ContactCreated' }));
+    ok(out2.status === 200 && out2.body.ignored === true && fx.db.pec_appointments.length === 0, 'other entity events are ignored too');
+  }
+
+  console.log('# routemize native: existing lead links, source fill-if-blank only (verify 6)');
+  {
+    const fx = makeDb(baseTables());
+    fx.db.leads[0].source = 'meta'; // attribution already set
+    const { deps } = stubDeps(fx);
+    const env = rzEnvelope({}, {
+      contactName: 'Jane Doe',
+      contact: { contactId: 'rz-contact-jane', firstName: 'Jane', lastName: 'Doe', email: 'jane@example.com', phoneNumber: '928-555-1234', leadSource: 'Other', leadSourceText: 'Google' },
+    });
+    const out = await processApptIntake(deps, env);
+    ok(out.status === 200 && out.body.created === true, '200 created');
+    ok(fx.db.leads.length === 1, 'no new lead: matched the existing one');
+    ok(fx.db.pec_appointments[0].lead_id === 'lead1', 'linked to the matched lead');
+    ok(fx.db.leads[0].source === 'meta', 'an already-set source is NEVER overwritten (decision 10)');
+    ok(fx.db.leads[0].routemize_contact_id === 'rz-contact-jane', 'contactId stored on the matched lead');
+    ok(fx.db.lead_events.some(e => e.lead_id === 'lead1' && e.event_type === 'note' && e.payload.via === 'routemize_booking'), 'booking note lands on the existing lead timeline (landmine 2)');
+
+    // Blank source fills exactly once.
+    const fx2 = makeDb(baseTables());
+    fx2.db.leads[0].source = null;
+    const d2 = stubDeps(fx2);
+    await processApptIntake(d2.deps, env);
+    ok(fx2.db.leads[0].source === 'google', 'a blank source is filled from Routemize');
+  }
+
+  console.log('# routemize native: customer fallback stores contactId, creates no lead');
+  {
+    const fx = makeDb(baseTables());
+    const { deps } = stubDeps(fx);
+    const out = await processApptIntake(deps, rzEnvelope({}, {
+      contactName: 'Bob Builder',
+      contact: { contactId: 'rz-contact-bob', firstName: 'Bob', lastName: 'Builder', email: 'nomatch@example.com', phoneNumber: '928-555-9999', leadSource: null, leadSourceText: null },
+    }));
+    ok(out.status === 200, '200');
+    ok(fx.db.pec_appointments[0].customer_id === 'cust1' && fx.db.pec_appointments[0].lead_id == null, 'customer matched by phone, no lead');
+    ok(fx.db.leads.length === 1, 'a matched CUSTOMER suppresses lead creation (already in the pipeline)');
+    ok(fx.db.customers[0].routemize_contact_id === 'rz-contact-bob', 'contactId stored on the customer');
+  }
+
+  console.log('# routemize native: StatusChanged read defensively (landmine 5)');
+  {
+    const fx = makeDb(baseTables());
+    const { deps } = stubDeps(fx);
+    await processApptIntake(deps, rzEnvelope());
+    const apptId = fx.db.pec_appointments[0].id;
+
+    // Unknown shape: NO status field, NO times. Must never cancel, never 4xx.
+    const mystery = rzEnvelope({ eventType: 'AppointmentStatusChanged' }, { startTime: null, endTime: null, contact: {}, contactName: null, assignedUsers: [], customerAnswers: [] });
+    const out1 = await processApptIntake(deps, mystery);
+    ok(out1.status === 200 && out1.body.updated === true, 'undeterminable status change is a 200 update');
+    const row = fx.db.pec_appointments.find(a => a.id === apptId);
+    ok(row.status === 'scheduled', 'NEVER treated as a cancellation');
+    ok(/no readable status/.test(row.notes || ''), 'ambiguity noted in the internal notes');
+
+    // A cancel-ish status value cancels.
+    const out2 = await processApptIntake(deps, rzEnvelope({ eventType: 'AppointmentStatusChanged' }, { status: 'Cancelled By Customer' }));
+    ok(out2.status === 200 && fx.db.pec_appointments.find(a => a.id === apptId).status === 'canceled', 'cancel-ish status value cancels the booking');
+
+    // A non-cancel status with full data patches as an update and re-lives it.
+    const out3 = await processApptIntake(deps, rzEnvelope({ eventType: 'AppointmentStatusChanged' }, { status: 'Confirmed' }));
+    const row3 = fx.db.pec_appointments.find(a => a.id === apptId);
+    ok(out3.status === 200 && row3.status === 'scheduled' && /status changed to "Confirmed"/.test(row3.notes || ''), 'non-cancel status is an update with the status noted');
+  }
+
+  console.log('# routemize native: pre-migration column tolerance (landmine 8)');
+  {
+    const fx = makeDb(baseTables());
+    // Simulate PROD before Cowork applies 2026-08-01_routemize_contact_id.sql:
+    // any write touching the column fails like PostgREST would.
+    const rawSb = fx.sb;
+    const guardedSb = async (method, path, payload, ret) => {
+      if ((payload && 'routemize_contact_id' in payload) || /routemize_contact_id/.test(path)) {
+        throw new Error(`Supabase ${method} ${path} failed (400): column "routemize_contact_id" does not exist`);
+      }
+      return rawSb(method, path, payload, ret);
+    };
+    const captured = { logs: [] };
+    const out = await processApptIntake({
+      sb: guardedSb, now: () => NOW,
+      logIngest: async (f) => { captured.logs.push(f); },
+      runReminders: async () => {},
+    }, rzEnvelope());
+    ok(out.status === 200 && out.body.created === true, 'intake still succeeds with the column absent');
+    ok(fx.db.leads.length === 2 && !('routemize_contact_id' in fx.db.leads[1]), 'lead still created, just without the column');
+    ok(fx.db.pec_appointments.length === 1 && fx.db.pec_appointments[0].lead_id === fx.db.leads[1].id, 'appointment linked normally');
+  }
+
+  console.log('# routemize native: settings map drives appt_type, unmapped defaults');
+  {
+    const fx = makeDb(baseTables());
+    const { deps } = stubDeps(fx);
+    await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Walkthrough', relatedEntityId: 'rz-appt-w' }));
+    ok(fx.db.pec_appointments[0].appt_type === 'project_walkthrough', 'mapped service uses its configured type');
+    await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Mystery Service', relatedEntityId: 'rz-appt-m', contact: { contactId: 'c9', firstName: 'Al', lastName: 'B', email: 'al@example.com', phoneNumber: '5205551111' }, contactName: 'Al B' }));
+    const m = fx.db.pec_appointments.find(a => a.routemize_appt_id === 'rz-appt-m');
+    ok(m.appt_type === 'on_site_estimate', 'unmapped service defaults to on_site_estimate');
+    ok(m.title === 'Al B, Mystery Service', 'title still uses the raw service name');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

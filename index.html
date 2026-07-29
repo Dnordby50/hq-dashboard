@@ -17215,11 +17215,12 @@ async function renderSettingsEstimates() {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
     supabase.from('people').select('sales_team_member_id,email').not('sales_team_member_id', 'is', null),
+    supabase.from('settings').select('value').eq('key', 'routemize_service_type_map').maybeSingle(),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   const rules = (rulesRes.error ? [] : rulesRes.data || []);
@@ -17228,6 +17229,17 @@ async function renderSettingsAppointments() {
   const saMigrated = !(saSetRes && saSetRes.error) && ('salesask_sync_enabled' in saSettings);
   const personEmailByMember = {};
   for (const p of ((peopleRes && peopleRes.data) || [])) { if (p.email) personEmailByMember[p.sales_team_member_id] = p.email; }
+  // Routemize serviceName -> appt_type map (prompt 56, rule 12): JSON text in
+  // ONE settings row; pec-appt-intake reads it on every native delivery, so
+  // adding a Routemize service is an edit here, never a deploy. A missing or
+  // unparseable row just renders empty (everything then defaults to
+  // on_site_estimate server-side).
+  let rzMap = {};
+  try {
+    const parsed = JSON.parse((rzSetRes && rzSetRes.data && rzSetRes.data.value) || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) rzMap = parsed;
+  } catch (_) { /* bad JSON renders empty; the next save rewrites it clean */ }
+  const RZ_APPT_TYPES = ['on_site_estimate', 'project_walkthrough', 'site_visit', 'other'];
 
   const whenLabel = (r) => {
     if (r.on_book) return 'On booking';
@@ -17289,6 +17301,27 @@ async function renderSettingsAppointments() {
             style="max-width:260px;font-size:.8rem">
         </div>`).join('')}
       <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="saStatus"></div>`}
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Routemize booking intake</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        Appointments booked on Routemize land on this calendar automatically. Map each Routemize
+        service name to a TopCoat appointment type below; anything not listed comes in as an
+        on-site estimate. Adding a new Routemize service is a row here, not a code change.
+      </div>
+      <div id="rzMapRows">
+        ${Object.entries(rzMap).map(([k, v]) => `
+        <div style="display:flex;gap:8px;align-items:center;padding:5px 0" data-rz-row>
+          <input data-rz-key value="${esc(k)}" placeholder="Routemize service name" style="max-width:230px;font-size:.8rem">
+          <select data-rz-type style="max-width:190px;font-size:.8rem">
+            ${RZ_APPT_TYPES.map(t => `<option value="${t}"${v === t ? ' selected' : ''}>${esc(apptTypeInfo(t).label)}</option>`).join('')}
+          </select>
+          <button class="pec-btn ghost sm danger" data-rz-del>Remove</button>
+        </div>`).join('') || ''}
+      </div>
+      <button class="pec-btn ghost sm" id="rzMapAdd" style="margin-top:4px">+ Add mapping</button>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="rzStatus"></div>
     </div>
 
     <div class="pec-card">
@@ -17388,6 +17421,43 @@ async function renderSettingsAppointments() {
     if (error) saStatus('Email save failed: ' + error.message);
     else { saStatus('Saved.'); setTimeout(() => saStatus(''), 2000); }
   }));
+
+  // Routemize map wiring: the rows are the editor, the ONE settings row is
+  // the storage. Any change (edit / add / remove) collects the rows and
+  // upserts the whole JSON, same save-on-change pattern as the cards above.
+  const rzStatus = (msg) => { const el = root.querySelector('#rzStatus'); if (el) el.textContent = msg; };
+  const rzSave = async () => {
+    const map = {};
+    root.querySelectorAll('[data-rz-row]').forEach(row => {
+      const k = row.querySelector('[data-rz-key]').value.trim().toLowerCase();
+      const v = row.querySelector('[data-rz-type]').value;
+      if (k && RZ_APPT_TYPES.includes(v)) map[k] = v;
+    });
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'routemize_service_type_map', value: JSON.stringify(map) }, { onConflict: 'key' }), { label: 'settings-routemize-map-save' });
+    if (w.error) { rzStatus('Save failed: ' + w.error.message); return; }
+    rzStatus('Saved.'); setTimeout(() => rzStatus(''), 2000);
+  };
+  const rzWireRow = (row) => {
+    row.querySelector('[data-rz-key]').addEventListener('change', rzSave);
+    row.querySelector('[data-rz-type]').addEventListener('change', rzSave);
+    row.querySelector('[data-rz-del]').addEventListener('click', () => { row.remove(); rzSave(); });
+  };
+  root.querySelectorAll('[data-rz-row]').forEach(rzWireRow);
+  root.querySelector('#rzMapAdd')?.addEventListener('click', () => {
+    const holder = root.querySelector('#rzMapRows');
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:8px;align-items:center;padding:5px 0';
+    div.setAttribute('data-rz-row', '');
+    div.innerHTML = `
+      <input data-rz-key value="" placeholder="Routemize service name" style="max-width:230px;font-size:.8rem">
+      <select data-rz-type style="max-width:190px;font-size:.8rem">
+        ${RZ_APPT_TYPES.map(t => `<option value="${t}">${esc(apptTypeInfo(t).label)}</option>`).join('')}
+      </select>
+      <button class="pec-btn ghost sm danger" data-rz-del>Remove</button>`;
+    holder.appendChild(div);
+    rzWireRow(div);
+    div.querySelector('[data-rz-key]').focus();
+  });
 
   const openRuleModal = (rule) => openApptRuleModal(rule, () => renderSettingsAppointments());
   $('apptRuleAdd').addEventListener('click', () => openRuleModal(null));

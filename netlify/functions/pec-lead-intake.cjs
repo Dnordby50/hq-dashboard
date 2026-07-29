@@ -36,15 +36,11 @@
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { enrollLead } = require('./_pec-drip.cjs');
+// Same-human matching lives in _pec-lead-match.cjs (prompt 56) so this
+// intake and the Routemize appointment intake share ONE dedupe rule.
+const { normPhone, findRecentLiveLead } = require('./_pec-lead-match.cjs');
 
 const ENDPOINT = 'lead-intake';
-const DEDUPE_WINDOW_DAYS = 90;
-
-// Last 10 digits, so '+1 (928) 555-1212' and '9285551212' match.
-function normPhone(s) {
-  const d = String(s == null ? '' : s).replace(/\D/g, '');
-  return d.length >= 10 ? d.slice(-10) : (d || null);
-}
 
 function cleanStr(s) {
   const out = String(s == null ? '' : s).trim();
@@ -123,20 +119,15 @@ exports.handler = async (event) => {
     }
 
     // Dedupe 2: same person reaching out again inside the window.
-    const sinceIso = new Date(Date.now() - DEDUPE_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    const orParts = [];
-    if (phone10) orParts.push(`phone.ilike.*${phone10}`);
-    if (email) orParts.push(`email.eq.${email}`);
-    const dupHuman = await sb('GET',
-      `/leads?or=(${encodeURIComponent(orParts.join(','))})&deleted_at=is.null&created_at=gte.${encodeURIComponent(sinceIso)}&select=id,stage&order=created_at.desc&limit=1`);
-    if (dupHuman.length) {
+    const dupHuman = await findRecentLiveLead(sb, { phone10, email });
+    if (dupHuman) {
       await sb('POST', '/lead_events', {
-        lead_id: dupHuman[0].id,
+        lead_id: dupHuman.id,
         event_type: 'duplicate_intake',
         payload: { source, raw: body },
       });
-      await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `deduped onto existing lead ${dupHuman[0].id} (stage ${dupHuman[0].stage})`, payload: body });
-      return json(200, { success: true, deduped: true, lead_id: dupHuman[0].id });
+      await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `deduped onto existing lead ${dupHuman.id} (stage ${dupHuman.stage})`, payload: body });
+      return json(200, { success: true, deduped: true, lead_id: dupHuman.id });
     }
 
     // Insert the lead.

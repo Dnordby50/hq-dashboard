@@ -1602,28 +1602,35 @@
     {
       "name": "Routemize appointment intake",
       "area": "integrations",
-      "description": "The webhook path that makes Routemize (prescottepoxycompany.routemize.com) the booking front end and TopCoat's appointment calendar the system of record after DripJobs retirement. Zapier posts every Routemize appointment event (created / updated / canceled / deleted) to pec-appt-intake with the shared webhook secret; the endpoint upserts pec_appointments by routemize_appt_id (source 'routemize', bare datetimes read as America/Phoenix), matches the contact to a live lead by last-10 phone or email (customer fallback; never auto-creates either), and maps the assigned rep to the pec_sales_team_members roster by google_email else name. A Routemize delete marks the row canceled, never hard-deletes, so the existing Google push removes the calendar event on its next kick. A NEW lead-linked booking reproduces the in-app booking's lead-side state through the shared server helper apptBookingLeadEffects (_pec-appt.cjs): a new lead with a booked on-site estimate advances to contacted with a stage_change lead_event, the lead's active nurture drip stops with reason appointment_booked (in-app bookings get the same drip pause via the pec-appt-notify kick), a staff bell row lands, and a best-effort runApptReminders kick sends the consented customer confirmation immediately (the 15-minute runner is the safety net). Every attempt logs to pec_webhook_ingest_log (endpoint 'appt-intake') for the Sync Health view. Unmatched contact or rep never blocks the appointment: it lands unlinked/unassigned with the details noted in the internal Company notes.",
+      "description": "The webhook path that makes Routemize (prescottepoxycompany.routemize.com) the booking front end and TopCoat's appointment calendar the system of record. Routemize's NATIVE Custom Webhook ('TopCoat appointment intake') posts all five appointment events (Created / Updated / StatusChanged / Cancelled / Deleted) directly to pec-appt-intake with the shared x-webhook-secret header; there is NO Zapier in the chain (prompt 56 replaced the prompt-43 Zapier design). The endpoint auto-detects the body shape: a Routemize envelope ({eventType, data}) is mapped by mapRoutemizeEnvelope onto the original hand-rolled contract, which still works for manual curls. eventType casing is normalized aggressively (PascalCase, dotted lowercase); unrecognized events return 200 no-op, never 4xx, because Routemize retries non-2xx and tracks webhook health. Mapping: relatedEntityId -> routemize_appt_id (upsert key), startTime/endTime carry explicit Z (trusted as-is, no Phoenix branch), contactName/contact.* -> customer fields, address.* -> location_*, customerAnswers -> customer-facing Q&A in customer_notes, nested AppointmentNotes -> internal notes, appointmentTitle ignored in favor of our own '<name>, <service>' title. appt_type comes from the routemize_service_type_map settings key (serviceName then eventTypeId, lowercased; unmapped defaults to on_site_estimate), editable in Settings > Appointments > Routemize booking intake (rule 12). Rep mapping tries assignedUsers[0].userName then .email against pec_sales_team_members.google_email, then first+last name, case-insensitive. Lead behavior (native path only, REVERSES prompt 43 decision 3): an unmatched booker gets a lead CREATED (brand PEC, stage new, sms_consent false, source = Routemize's own leadSourceText/leadSource slug else 'routemize', source_ref + routemize_contact_id = contact.contactId), then apptBookingLeadEffects advances it like an in-app booking; the created lead is deliberately NOT nurture-enrolled (the effects would pause it instantly). Matching uses the shared same-human rule in _pec-lead-match.cjs (also used by pec-lead-intake, windowless here), so the two intakes cannot drift; a matched existing lead gets its source filled only if blank (never overwritten), contact.contactId stored fill-if-blank (column absence tolerated pre-migration), and a 'note' lead_event recording the booking; a matched customer stores the contactId and suppresses lead creation. AppointmentStatusChanged is read defensively (shape unverified): a cancel-ish status cancels, anything else (including no readable status) is treated as an update with the ambiguity noted in internal notes, never a cancellation. A Routemize cancel/delete marks the row canceled, never hard-deletes, so the existing Google push removes the calendar event on its next kick. google_* columns are never touched. Every attempt logs the RAW envelope to pec_webhook_ingest_log (endpoint 'appt-intake') for the Sync Health view.",
       "code": {
-        "indexHtml": [],
+        "indexHtml": [
+          "renderSettingsAppointments"
+        ],
         "netlifyFunctions": [
-          "pec-appt-intake.cjs",
           "_pec-appt.cjs",
-          "pec-appt-notify.cjs"
+          "_pec-lead-match.cjs",
+          "pec-appt-intake.cjs",
+          "pec-appt-notify.cjs",
+          "pec-lead-intake.cjs"
         ],
         "other": [
+          "production/appt-intake.test.cjs",
           "supabase/migrations/2026-07-21_appointment_routemize_source.sql",
-          "production/appt-intake.test.cjs"
+          "supabase/migrations/2026-08-01_routemize_contact_id.sql"
         ]
       },
       "tables": [
-        "pec_appointments",
-        "leads",
+        "customers",
         "lead_events",
-        "pec_drip_enrollments",
+        "leads",
+        "pec_appointments",
         "pec_drip_campaigns",
-        "pec_sales_team_members",
+        "pec_drip_enrollments",
         "pec_notifications",
-        "pec_webhook_ingest_log"
+        "pec_sales_team_members",
+        "pec_webhook_ingest_log",
+        "settings"
       ],
       "since": "2026-07"
     },

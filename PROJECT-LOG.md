@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Prompt 56 shipped: pec-appt-intake speaks Routemize's native webhook; unmatched bookers become leads
+By: Claude Code
+
+Changed: pec-appt-intake.cjs now auto-detects the Routemize native envelope (a body with `eventType` and a `data` object) and maps it onto the existing hand-rolled contract, which keeps working untouched for manual curls. This unblocks the live pipe: every real Routemize appointment has been 400ing since the native webhook was wired on 2026-07-29, because the endpoint only knew the prompt-43 field names.
+
+HOW THE ADAPTER WORKS, the parts worth remembering:
+
+- **Envelope mapping** (`mapRoutemizeEnvelope`): `relatedEntityId` -> `routemize_appt_id` (same upsert key as before, so queued Routemize retries of the old 400s are harmless), `startTime/endTime` trusted as-is (they carry an explicit Z; the Phoenix bare-datetime branch never runs), `customerAnswers` -> customer-facing Q&A in `customer_notes`, nested `AppointmentNotes` -> internal notes, and our OWN title ("John Courtis, Estimate"), ignoring Routemize's "Meeting with - John". eventType casing is normalized aggressively (real events are PascalCase, the synthetic test event was `test.webhook`); anything unrecognized returns **200 no-op** and still logs, because Routemize retries non-2xx and tracks webhook health.
+- **appt_type via settings** (rule 12): new `routemize_service_type_map` key (JSON, serviceName then eventTypeId, lowercased; unmapped defaults to on_site_estimate), editable in Settings > Appointments > "Routemize booking intake" (new card, save-on-change like its neighbors). Adding a Routemize service is a Settings row, not a deploy.
+- **Rep mapping**: `assignedUsers[0].userName` first, then `.email`, both against google_email, then first+last vs name; userName goes first because on the real capture it held the work address (aron@prescottepoxy.com).
+- **Lead creation (decision 9, REVERSES prompt 43 decision 3 for the native path only)**: an unmatched booker gets a lead created (brand PEC, stage new, sms_consent false; never inferred). The dedupe that made the reversal safe: the same-human match was EXTRACTED from pec-lead-intake into `_pec-lead-match.cjs` and both intakes now share it, so they cannot drift. The appointment intake matches windowless (broader than lead-intake's 90-day window), so "no match here" proves the windowed dedupe could not hit either. A created lead is NOT nurture-enrolled (apptBookingLeadEffects would pause it instantly; enroll-then-pause is churn); the effects helper advances its stage exactly like an in-app booking. The lead-AI kick was also deliberately NOT added for this path; flag it if wanted.
+- **Lead source is person-level (decision 10)**: new lead takes Routemize's own leadSourceText/leadSource slug (else 'routemize'); an existing lead's source fills only if blank via a guarded PATCH (`source=is.null`), so marketing attribution is never rewritten. Nothing source-shaped lands on pec_appointments.
+- **contact.contactId (decision 12)**: stored fill-if-blank on the matched/created lead (else customer) in `routemize_contact_id`; the write is wrapped so a missing column (migration not applied yet) degrades to a console.warn, never a failed intake (landmine 8, same posture as the name_aliases guard).
+- **StatusChanged read defensively (landmine 5)**: shape unverified, so the status is read from a candidate list; cancel-ish cancels, anything else (including "no readable status at all", or no readable times) is an update or a note-only patch, NEVER a cancellation, never a 4xx.
+- Ingest log rows now carry the RAW envelope, not the mapped body, so Sync Health shows what Routemize actually sent.
+
+Migration WRITTEN, NOT APPLIED (Cowork applies): supabase/migrations/2026-08-01_routemize_contact_id.sql (routemize_contact_id on leads + customers, insert-only routemize_service_type_map seed).
+
+Tests: production/appt-intake.test.cjs grew from 51 to 100 assertions (native create + lead creation, replay idempotency, unknown eventType no-op, source fill-if-blank vs never-overwrite, customer fallback, StatusChanged defense, pre-migration column tolerance, settings map). It was also ADDED to `npm test` (it previously only ran by hand), so the adapter is guarded on every commit. Full suite green.
+
+Why: Routemize books daily and every event was rejected with 400 "routemize_appt_id is required"; this is the field-mapping half that the native webhook (which replaced Zapier) left to us.
+Files touched: netlify/functions/pec-appt-intake.cjs, netlify/functions/_pec-lead-match.cjs (new), netlify/functions/pec-lead-intake.cjs (uses the shared dedupe), supabase/migrations/2026-08-01_routemize_contact_id.sql (new), index.html (renderSettingsAppointments card), production/appt-intake.test.cjs, package.json (test script), features.json, help/whats-new.json, PROJECT-LOG.md (this entry).
+Next steps: Cowork handoff below; the Routemize -> DripJobs push stays live until a REAL booking verifies end to end.
+
+## Handoff to Cowork
+1. Apply supabase/migrations/2026-08-01_routemize_contact_id.sql to PROD (zdfpzmmrgotynrwkeakd), then regenerate SCHEMA.md. The endpoint already tolerates the column being absent, so order vs deploy does not matter.
+2. Verify against a REAL booking, not the synthetic test event: watch pec_webhook_ingest_log for the next endpoint='appt-intake' row, confirm outcome 'ok', then confirm the appointment renders on the TopCoat Appointments calendar with the right rep and time (15:00Z must show as 8:00 AM Phoenix).
+3. Only after step 2 passes: retire the Routemize -> DripJobs push (Routemize > Settings > Integrations > DripJobs > Disconnect).
+4. Append a `By: Cowork` PROJECT-LOG entry with the first real appointment's id and the ingest-log outcome.
+
+---
+
 ## [2026-07-29 MST] Cowork: wrote prompt 56 (Routemize native-webhook adapter), 14 decisions locked
 By: Cowork
 

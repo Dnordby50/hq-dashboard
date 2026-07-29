@@ -1,5 +1,16 @@
 [
   {
+    "id": "routemize-booking-intake",
+    "date": "2026-07-29",
+    "title": "Routemize bookings now land on the TopCoat calendar",
+    "summary": "Appointments booked through Routemize flow straight into TopCoat. Each booking shows on the Appointments calendar with the right time, salesperson, and the customer's own form answers, and it syncs out to Google Calendar like any other appointment. If the booker is brand new, TopCoat creates the lead for them automatically so follow-up never misses them, and a repeat customer is matched to their existing record instead of duplicated.",
+    "howto": [
+      "Open Appointments to see Routemize bookings appear automatically (source: Routemize).",
+      "Open Settings, then Appointments, then Routemize booking intake to map each Routemize service name to an appointment type.",
+      "Anything not mapped comes in as an on-site estimate, so new services still land safely."
+    ]
+  },
+  {
     "id": "salesask-recordings",
     "date": "2026-07-28",
     "title": "SalesAsk sales visit recordings are wired in",

@@ -1,10 +1,17 @@
-// Routemize -> TopCoat appointment intake (prompt 43). Zapier posts every
-// Routemize appointment event here (Created / Updated / Cancelled / Deleted),
-// so appointments booked in Routemize land on the TopCoat calendar as the
-// system of record, linked to the originating lead so the lead -> drip ->
-// appointment pipeline stays connected. Same house pattern as
-// pec-lead-intake.cjs: WE define the contract below, Zapier maps Routemize's
-// real fields onto it (adding a source is a Zapier change, not a code change).
+// Routemize -> TopCoat appointment intake (prompt 43 contract + prompt 56
+// native adapter). Appointments booked in Routemize land on the TopCoat
+// calendar as the system of record, linked to the originating lead so the
+// lead -> drip -> appointment pipeline stays connected.
+//
+// TWO BODY SHAPES, one endpoint, auto-detected (prompt 56 decision 1):
+//   1. Routemize NATIVE webhook envelope ({ eventType, data, ... }): posted
+//      directly by Routemize's Custom Webhook "TopCoat appointment intake"
+//      (no Zapier anywhere in the chain). mapRoutemizeEnvelope() translates
+//      it onto the hand-rolled contract below, then the shared flow runs.
+//      Native deliveries ALSO get the lead-side behavior the prompt-43
+//      contract deliberately does not: see "Routemize-native lead behavior".
+//   2. The original hand-rolled contract (everything below): still fully
+//      supported, so a manual curl keeps working.
 //
 // POST /.netlify/functions/pec-appt-intake
 // Header: x-webhook-secret: <PEC_WEBHOOK_SECRET>   (same secret every intake
@@ -39,11 +46,29 @@
 //   - canceled / deleted: set status='canceled' on the matched row (never a
 //     hard delete; the existing pec-appt-sync-push removes the Google event
 //     off that status on its next kick). No-op if not found.
-//   - Lead linkage (locked decision 3): match a LIVE lead by last-10 phone or
-//     email and link it (plus its customer); else a customer by the same
+//   - Lead linkage (prompt 43 decision 3): match a LIVE lead by last-10 phone
+//     or email and link it (plus its customer); else a customer by the same
 //     keys; else leave both null and carry name/phone on the appointment
-//     itself. Never auto-create a lead or customer here (would collide with
-//     the other intake paths).
+//     itself. The hand-rolled contract never auto-creates a lead or customer
+//     (would collide with the other intake paths).
+//
+// Routemize-native lead behavior (prompt 56, REVERSING prompt 43 decision 3
+// for the native path ONLY, Dylan 2026-07-29): Routemize is now the front
+// door, so a direct booker who matches no lead and no customer gets a lead
+// CREATED (stage 'new'; apptBookingLeadEffects then advances it exactly like
+// an in-app booking). The collision risk prompt 43 worried about is handled
+// by sharing pec-lead-intake's own same-human dedupe (_pec-lead-match.cjs):
+// the windowless lead match here is strictly broader than lead-intake's
+// 90-day window, so if it found nothing, the windowed dedupe cannot hit
+// either, and creating is safe. A created lead is NOT nurture-enrolled
+// (landmine 3: apptBookingLeadEffects would pause it instantly; enroll-then-
+// pause is churn) and never gets AI kicked (kept out of scope deliberately).
+// Lead source is attributed to the PERSON, never the appointment (decision
+// 10): a new lead takes Routemize's own leadSource (fallback 'routemize');
+// an existing lead's source is filled only if blank, never overwritten.
+// contact.contactId lands on the matched/created lead (else customer) in the
+// nullable routemize_contact_id column, tolerated as absent pre-migration
+// (landmine 8, same posture as the name_aliases guard).
 //   - Rep mapping (decision 5): assigned_member_email -> google_email, else
 //     assigned_member_name -> name, both case-insensitive; no match leaves
 //     the appointment unassigned and notes it in the internal notes.
@@ -59,6 +84,7 @@
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
+const { sameHumanOr } = require('./_pec-lead-match.cjs');
 
 const ENDPOINT = 'appt-intake';
 const APPT_TYPES = ['on_site_estimate', 'project_walkthrough', 'site_visit', 'other'];
@@ -115,18 +141,22 @@ function parseApptDate(s) {
   return isNaN(d) ? null : d.toISOString();
 }
 
-// Decision 5: google_email (case-insensitive) else exact name
-// (case-insensitive); no match -> null (lands unassigned, noted in notes).
-async function resolveSalesMember(db, memberEmail, memberName) {
-  if (!memberEmail && !memberName) return null;
+// Email candidates (in order, all case-insensitive against google_email),
+// else exact name (case-insensitive); no match -> null (lands unassigned,
+// noted in notes). Accepts a single email or an ordered array: the Routemize
+// adapter tries assignedUsers[0].userName BEFORE .email (prompt 56 decision
+// 2: on the real sample userName held the work address).
+async function resolveSalesMember(db, memberEmails, memberName) {
+  const emails = (Array.isArray(memberEmails) ? memberEmails : [memberEmails])
+    .map(cleanStr).filter(Boolean);
+  if (!emails.length && !memberName) return null;
   const rows = await db('GET', '/pec_sales_team_members?select=id,name,google_email');
   const members = Array.isArray(rows) ? rows : [];
-  const lcEmail = memberEmail ? memberEmail.toLowerCase() : null;
-  const lcName = memberName ? memberName.toLowerCase() : null;
-  if (lcEmail) {
-    const hit = members.find(m => String(m.google_email || '').toLowerCase() === lcEmail);
+  for (const e of emails) {
+    const hit = members.find(m => String(m.google_email || '').toLowerCase() === e.toLowerCase());
     if (hit) return hit;
   }
+  const lcName = memberName ? memberName.toLowerCase() : null;
   if (lcName) {
     const hit = members.find(m => String(m.name || '').trim().toLowerCase() === lcName);
     if (hit) return hit;
@@ -140,11 +170,8 @@ async function resolveSalesMember(db, memberEmail, memberName) {
 // same keys; else nothing.
 async function resolveContact(db, phone10, email) {
   const out = { lead_id: null, customer_id: null };
-  if (!phone10 && !email) return out;
-  const orParts = [];
-  if (phone10) orParts.push(`phone.ilike.*${phone10}`);
-  if (email) orParts.push(`email.eq.${email}`);
-  const or = encodeURIComponent(orParts.join(','));
+  const or = sameHumanOr(phone10, email); // ONE matching rule, shared with pec-lead-intake
+  if (!or) return out;
   const leads = await db('GET',
     `/leads?or=(${or})&deleted_at=is.null&select=id,customer_id&order=created_at.desc&limit=1`);
   if (Array.isArray(leads) && leads.length) {
@@ -156,6 +183,250 @@ async function resolveContact(db, phone10, email) {
     `/customers?or=(${or})&archived_at=is.null&select=id&order=created_at.desc&limit=1`);
   if (Array.isArray(customers) && customers.length) out.customer_id = customers[0].id;
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Routemize native-webhook adapter (prompt 56). Routemize's Custom Webhook
+// posts its own envelope; everything below translates it onto the hand-rolled
+// contract so ONE flow handles both shapes.
+// ---------------------------------------------------------------------------
+
+// eventType casing is NOT consistent (landmine 4: real events are PascalCase
+// 'AppointmentCreated', the synthetic test event was dotted 'test.webhook'),
+// so strip non-alphanumerics and lowercase before matching.
+function normalizeEventType(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+const NATIVE_EVENT_ACTIONS = {
+  appointmentcreated: 'created',
+  appointmentupdated: 'updated',
+  appointmentcancelled: 'canceled', // Routemize's spelling
+  appointmentcanceled: 'canceled',
+  appointmentdeleted: 'deleted',
+  appointmentstatuschanged: 'status_changed', // resolved from the payload below
+};
+
+// Lead-source slug in the house vocabulary ('meta', 'google_lsa', ...).
+function slugSource(s) {
+  const k = String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return k || null;
+}
+
+// Some fields ('AppointmentId', 'AppointmentNotes') live in a nested
+// PascalCase template block whose exact key is not pinned down; check the top
+// level, then one level of nested objects. Never deeper: a bounded search
+// cannot be fooled into scanning a pathological payload.
+function findNestedKey(data, key) {
+  if (data == null || typeof data !== 'object') return null;
+  if (data[key] != null) return data[key];
+  for (const v of Object.values(data)) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && v[key] != null) return v[key];
+  }
+  return null;
+}
+
+// AppointmentStatusChanged's payload shape is UNVERIFIED (landmine 5): read
+// the status from the likely candidates, never depend on one silently.
+const STATUS_FIELD_CANDIDATES = [
+  'status', 'newStatus', 'appointmentStatus', 'statusName', 'statusText',
+  'Status', 'NewStatus', 'AppointmentStatus', 'StatusName',
+];
+function readRoutemizeStatus(data) {
+  for (const k of STATUS_FIELD_CANDIDATES) {
+    const v = findNestedKey(data, k);
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+// serviceName/eventTypeId -> appt_type map, tunable from Settings (standing
+// rule 12: adding a Routemize service is a Settings edit, not a deploy).
+// Value is JSON text like {"estimate":"on_site_estimate"}; keys are matched
+// lowercased against serviceName first, then eventTypeId. Anything unmapped
+// (or a missing/broken setting) defaults to on_site_estimate (decision 5).
+const ROUTEMIZE_TYPE_MAP_KEY = 'routemize_service_type_map';
+async function getRoutemizeTypeMap(db) {
+  try {
+    const rows = await db('GET', `/settings?key=eq.${ROUTEMIZE_TYPE_MAP_KEY}&select=value&limit=1`);
+    const raw = Array.isArray(rows) && rows[0] ? rows[0].value : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    const out = {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed)) {
+        if (APPT_TYPES.includes(v)) out[String(k).trim().toLowerCase()] = v;
+      }
+    }
+    return out;
+  } catch (_) {
+    return {}; // bad JSON / missing setting or table: everything defaults
+  }
+}
+
+// Envelope -> hand-rolled contract. Returns { recognized: false } for any
+// eventType we do not handle (the caller answers 200 no-op: Routemize retries
+// non-2xx and tracks webhook health, so an unknown event must never 4xx), or
+// { recognized: true, body, rz } where body is the mapped contract and rz
+// carries the native-only extras (contact id, lead source, rep candidates).
+async function mapRoutemizeEnvelope(db, env) {
+  let action = NATIVE_EVENT_ACTIONS[normalizeEventType(env.eventType)];
+  if (!action) return { recognized: false };
+
+  const data = (env.data && typeof env.data === 'object') ? env.data : {};
+  const contact = (data.contact && typeof data.contact === 'object') ? data.contact : {};
+  const address = (data.address && typeof data.address === 'object') ? data.address : {};
+  const assigned = (Array.isArray(data.assignedUsers) && data.assignedUsers[0] && typeof data.assignedUsers[0] === 'object')
+    ? data.assignedUsers[0] : {};
+
+  // Status-changed maps by status VALUE (decision 3): cancel-ish stops the
+  // booking; anything else (or no readable status at all) is an update,
+  // NEVER a cancellation, with the ambiguity noted in the internal notes.
+  let statusNote = null;
+  if (action === 'status_changed') {
+    const status = readRoutemizeStatus(data);
+    if (status && /cancel/i.test(status)) {
+      action = 'canceled';
+    } else {
+      action = 'updated';
+      statusNote = status
+        ? `Routemize status changed to "${status}".`
+        : 'Routemize sent a status change with no readable status; treated as an update.';
+    }
+  }
+
+  // relatedEntityId is the appointment id (mirrored as AppointmentId in the
+  // nested block). A relatedEntityId typed as some OTHER entity is not our key.
+  let rmId = cleanStr(data.relatedEntityId);
+  const ret = cleanStr(data.relatedEntityType);
+  if (rmId && ret && ret.toLowerCase() !== 'appointment') rmId = null;
+  if (!rmId) rmId = cleanStr(findNestedKey(data, 'AppointmentId'));
+
+  const firstName = cleanStr(contact.firstName);
+  const lastName = cleanStr(contact.lastName);
+  const customerName = cleanStr(data.contactName)
+    || (firstName ? `${firstName}${lastName ? ' ' + lastName : ''}` : null);
+
+  // appt_type via the settings map; serviceName wins, eventTypeId is the
+  // secondary key (decision 5).
+  const serviceName = cleanStr(data.serviceName);
+  const typeMap = await getRoutemizeTypeMap(db);
+  const apptType = (serviceName && typeMap[serviceName.toLowerCase()])
+    || (cleanStr(data.eventTypeId) && typeMap[cleanStr(data.eventTypeId).toLowerCase()])
+    || 'on_site_estimate';
+
+  // Our own title (decision 6): "John Courtis, Estimate". Routemize's
+  // appointmentTitle ("Meeting with - John") is deliberately ignored. This
+  // shows on the TopCoat calendar and syncs out to Google Calendar.
+  const title = [customerName, serviceName || TYPE_LABELS[apptType]].filter(Boolean).join(', ') || null;
+
+  // customerAnswers -> customer-facing Job notes (decision 4: the customer
+  // wrote them). Q&A pairs, one per line; the send path scrubs em dashes.
+  const answers = (Array.isArray(data.customerAnswers) ? data.customerAnswers : [])
+    .map(a => {
+      if (!a || typeof a !== 'object') return null;
+      const q = cleanStr(a.question);
+      const ans = cleanStr(a.answer);
+      return q && ans ? `${q}: ${ans}` : ans;
+    })
+    .filter(Boolean);
+
+  const addr = [cleanStr(address.addressLine1), cleanStr(address.addressLine2)].filter(Boolean).join(', ');
+
+  const body = {
+    action,
+    routemize_appt_id: rmId,
+    appt_type: apptType,
+    title,
+    // startTime/endTime carry an explicit Z; parseApptDate trusts an explicit
+    // offset, so the Phoenix bare-datetime branch never runs on these.
+    start_at: data.startTime,
+    end_at: data.endTime,
+    customer_name: customerName,
+    phone: contact.phoneNumber,
+    email: contact.email,
+    address: addr || null,
+    city: address.city,
+    state: address.state,
+    zip: address.zipCode,
+    // First non-empty candidate doubles as the contract field so the
+    // unmatched-rep note names something useful.
+    assigned_member_email: cleanStr(assigned.userName) || cleanStr(assigned.email),
+    assigned_member_name: cleanStr(assigned.firstName)
+      ? `${cleanStr(assigned.firstName)}${cleanStr(assigned.lastName) ? ' ' + cleanStr(assigned.lastName) : ''}`
+      : null,
+    notes: cleanStr(findNestedKey(data, 'AppointmentNotes')),
+    customer_notes: answers.length ? answers.join('\n') : null,
+  };
+
+  const rz = {
+    native: true,
+    contactId: cleanStr(contact.contactId),
+    firstName,
+    lastName,
+    // leadSourceText is the meaningful value when leadSource is a bucket
+    // ("Other"/"Google" on the real sample); fall back to 'routemize' when
+    // Routemize sends nothing (decision 10).
+    leadSource: slugSource(cleanStr(contact.leadSourceText) || cleanStr(contact.leadSource)) || 'routemize',
+    memberEmails: [cleanStr(assigned.userName), cleanStr(assigned.email)].filter(Boolean),
+    statusNote,
+  };
+  return { recognized: true, body, rz };
+}
+
+// Decision 9 (native path only): create the lead a direct Routemize booker
+// never became. Stage 'new' + a 'created' lead_event; apptBookingLeadEffects
+// does the stage advance afterwards, exactly like an in-app booking.
+// DELIBERATELY NOT nurture-enrolled (landmine 3) and no AI kick. Best-effort:
+// a failed create lands the appointment unlinked with the contact noted, it
+// never turns a good intake into a non-200.
+async function createRoutemizeLead(db, args) {
+  const base = {
+    brand: 'PEC', // decision 7: FTP does not use Routemize
+    source: args.source,
+    source_ref: args.contactId || null,
+    first_name: args.firstName || (args.customerName ? args.customerName.split(' ')[0] : null),
+    last_name: args.lastName || (args.customerName && args.customerName.includes(' ')
+      ? args.customerName.split(' ').slice(1).join(' ') : null),
+    full_name: args.customerName,
+    email: args.email,
+    phone: args.phone10 || null,
+    address: args.address, city: args.city, state: args.state, zip: args.zip,
+    stage: 'new',
+    sms_consent: false, // TCPA: consent is never inferred from a booking
+  };
+  let rows;
+  try {
+    rows = await db('POST', '/leads', { ...base, routemize_contact_id: args.contactId || null }, true);
+  } catch (err) {
+    // Pre-migration (landmine 8): the column is not there yet; the lead
+    // still gets created without it.
+    if (/routemize_contact_id/i.test(String(err && err.message))) {
+      rows = await db('POST', '/leads', base, true);
+    } else throw err;
+  }
+  const lead = Array.isArray(rows) && rows[0];
+  if (!lead) throw new Error('lead insert returned no row');
+  await db('POST', '/lead_events', {
+    lead_id: lead.id,
+    event_type: 'created',
+    to_stage: 'new',
+    payload: { source: args.source, via: 'routemize_booking', routemize_appt_id: args.rmId },
+  }).catch(e => console.warn('pec-appt-intake: created lead_event failed (non-fatal):', e && e.message));
+  return lead;
+}
+
+// Store contact.contactId on the matched/created lead or customer (decision
+// 12). Fill-if-blank (the guard doubles as idempotency) and tolerant of the
+// column not existing yet (landmine 8): the PATCH just fails quietly until
+// Cowork applies the migration.
+async function storeRoutemizeContactId(db, table, id, contactId) {
+  if (!id || !contactId) return;
+  try {
+    await db('PATCH',
+      `/${table}?id=eq.${encodeURIComponent(id)}&routemize_contact_id=is.null`,
+      { routemize_contact_id: contactId });
+  } catch (e) {
+    console.warn(`pec-appt-intake: routemize_contact_id store on ${table} skipped (pre-migration?):`, e && e.message);
+  }
 }
 
 // Staff bell for a Routemize booking: the in-app path goes through the
@@ -181,16 +452,34 @@ async function processApptIntake(deps, body) {
   const runReminders = deps.runReminders || ((d, o) => runApptReminders(d, o));
   const now = deps.now ? deps.now() : new Date();
 
+  // The ingest log must show what Routemize ACTUALLY sent, not our mapping.
+  const rawPayload = body;
+
+  // Auto-detect the Routemize native envelope (decision 1): eventType AND a
+  // data object mean native; anything else falls through to the hand-rolled
+  // contract untouched. An unrecognized eventType (including the synthetic
+  // 'test.webhook') is a 200 no-op, never a 4xx (landmines 4 and 6).
+  let rz = null;
+  if (body && typeof body.eventType === 'string' && body.data && typeof body.data === 'object') {
+    const mapped = await mapRoutemizeEnvelope(db, body);
+    if (!mapped.recognized) {
+      await log({ endpoint: ENDPOINT, deal_id: null, customer_name: null, outcome: 'ok', status_code: 200, message: `routemize: ignored eventType '${body.eventType}' (no-op)`, payload: rawPayload });
+      return { status: 200, body: { success: true, ignored: true, event_type: body.eventType } };
+    }
+    rz = mapped.rz;
+    body = mapped.body;
+  }
+
   const action = cleanStr(body.action) || 'created';
   const rmId = cleanStr(body.routemize_appt_id);
   const customerName = cleanStr(body.customer_name);
 
   if (!['created', 'updated', 'canceled', 'deleted'].includes(action)) {
-    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 400, message: `unknown action '${action}'`, payload: body });
+    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 400, message: `unknown action '${action}'`, payload: rawPayload });
     return { status: 400, body: { success: false, error: `unknown action '${action}'` } };
   }
   if (!rmId) {
-    await log({ endpoint: ENDPOINT, deal_id: null, customer_name: customerName, outcome: 'rejected', status_code: 400, message: 'routemize_appt_id is required', payload: body });
+    await log({ endpoint: ENDPOINT, deal_id: null, customer_name: customerName, outcome: 'rejected', status_code: 400, message: 'routemize_appt_id is required', payload: rawPayload });
     return { status: 400, body: { success: false, error: 'routemize_appt_id is required' } };
   }
 
@@ -200,18 +489,35 @@ async function processApptIntake(deps, body) {
       const rows = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=id,status&limit=1`);
       const appt = Array.isArray(rows) && rows[0];
       if (!appt) {
-        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no matching appointment (no-op)`, payload: body });
+        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no matching appointment (no-op)`, payload: rawPayload });
         return { status: 200, body: { success: true, matched: false } };
       }
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { status: 'canceled' });
-      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${appt.id} canceled`, payload: body });
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${appt.id} canceled`, payload: rawPayload });
       return { status: 200, body: { success: true, canceled: true, appointment_id: appt.id } };
     }
 
     // ---- created / updated -------------------------------------------------
     const startAt = parseApptDate(body.start_at);
     if (!startAt) {
-      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 400, message: 'start_at is required (ISO 8601)', payload: body });
+      // Native events with no readable times (the unverified StatusChanged
+      // shape is the expected culprit, landmine 5): never a 4xx and NEVER a
+      // cancellation. Append the status note to the matched row's internal
+      // notes and answer 200; no row is a clean no-op.
+      if (rz) {
+        const rows = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=id,notes&limit=1`);
+        const appt = Array.isArray(rows) && rows[0];
+        if (!appt) {
+          await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no readable start time and no matching appointment (no-op)`, payload: rawPayload });
+          return { status: 200, body: { success: true, matched: false } };
+        }
+        const noteAdd = rz.statusNote || `Routemize sent an ${action} event with no readable start time; appointment left as-is.`;
+        await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`,
+          { notes: [cleanStr(appt.notes), noteAdd].filter(Boolean).join('\n') });
+        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no readable start time; noted on appointment ${appt.id}`, payload: rawPayload });
+        return { status: 200, body: { success: true, updated: true, appointment_id: appt.id } };
+      }
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'rejected', status_code: 400, message: 'start_at is required (ISO 8601)', payload: rawPayload });
       return { status: 400, body: { success: false, error: 'start_at is required and must be a parseable datetime' } };
     }
     const endAt = parseApptDate(body.end_at) || new Date(new Date(startAt).getTime() + DEFAULT_DURATION_MS).toISOString();
@@ -223,15 +529,48 @@ async function processApptIntake(deps, body) {
 
     const [contact, member] = [
       await resolveContact(db, phone10, email),
-      await resolveSalesMember(db, memberEmail, memberName),
+      await resolveSalesMember(db, rz ? rz.memberEmails : memberEmail, memberName),
     ];
 
-    // Internal notes: what Zapier sent, plus anything a rep must act on
+    // Routemize-native lead behavior (decisions 9/10/12; see the header
+    // block). resolveContact just ran the shared same-human match with NO
+    // window, strictly broader than lead-intake's 90-day dedupe, so a miss
+    // here proves the windowed dedupe cannot hit either: creating is safe.
+    let leadCreated = false;
+    if (rz && !contact.lead_id && !contact.customer_id && customerName && (phone10 || email)) {
+      try {
+        const lead = await createRoutemizeLead(db, {
+          customerName, firstName: rz.firstName, lastName: rz.lastName,
+          phone10, email, source: rz.leadSource, contactId: rz.contactId, rmId,
+          address: cleanStr(body.address), city: cleanStr(body.city),
+          state: cleanStr(body.state), zip: cleanStr(body.zip),
+        });
+        contact.lead_id = lead.id;
+        leadCreated = true;
+      } catch (e) {
+        // The appointment still lands (unlinked, contact noted below); a
+        // non-200 here would just make Routemize retry a working intake.
+        console.warn('pec-appt-intake: routemize lead create failed (non-fatal):', e && e.message);
+      }
+    }
+    if (rz && contact.lead_id && !leadCreated) {
+      // Existing lead: fill the source only if blank, NEVER overwrite
+      // (decision 10: overwriting would rewrite marketing attribution).
+      await db('PATCH', `/leads?id=eq.${encodeURIComponent(contact.lead_id)}&source=is.null`, { source: rz.leadSource })
+        .catch(e => console.warn('pec-appt-intake: lead source fill failed (non-fatal):', e && e.message));
+    }
+    if (rz) {
+      if (contact.lead_id) await storeRoutemizeContactId(db, 'leads', contact.lead_id, rz.contactId);
+      else if (contact.customer_id) await storeRoutemizeContactId(db, 'customers', contact.customer_id, rz.contactId);
+    }
+
+    // Internal notes: what the payload carried, plus anything a rep must act on
     // because we could not link it (unmatched contact keeps its phone here so
     // the appointment is still workable; unmatched rep is called out so
     // someone assigns it). Internal-only text, never customer-facing.
     const noteLines = [];
     if (cleanStr(body.notes)) noteLines.push(cleanStr(body.notes));
+    if (rz && rz.statusNote) noteLines.push(rz.statusNote);
     if (!contact.lead_id && !contact.customer_id && (customerName || phone10 || email)) {
       noteLines.push('Routemize contact (no matching lead/customer): '
         + [customerName, phone10, email].filter(Boolean).join(' / '));
@@ -269,7 +608,7 @@ async function processApptIntake(deps, body) {
       if (!existingRow.lead_id && contact.lead_id) fields.lead_id = contact.lead_id;
       if (!existingRow.customer_id && contact.customer_id) fields.customer_id = contact.customer_id;
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(existingRow.id)}`, fields);
-      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${existingRow.id} updated`, payload: body });
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${existingRow.id} updated`, payload: rawPayload });
       return { status: 200, body: { success: true, updated: true, appointment_id: existingRow.id, lead_id: fields.lead_id || existingRow.lead_id || null } };
     }
 
@@ -289,14 +628,30 @@ async function processApptIntake(deps, body) {
       // beat us between the existence check and the insert. Its row is the
       // row; nothing to do.
       if (/409|23505|duplicate/i.test(String(err && err.message))) {
-        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: 'created: deduped on routemize_appt_id (concurrent retry)', payload: body });
+        await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: 'created: deduped on routemize_appt_id (concurrent retry)', payload: rawPayload });
         return { status: 200, body: { success: true, deduped: true } };
       }
       throw err;
     }
     const appt = inserted[0];
 
-    // Side effects, every one best-effort: the row is saved, and Zapier
+    // Landmine 2: a Routemize booking folding onto an EXISTING lead leaves a
+    // timeline note (renders via the 'note' branch of leadEventHtml) so the
+    // rep sees this person booked again. A CREATED lead already got its
+    // 'created' event, and the stage advance below writes its own.
+    if (rz && appt.lead_id && !leadCreated) {
+      await db('POST', '/lead_events', {
+        lead_id: appt.lead_id,
+        event_type: 'note',
+        payload: {
+          text: `Booked via Routemize: ${appt.title || TYPE_LABELS[appt.appt_type] || 'appointment'}, ${apptDateStr(appt.start_at)} at ${apptTimeStr(appt.start_at)}`,
+          via: 'routemize_booking',
+          appointment_id: appt.id,
+        },
+      }).catch(e => console.warn('pec-appt-intake: booking note event failed (non-fatal):', e && e.message));
+    }
+
+    // Side effects, every one best-effort: the row is saved, and a caller
     // retrying a non-200 would re-run them, which is worse than missing one
     // (the 15-minute runner backstops the confirmation anyway).
     let effects = { staged: false, drip_stopped: 0 };
@@ -311,7 +666,7 @@ async function processApptIntake(deps, body) {
     try { await runReminders({ sb: db }, { appointmentId: appt.id }); }
     catch (e) { console.warn('pec-appt-intake: confirmation kick failed (non-fatal):', e && e.message); }
 
-    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `created: appointment ${appt.id}${appt.lead_id ? ` linked to lead ${appt.lead_id}` : ''}${member ? '' : (memberEmail || memberName ? ' (rep unmatched)' : '')}`, payload: body });
+    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `created: appointment ${appt.id}${appt.lead_id ? ` linked to lead ${appt.lead_id}` : ''}${member ? '' : (memberEmail || memberName ? ' (rep unmatched)' : '')}`, payload: rawPayload });
     return {
       status: 200,
       body: {
@@ -323,7 +678,7 @@ async function processApptIntake(deps, body) {
     };
   } catch (err) {
     console.error('pec-appt-intake failed:', err);
-    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'error', status_code: 500, message: err && err.message, payload: body });
+    await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'error', status_code: 500, message: err && err.message, payload: rawPayload });
     return { status: 500, body: { success: false, error: 'Internal error ingesting appointment' } };
   }
 }
@@ -344,3 +699,5 @@ exports.handler = async (event) => {
 exports.processApptIntake = processApptIntake;
 exports.parseApptDate = parseApptDate;
 exports.normApptType = normApptType;
+exports.normalizeEventType = normalizeEventType;
+exports.mapRoutemizeEnvelope = mapRoutemizeEnvelope;
