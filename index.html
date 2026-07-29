@@ -26678,7 +26678,7 @@ function touchupPanelHtml(ctx) {
 
   return `
       <details class="pec-sched-aside-details" open>
-        <summary class="pec-sched-aside-sum">Touch-ups <span style="color:var(--muted);font-weight:400">· ${byState.open.length} open</span>
+        <summary class="pec-sched-aside-sum">Touch-ups <span style="color:var(--muted);font-weight:400">· ${byState.open.length + byState.scheduled.length} outstanding</span>
           <span style="flex:1"></span>
           <button class="pec-btn ghost sm" id="tuReportLink" style="padding:1px 7px;font-size:.64rem" title="Closed touch-ups by cause and crew, plus the callback rate">Report</button>
           <button class="pec-btn primary sm" id="tuAddBtn" style="padding:1px 8px;font-size:.68rem" title="Log a touch-up from a customer call: search past jobs by name or address">+ Touch-up</button>
