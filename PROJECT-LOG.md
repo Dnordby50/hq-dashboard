@@ -4,6 +4,37 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: Routemize -> TopCoat wired via a NATIVE Routemize webhook (not Zapier); real payload shape captured
+By: Cowork
+
+Changed: one new Custom Webhook inside Routemize (prescottepoxycompany.routemize.com > Settings > Integrations). No code, no schema, no repo change beyond this entry.
+
+ARCHITECTURE CHANGED, with Dylan's approval this session. Prompt 43 specified Routemize -> Zapier -> pec-appt-intake. Zapier was still not logged in (the same blocker as 2026-07-21), but the investigation found something better: **Routemize ships NATIVE Custom Webhooks**, and critically they support arbitrary CUSTOM HEADERS. That removes the only reason Zapier was in the design. Zapier was chosen in prompt 43 to do two jobs: set the auth header and rename fields. Routemize can do the first natively; only the second remains. Net result: no Zapier account, no Zapier tasks per appointment, no third party in the chain, and Routemize handles its own delivery retries and health tracking.
+
+WEBHOOK CREATED: name "TopCoat appointment intake", status Active, URL https://prescottepoxy.netlify.app/.netlify/functions/pec-appt-intake, custom header `x-webhook-secret` set to PEC_WEBHOOK_SECRET (production value, copied from Netlify env via clipboard so the value was never typed out), HMAC Secret Key deliberately left EMPTY because our endpoint does not verify a signature. Subscribed events: all 5 appointment events (Created, Updated, Status Changed, Cancelled, Deleted). Booking Requests, Contacts, Services, and Calendar & Schedule were deliberately NOT subscribed.
+
+TEST DELIVERY FIRED, and its result is the useful part. Routemize's UI reported "Internal Server Error"; the truth from pec_webhook_ingest_log is a **400, outcome 'rejected', message "routemize_appt_id is required"**. That is exactly the right failure and it proves two things at once: the delivery reaches us, and **the secret header is CORRECT** (a wrong secret returns 401 "Invalid webhook secret", not 400). Auth is done. Only the field contract is left.
+
+THE REAL PAYLOAD SHAPE, read from Routemize's own DripJobs delivery log (146 deliveries, health "Healthy"), so this is the production serializer and not a guess. Envelope: `{ eventId, eventType, timestamp, tenantId, apiVersion: "v1", data: {...}, metadata: {...} }`. eventType is **PascalCase**: AppointmentCreated / AppointmentUpdated / AppointmentStatusChanged / AppointmentCancelled / AppointmentDeleted. Inside `data`:
+- `relatedEntityId` (with `relatedEntityType: "Appointment"`) is the APPOINTMENT ID, and it is mirrored as `AppointmentId` in the nested template block. This is the idempotency key for routemize_appt_id.
+- `startTime` / `endTime`: ISO 8601 **with an explicit Z** (verified: startTime 2026-07-29T15:00:00Z alongside AppointmentTime "8:00 AM", which is 08:00 MST). parseApptDate already trusts an explicit offset, so no timezone work is needed.
+- `contact`: { contactId, firstName, lastName, email, phoneNumber, businessName, leadSource, leadSourceText }, plus a flat `contactName`.
+- `address`: { addressLine1, addressLine2, city, state, zipCode, latitude, longitude }.
+- `serviceName` ("Estimate"), `appointmentTitle` ("Meeting with - John"), `appointmentDate`, `bookingFormId`, `eventTypeId`.
+- `assignedUsers[]`: { userId, firstName, lastName, email, **userName** }. NOTE: userName carried the work address (aron@prescottepoxy.com) while `email` is a separate field, so the rep mapping should try BOTH against pec_sales_team_members.google_email before falling back to name.
+- `customerAnswers[]`: { questionId, question, answer, attachments[] }. On the sample this held the project description and "Epoxy Patio / Pool Deck". This is the real content for customer_notes.
+- A nested PascalCase block also carries `AppointmentNotes`.
+
+CURRENT STATE, stated plainly: the pipe is connected and authenticated, and it will keep returning 400 on every real appointment until pec-appt-intake learns this shape. Nothing is broken by that (the endpoint rejects cleanly and logs every attempt), but nothing lands either.
+
+ALSO CONFIRMED: Routemize -> DripJobs is still fully live (Connected, toggled on, 146 deliveries, last one minutes ago). It must NOT be disconnected until the adapter ships and is verified, or appointments would reach neither system.
+
+Why: Dylan asked for the Routemize connection to be built (2026-07-28 readiness audit).
+Files touched: PROJECT-LOG.md (this entry). Routemize config changed outside the repo.
+Next steps: a Claude Code prompt for the pec-appt-intake Routemize adapter (envelope detection + field mapping + PascalCase eventType -> action). Scoping questions are with Dylan now. After it ships, verify against a REAL booking (they book daily) rather than the synthetic test event, then retire the Routemize -> DripJobs push.
+
+---
+
 ## [2026-07-28 MST] SalesAsk integration Phase 3: Sales coaching card on Metrics
 By: Claude Code
 Changed: renderMetrics gained three data sources (pec_salesask_recordings, pec_appointments, the cachedRef sales roster) and a "Sales coaching (SalesAsk)" card in the Sales rank grid. Per-rep table: recordings, avg process score (followed/total), avg length, coverage (recordings vs completed appointments in the window). Below it, close-rate split: leads with a scored recording, above- vs below-median process score, closed = lead.accepted_at set; renders only at 4+ scored leads, with a small-n honesty caption (same instinct as the $/sqft coverage note). Honors the window presets and the salesperson filter (matched by roster name, since the filter's values are pec_job_ar's free-text names). Degrades pre-migration to an "apply the migration" empty state and pre-data to a "turn on sync" pointer. What's New entry extended to mention the card.
