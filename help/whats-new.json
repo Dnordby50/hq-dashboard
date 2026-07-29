@@ -1,5 +1,69 @@
 [
   {
+    "id": "financing-enhancify-block",
+    "date": "2026-07-29",
+    "title": "Financing option on estimates and invoices",
+    "summary": "Customers can now see a financing option right on the public estimate page, the estimate PDF, and the public invoice page. When an APR and term are set in Settings, the block shows an estimated monthly payment (clearly labeled an estimate, subject to credit approval); otherwise it shows a simple check-your-options button. Nothing appears anywhere until you turn it on, and jobs under your minimum amount never show it.",
+    "howto": [
+      "Open Settings, General, and find the Financing (Enhancify) section.",
+      "Paste the Enhancify apply link (and embed URL if you have one), set the minimum job total, and switch the block On.",
+      "Optionally set an APR and term to quote an estimated monthly payment; leave them blank to show just the button."
+    ]
+  },
+  {
+    "id": "estimator-workorder-custom-warning",
+    "date": "2026-07-29",
+    "title": "Work order questions on custom estimates, plus a moisture and MOHS reminder",
+    "summary": "Custom estimates now ask the same work order questions as standard ones (gate code, moisture, MOHS, tooling, and the rest), so the crew sheet is complete either way. And when Moisture or MOHS hardness is left blank, the estimator and the job page both show a gentle reminder. It never blocks anything: you can still save, send, and accept as always.",
+    "howto": [
+      "In the estimator's Custom mode, open the new Work order (site questions) section and fill in what you know.",
+      "If Moisture or MOHS is blank, a yellow note appears near Save and on the job page until it is filled in.",
+      "Fill in the reading on the job page (Job Card) whenever you get it; the warning goes away on its own."
+    ]
+  },
+  {
+    "id": "schedule-price-from-estimate",
+    "date": "2026-07-29",
+    "title": "The schedule now shows each job's real price",
+    "summary": "Calendar bars, week revenue totals, Next Day cards, run sheets, and the schedule window now show the job's current estimate total, including change orders, instead of the original booking number. If the estimate changes, the schedule follows automatically. Jobs already completed or finalized keep the numbers they always showed, and manually added jobs still use the price you typed.",
+    "howto": [
+      "Add a change order or edit an estimate, then reload the schedule: the price updates everywhere at once.",
+      "Hover a calendar bar to see where the number comes from and what the job was originally booked at.",
+      "In the schedule window, a price that comes from the estimate is read-only; change it on the job page instead."
+    ]
+  },
+  {
+    "id": "change-orders-on-job-and-workorder",
+    "date": "2026-07-29",
+    "title": "Change orders are spelled out on the job page and the crew work order",
+    "summary": "Every change order now shows itemized on the job detail page, including ones that never got a signature link, with a total that matches the Totals card. The printed work order gains a CHANGE ORDERS section on page 1, right by the scope, so the crew sees added work on the page they actually read instead of a back-page footnote.",
+    "howto": [
+      "Open a job with change orders: each one lists its name, details, amount, and signature status, with a total underneath.",
+      "Print the work order: added scope shows on page 1 with sqft and price.",
+      "Jobs without change orders look exactly the same as before."
+    ]
+  },
+  {
+    "id": "calendars-sunday-first",
+    "date": "2026-07-29",
+    "title": "Calendars now start the week on Sunday",
+    "summary": "The Job Schedule week and 3-week views, the Next Day window, and the date pickers all start on Sunday now, matching a normal American calendar. One thing to know: the per-week revenue totals group by the new week boundary, so a Sunday install now counts in the week it starts rather than the week before. Metrics and weekly charts are unchanged.",
+    "howto": [
+      "Open the Job Schedule: every grid starts on Sunday.",
+      "If a week's revenue total looks different from last week's report, check whether a Sunday job moved weeks; that is the new boundary, not a data change."
+    ]
+  },
+  {
+    "id": "touchup-header-outstanding",
+    "date": "2026-07-29",
+    "title": "Touch-up count now includes scheduled work",
+    "summary": "The Touch-ups panel header on the Job Schedule now counts everything still owed to a customer: open, waiting, and scheduled touch-ups together, labeled outstanding. Before, a touch-up dropped out of the count the moment it was scheduled, so the header could read zero while work was still owed. The Open and Scheduled sections inside the panel are unchanged.",
+    "howto": [
+      "Open the Job Schedule and look at the Touch-ups header: the number now means not done yet.",
+      "Expand the panel to see the same Open and Scheduled split as before."
+    ]
+  },
+  {
     "id": "ordering-pick-jobs-order-sheet",
     "date": "2026-07-29",
     "title": "Ordering reworked: pick the jobs, then order exactly what they need",

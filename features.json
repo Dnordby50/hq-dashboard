@@ -193,7 +193,7 @@
     {
       "name": "Custom estimate mode",
       "area": "estimator",
-      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone. An optional square footage field shows a live read-only price per sqft (the price stays the typed number) and carries to the job's sqft on accept, lighting up the $/sqft readouts on Job Costing and the work order.",
+      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone. An optional square footage field shows a live read-only price per sqft (the price stays the typed number) and carries to the job's sqft on accept, lighting up the $/sqft readouts on Job Costing and the work order. Prompt 58: the Work order site questions (gate code, moisture, MOHS, tooling, non-slip, coat past garage, stem walls, special notes) render in custom mode too, from one shared field list. A blank Moisture or MOHS shows a soft warning on the estimator (near the grid and by both save rows) and on the job page's Job Card; it never blocks save, send, or accept.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-custom-polish.cjs"
@@ -561,7 +561,7 @@
     {
       "name": "Job Schedule calendar",
       "area": "dashboard",
-      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date. Prompt 51: the left aside is now a column holding the Touch-ups panel (see 'Touch-up list and callback tracking') above Pending Jobs, and BOTH pending sources exclude is_callback rows, so an unscheduled touch-up never renders as an ordinary pending job card. The week-revenue exclusion now tests revenue, not the flag: a billable callback (revenue > 0) prorates like any job. Prompt 54: crews themselves stay pec_prod_crews (a crew is a grouping, not a person); people are assigned to crews from Settings > People, writing pec_prod_crew_members.crew_id. Prompt 55: the schedule surfaces (modal, Pending cards, read-only popup, calendar bars, Next Day board + run sheet) autofill system type and estimated hours from the ESTIMATE via one shared helper (prodJobEstimateFacts, backed by buildProdEstimateFacts, the extracted loadCostingData estimate phase), so they always match the Budget card and Job Costing. System: a real pec_prod_areas system (an explicit modal pick) wins; else the estimate-derived system follows live. Hours: a typed override (pec_prod_jobs.estimated_hours) wins on schedule surfaces only; else the computed budgetedHours; costing/bonus keep using the computed number per prompt 50. The modal writes estimated_hours only when the field differs from its prefill, and shows an 'Estimate now says N hrs' drift line with one-click adoption. Prompt 57: bars are FILLED by crew color (pec_prod_crews.color, picked in the crew modal with presets) with the system type as a thin top band (--ev-banner pseudo-element); a crew color key renders above the calendar and a crew with no color falls back to the system fill. Callbacks keep sky blue with no crew fill. Clicking a bar opens the READ-ONLY quick look (openJobQuickLook); the Schedule button inside it is the only path to the edit modal. Sq footage rides the bar tooltip via prodJobEstimateFacts.sqft (jobEffectiveSqft: manual jobs.sqft, else the area sum), the same number Job Costing shows.",
+      "description": "A rolling Week / 3-week production calendar with continuous multi-day job bars, color coded by system, per-week prorated revenue that opens a click-through breakdown, and short per-segment notes (like flake portion) on the bars. Jobs carry their system automatically from the accepted estimate, days are numbered chronologically, and the pending-jobs panel offers quick read-only job details and sizes itself to the calendar. It reflows into a tappable day list on phones. The +Schedule modal also shows the job's CompanyCam site photos read-only (reads jobs.companycam_project_id via the dripjobs_deal_id bridge through the pec-companycam proxy), and both month day pickers ring today's date. Prompt 51: the left aside is now a column holding the Touch-ups panel (see 'Touch-up list and callback tracking') above Pending Jobs, and BOTH pending sources exclude is_callback rows, so an unscheduled touch-up never renders as an ordinary pending job card. The week-revenue exclusion now tests revenue, not the flag: a billable callback (revenue > 0) prorates like any job. Prompt 54: crews themselves stay pec_prod_crews (a crew is a grouping, not a person); people are assigned to crews from Settings > People, writing pec_prod_crew_members.crew_id. Prompt 55: the schedule surfaces (modal, Pending cards, read-only popup, calendar bars, Next Day board + run sheet) autofill system type and estimated hours from the ESTIMATE via one shared helper (prodJobEstimateFacts, backed by buildProdEstimateFacts, the extracted loadCostingData estimate phase), so they always match the Budget card and Job Costing. System: a real pec_prod_areas system (an explicit modal pick) wins; else the estimate-derived system follows live. Hours: a typed override (pec_prod_jobs.estimated_hours) wins on schedule surfaces only; else the computed budgetedHours; costing/bonus keep using the computed number per prompt 50. The modal writes estimated_hours only when the field differs from its prefill, and shows an 'Estimate now says N hrs' drift line with one-click adoption. Prompt 57: bars are FILLED by crew color (pec_prod_crews.color, picked in the crew modal with presets) with the system type as a thin top band (--ev-banner pseudo-element); a crew color key renders above the calendar and a crew with no color falls back to the system fill. Callbacks keep sky blue with no crew fill. Clicking a bar opens the READ-ONLY quick look (openJobQuickLook); the Schedule button inside it is the only path to the edit modal. Sq footage rides the bar tooltip via prodJobEstimateFacts.sqft (jobEffectiveSqft: manual jobs.sqft, else the area sum), the same number Job Costing shows. Prompt 58: every calendar grid is Sunday-first (startOfWeek flipped; per-week revenue re-buckets at the new boundary), and every schedule surface shows a DERIVED price via prodJobDisplayRevenue: the CRM jobs.price (estimate lines + change orders) when the prod job resolves to a CRM card, else the stored pec_prod_jobs.revenue, with stored winning for callbacks, finalized/completed jobs, and $0-estimate cards. The stored revenue is never rewritten; the schedule modal shows the derived number read-only with the booked-at delta, and manual jobs keep the editable field.",
       "code": {
         "indexHtml": [
           "buildProdEstimateFacts",
@@ -573,7 +573,9 @@
           "openScheduleModal",
           "prodJobEstimateFacts",
           "renderSchedule",
-          "renderScheduleCalendar"
+          "renderScheduleCalendar",
+          "startOfWeek",
+          "prodJobDisplayRevenue"
         ],
         "netlifyFunctions": [
           "pec-companycam.cjs"
@@ -592,7 +594,7 @@
     {
       "name": "Touch-up list and callback tracking",
       "area": "dashboard",
-      "description": "A Touch-ups panel in the Job Schedule aside (above Pending Jobs) that tracks every touch-up / warranty callback from request to close. A touch-up stays a full callback job (pec_prod_jobs, is_callback + original_job_id); the panel adds a lifecycle (touchup_state: open / scheduled / waiting_customer / done, a parallel axis to status, which callbacks keep at 'unscheduled'), an age clock (touchup_opened_at; rows go red past touchup_aging_days), manual drag order (touchup_order) with an optional deterministic Sort by suggested (+40 active customer job, +25 crew in the same city in the visible window, +days open capped at 30, -15 waiting; Undo restores touchup_order_prev), and a close flow that REQUIRES a cause from a six-value enum ('other' requires a note) and never deletes anything. Intake is office-only from two places: the panel's + Touch-up (search past jobs by name/address, description + touchup_requested_by) and the job detail toolbar's + Touch-up (prod row resolved by deal id then jobNameAddrKey); both flow through addTouchupCallback (the legacy #schedAddCallback button keeps its confirm + straight-to-scheduler path). Text opens the original job's comms tab with a prefilled draft (one-shot window.__pecCommsPrefill). Billable override: touchup_billable + revenue save together from the schedule modal; the four revenue-exclusion sites test revenue (a null-revenue callback stays $0). The panel's Report modal totals closed touch-ups by cause and by the ORIGINAL job's crew (90 days / YTD) with a callback rate. Callback costs roll up read-only into the parent's unified costing GP display without touching computeCrewBonus inputs (prompt 50's review gate stays the only bonus lever).",
+      "description": "A Touch-ups panel in the Job Schedule aside (above Pending Jobs) that tracks every touch-up / warranty callback from request to close. A touch-up stays a full callback job (pec_prod_jobs, is_callback + original_job_id); the panel adds a lifecycle (touchup_state: open / scheduled / waiting_customer / done, a parallel axis to status, which callbacks keep at 'unscheduled'), an age clock (touchup_opened_at; rows go red past touchup_aging_days), manual drag order (touchup_order) with an optional deterministic Sort by suggested (+40 active customer job, +25 crew in the same city in the visible window, +days open capped at 30, -15 waiting; Undo restores touchup_order_prev), and a close flow that REQUIRES a cause from a six-value enum ('other' requires a note) and never deletes anything. Intake is office-only from two places: the panel's + Touch-up (search past jobs by name/address, description + touchup_requested_by) and the job detail toolbar's + Touch-up (prod row resolved by deal id then jobNameAddrKey); both flow through addTouchupCallback (the legacy #schedAddCallback button keeps its confirm + straight-to-scheduler path). Text opens the original job's comms tab with a prefilled draft (one-shot window.__pecCommsPrefill). Billable override: touchup_billable + revenue save together from the schedule modal; the four revenue-exclusion sites test revenue (a null-revenue callback stays $0). The panel's Report modal totals closed touch-ups by cause and by the ORIGINAL job's crew (90 days / YTD) with a callback rate. Callback costs roll up read-only into the parent's unified costing GP display without touching computeCrewBonus inputs (prompt 50's review gate stays the only bonus lever). Prompt 58: the collapsed panel header counts open + scheduled together as 'outstanding' (everything not done), while the Ops Queue check still deliberately counts only unactioned open touch-ups.",
       "code": {
         "indexHtml": [
           "touchupPanelHtml",
@@ -945,12 +947,13 @@
     {
       "name": "Change orders",
       "area": "dashboard",
-      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. An Additional coat mode adds an extra coat (MVB today, extensible ADDITIONAL_COATS list) to a chosen existing area at its square footage, with an editable price down to $0 for cost-only absorption; the coat rides the area machinery so its product reaches the material pull and costing automatically. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later.",
+      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. An Additional coat mode adds an extra coat (MVB today, extensible ADDITIONAL_COATS list) to a chosen existing area at its square footage, with an editable price down to $0 for cost-only absorption; the coat rides the area machinery so its product reaches the material pull and costing automatically. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later. Prompt 58: change orders render itemized on the job detail page even when a signature row is missing (line-item boxes marked 'Recorded, no signature link', footer total tied to the line items / coSum), and the printed work order gets a CHANGE ORDERS section on page 1 near the scope with name, detail, sqft/system for scope-mode COs, and price.",
       "code": {
         "indexHtml": [
           "openChangeOrderModal",
           "mountChangeOrderCard",
-          "pushChangeOrderMaterialsToProd"
+          "pushChangeOrderMaterialsToProd",
+          "renderWorkOrder"
         ],
         "netlifyFunctions": [
           "pec-public-change-order.cjs",
@@ -1716,7 +1719,7 @@
     {
       "name": "Estimator stuck-sync visibility",
       "area": "estimator",
-      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online \u00b7 N to sync, or a RED 'N saves not syncing \u00b7 oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
+      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online · N to sync, or a RED 'N saves not syncing · oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
       "code": {
         "indexHtml": [
           "renderSettingsEstimates",
@@ -1823,6 +1826,36 @@
         "salesask_pull_lookback_days"
       ],
       "since": "2026-07-28"
+    },
+    {
+      "name": "Customer financing (Enhancify)",
+      "area": "customer-facing",
+      "description": "A settings-backed financing block on the public estimate page (between the total and the accept panel), the public invoice page (keyed on balance due, above the pay buttons), and the estimate PDF (static text: monthly estimate plus apply URL). Off by default; nothing renders until financing_enabled is on and the amount clears financing_min_amount. With financing_apr_pct and financing_term_months both set it quotes an estimated monthly payment from the standard amortization formula, always labeled an estimate and subject to credit approval; with either blank it shows a plain check-your-options action. The embed shape is an https iframe URL (financing_embed_url), never a script tag, so a settings row cannot inject script into a customer page; the plain apply link is the degradation path. The customer portal shows a price but is deliberately skipped: settings are staff-only under RLS and the portal is anon via SECURITY DEFINER RPCs, so exposing financing there needs a follow-up migration.",
+      "code": {
+        "indexHtml": [
+          "fetchFinancingSettings",
+          "financingPdfHtml",
+          "renderSettings"
+        ],
+        "netlifyFunctions": [
+          "_pec-financing.cjs",
+          "pec-public-estimate.cjs",
+          "pec-public-invoice.cjs"
+        ]
+      },
+      "tables": [
+        "settings"
+      ],
+      "settings": [
+        "financing_enabled",
+        "financing_provider_name",
+        "financing_embed_url",
+        "financing_apply_url",
+        "financing_apr_pct",
+        "financing_term_months",
+        "financing_min_amount"
+      ],
+      "since": "2026-07"
     }
   ]
 }
