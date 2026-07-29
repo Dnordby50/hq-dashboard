@@ -4,6 +4,42 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: wrote prompt 59 (Estimate Scheduled stage, Sales Pipeline rename, estimator iframe hotfix), 12 decisions locked
+By: Cowork
+
+Changed: one new file, claude-code-prompt-59-pipeline-stage-rename-frame.md. No code, no schema, no prod change. Twelve multiple-choice questions were asked before writing (project rule); the answers are the LOCKED lines in the prompt.
+
+THE FINDING THAT MATTERS, because it is a live outage nobody had noticed: Dylan's "prescottepoxy.netlify.app refused to connect" when starting an estimate is **netlify.toml:331 setting `X-Frame-Options = "DENY"` on `/*`**, shipped 2026-07-25 in the security remediation. DENY forbids ALL framing including same-origin, and the estimator opens as a same-origin iframe (index.html:7116, `src="/estimator/?..."`). SAMEORIGIN is the value that blocks other sites while allowing our own page to frame our own path. This was never a Cowork-browser quirk: every rep who tries to start an estimate on the live site gets the same refused frame, and Dylan confirmed nobody has tried since 7/25. The estimate-preview modal (index.html:25344) is broken the same way. Prompt 59 puts the header fix FIRST, in its own deployable commit, ahead of the feature work, and also flips the report-only CSP's `frame-ancestors 'none'` to `'self'` so enforcing CSP later does not re-break it. CSP stays report-only (Dylan's answer); enforcing it is its own project.
+
+THE SECOND FINDING: the estimate-scheduled column Dylan asked for was already flagged in the code as a Dylan decision. index.html:24085-24092 reads "the locked decision says advance to the estimate stage, but LEAD_STAGES has no such stage ... Flagged for Dylan in the PROJECT-LOG if he wants a real 'estimate_scheduled' kanban column instead." He wants it. Verified against prod: `leads_stage_check` is a six-value CHECK, so the seventh stage is a migration (same shape as the material_type CHECK lesson), and `lead_events.from_stage/to_stage` have NO check, so nothing else needs one. Only 6 open leads exist (5 contacted, 1 new), so there is nothing to backfill.
+
+LOCKED DECISIONS, the ones with teeth:
+
+- **Real seventh stage** `estimate_scheduled` between Contacted and Estimate Sent, not a derived bucket. Migration extends leads_stage_check and adds leads.estimate_scheduled_at; Claude Code applies it via the Supabase MCP and regenerates SCHEMA.md.
+- **Automatic on booking AND draggable.** Both entry paths: the client Schedule Estimate flow (openScheduleEstimateFromLead, index.html:24093) and the server twin for Routemize bookings (apptBookingLeadEffects in _pec-appt.cjs), whose `stage=eq.new` guard becomes two guarded PATCHes covering new and contacted.
+- **Cancel falls the lead back to Contacted**, guarded on "no OTHER scheduled on-site estimate for this lead" so a reschedule (cancel old, book new) does not walk the lead backward. New apptCancelLeadEffects on both sides: client hooked into apptPostWrite's existing `canceled` / `deleted` flags, server called from pec-appt-intake's cancel branch.
+- **Nurture drip stops** in the new stage (_pec-drip.cjs:571 stop list). Booking already stops the enrollment eagerly with `appointment_booked`; the stop-list entry covers a card a human drags in, where nothing server-side fires.
+- **Counts as open pipeline, gets its own first-touch timestamp**, and leads in it STAY in the follow-up queue.
+- **Rename is board-only**: rail group "Sales Pipeline", item "Pipeline", records stay "Lead" (New Lead, lead detail, Open leads tile all unchanged). `data-pec-view="leads"` and the `#leads` hash are explicitly frozen so bookmarks survive. Production's "Jobs pipeline" is left alone.
+
+LANDMINES WRITTEN INTO THE PROMPT so Claude Code cannot miss them:
+
+- **contacted_at must be stamped when a `new` lead jumps to estimate_scheduled.** LEAD_STAGE_TS only stamps the destination stage's column, so without this a lead with a booked appointment reads forever as "never contacted" and would top an urgency list. Speed-to-lead and prompt 49's overdue math both read it.
+- **estimateSentLeadEffects (index.html:25789) tests `stage === 'new' || 'contacted'`.** Miss the new stage there and sending a real estimate silently fails to advance the lead, breaking the estimate follow-up drip handoff and conversion metrics.
+- **estimate_sent stays reserved for a real document going out.** Nothing in the booking path may stamp estimate_sent_at; that reservation is why the stage did not exist in the first place.
+- Three more stage lists that go stale silently if missed: the appointment form's lead picker (index.html:22583), the blast wizard's default audience set (23641) and LEAD_STAGE_OPTS (23646).
+- **Prompt 49 (leads follow-up queue) is still written and unrun, and assumes six stages.** Prompt 59 tells Claude Code to append a note at the top of that file: it needs a `followup_overdue_days_estimate_scheduled` setting and a fallbackPriority weight for the new stage.
+- Do NOT apply 2026-08-01_routemize_contact_id.sql (prompt 56's open Cowork handoff, out of scope).
+
+Also specified: the Estimate Scheduled column sorts soonest-visit-first from one new pec_appointments query in loadLeadsData (with an explicit res.error check, per the supabase-js silent-empty gotcha), cards in it carry an appointment date chip, refreshTitle gains a generic `data-pec-title` attribute rather than a string special-case so the page header reads "Sales Pipeline" while the rail item stays short, one What's New entry covers both user-visible changes, Part A deliberately gets none (rule-11 exception, justified in the prompt), and rule 12 is explicitly skipped with a reason (the only tunable is prompt 49's per-stage threshold).
+
+Why: Dylan pasted three items, an estimate-scheduled column in the sales pipeline, the Leads to Sales Pipeline rename, and the refused-to-connect failure he hit during a Cowork smoke test.
+Files touched: claude-code-prompt-59-pipeline-stage-rename-frame.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 59 in Claude Code. Part A (the X-Frame-Options fix) is a standalone commit and should be deployed first; the estimator modal is broken on the live site until it is.
+Handoff to Dylan: commit the two files (Cowork's git commit fails from the cloud sandbox).
+
+---
+
 ## [2026-07-29 MST] Prompt 58 shipped: touch-up count, Sunday calendars, change orders surfaced, derived schedule price, custom-mode work order questions, Enhancify financing
 By: Claude Code
 
