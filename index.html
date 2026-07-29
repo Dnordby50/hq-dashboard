@@ -21422,8 +21422,8 @@ function parseISO(s) {
   return new Date(y, m - 1, d);
 }
 function startOfWeek(d) {
-  // Monday start
-  const day = (d.getDay() + 6) % 7;
+  // Sunday start (American convention, prompt 58)
+  const day = d.getDay();
   const out = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   out.setDate(out.getDate() - day);
   return out;
@@ -27546,7 +27546,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
 
   host.innerHTML = `
     <div class="pec-cal-month">
-      <div class="pec-cal-month-head">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}<div class="day-h pec-cal-revhead">Revenue</div></div>
+      <div class="pec-cal-month-head">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="day-h">${d}</div>`).join('')}<div class="day-h pec-cal-revhead">Revenue</div></div>
       ${weeks.map((w, wi) => `
         <div class="pec-cal-week-block">
           <div class="pec-cal-week-row">
@@ -28146,7 +28146,7 @@ function openScheduleModal(jobId) {
         <button type="button" class="pec-btn sm ghost" id="schedPickerNext">›</button>
       </div>
       <div class="pec-day-grid">
-        ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
+        ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="day-h">${d}</div>`).join('')}
         ${days.map(d => {
           const iso = isoDate(d);
           const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
@@ -28847,7 +28847,7 @@ function openAddJobModal() {
         <button type="button" class="pec-btn sm ghost" id="addJobPickerNext">›</button>
       </div>
       <div class="pec-day-grid">
-        ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => `<div class="day-h">${d}</div>`).join('')}
+        ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="day-h">${d}</div>`).join('')}
         ${days.map(d => {
           const iso = isoDate(d);
           const inMonth = d.getMonth() === draft.pickerMonth.getMonth();
