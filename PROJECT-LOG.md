@@ -35,6 +35,24 @@ Next steps: a Claude Code prompt for the pec-appt-intake Routemize adapter (enve
 
 ---
 
+## [2026-07-28 MST] SalesAsk integration Phase 4: MCP get_sales_recordings tool + consolidated handoff
+By: Claude Code
+Changed: The Claude-facing MCP server (netlify/functions/mcp.cjs) gained a sixth read-only tool, get_sales_recordings: lists pec_salesask_recordings newest first with AI summary, action items, process score, duration, recording link, match method, and linked customer/rep/lead/appointment; filters by customer name, rep name, and date window (customer/rep joins are !inner only when their filter is present, so unmatched recordings still list unfiltered). Transcripts are deliberately excluded to keep tool payloads small; Claude can name the recording and Dylan opens it in the app. features.json updated (MCP entry + SalesAsk entry).
+Why: Phase 4 of the SalesAsk plan, Dylan asked for it explicitly. This closes the loop where chat-based Claude can answer "how did yesterday's estimates go" from the actual visit recordings.
+Files touched: netlify/functions/mcp.cjs, features.json, PROJECT-LOG.md (this entry).
+Next steps: Cowork runs the migration + config below; Dylan flips salesask_sync_enabled on after the webhook test lands. SCHEMA.md regeneration happens with the migration (Cowork).
+Handoff to Dylan: None directly (Cowork collects the SalesAsk-side values; see below).
+
+## Handoff to Cowork
+1. Run supabase/migrations/2026-07-31_salesask_integration.sql in the PROD Supabase project (zdfpzmmrgotynrwkeakd), then regenerate SCHEMA.md and run pec-migration-drift manually (?manual=1&notify=0). Verify queries are at the bottom of the migration file.
+2. In SalesAsk (org "Prescott Epoxy Company", admin login): Settings > Organization > Organization API Key, generate the key; set it as Netlify env var SALESASK_API_KEY on the prescottepoxy site.
+3. Generate a random 32+ char secret (e.g. `openssl rand -hex 24`); set as Netlify env var SALESASK_WEBHOOK_SECRET.
+4. In SalesAsk Settings > Organization > Webhooks, register: https://prescottepoxy.netlify.app/api/salesask/webhook?secret=<the secret from step 3>, events recording.processed AND recording.integration_updated. Send a test event; confirm a row lands in pec_webhook_ingest_log (endpoint 'salesask-webhook').
+5. Confirm each active sales rep exists as an active SalesAsk user; record the login emails and enter them in TopCoat Settings > Appointments > SalesAsk recording sync (or verify they match the People emails already shown as placeholders).
+6. After steps 1-5, flip the "Sync appointments and pull recordings" toggle on (Settings > Appointments) and curl https://prescottepoxy.netlify.app/.netlify/functions/pec-salesask-sync once; confirm the JSON reports push/reconcile/complete objects with no failures.
+
+---
+
 ## [2026-07-28 MST] SalesAsk integration Phase 3: Sales coaching card on Metrics
 By: Claude Code
 Changed: renderMetrics gained three data sources (pec_salesask_recordings, pec_appointments, the cachedRef sales roster) and a "Sales coaching (SalesAsk)" card in the Sales rank grid. Per-rep table: recordings, avg process score (followed/total), avg length, coverage (recordings vs completed appointments in the window). Below it, close-rate split: leads with a scored recording, above- vs below-median process score, closed = lead.accepted_at set; renders only at 4+ scored leads, with a small-n honesty caption (same instinct as the $/sqft coverage note). Honors the window presets and the salesperson filter (matched by roster name, since the filter's values are pec_job_ar's free-text names). Degrades pre-migration to an "apply the migration" empty state and pre-data to a "turn on sync" pointer. What's New entry extended to mention the card.

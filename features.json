@@ -1194,13 +1194,15 @@
     {
       "name": "Claude-facing MCP server",
       "area": "integrations",
-      "description": "A Model Context Protocol server exposing read-only tools (sales summary, customers, jobs, schedule, pipeline) so Claude can answer questions about the business directly against live data.",
+      "description": "A Model Context Protocol server exposing read-only tools (sales summary, customers, jobs, schedule, pipeline) so Claude can answer questions about the business directly against live data. Sixth tool get_sales_recordings (2026-07-28): read-only list of SalesAsk sales visit recordings from pec_salesask_recordings (AI summary, action items, process score, recording link; filters customer/rep/date window; transcripts excluded to keep payloads small).",
       "code": {
         "netlifyFunctions": [
           "mcp.cjs"
         ]
       },
-      "tables": [],
+      "tables": [
+        "pec_salesask_recordings"
+      ],
       "spec": "docs/archive/prompts/claude-code-prompt-mcp-v0.2-read-tools.md",
       "since": "2026-06"
     },
@@ -1775,7 +1777,7 @@
     {
       "name": "SalesAsk sales visit recordings",
       "area": "leads",
-      "description": "Integration with SalesAsk (AI recording/coaching for in-home sales). pec-salesask-sync.cjs (cron */15, gated by settings salesask_sync_enabled) pushes upcoming pec_appointments to SalesAsk's scheduled-tasks API with event_id = appointment id so the rep's mobile recording auto-attaches; it also reconciles recent recordings (SalesAsk webhooks have no retries) and completes pending rows (transcript fetch, appointment matching via event_id -> rep+time-window -> name fuzzy, then a 'salesask_recording' lead_events row that is both the lead-timeline surface and pec-lead-ai's context feed). pec-webhook-salesask.cjs (routed /api/salesask/webhook, ?secret= vs SALESASK_WEBHOOK_SECRET, always-200 after auth) ingests recording.processed thin rows immediately. Recordings land in pec_salesask_recordings (staff-read RLS, service-role writes; linked to appointment/lead/customer/sales_member; estimates join relationally via lead_id). Surfaces: lead timeline branch in leadEventHtml, customer profile card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk), read-only recording section in openAppointmentForm (#afSalesAskRow), settings card in renderSettingsAppointments (master toggle + push window + lookback + per-member salesask_email on pec_sales_team_members). Rep email resolution: salesask_email -> people.email -> google_email (loadRepEmailMap in _pec-salesask.cjs). Env: SALESASK_API_KEY, SALESASK_WEBHOOK_SECRET.",
+      "description": "Integration with SalesAsk (AI recording/coaching for in-home sales). pec-salesask-sync.cjs (cron */15, gated by settings salesask_sync_enabled) pushes upcoming pec_appointments to SalesAsk's scheduled-tasks API with event_id = appointment id so the rep's mobile recording auto-attaches; it also reconciles recent recordings (SalesAsk webhooks have no retries) and completes pending rows (transcript fetch, appointment matching via event_id -> rep+time-window -> name fuzzy, then a 'salesask_recording' lead_events row that is both the lead-timeline surface and pec-lead-ai's context feed). pec-webhook-salesask.cjs (routed /api/salesask/webhook, ?secret= vs SALESASK_WEBHOOK_SECRET, always-200 after auth) ingests recording.processed thin rows immediately. Recordings land in pec_salesask_recordings (staff-read RLS, service-role writes; linked to appointment/lead/customer/sales_member; estimates join relationally via lead_id). Surfaces: lead timeline branch in leadEventHtml, customer profile card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk), read-only recording section in openAppointmentForm (#afSalesAskRow), settings card in renderSettingsAppointments (master toggle + push window + lookback + per-member salesask_email on pec_sales_team_members). Rep email resolution: salesask_email -> people.email -> google_email (loadRepEmailMap in _pec-salesask.cjs). Env: SALESASK_API_KEY, SALESASK_WEBHOOK_SECRET. MCP: get_sales_recordings tool in mcp.cjs.",
       "code": {
         "indexHtml": [
           "leadEventHtml",
@@ -1790,7 +1792,8 @@
           "netlify/functions/pec-webhook-salesask.cjs",
           "netlify/functions/pec-salesask-sync.cjs",
           "netlify/functions/pec-lead-ai.cjs",
-          "supabase/migrations/2026-07-31_salesask_integration.sql"
+          "supabase/migrations/2026-07-31_salesask_integration.sql",
+          "netlify/functions/mcp.cjs"
         ]
       },
       "tables": [

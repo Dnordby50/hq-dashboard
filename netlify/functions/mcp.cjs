@@ -157,6 +157,38 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'get_sales_recordings',
+    description: 'List SalesAsk in-home sales visit recordings (Supabase pec_salesask_recordings), newest first. Each row carries the AI summary, action items, process score (followed/total), duration, recording link, processing status, and the linked customer/rep/lead/appointment ids. Filter by customer name, rep name, and/or a date window. Use this to review what happened in recent sales appointments or to check coaching scores; transcripts are large and are NOT returned here.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customer: {
+          type: 'string',
+          description: 'Partial, case-insensitive match on the linked customer name.',
+        },
+        rep: {
+          type: 'string',
+          description: 'Partial, case-insensitive match on the sales rep name.',
+        },
+        from: {
+          type: 'string',
+          description: 'ISO date (YYYY-MM-DD); only recordings on/after this date.',
+        },
+        to: {
+          type: 'string',
+          description: 'ISO date (YYYY-MM-DD); only recordings on/before this date.',
+        },
+        limit: {
+          type: 'integer',
+          description: 'Maximum recordings to return, newest first. Default 20, max 100.',
+          minimum: 1,
+          maximum: 100,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 function parseDate(s) {
@@ -440,12 +472,58 @@ async function tool_list_pipeline(args) {
   return { count: jobs.length, stage: args.stage || 'all', business: args.business || 'all', jobs };
 }
 
+async function tool_get_sales_recordings(args) {
+  const limit = clampLimit(args.limit, 20, 100);
+  // Embedded joins: !inner only when the corresponding filter is present, so
+  // an unfiltered list still includes unmatched recordings (customer_id null).
+  const custJoin = args.customer ? 'customers!inner(name)' : 'customers(name)';
+  const repJoin = args.rep ? 'pec_sales_team_members!inner(name)' : 'pec_sales_team_members(name)';
+  const params = [
+    `select=id,salesask_recording_id,occurred_at,status,title,summary,action_items,` +
+    `process_followed,process_missed,process_total,duration_seconds,recording_url,` +
+    `match_method,lead_id,appointment_id,${custJoin},${repJoin}`,
+  ];
+  if (args.customer) {
+    const pat = ilikePattern(args.customer);
+    if (pat) params.push(`customers.name=ilike.${pat}`);
+  }
+  if (args.rep) {
+    const pat = ilikePattern(args.rep);
+    if (pat) params.push(`pec_sales_team_members.name=ilike.${pat}`);
+  }
+  if (parseDate(args.from)) params.push(`occurred_at=gte.${encodeURIComponent(String(args.from))}`);
+  if (parseDate(args.to)) params.push(`occurred_at=lte.${encodeURIComponent(String(args.to))}T23:59:59Z`);
+  params.push(`limit=${limit}`, 'order=occurred_at.desc.nullslast');
+
+  const data = await sbSelect('pec_salesask_recordings', params.join('&'));
+  const recordings = data.map(r => ({
+    id: r.id,
+    salesask_recording_id: r.salesask_recording_id,
+    occurred_at: r.occurred_at || null,
+    status: r.status || null,
+    title: r.title || null,
+    customer: r.customers ? r.customers.name : null,
+    rep: r.pec_sales_team_members ? r.pec_sales_team_members.name : null,
+    duration_seconds: r.duration_seconds != null ? Number(r.duration_seconds) : null,
+    process_score: (r.process_followed != null && r.process_total != null)
+      ? `${r.process_followed}/${r.process_total}` : null,
+    summary: r.summary || null,
+    action_items: r.action_items || null,
+    recording_url: r.recording_url || null,
+    match_method: r.match_method || null,
+    lead_id: r.lead_id || null,
+    appointment_id: r.appointment_id || null,
+  }));
+  return { count: recordings.length, recordings };
+}
+
 const HANDLERS = {
   get_schedule: tool_get_schedule,
   get_sales_summary: tool_get_sales_summary,
   find_customers: tool_find_customers,
   find_jobs: tool_find_jobs,
   list_pipeline: tool_list_pipeline,
+  get_sales_recordings: tool_get_sales_recordings,
 };
 
 function rpcResult(id, result) {
