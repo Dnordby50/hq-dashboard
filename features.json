@@ -667,20 +667,27 @@
     {
       "name": "Material ordering",
       "area": "dashboard",
-      "description": "An Ordering view that computes what to buy for scheduled jobs directly from each job card's system and color picks, organized by material (bulk by product plus a by-customer putaway list) with per-line and per-supplier cost. It gates ordering behind a colors-confirmed check so unspecified jobs are not ordered prematurely.",
+      "description": "A job-first Ordering view: a Jobs-to-order list of open jobs with schedule dates, crew, system, colors-confirmed and material-status chips, where you hand-pick the jobs to order for; the Order sheet aggregates the selected jobs by supplier with per-line editable order quantities that persist as manual overrides (order_qty_manual, kept through Recalculate until reset), ordered check-offs, hand-added lines (manual_added), and a print mode. Recalculate merges instead of clobbering (mergeRecalcLines). A by-customer putaway list and the date-range Pull Material modal remain. Ordering is gated behind a colors-confirmed check, surfaced as a disabled checkbox instead of a silent skip.",
       "code": {
         "indexHtml": [
-          "renderMaterialPull",
-          "computeMaterialPlan",
+          "renderJobs",
           "aggregateMaterialPull",
+          "resolveJobLines",
+          "mergeRecalcLines",
+          "handleOrderQtyEdit",
+          "handleOrderQtyReset",
+          "openProdAddLineModal",
+          "handleOrderLineToggle",
           "openMaterialPull",
-          "openAddMaterialModal",
-          "handleOrderLineToggle"
+          "renderMaterialPull",
+          "computeMaterialPlan"
         ]
       },
       "tables": [
         "pec_prod_material_lines",
-        "pec_prod_products"
+        "pec_prod_products",
+        "pec_prod_job_schedule_days",
+        "pec_prod_crews"
       ],
       "since": "2026-05"
     },
@@ -1709,7 +1716,7 @@
     {
       "name": "Estimator stuck-sync visibility",
       "area": "estimator",
-      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online · N to sync, or a RED 'N saves not syncing · oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
+      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online \u00b7 N to sync, or a RED 'N saves not syncing \u00b7 oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
       "code": {
         "indexHtml": [
           "renderSettingsEstimates",

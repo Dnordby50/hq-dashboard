@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Ordering reworked: pick jobs from a schedule-style list, order sheet with persistent qty overrides
+By: Claude Code
+
+Changed: The Ordering page (Module 3, bootProd in index.html) is now job-first, replacing date-window scoping as the selection mechanism. Dylan confirmed all four pain points with the old flow (window instead of job picking, no qty editing where he orders, confusing layout, no schedule context) and approved the plan before implementation.
+
+HOW THE NEW FLOW WORKS, the parts worth remembering:
+
+- **Jobs to order list**: one row per open pec_prod_jobs row, sorted by earliest scheduled day (pec_prod_job_schedule_days, fallback install_date), with schedule dates (first-last + day count), crew (first scheduled day's crew_id -> pec_prod_crews name, fallback job.crew text), system + sqft, a colors chip, and a material-status chip from resolveJobLines ("saved / X of Y ordered", "calculated, not saved", or the skip reason). Checkboxes drive everything; state.orderSelected is IN-MEMORY ONLY by design because the durable output is the saved/overridden lines themselves.
+- **The date scope became a pure list filter.** The old Material scope selector (All/7/14/30/custom) still renders but only hides rows; it no longer feeds aggregation. Selection survives filter changes and the header shows "N hidden by the filter, still in the order" so a checked job can never silently vanish from the sheet. The null/null "all open" sentinel in jobInScope is untouched; the Order sheet simply aggregates state.jobs filtered to the selected ids with null/null bounds.
+- **Order sheet**: aggregateMaterialPull output grouped by supplier (same grouping as the Pull modal), with a per-job breakdown per product where each SAVED line has an editable order-qty input. Editing writes order_qty + order_qty_manual=true (handleOrderQtyEdit); the pencil marker + "reset" button (handleOrderQtyReset) return to qty_needed and clear the flag. The colors gate is SURFACED (disabled checkbox + amber chip on a bridged job with colors_confirmed=false and no saved lines) instead of silently excluding; saved lines still win over the gate, same as resolveJobLines always did.
+- **Recalculate no longer clobbers.** mergeRecalcLines replaces the delete-all + reinsert in recalcActiveJob: plan lines match existing rows on the same product|cure key the pull aggregates on, consumed one-to-one in order_index order (duplicate same-SKU lines insert instead of double-updating). Refreshed: qty_needed, spread/kit, costs, order_index, color. Preserved: order_qty when order_qty_manual, ordered/delivered, backstock, use_backstock, notes, a hand-set supplier, and a hand-entered custom-blend unit cost. manual_added rows are invisible to the merge. A stale calculated row already ordered/delivered keeps its row with qty_needed=0 (procurement history) instead of deletion.
+- **Add/remove lines**: openProdAddLineModal is the bootProd twin of the CRM openAddMaterialModal (hand-rolled into #prodModalRoot, NOT the CRM openModal helpers - two-modal-roots gotcha), inserting with manual_added=true, order_qty_manual=true, and the order_index >= 9000 sentinel so the CRM Job Costing view keeps recognizing hand-added lines. It deliberately does NOT set actual_used_qty (ordering is not usage; the CRM costing add sets it because that flow records used material). Remove (x) only appears on manual_added rows.
+- **Print**: openMaterialPull gained a { jobIds } selection mode - no date toolbar, aggregates exactly the selected jobs; the date-range mode is byte-for-byte the old behavior. Putaway (buildCustomerPull) and the All Jobs table are unchanged.
+- **Migration applied via Supabase MCP** (departure from the recent Cowork-applies pattern, per the approved plan): supabase/migrations/2026-08-02_material_order_overrides.sql adds order_qty_manual + manual_added (boolean not null default false) to pec_prod_material_lines and backfills manual_added from the >= 9000 sentinel (12 rows of 142). SCHEMA.md regenerated in the same commit. get_advisors: no findings for this table.
+- **Known caveat, also in What's New**: pre-existing hand-edited quantities carry order_qty_manual=false, so the FIRST recalculate after this ships refreshes them exactly as the old code would have. Edited once more, they stick.
+- Settings surface (rule 12): none needed - workflow rework with no timers, thresholds, or toggles. The only candidate (default list filter) is a UI default; add an ordering.default_filter_days settings key only if Dylan asks.
+
+Why: Dylan: "for ordering - I want to view the job schedule and select jobs I want to order material for. Option to be able to manually adjust materials needed as a manual override" plus "whats currently there is not really working for me."
+Files touched: index.html, supabase/migrations/2026-08-02_material_order_overrides.sql (new, applied), SCHEMA.md, features.json (Material ordering entry), help/whats-new.json, PROJECT-LOG.md (this entry).
+Tests: npm test green (330 assertions across the five suites); calculator/CALC_VERSION untouched.
+Next steps: Dylan verifies the flow on the live app after Netlify deploys (select two jobs, edit a qty, reload, recalculate; see What's New).
+Handoff to Cowork: None (migration already applied and verified from this session).
+Handoff to Dylan: Hard-reload the dashboard after deploy. Note the caveat above about previously hand-edited quantities.
+
+---
+
 ## [2026-07-29 MST] Prompt 56 shipped: pec-appt-intake speaks Routemize's native webhook; unmatched bookers become leads
 By: Claude Code
 

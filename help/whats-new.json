@@ -1,5 +1,16 @@
 [
   {
+    "id": "ordering-pick-jobs-order-sheet",
+    "date": "2026-07-29",
+    "title": "Ordering reworked: pick the jobs, then order exactly what they need",
+    "summary": "The Ordering page now starts with a Jobs to order list showing each open job's scheduled dates, crew, system, and whether colors are confirmed. Check the jobs you want to buy for and the Order sheet below builds the shopping list from just those jobs, grouped by supplier with costs. You can edit any quantity right on the sheet and your number sticks, even through a recalculate, until you reset it. You can also add extra materials to a job or remove ones you added by hand. One note: quantities you hand-edited before this update will refresh to the calculated amount the next time that job is recalculated; edit them once more and they will stick from then on.",
+    "howto": [
+      "Open Ordering and check the boxes next to the jobs you want to order material for.",
+      "In the Order sheet, type over any quantity to override it. The pencil mark shows it is yours; reset brings back the calculated number.",
+      "Use + Add line on a selected job for extra material, and Print order for a supplier-ready sheet."
+    ]
+  },
+  {
     "id": "routemize-booking-intake",
     "date": "2026-07-29",
     "title": "Routemize bookings now land on the TopCoat calendar",
