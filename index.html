@@ -25848,7 +25848,9 @@ async function renderNextDay() {
   // dayRows, so they contribute nothing here.
   const totalDaysByJob = scheduleTotalDaysByJob();
   const revSliceFor = (jobId) => {
-    const rev = Number((jobById[jobId] || {}).revenue) || 0;
+    // Prompt 58 Part D: derived price (estimate when CRM-resolved, else the
+    // stored revenue) through the ONE shared resolver, matching the calendar.
+    const rev = prodJobDisplayRevenue(jobById[jobId] || jobId).revenue;
     return rev > 0 ? rev / (totalDaysByJob[jobId] || 1) : 0;
   };
   const dayRevenue = Object.keys(rowsByJobToday).reduce((s, jobId) => {
@@ -27024,7 +27026,7 @@ async function renderSchedule() {
                 <span style="display:inline-block;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:color-mix(in srgb, #f59e0b 16%, transparent);color:#b45309;border:1px solid color-mix(in srgb, #f59e0b 45%, transparent);border-radius:999px;padding:2px 8px">Reschedule · ${owed} day${owed === 1 ? '' : 's'}</span>
                 ${j.rescheduled_from ? `<div style="font-size:.68rem;color:var(--muted);margin-top:3px">was scheduled for ${esc(fmtDate(j.rescheduled_from))}</div>` : ''}
               </div>` : ''}
-              <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${j.revenue ? ' · ' + fmtMoney(j.revenue) : ''}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
+              <div class="meta">${esc(j.address || 'No address')}<br>Proposal #${esc(j.proposal_number)}${(() => { const ri = prodJobDisplayRevenue(j); return ri.revenue ? ' · ' + fmtMoney(ri.revenue) : ''; })()}${sumSqft(j) ? ' · ' + sumSqft(j).toLocaleString() + ' sqft' : ''}</div>
               <div style="font-size:.7rem;margin-bottom:8px">${sys ? `<span class="pec-color-dot" style="background:${esc(sys.color || '#888')}"></span>${esc(sys.name)}` : '<span style="color:var(--muted)">No system yet</span>'}${estHrs ? ` · ${esc(estHrs)} hrs est` : ''}</div>
               <button class="pec-btn primary sm" data-schedule-job="${esc(j.id)}" style="width:100%">+ Schedule</button>
             </div>`;
@@ -27259,7 +27261,11 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     const job = state.prodJobs.find(j => j.id === jobId); if (!job) return null;
     const sys = areaSystem(job);
     const crew = job.crew_id && crewById[job.crew_id] ? crewById[job.crew_id].name : '';
-    const revNum = Number(job.revenue || 0);
+    // Prompt 58 Part D: the displayed price derives from the estimate when
+    // the job resolves to a CRM card (prodJobDisplayRevenue, the ONE shared
+    // resolver). The stored pec_prod_jobs.revenue is untouched.
+    const revInfo = prodJobDisplayRevenue(job);
+    const revNum = revInfo.revenue;
     // Per-DAY revenue is the proration unit: a bar/card showing N of this job's
     // days prints revNum * (N / totalScheduledDays). A 1-day job shows full
     // revenue; a multi-week job's dollars split across the weeks it touches, so
@@ -27282,6 +27288,9 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       evSqft ? evSqft.toLocaleString() + ' sqft' : '',
       crew ? crew + ' crew' : '',
       job.proposal_number ? '#' + job.proposal_number : '',
+      // Price provenance rides the tooltip (never silent, prompt 58 Part D):
+      // when the estimate and the booked number disagree, the hover says so.
+      prodJobRevenueNote(revInfo),
     ].filter(Boolean).join(' · ');
     // Prompt 57 Part F: the bar FILL is the CREW color (Dylan reads the
     // calendar for who is where); the system type rides as a thin top banner
@@ -27338,7 +27347,9 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       // No-revenue callbacks stay excluded (the $0 warranty default); a
       // billable callback carries revenue and prorates like any job (Part D).
       if (job.is_callback && !(Number(job.revenue) > 0)) { excluded.push({ job, daysInWeek, totalDays, reason: 'touch-up callback (no charge)' }); continue; }
-      const rev = Number(job.revenue || 0);
+      // Prompt 58 Part D: same derived price as the bars, so the week total
+      // always equals the sum of the bars it explains.
+      const rev = prodJobDisplayRevenue(job).revenue;
       const slice = rev * (daysInWeek / totalDays);
       total += slice;
       rows.push({ job, rev, daysInWeek, totalDays, slice });
@@ -28056,7 +28067,15 @@ function openJobQuickLook(jobId) {
     </div>
     <div style="margin:12px 0 2px">
       ${row('Proposal', job.proposal_number ? esc(job.proposal_number) : dash)}
-      ${row('Revenue', job.revenue != null ? fmtMoney(job.revenue) : dash)}
+      ${(() => {
+        // Prompt 58 Part D: derived price, with its provenance on hover.
+        const ri = prodJobDisplayRevenue(job);
+        const note = prodJobRevenueNote(ri);
+        const has = ri.source === 'crm' || job.revenue != null;
+        return row('Revenue', has
+          ? fmtMoney(ri.revenue) + (note ? ` <span style="color:var(--muted);font-size:.72rem;cursor:help" title="${esc(note)}">${ri.source === 'crm' ? '· from estimate' : '· check estimate'}</span>` : '')
+          : dash);
+      })()}
       ${row('System', systemHtml)}
       ${crewNames.length ? row('Crew', esc(crewNames.join(', '))) : ''}
       ${datesHtml ? row('Scheduled', datesHtml) : ''}
@@ -28111,6 +28130,13 @@ function openScheduleModal(jobId) {
   // stays editable only for prod rows with no CRM card (manual "+ Add Job"),
   // so a manual row can still record who sold it.
   const crmSalesperson = (state.crmSalespersonByProdJob || {})[jobId] || null;
+  // Revenue lock (prompt 58 Part D, same reasoning as the salesperson lock
+  // above): when the job resolves to a CRM card, the price derives from the
+  // estimate and the field shows read-only — a freely editable copy of a
+  // derived number is exactly the drift being killed. Manual jobs (no CRM
+  // card) keep the editable field: for them the stored value IS the truth.
+  const crmRev = prodJobDisplayRevenue(job);
+  const revLocked = !job.is_callback && crmRev.source === 'crm';
   const existingDays = state.scheduleDays.filter(d => d.job_id === jobId).sort((a,b) => a.day_index - b.day_index);
 
   // The picker opens on the CURRENT month, not the job's first scheduled day.
@@ -28140,7 +28166,10 @@ function openScheduleModal(jobId) {
     // else the touch-up default for callbacks. Rounded for DISPLAY only.
     estimated_hours: fmtFactsHours(facts.budgetedHours),
     sales_team: job.sales_team || '',
-    revenue: job.revenue ?? '',
+    // CRM-derived jobs prefill (and save) the ESTIMATE price; the save still
+    // writes pec_prod_jobs.revenue on the existing path, which is what keeps
+    // the scheduled_needs_revenue constraint satisfied.
+    revenue: revLocked ? String(crmRev.revenue) : (job.revenue ?? ''),
     // Billable touch-up override (prompt 51 Part D): billable and revenue are
     // set TOGETHER, never one without the other.
     billable: !!(job.is_callback && job.touchup_billable && Number(job.revenue) > 0),
@@ -28343,7 +28372,12 @@ function openScheduleModal(jobId) {
         <div class="pec-field"><label>Charge ($)</label><input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.billable ? draft.revenue : '')}" placeholder="required when billable" ${draft.billable ? '' : 'disabled'}></div>
       </div>` : `
       <div class="pec-row-2">
-        <div class="pec-field"><label>Revenue ($)</label><input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.revenue)}" placeholder="required to schedule"></div>
+        <div class="pec-field"><label>Revenue ($)</label>${revLocked
+          ? `<input id="schedRevenue" type="number" value="${esc(draft.revenue)}" readonly disabled title="From the estimate. It changes when the estimate does; edit it on the job page.">
+             <div style="font-size:.68rem;color:var(--muted);margin-top:4px">From the estimate. It changes when the estimate does; adjust it on the job page (Open job page above).</div>
+             ${crmRev.delta ? `<div style="font-size:.68rem;color:#b45309">Originally booked at ${esc(fmtMoney(crmRev.stored))} (${crmRev.delta > 0 ? '+' : ''}${esc(fmtMoney(crmRev.delta))} since).</div>` : ''}`
+          : `<input id="schedRevenue" type="number" min="0" step="0.01" value="${esc(draft.revenue)}" placeholder="required to schedule">
+             ${crmRev.crmZero ? `<div style="font-size:.68rem;color:#b45309;margin-top:4px">This job's estimate totals $0, so the stored amount shows. Check the estimate lines on the job page.</div>` : ''}`}</div>
         <div class="pec-field"><div style="font-size:.7rem;color:var(--muted);margin-top:20px">Scheduled jobs must carry revenue (price integrity constraint). The value saves to the job.</div></div>
       </div>`}
       <details class="pec-card" id="schedCcSection" style="padding:14px;margin:0 0 12px">
@@ -29622,7 +29656,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, products: [], flakeColors: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, crmPriceByProd: {}, products: [], flakeColors: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -29679,6 +29713,9 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     if (ident) {
       resolvedByProd[job.id] = ident; neededCrmIds.add(ident.id);
       out.crmIdByProd[job.id] = ident.id;
+      // CRM jobs.price per prod job (prompt 58 Part D): the schedule-surface
+      // display revenue derives from this, the same number Job Costing reads.
+      out.crmPriceByProd[job.id] = ident.price;
       if (ident.status) out.crmStatusByProd[job.id] = ident.status;
       if (ident.sqft != null) out.crmSqftByProd[job.id] = ident.sqft;
       // The CRM job's salesperson (prompt 55 Part B): jobs.salesperson is the
@@ -29748,6 +29785,7 @@ async function loadScheduleEstimates() {
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
     state.crmPhoneByProdJob = facts.crmPhoneByProd;
     state.crmIdByProdJob = facts.crmIdByProd;
+    state.crmPriceByProdJob = facts.crmPriceByProd;
     state.flakeColors = facts.flakeColors;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
@@ -29798,6 +29836,49 @@ function prodJobEstimateFacts(jobOrId) {
   };
 }
 window.prodJobEstimateFacts = prodJobEstimateFacts;
+
+// Schedule-surface price (prompt 58 Part D). CRM jobs.price is re-derived
+// from the estimate lines + change orders on every save; pec_prod_jobs.revenue
+// is stamped once by the proposal-accepted webhook and then only hand-edited,
+// and nothing syncs them. Schedule DISPLAYS derive from the CRM price; the
+// stored revenue is never rewritten (locked decision 2), and the writes that
+// keep pec_prod_jobs_scheduled_needs_revenue satisfied stay exactly where
+// they are. Returns the source ('crm' | 'stored') the same way
+// jobEffectiveSqft returns sqftSource, plus stored and delta so surfaces can
+// show the drift instead of hiding it.
+//
+// Stored wins in three deliberate cases:
+// - Callbacks: they resolve by name+address to the ORIGINAL job's CRM card,
+//   so the derived number would be the whole original install, not the
+//   touch-up charge.
+// - Frozen jobs (costing finalized or completed): nothing historical
+//   restates (locked decision 4).
+// - A resolved CRM job whose price is $0 while the stored revenue is not
+//   (a job card that never got estimate lines): a $0 calendar bar for a
+//   booked job is noise, not truth. crmZero flags it so callers can say so.
+function prodJobDisplayRevenue(jobOrId) {
+  const job = (jobOrId && typeof jobOrId === 'object') ? jobOrId : ((state.prodJobs || []).find(j => j.id === jobOrId) || null);
+  const stored = (job && job.revenue != null) ? (Number(job.revenue) || 0) : 0;
+  const out = { revenue: stored, source: 'stored', stored, delta: 0, crmZero: false };
+  if (!job || job.is_callback) return out;
+  if (costingIsFinalized(job) || costingIsCompleted(job)) return out;
+  const crmPrice = (state.crmPriceByProdJob || {})[job.id];
+  if (crmPrice == null) return out;
+  const price = Number(crmPrice) || 0;
+  if (!(price > 0)) { out.crmZero = stored > 0; return out; }
+  out.revenue = price;
+  out.source = 'crm';
+  out.delta = invRound2(price - stored);
+  return out;
+}
+// One-line drift note for tooltips/titles; empty when there is nothing to say.
+function prodJobRevenueNote(revInfo) {
+  if (revInfo.crmZero) return 'Estimate total is $0; showing the booked amount. Check the job page.';
+  if (revInfo.source === 'crm' && revInfo.delta) return `Price from the estimate (booked at ${fmtMoney(revInfo.stored)}).`;
+  if (revInfo.source === 'crm') return 'Price from the estimate.';
+  return '';
+}
+
 // Display rounding ONLY (one decimal). The stored and costing values are
 // never rounded.
 function fmtFactsHours(h) { return h == null ? '' : String(Math.round(Number(h) * 10) / 10); }
