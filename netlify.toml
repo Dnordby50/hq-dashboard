@@ -85,6 +85,16 @@
 [functions."pec-google-calendar-pull"]
   schedule = "*/15 * * * *"
 
+# SalesAsk sync: push upcoming appointments to SalesAsk as scheduled tasks
+# (event_id = our appointment id, so the rep's recording auto-attaches),
+# reconcile recent recordings (SalesAsk webhooks have NO retries, this sweep
+# is the delivery guarantee), and complete pending rows (transcript fetch +
+# appointment matching + the salesask_recording lead_events row). Every 15
+# minutes; gated by the salesask_sync_enabled setting (seeded 'false') and
+# a no-op without SALESASK_API_KEY, so the schedule is harmless before setup.
+[functions."pec-salesask-sync"]
+  schedule = "*/15 * * * *"
+
 # Old auto-subdomain -> current one. The site was renamed from hq-prescott to
 # prescottepoxy; this 301s any request still hitting the old netlify.app host to
 # the current one (path + query preserved via :splat), so a browser Back button
@@ -258,6 +268,16 @@
 [[redirects]]
   from = "/api/quo/webhook"
   to = "/.netlify/functions/pec-webhook-quo"
+  status = 200
+  force = true
+
+# SalesAsk recording webhook. SalesAsk POSTs here when a recording's AI
+# analysis finishes. SalesAsk offers no payload signing, so the URL registered
+# in their Settings > Webhooks carries ?secret=<SALESASK_WEBHOOK_SECRET> and
+# the function compares it constant-time.
+[[redirects]]
+  from = "/api/salesask/webhook"
+  to = "/.netlify/functions/pec-webhook-salesask"
   status = 200
   force = true
 

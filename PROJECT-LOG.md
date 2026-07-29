@@ -4,6 +4,17 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-28 MST] SalesAsk integration Phase 1: appointment push + recording ingest (data loop)
+By: Claude Code
+Changed: New SalesAsk integration data loop. Migration 2026-07-31_salesask_integration.sql creates pec_salesask_recordings (recording + AI summary/notes/action items/coaching/process score/transcript, staff-read RLS, service-role-only writes, same trust model as pec_call_log), adds push bookkeeping columns to pec_appointments (salesask_synced_at, salesask_sync_hash), adds pec_sales_team_members.salesask_email, and seeds three settings knobs (salesask_sync_enabled 'false', salesask_push_window_days '14', salesask_pull_lookback_days '3'). Three new Netlify functions: _pec-salesask.cjs (shared helpers), pec-webhook-salesask.cjs (routed /api/salesask/webhook), pec-salesask-sync.cjs (cron */15). netlify.toml gained the redirect and the schedule.
+Why: Dylan is rolling out SalesAsk (AI recording/coaching for in-home sales, org "Prescott Epoxy Company") and wants recordings tied to TopCoat appointments, leads, customers, and estimates. HOW IT WORKS: the cron pushes upcoming pec_appointments to SalesAsk's scheduled-tasks API with event_id = our appointment id, so the rep's mobile recording auto-attaches to the right appointment; SalesAsk's recording.processed webhook (no retries, no signing, hence the ?secret= URL param and the cron's reconcile sweep as delivery guarantee) upserts the row; the cron then fetches the full document + transcript, matches unmatched recordings (event_id, then rep + time window, then name fuzzy), and inserts a 'salesask_recording' lead_events row. That one lead_events row is deliberately double-duty: it IS the lead-timeline surface AND it feeds pec-lead-ai's context gather (which reads lead_events payloads), so the lead AI sees what was actually said in the appointment with zero changes to its query. Estimate linkage is relational (recording -> appointment -> lead_id -> estimates.lead_id), no new column. A push cron instead of inline kicks because appointments are born in three places (dashboard modal, Routemize intake, Google pull) and only a server-side sweep covers all three.
+Files touched: supabase/migrations/2026-07-31_salesask_integration.sql (new), netlify/functions/_pec-salesask.cjs (new), netlify/functions/pec-webhook-salesask.cjs (new), netlify/functions/pec-salesask-sync.cjs (new), netlify.toml, PROJECT-LOG.md (this entry).
+Next steps: Phase 2 (lead timeline / customer profile / appointment detail surfacing + Settings card), Phase 3 (Metrics Sales coaching card), Phase 4 (MCP get_sales_recordings tool). Everything is inert until the env vars land and salesask_sync_enabled is flipped on.
+Handoff to Cowork: Run the migration in prod Supabase and regenerate SCHEMA.md (full prompt will ship with the final phase so it is one handoff, not four).
+Handoff to Dylan: None yet (env vars + SalesAsk webhook registration come with the consolidated handoff).
+
+---
+
 ## [2026-07-29 MST] Cowork: wrote claude-code-prompt-58 (change orders on the job card, Enhancify, Sunday calendars, schedule price, touch-up count, work order questions)
 By: Cowork
 
