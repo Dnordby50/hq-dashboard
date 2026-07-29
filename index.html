@@ -20992,6 +20992,9 @@ function openSalesTeamModal(salesId) {
 function openCrewModal(crewId) {
   const existing = crewId ? state.crews.find(c => c.id === crewId) : null;
   const c = existing || { name: '', active: true, notes: '' };
+  // Crew color presets (prompt 57 Part F): distinct at bar size, none of them
+  // the callback sky blue (#0ea5e9), which stays reserved for touch-ups.
+  const CREW_PRESETS = ['#8b5cf6', '#f59e0b', '#10b981', '#ec4899', '#ef4444', '#6366f1', '#14b8a6', '#a16207'];
   openModal(`
     <h3>${existing ? 'Edit' : 'New'} crew</h3>
     <div class="pec-field"><label>Name</label><input id="crewName" value="${esc(c.name)}" placeholder="e.g. Crew A"></div>
@@ -21000,6 +21003,13 @@ function openCrewModal(crewId) {
         <select id="crewActive"><option value="true" ${c.active?'selected':''}>Yes</option><option value="false" ${!c.active?'selected':''}>No</option></select>
       </div>
       <div class="pec-field"><label>Notes</label><input id="crewNotes" value="${esc(c.notes || '')}"></div>
+    </div>
+    <div class="pec-field"><label>Color</label>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input type="color" id="crewColor" value="${esc(c.color || CREW_PRESETS[0])}" style="width:44px;height:30px;padding:2px;border:1px solid var(--border);border-radius:6px;background:transparent;cursor:pointer">
+        ${CREW_PRESETS.map(hx => `<button type="button" data-crew-preset="${hx}" title="${hx}" aria-label="Use ${hx}" style="width:22px;height:22px;border-radius:50%;border:1px solid rgba(0,0,0,.25);background:${hx};cursor:pointer"></button>`).join('')}
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Fills this crew's bars on the Job Schedule, the Next Day board, and the printed run sheet. Leave it untouched to keep coloring by system type.</div>
     </div>
     <div class="pec-modal-actions">
       ${existing ? '<button class="pec-btn danger" id="crewDelete">Delete</button>' : ''}
@@ -21010,6 +21020,14 @@ function openCrewModal(crewId) {
     <div class="prod-msg-err" id="crewError"></div>
   `, {
     onMount(modal) {
+      // Color is only written when the user actually touched the picker (or
+      // the crew already carries one): auto-stamping the default on every save
+      // would silently kill the no-color -> system-color fallback.
+      let colorTouched = !!c.color;
+      modal.querySelector('#crewColor').addEventListener('input', () => { colorTouched = true; });
+      modal.querySelectorAll('[data-crew-preset]').forEach(b => b.addEventListener('click', () => {
+        modal.querySelector('#crewColor').value = b.dataset.crewPreset; colorTouched = true;
+      }));
       modal.querySelector('#crewSave').addEventListener('click', async () => {
         const errEl = modal.querySelector('#crewError'); errEl.textContent = '';
         const payload = {
@@ -21017,12 +21035,20 @@ function openCrewModal(crewId) {
           active: modal.querySelector('#crewActive').value === 'true',
           notes: modal.querySelector('#crewNotes').value || null,
         };
+        if (colorTouched) payload.color = modal.querySelector('#crewColor').value || null;
         if (!payload.name) return errEl.textContent = 'Name is required.';
         try {
-          const op = existing
-            ? supabase.from('pec_prod_crews').update(payload).eq('id', existing.id)
-            : supabase.from('pec_prod_crews').insert(payload);
-          const { error } = await op;
+          const doSave = (p) => existing
+            ? supabase.from('pec_prod_crews').update(p).eq('id', existing.id)
+            : supabase.from('pec_prod_crews').insert(p);
+          let { error } = await doSave(payload);
+          // Pre-migration grace: if the color column is not live yet, save the
+          // rest instead of stranding the whole edit.
+          if (error && payload.color !== undefined && /color/.test(error.message || '')) {
+            const { color, ...rest } = payload;
+            ({ error } = await doSave(rest));
+            if (!error) showToast('Saved, but crew colors need the 2026-07-29_crew_colors.sql migration first.', { ttl: 6000 });
+          }
           if (error) return errEl.textContent = error.message;
         } catch (err) {
           errEl.textContent = 'Save failed: ' + err.message;
@@ -25375,6 +25401,18 @@ async function renderNextDay() {
     return (!j || (j.is_callback && !(Number(j.revenue) > 0))) ? s : s + revSliceFor(jobId);
   }, 0);
 
+  // Crew-color edges (prompt 57 Part F): the card's left edge is the CREW
+  // color with the system type as a thin top band, matching the calendar bars.
+  // No crew color -> system color edge, no band. Callbacks keep sky blue.
+  const ndSysById = Object.fromEntries((state.systemTypes || []).map(s => [s.id, s]));
+  const ndCrewById = Object.fromEntries((state.crews || []).map(c => [c.id, c]));
+  const cardEdgeStyle = (jobId, crewId, isCallback) => {
+    const sid = prodJobEstimateFacts(jobById[jobId] || jobId).systemTypeId;
+    const sysColor = (sid && ndSysById[sid] && ndSysById[sid].color) || '#6366f1';
+    if (isCallback) return 'border-left:4px solid #0ea5e9;';
+    const crewColor = (crewId && ndCrewById[crewId] && ndCrewById[crewId].color) || null;
+    return `border-left:4px solid ${crewColor || sysColor};${crewColor ? `border-top:4px solid ${sysColor};` : ''}`;
+  };
   const cardHtml = (d) => {
     const j = jobById[d.job_id] || {};
     // Split controls. "Split to 2nd crew" shows only when this card HAS a crew
@@ -25396,7 +25434,7 @@ async function renderNextDay() {
     const splitBtn = canSplit ? `<button type="button" data-split-day="${esc(d.id)}" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">Split to 2nd crew</button>` : '';
     const removeBtn = (shared && isSecondRow(d)) ? `<button type="button" data-unsplit-day="${esc(d.id)}" title="Remove this second team; the other team's card stays" style="font-size:.65rem;padding:2px 8px;border:1px solid var(--rd-line,#e6e8ec);background:transparent;color:var(--rd-muted,#6b7280);border-radius:6px;cursor:pointer;margin-top:6px">✕ Remove 2nd team</button>` : '';
     return `<div class="nextday-card" draggable="true" data-day-id="${esc(d.id)}" data-card-job="${esc(d.job_id)}"
-        style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
+        style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);${cardEdgeStyle(d.job_id, d.crew_id, !!j.is_callback)}color:var(--rd-ink,#0f1420);border-radius:8px;padding:8px;margin-bottom:6px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
       <strong class="nextday-jobname" data-open-pcard="${esc(d.job_id)}" role="button" tabindex="0" style="font-size:.85rem">${esc(j.customer_name || '(no name)')}</strong>${badge}${tuBadge}
       <div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">${esc(j.address || 'No address')}</div>
       ${tuDesc}
@@ -25458,7 +25496,7 @@ async function renderNextDay() {
       // new install on the printed sheet. Revenue prints $0 unless billable.
       const touchup = j.is_callback ? ' - TOUCHUP' : '';
       const tuDescLine = (j.is_callback && j.notes) ? `<div class="addr">${esc(String(j.notes).split('\n')[0])}</div>` : '';
-      return `<div class="job">
+      return `<div class="job" style="${cardEdgeStyle(d.job_id, d.crew_id, !!j.is_callback)}">
         <div class="cust">${esc(j.customer_name || '(no name)')}${esc(teams)}${esc(touchup)}</div>
         <div class="addr">${esc(j.address || 'No address')}</div>
         ${tuDescLine}
@@ -25498,7 +25536,9 @@ async function renderNextDay() {
   .crew h2 { margin: 0 0 10px; font-size: 17px; }
   .slots { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
   .slot-h { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #666; border-bottom: 1px solid #e0e0e0; padding-bottom: 3px; margin-bottom: 6px; }
-  .job { margin-bottom: 8px; }
+  /* Crew-color left edge + system top band ride each job block (inline, from
+     cardEdgeStyle); color-adjust keeps them from being stripped in print. */
+  .job { margin-bottom: 8px; padding-left: 6px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .job .cust { font-weight: 700; font-size: 14px; }
   .job .addr { font-size: 12.5px; color: #333; }
   .job .meta { font-size: 12.5px; color: #555; }
@@ -26561,6 +26601,18 @@ async function renderSchedule() {
             </div>
           </div>
         </div>
+        ${(() => {
+          // Crew color key (prompt 57 Part F): without it the crew fill is a
+          // code nobody can read. Only crews that actually carry a color are
+          // listed; pre-migration (no color column) the legend simply absents.
+          const colored = (state.crews || []).filter(c => c.active && c.color);
+          if (!colored.length) return '';
+          return `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:.72rem;color:var(--muted);margin:2px 0 8px">
+            ${colored.map(c => `<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:${esc(c.color)};display:inline-block"></span>${esc(c.name)}</span>`).join('')}
+            <span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:#0ea5e9;display:inline-block"></span>Touch-up</span>
+            <span>Top band = system type</span>
+          </div>`;
+        })()}
         <div id="pecSchedCalendar"></div>
       </main>
     </div>
@@ -26774,10 +26826,19 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
       crew ? crew + ' crew' : '',
       job.proposal_number ? '#' + job.proposal_number : '',
     ].filter(Boolean).join(' · ');
+    // Prompt 57 Part F: the bar FILL is the CREW color (Dylan reads the
+    // calendar for who is where); the system type rides as a thin top banner
+    // (bannerColor). A crew with no color set falls back to the system color
+    // as the fill (and then needs no banner), so nothing ever renders grey.
+    const crewColor = (job.crew_id && crewById[job.crew_id] && crewById[job.crew_id].color) || null;
+    const sysColor = (sys && sys.color) || '#6366f1';
     return {
       job, sys, isCallback,
-      // Callbacks get a distinct color so they read as a touch-up, not sold work.
-      color: isCallback ? '#0ea5e9' : ((sys && sys.color) || '#6366f1'),
+      // Callbacks keep the sky-blue treatment and get NO crew fill or banner:
+      // a touch-up is not crew-scheduled work in the same sense, and the sky
+      // blue must stay unmistakable.
+      color: isCallback ? '#0ea5e9' : (crewColor || sysColor),
+      bannerColor: (!isCallback && crewColor) ? sysColor : null,
       customer: isCallback ? 'Touch-up: ' + (job.customer_name || '') : (job.customer_name || ''),
       crew, revNum, revPerDay, revFull,
       label: `${isCallback ? 'Touch-up · ' : (sys ? sys.name + ' · ' : '')}${job.customer_name}`,
@@ -26947,7 +27008,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
     return `<div class="pec-cal-event-bar"
       data-event-job="${esc(bar.jobId)}"
       title="${esc(tip)}"
-      style="grid-column:${bar.startCol} / span ${bar.spanCols};grid-row:${gridRow};--ev-color:${esc(bar.ev.color)}">${parts.join('')}</div>`;
+      style="grid-column:${bar.startCol} / span ${bar.spanCols};grid-row:${gridRow};--ev-color:${esc(bar.ev.color)}${bar.ev.bannerColor ? `;--ev-banner:${esc(bar.ev.bannerColor)}` : ''}">${parts.join('')}</div>`;
   };
 
   // No per-day cap: every bar in the week is shown. The week row grows
@@ -27025,7 +27086,7 @@ function renderScheduleCalendar(sysById, crewById, areaSystem) {
             const muted = 'font-size:.7rem;color:var(--rd-muted,var(--muted));margin-top:3px;line-height:1.35';
             const tip = ev.tooltipBase
               + (ev.revFull ? ` · Contract ${ev.revFull}` + (ev.revPerDay > 0 ? ` · this day ${fullRev(ev.revPerDay)}` : '') : '');
-            return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(tip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:8px 10px;margin-bottom:8px">
+            return `<div class="pec-runsheet-job" data-event-job="${esc(sd.job_id)}" title="${esc(tip)}" style="cursor:pointer;border-left:3px solid ${esc(ev.color)};${ev.bannerColor ? `border-top:4px solid ${esc(ev.bannerColor)};` : ''}background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,var(--text));border-radius:6px;padding:8px 10px;margin-bottom:8px">
               <div style="display:flex;gap:6px;align-items:center">
                 ${sd.time_slot ? `<span class="bar-slot" style="font-size:.62rem;font-weight:700;background:rgba(0,0,0,.06);border-radius:4px;padding:1px 5px">${esc(slotLabel(sd.time_slot))}</span>` : ''}
                 <strong style="font-size:.86rem;line-height:1.2;flex:1">${esc(ev.customer || '(no name)')}</strong>
@@ -33113,6 +33174,11 @@ if (portalToken) {
      connected days read as continuous fill rather than per-day chips. */
   .pec-cal-event-bar { position:relative; z-index:2; margin:1px 3px; padding:4px 10px 4px 14px; background:color-mix(in srgb, var(--ev-color, #6366f1) 22%, transparent); border-radius:6px; font-size:.72rem; line-height:1.25; display:flex; flex-wrap:wrap; gap:2px 6px; align-items:center; align-content:center; cursor:pointer; overflow:hidden; white-space:nowrap; color:var(--rd-ink, #0f172a); container-type:inline-size }
   .pec-cal-event-bar::before { content:''; position:absolute; left:3px; top:2px; bottom:2px; width:3px; background:var(--ev-color, #6366f1); border-radius:2px }
+  /* System-type banner (prompt 57 Part F): a 4px band along the TOP edge in the
+     system color while the bar fill says crew. A pseudo-element on the existing
+     bar, deliberately no wrapper, so the grid math is untouched. Bars without
+     --ev-banner (no crew color, or a callback) render no band. */
+  .pec-cal-event-bar::after { content:''; position:absolute; left:0; right:0; top:0; height:4px; background:var(--ev-banner, transparent); border-radius:6px 6px 0 0; pointer-events:none }
   .pec-cal-event-bar:hover { filter:brightness(1.08) }
   .pec-cal-event-bar > span { overflow:hidden; text-overflow:ellipsis; min-width:0 }
   .pec-cal-event-bar .bar-slot { flex:0 0 auto; font-weight:700; font-size:.6rem; letter-spacing:.5px; padding:1px 5px; border-radius:999px; background:var(--ev-color, #6366f1); color:#fff; overflow:visible }

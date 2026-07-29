@@ -1917,6 +1917,18 @@
           "name": "datasheet_max_upload_mb"
         }
       ]
+    },
+    {
+      "file": "2026-07-29_crew_colors.sql",
+      "date": "2026-07-29",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_crews.color"
+        }
+      ]
     }
   ],
   "knownTables": [
