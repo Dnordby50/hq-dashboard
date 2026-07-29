@@ -34765,7 +34765,62 @@ function _mergeAcrossAreas(areaPlans) {
       use_backstock: false, ordered: false, delivered: false,
       unit_cost_snapshot: l.unit_cost_snapshot, line_cost: l.line_cost, order_index: l.order_index,
       cure_speed: l.cure_speed || null,
+      order_qty_manual: false, manual_added: false,
     }));
+  }
+
+  // Recalculate merge: refreshes calculated fields on saved lines WITHOUT
+  // clobbering human state, replacing the old delete-all + reinsert. Plan
+  // lines match existing rows on the same SKU key the pull aggregates on
+  // (product|cure), consumed one-to-one in order_index order so two same-SKU
+  // lines insert a second row instead of double-updating one. Per matched
+  // row: calculated fields refresh; order_qty refreshes ONLY when the row is
+  // not flagged order_qty_manual (a hand-set override wins until reset);
+  // ordered/delivered/backstock/use_backstock/notes are never touched; a
+  // hand-set supplier is kept (it is the one catalog field the detail editor
+  // lets you change). manual_added rows are invisible to the merge. A stale
+  // calculated row already ordered/delivered is kept with qty_needed 0
+  // (procurement/costing history) instead of deleted.
+  async function mergeRecalcLines(jobId, planLines, existingLines) {
+    const keyOf = (l) => `${l.product_id || `name:${l.product_name}`}|${l.cure_speed || ''}`;
+    const pool = new Map();
+    const mergeable = (existingLines || []).filter(l => !l.manual_added)
+      .sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+    for (const l of mergeable) { const k = keyOf(l); if (!pool.has(k)) pool.set(k, []); pool.get(k).push(l); }
+    const inserts = [];
+    for (const p of planLines) {
+      const match = (pool.get(keyOf(p)) || []).shift();
+      if (!match) { inserts.push(p); continue; }
+      // Custom blend (no catalog product): the detail editor lets the user
+      // set the per-job unit cost; keep it, and keep line_cost consistent.
+      const keepCost = p.product_id == null && Number(match.unit_cost_snapshot) > 0;
+      const patch = {
+        material_type: p.material_type, product_name: p.product_name,
+        qty_needed: p.qty_needed, spread_rate: p.spread_rate, kit_size: p.kit_size,
+        unit_cost_snapshot: keepCost ? match.unit_cost_snapshot : p.unit_cost_snapshot,
+        line_cost: keepCost ? Math.round(Number(p.qty_needed || 0) * Number(match.unit_cost_snapshot) * 100) / 100 : p.line_cost,
+        order_index: p.order_index, color: p.color,
+        supplier: match.supplier || p.supplier,
+        order_qty: match.order_qty_manual ? match.order_qty : p.order_qty,
+      };
+      const { error } = await supabase.from('pec_prod_material_lines').update(patch).eq('id', match.id);
+      if (error) return { error };
+    }
+    const stale = [...pool.values()].flat();
+    const deletable = stale.filter(l => !l.ordered && !l.delivered).map(l => l.id);
+    if (deletable.length) {
+      const { error } = await supabase.from('pec_prod_material_lines').delete().in('id', deletable);
+      if (error) return { error };
+    }
+    for (const l of stale.filter(x => x.ordered || x.delivered)) {
+      const { error } = await supabase.from('pec_prod_material_lines').update({ qty_needed: 0 }).eq('id', l.id);
+      if (error) return { error };
+    }
+    if (inserts.length) {
+      const { error } = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(jobId, inserts));
+      if (error) return { error };
+    }
+    return {};
   }
 
   // "Save lines to job" on a calculated putaway card: persists the in-memory
@@ -35586,7 +35641,7 @@ function _mergeAcrossAreas(areaPlans) {
                 ? `<span class="prod-readonly">${l.unit_cost_snapshot == null ? '' : '$' + Number(l.unit_cost_snapshot).toFixed(2)}</span>`
                 : `<input data-prop="unit_cost_snapshot" type="number" min="0" step="0.01" value="${esc(l.unit_cost_snapshot ?? 0)}" class="prod-num" title="Custom blend: enter the per-kit cost for this job">`}</td>
               <td><input data-prop="backstock_qty" type="number" min="0" step="1" value="${esc(l.backstock_qty)}" class="prod-num"></td>
-              <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num"></td>
+              <td><input data-prop="order_qty"     type="number" min="0" step="1" value="${esc(l.order_qty)}"     class="prod-num">${l.order_qty_manual ? '<span title="Manually set; kept on Recalculate" style="color:#f59e0b;margin-left:3px">&#9998;</span>' : ''}</td>
               <td><input data-prop="use_backstock" type="checkbox" ${l.use_backstock?'checked':''}></td>
               <td><input data-prop="ordered"       type="checkbox" ${l.ordered?'checked':''}></td>
               <td><input data-prop="delivered"     type="checkbox" ${l.delivered?'checked':''}></td>
@@ -35605,6 +35660,9 @@ function _mergeAcrossAreas(areaPlans) {
           if (inp.type === 'checkbox') line[prop] = inp.checked;
           else if (inp.type === 'number') line[prop] = inp.value === '' ? 0 : Number(inp.value);
           else line[prop] = inp.value;
+          // A hand-edited Order qty becomes a persistent override (flagged on
+          // the next Save line edits) so Recalculate keeps it.
+          if (prop === 'order_qty') line._orderQtyTouched = true;
         });
       });
     });
@@ -35620,6 +35678,7 @@ function _mergeAcrossAreas(areaPlans) {
         qty_needed: Number(l.qty_needed || 0), backstock_qty: Number(l.backstock_qty || 0), order_qty: Number(l.order_qty || 0),
         use_backstock: !!l.use_backstock, ordered: !!l.ordered, delivered: !!l.delivered,
       };
+      if (l._orderQtyTouched) patch.order_qty_manual = true;
       // Manual (custom blend) lines only: persist the per-job unit cost and
       // recompute line_cost so it flows into the Job Costing materials totals.
       // Catalog lines keep their snapshot untouched (same behavior as before:
@@ -35638,7 +35697,7 @@ function _mergeAcrossAreas(areaPlans) {
 
   async function recalcActiveJob() {
     const j = state.activeJob;
-    if (!confirm('Recalculate will overwrite all material lines for this job from the catalog. Manual edits to qty/supplier/color will be lost. Continue?')) return;
+    if (!confirm('Recalculate refreshes this job\'s material lines from the catalog. Kept: manual Order-qty overrides, Ordered/Delivered check-offs, backstock, and hand-added lines. Refreshed: calculated quantities, costs, and which recipe lines exist. Continue?')) return;
     // Same source resolution as the Ordering page and the pull: CRM job card
     // picks for bridged jobs, pec_prod_areas otherwise. Critical because the
     // lines persisted here win over everything downstream; recalculating a
@@ -35652,11 +35711,8 @@ function _mergeAcrossAreas(areaPlans) {
         recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake(),
       });
     } catch (err) { return $('prodDetailError').textContent = err.message; }
-    await supabase.from('pec_prod_material_lines').delete().eq('job_id', j.id);
-    if (plan.lines.length) {
-      const ins = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(j.id, plan.lines));
-      if (ins.error) return $('prodDetailError').textContent = ins.error.message;
-    }
+    const merged = await mergeRecalcLines(j.id, plan.lines, j.lines || []);
+    if (merged.error) return $('prodDetailError').textContent = merged.error.message;
     window.pecCostingStale = true; // unified Job Costing page re-loads lines
     await loadJobs();
     state.activeJob = JSON.parse(JSON.stringify(state.jobs.find(x => x.id === j.id)));
