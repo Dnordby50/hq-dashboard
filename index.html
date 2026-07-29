@@ -10062,14 +10062,23 @@ async function pushChangeOrderMaterialsToProd(job, coArea, inputs) {
 // nothing pre-migration. With 2+ PENDING COs the pending ones collapse into
 // one batch box (one stable link at /co/batch/<token>, one signature signs
 // all; prompt 31); 0 or 1 pending renders exactly the classic per-CO boxes.
-async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows = null }) {
+async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows = null, lineItems = null }) {
   if (!el) return;
   let rows = sigRows;
   if (rows == null) {
     const r = await supabase.from('pec_change_order_signatures').select('*').eq('job_id', jobId).order('created_at');
     rows = r.error ? [] : (r.data || []);
   }
-  if (!rows.length) { el.innerHTML = ''; return; }
+  // Prompt 58 Part C: jobs.line_items is the BILLING truth for change orders;
+  // the signature rows are the approval layer. A CO whose signature insert
+  // failed (the error toast path in openChangeOrderModal) used to be invisible
+  // here while still counting in the Totals fold. When the caller passes
+  // lineItems, any CO line with no matching signature row renders as a plain
+  // itemized box, and the card gets a footer total that ties to coSum.
+  // Callers that do not pass lineItems (Invoicing) behave exactly as before.
+  const liPrice = li => { const v = li.price ?? li.total ?? li.unit_price; return v == null ? 0 : Number(v) || 0; };
+  const liCos = Array.isArray(lineItems) ? lineItems.filter(l => l && l.is_change_order) : null;
+  if (!rows.length && !(liCos && liCos.length)) { el.innerHTML = ''; return; }
   let customer = null;
   if (customerId) {
     try {
@@ -10228,6 +10237,34 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
   } else {
     el.innerHTML = rows.map(r => coBoxHtml(r, numById[r.id])).join('')
       + (pendingRows.length >= 2 ? `<div class="pec-li-sub" style="margin-top:4px">Batch approval (one link for all pending change orders) needs the 2026-07-17_change_order_batches migration. Per-CO links shown meanwhile.</div>` : '');
+  }
+  if (liCos && liCos.length) {
+    // Match each signature row to a CO line once (title + amount); whatever
+    // line items remain have no approval link and render without action
+    // buttons. The footer total sums the LINE ITEMS, so it always equals the
+    // Totals card's "Change orders" row (coSum) even when the two layers
+    // disagree.
+    const pool = rows.slice();
+    const orphans = liCos.filter(li => {
+      const i = pool.findIndex(r => String(r.title || '').trim().toLowerCase() === String(li.name || '').trim().toLowerCase()
+        && Math.abs(invNum(r.amount) - liPrice(li)) < 0.005);
+      if (i >= 0) { pool.splice(i, 1); return false; }
+      return true;
+    });
+    const orphanHtml = orphans.map(li => `
+    <div class="pec-co-box">
+      <div class="pec-co-head">
+        <strong>${esc(li.name || 'Change order')}</strong>
+        <span class="pec-age" title="This change order is on the estimate total but has no signature link. Re-add it from + Change order if the customer needs to sign.">Recorded, no signature link</span>
+      </div>
+      <div class="pec-co-body">
+        ${li.description ? `<div class="pec-li-sub" style="white-space:pre-wrap">${esc(li.description)}</div>` : ''}
+        <div style="font-weight:700;margin-top:4px;text-align:right">${invUSD(liPrice(li))}</div>
+      </div>
+    </div>`).join('');
+    const coTotal = invRound2(liCos.reduce((s, l) => s + liPrice(l), 0));
+    el.insertAdjacentHTML('beforeend', orphanHtml
+      + `<div class="pec-li-sub" style="text-align:right;font-weight:700;margin-top:6px">Change orders total: ${invUSD(coTotal)}</div>`);
   }
   const rowByToken = Object.fromEntries(rows.map(r => [String(r.token), r]));
   el.querySelectorAll('[data-co-view]').forEach(b => b.addEventListener('click', () => window.open('/co/' + b.dataset.coView, '_blank')));
@@ -13512,6 +13549,21 @@ async function renderWorkOrder(ctx) {
   // computeJobMaterialLines above).
   const { lines, planAreas } = computeJobMaterialLines({ areasFromState, productById, recipeSlots });
 
+  // Prompt 58 Part C: change orders belong on PAGE 1, where the crew reads.
+  // jobs.line_items is the billing truth for COs (both modes write one);
+  // scope-mode COs also carry a job_areas row (is_change_order = true) that
+  // holds the sqft + system, fetched here only to enrich the display.
+  // Pre-migration (no is_change_order column) the query errors silently and
+  // the section renders from the lines alone.
+  const woCoLines = (Array.isArray(job.line_items) ? job.line_items : []).filter(l => l && l.is_change_order);
+  let woCoAreas = [];
+  if (woCoLines.length) {
+    try {
+      const r = await supabase.from('job_areas').select('name,sqft,system_type_id').eq('job_id', job.id).eq('is_change_order', true);
+      if (!r.error) woCoAreas = r.data || [];
+    } catch (_) { /* silent: section renders without sqft */ }
+  }
+
   // Hour Budget: always computed (revenue x system.labor_budget_pct / hourly_rate)
   // per Dylan's plan answer. Picks the FIRST area's system as the basis.
   const primarySys = planAreas[0] ? systemTypes.find(s => s.id === planAreas[0].system_type_id) : null;
@@ -13574,6 +13626,33 @@ async function renderWorkOrder(ctx) {
       <td></td>
       <td></td>
     </tr>`).join('');
+
+  // Page-1 CHANGE ORDERS section (prompt 58 Part C): same visual language as
+  // the CREW NOTES section above the scope. Price is included deliberately,
+  // matching the line-items page which already prints a priced total. Empty
+  // when the job has no COs, so a CO-less sheet is byte-identical to before.
+  const woCoPrice = (li) => { const v = li.price ?? li.total ?? li.unit_price; return v == null ? 0 : Number(v) || 0; };
+  const woCoTotal = woCoLines.reduce((s, li) => s + woCoPrice(li), 0);
+  const changeOrdersSection = woCoLines.length ? `
+  <div class="section">
+    <h3>CHANGE ORDERS: ADDED SCOPE</h3>
+    <table class="li-tbl">
+      <thead><tr><th>Change order</th><th>Detail</th><th style="text-align:right">Price</th></tr></thead>
+      <tbody>
+        ${woCoLines.map(li => {
+          const area = woCoAreas.find(a => String(a.name || '').trim().toLowerCase() === String(li.name || '').trim().toLowerCase());
+          const sysName = area ? ((systemTypes.find(s => s.id === area.system_type_id) || {}).name || '') : '';
+          const meta = area ? [sysName, Number(area.sqft) > 0 ? Number(area.sqft).toLocaleString() + ' sqft' : ''].filter(Boolean).join(' · ') : '';
+          return `<tr>
+          <td>${e(li.name || '')}</td>
+          <td>${[meta, li.description].filter(Boolean).map(x => e(x)).join('\n')}</td>
+          <td style="text-align:right">${invUSD(woCoPrice(li))}</td>
+        </tr>`;
+        }).join('')}
+        <tr class="li-total"><td colspan="2" style="text-align:right">Change orders total</td><td style="text-align:right">${invUSD(woCoTotal)}</td></tr>
+      </tbody>
+    </table>
+  </div>` : '';
 
   // Page 2: line items (scope title + detail + price) from job.line_items. Only
   // emitted when there's at least one line, so a job without line items still
@@ -13732,6 +13811,7 @@ async function renderWorkOrder(ctx) {
     <h3>ISSUES / NOTES</h3>
     <div class="notes-box">${sanitizeNotes(job.scope)}</div>
   </div>
+  ${changeOrdersSection}
   <div class="intake">
     <div class="grp">Budget</div>
     <div class="lbl">Hour Budget:</div>    <div class="val num">${hourBudget != null ? hourBudget.toFixed(1) + ' hrs' : ''}</div>
@@ -14964,7 +15044,7 @@ async function renderJobDetailInner(id) {
       // refresh the total ONLY via the repaint (they never call
       // recalcEstimateTotal like the price-typing path does).
       recalcEstimateTotal();
-      mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, onChanged: () => renderJobDetail(job.id) });
+      mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, lineItems: job.line_items, onChanged: () => renderJobDetail(job.id) });
     };
 
     // One shared paint for both modes: Line Items card, then the change-order
