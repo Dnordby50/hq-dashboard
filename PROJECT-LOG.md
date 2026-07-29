@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: wrote prompt 56 (Routemize native-webhook adapter), 14 decisions locked
+By: Cowork
+
+Changed: one new file, claude-code-prompt-56-routemize-adapter.md. No code, no schema, no prod change.
+
+Follows the webhook wiring entry directly above. Fourteen multiple-choice questions were asked before writing (project rule); the answers are the locked-decisions block in the prompt file.
+
+THE DECISION THAT MATTERS, and why it is flagged as a landmine rather than buried: decision 9 **REVERSES prompt 43's locked decision 3**, which said never auto-create a lead or customer from an appointment because it "would collide with the other intake paths". That reasoning was correct when DripJobs was the front door. Routemize is the front door now, so a customer who books straight off the site and never existed as a lead would appear on the calendar and never enter the pipeline, meaning the follow-up queue and the drips never see them. The prompt flags the reversal explicitly so Claude Code does not "fix" it back, and pairs it with the mitigation prompt 43 was actually worried about: reuse pec-lead-intake's own 90-day last-10-phone / email dedupe, preferably extracted into a shared helper so the two intakes cannot drift.
+
+Dylan also corrected a framing in the questions: lead source is attributed to the PERSON, not the appointment. So nothing lead-source-shaped goes on pec_appointments. On an existing lead the source is filled only when blank (never overwritten, because overwriting it would quietly rewrite marketing attribution toward whatever tool booked the appointment); on a new lead it takes Routemize's own leadSource, falling back to 'routemize'.
+
+OTHER FINDINGS WORTH KEEPING:
+
+- **eventType casing is not consistent.** The real appointment event was PascalCase `AppointmentCreated`; the synthetic test event was dotted lowercase `test.webhook`. The prompt requires aggressive normalization and a 200 no-op on anything unrecognized.
+- **AppointmentStatusChanged's shape is UNVERIFIED** and the prompt says so rather than guessing. The captured sample is a Created event and carries no status field. Written as: read defensively, and when status cannot be determined treat it as an update, NEVER a cancellation. Hard-deleting a real appointment off a mis-read field is the worst failure available on this endpoint.
+- **startTime carries an explicit Z** (15:00:00Z alongside AppointmentTime "8:00 AM" = 08:00 MST). parseApptDate already trusts an explicit offset, so the prompt explicitly forbids adding timezone handling; the Phoenix bare-datetime branch must not run on these.
+- Rep mapping tries `assignedUsers[0].userName` BEFORE `.email`, because on the real sample userName held the work address aron@prescottepoxy.com.
+- Drip subtlety called out: a lead created from a booking must NOT be nurture-enrolled, because apptBookingLeadEffects would immediately pause it. Enroll-then-pause is churn and pollutes the drip ledger.
+- Backfill was declined (Dylan's answer). Consequence stated plainly so nobody is surprised: the appointments already on the Routemize books, including John Courtis on 7/29 and Susan Nasser on 8/3, will never appear in TopCoat.
+
+Why: Dylan asked to build the Routemize connection; the native webhook removed Zapier from the design and left only the field contract.
+Files touched: claude-code-prompt-56-routemize-adapter.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 56 in Claude Code. It writes the contact-id migration but does NOT apply it; applying it, regenerating SCHEMA.md, verifying against a REAL booking, and only then retiring the Routemize -> DripJobs push are the Cowork handoff at the bottom of the prompt file.
+
+---
+
 ## [2026-07-29 MST] Cowork: Routemize -> TopCoat wired via a NATIVE Routemize webhook (not Zapier); real payload shape captured
 By: Cowork
 
