@@ -34155,8 +34155,11 @@ function _mergeAcrossAreas(areaPlans) {
     jobFilter: { status: '' },
     activeJob: null,
     newJob: blankNewJob(),
-    orderScope: 'all',     // material sections on the Ordering page: 'all' | '7' | '14' | '30' | 'custom'
+    orderScope: 'all',     // Ordering page LIST FILTER (2026-07-29 rework: hides job rows, no longer feeds aggregation): 'all' | '7' | '14' | '30' | 'custom'
     orderCustom: { start: null, end: null }, // From/To window for orderScope 'custom' (lazily set to today..+14 on first pick)
+    orderSelected: new Set(), // job ids hand-picked for the Order sheet. In-memory only: the durable output is the saved/overridden lines themselves.
+    crews: [],             // pec_prod_crews (id,name) for the Jobs-to-order crew column
+    crewIdByJob: {},       // job_id -> crew_id of the earliest scheduled day (fallbacks: job.crew_id, job.crew text)
     daysByJob: {},         // pec_prod_job_schedule_days: job_id -> sorted ISO dates
     daysError: false,      // schedule-days fetch failed; degrade to install_date matching
     crmAreasByProdJob: {}, // prod job id -> CRM job_areas rows (with materials) for bridged jobs; refreshed by loadJobs
@@ -34212,7 +34215,7 @@ function _mergeAcrossAreas(areaPlans) {
     // invalidateRefCache lives in Module 2; reach it via window (guarded so a
     // load-order race can never re-throw and kill the catalog view).
     window.invalidateRefCache && window.invalidateRefCache();
-    const [p, s, r, a, fc] = await Promise.all([
+    const [p, s, r, a, fc, cw] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
       supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
@@ -34222,6 +34225,9 @@ function _mergeAcrossAreas(areaPlans) {
       // product_id + default_basecoat_product_id). A failed read degrades to
       // the legacy product-based picker.
       supabase.from('colors').select('*').eq('category', 'flake-blend').order('name'),
+      // Crew names for the Jobs-to-order list; a failed read degrades to the
+      // job's free-text crew field.
+      supabase.from('pec_prod_crews').select('id,name,active'),
     ]);
     if (p.error) console.error('[prod] products:', p.error);
     if (s.error) console.error('[prod] system_types:', s.error);
@@ -34232,6 +34238,7 @@ function _mergeAcrossAreas(areaPlans) {
     state.recipeSlots = r.data || [];
     state.addons = a.data || [];
     state.flakeColors = (fc && !fc.error && fc.data) || [];
+    state.crews = (cw && !cw.error && cw.data) || [];
     // Calculated material lines depend on the catalog; invalidate them.
     state._calcCache = new Map();
   }
@@ -34241,15 +34248,21 @@ function _mergeAcrossAreas(areaPlans) {
     // matching; renderJobs/renderMaterialPull surface a note via daysError.
     const byJob = {};
     try {
-      const { data, error } = await supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date');
+      const { data, error } = await supabase.from('pec_prod_job_schedule_days').select('job_id,scheduled_date,crew_id');
       if (error) throw error;
-      for (const r of (data || [])) (byJob[r.job_id] ||= []).push(r.scheduled_date);
+      const firstDay = {}; // earliest crew-bearing day per job -> crew column on the Jobs-to-order list
+      for (const r of (data || [])) {
+        (byJob[r.job_id] ||= []).push(r.scheduled_date);
+        if (r.crew_id && (!firstDay[r.job_id] || r.scheduled_date < firstDay[r.job_id].d)) firstDay[r.job_id] = { d: r.scheduled_date, crew: r.crew_id };
+      }
       for (const k of Object.keys(byJob)) byJob[k].sort();
       state.daysByJob = byJob;
+      state.crewIdByJob = Object.fromEntries(Object.entries(firstDay).map(([k, v]) => [k, v.crew]));
       state.daysError = false;
     } catch (err) {
       console.warn('[prod] schedule days:', err);
       state.daysByJob = {};
+      state.crewIdByJob = {};
       state.daysError = true;
     }
   }
@@ -34332,14 +34345,35 @@ function _mergeAcrossAreas(areaPlans) {
 
   // -------------------- Jobs view --------------------
   function renderJobs(r) {
-    // Material-first Ordering page: bulk order by product, then per-customer
-    // putaway cards, then the plain jobs table. The material sections read
-    // state.orderScope (their own filter); the status dropdown below filters
-    // ONLY the jobs table, exactly as it always has.
+    // Job-first Ordering page (2026-07-29 rework): hand-pick the jobs to
+    // order for from a schedule-style list (checkboxes), and the Order sheet
+    // aggregates EXACTLY the selected jobs. The date scope is now a pure
+    // LIST FILTER: it hides rows, it no longer feeds the aggregation, and
+    // selection survives filter changes. Putaway keeps the date filter
+    // (it answers "where does this arriving box go", independent of the
+    // order being built) and the jobs table below is unchanged.
     const { start, end } = orderScopeRange();
     const computeLinesFor = makePullCalcLines();
-    const { rows, summary: matSummary } = aggregateMaterialPull(state.jobs, start, end, state.daysByJob || {}, computeLinesFor);
-    const cards = buildCustomerPull(state.jobs, start, end, state.daysByJob || {}, computeLinesFor);
+    const daysByJob = state.daysByJob || {};
+
+    // Selection can go stale across reloads (job completed or removed
+    // elsewhere); prune before rendering so counts and the sheet agree.
+    for (const id of [...state.orderSelected]) {
+      const j = state.jobs.find(x => x.id === id);
+      if (!j || j.status === 'completed') state.orderSelected.delete(id);
+    }
+
+    const openJobs = state.jobs.filter(j => j.status !== 'completed');
+    const schedKey = (j) => (daysByJob[j.id] || [])[0] || j.install_date || '9999';
+    const listJobs = openJobs.slice().sort((a, b) => schedKey(a).localeCompare(schedKey(b)) || (a.customer_name || '').localeCompare(b.customer_name || ''));
+    const shownJobs = listJobs.filter(j => jobInScope(j, daysByJob[j.id] || [], start, end));
+    const shownIds = new Set(shownJobs.map(j => j.id));
+    const hiddenSelected = [...state.orderSelected].filter(id => !shownIds.has(id)).length;
+
+    const selectedJobs = state.jobs.filter(j => state.orderSelected.has(j.id));
+    // null/null scope sentinel = "no date bound": the selection is the only scope.
+    const { rows, summary: matSummary } = aggregateMaterialPull(selectedJobs, null, null, daysByJob, computeLinesFor);
+    const cards = buildCustomerPull(state.jobs, start, end, daysByJob, computeLinesFor);
 
     const filter = state.jobFilter.status;
     const tableJobs = filter ? state.jobs.filter((j) => j.status === filter) : state.jobs;
@@ -34355,21 +34389,104 @@ function _mergeAcrossAreas(areaPlans) {
     };
     const sumSqft = (job) => (job.areas || []).reduce((s, a) => s + Number(a.sqft || 0), 0);
 
-    const productRowsHtml = rows.map(row => `
-      <tr class="nohover">
-        <td>${esc(row.supplier)}</td>
-        <td>${esc(row.material_type)}</td>
-        <td>${esc(row.product_name)}</td>
-        <td>${esc(row.color || '')}</td>
-        <td>${esc(row.cure_speed || '')}</td>
-        <td><strong>${esc(row.total_qty)}</strong></td>
-        <td style="font-size:.72rem;color:var(--muted)">
-          ${row.jobs.map(j => `${esc(j.customer)} #${esc(j.proposal)} <strong style="color:var(--rd-ink, var(--text))">${esc(j.qty)}</strong>${j.calculated ? ' <em>(calc)</em>' : ''}`).join(' · ')}
-        </td>
-      </tr>`).join('');
-    const productEmpty = matSummary.inWindow === 0
-      ? 'No open jobs in this scope.'
-      : 'Nothing to order: every in-scope line is delivered, skipped, or covered by backstock. See the putaway list below.';
+    // ---- Jobs-to-order list rows ----
+    const crewById = indexById(state.crews || []);
+    const crewNameFor = (j) => {
+      const cid = (state.crewIdByJob || {})[j.id] || j.crew_id;
+      return (cid && (crewById[cid] || {}).name) || j.crew || '—';
+    };
+    const schedLabel = (j) => {
+      const days = daysByJob[j.id] || [];
+      if (days.length) {
+        const first = fmtDate(days[0]);
+        return days.length === 1 ? first : `${first} – ${fmtDate(days[days.length - 1])} · ${days.length}d`;
+      }
+      return j.install_date ? fmtDate(j.install_date) : 'not scheduled';
+    };
+    // Colors gate, surfaced instead of silent: a bridged job explicitly NOT
+    // confirmed and with no saved lines gets a disabled checkbox (saved lines
+    // win over the gate, same rule as resolveJobLines).
+    const isGated = (j) => !!(j.dripjobs_deal_id && state.crmColorsConfirmedByProdJob[j.id] === false && !(j.lines || []).length);
+
+    const jobRowsHtml = shownJobs.map(j => {
+      const resolved = resolveJobLines(j, computeLinesFor);
+      const colorsKnown = Object.prototype.hasOwnProperty.call(state.crmColorsConfirmedByProdJob, j.id);
+      const colorsOk = state.crmColorsConfirmedByProdJob[j.id];
+      const gated = isGated(j);
+      let matChip;
+      if (resolved.kind === 'saved') {
+        const n = resolved.lines.length;
+        const ord = resolved.lines.filter(l => l.ordered).length;
+        const del = resolved.lines.filter(l => l.delivered).length;
+        matChip = `<span class="pec-badge">saved · ${ord}/${n} ordered${del ? ` · ${del} delivered` : ''}</span>`;
+      } else if (resolved.kind === 'calculated') {
+        matChip = '<span class="pec-badge">calculated, not saved</span>';
+      } else {
+        matChip = `<span style="color:var(--danger);font-size:.68rem">${esc(resolved.reason)}</span>`;
+      }
+      const colorsChip = !colorsKnown ? '' : (colorsOk
+        ? '<span class="pec-badge delivered">colors confirmed</span>'
+        : '<span class="pec-badge" style="background:rgba(245,158,11,.14);color:#b45309;border-color:rgba(245,158,11,.4)">colors NOT confirmed</span>');
+      return `
+        <tr class="nohover"${gated ? ' style="opacity:.6"' : ''}>
+          <td><input type="checkbox" data-select-job="${esc(j.id)}" ${state.orderSelected.has(j.id) ? 'checked' : ''} ${gated ? 'disabled title="Colors not confirmed on the CRM job card"' : ''}></td>
+          <td style="white-space:nowrap">${esc(schedLabel(j))}</td>
+          <td data-open-job="${esc(j.id)}" style="cursor:pointer">${esc(j.customer_name)} <span style="color:var(--muted);font-size:.7rem">#${esc(j.proposal_number)}</span><div style="color:var(--muted);font-size:.68rem">${esc(j.address || '')}</div></td>
+          <td>${esc(crewNameFor(j))}</td>
+          <td>${esc(sysSummary(j))}</td>
+          <td>${sumSqft(j).toLocaleString()}</td>
+          <td>${colorsChip}</td>
+          <td>${matChip}</td>
+        </tr>`;
+    }).join('');
+
+    // ---- Order sheet (selection-driven), grouped by supplier like the pull ----
+    const money  = (n) => '$' + Math.round(Number(n)).toLocaleString();
+    const money2 = (n) => '$' + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const rowCost = (row) => (row.unit_cost == null ? 0 : Number(row.unit_cost) * Number(row.total_qty));
+    const totalCost = rows.reduce((s, row) => s + rowCost(row), 0);
+    const groupedBySupplier = rows.reduce((acc, row) => { (acc[row.supplier] ||= []).push(row); return acc; }, {});
+    const breakdownHtml = (row) => row.jobs.map(jb => {
+      if (!jb.saved) return `<div style="margin:2px 0">${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span> · <strong>${esc(jb.qty)}</strong> <em style="color:var(--muted)">(calculated; save lines to edit)</em></div>`;
+      return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0">
+        <span>${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span></span>
+        <input type="number" min="0" step="1" value="${esc(jb.order_qty)}" data-oq-line="${esc(jb.line_id)}" class="prod-num" style="width:60px" title="Order quantity for this job">
+        ${jb.order_qty_manual ? `<span title="Manually set; kept on Recalculate" style="color:#f59e0b">&#9998;</span><button class="pec-btn ghost sm" data-oq-reset="${esc(jb.line_id)}" title="Back to the calculated ${esc(jb.qty_needed)}">reset</button>` : ''}
+        <label style="font-size:.65rem;color:var(--muted);display:inline-flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" data-line-id="${esc(jb.line_id)}" data-prop="ordered" ${jb.ordered ? 'checked' : ''}>ordered</label>
+        ${jb.manual_added ? `<span class="pec-badge">added</span><button class="pec-btn ghost sm" data-remove-line="${esc(jb.line_id)}" title="Remove this hand-added line">&times;</button>` : ''}
+      </div>`;
+    }).join('');
+    const supplierKeys = Object.keys(groupedBySupplier);
+    const sheetBodyHtml = supplierKeys.length === 0
+      ? `<div class="pec-empty">${matSummary.inWindow === 0 ? 'Nothing selected yet.' : 'Nothing to order for the selected jobs: every line is delivered, skipped, or covered by backstock.'}</div>`
+      : supplierKeys.map(sup => {
+        const supRows = groupedBySupplier[sup];
+        const supCost = supRows.reduce((s, row) => s + rowCost(row), 0);
+        return `
+          <div class="pec-pull-supplier">${esc(sup)} <span style="color:var(--muted);font-weight:400;font-size:.75rem">· ${supRows.length} line${supRows.length === 1 ? '' : 's'}${supCost > 0 ? ` · ${money(supCost)}` : ''}</span></div>
+          <div class="pec-table-wrap">
+          <table class="pec-table">
+            <thead><tr><th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Total qty</th><th style="text-align:right">Unit $ / kit</th><th style="text-align:right">Line $</th><th>Per job (edit qty here)</th></tr></thead>
+            <tbody>
+              ${supRows.map(row => `
+                <tr class="nohover">
+                  <td>${esc(row.material_type)}</td>
+                  <td>${esc(row.product_name)}</td>
+                  <td>${esc(row.color || '')}</td>
+                  <td>${esc(row.cure_speed || '')}</td>
+                  <td><strong>${esc(row.total_qty)}</strong></td>
+                  <td style="text-align:right">${row.unit_cost == null ? '—' : money2(row.unit_cost)}</td>
+                  <td style="text-align:right">${row.unit_cost == null ? '—' : money(rowCost(row))}</td>
+                  <td style="font-size:.72rem">${breakdownHtml(row)}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+          </div>`;
+      }).join('');
+    const calcSelected = selectedJobs.filter(j => resolveJobLines(j, computeLinesFor).kind === 'calculated');
+    const addChipsHtml = selectedJobs.map(j =>
+      `<span style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;padding:2px 10px;font-size:.72rem">${esc(j.customer_name)} <span style="color:var(--muted)">#${esc(j.proposal_number)}</span>${(j.lines || []).length ? `<button class="pec-btn ghost sm" data-add-line-job="${esc(j.id)}">+ Add line</button>` : '<em style="color:var(--muted)">save lines to add</em>'}</span>`
+    ).join(' ');
 
     const cardsHtml = cards.map(c => `
       <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px${c.fullyDelivered ? ';opacity:.55' : ''}">
@@ -34412,7 +34529,7 @@ function _mergeAcrossAreas(areaPlans) {
 
     r.innerHTML = `
       <div class="pec-toolbar">
-        <label style="font-size:.7rem;color:var(--muted)">Material scope
+        <label style="font-size:.7rem;color:var(--muted)">Show
           <select id="prodOrderScope" style="margin-left:6px">
             <option value="all" ${state.orderScope==='all'?'selected':''}>All open jobs</option>
             <option value="7"   ${state.orderScope==='7'?'selected':''}>Next 7 days</option>
@@ -34426,25 +34543,45 @@ function _mergeAcrossAreas(areaPlans) {
         <label style="font-size:.7rem;color:var(--muted)">To <input id="prodOrderEnd" type="date" value="${esc(state.orderCustom.end || '')}" style="margin-left:6px"></label>` : ''}
         <button class="pec-btn primary" id="prodNewJobBtn">+ New Job</button>
         <button class="pec-btn" id="prodPullMaterialBtn">Pull Material</button>
-        <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${matSummary.inWindow} open job${matSummary.inWindow===1?'':'s'} in scope · ${rows.length} product${rows.length===1?'':'s'} to order</span>
-      </div>
-
-      <div style="margin:0 0 12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:.75rem;color:var(--muted)">
-        <strong style="color:var(--rd-ink, var(--text))">${matSummary.inWindow}</strong> job${matSummary.inWindow===1?'':'s'} in scope:
-        ${matSummary.saved} with saved lines · ${matSummary.calculated} calculated from catalog ·
-        ${matSummary.skipped.length} skipped · ${matSummary.fullyDelivered} fully delivered.
-        ${state.daysError && state.orderScope !== 'all' ? '<div style="color:var(--danger);margin-top:4px">Could not load the job schedule; matching on install date only.</div>' : ''}
+        <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${shownJobs.length} of ${openJobs.length} open job${openJobs.length===1?'':'s'} shown</span>
       </div>
 
       <div class="pec-card">
-        <h3>Order by Product</h3>
-        <div class="pec-table-wrap">
+        <div class="pec-toolbar" style="margin-bottom:8px">
+          <h3 style="margin:0">Jobs to order</h3>
+          <button class="pec-btn sm" id="prodSelectShown">Select all shown</button>
+          <button class="pec-btn ghost sm" id="prodSelectClear">Clear</button>
+          <span style="margin-left:auto;color:var(--muted);font-size:.75rem"><strong style="color:var(--rd-ink, var(--text))">${state.orderSelected.size}</strong> selected${hiddenSelected ? ` (${hiddenSelected} hidden by the filter, still in the order)` : ''}</span>
+        </div>
+        <div style="color:var(--muted);font-size:.72rem;margin:-2px 0 10px">Check the jobs you want to order material for; the Order sheet below builds from your selection. The Show filter only hides rows here, it never drops a checked job from the order.</div>
+        ${state.daysError ? '<div style="color:var(--danger);font-size:.72rem;margin-bottom:8px">Could not load the job schedule; dates and the Show filter fall back to install date only.</div>' : ''}
+        <div class="pec-table-wrap" id="prodOrderJobList">
           <table class="pec-table">
-            <thead><tr><th>Supplier</th><th>Material</th><th>Product</th><th>Color</th><th>Cure</th><th>Total qty</th><th>Per customer</th></tr></thead>
-            <tbody>${productRowsHtml || `<tr class="nohover"><td colspan="7" class="pec-empty">${productEmpty}</td></tr>`}</tbody>
+            <thead><tr><th></th><th>Scheduled</th><th>Customer</th><th>Crew</th><th>System</th><th>Sqft</th><th>Colors</th><th>Material</th></tr></thead>
+            <tbody>${jobRowsHtml || '<tr class="nohover"><td colspan="8" class="pec-empty">No open jobs in this window. Widen the Show filter.</td></tr>'}</tbody>
           </table>
         </div>
       </div>
+
+      ${state.orderSelected.size ? `
+      <div class="pec-card" id="prodOrderSheet">
+        <div class="pec-toolbar" style="margin-bottom:8px">
+          <h3 style="margin:0">Order sheet</h3>
+          <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${matSummary.inWindow} job${matSummary.inWindow===1?'':'s'} · ${rows.length} product${rows.length===1?'':'s'}${totalCost > 0 ? ` · est <strong style="color:var(--rd-ink, var(--text))">${money(totalCost)}</strong>` : ''}</span>
+          <button class="pec-btn primary sm" id="prodSheetPrint">Print order</button>
+        </div>
+        ${calcSelected.length ? `
+        <div style="margin-bottom:10px;padding:8px 12px;border:1px solid rgba(245,158,11,.4);border-radius:8px;font-size:.75rem">
+          ${calcSelected.length} selected job${calcSelected.length===1?' has':'s have'} calculated (unsaved) lines; quantities there can only be edited after saving.
+          <button class="pec-btn sm" id="prodSheetSaveCalc" style="margin-left:8px">Save lines for ${calcSelected.length} job${calcSelected.length===1?'':'s'}</button>
+        </div>` : ''}
+        ${matSummary.skipped.length ? `<div style="margin-bottom:10px;color:var(--danger);font-size:.72rem">Skipped: ${matSummary.skipped.map(x => `${esc(x.customer)} (#${esc(x.proposal)}): ${esc(x.reason)}`).join(' · ')}</div>` : ''}
+        ${sheetBodyHtml}
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:.72rem;color:var(--muted)">Add material to a selected job:</span>
+          ${addChipsHtml}
+        </div>
+      </div>` : ''}
 
       <div class="pec-card">
         <h3>By Customer (putaway)</h3>
@@ -34503,6 +34640,51 @@ function _mergeAcrossAreas(areaPlans) {
     r.querySelectorAll('tr[data-job-id]').forEach((tr) => {
       tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
     });
+    // Jobs-to-order list: checkbox toggles selection; the customer cell opens
+    // the job detail (only that cell, so checkbox clicks never open a modal).
+    $('prodSelectShown').addEventListener('click', () => {
+      shownJobs.filter(j => !isGated(j)).forEach(j => state.orderSelected.add(j.id));
+      render();
+    });
+    $('prodSelectClear').addEventListener('click', () => { state.orderSelected.clear(); render(); });
+    const selHost = $('prodOrderJobList');
+    if (selHost) {
+      selHost.addEventListener('change', (e) => {
+        const cb = e.target.closest('input[data-select-job]');
+        if (!cb) return;
+        if (cb.checked) state.orderSelected.add(cb.dataset.selectJob);
+        else state.orderSelected.delete(cb.dataset.selectJob);
+        render();
+      });
+      selHost.addEventListener('click', (e) => {
+        const open = e.target.closest('[data-open-job]');
+        if (open) openJobDetail(open.dataset.openJob);
+      });
+    }
+    // Order sheet: qty edits persist as overrides; ordered check-offs reuse
+    // the putaway handler (it syncs state.jobs by line id); add/remove lines.
+    const sheetHost = $('prodOrderSheet');
+    if (sheetHost) {
+      sheetHost.addEventListener('change', (e) => {
+        if (e.target.matches('input[data-oq-line]')) return handleOrderQtyEdit(e.target);
+        if (e.target.matches('input[data-line-id][data-prop]')) return handleOrderLineToggle(e.target);
+      });
+      sheetHost.addEventListener('click', (e) => {
+        const reset = e.target.closest('button[data-oq-reset]');
+        if (reset) return handleOrderQtyReset(reset.dataset.oqReset);
+        const rm = e.target.closest('button[data-remove-line]');
+        if (rm) return handleManualLineRemove(rm.dataset.removeLine);
+        const add = e.target.closest('button[data-add-line-job]');
+        if (add) return openProdAddLineModal(add.dataset.addLineJob);
+      });
+      const saveCalcBtn = $('prodSheetSaveCalc');
+      if (saveCalcBtn) saveCalcBtn.addEventListener('click', async () => {
+        saveCalcBtn.disabled = true; saveCalcBtn.textContent = 'Saving…';
+        for (const j of calcSelected) await saveCalculatedLines(j.id);
+      });
+      const printBtn = $('prodSheetPrint');
+      if (printBtn) printBtn.addEventListener('click', () => openMaterialPull({ jobIds: new Set(state.orderSelected) }));
+    }
     // Putaway cards: delegated wiring. Checkbox changes persist immediately;
     // the open-job click lives ONLY on the card header element, so clicks on
     // checkboxes and buttons inside the lines table never open the detail.
@@ -34692,6 +34874,16 @@ function _mergeAcrossAreas(areaPlans) {
           install_date: displayDate,
           qty: need,
           calculated,
+          // Line-level fields for the Order sheet's editable breakdown
+          // (renderMaterialPull ignores these). line_id is null on
+          // calculated (unsaved) lines, so `saved` gates the edit UI.
+          line_id: l.id || null,
+          saved: !!l.id,
+          order_qty: Number(l.order_qty || l.qty_needed || 0),
+          qty_needed: Number(l.qty_needed || 0),
+          order_qty_manual: !!l.order_qty_manual,
+          ordered: !!l.ordered,
+          manual_added: !!l.manual_added,
         });
       }
     }
@@ -34874,15 +35066,157 @@ function _mergeAcrossAreas(areaPlans) {
     render();
   }
 
-  async function openMaterialPull() {
+  function findLineById(lineId) {
+    for (const j of state.jobs) {
+      const l = (j.lines || []).find(x => x.id === lineId);
+      if (l) return l;
+    }
+    return null;
+  }
+
+  // Order-sheet qty edit: persists as a manual override (order_qty_manual)
+  // so mergeRecalcLines keeps it on Recalculate until reset.
+  async function handleOrderQtyEdit(input) {
+    const lineId = input.dataset.oqLine;
+    const v = input.value === '' ? 0 : Number(input.value);
+    if (!Number.isFinite(v) || v < 0) { render(); return; }
+    input.disabled = true;
+    const { error } = await supabase.from('pec_prod_material_lines').update({ order_qty: v, order_qty_manual: true }).eq('id', lineId);
+    if (error) {
+      console.error('[prod] order qty edit:', error);
+      window.showToast && window.showToast('Could not save quantity: ' + error.message, { ttl: 5000 });
+      render(); // rebuilds the input from the unchanged in-memory value
+      return;
+    }
+    window.pecCostingStale = true;
+    const l = findLineById(lineId);
+    if (l) { l.order_qty = v; l.order_qty_manual = true; }
+    render();
+  }
+
+  async function handleOrderQtyReset(lineId) {
+    const l = findLineById(lineId);
+    if (!l) return;
+    const calc = Number(l.qty_needed || 0);
+    const { error } = await supabase.from('pec_prod_material_lines').update({ order_qty: calc, order_qty_manual: false }).eq('id', lineId);
+    if (error) {
+      console.error('[prod] order qty reset:', error);
+      window.showToast && window.showToast('Could not reset quantity: ' + error.message, { ttl: 5000 });
+      return;
+    }
+    window.pecCostingStale = true;
+    l.order_qty = calc; l.order_qty_manual = false;
+    render();
+  }
+
+  // Remove is offered ONLY on manual_added rows (calculator-produced lines
+  // are managed by Recalculate; zero the qty instead of deleting them).
+  async function handleManualLineRemove(lineId) {
+    if (!confirm('Remove this hand-added line from the job?')) return;
+    const { error } = await supabase.from('pec_prod_material_lines').delete().eq('id', lineId);
+    if (error) {
+      console.error('[prod] remove line:', error);
+      window.showToast && window.showToast('Could not remove line: ' + error.message, { ttl: 5000 });
+      return;
+    }
+    window.pecCostingStale = true;
+    for (const j of state.jobs) {
+      const i = (j.lines || []).findIndex(x => x.id === lineId);
+      if (i >= 0) { j.lines.splice(i, 1); break; }
+    }
+    render();
+  }
+
+  // Add a catalog line to a job from the Order sheet. Modeled on the CRM
+  // module's openAddMaterialModal payload, but hand-rolled into
+  // #prodModalRoot like every other Module 3 modal (two-modal-roots gotcha:
+  // never call the CRM openModal helpers from bootProd). Inserted with
+  // manual_added=true (recalc never touches it) and the order_index >= 9000
+  // sentinel the CRM Job Costing view already treats as a hand-added line.
+  // Only offered on jobs with saved lines (calculated jobs go through Save
+  // lines first, same invariant as saveCalculatedLines).
+  function openProdAddLineModal(jobId) {
+    const job = state.jobs.find(j => j.id === jobId); if (!job) return;
+    const products = state.products.filter(p => p.active !== false).slice()
+      .sort((a, b) => String(a.material_type || '').localeCompare(String(b.material_type || '')) || String(a.name || '').localeCompare(String(b.name || '')));
+    if (!products.length) { window.showToast && window.showToast('No catalog products available to add.', { ttl: 4000 }); return; }
+    const optHtml = products.map(p => `<option value="${esc(p.id)}" data-unit="${esc(p.unit_cost ?? '')}">${esc(p.material_type || '')} · ${esc(p.name)}${p.color ? ' (' + esc(p.color) + ')' : ''}</option>`).join('');
+    $('prodModalRoot').innerHTML = `
+      <div class="pec-modal-bg" id="prodAddLineBg">
+        <div class="pec-modal">
+          <h3 style="margin:0 0 4px">Add material line</h3>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">${esc(job.customer_name)} <span>#${esc(job.proposal_number)}</span>. Hand-added lines survive Recalculate and can be removed from the Order sheet.</div>
+          <div class="pec-field"><label>Product</label><select id="prodAddLineProduct">${optHtml}</select></div>
+          <div class="pec-row-2">
+            <div class="pec-field"><label>Quantity (kits)</label><input id="prodAddLineQty" type="number" min="0" step="0.01" value="1"></div>
+            <div class="pec-field"><label>Unit $ / kit</label><input id="prodAddLineUnit" type="number" min="0" step="0.01" value=""></div>
+          </div>
+          <div style="color:var(--danger);font-size:.8rem;min-height:1em;margin-bottom:6px" id="prodAddLineErr"></div>
+          <div class="pec-modal-actions">
+            <button type="button" class="pec-btn ghost" id="prodAddLineCancel">Cancel</button>
+            <button type="button" class="pec-btn primary" id="prodAddLineSave">Add line</button>
+          </div>
+        </div>
+      </div>`;
+    const sel = $('prodAddLineProduct'), qtyEl = $('prodAddLineQty'), unitEl = $('prodAddLineUnit'), errEl = $('prodAddLineErr');
+    const syncUnit = () => { const opt = sel.options[sel.selectedIndex]; unitEl.value = opt ? (opt.dataset.unit || '') : ''; };
+    syncUnit();
+    sel.addEventListener('change', syncUnit);
+    const close = () => { $('prodModalRoot').innerHTML = ''; };
+    $('prodAddLineCancel').addEventListener('click', close);
+    $('prodAddLineBg').addEventListener('click', (e) => { if (e.target.id === 'prodAddLineBg') close(); });
+    $('prodAddLineSave').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const product = products.find(p => p.id === sel.value);
+      const qty = Number(qtyEl.value);
+      const unitCost = unitEl.value === '' ? null : Number(unitEl.value);
+      if (!product) { errEl.textContent = 'Pick a product.'; return; }
+      if (!Number.isFinite(qty) || qty <= 0) { errEl.textContent = 'Enter a quantity greater than 0.'; return; }
+      if (unitCost == null || !Number.isFinite(unitCost) || unitCost < 0) { errEl.textContent = 'Enter a unit cost (0 or more).'; return; }
+      const saveBtn = $('prodAddLineSave');
+      saveBtn.disabled = true; saveBtn.textContent = 'Adding…';
+      try {
+        const next = 9000 + (job.lines || []).filter(l => Number(l.order_index || 0) >= 9000).length;
+        const ins = await supabase.from('pec_prod_material_lines').insert({
+          job_id: jobId, area_id: null,
+          material_type: product.material_type, product_id: product.id, product_name: product.name,
+          supplier: product.supplier || null, color: product.color || null,
+          spread_rate: product.spread_rate ?? null, kit_size: product.kit_size ?? null,
+          qty_needed: qty, backstock_qty: 0, order_qty: qty,
+          use_backstock: false, ordered: false, delivered: false,
+          unit_cost_snapshot: unitCost, line_cost: Math.round(unitCost * qty * 100) / 100,
+          order_index: next, cure_speed: null,
+          order_qty_manual: true, manual_added: true,
+        });
+        if (ins.error) throw ins.error;
+        window.pecCostingStale = true;
+        close();
+        window.showToast && window.showToast(`Added ${product.name}.`, { ttl: 2500 });
+        await loadJobs();
+        render();
+      } catch (err) {
+        saveBtn.disabled = false; saveBtn.textContent = 'Add line';
+        errEl.textContent = 'Could not add: ' + ((err && err.message) || err);
+      }
+    });
+  }
+
+  // Two modes: date-range (default, the original pull) and selection
+  // ({ jobIds }: the Order sheet's Print path). Selection mode aggregates
+  // exactly those jobs with the null/null "no date bound" sentinel and hides
+  // the date toolbar; the date-range mode is untouched.
+  async function openMaterialPull(opts) {
+    state._pullJobIds = (opts && opts.jobIds) || null;
     state._pull = state._pull || { start: isoDay(0), end: isoDay(14) };
     await loadScheduleDays(); // refresh on open; degrades via state.daysError
     renderMaterialPull();
   }
 
   function renderMaterialPull() {
-    const { start, end } = state._pull;
-    const { rows, summary } = aggregateMaterialPull(state.jobs, start, end, state.daysByJob || {}, makePullCalcLines());
+    const jobIds = state._pullJobIds || null;
+    const { start, end } = jobIds ? { start: null, end: null } : state._pull;
+    const pullJobs = jobIds ? state.jobs.filter(j => jobIds.has(j.id)) : state.jobs;
+    const { rows, summary } = aggregateMaterialPull(pullJobs, start, end, state.daysByJob || {}, makePullCalcLines());
     const groupedBySupplier = rows.reduce((acc, r) => {
       (acc[r.supplier] ||= []).push(r);
       return acc;
@@ -34899,18 +35233,21 @@ function _mergeAcrossAreas(areaPlans) {
         <div class="pec-modal prod-modal-wide">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
-              <h3 style="margin:0">Material Pull</h3>
-              <div style="color:var(--muted);font-size:.75rem;margin-top:4px">Everything you need to order to cover scheduled installs in this window. Excludes completed jobs and any line already marked delivered.</div>
+              <h3 style="margin:0">${jobIds ? 'Order' : 'Material Pull'}</h3>
+              <div style="color:var(--muted);font-size:.75rem;margin-top:4px">${jobIds
+                ? `Everything to order for the ${summary.inWindow} selected job${summary.inWindow===1?'':'s'}. Excludes any line already marked delivered.`
+                : 'Everything you need to order to cover scheduled installs in this window. Excludes completed jobs and any line already marked delivered.'}</div>
             </div>
             <button class="pec-btn ghost sm" id="prodPullClose">Close</button>
           </div>
 
           <div class="pec-toolbar" style="margin-top:14px">
+            ${jobIds ? '' : `
             <label style="font-size:.7rem;color:var(--muted)">From <input id="prodPullStart" type="date" value="${esc(start)}" style="margin-left:6px"></label>
             <label style="font-size:.7rem;color:var(--muted)">To <input id="prodPullEnd" type="date" value="${esc(end)}" style="margin-left:6px"></label>
             <button class="pec-btn sm" id="prodPullPreset7">Next 7 days</button>
             <button class="pec-btn sm" id="prodPullPreset14">Next 14 days</button>
-            <button class="pec-btn sm" id="prodPullPreset30">Next 30 days</button>
+            <button class="pec-btn sm" id="prodPullPreset30">Next 30 days</button>`}
             <span style="margin-left:auto;color:var(--muted);font-size:.7rem">${totalLines} line${totalLines===1?'':'s'}${totalCost > 0 ? ` · est <strong style="color:var(--rd-ink)">${money(totalCost)}</strong>` : ''}</span>
             <button class="pec-btn primary sm" id="prodPullPrint">Print</button>
           </div>
@@ -34925,7 +35262,8 @@ function _mergeAcrossAreas(areaPlans) {
 
           ${supplierKeys.length === 0
             ? `<div class="pec-empty" style="margin-top:14px">${
-                (!start || !end) ? 'Pick both a start and an end date.'
+                jobIds ? 'No outstanding material for the selected jobs: every line is delivered, skipped, or already covered by backstock. See the summary above.'
+                : (!start || !end) ? 'Pick both a start and an end date.'
                 : summary.inWindow === 0 ? 'No jobs have an install date or scheduled day between these dates.'
                 : 'No outstanding material: every in-window job is fully delivered, skipped, or already covered by backstock. See the summary above.'
               }</div>`
@@ -34964,13 +35302,16 @@ function _mergeAcrossAreas(areaPlans) {
       </div>
     `;
 
-    $('prodPullClose').addEventListener('click', () => { $('prodModalRoot').innerHTML = ''; });
-    $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg' && !e.currentTarget.querySelector('form, input, textarea, select')) $('prodModalRoot').innerHTML = ''; });
-    $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
-    $('prodPullEnd').addEventListener('change', (e) => { state._pull.end = e.target.value; renderMaterialPull(); });
-    $('prodPullPreset7').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(7)  }; renderMaterialPull(); });
-    $('prodPullPreset14').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(14) }; renderMaterialPull(); });
-    $('prodPullPreset30').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(30) }; renderMaterialPull(); });
+    const closePull = () => { state._pullJobIds = null; $('prodModalRoot').innerHTML = ''; };
+    $('prodPullClose').addEventListener('click', closePull);
+    $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closePull(); });
+    if (!jobIds) { // date toolbar only exists in date-range mode
+      $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
+      $('prodPullEnd').addEventListener('change', (e) => { state._pull.end = e.target.value; renderMaterialPull(); });
+      $('prodPullPreset7').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(7)  }; renderMaterialPull(); });
+      $('prodPullPreset14').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(14) }; renderMaterialPull(); });
+      $('prodPullPreset30').addEventListener('click', () => { state._pull = { start: isoDay(0), end: isoDay(30) }; renderMaterialPull(); });
+    }
     $('prodPullPrint').addEventListener('click', () => window.print());
   }
 
