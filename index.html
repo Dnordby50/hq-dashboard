@@ -9612,6 +9612,50 @@ function pecDownloadInvoicePdf(row, payments) {
     ${payHtml}`;
   pecOpenPrintDoc(`Invoice ${invNo} - ${row.customer_name || ''}`, brand, head, body);
 }
+// Financing settings cache for print docs (prompt 58 Part F). Warmed alongside
+// fetchBrandIdentity on job detail render because the PDF click opens its
+// window SYNCHRONOUSLY and cannot await a fetch. A cache miss (a click before
+// the warm-up lands) just omits the financing lines; never an error.
+async function fetchFinancingSettings() {
+  if (state.financingSettings !== undefined) return state.financingSettings;
+  try {
+    const res = await supabase.from('settings').select('key,value')
+      .in('key', ['financing_enabled', 'financing_provider_name', 'financing_apply_url', 'financing_apr_pct', 'financing_term_months', 'financing_min_amount']);
+    if (res.error) throw res.error;
+    const map = Object.fromEntries((res.data || []).map(r => [r.key, r.value]));
+    const apr = Number(map.financing_apr_pct);
+    state.financingSettings = {
+      enabled: map.financing_enabled === 'true',
+      provider: String(map.financing_provider_name || 'Enhancify').trim() || 'Enhancify',
+      applyUrl: /^https:\/\//i.test(String(map.financing_apply_url || '').trim()) ? String(map.financing_apply_url).trim() : '',
+      aprPct: (map.financing_apr_pct != null && String(map.financing_apr_pct).trim() !== '' && Number.isFinite(apr) && apr >= 0) ? apr : null,
+      termMonths: Number(map.financing_term_months) > 0 ? Number(map.financing_term_months) : null,
+      minAmount: Number(map.financing_min_amount) > 0 ? Number(map.financing_min_amount) : 0,
+    };
+  } catch (_) { state.financingSettings = null; }
+  return state.financingSettings;
+}
+// Static financing lines for the estimate PDF: a PDF cannot run a widget, so
+// it gets the monthly estimate plus the apply URL as plain text. '' when
+// financing is off, the total is under the minimum, or there is no apply URL.
+// Customer-facing: plain language, estimate-labeled, no em dashes.
+function financingPdfHtml(amount) {
+  const f = state.financingSettings;
+  if (!f || !f.enabled || !f.applyUrl) return '';
+  const amt = Number(amount) || 0;
+  if (!(amt > 0) || (f.minAmount && amt < f.minAmount)) return '';
+  let monthly = null;
+  if (f.aprPct != null && f.termMonths) {
+    const r = f.aprPct / 100 / 12;
+    monthly = Math.round((r > 0 ? amt * r / (1 - Math.pow(1 + r, -f.termMonths)) : amt / f.termMonths) * 100) / 100;
+  }
+  return `<div style="margin-top:14px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px">
+    <div style="font-weight:700">Financing available${monthly != null ? `: from ${invUSD(monthly)}/mo with ${esc(f.provider)}` : ` with ${esc(f.provider)}`}</div>
+    <div class="doc-note" style="margin-top:3px">${monthly != null
+      ? `Estimated payment at ${esc(f.aprPct)}% APR for ${esc(f.termMonths)} months. This is an estimate only, not an offer of credit or an approval, and all terms are subject to credit approval. `
+      : 'Rates and terms come from the lender and are subject to credit approval. '}Apply at ${esc(f.applyUrl)}</div>
+  </div>`;
+}
 // Estimate PDF from the job's estimate areas (one line per area). Total is the
 // area-price sum, matching the on-page Estimate total. Change orders are an
 // invoice concept and are not part of the estimate document.
@@ -9625,7 +9669,7 @@ function pecDownloadEstimatePdf(job, areas, total, sysNameFor) {
   const body = `
     <div class="doc-billto"><div class="lbl">Prepared for</div><div class="name">${esc(custName)}</div><div class="doc-note">${esc(job.address || '')}</div></div>
     <table class="doc-tbl"><thead><tr><th>Scope of work</th><th class="r">Price</th></tr></thead><tbody>${rowsHtml}</tbody></table>
-    <table class="doc-tot"><tr class="tot"><td>Estimate total</td><td class="r">${invUSD(total)}</td></tr></table>`;
+    <table class="doc-tot"><tr class="tot"><td>Estimate total</td><td class="r">${invUSD(total)}</td></tr></table>${financingPdfHtml(total)}`;
   pecOpenPrintDoc(`Estimate - ${custName}`, brand, head, body);
 }
 
@@ -13865,6 +13909,8 @@ async function renderJobDetailInner(id) {
   // Warm the brand identity so the Estimate "Download PDF" doc has full company
   // details by click time (the click opens the print window synchronously).
   fetchBrandIdentity().catch(() => {});
+  // Same warm-up for the PDF's financing lines (prompt 58 Part F).
+  fetchFinancingSettings().catch(() => {});
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
   const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes, salesRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
@@ -19362,6 +19408,20 @@ async function renderSettings() {
           </select>
           <span style="color:var(--muted);font-size:.68rem">On, the suggested crew bonus counts against GP as pending before approval, so GP does not drop later when it is approved.</span>
         </div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Financing (Enhancify)</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">Shows a financing block on the public estimate page, the estimate PDF, and the public invoice page. Off by default; nothing appears anywhere until this is turned on. With APR and term both set, the block quotes an estimated monthly payment (always labeled an estimate, subject to credit approval); with either blank it shows a plain "check your options" action instead.</div>
+        <div class="pec-field"><label>Financing block</label>
+          <select name="financing_enabled">
+            <option value="false" ${(map.financing_enabled || 'false') !== 'true' ? 'selected' : ''}>Off</option>
+            <option value="true" ${(map.financing_enabled || 'false') === 'true' ? 'selected' : ''}>On</option>
+          </select>
+        </div>
+        <div class="pec-field"><label>Provider name</label><input name="financing_provider_name" value="${esc(map.financing_provider_name || 'Enhancify')}"><span style="color:var(--muted);font-size:.68rem">Shown to the customer ("Pay over time with ...").</span></div>
+        <div class="pec-field"><label>Embed URL (iframe)</label><input name="financing_embed_url" value="${esc(map.financing_embed_url || '')}" placeholder="https://..."><span style="color:var(--muted);font-size:.68rem">The Enhancify widget URL, rendered as an embedded frame on the estimate and invoice pages. Must start with https. Leave blank to show only the apply link.</span></div>
+        <div class="pec-field"><label>Apply link (fallback)</label><input name="financing_apply_url" value="${esc(map.financing_apply_url || '')}" placeholder="https://..."><span style="color:var(--muted);font-size:.68rem">The plain "check my options" link; also what the PDF prints, since a PDF cannot run a widget. Must start with https.</span></div>
+        <div class="pec-field"><label>Quoted APR (%)</label><input name="financing_apr_pct" type="number" min="0" step="0.01" value="${esc(map.financing_apr_pct || '')}" placeholder="blank = no monthly figure"></div>
+        <div class="pec-field"><label>Quoted term (months)</label><input name="financing_term_months" type="number" min="1" step="1" value="${esc(map.financing_term_months || '')}" placeholder="blank = no monthly figure"></div>
+        <div class="pec-field"><label>Minimum job total ($)</label><input name="financing_min_amount" type="number" min="0" step="1" value="${esc(map.financing_min_amount || '')}"><span style="color:var(--muted);font-size:.68rem">Below this total (or balance due, on invoices) the block does not render at all.</span></div>
         <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Ops Queue</div>
         <div style="font-size:.68rem;color:var(--muted);margin-bottom:8px">Each derived check on the Ops Queue can be switched off here. Off hides the whole section on the queue; nothing is deleted.</div>
         ${[

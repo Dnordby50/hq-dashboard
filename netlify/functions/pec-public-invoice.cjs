@@ -16,6 +16,7 @@
 // flow) is unchanged from prompts 11 + 13.
 
 const { sb, tokenFromEvent } = require('./_pec-supabase.cjs');
+const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
 // Prompt 45: payment schedules. resolveCurrentAsk is the ONE definition of
 // "the current amount due" (shared with Stripe checkout, the reminder drip,
 // and the staff UI). A job with no installment rows resolves to null and this
@@ -443,7 +444,11 @@ function invoicePage(row, brand, payments, opts) {
 
     ${paymentsSection(payments, b, o.pendingRows)}
 
-    ${payButtons(b, row, o.token, pendingSum, ask)}
+    ${/* Financing (prompt 58 Part F): keyed on the BALANCE DUE, not the
+        invoice total, right above the pay buttons where a customer weighing
+        the payment is looking. '' unless enabled, and flush against
+        payButtons so the disabled state renders byte-identical. */
+      financingBlockHtml(o.financing, dueNet, { accent: b.accent_color })}${payButtons(b, row, o.token, pendingSum, ask)}
 
     ${b.payment_instructions_html ? `<div class="card pad" style="margin-top:18px">
       <div class="eyebrow">Good to know</div>
@@ -545,7 +550,8 @@ exports.handler = async (event) => {
     } catch (_) { /* no ACH treatment */ }
     const pendingSum = round2(pendingRows.reduce((s2, p) => s2 + (Number(p.amount) || 0), 0));
     const paidParam = (event.queryStringParameters && event.queryStringParameters.paid) || '';
-    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed, ask });
+    const financing = await loadFinancingSettings(sb);
+    return invoicePage(row, brand, payments, { token, paid: paidParam === '1' || paidParam === 'true', pendingRows, pendingSum, achFailed, ask, financing });
   } catch (err) {
     // Distinct from the no-row case: the pec_job_ar query (or render) threw.
     console.error('public-invoice: query error', err.message);

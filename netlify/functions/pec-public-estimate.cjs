@@ -34,6 +34,7 @@
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
 const { prepareDepositInstallment } = require('./_pec-installments.cjs');
+const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
 const crypto = require('crypto');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -346,6 +347,13 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
       <div style="color:#6b7280;font-size:13px;margin-top:8px">${esc(est.signed_name || '')}${est.signed_at ? ' &middot; ' + esc(fmtStamp(est.signed_at)) : ''}</div>
     </div>`;
 
+  // Financing (prompt 58 Part F): between the total and the accept panel,
+  // where a customer hesitating on price is looking. '' unless
+  // financing_enabled is on and the total clears financing_min_amount, and
+  // the interpolation below sits flush against signedBlock so the disabled
+  // state renders byte-identical to the pre-financing page.
+  const financingBlock = financingBlockHtml(opts && opts.financing, total, { accent: b.accent_color });
+
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>Estimate ${esc(invNoTxt)} &middot; ${esc(biz)}</title>
@@ -457,7 +465,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
       </div>
     </div>
 
-    ${signedBlock}
+    ${financingBlock}${signedBlock}
     ${actions}
 
     <div class="noprint" style="text-align:center;margin-top:24px">
@@ -1134,13 +1142,14 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, sysName, areas] = await Promise.all([
+      const [brand, sysName, areas, financing] = await Promise.all([
         loadBrand(est.brand),
         loadSystemName(est.system_type_id),
         loadAreas(est.id),
+        loadFinancingSettings(sb),
       ]);
       const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-      return estimatePage(est, brand, sysName, totalSqft, { preview: true });
+      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -1153,16 +1162,17 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, sysName, areas] = await Promise.all([
+    const [brand, sysName, areas, financing] = await Promise.all([
       loadBrand(est.brand),
       loadSystemName(est.system_type_id),
       loadAreas(est.id),
+      loadFinancingSettings(sb),
     ]);
     const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
     await logEstimateView(est, event);
-    return estimatePage(est, brand, sysName, totalSqft);
+    return estimatePage(est, brand, sysName, totalSqft, { financing });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();
