@@ -1061,6 +1061,7 @@ assertThrows(() => {
   assertEq(typeof flakeProductSaveError({ name: 'Decorative Simiron Flake - Domino', material_type: 'Flake', default_basecoat_product_id: null }), 'string', 'a flake with no basecoat is blocked with an error message');
   assertEq(flakeProductSaveError({ name: 'Decorative Simiron Flake - Domino', material_type: 'Flake', default_basecoat_product_id: 'basecoat' }), null, 'a flake with a basecoat saves');
   assertEq(flakeProductSaveError({ name: 'Special Order Flake', material_type: 'Flake', default_basecoat_product_id: null }), null, 'Special Order Flake is exempt');
+  assertEq(flakeProductSaveError({ name: 'Standard Flake', material_type: 'Flake', color: 'Per-job pick', default_basecoat_product_id: null }), null, 'per-job-pick flakes are exempt (the COLOR carries the pairing, prompt 57)');
   assertEq(flakeProductSaveError({ name: 'Simiron 1100 SL - Black', material_type: 'Basecoat', default_basecoat_product_id: null }), null, 'non-flake products never trip the gate');
 }
 

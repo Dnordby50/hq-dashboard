@@ -572,6 +572,11 @@ export function flakeBasecoatDefaults(products) {
 export function flakeProductSaveError(payload) {
   if (!payload || payload.material_type !== 'Flake') return null;
   if (payload.name === 'Special Order Flake') return null;
+  // Per-job-pick products (Standard Flake, Simiron Special Flake 40lb
+  // (Standard)) carry no single blend, so no single pairing: the basecoat
+  // comes from the picked COLOR (colors.default_basecoat_product_id,
+  // prompt 57 Part G) or an explicit area pick.
+  if (payload.color === 'Per-job pick') return null;
   if (payload.default_basecoat_product_id) return null;
   return 'Pick a default basecoat for this flake color.';
 }

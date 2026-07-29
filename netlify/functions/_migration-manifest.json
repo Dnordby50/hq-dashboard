@@ -1929,6 +1929,34 @@
           "name": "public.pec_prod_crews.color"
         }
       ]
+    },
+    {
+      "file": "2026-07-29_flake_color_model.sql",
+      "date": "2026-07-29",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.colors.product_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.colors.default_basecoat_product_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.colors.active"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_areas.flake_color_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.job_areas.flake_color_id"
+        }
+      ]
     }
   ],
   "knownTables": [

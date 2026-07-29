@@ -27564,9 +27564,17 @@ function openJobQuickLook(jobId) {
   const phone = (state.crmPhoneByProdJob || {})[jobId] || null;
   // Material picks from the job's own pec_prod_areas rows when present.
   const prodById = Object.fromEntries((state.products || []).map(p => [p.id, p]));
+  const flakeColorById = Object.fromEntries((state.flakeColors || []).map(c => [c.id, c]));
   const pickNames = (field, useColor) => [...new Set(areas.map(a => a[field]).filter(Boolean)
     .map(id => { const p = prodById[id]; return p ? ((useColor && p.color) || p.name) : null; }).filter(Boolean))];
-  const flakePicks = pickNames('flake_product_id', true);
+  // Flake prefers the picked BLEND (colors table, prompt 57 Part G) over the
+  // product's color, so a condensed "Standard Flake / Per-job pick" area still
+  // reads as the blend the customer chose.
+  const flakePicks = [...new Set(areas
+    .map(a => (a.flake_color_id && flakeColorById[a.flake_color_id] && flakeColorById[a.flake_color_id].name)
+      || (a.flake_product_id && prodById[a.flake_product_id] && (prodById[a.flake_product_id].color || prodById[a.flake_product_id].name))
+      || null)
+    .filter(Boolean))];
   const basecoatPicks = pickNames('basecoat_product_id', false);
   const topcoatPicks = pickNames('topcoat_product_id', false);
   const flakeSizes = [...new Set(areas.map(a => a.flake_size).filter(Boolean))];
@@ -29157,7 +29165,7 @@ function openTaskModal(task, opts = {}) {
 // itself (cached), because budgetedHours = laborBudget / rate, so a different
 // rate would break the modal == Budget card == Job Costing acceptance rule.
 async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}) {
-  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, products: [], laborRate: laborRate };
+  const out = { estimateByJob: {}, systemIdByJob: {}, crmStatusByProd: {}, crmSqftByProd: {}, crmSalespersonByProd: {}, crmPhoneByProd: {}, crmIdByProd: {}, products: [], flakeColors: [], laborRate: laborRate };
   if (!(state.prodJobs || []).length || typeof window.computeJobEstimate !== 'function') return out;
   const noSavedLines = (state.prodJobs || []).filter(j => !(linesByJob[j.id] && linesByJob[j.id].length));
   const areaFetchIds = noSavedLines.filter(j => (state.productAreasByJob[j.id] || []).length).map(j => j.id);
@@ -29167,7 +29175,7 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   // recipe slots go through cachedRef (they are already cached elsewhere), so
   // a schedule page turn does not re-read a 182-row table and the full slot
   // table on every render.
-  const [fullAreasRes, prodRes, slotRes, crmIdentRes, rateRes] = await withFreshSession(() => Promise.all([
+  const [fullAreasRes, prodRes, slotRes, crmIdentRes, rateRes, flakeColorsRes] = await withFreshSession(() => Promise.all([
     areaFetchIds.length ? supabase.from('pec_prod_areas').select('*').in('job_id', areaFetchIds) : Promise.resolve({ data: [] }),
     cachedRef('prod', () => supabase.from('pec_prod_products').select('*').order('name')),
     cachedRef('slot', () => supabase.from('pec_prod_recipe_slots').select('*').order('order_index')),
@@ -29175,6 +29183,10 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     laborRate == null
       ? cachedRef('laborRate', () => supabase.from('settings').select('key,value').eq('key', 'default_labor_hourly_rate').maybeSingle())
       : Promise.resolve(null),
+    // Flake blend colors (prompt 57 Part G): each carries its own default
+    // basecoat pairing once the flake_color_model migration lands. Cached like
+    // the catalog; a failed read degrades to the legacy product-only pairing.
+    cachedRef('flakeColors', () => supabase.from('colors').select('*').eq('category', 'flake-blend').order('name')),
   ]), { label: 'prodEstimateFacts' });
   const defaultLaborRate = laborRate != null ? laborRate : (Number(rateRes?.data?.value) > 0 ? Number(rateRes.data.value) : 35);
   out.laborRate = defaultLaborRate;
@@ -29184,6 +29196,11 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
   for (const s of (slotRes.data || [])) (slotsBySystem[s.system_type_id] ||= []).push(s);
   for (const k in slotsBySystem) slotsBySystem[k].sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
   const defaultBasecoatByFlake = window.flakeBasecoatDefaults(prodRes.data || []);
+  // Color-carried pairing (prompt 57 Part G) + the color list itself for
+  // display surfaces (quick look shows the blend name, not "Per-job pick").
+  const flakeColors = (flakeColorsRes && !flakeColorsRes.error && flakeColorsRes.data) || [];
+  const colorBcByColorId = window.flakeColorBasecoatDefaults(flakeColors);
+  out.flakeColors = flakeColors;
   const areasByJob = {};
   for (const a of (fullAreasRes.data || [])) (areasByJob[a.job_id] ||= []).push(a);
   // Deal + name|address indexes of CRM job identities (first row wins).
@@ -29238,7 +29255,12 @@ async function buildProdEstimateFacts({ linesByJob = {}, laborRate = null } = {}
     } else if ((areasByJob[jid] || []).length) {
       planAreas = areasByJob[jid].map(a => {
         const n = Number(a.sqft);
-        return { id: a.id, name: a.name, sqft: Number.isFinite(n) && n >= 0 ? n : 0, system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null };
+        // Basecoat: explicit pick > the picked COLOR's pairing > the flake
+        // PRODUCT's pairing (legacy rows, resolved inside the calculator via
+        // defaultBasecoatByFlake) > null. Pre-resolving the color leg here
+        // keeps computeJobEstimate's signature untouched (prompt 57 Part G).
+        const bc = a.basecoat_product_id || (a.flake_color_id ? colorBcByColorId[a.flake_color_id] : null) || null;
+        return { id: a.id, name: a.name, sqft: Number.isFinite(n) && n >= 0 ? n : 0, system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: bc };
       });
     } else {
       planAreas = (state.productAreasByJob[jid] || []).map(a => ({ id: a.id, sqft: Number(a.sqft) || 0, system_type_id: a.system_type_id }));
@@ -29269,6 +29291,7 @@ async function loadScheduleEstimates() {
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
     state.crmPhoneByProdJob = facts.crmPhoneByProd;
     state.crmIdByProdJob = facts.crmIdByProd;
+    state.flakeColors = facts.flakeColors;
     if (facts.products.length && !(state.products || []).length) state.products = facts.products;
   } catch (e) { console.warn('[pec] schedule estimate facts skipped:', e); }
 }
@@ -29436,6 +29459,7 @@ async function loadCostingData() {
     state.crmStatusByProdJob = facts.crmStatusByProd;
     state.crmSalespersonByProdJob = facts.crmSalespersonByProd;
     state.crmPhoneByProdJob = facts.crmPhoneByProd;
+    state.flakeColors = facts.flakeColors;
     // Manual jobs.sqft per prod job (prompt 32): pec_prod_jobs has no sqft
     // column, so the unified $/sqft readout needs the CRM job's manual sqft
     // (set on accept for custom estimates, or backfilled on the job header)
@@ -32556,7 +32580,9 @@ async function renderCustomerPortal(token) {
     return;
   }
   const { customer, jobs, referral_reward_amount } = data;
-  data.colors = colorsRes.data || [];
+  // active !== false keeps retired colors out once colors.active exists
+  // (prompt 57 Part G); pre-migration rows have no active key and all pass.
+  data.colors = (colorsRes.data || []).filter(c => c.active !== false);
   // status -> customer-facing description (editable in Settings). Map for O(1)
   // lookup in the job detail; tolerates the table not existing yet (empty map).
   data.statusDescriptions = Object.fromEntries(((statusDescRes && !statusDescRes.error ? statusDescRes.data : []) || []).map(r => [r.status, r.body_text]));
@@ -33501,6 +33527,23 @@ function flakeBasecoatDefaults(products) {
   return out;
 }
 window.flakeBasecoatDefaults = flakeBasecoatDefaults;
+// Prompt 57 Part G: the standard flake BLEND now lives on the colors table
+// (category='flake-blend'); each color knows which product prices it
+// (product_id) and its default basecoat pairing. This builds colorId ->
+// default_basecoat_product_id. Area-level resolution everywhere is: explicit
+// basecoat_product_id > the COLOR's pairing (flake_color_id) > the PRODUCT's
+// pairing (flakeBasecoatDefaults above, the legacy leg that keeps every
+// pre-condense area resolving) > null. Pre-migration the colors rows carry
+// no default_basecoat_product_id key, so this map is empty and everything
+// behaves exactly as before.
+function flakeColorBasecoatDefaults(colors) {
+  const out = {};
+  for (const c of (colors || [])) {
+    if (c && c.category === 'flake-blend' && c.default_basecoat_product_id) out[c.id] = c.default_basecoat_product_id;
+  }
+  return out;
+}
+window.flakeColorBasecoatDefaults = flakeColorBasecoatDefaults;
 // Mirror of production/calculator.js flakeProductSaveError: a Flake product
 // MUST carry a default basecoat, except the "Special Order Flake" placeholder
 // (per-job pick by design). Returns the error string or null. Existing flakes
@@ -33508,6 +33551,10 @@ window.flakeBasecoatDefaults = flakeBasecoatDefaults;
 function flakeProductSaveError(payload) {
   if (!payload || payload.material_type !== 'Flake') return null;
   if (payload.name === 'Special Order Flake') return null;
+  // Per-job-pick products (Standard Flake, Simiron Special Flake 40lb
+  // (Standard)) carry no single blend, so no single pairing: the basecoat
+  // comes from the picked COLOR (prompt 57 Part G) or an explicit area pick.
+  if (payload.color === 'Per-job pick') return null;
   if (payload.default_basecoat_product_id) return null;
   return 'Pick a default basecoat for this flake color.';
 }
@@ -33746,7 +33793,7 @@ function _mergeAcrossAreas(areaPlans) {
     return { proposal_number: '', customer_name: '', address: '', install_date: '', revenue: '', crew: '', notes: '', job_class: 'residential', standalone_mvb: false, areas: [blankArea()] };
   }
   function blankArea() {
-    return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_product_id: '', basecoat_product_id: '', topcoat_product_id: '', basecoat_cure_speed: '', topcoat_cure_speed: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '', tints: [] };
+    return { _key: Math.random().toString(36).slice(2,8), name: 'Main', sqft: '', system_type_id: '', flake_color_id: '', flake_product_id: '', basecoat_product_id: '', topcoat_product_id: '', basecoat_cure_speed: '', topcoat_cure_speed: '', notes: '', flake_size: '1/4"', special_order: false, special_order_color: '', tints: [] };
   }
 
   const $ = (id) => document.getElementById(id);
@@ -33765,6 +33812,16 @@ function _mergeAcrossAreas(areaPlans) {
   function defaultBasecoatByFlake() {
     return window.flakeBasecoatDefaults(state.products);
   }
+  // Prompt 57 Part G helpers. flakeColorMode() is the post-migration switch:
+  // true once any flake-blend color carries product_id, at which point the
+  // flake picker lists COLORS and areas save flake_color_id. Pre-migration all
+  // three return empty/false and the legacy product-based picker renders.
+  function flakeColorMode() { return (state.flakeColors || []).some(c => c.product_id); }
+  function flakeBlendColors() {
+    return (state.flakeColors || []).filter(c => c.product_id && c.active !== false)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function colorBasecoatDefaults() { return window.flakeColorBasecoatDefaults(state.flakeColors); }
   function productsByMaterialType(t, opts = {}) {
     return state.products
       .filter((p) => p.material_type === t && (opts.includeInactive || p.active))
@@ -33778,11 +33835,16 @@ function _mergeAcrossAreas(areaPlans) {
     // invalidateRefCache lives in Module 2; reach it via window (guarded so a
     // load-order race can never re-throw and kill the catalog view).
     window.invalidateRefCache && window.invalidateRefCache();
-    const [p, s, r, a] = await Promise.all([
+    const [p, s, r, a, fc] = await Promise.all([
       supabase.from('pec_prod_products').select('*').order('material_type').order('name'),
       supabase.from('pec_prod_system_types').select('*').order('name'),
       supabase.from('pec_prod_recipe_slots').select('*').order('order_index'),
       supabase.from('pec_prod_addons').select('*').order('sort_order').order('name'),
+      // Flake blend colors (prompt 57 Part G): the New Job flake picker lists
+      // these once the flake_color_model migration lands (each row carries
+      // product_id + default_basecoat_product_id). A failed read degrades to
+      // the legacy product-based picker.
+      supabase.from('colors').select('*').eq('category', 'flake-blend').order('name'),
     ]);
     if (p.error) console.error('[prod] products:', p.error);
     if (s.error) console.error('[prod] system_types:', s.error);
@@ -33792,6 +33854,7 @@ function _mergeAcrossAreas(areaPlans) {
     state.systemTypes = s.data || [];
     state.recipeSlots = r.data || [];
     state.addons = a.data || [];
+    state.flakeColors = (fc && !fc.error && fc.data) || [];
     // Calculated material lines depend on the catalog; invalidate them.
     state._calcCache = new Map();
   }
@@ -34096,11 +34159,15 @@ function _mergeAcrossAreas(areaPlans) {
     const crmAreas = state.crmAreasByProdJob[job.id];
     if (crmAreas && crmAreas.length) return { areas: crmPlanAreas(crmAreas, slotsBySystem), fromCrm: true };
     if ((job.areas || []).length) {
+      const colorBc = colorBasecoatDefaults();
       return {
         fromCrm: false,
         areas: job.areas.map(a => ({
           id: a.id, name: a.name, sqft: Number(a.sqft),
-          system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null, basecoat_product_id: a.basecoat_product_id || null,
+          system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null,
+          // Prompt 57 Part G ladder: explicit > the picked color's pairing >
+          // the product's pairing (resolved inside computeMaterialPlan).
+          basecoat_product_id: a.basecoat_product_id || (a.flake_color_id ? colorBc[a.flake_color_id] : null) || null,
           topcoat_product_id: a.topcoat_product_id || null,
           basecoat_cure_speed: a.basecoat_cure_speed || null,
           topcoat_cure_speed: a.topcoat_cure_speed || null,
@@ -34553,6 +34620,12 @@ function _mergeAcrossAreas(areaPlans) {
 
     const productById = indexById(state.products);
     const defaultsByFlake = defaultBasecoatByFlake();
+    const colorBcDefaults = colorBasecoatDefaults();
+    // Post-migration the flake picker lists BLEND COLORS (all 21 names) while
+    // the products behind them are condensed; pre-migration it lists products
+    // exactly as before.
+    const colorMode = flakeColorMode();
+    const blendColors = flakeBlendColors();
     const topcoats   = productsByMaterialType('Topcoat');
     const tintProducts = productsByMaterialType('Tint Pack');
     host.innerHTML = state.newJob.areas.map((a, idx) => {
@@ -34575,8 +34648,11 @@ function _mergeAcrossAreas(areaPlans) {
       // Mirrors the planner resolution: explicit pick > default pairing > slot
       // default.
       const sysSlots = sys ? (slotsBySys[sys.id] || []) : [];
+      // Basecoat ladder (prompt 57 Part G): explicit pick > the picked COLOR's
+      // pairing > the flake PRODUCT's pairing (legacy) > slot default.
       const resolvedBasecoatId =
         a.basecoat_product_id ||
+        (a.flake_color_id ? colorBcDefaults[a.flake_color_id] : null) ||
         (a.flake_product_id ? defaultsByFlake[a.flake_product_id] : null) ||
         (sysSlots.find(s => s.material_type === 'Basecoat') || {}).default_product_id ||
         null;
@@ -34598,10 +34674,17 @@ function _mergeAcrossAreas(areaPlans) {
           <div class="pec-row-3">
             <div class="pec-field" style="${showFlake && !a.special_order ? '' : 'display:none'}">
               <label>Flake color</label>
+              ${colorMode ? `
+              <select data-aprop="flake_color_id">
+                <option value="">Not yet selected (TBD)</option>
+                ${blendColors.map(c => `<option value="${esc(c.id)}" ${c.id===a.flake_color_id?'selected':''}>${esc(c.name)}</option>`).join('')}
+                ${flakes.filter(p => p.name !== 'Special Order Flake' && !blendColors.some(c => c.product_id === p.id))
+                  .map(p => `<option value="prod:${esc(p.id)}" ${(!a.flake_color_id && p.id===a.flake_product_id)?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
+              </select>` : `
               <select data-aprop="flake_product_id">
                 <option value="">Not yet selected (TBD)</option>
                 ${flakes.filter(p => p.name !== 'Special Order Flake').map(p => `<option value="${esc(p.id)}" ${p.id===a.flake_product_id?'selected':''}>${esc(p.color || p.name)}</option>`).join('')}
-              </select>
+              </select>`}
             </div>
             <div class="pec-field" style="${showQuartz && !a.special_order ? '' : 'display:none'}">
               <label>Quartz color</label>
@@ -34716,12 +34799,30 @@ function _mergeAcrossAreas(areaPlans) {
       const area = state.newJob.areas.find(a => a._key === key);
       card.querySelectorAll('[data-aprop]').forEach((inp) => {
         const sync = () => {
-          area[inp.dataset.aprop] = inp.value;
+          // Color-mode flake picker (prompt 57 Part G): a plain value is a
+          // colors.id (write the color AND its pricing product); a "prod:"
+          // value is a product with no blend color (Simiron Special, Standard
+          // pre-pick) and writes the product alone.
+          if (inp.dataset.aprop === 'flake_color_id') {
+            if (inp.value.startsWith('prod:')) {
+              area.flake_color_id = '';
+              area.flake_product_id = inp.value.slice(5);
+            } else {
+              area.flake_color_id = inp.value;
+              const col = (state.flakeColors || []).find(c => c.id === inp.value);
+              area.flake_product_id = col ? (col.product_id || '') : '';
+            }
+          } else {
+            area[inp.dataset.aprop] = inp.value;
+            // A direct product write (quartz / pigment pickers, legacy flake
+            // picker) is not a blend pick; drop any stale color.
+            if (inp.dataset.aprop === 'flake_product_id') area.flake_color_id = '';
+          }
           // Re-render the area card whenever a field changes that could change
           // which fields are shown: system pick gates flake/quartz/pigment;
           // flake/basecoat/topcoat picks gate the cure-speed dropdowns by
           // resolving to a (possibly cure-speed-bearing) product.
-          const layoutFields = new Set(['system_type_id', 'flake_product_id', 'basecoat_product_id', 'topcoat_product_id']);
+          const layoutFields = new Set(['system_type_id', 'flake_color_id', 'flake_product_id', 'basecoat_product_id', 'topcoat_product_id']);
           if (layoutFields.has(inp.dataset.aprop)) renderAreas();
           renderPreview();
         };
@@ -34741,8 +34842,10 @@ function _mergeAcrossAreas(areaPlans) {
           area.flake_product_id = usesQuartz
             ? (specialQuartz?.id || area.flake_product_id)
             : (specialFlake?.id  || area.flake_product_id);
+          area.flake_color_id = ''; // a special order is by definition not a catalog blend
         } else {
           area.flake_product_id = '';
+          area.flake_color_id = '';
           area.special_order_color = '';
         }
         renderAreas(); renderPreview();
@@ -34808,6 +34911,9 @@ function _mergeAcrossAreas(areaPlans) {
     // job-level MVB checkbox, mapped to mvb=true on every area (so the MVB is
     // still applied across the whole job, same total as the old job-level path).
     const jobMvb = !!state.newJob.standalone_mvb;
+    // Basecoat ladder (prompt 57 Part G): pre-resolve the COLOR's pairing here
+    // so the calculator's own product-keyed map stays the legacy leg untouched.
+    const colorBc = colorBasecoatDefaults();
     return {
       areas: areas
         .filter(a => a.system_type_id && Number(a.sqft) > 0)
@@ -34815,7 +34921,7 @@ function _mergeAcrossAreas(areaPlans) {
           id: a._key || a.id, name: a.name, sqft: Number(a.sqft),
           system_type_id: a.system_type_id,
           flake_product_id: a.flake_product_id || null,
-          basecoat_product_id: a.basecoat_product_id || null,
+          basecoat_product_id: a.basecoat_product_id || (a.flake_color_id ? colorBc[a.flake_color_id] : null) || null,
           topcoat_product_id: a.topcoat_product_id || null,
           basecoat_cure_speed: a.basecoat_cure_speed || null,
           topcoat_cure_speed: a.topcoat_cure_speed || null,
@@ -34924,6 +35030,9 @@ function _mergeAcrossAreas(areaPlans) {
         notes: a.notes || null, order_index: idx,
         flake_size: a.flake_size || null,
         special_order_color: a.special_order ? (a.special_order_color || null) : null,
+        // flake_color_id only once the flake_color_model migration is live
+        // (colorMode); including it earlier would 400 on the missing column.
+        ...(flakeColorMode() ? { flake_color_id: a.flake_color_id || null } : {}),
       }));
       const insAreas = await supabase.from('pec_prod_areas').insert(areaPayload).select();
       if (insAreas.error) return setErr(insAreas.error.message);
@@ -34959,6 +35068,7 @@ function _mergeAcrossAreas(areaPlans) {
         // instead of the placeholder label.
         const specialFlakeId  = (state.products.find(p => p.name === 'Special Order Flake')  || {}).id;
         const specialQuartzId = (state.products.find(p => p.name === 'Special Order Quartz') || {}).id;
+        const flakeColorById = indexById(state.flakeColors || []);
         const linePayload = plan.lines.map(l => {
           let { color, product_name } = l;
           if (l.product_id === specialFlakeId || l.product_id === specialQuartzId) {
@@ -34968,6 +35078,13 @@ function _mergeAcrossAreas(areaPlans) {
               color = `Special: ${areaWithColor.special_order_color}`;
               product_name = `${l.material_type} (special order)`;
             }
+          }
+          // Condensed standard flake (prompt 57 Part G): the product's color is
+          // 'Per-job pick', so stamp the picked BLEND name onto the ordering
+          // line, mirroring the special-order pattern above.
+          if (l.material_type === 'Flake' && color === 'Per-job pick') {
+            const areaWithBlend = (l.area_ids || []).map(k => j.areas.find(a => a._key === k)).find(a => a?.flake_color_id && flakeColorById[a.flake_color_id]);
+            if (areaWithBlend) color = flakeColorById[areaWithBlend.flake_color_id].name;
           }
           return {
             job_id: jobId, area_id: null,
@@ -35355,14 +35472,18 @@ function _mergeAcrossAreas(areaPlans) {
     const sortRows = (t) => (a, b) => t === 'Basecoat'
       ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
       : (a.color || a.name).localeCompare(b.color || b.name) || a.name.localeCompare(b.name);
+    // Inactive products (the 18 condensed flake blends, prompt 57 Part G, and
+    // anything retired later) hide by default behind the Show-inactive toggle;
+    // they stay in the DB and in this list because historical areas FK to them.
+    const showInactive = !!state.catalogShowInactive;
     const grouped = sectionOrder.map(t => ({
       type: t,
       label: sectionLabel[t],
       rows: state.products
-        .filter(p => p.material_type === t)
+        .filter(p => p.material_type === t && (showInactive || p.active))
         .sort(sortRows(t)),
     })).filter(g => g.rows.length);
-    const uncategorized = state.products.filter(p => !sectionOrder.includes(p.material_type));
+    const uncategorized = state.products.filter(p => !sectionOrder.includes(p.material_type) && (showInactive || p.active));
     if (uncategorized.length) grouped.push({ type: 'Other', label: 'Other', rows: uncategorized });
 
     const renderRow = (p) => {
@@ -35394,6 +35515,9 @@ function _mergeAcrossAreas(areaPlans) {
     host.innerHTML = `
       <div class="pec-toolbar">
         <button class="pec-btn primary" id="prodAddProductBtn">+ Add product</button>
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted);cursor:pointer;margin-left:10px">
+          <input type="checkbox" id="prodShowInactive" ${showInactive ? 'checked' : ''}> Show inactive
+        </label>
         <span style="margin-left:auto;color:var(--muted);font-size:.72rem">Cost per kit is what job costing uses. In the editor you can enter cost per gal/box/pack or per kit; the other fills in automatically. Manufacturer = who makes it; Supplier = who you order it from.</span>
       </div>
       ${grouped.length === 0 ? '<div class="pec-empty">No products yet. Click + Add product.</div>' : grouped.map(g => {
@@ -35420,6 +35544,11 @@ function _mergeAcrossAreas(areaPlans) {
       }).join('')}
     `;
     $('prodAddProductBtn').addEventListener('click', () => openProductModal(null));
+    const showInactiveBox = $('prodShowInactive');
+    if (showInactiveBox) showInactiveBox.addEventListener('change', () => {
+      state.catalogShowInactive = showInactiveBox.checked;
+      renderProducts(host);
+    });
     host.querySelectorAll('[data-edit-product]').forEach(b => b.addEventListener('click', () => openProductModal(b.dataset.editProduct)));
     // A TDS/SDS chip click opens the PDF, not the row's edit modal (the click
     // handler lives on the whole <tr>).
