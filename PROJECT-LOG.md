@@ -4,6 +4,52 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: applied the prompt-57 migrations (crew colors in full, flake color model minus the deactivation)
+By: Cowork
+
+Changed: two migrations applied to prod zdfpzmmrgotynrwkeakd, one migration file split, SCHEMA.md refreshed. No code change.
+
+APPLIED 1 of 2, IN FULL: 2026-07-29_crew_colors.sql. One additive column plus a name-keyed backfill.
+Verify (select name, color, active from pec_prod_crews order by name): Davey #10b981 active, Dylan #ec4899 inactive, Kyle #8b5cf6 active, Landen #f59e0b active. Exactly the four expected values. Part F is live.
+
+APPLIED 2 of 2, PARTIALLY: 2026-07-29_flake_color_model.sql, steps 1 through 7 only. Step 8 was HELD.
+
+WHY STEP 8 WAS HELD. The migration header flagged that get_portal_job_catalog and the CRM job-card swatch grid both list flake options straight from pec_prod_products filtered on active, so deactivating the 18 collapsed blends removes them from both. Confirmed in the live function body (the options subquery ends `where p.material_type = rs.material_type and p.active`). Dylan was asked and cleared the CUSTOMER side: the portal is not in use yet, so no customer sees it. That reasoning does not extend to the second surface. The CRM job-card swatch grid is a STAFF screen, and with the portal unused it is currently the ONLY place a colour gets picked on a booked job, so dropping it from 21 options to 3 blends plus the specials is a live internal regression, not a cosmetic one. 54 of 141 job_areas already carry a Torginol blend and 94 jobs have been through the colors-confirmed flow, so this is a path in daily use.
+
+Step 8 is therefore split verbatim into supabase/migrations/2026-07-30_flake_deactivate_collapsed_blends.sql, NOT APPLIED, with a header stating the precondition: apply it once get_portal_job_catalog and the CRM job-card swatch grid read public.colors (category 'flake-blend', joined through colors.product_id for pricing) instead of pec_prod_products. Its @artifacts header is `none: data-only`, since it creates nothing and is unverifiable by the drift checker. The parent file keeps a RESOLVED note and stays idempotent on re-run.
+
+VERIFY COUNTS after steps 1-7:
+- colors where category='flake-blend': 21 (expected 21)
+- ... and product_id is null: 0 (expected 0)
+- ... and default_basecoat_product_id is null: 0 (expected 0)
+- product 8fb6d88d: name 'Standard Flake', color 'Per-job pick', active true (as expected)
+- pec_prod_products where material_type='Flake' and active: 25. EXPECTED 7. This is the one deviation and it is entirely accounted for by holding step 8; nothing failed.
+- pec_prod_areas with flake_color_id: 2, with a flake_product_id but no colour: 0
+- job_areas with flake_color_id: 54, with a flake_product_id but no colour: 22. All 22 verified non-blend (Simiron Special Flake 6, Special Order Flake 6, Torginol Metallic Pigment 3, Q-Color quartz 3, Standard Flake 2, Simiron Metallic 2), which is exactly what the migration's Verify comment predicts.
+
+PAIRING AUDIT, the check that actually matters for Part G. Compared every one of the 21 colors' new default_basecoat_product_id against the pairing its old product carried: 21 of 21 identical. Spot values matching the prompt's acceptance list: Domino pairs Simiron 1100 SL - Light Gray and prices via Standard Flake at $87.44 / 325 (item a); Obsidian pairs Sandstone and prices via its own product at $120.00 / 300 (item b); Wombat still resolves as Wombat, prices $87.44, pairing Light Gray unchanged (item c). Item d (historical costing resolves a retired flake) is trivially satisfied while step 8 is held, since nothing is retired yet, and will need re-checking when that file runs. Item e (Catalog shows 7 active flake products) is NOT met by design, see above.
+
+NOT RUN, HANDED BACK TO DYLAN: the browser-side halves of the acceptance lists. The Part G items were verified at the data layer, which is where the pricing and pairing risk lives, but nobody has looked at the estimator dropdown, the crew-colour calendar, or the run sheet on the live deploy. Part H was not exercised at all, because its central step (Create login on a person with no login) writes a real auth account and possibly sends mail, which is not a change Cowork should make on prod unprompted.
+
+PART H FINDING, FOUND WHILE PREPARING THAT CHECK AND WORTH MORE THAN THE CHECK ITSELF: public.people already holds TWO rows each for Kyle Floyd and Landen Johnson. In both cases one row is crew-only (crew_member_id set, no login) and the other is login-only (admin_user_id set, no crew). 13 people rows for 11 humans. This is not caused by prompt 57 and not caused by Create login; it is the prompt-54 model working as designed, since dedupe across the legacy tables is HUMAN-CONFIRMED only and these two are sitting on the Possible duplicates card waiting for someone to click Merge. Cowork did not merge them: that rule exists on purpose. Dylan should click Merge on both, in the new People tab, and that also gives him a real one-person-not-two verification without creating a test account.
+
+SIX HEX VALUES STILL PROVISIONAL. Garnet #6E3B3B, Obsidian #1C1C1E, Pumice #A8A296, Schist #6E675E, Stonewash #7E8C99, Wombat #757065 are derived neutrals, not Simiron chips, and their sku is NULL on purpose. They render in the swatch grids, so they are visibly wrong to anyone who knows the blends.
+
+SCHEMA.md refreshed: colors (3 new columns, 15 rows to 21, plus the blend-source-of-truth explanation and the type='simiron' vs manufacturer='Torginol' drift note), pec_prod_crews.color, pec_prod_areas.flake_color_id, job_areas.flake_color_id, and a pec_prod_products note recording the Standard Flake rename AND that no product was deactivated. Table counts unchanged and re-verified against the live schema: 82 documented, 82 live, no gaps (both migrations were additive columns only).
+
+Why: the prompt-57 Cowork handoff.
+Files touched: supabase/migrations/2026-07-29_flake_color_model.sql (step 8 removed, RESOLVED note added), supabase/migrations/2026-07-30_flake_deactivate_collapsed_blends.sql (new, not applied), SCHEMA.md, PROJECT-LOG.md (this entry).
+
+## Handoff to Dylan
+1. Eyeball the live deploy: Job Schedule bars filled by crew colour with a system band on top, the crew colour key above the calendar, Next Day and the printed run sheet carrying crew colours.
+2. New estimate on a flake system: confirm the colour dropdown lists all 21 blends and that picking Domino auto-fills Simiron 1100 SL - Light Gray.
+3. Settings > People: click Merge on the Kyle Floyd and Landen Johnson duplicate suggestions.
+4. Send the six real chip hex values (or say to leave the neutrals) so the colors rows can be corrected.
+5. Decide whether to schedule the follow-up that moves get_portal_job_catalog and the CRM job-card swatch grid onto colors, which is what unblocks 2026-07-30_flake_deactivate_collapsed_blends.sql and the Catalog cleanup he originally asked for.
+6. Unrelated and still open: the prompt-56 STOP on legacy labor precedence is awaiting his ruling. It does not touch any of this.
+
+---
+
 ## [2026-07-28 MST] Claude Code: prompt 57 built (schedule colors, shared job popup, sqft, ACH pending, 12hr times, settings nav, flake condense, People+Users merge)
 By: Claude Code
 

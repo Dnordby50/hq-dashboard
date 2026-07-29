@@ -23,6 +23,13 @@
 -- Special) instead of the 21 blend names. The estimator's New Job flake picker
 -- is colors-driven after this migration and keeps all 21 blends. Dylan decides
 -- whether that trade is acceptable before this file is applied.
+--
+-- RESOLVED 2026-07-29 (Cowork): steps 1-7 APPLIED to prod; step 8 HELD and
+-- split into 2026-07-30_flake_deactivate_collapsed_blends.sql. Dylan cleared
+-- the customer side (the portal is not in use yet), but the CRM job-card
+-- swatch grid is the STAFF colour-pick surface on booked jobs and with the
+-- portal unused it is currently the only one, so it would lose 18 of 21
+-- options. Re-running THIS file is safe and idempotent.
 
 -- 1. Colors learn which product prices them, their default basecoat pairing,
 --    and an active flag (mirroring products, for future retirements).
@@ -98,29 +105,10 @@ where a.flake_color_id is null
   and p.material_type = 'Flake'
   and p.manufacturer = 'Torginol';
 
--- 8. Deactivate the 18 collapsed products (explicit ids, never a name match).
---    DO NOT DELETE: historical areas FK to them and costing must keep
---    resolving their names and costs.
-update public.pec_prod_products set active = false where id in (
-  '7c608eff-9394-446f-b496-653615071ee8',  -- Cabin Fever Flake
-  'd556afa1-583c-4fa6-a188-b5de4ac86af7',  -- Coyote Flake
-  '83dca574-4e4e-472f-8f05-e9bc54a1c6b5',  -- Creekbed Flake
-  '94f2da6b-b9b5-4923-96e1-2d3352d50de5',  -- Domino Flake
-  '4a1b7552-9aca-40a5-bf70-aa42f9ebd12b',  -- Feather Gray Flake
-  'd7e17787-78a5-4c99-a173-b856b94037b0',  -- Garnet Flake
-  'b81ce7a2-12a9-4af1-9ad6-89d5f18271ae',  -- Glacier Flake
-  'ea3d1f53-9603-4a2c-a95c-10dede24fbf0',  -- Gravel Flake
-  'bcc436dd-f378-4a89-9117-0dda0a9d483d',  -- Nightfall Flake
-  '3b202382-f96b-4ac1-84da-f2aeee899472',  -- Orbit Flake
-  '901d0b46-0971-462c-a92c-ff58695dd170',  -- Outback Flake
-  '82661eab-f823-42eb-9cbb-0a452350edfb',  -- Pumice Flake
-  '20d9d38a-dab6-4a3d-913e-ffe2be364824',  -- Safari Flake
-  '79b57923-96f0-4ece-ab4a-965fa720d6b5',  -- Schist Flake
-  'e05512ff-63e4-49d2-8ef1-ee067b16a163',  -- Shoreline Flake
-  'a75e6258-cca0-4669-940c-9ca22d989e83',  -- Stargazer Flake
-  'b2be6b28-7352-43a1-83c9-7e004f85de09',  -- Tidal Wave Flake
-  'af13a551-1dae-419a-8540-e1ac8a592c0f'   -- Wombat Flake
-);
+-- 8. (MOVED) Deactivating the 18 collapsed products now lives in
+--    2026-07-30_flake_deactivate_collapsed_blends.sql and is NOT applied.
+--    See that file's header for why. Steps 1-7 above were applied 2026-07-29
+--    and do not depend on it.
 
 -- Verify:
 --   select count(*) from colors where category = 'flake-blend';                          -- 21
@@ -129,7 +117,7 @@ update public.pec_prod_products set active = false where id in (
 --     and default_basecoat_product_id is null;                                           -- 0
 --   select name, color, active from pec_prod_products
 --     where id = '8fb6d88d-33f3-4886-84d0-5e1eb8321509';                                 -- Standard Flake / Per-job pick / true
---   select count(*) from pec_prod_products where material_type = 'Flake' and active;     -- 7
+--   select count(*) from pec_prod_products where material_type = 'Flake' and active;     -- 25 while step 8 is held (7 once it runs)
 --   select count(*) from pec_prod_areas where flake_product_id is not null
 --     and flake_color_id is null;   -- only rows whose product is not a Torginol blend
 --                                   -- (Simiron Special, Special Order, Standard Flake pre-pick)

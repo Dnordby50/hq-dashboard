@@ -12,6 +12,8 @@ Refreshed 2026-07-28 (Cowork, second pass) after the prompt-54 People model migr
 
 Refreshed 2026-07-28 (Cowork, third pass) after the prompt-55 Ops Queue migration: new `pec_ops_items` table (the 82nd) with its shape CHECK, two indexes, four policies and the `pec_ops_item_notify` RPC, plus twelve `ops_*` settings keys (settings 45 rows to 57). Additive only: no existing table, policy, or permission changed.
 
+Refreshed 2026-07-29 (Cowork) after the prompt-57 migrations: `pec_prod_crews.color` (Part F, applied); `colors.product_id` / `colors.default_basecoat_product_id` / `colors.active` plus six inserted flake-blend rows, `pec_prod_areas.flake_color_id`, `job_areas.flake_color_id`, and the `Standard Flake` product rename (Part G steps 1-7, applied). Part G step 8 (deactivating 18 flake products) is NOT applied and is split into 2026-07-30_flake_deactivate_collapsed_blends.sql. Additive only: no existing column changed type, and nothing was deleted or deactivated.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 82 tables documented, 82 live, all in `public`, all with RLS enabled. No gaps.
@@ -71,7 +73,7 @@ RLS: enabled · rows: 754
 PK: id
 
 ### colors
-RLS: enabled · rows: 15
+RLS: enabled · rows: 21
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -83,8 +85,18 @@ RLS: enabled · rows: 15
 | category | text | yes |  |
 | created_at | timestamptz | no | now() |
 | sku | text | yes |  |
+| product_id | uuid | yes |  |
+| default_basecoat_product_id | uuid | yes |  |
+| active | boolean | no | true |
 
 PK: id
+FK: product_id → pec_prod_products.id; default_basecoat_product_id → pec_prod_products.id
+
+Added 2026-07-29 (prompt 57 Part G). `colors` is now the source of truth for the FLAKE BLEND, not just a swatch list. For `category = 'flake-blend'` rows (21 of them, all `type = 'simiron'`):
+- `product_id` is which `pec_prod_products` row PRICES this blend. 18 point at `Standard Flake` (8fb6d88d, $87.44 / 325); Obsidian, Autumn Brown and Stonewash point at their own surviving products because their cost or spread rate differs.
+- `default_basecoat_product_id` carries the flake-to-basecoat pairing that used to live on the flake PRODUCT. All 21 were backfilled from their matching product and verified identical to the pre-migration pairing.
+- Six rows (Garnet, Obsidian, Pumice, Schist, Stonewash, Wombat) were INSERTED by that migration. Their `hex` values are derived neutrals, NOT sourced from Simiron, and their `sku` is deliberately NULL. Dylan owes real chip values.
+- NAMING DRIFT, known and deliberate: these rows carry `type = 'simiron'` while the matching products carry `manufacturer = 'Torginol'`. Torginol makes the flake, Simiron supplies it. Flagged, not reconciled.
 
 ### customers
 RLS: enabled · rows: 84
@@ -311,9 +323,12 @@ RLS: enabled · rows: 127
 | price | numeric | yes |  |
 | description | text | yes |  |
 | is_change_order | boolean | no | false |
+| flake_color_id | uuid | yes |  |
 
 PK: id
-FK: basecoat_product_id → pec_prod_products.id; flake_product_id → pec_prod_products.id; job_id → jobs.id; system_type_id → pec_prod_system_types.id
+FK: basecoat_product_id → pec_prod_products.id; flake_product_id → pec_prod_products.id; flake_color_id → colors.id; job_id → jobs.id; system_type_id → pec_prod_system_types.id
+
+`flake_color_id` added 2026-07-29 (prompt 57 Part G): which BLEND the area carries. `flake_product_id` still prices it. Backfilled from the product's `color` name for Torginol blend rows only, so 54 rows carry a colour and 22 do not (those 22 are Simiron Special, Special Order, Standard Flake, or a quartz/metallic product stored in the same generic swatch column).
 
 ### job_colors
 RLS: enabled · rows: 1
@@ -1026,9 +1041,12 @@ RLS: enabled · rows: 43
 | basecoat_cure_speed | text | yes |  |
 | topcoat_cure_speed | text | yes |  |
 | mvb | boolean | no | false |
+| flake_color_id | uuid | yes |  |
 
 PK: id
-FK: basecoat_product_id → pec_prod_products.id; flake_product_id → pec_prod_products.id; job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id; topcoat_product_id → pec_prod_products.id
+FK: flake_color_id → colors.id; basecoat_product_id → pec_prod_products.id; flake_product_id → pec_prod_products.id; job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id; topcoat_product_id → pec_prod_products.id
+
+`flake_color_id` added 2026-07-29 (prompt 57 Part G): the blend the area carries; `flake_product_id` still prices it. Backfilled from the product colour name for Torginol blend rows (2 rows carried one, 0 blend rows left unmatched).
 
 ### pec_prod_busybusy_employees
 RLS: enabled · rows: 0
@@ -1201,8 +1219,11 @@ RLS: enabled · rows: 4
 | notes | text | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| color | text | yes |  |
 
 PK: id
+
+`color` added 2026-07-29 (prompt 57 Part F): the hex the Job Schedule bars, Next Day cards, and run sheet fill with, so the calendar reads as who-is-where. Backfilled Davey #10b981, Dylan #ec4899, Kyle #8b5cf6, Landen #f59e0b. A NULL falls back to the system-type colour in the UI, never grey. The system type now rides along as a thin banner on the top edge of the bar.
 
 ### pec_prod_holidays
 RLS: enabled · rows: 0
@@ -1472,6 +1493,8 @@ RLS: enabled · rows: 182
 PK: id
 FK: default_basecoat_product_id → pec_prod_products.id
 Added 2026-07-28 (prompt 53): datasheet_path (TDS) and msds_path (MSDS/SDS) hold the Storage OBJECT PATH inside the `pec-datasheets` bucket, never a full URL. The browser builds the link with supabase.storage.from('pec-datasheets').getPublicUrl(path). The bucket is public, PDF-only, 10 MB, with public read and is_admin_staff() writes; it is the app's first Storage feature and was created in SQL by 2026-07-28_product_datasheets.sql.
+
+Changed 2026-07-29 (prompt 57 Part G): product `8fb6d88d-33f3-4886-84d0-5e1eb8321509` was renamed from `Standard Flake (color TBD)` to **`Standard Flake`** with `color = 'Per-job pick'`, and is now THE product behind 18 of the 21 flake blends (the blend itself lives on `colors`, see that section). NO product was deactivated: step 8 of that migration is HELD in `supabase/migrations/2026-07-30_flake_deactivate_collapsed_blends.sql` because the portal RPC and the CRM job-card swatch grid both filter on `active`. `material_type = 'Flake' and active` therefore still counts **25**, not 7.
 
 ### pec_prod_recipe_slots
 RLS: enabled · rows: 24
