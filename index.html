@@ -11981,7 +11981,13 @@ async function renderMetrics() {
     const laborRate = Number(rateRow && rateRow.value) > 0 ? Number(rateRow.value) : 35;
     const lookup = (key) => ({ name: memberById[key]?.name || 'Crew member', wage: memberById[key]?.hourly_wage ?? null });
     for (const jid of new Set([...Object.keys(bbMap), ...Object.keys(manualMap)])) {
-      const hoursByKey = (bbMap[jid] && Object.keys(bbMap[jid]).length) ? bbMap[jid] : manualMap[jid];
+      // Dylan's ruling on the prompt-56 STOP (2026-07-29, option C): manual
+      // hours are a fallback only when no Salary & Wages was hand-typed, so
+      // Metrics agrees with Job Costing about which legacy jobs stay frozen
+      // on their typed labor. BusyBusy hours still beat a typed value.
+      const typedLabor = Number((costByProdJob[jid] || {}).salary_wages_cost || 0);
+      const hoursByKey = (bbMap[jid] && Object.keys(bbMap[jid]).length) ? bbMap[jid] : (typedLabor > 0 ? null : manualMap[jid]);
+      if (!hoursByKey || !Object.keys(hoursByKey).length) continue;
       const calc = computeCrewBonus(null, hoursByKey, lookup, laborRate);
       if (calc.actualLabor > 0) laborByProd[jid] = { laborCost: calc.actualLabor, actHrs: calc.totalHours };
     }
@@ -30244,16 +30250,24 @@ function bbAccumulateEntries(rows) {
 // The ONE crew-labor number for a job: hours, loaded cost (incl. burden), and
 // the suggested bonus pool, all from computeCrewBonus so the Costs card and the
 // Bonus Payout box can never disagree. Precedence: BusyBusy hours, else the
-// manual per-member hours editor, else nothing. Returns zeros when neither
-// exists, so a job with no hours never invents labor. A subcontracted job
-// still gets a real laborCost when crew hours exist; only the bonus POOL is
-// suppressed for it (null budget into computeCrewBonus, same as the detail).
+// manual per-member hours editor (ONLY when no Salary & Wages was hand-typed,
+// see below), else nothing. Returns zeros when neither exists, so a job with
+// no hours never invents labor. A subcontracted job still gets a real
+// laborCost when crew hours exist; only the bonus POOL is suppressed for it
+// (null budget into computeCrewBonus, same as the detail).
 function crewLaborForJob(job, sys) {
   const bb = (state.bbHoursByJobMember || {})[job.id];
   const hasBB = !!(bb && Object.keys(bb).length);
   let hoursByKey = hasBB ? bb : null;
   if (!hoursByKey) {
-    const manual = (state.manualLaborByJob?.[job.id] || []).filter(m => m.crew_member_id);
+    // Dylan's ruling on the prompt-56 STOP (2026-07-29, option C): the manual
+    // per-member hours fallback applies ONLY when the job has no hand-typed
+    // Salary & Wages. The shipped rule silently restated GP on 34 legacy jobs
+    // (+$4,785, 31 already finalized) that carried BOTH a typed labor cost
+    // and manual hour rows; typed now freezes those, while BusyBusy hours
+    // still beat a typed value (prompt-56 locked decision 2, unchanged).
+    const typedLabor = Number(((state.costing || []).find(c => c.job_id === job.id) || {}).salary_wages_cost || 0);
+    const manual = typedLabor > 0 ? [] : (state.manualLaborByJob?.[job.id] || []).filter(m => m.crew_member_id);
     if (manual.length) {
       hoursByKey = {};
       for (const m of manual) {

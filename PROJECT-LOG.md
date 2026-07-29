@@ -40,6 +40,28 @@ Handoff to Dylan: commit the two files (Cowork's git commit fails from the cloud
 
 ---
 
+## [2026-07-29 MST] Prompt-56 STOP resolved: typed labor freezes legacy jobs (Dylan ruled option C)
+By: Claude Code
+
+Changed: the manual per-member hours fallback in crewLaborForJob, and its Metrics twin in the laborByProd builder, now applies ONLY when the job has no hand-typed salary_wages_cost. BusyBusy hours still beat a typed value (prompt-56 locked decision 2 unchanged). This is the one-condition change the Cowork STOP entry predicted.
+
+Dylan's rulings (asked directly, both answered 2026-07-29):
+1. Legacy labor precedence: OPTION C. Manual hours are a fallback for empty boxes only; the 34 legacy jobs (typed labor $30,237.92 total, 31 already finalized) revert to their typed numbers, un-restating the +$4,785.34 GP move the STOP flagged. Verified against prod read-only before commit: the typed-AND-manual-AND-no-BusyBusy population is still exactly 34 jobs / $30,237.92 / 31 finalized, so the fix freezes precisely the STOP population.
+2. Cross-era wage basis (legacy typed = raw wages vs derived = wages + 25% burden): LIVE WITH IT. No backfill, no trend exclusion; logged here as decided, not open.
+
+HOW THE FIX WORKS: crewLaborForJob looks up the job's pec_prod_job_costing row in state.costing (hydrated by loadCostingData on every calling surface) and skips the manual-hours branch when salary_wages_cost > 0, so computeCostingRow's derived-beats-stored rule sees laborCost 0 and falls back to the typed value. pendingBonusForJob consequently returns 0 for these jobs too (no invented pool on frozen history). Metrics mirrors the same condition off costByProdJob so the list, rollups, and Metrics GP can never disagree about which jobs froze.
+
+Still open from the prompt-56 saga, now unblocked for Dylan/Cowork:
+- Bobette Weiss sits approved-not-finalized: run Unapprove, re-Approve, Finalize by hand (the confirm() dialog is not automatable).
+- Verify items 6 and 10 (Rollups hours, Metrics GP delta) can now be measured meaningfully since the item-7 regression is gone.
+
+Why: Dylan asked for the prompt-56 open items in plain terms and ruled on the spot.
+Files touched: index.html (crewLaborForJob, Metrics laborByProd builder), features.json (Job costing entry), help/whats-new.json (1 entry), PROJECT-LOG.md (this entry).
+Tests: npm test green (486 assertions); every inline script block node-checked.
+Handoff to Dylan: finish Bobette Weiss (Unapprove, Approve, Finalize) whenever convenient; the flake hexes and the two People merges (Kyle Floyd, Landen Johnson) are still waiting on you separately.
+
+---
+
 ## [2026-07-29 MST] Prompt 58 shipped: touch-up count, Sunday calendars, change orders surfaced, derived schedule price, custom-mode work order questions, Enhancify financing
 By: Claude Code
 

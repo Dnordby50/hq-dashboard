@@ -1,5 +1,15 @@
 [
   {
+    "id": "legacy-labor-typed-freeze",
+    "date": "2026-07-29",
+    "title": "Older jobs keep their original labor numbers",
+    "summary": "A recent update made Job Costing calculate labor from crew hours. On 34 older jobs that had both a typed labor cost and hand-entered hours, the calculated number quietly replaced the typed one and shifted their profit. Per Dylan's ruling, those jobs now keep the labor cost that was typed in, so their history reads exactly as it did before. New jobs, and any job with BusyBusy clock hours, still use the automatic math.",
+    "howto": [
+      "Nothing to do. Open Job Costing and older jobs show their original typed Salary and Wages again.",
+      "Jobs with BusyBusy hours keep the automatic labor math, including the 25% burden."
+    ]
+  },
+  {
     "id": "financing-enhancify-block",
     "date": "2026-07-29",
     "title": "Financing option on estimates and invoices",
