@@ -14,6 +14,8 @@ Refreshed 2026-07-28 (Cowork, third pass) after the prompt-55 Ops Queue migratio
 
 Refreshed 2026-07-29 (Cowork) after the prompt-57 migrations: `pec_prod_crews.color` (Part F, applied); `colors.product_id` / `colors.default_basecoat_product_id` / `colors.active` plus six inserted flake-blend rows, `pec_prod_areas.flake_color_id`, `job_areas.flake_color_id`, and the `Standard Flake` product rename (Part G steps 1-7, applied). Part G step 8 (deactivating 18 flake products) is NOT applied and is split into 2026-07-30_flake_deactivate_collapsed_blends.sql. Additive only: no existing column changed type, and nothing was deleted or deactivated.
 
+Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration (2026-08-02_material_order_overrides.sql, applied via MCP): `pec_prod_material_lines` gained `order_qty_manual` and `manual_added` (both boolean not null default false); 12 legacy order_index >= 9000 rows backfilled manual_added=true. Only that table's section changed.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 82 tables documented, 82 live, all in `public`, all with RLS enabled. No gaps.
@@ -1419,7 +1421,7 @@ PK: id
 FK: job_id → pec_prod_jobs.id
 
 ### pec_prod_material_lines
-RLS: enabled · rows: 127
+RLS: enabled · rows: 142
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1447,6 +1449,8 @@ RLS: enabled · rows: 127
 | updated_at | timestamptz | no | now() |
 | cure_speed | text | yes |  |
 | actual_used_qty | numeric | yes |  |
+| order_qty_manual | boolean | no | false |
+| manual_added | boolean | no | false |
 
 PK: id
 FK: area_id → pec_prod_areas.id; job_id → pec_prod_jobs.id; product_id → pec_prod_products.id
