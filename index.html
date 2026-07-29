@@ -13088,7 +13088,7 @@ function renderInvoicingDocs() {
       <li><strong>Job Costing</strong>: actual cost vs budget per completed job, plus the Pending Job Costing queue.</li>
       <li><strong>Invoicing</strong>: accounts receivable, payments, and invoice status.</li>
       <li><strong>Price &amp; Material Catalog</strong>: the system types, products, recipe slots, and color pairings the estimator and material plan use.</li>
-      <li><strong>Settings</strong>: configuration (admin only). The <strong>Users</strong> tab manages staff logins, roles, and per-user permissions (formerly the separate Team page); other tabs cover brand identity, email, crews, and more.</li>
+      <li><strong>Settings</strong>: configuration (admin only). The <strong>People</strong> tab is one record per person, including their login, role, and per-user permissions (the old Users tab merged in); other tabs cover brand identity, email, crews, and more.</li>
     </ul>
     <hr style="border:none;border-top:1px solid var(--rd-line, var(--border));margin:18px 0">
     <h3>Invoicing &amp; AR module</h3>
@@ -15722,9 +15722,10 @@ async function renderReviews() {
   `;
 }
 
-// Staff (admin_users) management lives in Settings > Users (renderSettingsUsers).
-// The old standalone Team view was merged there; openTeamForm + openResetPasswordForm
-// below are still used by that view.
+// Staff (admin_users) management lives on Settings > People (prompt 57 Part H:
+// the Users tab merged in; the person modal's Login section manages role +
+// permissions). openTeamForm below is now the Create-login / Add-Staff modal
+// and openResetPasswordForm the password reset, both invoked from there.
 
 // Admin sets a new password for a staff member. Goes through the
 // pec-reset-password Netlify function (service role + admin check); the browser
@@ -15768,16 +15769,16 @@ function openResetPasswordForm(t) {
   } });
 }
 
-function openTeamForm(t) {
+function openTeamForm(t, opts = {}) {
   const isNew = !t;
   openModal(`
-    <h3>${isNew ? 'Add Staff' : 'Edit Staff'}</h3>
+    <h3>${isNew ? (opts.name ? 'Create login' : 'Add Staff') : 'Edit Staff'}</h3>
     ${isNew ? `<p style="font-size:.8rem;color:var(--muted);margin-bottom:10px">
       Creates a sign-in account for this person. They can change their password later via "Forgot password?" on the sign-in screen.
     </p>` : ''}
     <form id="pecTeamForm">
-      <div class="pec-field"><label>Name</label><input name="name" required value="${esc(t?.name || '')}"></div>
-      <div class="pec-field"><label>Email</label><input name="email" type="email" required value="${esc(t?.email || '')}" ${isNew ? '' : 'readonly'}></div>
+      <div class="pec-field"><label>Name</label><input name="name" required value="${esc(t?.name || opts.name || '')}"></div>
+      <div class="pec-field"><label>Email</label><input name="email" type="email" required value="${esc(t?.email || opts.email || '')}" ${isNew ? '' : 'readonly'}></div>
       ${isNew ? `<div class="pec-field"><label>Initial password</label><input name="password" type="password" required minlength="8" autocomplete="new-password"></div>` : ''}
       <div class="pec-field"><label>Role</label>
         <select name="role">
@@ -15821,7 +15822,12 @@ function openTeamForm(t) {
         errEl.textContent = 'Save failed: ' + err.message;
         return; // do not close on error so user can retry
       }
-      closeModal(); renderSettings();
+      closeModal();
+      // opts.onCreated (prompt 57 Part H): the person modal's Create-login
+      // flow links the fresh admin_users row back to its person before the
+      // People tab re-renders. Only fires on a successful CREATE.
+      if (isNew && typeof opts.onCreated === 'function') { await opts.onCreated(body); return; }
+      renderSettings();
     });
   }});
 }
@@ -16903,7 +16909,6 @@ function settingsTabBar(active) {
     <div data-settings-tabstrip style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:thin;-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);padding-bottom:2px">
     ${btn('general', 'General')}
     ${btn('people', 'People')}
-    ${btn('users', 'Users')}
     ${btn('email', 'Email')}
     ${btn('appointments', 'Appointments')}
     ${btn('drips', 'Drips')}
@@ -17954,16 +17959,33 @@ function pecPersonRoleChips(p) {
   if (p.crew_member_id) chips.push('<span class="pec-badge" style="background:#b45309;color:#fff">Crew</span>');
   return chips.join(' ') || '<span style="color:var(--muted)">—</span>';
 }
+// Capabilities an admin can delegate to a non-admin (prompt 57 Part H: hoisted
+// from the retired renderSettingsUsers so the person modal's Login section can
+// read it). Team + Settings management are intentionally NOT here: they stay
+// admin-only (the admin role grants them).
+const PEC_DELEGABLE_PERMS = [
+  ['can_move_pipeline', 'Move pipeline cards'],
+  ['can_view_job_costing', 'Job Costing'],
+  ['can_override_status', 'Override status'],
+  ['can_view_commission', 'Commission'],
+  ['can_edit_catalog', 'Catalog'],
+];
 async function renderSettingsPeople() {
   const root = $('pecViewRoot');
   if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
-  const [peopleRes, crewsRes, salesRes, crewMembersRes, adminUsersRes, settingsRes] = await withFreshSession(() => Promise.all([
+  // Login/permission/sign-in reads are ADMIN data. The whole Settings view is
+  // admin-gated today, but these stay section-gated on isLoginAdmin below so a
+  // future relaxation of the outer gate can never leak the auth surface.
+  const isLoginAdmin = state.adminUser?.role === 'admin';
+  const [peopleRes, crewsRes, salesRes, crewMembersRes, adminUsersRes, settingsRes, permRes, signInsRes] = await withFreshSession(() => Promise.all([
     supabase.from('people').select('*').order('full_name'),
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_sales_team_members').select('*'),
     supabase.from('pec_prod_crew_members').select('*'),
     supabase.from('admin_users').select('id,name,email,role,auth_user_id').order('name'),
     supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days']),
+    isLoginAdmin ? supabase.from('user_permissions').select('*') : Promise.resolve({ data: [] }),
+    isLoginAdmin ? supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20) : Promise.resolve({ data: [] }),
   ]), { label: 'renderSettingsPeople' });
   if (peopleRes.error) {
     const missing = /relation .*people|people.*does not exist|schema cache/i.test(peopleRes.error.message || '');
@@ -17980,6 +18002,9 @@ async function renderSettingsPeople() {
   const crewMemberById = Object.fromEntries((crewMembersRes.data || []).map(m => [m.id, m]));
   const adminById = Object.fromEntries((adminUsersRes.data || []).map(u => [u.id, u]));
   state.peopleAdminUsers = adminUsersRes.data || [];
+  // Per-login capability rows for the person modal's Login section.
+  state.peoplePerms = (permRes && permRes.data) || [];
+  const signIns = (signInsRes && signInsRes.data) || [];
   const settingsMap = Object.fromEntries((settingsRes.data || []).map(r => [r.key, r.value]));
   let dismissed;
   try { dismissed = new Set(JSON.parse(settingsMap.people_merge_dismissed || '[]')); } catch (_) { dismissed = new Set(); }
@@ -18042,7 +18067,7 @@ async function renderSettingsPeople() {
               <td>${cm ? `<select data-person-crew style="min-width:110px"><option value="">No crew</option>${crews.map(c => `<option value="${esc(c.id)}" ${cm.crew_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${cm ? `<input class="prod-num" type="number" min="0" step="0.01" data-person-wage value="${esc(cm.hourly_wage ?? '')}" placeholder="default rate" style="width:100px">` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${sm ? `<input class="prod-num" type="number" min="0" max="100" step="0.5" data-person-pct value="${esc(sm.commission_pct ?? 0)}" style="width:80px">${sm.exclude_from_commission ? ' <span title="Excluded from the Commission report" style="font-size:.7rem;color:var(--muted)">excl.</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
-              <td style="font-size:.78rem">${au ? esc(au.email || au.name || 'linked') : '<span style="color:var(--muted)">—</span>'}</td>
+              <td style="font-size:.78rem">${au ? `${esc(au.email || au.name || 'linked')} <span class="pec-badge ${esc(au.role || '')}">${esc(au.role || '')}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${pecBirthdayLabel(p.birth_month, p.birth_day) || '<span style="color:#b45309" title="No birthday set. Edit to add one.">Not set</span>'}</td>
               <td><input type="checkbox" data-person-active ${p.active !== false ? 'checked' : ''} style="width:auto"></td>
               <td><button class="pec-btn sm ghost" data-person-edit>Edit</button></td>
@@ -18050,8 +18075,26 @@ async function renderSettingsPeople() {
           }).join('') || '<tr class="nohover"><td colspan="9" class="pec-empty">No people yet. The migration backfill creates them from Users, Sales Team, and Team Members.</td></tr>'}
         </tbody>
       </table></div>
-      <p style="color:var(--muted);font-size:.7rem;margin:10px 0 0">The old cards (General tab: Sales Team, Crews, Team Members; the Users tab) keep working and stay in sync; they are the fallback if anything here misbehaves. Crews themselves are still managed on the General tab; here you assign people to them.</p>
+      <p style="color:var(--muted);font-size:.7rem;margin:10px 0 0">Logins, roles, and permissions moved here from the old Users tab (prompt 57): open a person to manage their Login section, or create a login for someone who has none. The old General-tab cards (Sales Team, Crews, Team Members) keep working and stay in sync. Crews themselves are still managed on the General tab; here you assign people to them.</p>
     </div>
+    ${isLoginAdmin ? `
+    <div class="pec-card">
+      <details>
+        <summary style="cursor:pointer;font-weight:700">Recent sign-ins <span style="color:var(--muted);font-weight:400;font-size:.75rem">last 20, a security surface, kept from the old Users tab</span></summary>
+        <div class="pec-table-wrap" style="margin-top:10px">
+        <table class="pec-table">
+          <thead><tr><th>Email</th><th>IP</th><th>When</th><th>Device</th></tr></thead>
+          <tbody>${signIns.map(s => `
+            <tr class="nohover">
+              <td>${esc(s.email || '—')}</td>
+              <td style="font-family:var(--body);font-variant-numeric:tabular-nums;font-size:.75rem">${esc(s.ip_address || '—')}</td>
+              <td>${s.signed_in_at ? new Date(s.signed_in_at).toLocaleString() : '—'}</td>
+              <td style="color:var(--muted);font-size:.72rem">${esc((s.user_agent || '').slice(0, 60))}</td>
+            </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No sign-ins yet</td></tr>'}</tbody>
+        </table>
+        </div>
+      </details>
+    </div>` : ''}
   `;
   wireSettingsTabs(root);
   $('pecPersonAddBtn').addEventListener('click', () => openPersonModal(null));
@@ -18100,7 +18143,7 @@ async function renderSettingsPeople() {
     }
   }));
   // Person-level active: writes people.active; the mirror carries it to the
-  // sales and crew rows. Login disablement stays in Settings > Users.
+  // sales and crew rows. Login role changes live in the person's Login section.
   root.querySelectorAll('[data-person-active]').forEach(inp => inp.addEventListener('change', async () => {
     const p = personOf(inp); if (!p) return;
     const active = inp.checked;
@@ -18149,6 +18192,54 @@ function openPersonModal(personId) {
   const p = existing || { full_name: '', display_name: '', email: '', phone: '', active: true, birth_month: null, birth_day: null };
   const claimedAdminIds = new Set((state.people || []).filter(x => x.admin_user_id && x.id !== personId).map(x => x.admin_user_id));
   const loginOptions = (state.peopleAdminUsers || []).filter(u => !claimedAdminIds.has(u.id));
+  // Login section (prompt 57 Part H, merged from the old Users tab). Admin-only
+  // at the SECTION level, not just the tab: even if the outer Settings gate is
+  // ever relaxed, login data never renders for non-admins.
+  const isLoginAdmin = state.adminUser?.role === 'admin';
+  const au = (existing && p.admin_user_id) ? (state.peopleAdminUsers || []).find(u => u.id === p.admin_user_id) : null;
+  const permRow = au ? (state.peoplePerms || []).find(r => r.admin_user_id === au.id) : null;
+  const permVal = key => permRow ? !!permRow[key] : true; // missing row = all capabilities (the default)
+  const finalizeAllowed = !(permRow && permRow.can_finalize_costing === false);
+  // Two capability blocks, toggled live by the role select: non-admins get the
+  // delegable checkboxes (Finalize never applies: they submit for review);
+  // admins are full-access with Finalize as the ONE restrictable capability.
+  const permsStaffHtml = `
+    <div data-perms-staff style="display:flex;gap:14px;flex-wrap:wrap;font-size:.82rem;margin:6px 0 8px">
+      ${PEC_DELEGABLE_PERMS.map(([key, lbl]) => `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" data-person-perm="${esc(key)}" ${permVal(key) ? 'checked' : ''} style="width:auto"> ${esc(lbl)}</label>`).join('')}
+      <span style="color:var(--muted);font-size:.72rem;align-self:center">Finalize costing: submits for review (non-admins never finalize)</span>
+    </div>`;
+  const permsAdminHtml = `
+    <div data-perms-admin style="display:flex;gap:14px;flex-wrap:wrap;font-size:.82rem;margin:6px 0 8px">
+      <span style="color:var(--muted);font-size:.78rem;align-self:center">Admin (full access)</span>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" data-person-perm="can_finalize_costing" ${finalizeAllowed ? 'checked' : ''} style="width:auto"> Finalize costing</label>
+    </div>`;
+  const loginSectionHtml = !isLoginAdmin ? '' : `
+    <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;padding-top:8px;border-top:1px solid var(--rd-line,var(--border))">Login</div>
+    ${au ? `
+      <div style="font-size:.8rem;margin-bottom:6px"><strong>${esc(au.email || au.name || '')}</strong> · linked auth ${au.auth_user_id ? '✓' : '<span style="color:#b45309">not connected</span>'}</div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Role</label>
+          <select id="personLoginRole">
+            <option value="office" ${au.role === 'office' ? 'selected' : ''}>Office</option>
+            <option value="pm" ${au.role === 'pm' ? 'selected' : ''}>PM</option>
+            <option value="admin" ${au.role === 'admin' ? 'selected' : ''}>Admin</option>
+          </select>
+        </div>
+        <div class="pec-field" style="align-self:end">
+          ${au.auth_user_id ? '<button type="button" class="pec-btn sm" id="personResetPw">Reset password</button>' : ''}
+          ${au.id !== state.adminUser?.id ? '<button type="button" class="pec-btn sm danger" id="personDeleteLogin">Delete login</button>' : ''}
+        </div>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:2px">Permissions <span style="text-transform:none">(saved with this person; the user sees changes on their next load)</span></div>
+      ${permsStaffHtml}
+      ${permsAdminHtml}` : `
+      ${existing ? '<button type="button" class="pec-btn sm primary" id="personCreateLogin">Create login</button> <span style="color:var(--muted);font-size:.72rem">makes a sign-in account for this person and links it here</span>' : ''}`}
+    <div class="pec-field" style="margin-top:8px"><label>Linked login <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">relink or unlink an existing sign-in</span></label>
+      <select id="personLogin">
+        <option value="">No login</option>
+        ${loginOptions.map(u => `<option value="${esc(u.id)}" ${p.admin_user_id === u.id ? 'selected' : ''}>${esc(u.name || u.email)}${u.email && u.name ? ` (${esc(u.email)})` : ''}</option>`).join('')}
+      </select>
+    </div>`;
   openModal(`
     <h3>${existing ? 'Edit person' : 'New person'}</h3>
     <div class="pec-row-2">
@@ -18180,12 +18271,7 @@ function openPersonModal(personId) {
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="personRoleSales" style="width:auto"> Sales rep</label>
         <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="personRoleCrew" style="width:auto"> Crew member</label>
       </div>`}
-    <div class="pec-field"><label>Login <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">link to a CRM sign-in; create new logins in Settings &gt; Users</span></label>
-      <select id="personLogin">
-        <option value="">No login</option>
-        ${loginOptions.map(u => `<option value="${esc(u.id)}" ${p.admin_user_id === u.id ? 'selected' : ''}>${esc(u.name || u.email)}${u.email && u.name ? ` (${esc(u.email)})` : ''}</option>`).join('')}
-      </select>
-    </div>
+    ${loginSectionHtml}
     ${existing && p.sales_team_member_id ? '<div style="color:var(--muted);font-size:.7rem;margin:4px 0 8px">Renaming is safe for commission: the old name is kept as an alias, so past jobs stay attributed to this person.</div>' : ''}
     <div class="pec-modal-actions">
       <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -18204,6 +18290,60 @@ function openPersonModal(personId) {
     };
     modal.querySelector('#personGrantSales')?.addEventListener('click', () => grant('sales'));
     modal.querySelector('#personGrantCrew')?.addEventListener('click', () => grant('crew'));
+    // Login section wiring (prompt 57 Part H). The role select live-toggles
+    // which capability block shows (delegable checkboxes vs admin+Finalize).
+    const roleSel = modal.querySelector('#personLoginRole');
+    const syncPermBlocks = () => {
+      const isAdminRole = roleSel && roleSel.value === 'admin';
+      const staffBlk = modal.querySelector('[data-perms-staff]');
+      const adminBlk = modal.querySelector('[data-perms-admin]');
+      if (staffBlk) staffBlk.style.display = isAdminRole ? 'none' : '';
+      if (adminBlk) adminBlk.style.display = isAdminRole ? '' : 'none';
+    };
+    if (roleSel) { syncPermBlocks(); roleSel.addEventListener('change', syncPermBlocks); }
+    modal.querySelector('#personResetPw')?.addEventListener('click', () => { openResetPasswordForm(au); });
+    modal.querySelector('#personDeleteLogin')?.addEventListener('click', async () => {
+      if (!au) return;
+      if (!confirm(`Delete the login for ${au.email || au.name}? The person record stays; only the sign-in account row goes. (This does not delete the linked auth account.)`)) return;
+      const adminCount = (state.peopleAdminUsers || []).filter(u => u.role === 'admin').length;
+      if (au.role === 'admin' && adminCount <= 1) { err.textContent = 'Cannot delete the last admin.'; return; }
+      try {
+        const { error } = await withFreshWrite(() => supabase.from('admin_users').delete().eq('id', au.id), { label: 'person-delete-login' });
+        if (error) throw error;
+        closeModal(); renderSettings();
+      } catch (e) { err.textContent = 'Could not delete the login: ' + (e.message || e); }
+    });
+    // Create login: the existing pec-create-staff path via openTeamForm
+    // (prefilled). The prompt-54 adopt trigger INSERTS a fresh person for the
+    // new admin_users row (it does not match by email), so after creation we
+    // fold that auto-created person into THIS one with the sanctioned
+    // pec_people_merge RPC — one human, one row (acceptance: one row, not two).
+    modal.querySelector('#personCreateLogin')?.addEventListener('click', () => {
+      closeModal();
+      openTeamForm(null, {
+        name: p.full_name, email: p.email || '',
+        async onCreated(body) {
+          try {
+            const auRes = await supabase.from('admin_users').select('id').ilike('email', (body && body.email) || p.email || '').maybeSingle();
+            const newAuId = auRes && auRes.data && auRes.data.id;
+            if (newAuId) {
+              const dup = await supabase.from('people').select('id').eq('admin_user_id', newAuId).neq('id', personId).maybeSingle();
+              if (dup && dup.data && dup.data.id) {
+                const m = await supabase.rpc('pec_people_merge', { p_keep: personId, p_remove: dup.data.id });
+                if (m.error) throw m.error;
+              } else {
+                const l = await supabase.from('people').update({ admin_user_id: newAuId }).eq('id', personId);
+                if (l.error) throw l.error;
+              }
+            }
+          } catch (e) {
+            console.warn('[pec] create-login link-back failed:', e);
+            showToast('Login created, but it could not be auto-linked to this person. Link it from the person&#39;s Linked login dropdown, and check for a duplicate person row.', { ttl: 8000 });
+          }
+          renderSettings();
+        },
+      });
+    });
     modal.querySelector('#personSave').addEventListener('click', async () => {
       err.textContent = '';
       const full_name = modal.querySelector('#personName').value.trim();
@@ -18214,6 +18354,7 @@ function openPersonModal(personId) {
       if ((bMonth == null) !== (bDay == null)) return err.textContent = 'Birthday needs both a month and a day (or neither).';
       if (bDay != null && (!Number.isInteger(bDay) || bDay < 1 || bDay > 31)) return err.textContent = 'Birthday day must be 1 to 31.';
       if (!existing && bMonth == null) return err.textContent = 'Birthday (month and day) is required for new people.';
+      const loginSel = modal.querySelector('#personLogin');
       const body = {
         full_name,
         display_name: modal.querySelector('#personDisplay').value.trim() || null,
@@ -18221,7 +18362,8 @@ function openPersonModal(personId) {
         phone: modal.querySelector('#personPhone').value.trim() || null,
         birth_month: bMonth, birth_day: bDay,
         active: modal.querySelector('#personActive').checked,
-        admin_user_id: modal.querySelector('#personLogin').value || null,
+        // The select only renders for admins; non-admin saves keep the link.
+        admin_user_id: loginSel ? (loginSel.value || null) : (p.admin_user_id || null),
       };
       const saveBtn = modal.querySelector('#personSave');
       saveBtn.disabled = true;
@@ -18229,6 +18371,37 @@ function openPersonModal(personId) {
         if (existing) {
           const { error } = await withFreshWrite(() => supabase.from('people').update(body).eq('id', personId), { label: 'person-save' });
           if (error) throw error;
+          // Login role + permissions (prompt 57 Part H): saved per person with
+          // the same Save, replacing the old Users tab's bulk grid. Applies to
+          // the login whose controls were rendered (the person's linked login
+          // at open time), never to a just-relinked one.
+          if (au && roleSel) {
+            const newRole = roleSel.value;
+            if (newRole !== au.role) {
+              const adminCount = (state.peopleAdminUsers || []).filter(u => u.role === 'admin').length;
+              if (au.role === 'admin' && newRole !== 'admin' && adminCount <= 1) throw new Error('Cannot demote the last admin.');
+              const r = await withFreshWrite(() => supabase.from('admin_users').update({ role: newRole }).eq('id', au.id), { label: 'person-login-role' });
+              if (r.error) throw r.error;
+            }
+            const permBlock = modal.querySelector(newRole === 'admin' ? '[data-perms-admin]' : '[data-perms-staff]');
+            const row = { admin_user_id: au.id };
+            (permBlock ? permBlock.querySelectorAll('[data-person-perm]') : []).forEach(cb => { row[cb.dataset.personPerm] = cb.checked; });
+            if (Object.keys(row).length > 1) {
+              let { error: pe } = await supabase.from('user_permissions').upsert(row, { onConflict: 'admin_user_id' });
+              // Deploy-order safety (same as the old Users grid): before the
+              // 2026-07-06 migration, can_finalize_costing 400s; retry without
+              // it so the other capabilities still save.
+              if (pe && /can_finalize_costing/.test(pe.message || '')) {
+                const { can_finalize_costing, ...rest } = row;
+                ({ error: pe } = Object.keys(rest).length > 1
+                  ? await supabase.from('user_permissions').upsert(rest, { onConflict: 'admin_user_id' })
+                  : { error: null });
+                if (!pe) showToast('Saved, except Finalize costing: run the 2026-07-06_can_finalize_costing migration first.', { ttl: 6000 });
+              }
+              if (pe) throw pe;
+            }
+            await resolveAdminUser(); // refresh own permissions if the admin edited their own row
+          }
           if (existing.sales_team_member_id && existing.full_name !== full_name) {
             showToast('Renamed. The old name stays as a commission alias, so history keeps its attribution.', { ttl: 6000 });
           }
@@ -18652,7 +18825,10 @@ async function renderSettings() {
   // when leaving the Email tab or the Settings view).
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
   if (state.settingsTab === 'people') return renderSettingsPeople();
-  if (state.settingsTab === 'users') return renderSettingsUsers();
+  // Users merged into People (prompt 57 Part H). The 'users' key still routes
+  // so existing deep links and the data-ops-tab handler never 404 into a
+  // blank view.
+  if (state.settingsTab === 'users') { state.settingsTab = 'people'; return renderSettingsPeople(); }
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'drips') return renderSettingsDrips();
@@ -18987,159 +19163,10 @@ async function renderSettings() {
   wireSettingsTabs(root);
 }
 
-// Settings > Users: the single place to manage CRM logins. Merges what used to
-// be the standalone Team page (add staff, role, reset password, delete, sign-ins)
-// with the per-user capability grid (formerly Settings > User Permissions), since
-// both act on the SAME admin_users records. Admin-only (Settings already gates).
-// Crews / Crew Members stay separate (they are field workers, not logins).
-async function renderSettingsUsers() {
-  const root = $('pecViewRoot');
-  if (state.adminUser?.role !== 'admin') { root.innerHTML = '<div class="pec-empty">Admins only.</div>'; return; }
-  const [teamRes, permRes, signInsRes] = await withFreshSession(() => Promise.all([
-    supabase.from('admin_users').select('id,name,email,role,auth_user_id').order('name'),
-    supabase.from('user_permissions').select('*'),
-    supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20),
-  ]), { label: 'renderSettingsUsers' });
-  state.team = teamRes.data || [];
-  const signIns = signInsRes.data || [];
-  const permByUser = {};
-  for (const p of (permRes.data || [])) permByUser[p.admin_user_id] = p;
-  // Capabilities an admin can delegate to a non-admin. Team + Settings management
-  // are intentionally NOT here: they stay admin-only (the admin role grants them).
-  const DELEGABLE_PERMS = [
-    ['can_move_pipeline', 'Move pipeline cards'],
-    ['can_view_job_costing', 'Job Costing'],
-    ['can_override_status', 'Override status'],
-    ['can_view_commission', 'Commission'],
-    ['can_edit_catalog', 'Catalog'],
-  ];
-  const permVal = (uid, key) => { const r = permByUser[uid]; return r ? !!r[key] : true; };
-  // Finalize costing is the ONE capability that applies to ADMIN rows: it
-  // restricts the super-role (see canFinalizeCosting), so admins get a real
-  // checkbox here while their other capabilities stay "full access". Read with
-  // explicit-false semantics (missing row or pre-migration missing column =
-  // allowed), mirroring the runtime check exactly. Non-admins never finalize
-  // regardless, so their cell is informational.
-  const finalizeAllowed = (uid) => { const r = permByUser[uid]; return !(r && r.can_finalize_costing === false); };
-  const colCount = 4 + DELEGABLE_PERMS.length + 2; // Name, Email, Role, Auth + caps + Finalize costing + Actions
-
-  root.innerHTML = `
-    ${settingsTabBar('users')}
-    <div class="pec-card">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <h3 style="margin:0">Users</h3>
-        <span style="color:var(--muted);font-size:.72rem">Staff logins, roles, and capabilities. New accounts get every capability by default; uncheck to remove one. Admins always have full access (the role is a super-role), with ONE exception: unchecking Finalize costing on an admin makes them submit costing for review instead. Team and Settings management stay admin-only.</span>
-        <span style="flex:1"></span>
-        <button class="pec-btn sm" id="pecUsersSavePerms">Save permissions</button>
-        <button class="pec-btn primary sm" id="pecUsersAdd">+ Add Staff</button>
-      </div>
-      <div class="pec-table-wrap">
-        <table class="pec-table">
-          <thead><tr>
-            <th>Name</th><th>Email</th><th>Role</th><th>Linked Auth</th>
-            ${DELEGABLE_PERMS.map(([, lbl]) => `<th style="text-align:center">${esc(lbl)}</th>`).join('')}
-            <th style="text-align:center">Finalize costing</th>
-            <th>Actions</th>
-          </tr></thead>
-          <tbody>
-            ${state.team.map(t => `
-              <tr class="nohover" data-team-id="${esc(t.id)}">
-                <td><strong>${esc(t.name || '')}</strong></td>
-                <td>${esc(t.email || '')}</td>
-                <td><span class="pec-badge ${esc(t.role || '')}">${esc(t.role || '')}</span></td>
-                <td>${t.auth_user_id ? '✓' : '—'}</td>
-                ${t.role === 'admin'
-                  ? `<td colspan="${DELEGABLE_PERMS.length}" style="color:var(--muted);font-size:.72rem">Admin (full access)</td>`
-                  : DELEGABLE_PERMS.map(([key]) => `<td style="text-align:center"><input type="checkbox" data-perm-user="${esc(t.id)}" data-perm-key="${esc(key)}" ${permVal(t.id, key) ? 'checked' : ''}></td>`).join('')}
-                ${t.role === 'admin'
-                  ? `<td style="text-align:center"><input type="checkbox" data-perm-user="${esc(t.id)}" data-perm-key="can_finalize_costing" ${finalizeAllowed(t.id) ? 'checked' : ''}></td>`
-                  : `<td style="text-align:center;color:var(--muted);font-size:.72rem">submits for review</td>`}
-                <td style="white-space:nowrap">
-                  <button class="pec-btn sm" data-edit-team="${esc(t.id)}">Edit</button>
-                  ${t.auth_user_id ? `<button class="pec-btn sm" data-reset-team="${esc(t.id)}">Reset password</button>` : ''}
-                  ${t.id !== state.adminUser.id ? `<button class="pec-btn sm danger" data-del-team="${esc(t.id)}">Delete</button>` : ''}
-                </td>
-              </tr>`).join('') || `<tr class="nohover"><td colspan="${colCount}" class="pec-empty">No staff yet. Click + Add Staff.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="pec-card">
-      <h3>Recent sign-ins</h3>
-      <div class="pec-table-wrap">
-      <table class="pec-table">
-        <thead><tr><th>Email</th><th>IP</th><th>When</th><th>Device</th></tr></thead>
-        <tbody>${signIns.map(s => `
-          <tr class="nohover">
-            <td>${esc(s.email || '—')}</td>
-            <td style="font-family:var(--body);font-variant-numeric:tabular-nums;font-size:.75rem">${esc(s.ip_address || '—')}</td>
-            <td>${s.signed_in_at ? new Date(s.signed_in_at).toLocaleString() : '—'}</td>
-            <td style="color:var(--muted);font-size:.72rem">${esc((s.user_agent || '').slice(0, 60))}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No sign-ins yet</td></tr>'}</tbody>
-      </table>
-      </div>
-    </div>
-  `;
-
-  $('pecUsersAdd').addEventListener('click', () => openTeamForm());
-  root.querySelectorAll('[data-edit-team]').forEach(b =>
-    b.addEventListener('click', () => openTeamForm(state.team.find(t => t.id === b.dataset.editTeam))));
-  root.querySelectorAll('[data-reset-team]').forEach(b =>
-    b.addEventListener('click', () => openResetPasswordForm(state.team.find(t => t.id === b.dataset.resetTeam))));
-  root.querySelectorAll('[data-del-team]').forEach(b =>
-    b.addEventListener('click', async () => {
-      if (!confirm('Delete this staff row? (This does not delete the linked Google account.)')) return;
-      const adminCount = state.team.filter(t => t.role === 'admin').length;
-      const target = state.team.find(t => t.id === b.dataset.delTeam);
-      if (target?.role === 'admin' && adminCount <= 1) { alert('Cannot delete the last admin.'); return; }
-      const { error } = await supabase.from('admin_users').delete().eq('id', b.dataset.delTeam);
-      if (error) { alert(error.message); return; }
-      renderSettings();
-    }));
-
-  // Save the capability grid: one upsert per non-admin user.
-  const savePermsBtn = $('pecUsersSavePerms');
-  if (savePermsBtn) savePermsBtn.addEventListener('click', async () => {
-    savePermsBtn.disabled = true; savePermsBtn.textContent = 'Saving…';
-    const byUser = {};
-    root.querySelectorAll('[data-perm-user]').forEach(cb => {
-      const uid = cb.dataset.permUser;
-      (byUser[uid] ||= { admin_user_id: uid })[cb.dataset.permKey] = cb.checked;
-    });
-    try {
-      const rows = Object.values(byUser);
-      let finalizeSkipped = false;
-      if (rows.length) {
-        let { error } = await supabase.from('user_permissions').upsert(rows, { onConflict: 'admin_user_id' });
-        // Deploy-order safety: before the 2026-07-06 migration adds the
-        // can_finalize_costing column, the upsert 400s on the unknown column.
-        // Retry without that key so saving the OTHER capabilities still works
-        // (finalize behavior stays fail-open until the column lands).
-        if (error && /can_finalize_costing/.test(error.message || '')) {
-          const stripped = rows.map(({ can_finalize_costing, ...rest }) => rest).filter(r => Object.keys(r).length > 1);
-          ({ error } = stripped.length
-            ? await supabase.from('user_permissions').upsert(stripped, { onConflict: 'admin_user_id' })
-            : { error: null });
-          if (!error) finalizeSkipped = true;
-        }
-        if (error) throw error;
-      }
-      showToast(finalizeSkipped
-        ? 'Saved, except Finalize costing: run the 2026-07-06_can_finalize_costing migration first.'
-        : 'Permissions saved. Affected users see the change on their next load.', finalizeSkipped ? { ttl: 6000 } : {});
-      await resolveAdminUser(); // refresh current admin's own permissions if they changed their row
-      renderSettings();
-    } catch (err) {
-      console.error('[pec] permissions save failed', err);
-      savePermsBtn.disabled = false; savePermsBtn.textContent = 'Save permissions';
-      const hint = /user_permissions/.test(err.message || '') ? ' (Run the 2026-06-08_user_permissions.sql migration first.)' : '';
-      alert('Could not save permissions: ' + (err.message || err) + hint);
-    }
-  });
-
-  wireSettingsTabs(root);
-}
+// renderSettingsUsers retired (prompt 57 Part H): Users merged into People.
+// Logins, roles, permissions and the sign-in log now live on the People tab
+// (renderSettingsPeople + openPersonModal's Login section); the 'users'
+// settingsTab key routes there for old deep links.
 
 // Shared: POST a send to the pec-send-email function with the caller's Supabase
 // access token. Throws on any non-ok result so callers can show a friendly error.
