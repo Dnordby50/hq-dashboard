@@ -14181,6 +14181,12 @@ async function renderJobDetailInner(id) {
       </div>
       <div class="pec-card">
         <h3>Job Card <span style="font-size:.7rem;font-weight:400;color:var(--muted);letter-spacing:0">prints onto the work order</span></h3>
+        ${(job.moisture == null || job.mohs_hardness == null) ? `
+        <!-- Prompt 58 Part E: soft nag, mirrors the estimator's warning. Only
+             Moisture and MOHS are warned about; it never blocks anything. -->
+        <div style="font-size:.75rem;color:#b45309;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:6px 10px;margin-bottom:10px">
+          ${[job.moisture == null ? 'Moisture' : '', job.mohs_hardness == null ? 'MOHS hardness' : ''].filter(Boolean).join(' and ')} not filled in. The crew work order prints ${job.moisture == null && job.mohs_hardness == null ? 'them' : 'it'} blank; fill in the reading when you have it.
+        </div>` : ''}
         <div class="pec-row-3">
           <div class="pec-field"><label>Gate code</label><input id="jcGateCode" value="${esc(job.gate_code || '')}"></div>
           <div class="pec-field"><label>Coat past garage</label>

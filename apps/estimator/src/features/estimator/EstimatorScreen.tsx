@@ -1120,6 +1120,14 @@ export default function EstimatorScreen({
   // residential one a last name. Deliberately nothing else; the address is
   // never a gate (a rep standing in the driveway knows where they are).
   const customerIncomplete = customer.isCommercial ? !customer.company.trim() : !customer.lastName.trim();
+  // Prompt 58 Part E: soft warning only. Moisture and MOHS hardness are the
+  // two site readings the crew work order really needs; an empty one warns
+  // here and on the job page but never blocks save, send, or accept. The
+  // other work order fields are deliberately never warned about.
+  const woMissingFields = [
+    !intake.moisture ? 'Moisture' : null,
+    !intake.mohs_hardness ? 'MOHS hardness' : null,
+  ].filter(Boolean) as string[];
   // Custom mode gates on customer + a typed price > 0, nothing else: no
   // areas, no materials, no calculated price. Standard mode is unchanged.
   const canSave = !!salesperson && !addonsIncomplete && !customerIncomplete && saveState !== 'saving' &&
@@ -1601,6 +1609,36 @@ export default function EstimatorScreen({
       p.isCommercial === isCommercial ? p : { ...p, isCommercial, company: isCommercial ? p.company : '' },
     );
 
+  // Work order questions, ONE source of the field list (prompt 58 Part E):
+  // standard mode renders this inside More detail; custom mode gets its own
+  // details block below it, since the rest of More detail is recipe/area
+  // machinery a custom estimate does not have.
+  const workOrderFields = (
+    <>
+      <div className="wo-grid">
+        <label className="field"><span>Gate code</span><input value={intake.gate_code} onChange={(e) => setIntakeField('gate_code', e.target.value)} /></label>
+        <label className="field"><span>Moisture (1-5)</span>
+          <select value={intake.moisture} onChange={(e) => setIntakeField('moisture', e.target.value)}>
+            <option value="">--</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>MOHS hardness (1-10)</span>
+          <select value={intake.mohs_hardness} onChange={(e) => setIntakeField('mohs_hardness', e.target.value)}>
+            <option value="">--</option>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+        <label className="field"><span>Grinder tooling / grit</span><input value={intake.grinder_tooling_grit} onChange={(e) => setIntakeField('grinder_tooling_grit', e.target.value)} /></label>
+        <label className="field"><span>Additional non-slip</span><input value={intake.additional_non_slip} onChange={(e) => setIntakeField('additional_non_slip', e.target.value)} /></label>
+        <label className="check"><input type="checkbox" checked={intake.coat_past_garage} onChange={(e) => setIntakeField('coat_past_garage', e.target.checked)} /><span>Coat past garage door</span></label>
+        <label className="check"><input type="checkbox" checked={intake.stem_walls} onChange={(e) => setIntakeField('stem_walls', e.target.checked)} /><span>Stem walls</span></label>
+      </div>
+      <label className="field"><span>Special notes</span><textarea rows={2} value={intake.special_notes} onChange={(e) => setIntakeField('special_notes', e.target.value)} /></label>
+      {woMissingFields.length > 0 && (
+        <p className="warn">{woMissingFields.join(' and ')} not filled in yet. The crew work order prints them blank; saving and sending still work.</p>
+      )}
+    </>
+  );
+
   return (
     <div className="screen">
       <header className="topbar">
@@ -2066,24 +2104,15 @@ export default function EstimatorScreen({
             })}
             <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
             <div className="areas-head" style={{ marginTop: 10 }}><span>Work order</span></div>
-            <div className="wo-grid">
-              <label className="field"><span>Gate code</span><input value={intake.gate_code} onChange={(e) => setIntakeField('gate_code', e.target.value)} /></label>
-              <label className="field"><span>Moisture (1-5)</span>
-                <select value={intake.moisture} onChange={(e) => setIntakeField('moisture', e.target.value)}>
-                  <option value="">--</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </label>
-              <label className="field"><span>MOHS hardness (1-10)</span>
-                <select value={intake.mohs_hardness} onChange={(e) => setIntakeField('mohs_hardness', e.target.value)}>
-                  <option value="">--</option>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </label>
-              <label className="field"><span>Grinder tooling / grit</span><input value={intake.grinder_tooling_grit} onChange={(e) => setIntakeField('grinder_tooling_grit', e.target.value)} /></label>
-              <label className="field"><span>Additional non-slip</span><input value={intake.additional_non_slip} onChange={(e) => setIntakeField('additional_non_slip', e.target.value)} /></label>
-              <label className="check"><input type="checkbox" checked={intake.coat_past_garage} onChange={(e) => setIntakeField('coat_past_garage', e.target.checked)} /><span>Coat past garage door</span></label>
-              <label className="check"><input type="checkbox" checked={intake.stem_walls} onChange={(e) => setIntakeField('stem_walls', e.target.checked)} /><span>Stem walls</span></label>
-            </div>
-            <label className="field"><span>Special notes</span><textarea rows={2} value={intake.special_notes} onChange={(e) => setIntakeField('special_notes', e.target.value)} /></label>
+            {workOrderFields}
+          </details>}
+
+          {/* Custom mode still needs the site questions (prompt 58 Part E):
+              same field list as above, its own details block because the rest
+              of More detail is recipe/area machinery custom mode hides. */}
+          {isCustom && <details className="card more-detail">
+            <summary>Work order <span className="muted">(site questions)</span></summary>
+            {workOrderFields}
           </details>}
 
           {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
@@ -2146,6 +2175,9 @@ export default function EstimatorScreen({
                 <p className="hint">Custom estimate: the price is typed, not calculated, so GP has no cost basis and is not shown. Commission is the standard {config.standardCommissionPct}% of the total.</p>
                 {customerIncomplete && (
                   <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
+                )}
+                {woMissingFields.length > 0 && (
+                  <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see Work order above). Saving still works.</p>
                 )}
                 <div className="save-row">
                   <button type="button" className="save" disabled={!canSave} onClick={onSave}>
@@ -2221,6 +2253,9 @@ export default function EstimatorScreen({
                 <p className="calcver">engine {pricing.calcVersion}</p>
                 {customerIncomplete && (
                   <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
+                )}
+                {woMissingFields.length > 0 && (
+                  <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see More detail above). Saving still works.</p>
                 )}
                 <div className="save-row">
                   <button type="button" className="save" disabled={!canSave} onClick={onSave}>
