@@ -4,6 +4,35 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: wrote claude-code-prompt-58 (change orders on the job card, Enhancify, Sunday calendars, schedule price, touch-up count, work order questions)
+By: Cowork
+
+Changed: one new file, claude-code-prompt-58-invoice-financing-calendar-price.md. No code, no schema, nothing applied. Dylan brought six items; 15 multiple-choice questions were asked before writing.
+
+DIAGNOSIS DONE BEFORE THE PROMPT WAS WRITTEN (so Claude Code does not repeat it):
+- Items "change orders on invoice need to show on job card" and "scheduler price must match the job detail estimate" are ONE root cause. Change orders write a jobs.line_items row with is_change_order true (plus a job_areas row in scope/coat mode), saveJob folds them into jobs.price (index.html:15239-15246), and nothing writes back to pec_prod_jobs.revenue. The schedule reads revenue; the job page reads price. They diverge permanently on any post-booking edit.
+- Job Costing ALREADY reads jobs.price (index.html:12078 computeCostingRow({ revenue: j.price })), so costing is on the correct number today. This is why Dylan's "costing frozen" answer is a do-nothing, not a sync.
+- The work order already tags change orders on its page-2 line items table (index.html:13493), and job detail already folds coSum into the Totals card (index.html:14736), so part of this may already work. The prompt sends Claude Code through the Bug Diagnosis Workflow first rather than building a duplicate card.
+- "0 open" above the schedule is literal: byState.open.length at index.html:26331, and a scheduled touch-up leaves the open bucket by design (waiting_customer is already folded into open at 26267).
+- startOfWeek at index.html:21119 is explicitly Monday-start; three grid headers hardcode Mon-first (27199, 27799, 28500). All eight startOfWeek callers are schedule or picker sites. Metrics does NOT call it, so Sunday-first does not move the weekly charts. The schedule's own per-week revenue rows DO re-bucket.
+- Work order questions are hidden in Custom mode: EstimatorScreen.tsx:2043 wraps the whole More detail block in !isCustom, so a custom estimate never asks gate code, moisture, MOHS, stem walls, or coat past garage.
+- Crew notes IS already rendered in both estimator modes and IS in the deployed build (estimator/assets/index-CSzuJV1_.js, built 2026-07-26). Dylan withdrew that item after seeing this.
+- Enhancify does not exist anywhere in the repo. It is a net-new integration, embeddable widget per Dylan.
+
+DECISIONS LOCKED BY DYLAN: change orders show on job detail + printed work order (not the quick look); schedule price is DERIVED display-only, no backfill, no bulk update, stored revenue untouched; schedule surfaces live, costing/bonus/metrics frozen; finalized jobs never restated; every calendar grid goes Sunday-first, weekly metrics bucketing unchanged; touch-up header counts open + waiting + scheduled; work order questions show in Custom mode; unanswered questions WARN and never block; only Moisture and MOHS are required for the warning; the warning surfaces on the estimator and job detail only; Enhancify appears on the public estimate, estimate PDF, public invoice, and portal, with a settings-driven monthly estimate that degrades to a plain CTA.
+
+CONFLICT CAUGHT AND RESOLVED IN THE QUESTIONS: Dylan first answered "display-only everywhere" plus "leave historical alone", which cannot both hold (deriving everywhere silently moves finalized GP on any job with a change order, exactly the prompt-56 failure mode where a derived-beats-stored rule shifted $4,785 across 34 finalized jobs). Re-asked; he chose schedule live, costing frozen. Part D carries a mandatory blast-radius count before commit.
+
+Why: Dylan pasted six issues and asked for a Claude Code prompt.
+Files touched: claude-code-prompt-58-invoice-financing-calendar-price.md (new), PROJECT-LOG.md (this entry).
+
+## Handoff to Dylan
+1. Run the prompt in Claude Code. Parts are ordered A through F by risk; A through C are shippable on their own.
+2. Part F ends in a Cowork handoff to collect the real Enhancify embed snippet, APR, term, minimum job total, and whether financing applies to FTP as well as PEC. Nothing customer-facing renders until financing_enabled is turned on.
+3. Part E requires rebuilding apps/estimator and committing estimator/ or it ships as a no-op.
+
+---
+
 ## [2026-07-29 MST] Cowork: applied the prompt-57 migrations (crew colors in full, flake color model minus the deactivation)
 By: Cowork
 
