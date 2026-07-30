@@ -16,6 +16,8 @@ Refreshed 2026-07-29 (Cowork) after the prompt-57 migrations: `pec_prod_crews.co
 
 Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration (2026-08-02_material_order_overrides.sql, applied via MCP): `pec_prod_material_lines` gained `order_qty_manual` and `manual_added` (both boolean not null default false); 12 legacy order_index >= 9000 rows backfilled manual_added=true. Only that table's section changed.
 
+Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration (2026-08-03_lead_stage_estimate_scheduled.sql, applied via MCP): `leads.estimate_scheduled_at` (timestamptz, nullable) and `leads_stage_check` replaced to admit `estimate_scheduled` (seven stages, verified live via pg_get_constraintdef). Only the leads section changed.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 82 tables documented, 82 live, all in `public`, all with RLS enabled. No gaps.
@@ -454,6 +456,7 @@ RLS: enabled · rows: 1
 | customer_id | uuid | yes |  |
 | notes | text | yes |  |
 | contacted_at | timestamptz | yes |  |
+| estimate_scheduled_at | timestamptz | yes |  |
 | estimate_sent_at | timestamptz | yes |  |
 | presented_at | timestamptz | yes |  |
 | accepted_at | timestamptz | yes |  |
@@ -474,6 +477,7 @@ CASE
 
 PK: id
 FK: customer_id → customers.id
+CHECK leads_stage_check: stage in ('new','contacted','estimate_scheduled','estimate_sent','presented','accepted','lost')
 
 ### pec_appointment_reminder_rules
 RLS: enabled · rows: 2
