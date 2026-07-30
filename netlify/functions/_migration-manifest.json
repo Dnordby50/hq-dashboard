@@ -1957,6 +1957,109 @@
           "name": "public.job_areas.flake_color_id"
         }
       ]
+    },
+    {
+      "file": "2026-07-30_flake_deactivate_collapsed_blends.sql",
+      "date": "2026-07-30",
+      "hasHeader": true,
+      "none": "data-only (deactivates 18 existing pec_prod_products rows, creates nothing)",
+      "artifacts": []
+    },
+    {
+      "file": "2026-07-31_salesask_integration.sql",
+      "date": "2026-07-31",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_salesask_recordings"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.salesask_synced_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_appointments.salesask_sync_hash"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_sales_team_members.salesask_email"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_salesask_recordings_customer"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_salesask_recordings_appt"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_salesask_recordings_lead"
+        },
+        {
+          "kind": "setting",
+          "name": "salesask_sync_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "salesask_push_window_days"
+        },
+        {
+          "kind": "setting",
+          "name": "salesask_pull_lookback_days"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-01_routemize_contact_id.sql",
+      "date": "2026-08-01",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.routemize_contact_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.customers.routemize_contact_id"
+        },
+        {
+          "kind": "setting",
+          "name": "routemize_service_type_map"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-02_material_order_overrides.sql",
+      "date": "2026-08-02",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_prod_material_lines.order_qty_manual"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_prod_material_lines.manual_added"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-03_lead_stage_estimate_scheduled.sql",
+      "date": "2026-08-03",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.estimate_scheduled_at"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -2026,6 +2129,7 @@
     "pec_prod_tasks",
     "pec_sales_member_google_tokens",
     "pec_sales_team_members",
+    "pec_salesask_recordings",
     "pec_sms_log",
     "pec_sms_senders",
     "pec_status_descriptions",
