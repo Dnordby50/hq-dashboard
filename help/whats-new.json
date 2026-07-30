@@ -1,5 +1,16 @@
 [
   {
+    "id": "sales-pipeline-estimate-scheduled",
+    "date": "2026-07-29",
+    "title": "The Leads board is now Sales Pipeline, with a new Estimate Scheduled column",
+    "summary": "The left menu item that used to say Leads now says Pipeline, under a Sales Pipeline group. The board itself gained a seventh column, Estimate Scheduled, between Contacted and Estimate Sent. It fills itself when an on-site estimate appointment is booked and the lead moves back to Contacted if that appointment is canceled. Cards in it show the visit date and the column sorts soonest visit first.",
+    "howto": [
+      "Open Sales Pipeline, then Pipeline in the left menu (your old Leads bookmark still works).",
+      "Book an estimate with the Schedule Estimate button on a lead card and the lead moves to Estimate Scheduled on its own.",
+      "You can also drag a card in or out of the column by hand, like any other stage."
+    ]
+  },
+  {
     "id": "legacy-labor-typed-freeze",
     "date": "2026-07-29",
     "title": "Older jobs keep their original labor numbers",

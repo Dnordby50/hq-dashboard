@@ -1,5 +1,7 @@
 # Claude Code prompt 49: Follow-up queue, human-touch tracking, AI priority ranking
 
+> **UPDATE 2026-07-29 (prompt 59, before this prompt has ever run):** the pipeline now has a SEVENTH stage, `estimate_scheduled` ("Estimate Scheduled", between contacted and estimate_sent; timestamp column `leads.estimate_scheduled_at`; the board is now titled Sales Pipeline). This prompt was written assuming six stages. Whoever runs it must NOT silently drop the new stage: the per-stage overdue settings need a `followup_overdue_days_estimate_scheduled` key, and the `fallbackPriority` stage weighting needs a weight for `estimate_scheduled` (a lead with a booked visit is being handled, so it typically weighs BELOW contacted, not above). Also note the features.json entry is now named "Sales Pipeline board", not "Leads pipeline board".
+
 ## Context
 
 Dylan's ask (2026-07-26): "In the leads pipeline we need a way to be able to track who needs to be contacted and how many times I've contacted them a little bit better, also with an AI suggestion of which leads are hottest to follow up on."
