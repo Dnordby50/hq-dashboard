@@ -12,6 +12,8 @@ Refreshed 2026-07-28 (Cowork, second pass) after the prompt-54 People model migr
 
 Refreshed 2026-07-28 (Cowork, third pass) after the prompt-55 Ops Queue migration: new `pec_ops_items` table (the 82nd) with its shape CHECK, two indexes, four policies and the `pec_ops_item_notify` RPC, plus twelve `ops_*` settings keys (settings 45 rows to 57). Additive only: no existing table, policy, or permission changed.
 
+Refreshed 2026-07-29 (Cowork) after applying the prompt-56 Routemize adapter migration (`2026-08-01_routemize_contact_id.sql`): `routemize_contact_id` (nullable text, no index) added to BOTH `leads` and `customers`, holding Routemize's own `contact.contactId` so a repeat booker stays recognizable even if their phone or email changes on our side; the intake writes it fill-if-blank and pec-appt-intake.cjs tolerates the column being absent. New settings key `routemize_service_type_map` (settings 57 rows to 58), JSON mapping a Routemize serviceName to one of the four appt types, seeded `{"estimate":"on_site_estimate"}`, matched lowercased with serviceName first and anything unmapped defaulting to on_site_estimate. Row counts refreshed off live: leads 1 to 6, customers 84 to 91. `pec_appointments` is unchanged by this migration and already carried `routemize_appt_id`. Additive only.
+
 Refreshed 2026-07-29 (Cowork) after the prompt-57 migrations: `pec_prod_crews.color` (Part F, applied); `colors.product_id` / `colors.default_basecoat_product_id` / `colors.active` plus six inserted flake-blend rows, `pec_prod_areas.flake_color_id`, `job_areas.flake_color_id`, and the `Standard Flake` product rename (Part G steps 1-7, applied). Part G step 8 (deactivating 18 flake products) is NOT applied and is split into 2026-07-30_flake_deactivate_collapsed_blends.sql. Additive only: no existing column changed type, and nothing was deleted or deactivated.
 
 Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration (2026-08-02_material_order_overrides.sql, applied via MCP): `pec_prod_material_lines` gained `order_qty_manual` and `manual_added` (both boolean not null default false); 12 legacy order_index >= 9000 rows backfilled manual_added=true. Only that table's section changed.
@@ -103,7 +105,7 @@ Added 2026-07-29 (prompt 57 Part G). `colors` is now the source of truth for the
 - NAMING DRIFT, known and deliberate: these rows carry `type = 'simiron'` while the matching products carry `manufacturer = 'Torginol'`. Torginol makes the flake, Simiron supplies it. Flagged, not reconciled.
 
 ### customers
-RLS: enabled · rows: 84
+RLS: enabled · rows: 91
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -131,6 +133,7 @@ RLS: enabled · rows: 84
 | phone_norm | text | yes | 
 CASE
     WHEN (length(regexp_replace(COALESC... |
+| routemize_contact_id | text | yes |  |
 
 PK: id
 
@@ -424,7 +427,7 @@ PK: id
 FK: lead_id → leads.id
 
 ### leads
-RLS: enabled · rows: 1
+RLS: enabled · rows: 6
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -474,6 +477,7 @@ RLS: enabled · rows: 1
 | phone_norm | text | yes | 
 CASE
     WHEN (length(regexp_replace(COALESC... |
+| routemize_contact_id | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id
@@ -1841,7 +1845,7 @@ PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
 ### settings
-RLS: enabled · rows: 57
+RLS: enabled · rows: 58
 
 | column | type | nullable | default |
 |---|---|---|---|

@@ -4,6 +4,38 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-29 MST] Cowork: applied the prompt-56 Routemize migration, verified 3 REAL appointments landed, and found a live reschedule bug
+By: Cowork
+
+Changed: prod schema (zdfpzmmrgotynrwkeakd) and SCHEMA.md. Prompt 56's handoff task 1 is done. Task 3 (retire the Routemize -> DripJobs push) is NOT done and should not be done yet, see the bug below.
+
+MIGRATION APPLIED. 2026-08-01_routemize_contact_id.sql, one transaction, clean. Verified: `routemize_contact_id` (nullable text) now present on BOTH public.leads and public.customers, and settings key `routemize_service_type_map` = {"estimate":"on_site_estimate"} (settings 57 -> 58). Additive only; nothing existing changed.
+
+THE ADAPTER WORKS, on real bookings and not a synthetic test. pec_appointments went 1 -> 4, all source='routemize'. Three genuine appointments arrived 2026-07-29 (15:22, 19:21, 21:07 UTC), every one HTTP 200:
+- **Jay McCoy, Estimate** 7/31 16:15-17:15Z, lead-linked, rep resolved, customer_notes populated.
+- **Larry Bowles, Estimate** 7/30 17:35-18:35Z, lead-linked, rep resolved, customer_notes populated.
+- One bare **"On-site estimate"** 7/30 20:30-21:30Z with NO contact name, NO lead, NO customer, NO rep, no customer notes.
+Every locked decision that can be observed from the data held: our own composed title ("Jay McCoy, Estimate", not Routemize's "Meeting with - John"), appt_type on_site_estimate off the settings map, source='routemize', explicit-Z times stored unshifted (16:15Z stayed 16:15Z), and lead linkage working where a contact existed.
+
+## BUG (live, needs a fix): AppointmentUpdated uses a DIFFERENT field vocabulary and reschedules do not move
+Evidence: the 21:08 delivery logged `ok / 200 / "updated: no readable start time; noted on appointment 0e1809bc"`, and Jay McCoy's row now carries the internal note "Routemize sent an updated event with no readable start time; appointment left as-is."
+
+Root cause, from the stored payload's own data keys. **AppointmentCreated** sends `startTime` / `endTime` / `appointmentDate` / `contactName` / `relatedEntityId`. **AppointmentUpdated** sends NONE of those time fields. It sends `newStartTime`, `newEndTime`, `oldStartTime`, `oldEndTime`, `newStatus`, `oldStatus`, `oldTitle`, `oldNotes`, `notes`, `oldAddress`, `reason`, `previousAssignedUsers`, `previousUserIds`, `projectDetail`, `appointmentId`, `notificationVariables`. pec-appt-intake.cjs line 231 already reads `newStatus` among its status candidates (so status moves resolve), but the start/end reader only knows `startTime`/`endTime`, returns null, and correctly falls into the defensive branch.
+
+The DEFENSIVE BEHAVIOR IS CORRECT and is exactly what prompt 56's landmine 5 asked for: it returned 200, left the appointment untouched rather than guessing, and wrote a human-readable note. Nothing is corrupted. But the consequence is operational and silent to the crew: **reschedule an appointment in Routemize and TopCoat keeps the OLD time**, gaining only a note. The Google Calendar push then propagates the stale time too.
+
+Fix is small and one-place: extend the start/end reader to try `newStartTime` then `startTime` (and `newEndTime` then `endTime`), the same candidate-list pattern line 231 already uses for status. `oldStartTime`/`oldEndTime` must NOT be used as fallbacks; they are the pre-change values and would re-write the appointment backwards. `projectDetail` and `notes` are also unmapped on the update path and are likely the better sources for customer_notes / notes than the create-path-only `customerAnswers`.
+
+ALSO WORTH A LOOK: the bare "On-site estimate" row. It carried no contact at all, so decision 9's lead auto-create had nothing to create from and correctly did not invent one. Likely a Routemize-internal booking rather than a customer form submission. Worth confirming that is a real Routemize shape and not a third payload variant.
+
+SCHEMA.md updated: routemize_contact_id documented on leads and customers, routemize_service_type_map documented with the lowercased-serviceName-first matching rule and the on_site_estimate default, and stale row counts refreshed off live (leads 1 -> 6, customers 84 -> 91, settings 57 -> 58).
+
+Why: Dylan reported prompt 56 done; this is its Cowork handoff.
+Files touched: SCHEMA.md, PROJECT-LOG.md (this entry). Prod schema changed outside the repo.
+Next steps: fix the AppointmentUpdated time mapping (decision with Dylan). Do NOT retire the Routemize -> DripJobs push until reschedules verifiably move, because DripJobs is currently the only system getting the corrected time. Re-verify by rescheduling a real appointment in Routemize and confirming start_at moves in TopCoat.
+
+---
+
 ## [2026-07-29 MST] Cowork: wrote prompt 59 (Estimate Scheduled stage, Sales Pipeline rename, estimator iframe hotfix), 12 decisions locked
 By: Cowork
 
