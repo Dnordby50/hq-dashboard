@@ -227,9 +227,10 @@ async function processSalespersonRule(sb, rule, appt, ctx, summary) {
 // booking flow so a Routemize-ingested appointment leaves the lead in the
 // same state an in-app booking does. Two callers:
 //   - pec-appt-intake.cjs with { advanceStage: true }: full parity with the
-//     Schedule Estimate flow (a NEW lead with a booked on-site estimate
-//     advances to 'contacted' + a stage_change lead_event), plus the drip
-//     pause below.
+//     Schedule Estimate flow (a new or contacted lead with a booked on-site
+//     estimate advances to 'estimate_scheduled' + a stage_change lead_event;
+//     a NEW lead also stamps contacted_at, since a booked visit proves
+//     contact was made), plus the drip pause below.
 //   - pec-appt-notify.cjs with { advanceStage: false }: in-app bookings keep
 //     their existing client-side stage handling (openScheduleEstimateFromLead
 //     owns the advance there), so the kick adds ONLY the drip pause.
@@ -238,10 +239,11 @@ async function processSalespersonRule(sb, rule, appt, ctx, summary) {
 //     stop_reason 'appointment_booked' (the enrollment status CHECK has no
 //     'paused'; a stop-with-reason is the engine's pause, same shape as the
 //     estimate_sent eager stop). Estimate/invoice drips are left alone.
-// Every step is best-effort and idempotent: the stage patch is guarded on
-// stage=eq.new (a lost race writes nothing, so no duplicate event), the
-// enrollment patch is guarded on status=eq.active, and nothing here ever
-// throws (a side-effect failure must never fail the caller's response).
+// Every step is best-effort and idempotent: the stage patches are guarded on
+// the expected from-stage (a lost race writes nothing, so no duplicate
+// event), the enrollment patch is guarded on status=eq.active, and nothing
+// here ever throws (a side-effect failure must never fail the caller's
+// response).
 async function apptBookingLeadEffects(sb, appt, opts = {}) {
   const out = { staged: false, drip_stopped: 0 };
   if (!appt || !appt.lead_id) return out;
@@ -249,21 +251,33 @@ async function apptBookingLeadEffects(sb, appt, opts = {}) {
 
   if (opts.advanceStage && appt.appt_type === 'on_site_estimate') {
     try {
-      // Mirror openScheduleEstimateFromLead: only a 'new' lead advances; the
-      // conditional PATCH makes "did it actually flip" the DB's answer, so
-      // the lead_event is written exactly when the transition happened.
-      const rows = await sb('PATCH',
-        `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&stage=eq.new&deleted_at=is.null`,
-        { stage: 'contacted', contacted_at: nowIso }, true);
-      if (Array.isArray(rows) && rows.length) {
+      // Mirror openScheduleEstimateFromLead: new/contacted advance to
+      // estimate_scheduled, anything at or past estimate_sent keeps its
+      // stage. Two guarded PATCHes, stopping after the first that flips a
+      // row, make "did it actually advance, and from where" the DB's answer,
+      // so the lead_event carries the real from_stage exactly when the
+      // transition happened. The stage=eq.new patch also stamps contacted_at
+      // (a booked visit proves contact was made; the speed-to-lead metric
+      // reads it); stage=eq.contacted leaves contacted_at alone (first touch
+      // wins).
+      const attempts = [
+        { from: 'new', patch: { stage: 'estimate_scheduled', contacted_at: nowIso, estimate_scheduled_at: nowIso } },
+        { from: 'contacted', patch: { stage: 'estimate_scheduled', estimate_scheduled_at: nowIso } },
+      ];
+      for (const att of attempts) {
+        const rows = await sb('PATCH',
+          `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&stage=eq.${att.from}&deleted_at=is.null`,
+          att.patch, true);
+        if (!Array.isArray(rows) || !rows.length) continue;
         out.staged = true;
         await sb('POST', '/lead_events', {
           lead_id: appt.lead_id,
           event_type: 'stage_change',
-          from_stage: 'new',
-          to_stage: 'contacted',
+          from_stage: att.from,
+          to_stage: 'estimate_scheduled',
           payload: { via: 'appointment_booked', appointment_id: appt.id, source: appt.source || null },
         }).catch(e => console.warn('apptBookingLeadEffects: stage event failed (non-fatal):', e && e.message));
+        break;
       }
     } catch (e) {
       console.warn('apptBookingLeadEffects: stage advance failed (non-fatal):', e && e.message || e);
@@ -288,6 +302,42 @@ async function apptBookingLeadEffects(sb, appt, opts = {}) {
     }
   } catch (e) {
     console.warn('apptBookingLeadEffects: drip pause failed (non-fatal):', e && e.message || e);
+  }
+  return out;
+}
+
+// Cancel/delete side effect (prompt 59), the server twin of the client's
+// apptCancelLeadEffects so a Routemize cancellation walks the lead back the
+// same way an in-app cancel does. If the appointment's lead sits in
+// estimate_scheduled and NO other scheduled on-site estimate remains for it,
+// the lead falls back to 'contacted' with a stage_change event. The
+// other-appointment check is the whole point: a reschedule (cancel old, book
+// new) must leave the lead in Estimate Scheduled. Best-effort by the same
+// contract as booking: never throws, the guarded PATCH makes a lost race
+// write nothing, and a failure must never make a canceled appointment look
+// uncanceled.
+async function apptCancelLeadEffects(sb, appt) {
+  const out = { reverted: false };
+  if (!appt || !appt.lead_id || appt.appt_type !== 'on_site_estimate') return out;
+  try {
+    const others = await sb('GET',
+      `/pec_appointments?lead_id=eq.${encodeURIComponent(appt.lead_id)}&appt_type=eq.on_site_estimate&status=eq.scheduled&id=neq.${encodeURIComponent(appt.id)}&select=id&limit=1`);
+    if (Array.isArray(others) && others.length) return out;
+    const rows = await sb('PATCH',
+      `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&stage=eq.estimate_scheduled&deleted_at=is.null`,
+      { stage: 'contacted' }, true);
+    if (Array.isArray(rows) && rows.length) {
+      out.reverted = true;
+      await sb('POST', '/lead_events', {
+        lead_id: appt.lead_id,
+        event_type: 'stage_change',
+        from_stage: 'estimate_scheduled',
+        to_stage: 'contacted',
+        payload: { via: 'appointment_canceled', appointment_id: appt.id, source: appt.source || null },
+      }).catch(e => console.warn('apptCancelLeadEffects: stage event failed (non-fatal):', e && e.message));
+    }
+  } catch (e) {
+    console.warn('apptCancelLeadEffects: fallback failed (non-fatal):', e && e.message || e);
   }
   return out;
 }
@@ -386,4 +436,4 @@ async function runApptReminders(deps, opts = {}) {
   return summary;
 }
 
-module.exports = { runApptReminders, apptBookingLeadEffects, resolveApptRecipient, renderTemplate, scrubDashes, apptDateStr, apptTimeStr };
+module.exports = { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, resolveApptRecipient, renderTemplate, scrubDashes, apptDateStr, apptTimeStr };

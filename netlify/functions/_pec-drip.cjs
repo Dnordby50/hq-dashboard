@@ -564,11 +564,14 @@ async function resolveRecipient(sb, subjectType, subjectId) {
 // ---------------------------------------------------------------------------
 const KIND_CHECKS = {
   // Lead nurture: 'new'/'contacted' keep dripping; anything further means a
-  // human is engaged and the drip must shut up.
+  // human is engaged and the drip must shut up. estimate_scheduled is in the
+  // stop list for the lead a human DRAGS into that column: a booking already
+  // stops the enrollment eagerly (stop_reason 'appointment_booked'), but a
+  // hand-drag fires nothing server-side, so this check is its safety net.
   async lead(sb, enr, rcpt) {
     const lead = rcpt.lead;
     if (lead.stage === 'lost') return { action: 'stopped', reason: 'lost' };
-    if (['estimate_sent', 'presented', 'accepted'].includes(lead.stage)) {
+    if (['estimate_scheduled', 'estimate_sent', 'presented', 'accepted'].includes(lead.stage)) {
       return { action: 'stopped', reason: 'stage_advanced' };
     }
     return null;

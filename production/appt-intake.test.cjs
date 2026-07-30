@@ -104,9 +104,10 @@ const CREATED = {
     ok(appt.notes === 'Gate code 4321' && appt.customer_notes === 'We will text when on the way.', 'notes split preserved');
 
     const lead = fx.db.leads[0];
-    ok(lead.stage === 'contacted' && lead.contacted_at === NOW.toISOString(), 'new lead advanced to contacted (in-app parity)');
+    ok(lead.stage === 'estimate_scheduled' && lead.estimate_scheduled_at === NOW.toISOString(), 'new lead advanced to estimate_scheduled (in-app parity)');
+    ok(lead.contacted_at === NOW.toISOString(), 'contacted_at stamped too (a booked visit proves contact)');
     const ev = fx.db.lead_events.find(e => e.event_type === 'stage_change');
-    ok(ev && ev.from_stage === 'new' && ev.to_stage === 'contacted' && ev.payload.appointment_id === appt.id, 'stage_change lead_event written');
+    ok(ev && ev.from_stage === 'new' && ev.to_stage === 'estimate_scheduled' && ev.payload.appointment_id === appt.id, 'stage_change lead_event written');
     const enr = fx.db.pec_drip_enrollments.find(e => e.id === 'enr1');
     ok(enr.status === 'stopped' && enr.stop_reason === 'appointment_booked' && enr.next_send_at === null, 'nurture drip paused (stopped, reason appointment_booked)');
     ok(fx.db.pec_drip_enrollments.find(e => e.id === 'enrE').status === 'active', 'estimate drip left alone');
@@ -127,10 +128,50 @@ const CREATED = {
     console.log('# canceled flips status; deleted behaves the same');
     const out3 = await processApptIntake(deps, { action: 'canceled', routemize_appt_id: 'rm_100' });
     ok(out3.status === 200 && out3.body.canceled === true && fx.db.pec_appointments[0].status === 'canceled', 'canceled sets status=canceled, row kept');
+    ok(fx.db.leads[0].stage === 'contacted', 'cancellation walks the estimate_scheduled lead back to contacted');
+    const backEv = fx.db.lead_events.find(e => e.event_type === 'stage_change' && e.to_stage === 'contacted');
+    ok(backEv && backEv.from_stage === 'estimate_scheduled' && backEv.payload.via === 'appointment_canceled', 'walk-back stage_change event carries via appointment_canceled');
     const out4 = await processApptIntake(deps, { action: 'deleted', routemize_appt_id: 'rm_100' });
     ok(out4.status === 200 && fx.db.pec_appointments.length === 1 && fx.db.pec_appointments[0].status === 'canceled', 'deleted = canceled, never a hard delete');
     const out5 = await processApptIntake(deps, { action: 'canceled', routemize_appt_id: 'rm_nope' });
     ok(out5.status === 200 && out5.body.matched === false, 'cancel of an unknown id is a clean no-op 200');
+  }
+
+  console.log('# prompt 59: contacted lead advances without rewriting contacted_at');
+  {
+    const earlier = '2026-07-20T12:00:00.000Z';
+    const fx = makeDb(baseTables({ leads: [{ ...baseTables().leads[0], stage: 'contacted', contacted_at: earlier }] }));
+    const { deps } = stubDeps(fx);
+    await processApptIntake(deps, { ...CREATED });
+    const lead = fx.db.leads[0];
+    ok(lead.stage === 'estimate_scheduled' && lead.estimate_scheduled_at === NOW.toISOString(), 'contacted lead advanced to estimate_scheduled');
+    ok(lead.contacted_at === earlier, 'contacted_at NOT rewritten (first touch wins)');
+    const ev = fx.db.lead_events.find(e => e.event_type === 'stage_change');
+    ok(ev && ev.from_stage === 'contacted' && ev.to_stage === 'estimate_scheduled', 'event carries the real from_stage');
+  }
+
+  console.log('# prompt 59: a lead at estimate_sent is untouched by a booking');
+  {
+    const fx = makeDb(baseTables({ leads: [{ ...baseTables().leads[0], stage: 'estimate_sent', contacted_at: '2026-07-20T12:00:00.000Z' }] }));
+    const { deps } = stubDeps(fx);
+    await processApptIntake(deps, { ...CREATED });
+    const lead = fx.db.leads[0];
+    ok(lead.stage === 'estimate_sent' && lead.estimate_scheduled_at == null, 'estimate_sent lead keeps its stage, no timestamp faked');
+    ok(!fx.db.lead_events.some(e => e.event_type === 'stage_change'), 'no stage_change event when nothing flipped');
+  }
+
+  console.log('# prompt 59: canceling one of TWO scheduled estimates leaves the stage alone');
+  {
+    const fx = makeDb(baseTables());
+    const { deps } = stubDeps(fx);
+    await processApptIntake(deps, { ...CREATED });
+    await processApptIntake(deps, { ...CREATED, routemize_appt_id: 'rm_101', start_at: '2026-07-25T10:00:00' });
+    ok(fx.db.pec_appointments.length === 2, 'two scheduled on-site estimates on the lead');
+    ok(fx.db.leads[0].stage === 'estimate_scheduled', 'lead sits in estimate_scheduled');
+    await processApptIntake(deps, { action: 'canceled', routemize_appt_id: 'rm_100' });
+    ok(fx.db.leads[0].stage === 'estimate_scheduled', 'reschedule guard: a second scheduled visit keeps the stage');
+    await processApptIntake(deps, { action: 'canceled', routemize_appt_id: 'rm_101' });
+    ok(fx.db.leads[0].stage === 'contacted', 'canceling the LAST scheduled estimate walks the lead back');
   }
 
   console.log('# no contact match: lands unlinked with the contact carried in notes');
@@ -276,7 +317,7 @@ const CREATED = {
     ok(lead.source === 'google', "lead source is Routemize's own (leadSourceText slug), person-level");
     ok(lead.routemize_contact_id === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001' && lead.source_ref === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001', 'contact.contactId stored on the created lead');
     ok(lead.sms_consent === false, 'consent never inferred from a booking');
-    ok(lead.stage === 'contacted', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
+    ok(lead.stage === 'estimate_scheduled', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'created' && e.payload.via === 'routemize_booking'), "created lead_event written with via 'routemize_booking'");
     ok(fx.db.lead_events.some(e => e.lead_id === lead.id && e.event_type === 'stage_change'), 'stage_change event from the booking effects');
     ok(!fx.db.pec_drip_enrollments.some(e => e.lead_id === lead.id), 'created lead NOT nurture-enrolled (landmine 3: no enroll-then-pause churn)');

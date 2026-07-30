@@ -83,7 +83,7 @@
 //     so the Sync Health view can answer "did the Zap fire?".
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
-const { runApptReminders, apptBookingLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
+const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
 const { sameHumanOr } = require('./_pec-lead-match.cjs');
 
 const ENDPOINT = 'appt-intake';
@@ -486,13 +486,16 @@ async function processApptIntake(deps, body) {
   try {
     // ---- canceled / deleted: same outcome by locked decision 2 -------------
     if (action === 'canceled' || action === 'deleted') {
-      const rows = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=id,status&limit=1`);
+      const rows = await db('GET', `/pec_appointments?routemize_appt_id=eq.${encodeURIComponent(rmId)}&select=id,status,lead_id,appt_type,source&limit=1`);
       const appt = Array.isArray(rows) && rows[0];
       if (!appt) {
         await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no matching appointment (no-op)`, payload: rawPayload });
         return { status: 200, body: { success: true, matched: false } };
       }
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { status: 'canceled' });
+      // Walk an estimate_scheduled lead back to contacted (unless another
+      // scheduled on-site estimate remains). Best-effort; never throws.
+      await apptCancelLeadEffects(db, appt);
       await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${appt.id} canceled`, payload: rawPayload });
       return { status: 200, body: { success: true, canceled: true, appointment_id: appt.id } };
     }

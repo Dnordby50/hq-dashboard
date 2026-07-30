@@ -22484,6 +22484,7 @@ async function renderApptFallbackList(holder, members) {
 function apptPostWrite(row, opts = {}) {
   apptRefresh();
   if (opts.isNew && row) apptBookingSideEffects(row);
+  if ((opts.canceled || opts.deleted) && row) apptCancelLeadEffects(row);
   if (opts.deleted) {
     if (row && row.google_event_id) {
       apptKickPushSync({ action: 'delete', google_event_id: row.google_event_id, google_calendar_id: row.google_calendar_id });
@@ -22553,6 +22554,40 @@ async function apptBookingSideEffects(appt) {
   } catch (_) { /* fire-and-forget */ }
 }
 
+// Cancel/delete side effect (prompt 59), best-effort by the same contract as
+// booking: a failure here must never make a canceled appointment look
+// uncanceled. If the appointment's lead sits in estimate_scheduled and NO
+// other scheduled on-site estimate remains for it, walk the lead back to
+// contacted. The other-appointment check is the whole point: a reschedule
+// (cancel old, book new) must leave the lead in Estimate Scheduled. The
+// update is guarded on stage so a concurrent move writes nothing.
+async function apptCancelLeadEffects(appt) {
+  if (!appt || !appt.lead_id || appt.appt_type !== 'on_site_estimate') return;
+  try {
+    const leadRes = await supabase.from('leads').select('id,stage').eq('id', appt.lead_id).maybeSingle();
+    if (leadRes.error || !leadRes.data || leadRes.data.stage !== 'estimate_scheduled') return;
+    const otherRes = await supabase.from('pec_appointments').select('id')
+      .eq('lead_id', appt.lead_id).eq('appt_type', 'on_site_estimate').eq('status', 'scheduled')
+      .neq('id', appt.id).limit(1);
+    if (otherRes.error || (otherRes.data || []).length) return;
+    const upd = await supabase.from('leads').update({ stage: 'contacted' })
+      .eq('id', appt.lead_id).eq('stage', 'estimate_scheduled').select('id');
+    if (upd.error || !(upd.data || []).length) return; // race: someone else moved it first
+    const evt = await supabase.from('lead_events').insert({
+      lead_id: appt.lead_id,
+      event_type: 'stage_change',
+      from_stage: 'estimate_scheduled',
+      to_stage: 'contacted',
+      actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+      payload: { via: 'appointment_canceled', appointment_id: appt.id },
+    });
+    if (evt.error) console.warn('[appointments] cancel stage event:', evt.error.message);
+    showToast('Lead moved back to Contacted (estimate canceled)', { ttl: 2500 });
+  } catch (err) {
+    console.warn('[appointments] cancel lead effects:', err && err.message ? err.message : err);
+  }
+}
+
 // Create/edit modal. `existing` is a pec_appointments row or null.
 // prefill: { members, start, end, appt_type, lead_id, customer_id, title,
 //            location_address/_city/_state/_zip, onSaved }.
@@ -22586,7 +22621,7 @@ async function openAppointmentForm(existing, prefill = {}) {
   let leadOpts = '';
   if (isNew && !leadId) {
     const lr = await supabase.from('leads').select('id,full_name,stage')
-      .is('deleted_at', null).in('stage', ['new', 'contacted', 'estimate_sent', 'presented'])
+      .is('deleted_at', null).in('stage', ['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented'])
       .order('created_at', { ascending: false }).limit(200);
     if (!lr.error && (lr.data || []).length) {
       leadOpts = `<option value="">No linked lead</option>` +
@@ -22812,6 +22847,7 @@ async function openAppointmentForm(existing, prefill = {}) {
 const LEAD_STAGES = [
   { key: 'new', title: 'New' },
   { key: 'contacted', title: 'Contacted' },
+  { key: 'estimate_scheduled', title: 'Estimate Scheduled' },
   { key: 'estimate_sent', title: 'Estimate Sent' },
   { key: 'presented', title: 'Presented' },
   { key: 'accepted', title: 'Accepted' },
@@ -22822,6 +22858,7 @@ const LEAD_STAGES = [
 // never rewrite contacted_at, which the speed-to-lead metric depends on.
 const LEAD_STAGE_TS = {
   contacted: 'contacted_at',
+  estimate_scheduled: 'estimate_scheduled_at',
   estimate_sent: 'estimate_sent_at',
   presented: 'presented_at',
   accepted: 'accepted_at',
@@ -23644,12 +23681,12 @@ async function openBlastWizard({ sendingOn }) {
     step: 1, name: '', channel: 'both', goal: '',
     smsBody: '', emailSubject: '', emailBody: '',
     incLeads: true, incCustomers: false,
-    leadStages: new Set(['new', 'contacted', 'estimate_sent', 'presented']),
+    leadStages: new Set(['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented']),
     leadSource: '', leadCampaign: '', leadBrand: '',
     custTag: '', custCompany: '',
     data: null, audience: null, unchecked: new Set(),
   };
-  const LEAD_STAGE_OPTS = ['new', 'contacted', 'estimate_sent', 'presented', 'accepted', 'lost'];
+  const LEAD_STAGE_OPTS = ['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented', 'accepted', 'lost'];
   const phxHour = () => (new Date(Date.now() - 7 * 3600 * 1000)).getUTCHours();
   const inQuietWindow = () => phxHour() >= 8 && phxHour() < 20;
   const personalize = (text, r) => String(text || '').replace(/\{first_name\}/g, r.first_name || 'there');
@@ -23984,6 +24021,19 @@ async function loadLeadsData() {
   ]), { label: 'loadLeadsData' });
   if (leadsRes.error) throw new Error(leadsRes.error.message);
   const leads = leadsRes.data || [];
+  // Earliest upcoming on-site estimate visit per lead: feeds the card's date
+  // chip and the Estimate Scheduled column's soonest-first sort. Degrades to
+  // an empty map on error; res.error MUST be checked explicitly (supabase-js
+  // returns an empty result, not a throw, on a bad column name).
+  const estimateAppts = {};
+  if (leads.length) {
+    const apptRes = await supabase.from('pec_appointments').select('lead_id,start_at')
+      .in('lead_id', leads.map(l => l.id))
+      .eq('appt_type', 'on_site_estimate').eq('status', 'scheduled')
+      .order('start_at', { ascending: true });
+    if (apptRes.error) console.warn('[leads] estimate appts:', apptRes.error.message);
+    else for (const r of apptRes.data || []) if (!estimateAppts[r.lead_id]) estimateAppts[r.lead_id] = r.start_at;
+  }
   const contactStats = touchLogs ? leadContactStats(leads, touchLogs) : null;
   const dripActive = (dripRes && !dripRes.error && dripRes.data) ? new Set(dripRes.data.map(r => r.lead_id)) : new Set();
   const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
@@ -23992,7 +24042,7 @@ async function loadLeadsData() {
   const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -24015,6 +24065,15 @@ function leadCardHtml(lead) {
   const flags = (lead.ai_analysis && Array.isArray(lead.ai_analysis.risk_flags)) ? lead.ai_analysis.risk_flags : [];
   const srcColor = LEAD_SOURCE_COLORS[lead.source] || '#64748b';
   const elapsed = lead.stage === 'new' ? leadElapsed(lead.created_at) : null;
+  // Next scheduled on-site estimate, e.g. "Est Mon 8/3 8:00 AM" (local time is
+  // Phoenix for all staff, matching every other date on the board).
+  const apptAt = state.leadsData && state.leadsData.estimateAppts && state.leadsData.estimateAppts[lead.id];
+  let apptChip = '';
+  if (apptAt) {
+    const d = new Date(apptAt);
+    const when = `${d.toLocaleDateString([], { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()} ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+    apptChip = `<span class="pec-age" style="background:color-mix(in srgb,#0ea5e9 14%,transparent);color:#0369a1" title="On-site estimate appointment">Est ${esc(when)}</span>`;
+  }
   return `<div class="pipeline-card lead-card" draggable="true" data-lead-id="${esc(lead.id)}"
       style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
@@ -24024,6 +24083,7 @@ function leadCardHtml(lead) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
       ${leadScoreBadge(lead)}
+      ${apptChip}
       ${state.leadsData && state.leadsData.dripActive && state.leadsData.dripActive.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#7c3aed 14%,transparent);color:#7c3aed" title="Active drip: automatic follow-ups are running for this lead">Drip</span>' : ''}
     </div>
     ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
@@ -24036,6 +24096,7 @@ function leadCardHtml(lead) {
         ${elapsed ? `<span data-lead-elapsed="${esc(lead.created_at)}" style="font-weight:700;${elapsed.red ? 'color:var(--rd-danger,#ef4444)' : ''}">${esc(elapsed.text)}</span>` : ''}
       </span>
     </div>
+    ${/* estimate_scheduled deliberately excluded: that lead already has an appointment; a second one is a deliberate trip through the Appointments screen */''}
     ${['new', 'contacted'].includes(lead.stage) ? `<div style="margin-top:8px"><button type="button" class="pec-btn ghost sm" data-schedule-est="${esc(lead.id)}" style="width:100%">Schedule Estimate</button></div>` : ''}
   </div>`;
 }
@@ -24050,6 +24111,10 @@ async function commitLeadStage(lead, toStage, extra = {}) {
   if (extra.lost_reason) patch.lost_reason = extra.lost_reason;
   const tsCol = LEAD_STAGE_TS[toStage];
   if (tsCol && !lead[tsCol]) patch[tsCol] = new Date().toISOString();
+  // A booked estimate visit proves contact was made: a NEW lead jumping
+  // straight to estimate_scheduled must still stamp contacted_at, or the
+  // speed-to-lead metric reads it forever as "never contacted".
+  if (toStage === 'estimate_scheduled' && !lead.contacted_at) patch.contacted_at = new Date().toISOString();
   const upd = await withFreshWriteRetry(() => supabase.from('leads').update(patch).eq('id', lead.id), { label: 'lead-stage' });
   if (upd.error) throw upd.error;
   // History is best-effort: the stage move already landed, so an event miss
@@ -24085,17 +24150,15 @@ function moveLeadStage(leadId, toStage) {
     });
 }
 
-// "Schedule Estimate" (prompt 37): opens the appointment form prefilled from
-// the lead (type on_site_estimate, lead/customer link, name as title, address
-// fields) and, on save, advances the lead. STAGE MAPPING NOTE: the locked
-// decision says "advance to the estimate stage", but LEAD_STAGES has no such
-// stage; the closest, estimate_sent, is stamped only when a real estimate
+// "Schedule Estimate" (prompt 37, stage mapping reworked in prompt 59): opens
+// the appointment form prefilled from the lead (type on_site_estimate,
+// lead/customer link, name as title, address fields) and, on save, advances a
+// new/contacted lead to the estimate_scheduled stage (commitLeadStage stamps
+// estimate_scheduled_at and, for a NEW lead, contacted_at too). Anything at or
+// past estimate_sent keeps its stage (the at-or-past guard). estimate_sent
+// itself stays off limits here: it is stamped only when a real estimate
 // document goes out (estimateSentLeadEffects) and feeds conversion metrics
-// plus the drip kill-switch, so faking it here would corrupt both. A booked
-// estimate visit means contact was definitely made, so a NEW lead advances to
-// 'contacted' and anything at/past contacted keeps its stage (the prompt's
-// at-or-past guard). Flagged for Dylan in the PROJECT-LOG if he wants a real
-// 'estimate_scheduled' kanban column instead.
+// plus the drip kill-switch, so faking it from a booking would corrupt both.
 function openScheduleEstimateFromLead(lead, onDone) {
   openAppointmentForm(null, {
     appt_type: 'on_site_estimate',
@@ -24109,10 +24172,10 @@ function openScheduleEstimateFromLead(lead, onDone) {
     onSaved: async (appt) => {
       // Type is editable in the form; if the rep switched it to an ad-hoc
       // block, the lead should not advance off it.
-      if (appt && appt.appt_type === 'on_site_estimate' && lead.stage === 'new') {
+      if (appt && appt.appt_type === 'on_site_estimate' && (lead.stage === 'new' || lead.stage === 'contacted')) {
         try {
-          await commitLeadStage(lead, 'contacted');
-          showToast('Lead moved to Contacted', { ttl: 2200 });
+          await commitLeadStage(lead, 'estimate_scheduled');
+          showToast('Lead moved to Estimate Scheduled', { ttl: 2200 });
         } catch (err) {
           console.error('[leads] schedule-estimate stage move:', err);
           showToast('Appointment booked, but the lead stage move failed: ' + (err && err.message ? err.message : err), { ttl: 6000 });
@@ -24311,11 +24374,17 @@ async function renderLeads() {
   const columnsHtml = LEAD_STAGES.map(col => {
     const colRows = rows.filter(l => l.stage === col.key);
     // Default: New sorts OLDEST first (the longest-waiting lead is the most
-    // urgent); every other column reads newest activity first. The score sort
-    // (Part B) puts the hottest AI score on top in EVERY column, unscored
-    // leads last, with the default order as the tiebreak.
+    // urgent); Estimate Scheduled sorts by appointment start ascending
+    // (soonest visit first, same urgency reasoning), leads with no
+    // appointment (dragged in by hand) last; every other column reads newest
+    // activity first. The score sort (Part B) puts the hottest AI score on
+    // top in EVERY column, unscored leads last, with the default order as
+    // the tiebreak.
+    const apptMap = data.estimateAppts || {};
     const defaultCmp = col.key === 'new'
       ? (a, b) => String(a.created_at).localeCompare(String(b.created_at))
+      : col.key === 'estimate_scheduled'
+      ? (a, b) => String(apptMap[a.id] || '9999').localeCompare(String(apptMap[b.id] || '9999'))
       : (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
     colRows.sort(f.sort === 'score'
       ? (a, b) => ((b.score ?? -1) - (a.score ?? -1)) || defaultCmp(a, b)
@@ -25784,15 +25853,16 @@ async function openEstimateSendModal(est, opts = {}) {
 }
 
 // Best-effort lead bookkeeping for a send: first-touch estimate_sent_at, a
-// FORWARD-ONLY stage nudge (new/contacted go to estimate_sent; presented or
-// later never moves backward), and a timeline event. Failures only warn: the
+// FORWARD-ONLY stage nudge (new/contacted/estimate_scheduled go to
+// estimate_sent; presented or later never moves backward), and a timeline
+// event. Failures only warn: the
 // email already went out, so bookkeeping must never surface as a failed send.
 async function estimateSentLeadEffects(est, nowIso) {
   if (!est.lead_id) return;
   try {
     const { data: lead } = await supabase.from('leads').select('id,stage,estimate_sent_at').eq('id', est.lead_id).maybeSingle();
     if (!lead) return;
-    const forward = lead.stage === 'new' || lead.stage === 'contacted';
+    const forward = lead.stage === 'new' || lead.stage === 'contacted' || lead.stage === 'estimate_scheduled';
     const patch = {};
     if (!lead.estimate_sent_at) patch.estimate_sent_at = nowIso;
     if (forward) patch.stage = 'estimate_sent';

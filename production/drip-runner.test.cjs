@@ -68,6 +68,15 @@ const { state, ok } = makeChecker();
     ok(sum.stopped === 1 && fx.db.pec_drip_enrollments[0].stop_reason === 'stage_advanced', 'stage past contacted stops with stage_advanced');
   }
   {
+    // prompt 59: a lead dragged into Estimate Scheduled by hand fires nothing
+    // server-side, so the runner's stage check is the drip's safety net.
+    const fx = makeDb(baseTables());
+    fx.db.leads[0].stage = 'estimate_scheduled';
+    const { deps } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    ok(sum.stopped === 1 && fx.db.pec_drip_enrollments[0].stop_reason === 'stage_advanced', 'estimate_scheduled stops the nurture drip with stage_advanced');
+  }
+  {
     const fx = makeDb(baseTables());
     fx.db.leads[0].stage = 'contacted';
     const { deps } = stubDeps(fx);
