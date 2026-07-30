@@ -7116,6 +7116,14 @@ function renderAuthUI() {
 const OPEN_ESTIMATE_STATUSES = ['draft', 'sent', 'signed', 'change_requested'];
 
 function openEstimatorFrame({ leadId = null, estimateId = null } = {}) {
+  // Best-effort kick of the estimator PWA's service-worker update check. A
+  // browser that cached the shell while X-Frame-Options was DENY (7/25-7/29)
+  // keeps serving that cached DENY response to this iframe until its SW
+  // updates; this makes the very next open work instead of waiting on the
+  // browser's own update schedule. Does not touch how the frame launches.
+  try {
+    navigator.serviceWorker.getRegistration('/estimator/').then(r => { if (r) r.update(); }).catch(() => {});
+  } catch (_) { /* no SW support: nothing cached to worry about */ }
   const params = new URLSearchParams({ embed: '1' });
   if (estimateId) params.set('estimate_id', estimateId);
   else if (leadId) params.set('lead_id', leadId);

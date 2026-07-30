@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0f172a" />
     <meta name="robots" content="noindex" />
+    <!-- shell-rev 2026-07-29: content bump so the PWA precache revision
+         changes and service workers refetch this shell with the corrected
+         X-Frame-Options: SAMEORIGIN header (the cached 7/25 DENY copy made
+         same-origin iframes refuse to render even after the header fix). -->
     <title>PEC Estimator</title>
   </head>
   <body>
