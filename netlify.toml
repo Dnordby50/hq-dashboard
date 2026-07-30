@@ -316,7 +316,10 @@
 # path; the cache rules above still apply per-path (Netlify merges header rules).
 #
 # The clickjacking / sniffing / transport / referrer / feature headers are
-# ENFORCED immediately -- they cannot break a normal app. The Content-Security-
+# ENFORCED immediately. X-Frame-Options is SAMEORIGIN, not DENY: the app frames
+# its own estimator PWA (/estimator/) and its own estimate-preview renderer, and
+# embeds a third-party financing widget; DENY blocks even same-origin framing
+# and broke the estimator modal (found 2026-07-29). The Content-Security-
 # Policy is intentionally REPORT-ONLY for now: index.html is one ~28k-line inline
 # <script> plus inline styles, so an enforced policy needs 'unsafe-inline' (and
 # Google Maps needs 'unsafe-eval'), which blunts CSP's anti-XSS value. Report-only
@@ -325,12 +328,15 @@
 # `Content-Security-Policy` key. Origins allowed: self, Supabase (REST/auth/realtime),
 # Google Fonts, Google Maps + gstatic tiles, Stripe Checkout (form redirect),
 # and https:/data:/blob: images (Supabase Storage photos, CompanyCam, map tiles).
+# TODO: before enforcing the CSP, add `frame-src 'self' <Enhancify embed origin>`
+# (the financing_embed_url setting) or default-src 'self' will block the
+# Enhancify iframe on the estimate/invoice pages.
 [[headers]]
   for = "/*"
   [headers.values]
-    X-Frame-Options = "DENY"
+    X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Strict-Transport-Security = "max-age=31536000; includeSubDomains"
     Permissions-Policy = "accelerometer=(), gyroscope=(), magnetometer=(), microphone=(), usb=()"
-    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://maps.googleapis.com https://*.gstatic.com; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self' https://checkout.stripe.com"
+    Content-Security-Policy-Report-Only = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://maps.googleapis.com https://*.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://maps.googleapis.com https://*.gstatic.com; frame-ancestors 'self'; base-uri 'self'; object-src 'none'; form-action 'self' https://checkout.stripe.com"
