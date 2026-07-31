@@ -226,11 +226,40 @@ const RENDER_SYSTEM_PROMPT_INVOICE = `You write short, professional payment remi
 - email_subject: short and plain; if a suggested subject is provided, use it or a light variation.
 Respond with ONLY a JSON object, no markdown fences: {"sms": <string or null>, "email_subject": <string or null>, "email_body": <string or null>}. Produce only the channels requested; set the others null.`;
 
+// Review asks live under Google's review policies, so two rules here are
+// legal-shaped, not stylistic: nothing of value is ever offered in exchange
+// for a review, and the ask is never conditioned on the review being positive
+// (no rating gating). reviewCopyViolation() enforces the incentive rule
+// mechanically after the render, the same belt-and-suspenders posture as
+// scrubCopy for links and em dashes.
+const RENDER_SYSTEM_PROMPT_REVIEW = `You write short thank-you and review-request messages from Prescott Epoxy Company (PEC), an epoxy floor coating company in Prescott, Arizona, to a customer whose floor job is complete. You get the job facts and one instruction for this touch. Hard rules:
+- Use ONLY facts present in the record. NEVER invent details about the job, prices, discounts, dates, warranties, named customers, reviews, or statistics.
+- Mention the crew leader by name ONLY when crew_lead in the record is a non-empty name. When crew_lead is null or empty, refer to the crew generally with no name, and NEVER write the word null or leave a blank where a name would go.
+- NEVER offer anything of value in exchange for a review: no discounts, gift cards, refunds, entries, or freebies of any kind. Never make the ask conditional on the review being positive, and never suggest an unhappy customer contact you instead of reviewing.
+- Do not use em dashes or en dashes anywhere.
+- Do not include links, phone numbers, or email addresses in the message text. The system appends the review link automatically after your message.
+- Tone: warm, grateful, brief, zero corporate filler, no emoji, no pressure.
+- Use the customer's first name when one is available; otherwise no name.
+- sms: 1 to 3 sentences, under 250 characters, identify Prescott Epoxy by name.
+- email_body: 2 to 5 short sentences in plain paragraphs (separate paragraphs with a blank line), signed off as "the Prescott Epoxy team". No subject line inside the body.
+- email_subject: short and plain; if a suggested subject is provided, use it or a light variation.
+Respond with ONLY a JSON object, no markdown fences: {"sms": <string or null>, "email_subject": <string or null>, "email_body": <string or null>}. Produce only the channels requested; set the others null.`;
+
 const RENDER_SYSTEM_PROMPTS = {
   lead: RENDER_SYSTEM_PROMPT,
   estimate: RENDER_SYSTEM_PROMPT_ESTIMATE,
   invoice: RENDER_SYSTEM_PROMPT_INVOICE,
+  review: RENDER_SYSTEM_PROMPT_REVIEW,
 };
+
+// Mechanical enforcement of the no-incentives rule for review copy (landmine
+// 10): a leg that trips this is DROPPED (recorded as failed), never rewritten,
+// because a rewrite could invert the meaning. Deliberately review-only: dollar
+// amounts and "discount" are legitimate words in invoice copy.
+const REVIEW_INCENTIVE_RE = /\b(discount|coupon|gift\s*card|raffle|giveaway|sweepstakes?|refund|%\s?off|free\b[^.!?]{0,40}\b(upgrade|service|coating|cleaning|gift|estimate))\b|\$\d/i;
+function reviewCopyViolation(text) {
+  return !!(text && REVIEW_INCENTIVE_RE.test(String(text)));
+}
 
 function daysAgo(iso) {
   if (!iso) return null;
@@ -269,6 +298,19 @@ function buildRenderPrompt(ctx, step, campaign, needs) {
       invoice_sent_days_ago: daysAgo(ctx.job.invoice_first_sent_at),
     };
     touchLine = `THIS TOUCH: step ${step.step_index + 1} of ${campaign.max_touches} in the "${campaign.name}" sequence, day ${step.day_offset} after their invoice went out.`;
+  } else if (kind === 'review' && ctx.job) {
+    // crew_lead comes from the pec_review_requests SNAPSHOT (decision 9),
+    // never re-read from the live schedule. An explicit null tells the model
+    // to use the generic no-name wording.
+    const req = ctx.reviewRequest || {};
+    recordLabel = 'JOB RECORD (the only fact source):';
+    record = {
+      first_name: ctx.first_name,
+      crew_lead: req.crew_lead || null,
+      job_address: ctx.job.address || null,
+      completed_days_ago: daysAgo(req.job_completed_date || ctx.job.completed_date),
+    };
+    touchLine = `THIS TOUCH: step ${step.step_index + 1} of ${campaign.max_touches} in the "${campaign.name}" sequence, day ${step.day_offset} after we asked them for a review.`;
   } else {
     const lead = ctx.lead || ctx;   // legacy shape tolerated (tests, old callers)
     recordLabel = 'LEAD RECORD (the only fact source):';
@@ -505,6 +547,43 @@ async function enrollJobInvoiceDrip(sb, jobId, now = new Date()) {
   return enrollSubject(sb, 'invoice', 'job', jobId, null, now);
 }
 
+// Review-request enrollment, fired when a completed job's close-out popup (or
+// the job detail's "Request review" button, or the one-time backfill) chooses
+// Send. Anchored to NOW like every enrollment (enrollSubject computes
+// next_send_at from `now`), which is exactly what makes the backfill safe: a
+// job completed 25 days ago still starts at step 0 today, never 3 steps
+// overdue at once (Part H's anchoring rule).
+//
+// ENROLL-TIME GUARD (decision 15 / landmine 11): this campaign ships
+// mode='live' with NO dry_run cushion, so the drip_approval_required gate is
+// the only thing between it and a real customer's phone. Refuse to enroll
+// while the gate is not 'true' AND the campaign has never had an approved
+// send (no status='sent' row). Once a human has approved at least one send,
+// flipping the gate off is an informed choice and enrollment proceeds. A
+// failed guard read also refuses: when we cannot PROVE the gate is on, we do
+// not enroll into an ungated live campaign.
+async function enrollReviewDrip(sb, jobId, now = new Date()) {
+  try {
+    const camps = await sb('GET', `/pec_drip_campaigns?kind=eq.review&status=eq.active&select=id,mode&order=created_at.asc&limit=1`);
+    const camp = Array.isArray(camps) ? camps[0] : null;
+    if (camp && camp.mode === 'live') {
+      const rows = await sb('GET', `/settings?key=eq.drip_approval_required&select=value&limit=1`);
+      const gateOn = Array.isArray(rows) && !!rows[0] && rows[0].value === 'true';
+      if (!gateOn) {
+        const sent = await sb('GET', `/pec_drip_sends?campaign_id=eq.${encodeURIComponent(camp.id)}&status=eq.sent&select=id&limit=1`);
+        if (!Array.isArray(sent) || !sent.length) {
+          console.warn(`enrollReviewDrip refused for job ${jobId}: campaign is live, drip_approval_required is not 'true', and no send has ever been approved. Turn the approval gate on (Settings) before enrolling review drips.`);
+          return { enrolled: false, reason: 'approval_gate_off' };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('enrollReviewDrip gate check failed; refusing to enroll (fail-safe):', String(err && err.message || err));
+    return { enrolled: false, reason: 'gate_check_failed' };
+  }
+  return enrollSubject(sb, 'review', 'job', jobId, null, now);
+}
+
 // ---------------------------------------------------------------------------
 // Recipient resolution: (subject_type, subject_id) -> who to contact and
 // whether we may, per channel. Consent models DIFFER by subject on purpose:
@@ -632,6 +711,45 @@ const KIND_CHECKS = {
     rcpt.balance = balance;   // the ONLY amount the copy may state
     return null;
   },
+  // Review request (subject is the JOB, prompt 60). Reads the job's latest
+  // pec_review_requests row every run; each stop condition gets its own
+  // distinct stop_reason so the Drips activity log stays readable. Replies
+  // and STOP/opt-out are handled by the universal core (checkReplied +
+  // resolveRecipient's customer opt-out model), NOT re-implemented here.
+  async review(sb, enr, rcpt) {
+    const job = rcpt.job;
+    if (job.voided_at || job.archived_at) return { action: 'stopped', reason: 'job_closed' };
+    const jid = encodeURIComponent(enr.subject_id || enr.lead_id);
+    const reqs = await sb('GET', `/pec_review_requests?job_id=eq.${jid}&select=*&order=created_at.desc&limit=1`);
+    const req = (Array.isArray(reqs) && reqs[0]) || null;
+    if (!req) return { action: 'stopped', reason: 'request_missing' };
+    if (req.status === 'reviewed' || req.review_id) return { action: 'stopped', reason: 'reviewed' };
+    if (req.status === 'skipped') return { action: 'stopped', reason: 'request_skipped' };
+    if (req.status === 'stopped') return { action: 'stopped', reason: req.stop_reason || 'request_stopped' };
+    // Touch-up / callback gate, settings-driven (review_stop_on_touchup,
+    // default true). A touch-up lives either on the prod job row itself
+    // (touchup_state) or on a child callback row (is_callback=true,
+    // original_job_id pointing back); 'done' or a closed stamp means it no
+    // longer blocks. Best-effort: a failed READ never stops the drip.
+    if (req.prod_job_id) {
+      try {
+        const gRows = await sb('GET', `/settings?key=eq.review_stop_on_touchup&select=value&limit=1`);
+        const gateOn = !(Array.isArray(gRows) && gRows[0] && gRows[0].value === 'false');
+        if (gateOn) {
+          const pid = encodeURIComponent(req.prod_job_id);
+          const prows = await sb('GET', `/pec_prod_jobs?or=(id.eq.${pid},original_job_id.eq.${pid})&select=id,is_callback,touchup_state,touchup_closed_at`);
+          const open = (Array.isArray(prows) ? prows : []).some(p =>
+            (p.touchup_state && p.touchup_state !== 'done')
+            || (p.is_callback && !p.touchup_closed_at));
+          if (open) return { action: 'stopped', reason: 'touchup_opened' };
+        }
+      } catch (err) {
+        console.warn('pec-drip: review touch-up check skipped:', String(err && err.message || err));
+      }
+    }
+    rcpt.reviewRequest = req;   // token feeds kindTail; crew_lead feeds the copy
+    return null;
+  },
 };
 
 // Replied: ANY inbound text or call from this subject's person since
@@ -678,6 +796,12 @@ function kindTail(kind, rcpt) {
     // the legacy "Balance" wording byte-for-byte (prompt 45, decision 10).
     const bal = rcpt.balance != null ? `${rcpt.askIsSchedule ? 'Amount due now' : 'Balance'}: ${usd(rcpt.balance)}. ` : '';
     return { sms: ` ${bal}Pay online: ${url}`, text: `${bal}Pay online here: ${url}` };
+  }
+  if (kind === 'review' && rcpt.reviewRequest && rcpt.reviewRequest.token) {
+    // The /r/ tracking link: logs the click, then 302s to the Google review
+    // page. Appended by CODE, never the model (scrubCopy strips model URLs).
+    const url = `${SITE_URL}/r/${rcpt.reviewRequest.token}`;
+    return { sms: ` Leave a review here: ${url}`, text: `Leave a review here: ${url}` };
   }
   return null;
 }
@@ -735,6 +859,7 @@ async function runDrips(deps) {
   }
 
   const campCache = {}, stepsCache = {}, smsSenderCache = {}, emailSenderCache = {};
+  let reviewEnabled;   // lazy per-run read of review_drip_enabled
   const getCampaign = async (id) => campCache[id] ||
     (campCache[id] = (await sb('GET', `/pec_drip_campaigns?id=eq.${encodeURIComponent(id)}&select=*&limit=1`))[0] || null);
   const getSteps = async (id) => stepsCache[id] ||
@@ -746,6 +871,16 @@ async function runDrips(deps) {
       const campaign = await getCampaign(enr.campaign_id);
       if (!campaign) { await endEnrollment(sb, enr, 'stopped', 'campaign_missing', nowIso); summary.stopped++; continue; }
       if (campaign.status === 'paused') continue;   // holds in place; resumes when unpaused
+      // Review campaigns have their OWN master switch (review_drip_enabled)
+      // on top of the global one; off holds in place exactly like paused,
+      // never stops. Read once per run.
+      if (campaign.kind === 'review') {
+        if (reviewEnabled === undefined) {
+          const r = await sb('GET', `/settings?key=eq.review_drip_enabled&select=value&limit=1`);
+          reviewEnabled = !(Array.isArray(r) && r[0] && r[0].value === 'false');
+        }
+        if (!reviewEnabled) continue;
+      }
 
       // Pre-backfill rows have no subject columns; fall back to lead_id.
       const subjectType = enr.subject_type || 'lead';
@@ -870,6 +1005,21 @@ async function runDrips(deps) {
         if (canEmail) await writeLedger({ channel: 'email', status: 'failed', error_message: msg });
         summary.failed++;
         continue;   // step consumed; next touch continues the sequence
+      }
+      // Review copy gets the mechanical no-incentives check (landmine 10): a
+      // leg that trips it is dropped and recorded, never rewritten. Under the
+      // approval gate nothing is written, so the step just re-renders next
+      // tick; on the live path the step is already claimed, so the failed
+      // row explains the gap.
+      if (campaign.kind === 'review') {
+        if (canSms && reviewCopyViolation(copy.sms)) {
+          copy.sms = null;
+          if (!gatePending) { await writeLedger({ channel: 'sms', status: 'failed', error_message: 'incentive_language_blocked' }); summary.failed++; }
+        }
+        if (canEmail && (reviewCopyViolation(copy.email_body) || reviewCopyViolation(copy.email_subject))) {
+          copy.email_body = null;
+          if (!gatePending) { await writeLedger({ channel: 'email', status: 'failed', error_message: 'incentive_language_blocked' }); summary.failed++; }
+        }
       }
       // The estimate link / balance + pay link tail is appended AFTER scrub
       // and AFTER the cap (with the cap shortened so the tail and STOP line
@@ -1442,7 +1592,8 @@ async function drainBlasts(deps, opts = {}) {
 
 module.exports = {
   runDrips, drainBlasts, computeBlastAudience, enrollLead, enrollEstimateDrip,
-  enrollJobInvoiceDrip, enrollSubject, resolveRecipient, checkKillSwitches,
+  enrollJobInvoiceDrip, enrollReviewDrip, reviewCopyViolation,
+  enrollSubject, resolveRecipient, checkKillSwitches,
   masterSwitchOn, kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms,
   usd, dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
   RENDER_SYSTEM_PROMPTS, RUN_CAP, BLAST_BATCH, STOP_LINE, SITE_URL,
