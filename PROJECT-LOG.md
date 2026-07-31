@@ -4,6 +4,43 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-31 MST] Cowork: wrote prompt 60 (Google review ask drip, review intake, crew leader attribution, review bonus ledger), 21 decisions locked
+By: Cowork
+
+Changed: one new file, claude-code-prompt-60-review-drip.md. No code, no schema, no prod change. Twenty-one multiple-choice questions were asked before writing (project rule); the answers are the LOCKED lines in the prompt.
+
+WHAT DYLAN ASKED FOR: a NiceJob-style Google review campaign. Job completes, campaign starts, the ask is one tap, Anne follows up by phone, and reviews map back to jobs so we can count reviews per crew leader.
+
+THE FINDING THAT SHAPED THE BUILD, and the one worth remembering: **`reviews.job_id` and `reviews.customer_id` are NOT NULL today, and a Google review always arrives before we know whose job it is.** Google hands over a reviewer display name, stars, and text, and nothing that identifies a job. So the intake has to insert unmatched reviews and match them afterward, which means those two NOT NULLs have to be dropped in the migration or the entire Zapier feed silently inserts nothing. The `reviews` table is a 0-row stub (id, job_id, customer_id, rating, feedback, created_at) behind a read-only `renderReviews` view, so it gets widened rather than replaced: source, platform, external_id, reviewer_name, review_text, review_url, posted_at, match_status, matched_by/at, crew_lead/crew_id, review_request_id.
+
+THE SECOND FINDING, which changed a Dylan answer mid-stream: he initially said wire review counts into the bonus calculation. `pec_prod_job_bonuses` rolls into `pec_prod_job_costing.bonus_cost`, which feeds job GP, so a 5-star review landing three weeks after costing was finalized would retroactively move a finalized job's gross profit. That is the prompt-56 failure exactly (34 finalized jobs, $4,785 of GP moved). Put to him as its own question; he ruled a **separate `pec_review_bonuses` ledger that never touches job costing**. Acceptance criterion 7 makes that testable: GP numbers byte-identical before and after a review bonus is created and approved.
+
+THE THIRD FINDING, mostly good news: the plumbing is already there. The drip engine has supported `subject_type='job'` since Phase 3 (invoice reminders use it), with the approval gate, quiet hours, claim-first concurrency, and STOP handling. `pec_prod_jobs.crew_lead` and `pec_prod_job_schedule_days.crew_lead` already exist. And `settings` already holds `google_review_link_epoxy` / `google_review_link_paint`, rendered in a settings form at index.html:19380-19381 and read by literally nothing else. This build finally gives the epoxy one a job. Only `pec_drip_campaigns.kind` needs a CHECK extension ('lead','estimate','invoice' plus 'review'); the enrollment and send `subject_type` CHECKs already admit 'job'.
+
+LOCKED DECISIONS, the ones with teeth:
+
+- **Trigger is the human marking the job complete**, with a close-out popup, default Send, asking "Send a Google review request to this customer?" so whoever closes the job can opt out for an unhappy customer. This is Dylan's own design and it is the compliance-safe version: an INTERNAL choice about whom to ask, never a customer-facing "are you happy first?" screen. The prompt says so explicitly so nobody builds a rating-routed funnel later.
+- **Attribution is tracking link + Zapier Google Business Profile feed + human confirm queue**, all three. A click proves intent, not a posted review; a name match proves similarity, not identity. Auto-matched reviews are labeled as auto-matched and the intake function is FORBIDDEN from writing `match_status='confirmed'`. Only a human confirm turns a match into money.
+- **Bonus is a flat amount per human-confirmed 5-star review**, amount in Settings, `unique` on `pec_review_bonuses.review_id` so one review can never pay twice.
+- **Crew credit snapshots `pec_prod_jobs.crew_lead` at ask time**, frozen. Split-crew jobs credit the primary only. Schedule edits after completion must not rewrite history.
+- **List shows every review 1-5 stars; credit and bonus are confirmed-5-star only.** A bad review is never invisible.
+- **4 touches: day 1 SMS, day 3 SMS, day 7 email, day 14 SMS**, copy names the crew leader when populated (better conversion, and customers repeat the name in the review text, which improves matching).
+- **Anne gets no new queue.** Her follow-up is her existing phone call. She gets a review-status chip on the job plus an "asked, no review yet" filter in the Reviews view. No notifications, no Ops Queue count.
+- **Ships dry_run behind the approval gate**, and the last-30-days backfill runs while dry_run is on so deploy cannot text 20 people about three-week-old jobs.
+- **PEC epoxy only**, but `brand` on the request and `platform` on the review are in the schema so FTP is a settings change later, not a migration.
+- Stops on: review detected, customer replies by text or call, touch-up or callback opens, STOP/opt-out.
+
+LANDMINES WRITTEN INTO THE PROMPT: the NOT NULL drops; the kind CHECK being a real constraint (material_type lesson); the never-touch-costing boundary; **three separate completion paths that stamp `completed_date`** (index.html:11666 `markJobComplete`, the first-write-wins patch at 5940-5947, and `completeActiveJob` at 36397), miss one and the popup silently never fires there; snapshot-not-rederive on crew_lead; auto-matched never pays; the `/r/<token>` redirect must never show a customer an error (log-then-redirect, wrapped, redirect in the `finally`); idempotency on `external_id` because Zapier re-fires; no em dashes in customer copy; no incentives offered in exchange for a review (added to the scrubber rules); backfill-respects-dry_run ordering; and `res.error` checks per the supabase-js silent-empty gotcha.
+
+Also specified: `/r/*` netlify redirect alongside the existing `/pay/*` rule at netlify.toml:196, the link appended by CODE not the model (same as the pay link at _pec-drip.cjs ~675), `KIND_CHECKS.review` at the ~565 map with distinct stop_reasons, the intake modeled on pec-appt-intake.cjs's candidate-list field reading (the Routemize prompt-56 lesson: a second payload shape with a different vocabulary silently did nothing), six settings keys in a Settings > Reviews group per rule 12, a Metrics Reviews section (dataviz skill first), rule-11 What's New entry, rule-13 @artifacts header with the CHECK changes and NOT NULL drops flagged as hand-verify, and two new test files.
+
+Why: Dylan asked for a NiceJob-equivalent review drip inside TopCoat with per-crew-leader review counts.
+Files touched: claude-code-prompt-60-review-drip.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 60 in Claude Code.
+Handoff to Dylan: four items are in the prompt's own Handoff section: set REVIEW_INTAKE_SECRET in Netlify, confirm `google_review_link_epoxy` is the one-tap review URL and not the plain listing (the entire "as easy as possible" goal lives in that one string), build the Zapier Google Business Profile new-review Zap pointing at pec-review-intake, and set `review_bonus_amount` plus tell the crew leaders the confirmed-5-star rule BEFORE the first payout. Unrelated and still open from earlier entries: the Routemize AppointmentUpdated reschedule bug (newStartTime/newEndTime unmapped) and Bobette Weiss's Unapprove/Approve/Finalize.
+
+---
+
 ## [2026-07-29 MST] Cowork: applied the prompt-56 Routemize migration, verified 3 REAL appointments landed, and found a live reschedule bug
 By: Cowork
 
