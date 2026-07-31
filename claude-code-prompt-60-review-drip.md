@@ -1,6 +1,8 @@
 # Prompt 60: Google review ask drip, review intake, crew leader attribution, review bonus ledger
 
-Written by Cowork 2026-07-31 after 21 locked questions with Dylan. Every LOCKED line below is Dylan's answer, not a suggestion. Do not re-decide them.
+Written by Cowork 2026-07-31 after 25 locked questions with Dylan. Every LOCKED line below is Dylan's answer, not a suggestion. Do not re-decide them.
+
+Parts A through G were written first; **Parts H (backfill) and I (bad review alerting) came from a second round of answers**, along with three amendments: the campaign now ships live behind the approval gate instead of dry_run (decision 15), Anne gets no call list at all (decision 14), and reviews below 4 stars are recorded and visible but do not count (decision 11). If any earlier line in this document appears to contradict those, the numbered decision wins.
 
 ---
 
@@ -44,10 +46,11 @@ Repo: `/Users/dylannordby/Claude-Code/HQ-Dashboard`, deploy `prescottepoxy.netli
 11. **List shows every review, 1 through 5 stars. Credit and bonus are confirmed-5-star only.** A bad review is never invisible.
 12. **Bonus: flat dollar amount per human-confirmed 5-star review**, amount set in Settings.
 13. **Review bonuses live in their own ledger and never touch job costing.** See landmine 3, this is the load-bearing one.
-14. **Anne gets no new queue.** Her follow-up is her existing phone call. She gets a review-status chip on the job plus a filter in the Reviews view.
-15. **Ships dry_run behind the approval gate**, same as every other campaign.
+14. **Anne gets no new queue and no new call list.** She already works off the Job Schedule. Build her a review-status chip on the job plus an "asked, no review yet" filter in the Reviews view, and nothing else. Explicitly do NOT build a "recently completed, call them" list, a call-logged checkbox, an Ops Queue count, or notifications for the ask side.
+15. **Launches straight to the approval gate, skipping dry_run.** The campaign ships `mode='live'` with `drip_approval_required` holding every message for a human click. Dylan reads real copy in the Drip Approvals view and approves each send until he trusts it, then flips the gate off. This is a deliberate departure from how the lead, estimate, and invoice campaigns shipped, and it is Dylan's call.
 16. **Stop conditions: review detected for that job, customer replies by text or call, a touch-up or callback opens on the job, customer texts STOP or is opted out.**
-17. **Backfill jobs completed in the last 30 days** on go-live. Must respect the dry_run gate so deploy does not text 20 people.
+17. **Backfill jobs completed in the last 30 days** on go-live. Every backfilled message lands in the approval queue, never auto-sends. See Part H for the day-offset anchoring rule, which is not optional.
+18. **A review of 3 stars or fewer raises an immediate notification to Dylan and Anne** and stops any running campaign for that job. See Part I.
 
 ---
 
@@ -57,7 +60,7 @@ New file `supabase/migrations/2026-08-04_review_drip.sql`, one transaction, with
 
 **A1. Extend the campaign kind CHECK.** `pec_drip_campaigns.kind` is currently `CHECK (kind IN ('lead','estimate','invoice'))`. Add `'review'`. This is a real constraint, the same shape as the `material_type` lesson, so drop and recreate it rather than assuming it will accept a new value.
 
-**A2. Seed the campaign and its steps.** One `pec_drip_campaigns` row: name "Review request", kind 'review', status 'active', mode **'dry_run'**, max_touches 4. Four `pec_drip_steps` rows at day_offset 1 / 3 / 7 / 14, channels sms / sms / email / sms, step_index 0-3. `ai_guidance` is the instruction to the model, not customer copy. Write guidance that: thanks them by first name, references the crew leader by name when supplied, asks for a Google review in one sentence, states that the link is one tap, invents no facts about the job, offers nothing in exchange, and uses no em dashes. The email step gets an `email_subject`.
+**A2. Seed the campaign and its steps.** One `pec_drip_campaigns` row: name "Review request", kind 'review', status 'active', mode **'live'** (decision 15, the approval gate is this campaign's safety, not dry_run), max_touches 4. Four `pec_drip_steps` rows at day_offset 1 / 3 / 7 / 14, channels sms / sms / email / sms, step_index 0-3. `ai_guidance` is the instruction to the model, not customer copy. Write guidance that: thanks them by first name, references the crew leader by name when supplied, asks for a Google review in one sentence, states that the link is one tap, invents no facts about the job, offers nothing in exchange, and uses no em dashes. The email step gets an `email_subject`.
 
 **A3. New table `pec_review_requests`.** One row per ask, this is the unit Anne and the scoreboard read.
 
@@ -142,8 +145,9 @@ The `unique` on `review_id` is the guarantee that one review can never pay twice
 | `review_bonus_min_stars` | `'5'` | minimum rating that earns credit and a bonus |
 | `review_match_window_days` | `'45'` | how far back the intake looks for a candidate request |
 | `review_stop_on_touchup` | `'true'` | a touch-up or callback opening stops the drip |
+| `review_alert_max_stars` | `'3'` | a review at or below this rating alerts Dylan and Anne (Part I) |
 
-All six surfaced in Settings under a new "Reviews" group (rule 12). The Google review URL itself keeps using the existing `google_review_link_epoxy` key; do not create a duplicate.
+All seven surfaced in Settings under a new "Reviews" group (rule 12). The Google review URL itself keeps using the existing `google_review_link_epoxy` key; do not create a duplicate.
 
 ---
 
@@ -203,7 +207,7 @@ In `_pec-drip.cjs`:
 - **Render context** gains `crew_lead` (nullable) and the `/r/<token>` URL. Guidance must produce generic wording when `crew_lead` is null, not the string "null" or an empty name.
 - **`review_drip_enabled`** is checked alongside the global `drip_sending_enabled` master switch. Both must be true.
 
-The campaign ships `dry_run` and the approval gate (`drip_approval_required`) applies exactly as it does to the other kinds. Do not special-case it out of the gate.
+**The campaign ships `mode='live'`, not `dry_run`** (decision 15, a deliberate departure from the other three kinds). Its entire safety comes from the approval gate, so the gate is load-bearing here in a way it is not elsewhere: with `drip_approval_required='false'` at deploy time this campaign sends real texts to real customers on the first completed job. Add a guard in the migration or the enroll path that refuses to enroll while `drip_approval_required` is not 'true' AND the campaign has never had an approved send, and log the refusal. Do not special-case the campaign out of the gate under any circumstances.
 
 ---
 
@@ -234,7 +238,7 @@ Every read in this function checks `res.error` before treating an empty result a
 - Every review, newest first, any rating: stars, reviewer name, posted date, review text, source, and the matched job with its crew leader.
 - A match-status badge: Unmatched / Auto-matched / Confirmed / Rejected. Auto-matched must be visually distinct from Confirmed. Someone glancing at this page has to be able to tell inference from fact without clicking.
 - Per row: **Confirm match**, **Reassign to a different job** (searchable job picker), **Reject** (not our review, or spam).
-- A filter: **Asked, no review yet**, listing `pec_review_requests` with status 'asked' or 'clicked', days since ask, customer phone and email, so Anne can work a list when she wants one. This is a filter, not a queue, and it raises no notifications and no Ops Queue count. Decision 14.
+- A filter: **Asked, no review yet**, listing `pec_review_requests` with status 'asked' or 'clicked', days since ask, customer phone and email, so Anne can work a list when she wants one. This is a filter, not a queue: it raises no notifications, no Ops Queue count, and no bell. Anne works off the Job Schedule for her calls and does not need a second place to look. Decision 14.
 - Confirming a 5-star match creates the `pec_review_bonuses` row (Part G). Confirming a 1-to-4-star match records the review and credits nothing.
 
 **Job detail gets a review-status chip**: Not asked / Asked (day N) / Clicked / Reviewed (5 stars) / Skipped.
@@ -259,6 +263,28 @@ Bonus Report gets a **Review bonuses** section: pending list with Approve, appro
 
 ---
 
+## Part H: The 30-day backfill
+
+A one-time backfill (a script under `scripts/`, or an admin-only button, your call, but it must be re-runnable and idempotent) enrolls every PEC epoxy job with `completed_date` within the last 30 days that has no `pec_review_requests` row.
+
+**The anchoring rule, which is the whole reason this part exists.** The four steps are day 1 / 3 / 7 / 14. If you anchor a backfilled enrollment's day offsets to `completed_date`, a job completed 25 days ago is instantly overdue for steps 0, 1, and 2 at once, and the runner will render three messages for the same customer on the same tick. Anchor backfilled enrollments to **enrollment time**, not `completed_date`, so every backfilled customer starts at step 0 and walks the normal cadence from today. Set `asked_at` to now for these, and note the real completion date in the request row so the Reviews view can show "completed 25 days ago, asked today".
+
+Every backfilled message goes through the approval gate like any other, so the practical effect of running the backfill is that Dylan gets a stack of pending approvals to read, not a stack of sent texts. Log the count of jobs enrolled and the count skipped (already had a request), per the no-silent-caps rule.
+
+Sanity check before running it: the backfill will surface customers who finished a job three weeks ago and never heard from you since. Some of those are jobs that went badly. Skim the list before approving the batch.
+
+## Part I: Bad review alerting
+
+When `pec-review-intake` records a review with a rating at or below a new settings threshold `review_alert_max_stars` (default `'3'`):
+
+1. Raise a notification through the existing `pec_notifications` mechanism, targeted at Dylan and Anne, titled with the star count and the customer name if matched, or the reviewer name if not. Make it clickable through to the Reviews view, matching how the other notifications behave.
+2. If the review auto-matched or confirms to a job with a live review enrollment, stop that enrollment with `stop_reason='bad_review'`. Nothing should keep cheerfully texting someone who just left two stars.
+3. An unmatched bad review still alerts. Not knowing whose job it was is not a reason to stay quiet about it; that is exactly when a human needs to go look.
+
+The alert fires on insert only, never on a re-fire of the same `external_id`, or a Zapier retry storm becomes a notification storm.
+
+---
+
 ## Landmines
 
 1. **`reviews.job_id` and `reviews.customer_id` are NOT NULL today.** A Google review arrives before we know whose job it is. If you do not drop those constraints in Part A, every unmatched intake insert fails and the whole feed silently produces nothing.
@@ -271,9 +297,12 @@ Bonus Report gets a **Review bonuses** section: pending list with Approve, appro
 8. **Idempotency on `external_id`.** Zapier re-fires. A duplicate review row would double-count a crew leader and, after confirm, double-pay them. The unique constraint on `pec_review_bonuses.review_id` is the second net.
 9. **No em dashes in any customer-facing copy** (standing rule 6): SMS bodies, email bodies, subject lines, the What's New entry. Fine in the migration comments and the log entry.
 10. **No incentives, no rating gating.** Add "offers nothing of value in exchange for a review" to the scrubber's rules and to every step's `ai_guidance`.
-11. **Backfill respects dry_run.** The last-30-days backfill enrolls jobs, and because the campaign is `dry_run` at deploy nothing sends. Verify that ordering before you run it. Deploying and immediately texting 20 customers about a job from three weeks ago is the worst possible first impression of this feature.
-12. **FTP is out of scope but not designed out.** `brand` on the request and `platform` on the review exist so adding paint later is a settings change, not a migration.
-13. **Check `res.error` on every supabase-js read** before treating an empty result as meaningful.
+11. **This campaign ships LIVE, and the approval gate is the only thing standing between it and real customers.** Unlike the other three kinds, there is no dry_run cushion. Confirm `drip_approval_required` is 'true' before deploy, and build the enroll-time guard described in Part D. Getting this wrong means the first completed job after deploy texts a real person with untested copy.
+
+12. **Backfilled enrollments anchor to enrollment time, not `completed_date`.** Anchor to the completion date and a job finished 25 days ago fires steps 0, 1 and 2 on the same tick, three messages to one customer at once. Part H.
+13. **FTP is out of scope but not designed out.** `brand` on the request and `platform` on the review exist so adding paint later is a settings change, not a migration.
+14. **Check `res.error` on every supabase-js read** before treating an empty result as meaningful.
+15. **Do not build Anne a call list.** Decision 14 is a scope boundary, not an oversight. She works off the Job Schedule. A chip and a filter, nothing more.
 
 ---
 
@@ -281,23 +310,25 @@ Bonus Report gets a **Review bonuses** section: pending list with Approve, appro
 
 1. Marking a job complete shows the popup, default Send; both branches write a `pec_review_requests` row, only Send enrolls.
 2. `/r/<token>` on the live site redirects to the PEC Google review page and the request's `click_count` increments and status moves to 'clicked'. A garbage token still redirects.
-3. The review campaign appears in the Drips view as dry_run, and a due step renders real copy naming the crew leader with the `/r/` link appended, sends nothing, and holds at the approval gate when the gate is on.
+3. The review campaign appears in the Drips view as live, and a due step renders real copy naming the crew leader with the `/r/` link appended and holds it in Drip Approvals rather than sending. With `drip_approval_required` set to 'false' and no prior approved send, enrollment refuses and logs why.
 4. Posting a sample Zapier payload to `pec-review-intake` inserts a review; a matching customer name auto-matches with `match_status='auto'`; an unrecognizable name inserts with `job_id` null and `match_status='unmatched'`; re-posting the same `external_id` updates rather than duplicating.
 5. Confirming a 5-star match in the Reviews view creates exactly one `pec_review_bonuses` row at the settings amount. Confirming a 4-star match creates none. Double-clicking Confirm still creates exactly one.
 6. Metrics Reviews section shows per-crew-leader confirmed 5-star counts and the ask/click/review funnel.
 7. `pec_prod_job_costing.bonus_cost` and every GP number are byte-identical before and after a review bonus is created and approved. Verify on a real finalized job.
 8. Opening a touch-up on a job with a live review drip stops the enrollment with `stop_reason='touchup_opened'`.
-9. `npm test` green.
+9. Running the backfill on a job completed 25 days ago produces exactly one pending approval item, not three, and its `asked_at` is today.
+10. A 2-star review posted to the intake raises a notification for Dylan and Anne, stops any live enrollment for that job with `stop_reason='bad_review'`, and re-posting the same `external_id` raises no second notification.
+11. `npm test` green.
 
 ## Tests
 
-Extend `production/drip-phase3.test.cjs` (or a new `production/review-drip.test.cjs`) with: review-kind enrollment, each of the four stop conditions, crew-lead-null generic copy fallback, and the link-appended-by-code assertion. New `production/review-intake.test.cjs`: auto-match single candidate, ambiguous candidates leave unmatched, idempotent re-fire, unparseable payload returns 200 with a note, and the "intake never writes confirmed" assertion.
+Extend `production/drip-phase3.test.cjs` (or a new `production/review-drip.test.cjs`) with: review-kind enrollment, each of the five stop conditions (including `bad_review`), crew-lead-null generic copy fallback, the link-appended-by-code assertion, the enroll-refuses-without-the-gate guard, and the backfill anchoring rule (a 25-day-old completion yields one due step, not three). New `production/review-intake.test.cjs`: auto-match single candidate, ambiguous candidates leave unmatched, idempotent re-fire, unparseable payload returns 200 with a note, the "intake never writes confirmed" assertion, and bad-review alerting firing once per `external_id`.
 
 ## Standing rules checklist
 
 - **Rule 11 (What's New):** one entry covering the review request and the crew leader scoreboard. Plain language, no em dashes.
 - **Rule 12 (settings):** the six keys in Part A6, surfaced in a Settings > Reviews group.
-- **Rule 13 (@artifacts):** header on the migration covering the two new tables, the new `reviews` columns, and the six settings keys. The two CHECK changes and the NOT NULL drops are not expressible as artifact kinds, so note them and hand-verify with `pg_get_constraintdef` and `information_schema.columns`.
+- **Rule 13 (@artifacts):** header on the migration covering the two new tables, the new `reviews` columns, and the seven settings keys. The two CHECK changes and the NOT NULL drops are not expressible as artifact kinds, so note them and hand-verify with `pg_get_constraintdef` and `information_schema.columns`.
 - **features.json:** update the existing "Reviews" entry (currently "Read-only view of collected customer reviews") and add a "Review request drip" entry. Update the "Lead drip engine" entry to mention the fourth kind.
 - **SCHEMA.md:** regenerate after applying the migration.
 
@@ -306,5 +337,7 @@ Extend `production/drip-phase3.test.cjs` (or a new `production/review-drip.test.
 1. Set `REVIEW_INTAKE_SECRET` in Netlify env.
 2. Confirm `google_review_link_epoxy` in Settings is the short one-tap review URL (the `.../review?placeid=` or `g.page/.../review` form that opens the star widget), not the plain business listing. The whole "as easy as possible" goal lives in that one string.
 3. Build the Zap: Google Business Profile new-review trigger to a webhook POST at `https://prescottepoxy.netlify.app/.netlify/functions/pec-review-intake` with the secret header.
-4. Review the generated dry_run copy in the Drips view, then flip the campaign to live yourself.
-5. Set `review_bonus_amount` to the real number before flipping live, and tell the crew leaders the rule (confirmed 5-star only) before the first payout, not after.
+4. **Confirm `drip_approval_required` is 'true' BEFORE this deploys.** This campaign ships live, so the gate is the only thing between it and a real customer's phone. Then work the Drip Approvals queue for the first stretch, reading each message before approving, and flip the gate off only once the copy has stopped surprising you.
+5. Run the 30-day backfill when you're ready to read a batch of approvals, not before. Skim the job list first, some of those completions went badly and you'll want to skip them.
+6. Set `review_bonus_amount` to the real number before flipping the gate off, and tell the crew leaders the rule (confirmed 5-star only) before the first payout, not after.
+7. Decide who owns clicking Confirm in the Reviews view. Auto-matched reviews pay nobody until a human confirms them, so if that click has no owner, the scoreboard climbs, the bonuses never issue, and the crew notices before you do.

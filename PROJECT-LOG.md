@@ -4,6 +4,32 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-31 MST] Cowork: prompt 60 revised, four more decisions (live-behind-the-gate launch, backfill anchoring, bad-review alerting, no call list for Anne)
+By: Cowork
+
+Changed: claude-code-prompt-60-review-drip.md rewritten in place. Correction/extension of the entry immediately below this one, which described the 21-question version. Prompt 60 has still not been run in Claude Code.
+
+Four more questions were asked after the first draft. Two of them changed the build.
+
+**THE ONE THAT MATTERS: this campaign now ships `mode='live'`, not `dry_run`.** Dylan chose to skip the dry-run reading step and launch straight to the approval gate. That is a deliberate departure from how the lead, estimate, and invoice campaigns shipped, and it moves ALL of the safety onto `drip_approval_required`. With the gate off at deploy time, the first completed job texts a real customer with untested copy. The prompt now says so in three places and adds an enroll-time guard: refuse to enroll while the gate is not 'true' AND the campaign has never had an approved send, and log the refusal. Acceptance criterion 3 tests that refusal. Landmine 11, which used to read "backfill respects dry_run", was rewritten as "there is no dry_run cushion".
+
+**THE SECOND REAL FINDING, from thinking through the backfill Dylan approved in round 3: day offsets must anchor to ENROLLMENT time, not `completed_date`.** The steps are day 1/3/7/14. Anchor a backfilled enrollment to the completion date and a job finished 25 days ago is instantly overdue for steps 0, 1 and 2 on the same runner tick, rendering three messages for one customer at once. This is a new Part H: backfill is re-runnable and idempotent, stamps `asked_at` to now, keeps the real completion date on the request row so the Reviews view can show "completed 25 days ago, asked today", and logs enrolled-vs-skipped counts per the no-silent-caps rule. Acceptance criterion 9 tests it: one pending approval item for a 25-day-old job, not three.
+
+**New Part I, bad review alerting.** A review at or below `review_alert_max_stars` (new settings key, default '3') raises a `pec_notifications` entry for Dylan and Anne, clickable through to the Reviews view, AND stops any live enrollment for that job with `stop_reason='bad_review'` so the drip does not keep cheerfully texting someone who just left two stars. An UNMATCHED bad review still alerts, since not knowing whose job it was is exactly when a human needs to go look. Alert fires on insert only, never on a re-fire of the same `external_id`, or a Zapier retry storm becomes a notification storm. That is a fifth stop condition and a seventh settings key.
+
+**Scope boundary confirmed and written in as landmine 15: do not build Anne a call list.** She was offered a "recently completed, call them" list, a call-logged checkbox, and an Ops Queue count, and turned all three down. She works off the Job Schedule. She gets a review-status chip on the job and an "asked, no review yet" FILTER in the Reviews view, which raises no notifications, no queue count, and no bell. This is a decision, not an oversight, and the prompt says so explicitly so a future session does not helpfully add one.
+
+Also confirmed unchanged: reviews of 1 to 4 stars are recorded and visible with rating and text, and Metrics shows average rating and a star breakdown; only confirmed 5-star reviews add to a crew leader's count and pay a bonus. That was already the spec, Dylan reconfirmed it.
+
+Two Dylan handoff items were added: confirm `drip_approval_required` is 'true' BEFORE deploy, and decide who owns clicking Confirm in the Reviews view. That second one is a real operational risk, not a nicety. Auto-matched reviews pay nobody until a human confirms them, so if the click has no owner the scoreboard climbs, bonuses never issue, and the crew notices before Dylan does.
+
+Why: second round of scoping questions after the first draft was delivered.
+Files touched: claude-code-prompt-60-review-drip.md (rewritten), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 60 in Claude Code. Read the revised file, not the first draft; its header notes which decisions superseded which.
+Handoff to Dylan: seven items now in the prompt's own Handoff section. The two with teeth are confirming the approval gate is on before deploy, and naming an owner for the Confirm click.
+
+---
+
 ## [2026-07-31 MST] Cowork: wrote prompt 60 (Google review ask drip, review intake, crew leader attribution, review bonus ledger), 21 decisions locked
 By: Cowork
 
