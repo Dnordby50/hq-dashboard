@@ -280,8 +280,13 @@ export default function EstimatorScreen({
   // real job is a garage plus a patio plus stem walls, and they are not the
   // same system. The estimate-level system becomes the DOMINANT area's (most
   // sqft) for reporting; pricing weights every area's own system.
+  // Editing an estimate WITH areas maps them straight in. Editing one with NO
+  // areas (a dashboard-created draft, prompt 61 Part B: the row exists before
+  // the estimator ever opens) seeds the SAME single Main area the create path
+  // uses, defaults included, instead of an empty area list the rep cannot
+  // price from. The fix lives here, not in a fake database row.
   const [areas, setAreas] = useState<AreaForm[]>(() =>
-    editing
+    editing && editing.areas.length
       ? editing.areas.map((a) => ({
           name: a.name,
           sqft: a.sqft,
@@ -1155,6 +1160,46 @@ export default function EstimatorScreen({
     try { window.parent?.postMessage(msg, window.location.origin); } catch { /* not framed */ }
   }, []);
 
+  // ---- Inline-embed plumbing (prompt 61 Part A) ----------------------------
+  // Height posting: the dashboard hosts this app INLINE in the estimate
+  // detail page now, and a fixed-height frame plus the page's own scrollbar
+  // is the nested-scroll smell the inline move exists to avoid. A
+  // ResizeObserver on the app root posts the content height up, throttled to
+  // one message per animation frame; the parent sizes the iframe to match
+  // (with its own fallback if no message ever arrives).
+  useEffect(() => {
+    if (!embed) return;
+    const el = document.getElementById('root');
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    document.body.classList.add('embed');
+    let raf = 0;
+    const post = () => {
+      raf = 0;
+      const px = Math.ceil(Math.max(el.scrollHeight, el.offsetHeight));
+      if (px > 0) postToParent({ type: 'pec-estimator-height', px });
+    };
+    const ro = new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(post); });
+    ro.observe(el);
+    post();
+    return () => { ro.disconnect(); if (raf) cancelAnimationFrame(raf); };
+  }, [embed, postToParent]);
+
+  // Theme follows the DASHBOARD, never the OS (Part A item 9): the parent
+  // posts { type: 'pec-theme', theme } on mount and on change; a light panel
+  // inside a dark page (or vice versa) is the two-UIs seam at its worst.
+  // Origin-checked like every message on this channel.
+  useEffect(() => {
+    if (!embed) return;
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.origin !== window.location.origin) return;
+      const msg = ev.data as { type?: string; theme?: string } | null;
+      if (!msg || msg.type !== 'pec-theme') return;
+      document.documentElement.dataset.theme = msg.theme === 'dark' ? 'dark' : 'light';
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [embed]);
+
   // The full page's Back button: return to wherever the rep came from when it
   // was a same-origin page (a full-screen estimator that dead-ends was the
   // complaint), else land on the dashboard root.
@@ -1640,10 +1685,13 @@ export default function EstimatorScreen({
   );
 
   return (
-    <div className="screen">
+    <div className={embed ? 'screen embed' : 'screen'}>
       <header className="topbar">
         <div className="brand">
-          PEC Estimator <span className="beta">beta</span>
+          {/* Embedded, the estimate detail page already names the estimate, so
+              the app title is duplicated chrome and is dropped (Part A item
+              9). The chips stay: linkage is real information either way. */}
+          {!embed && <>PEC Estimator <span className="beta">beta</span></>}
           {editing && (
             <span className="lead-chip" title={`Editing estimate ${editing.id} in place`}>
               Editing {editing.estimateNumber != null ? `EST-${editing.estimateNumber}` : 'estimate'}

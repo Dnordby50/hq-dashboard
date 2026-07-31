@@ -170,7 +170,10 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     scopeStale: e.scope_stale === true,
     scopeAnswers: (e.scope_answers && typeof e.scope_answers === 'object' ? e.scope_answers : {}) as Record<string, string>,
     priceOverrideReason: (e.price_override_reason as string | null) ?? null,
-    areas: areas.length ? areas : [{ name: 'Main', sqft: '', systemTypeId: null, mvb: false, slotValues: {} }],
+    // Returned as-is, INCLUDING empty: EstimatorScreen seeds the create-path
+    // Main area (with the system's default slot values) when a loaded draft
+    // has none. A placeholder here would skip that default seeding.
+    areas,
     addonLines,
     isCustom,
     customScope: e.custom_scope != null ? String(e.custom_scope) : '',

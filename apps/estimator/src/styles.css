@@ -1,18 +1,57 @@
+/* Design tokens ALIGNED WITH THE DASHBOARD (prompt 61 Part A item 9: "two
+   different-looking UIs for one estimate" was Dylan's number-one complaint).
+   The --rd-* names mirror index.html's :root vocabulary verbatim so both apps
+   read from one token language; the estimator's own short names now derive
+   from them. Values match the dashboard's CRM light skin: PEC orange accent,
+   same surfaces, same ink, same radii scale, same font stack. */
 :root {
-  --bg: #0f172a;
-  --panel: #ffffff;
-  --ink: #0f172a;
-  --muted: #64748b;
-  --line: #e2e8f0;
-  --accent: #2563eb;
+  --rd-bg: #eef0f3;
+  --rd-card: #ffffff;
+  --rd-soft: #f5f6f8;
+  --rd-ink: #0f1420;
+  --rd-muted: #6b7280;
+  --rd-line: #e6e8ec;
+  --rd-accent: #D8531C;
+  --rd-accent-ink: #ffffff;
+  --rd-success: #10b981;
+  --rd-danger: #ef4444;
+  --rd-r-lg: 16px;
+  --rd-r-md: 12px;
+  --rd-r-sm: 8px;
+
+  --bg: #0f172a;                /* full-page topbar only; unused in embed */
+  --panel: var(--rd-card);
+  --ink: var(--rd-ink);
+  --muted: var(--rd-muted);
+  --line: var(--rd-line);
+  --accent: var(--rd-accent);
   --good: #16a34a;
   --bad: #dc2626;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* Dark theme, DRIVEN BY THE PARENT (postMessage pec-theme), never the OS: a
+   light estimator panel inside a dark dashboard is the seam at its most
+   obvious, and the reverse is just as bad. The dashboard's CRM skin is light
+   today, so this fires only if the parent ever says so; the standalone
+   /estimator/ page stays light. */
+:root[data-theme='dark'] {
+  --rd-bg: #0f1420;
+  --rd-card: #171d2b;
+  --rd-soft: #1e2536;
+  --rd-ink: #e7eaf0;
+  --rd-muted: #9aa1ad;
+  --rd-line: #2b3142;
+}
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
-body { background: #f1f5f9; color: var(--ink); }
+body { background: var(--rd-bg); color: var(--ink); }
+/* Embedded in the estimate detail page: the page behind supplies the surface,
+   so the frame body goes transparent and the panel reads as part of the page
+   instead of a window with its own backdrop. */
+body.embed { background: transparent; }
+body.embed .screen { min-height: 0; }
 
 .centered {
   min-height: 100%;
@@ -170,7 +209,7 @@ select, input {
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--line);
   border-radius: 0.5rem;
-  background: #fff;
+  background: var(--rd-card);
   color: var(--ink);
 }
 
@@ -216,7 +255,7 @@ select, input {
 .wo-grid .field { margin-bottom: 0; }
 .check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
 .check input { width: 1.1rem; height: 1.1rem; }
-textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 0.5rem; resize: vertical; font-family: inherit; }
+textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 0.5rem; resize: vertical; font-family: inherit; background: var(--rd-card); color: var(--ink); }
 @media (max-width: 520px) { .slots, .wo-grid { grid-template-columns: 1fr; } }
 
 .result { display: flex; flex-direction: column; gap: 0.75rem; min-height: 9rem; justify-content: center; }
@@ -245,7 +284,7 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 /* Residential / Commercial segmented toggle (build 23). */
 .cust-type { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
 .cust-type button {
-  background: #fff;
+  background: var(--rd-card);
   border: none;
   color: var(--muted);
   font-size: 0.78rem;
@@ -274,7 +313,7 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
   right: 0;
   z-index: 30;
   margin-top: 2px;
-  background: #fff;
+  background: var(--rd-card);
   border: 1px solid var(--line);
   border-radius: 0.5rem;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.15);
@@ -296,7 +335,7 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
   color: var(--ink);
 }
 .addr-ac-item:last-child { border-bottom: none; }
-.addr-ac-item:hover { background: #f1f5f9; }
+.addr-ac-item:hover { background: var(--rd-soft); }
 .addr-ac-main { font-weight: 600; }
 .addr-ac-sec { font-size: 0.75rem; color: var(--muted); }
 
@@ -333,7 +372,7 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 .mvb-seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 0.5rem; overflow: hidden; }
 .seg {
   flex: 1;
-  background: #fff;
+  background: var(--rd-card);
   border: none;
   border-right: 1px solid var(--line);
   padding: 0.55rem 0.4rem;
@@ -379,3 +418,24 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 
 /* The embed Close control reuses the .back link look on a real button. */
 .back.as-btn { background: none; border: none; cursor: pointer; font-family: inherit; }
+
+/* ---- Embedded chrome (prompt 61 Part A item 9) ---------------------------
+   Inside the estimate detail page the app drops the duplicated header chrome:
+   no dark brand bar (the page has its own header), just a slim status row
+   with the sync/offline state and the Close control, in page colors. The
+   full-page /estimator/ keeps the dark topbar unchanged. */
+.screen.embed .topbar {
+  background: transparent;
+  color: var(--ink);
+  padding: 0.15rem 0.25rem 0.35rem;
+}
+.screen.embed .status { color: var(--muted); }
+.screen.embed .topbar .back { color: var(--accent); }
+.screen.embed .topbar .back:hover { color: var(--accent); text-decoration: underline; }
+.screen.embed .lead-chip {
+  background: var(--rd-soft);
+  border-color: var(--line);
+  color: var(--ink);
+  margin-left: 0;
+}
+.screen.embed .cols { padding: 0.25rem 0 0.5rem; max-width: none; }

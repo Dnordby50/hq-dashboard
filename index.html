@@ -603,6 +603,11 @@ button.pec-stat:hover{border-color:var(--accent)}
    chrome renders without horizontal scrolling inside its iframe. */
 .pec-modal.pec-modal-email-log{max-width:min(720px,94vw)}
 .pec-estimator-frame{display:block;width:100%;height:100%;border:0}
+/* Inline estimator (prompt 61): lives INSIDE the estimate detail page, sized
+   by the app's own height messages (fallback height set in JS). No border of
+   its own: the estimator's cards carry the page look, and a visible frame
+   edge is exactly the "window inside a page" seam this build removes. */
+.pec-estimator-inline{display:block;width:100%;min-height:520px;border:0;background:transparent}
 .pec-modal h3{font-family:var(--sans);font-weight:600;margin-bottom:14px}
 .pec-modal .pec-modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .pec-pagination{display:flex;gap:8px;margin-top:14px;align-items:center;justify-content:center;font-size:.75rem;color:var(--muted)}
@@ -7105,36 +7110,97 @@ function renderAuthUI() {
 // settings.estimator_allowed_emails only ever gated that one button and is now
 // an unused row (harmless; nothing reads it).
 
-// ---- Estimator iframe modal ------------------------------------------------
+// ---- Estimator hosting (prompt 61: INLINE is the normal path now) ----------
 // The estimator PWA stays exactly as it is architecturally (offline outbox,
-// its own service worker); this is only a shell that frames it OVER the
-// dashboard instead of a new tab. Uses #pecModalRoot via openModal() per the
-// two-modal-root rule. Launch shapes:
-//   openEstimatorModal()                          walk-up, no lead
-//   openEstimatorModal({ leadId })                from a lead detail page
-//   openEstimatorModal({ estimateId })            Edit on the estimate page
-//
-// The DUPLICATE GUARD lives HERE, not on the Start-estimate button, so EVERY
-// path that opens the estimator for a lead is covered (a guard on one caller is
-// theater). It fires only when the lead has an OPEN estimate (draft / sent /
-// signed / change_requested); a rejected or lost estimate is dead and
-// re-estimating after a rejection is normal, so it stays silent there.
+// its own service worker); the dashboard only decides WHERE to render its
+// iframe. Since prompt 61 the normal home is INLINE inside the estimate
+// detail page (mountInlineEstimator): a draft opens with the estimator
+// already up, Edit swaps it in on any other status, and nothing floats over
+// the dashboard. The old #pecModalRoot modal (openEstimatorModal below) is
+// now the EXCEPTION, kept for exactly one path: creating an estimate while
+// OFFLINE, where no draft row can be inserted and the outbox flow needs the
+// lead_id launch shape. The duplicate guard is shared by both.
 const OPEN_ESTIMATE_STATUSES = ['draft', 'sent', 'signed', 'change_requested'];
 
-function openEstimatorFrame({ leadId = null, estimateId = null } = {}) {
-  // Best-effort kick of the estimator PWA's service-worker update check. A
-  // browser that cached the shell while X-Frame-Options was DENY (7/25-7/29)
-  // keeps serving that cached DENY response to this iframe until its SW
-  // updates; this makes the very next open work instead of waiting on the
-  // browser's own update schedule. Does not touch how the frame launches.
+// One source builder for both mounts, including the best-effort kick of the
+// estimator PWA's service-worker update check. The kick is NOT optional: a
+// browser that cached the shell while X-Frame-Options was DENY (7/25-7/29)
+// keeps serving that cached DENY response to this iframe until its SW
+// updates; this makes the very next open work instead of waiting on the
+// browser's own update schedule.
+function estimatorFrameSrc({ leadId = null, estimateId = null } = {}) {
   try {
     navigator.serviceWorker.getRegistration('/estimator/').then(r => { if (r) r.update(); }).catch(() => {});
   } catch (_) { /* no SW support: nothing cached to worry about */ }
   const params = new URLSearchParams({ embed: '1' });
   if (estimateId) params.set('estimate_id', estimateId);
   else if (leadId) params.set('lead_id', leadId);
+  return `/estimator/?${params.toString()}`;
+}
+
+// The ONE live inline mount. estimateId names the estimate whose page hosts
+// the frame; closedFor remembers an explicit Close on a draft so re-rendering
+// that page shows the summary instead of stubbornly remounting the estimator.
+// gotHeight gates the fixed-height fallback.
+const pecEstInline = { estimateId: null, iframe: null, closedFor: null, gotHeight: false, fallbackTimer: null };
+
+function pecInlineEstimatorAlive() {
+  return !!(pecEstInline.iframe && document.body.contains(pecEstInline.iframe));
+}
+
+// The dashboard's CRM surface is the light skin today; if a dark CRM theme
+// ever ships, this is the one place to derive it from. Posted to the frame on
+// load (and re-postable on change) so the estimator tracks the DASHBOARD's
+// theme, never the OS's.
+function pecCurrentTheme() { return 'light'; }
+function pecPostThemeToEstimator(frame) {
+  try { frame && frame.contentWindow && frame.contentWindow.postMessage({ type: 'pec-theme', theme: pecCurrentTheme() }, window.location.origin); } catch (_) {}
+}
+
+// Inline mount (prompt 61 Part A): the iframe lives INSIDE the estimate
+// detail page, no modal, sized by the pec-estimator-height messages the app
+// posts (ResizeObserver + rAF on its side). Fallback if no height arrives
+// within 1500ms (or the frame reports 0): min(1100px, 85vh) with internal
+// scrolling. Never below 520px either way.
+function mountInlineEstimator(container, { leadId = null, estimateId = null } = {}) {
+  if (pecEstInline.fallbackTimer) { clearTimeout(pecEstInline.fallbackTimer); pecEstInline.fallbackTimer = null; }
+  const iframe = document.createElement('iframe');
+  iframe.className = 'pec-estimator-inline';
+  iframe.title = 'PEC Estimator';
+  iframe.src = estimatorFrameSrc({ leadId, estimateId });
+  iframe.style.height = Math.min(1100, Math.round(window.innerHeight * 0.85)) + 'px';
+  container.innerHTML = '';
+  container.appendChild(iframe);
+  pecEstInline.estimateId = estimateId || null;
+  pecEstInline.iframe = iframe;
+  pecEstInline.gotHeight = false;
+  iframe.addEventListener('load', () => pecPostThemeToEstimator(iframe));
+  pecEstInline.fallbackTimer = setTimeout(() => {
+    if (!pecEstInline.gotHeight && pecEstInline.iframe === iframe && document.body.contains(iframe)) {
+      iframe.style.height = Math.min(1100, Math.round(window.innerHeight * 0.85)) + 'px';
+      iframe.style.overflow = 'auto';
+    }
+  }, 1500);
+  return iframe;
+}
+
+// Drop the inline mount's bookkeeping (the DOM node goes with whatever
+// re-render replaces it; this only forgets the reference so renderers stop
+// treating the estimator as open).
+function unmountInlineEstimator() {
+  if (pecEstInline.fallbackTimer) { clearTimeout(pecEstInline.fallbackTimer); pecEstInline.fallbackTimer = null; }
+  pecEstInline.estimateId = null;
+  pecEstInline.iframe = null;
+  pecEstInline.gotHeight = false;
+}
+
+// Modal mount: the offline fallback only (Part B item 5).
+function openEstimatorFrame({ leadId = null, estimateId = null, offlineNote = false } = {}) {
+  const note = offlineNote
+    ? '<div style="background:rgba(217,119,6,.12);border-bottom:1px solid rgba(217,119,6,.4);padding:8px 12px;font-size:.8rem">You are offline, so the estimate opens in the classic window and saves to this device. It is created for real, with its number, as soon as the device is back online.</div>'
+    : '';
   const wrap = openModal(
-    `<iframe class="pec-estimator-frame" src="/estimator/?${params.toString()}" title="PEC Estimator"></iframe>`,
+    `${note}<iframe class="pec-estimator-frame" src="${estimatorFrameSrc({ leadId, estimateId })}" title="PEC Estimator"></iframe>`,
   );
   const modal = wrap.querySelector('.pec-modal');
   if (modal) modal.classList.add('pec-modal-estimator');
@@ -7212,14 +7278,43 @@ window.addEventListener('message', (ev) => {
   if (ev.origin !== window.location.origin) return;
   const msg = ev.data;
   if (!msg || typeof msg !== 'object') return;
+  // Inline height sizing (prompt 61): the app posts its content height so the
+  // page grows with the form instead of nesting a second scrollbar. Floor at
+  // 520px so a transient 0 can never collapse the frame.
+  if (msg.type === 'pec-estimator-height') {
+    if (pecInlineEstimatorAlive() && Number(msg.px) > 0) {
+      pecEstInline.gotHeight = true;
+      pecEstInline.iframe.style.height = Math.max(520, Math.ceil(Number(msg.px)) + 2) + 'px';
+    }
+    return;
+  }
   if (msg.type === 'pec-estimator-close') {
+    // Context-aware (prompt 61): an inline estimator closes back to the
+    // read-only summary IN PLACE; the modal (offline fallback) closes as
+    // before. closedFor stops the draft page from instantly remounting it.
+    if (pecInlineEstimatorAlive()) {
+      const id = pecEstInline.estimateId;
+      pecEstInline.closedFor = id;
+      unmountInlineEstimator();
+      if (id) renderEstimateDetail(id);
+      return;
+    }
     closeModal();
     return;
   }
   if (msg.type === 'pec-estimate-saved') {
-    closeModal();
     const num = msg.estimate_number != null ? `EST-${msg.estimate_number}` : 'Estimate';
-    showToast(`${esc(num)} saved`, { ttl: 3000 });
+    // Inline save of the estimate already open: STAY PUT (Part A item 7/8).
+    // renderEstimateDetail sees the live mount and refreshes the summary data
+    // around the iframe without touching it, so nothing the rep typed is lost
+    // and the header/totals visibly update.
+    if (pecInlineEstimatorAlive() && msg.estimate_id && String(msg.estimate_id) === String(pecEstInline.estimateId)) {
+      showToast(`${esc(num)} saved`, { ttl: 3000 });
+      renderEstimateDetail(String(msg.estimate_id));
+      return;
+    }
+    closeModal();
+    showToast(`${esc(num)} saved${navigator.onLine ? '' : ' to this device (offline). It uploads and gets its number when you are back online.'}`, { ttl: navigator.onLine ? 3000 : 6000 });
     // Land on the estimate's own page. If the row has not synced yet (saved
     // offline inside the iframe), renderEstimateDetail shows its honest
     // not-synced-yet state instead of a broken page.
@@ -25760,8 +25855,24 @@ async function renderEstimates() {
 
 async function renderEstimateDetail(estimateId) {
   const root = $('pecViewRoot');
-  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimate…</div>';
-  const back = () => { state.openEstimateId = null; renderEstimates(); };
+  // LANDMINE 1 (prompt 61): destroying the page while the inline estimator is
+  // mounted reloads the PWA and silently discards whatever the rep typed.
+  // Every handler in this file calls renderEstimateDetail(est.id) to refresh,
+  // so the guard lives HERE, once: when the inline estimator for THIS
+  // estimate is alive, the skeleton (chrome / inline host / body) is kept and
+  // only chrome+body are rebuilt around the untouched iframe. Everything else
+  // gets the normal full render.
+  const keepInline = pecInlineEstimatorAlive()
+    && String(pecEstInline.estimateId) === String(estimateId)
+    && root.contains(pecEstInline.iframe);
+  if (!keepInline) {
+    unmountInlineEstimator();
+    root.innerHTML = `
+      <div id="estDetailChrome"><div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimate…</div></div>
+      <div id="estInlineHost" style="display:none;margin-bottom:14px"></div>
+      <div id="estDetailBody"></div>`;
+  }
+  const back = () => { unmountInlineEstimator(); state.openEstimateId = null; renderEstimates(); };
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="estBack">← Back to estimates</button></div>';
   let res;
   try {
@@ -25771,8 +25882,11 @@ async function renderEstimateDetail(estimateId) {
       // NOTE: deleted_at is NOT filtered here on purpose: viewing an archived
       // estimate's detail (to restore it, or read it) must work.
   } catch (e) { res = { error: e }; }
+  const chromeEl = $('estDetailChrome'), inlineHost = $('estInlineHost'), bodyEl = $('estDetailBody');
+  if (!chromeEl || !inlineHost || !bodyEl) return;   // the view changed underneath the fetch
   if (res.error || !res.data) {
-    root.innerHTML = backBar + `<div class="pec-empty">${res.error
+    chromeEl.innerHTML = backBar;
+    bodyEl.innerHTML = `<div class="pec-empty">${res.error
       ? esc(res.error.message)
       : 'Estimate not found. If it was just saved OFFLINE on another device, it appears here once that device syncs.'}</div>`;
     $('estBack').addEventListener('click', back);
@@ -25862,11 +25976,11 @@ async function renderEstimateDetail(estimateId) {
     if (!vr.error) viewsInfo = { count: vr.count || 0, last: vr.data && vr.data[0] ? vr.data[0].viewed_at : null };
   } catch (_) {}
 
-  root.innerHTML = `
+  chromeEl.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="estBack">← Back to estimates</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="pec-btn sm" id="estEdit" title="Reopens the estimator prefilled; saving edits this estimate in place">Edit</button>
+        <button class="pec-btn sm" id="estEdit" title="Opens the estimator right here on the page; saving edits this estimate in place">Edit</button>
         <button class="pec-btn sm" id="estPreview" title="See exactly what the customer will get, without sending">Preview</button>
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
@@ -25880,8 +25994,10 @@ async function renderEstimateDetail(estimateId) {
       </div>
     </div>
     ${isArchived ? `<div style="background:rgba(100,116,139,.12);border:1px solid rgba(100,116,139,.4);border-radius:8px;padding:10px 12px;font-size:.84rem;margin-bottom:10px"><strong>This estimate is archived.</strong> Its public link is inactive. Restore it to make it active again.</div>` : ''}
-    <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
-      <div>
+  `;
+  bodyEl.innerHTML = `
+    <div id="estSummaryGrid" style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
+      <div id="estSummaryLeft">
         <div class="pec-card">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap">
             <div>
@@ -26092,7 +26208,33 @@ async function renderEstimateDetail(estimateId) {
   `;
 
   $('estBack').addEventListener('click', back);
-  $('estEdit').addEventListener('click', () => openEstimatorModal({ estimateId: est.id }));
+
+  // ---- Inline estimator region (prompt 61 Part A) ---------------------------
+  // The region below the toolbar is EITHER the read-only summary (the left
+  // column of the grid) or the inline estimator. Draft opens with the
+  // estimator up (unless the rep just closed it); Edit swaps it in on any
+  // status, in place, with no page re-render and no modal. The right column
+  // (customer view, pricing, activity) stays visible in both states.
+  const applyInlineLayout = () => {
+    inlineHost.style.display = 'block';
+    const left = $('estSummaryLeft'); if (left) left.style.display = 'none';
+    const grid = $('estSummaryGrid'); if (grid) grid.style.gridTemplateColumns = 'minmax(300px,1fr)';
+    const editBtn = $('estEdit');
+    if (editBtn) { editBtn.disabled = true; editBtn.textContent = 'Editing below'; editBtn.title = 'The estimator is open below. Close it there to see the read-only summary.'; }
+  };
+  const openInlineEstimator = () => {
+    pecEstInline.closedFor = null;
+    mountInlineEstimator(inlineHost, { estimateId: est.id });
+    applyInlineLayout();
+  };
+  if (keepInline) {
+    // A summary refresh happened around a live estimator (a save, a line-item
+    // change): keep the untouched iframe and re-apply the layout.
+    applyInlineLayout();
+  } else if (est.status === 'draft' && !isArchived && String(pecEstInline.closedFor) !== String(est.id)) {
+    openInlineEstimator();
+  }
+  $('estEdit').addEventListener('click', openInlineEstimator);
   // Preview: the EXACT customer page (same server renderer), in an iframe, with
   // nothing live. The dashboard fetches the HTML with the staff JWT and drops
   // it into srcdoc, so the preview never sets sent_at, flips status, or exposes
