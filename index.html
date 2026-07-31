@@ -5962,6 +5962,8 @@ function openStatusChangeModal(jobId, fromStatus, toStatus, onDone, ctx = {}) {
         if (toStatus === 'completed') await mirrorProdStatus({ dealId: ctx.dealId, name: ctx.name, addr: ctx.addr }, 'completed');
         closeModal();
         showToast('Status updated', { ttl: 2000 });
+        // Prompt 60: every path that completes a job offers the review ask.
+        if (toStatus === 'completed') openReviewAskModal(jobId).catch(() => {});
         if (typeof onDone === 'function') onDone();
       } catch (err) {
         go.disabled = false; go.textContent = 'Set status';
@@ -11686,6 +11688,8 @@ async function markJobComplete(row) {
     try { await mirrorProdStatus({ dealId: row.dripjobs_deal_id, name: row.customer_name, addr: row.address }, 'completed'); } catch (_) {}
     try { await logJobActivity(row.id, 'status_change', { status: row.status }, { status: 'completed', source: 'invoicing_mark_complete' }); } catch (_) {}
     showToast("Marked complete. Don't forget to send the invoice.", { ttl: 5000 });
+    // Prompt 60: the close-out review ask rides every completion path.
+    openReviewAskModal(row.id).catch(() => {});
     renderInvoicing();
   } catch (err) {
     console.error('[pec] mark complete failed', err);
@@ -14205,6 +14209,7 @@ async function renderJobDetailInner(id) {
             ${STATUSES.map(s => `<option value="${s}" ${job.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
           </select>
           ${['scheduled','in_progress'].includes(job.status) ? `<button class="pec-btn sm" id="pecJobComplete" style="margin-top:8px">Mark job complete</button>` : ''}
+          <div id="pecJobReviewWrap" style="margin-top:10px"></div>
           ${scheduleState.prodJob ? `<div style="margin-top:10px">
             <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Callback</label>
             <select id="pecJobCallback">
@@ -14564,6 +14569,9 @@ async function renderJobDetailInner(id) {
       });
     });
   }
+  // Google review chip + Request review button (prompt 60): loads async so
+  // the job detail render never waits on the review tables.
+  hydrateJobReviewChip(id).catch(() => {});
   // Job Complete button (open to staff, not just admins -- Dusty / crew lead).
   // Sets completed + completed_date, marks it a manual lock so automation won't
   // move it, and mirrors 'completed' onto the bridged pec_prod_jobs row.
@@ -14583,6 +14591,8 @@ async function renderJobDetailInner(id) {
       }
       try { await logJobActivity(id, 'status_change', { status: job.status }, { status: 'completed', source: 'mark_complete' }); } catch (_) {}
       showToast('Job marked complete', { ttl: 2500 });
+      // Prompt 60: the close-out review ask rides every completion path.
+      openReviewAskModal(id).catch(() => {});
       renderJobDetail(id);
     } catch (err) {
       completeBtn.disabled = false; completeBtn.textContent = 'Mark job complete';
@@ -16951,7 +16961,11 @@ async function renderBonusReport() {
   // Set a missing completion date (prompt 50 Part E1, Correction 1): writes
   // public.jobs.completed_date on the bridged CRM job so the lock can be
   // evaluated. Data fix only; status is not touched (manual completion stays
-  // the source of truth via markJobComplete).
+  // the source of truth via markJobComplete). Prompt 60's review-ask popup is
+  // DELIBERATELY not wired here: this stamps a possibly weeks-old date on an
+  // already-finished job for bonus locking, it is not a completion event, and
+  // texting that customer "your job wrapped up yesterday" would be wrong. Old
+  // jobs get their ask from the Part H backfill instead.
   root.querySelectorAll('[data-bon-setcompl]').forEach(b => b.addEventListener('click', async () => {
     const crmId = b.dataset.bonSetcompl;
     const d = prompt('Completion date for this job (YYYY-MM-DD):', today);
@@ -23116,6 +23130,208 @@ async function enrollEstimateDripClient(leadId) {
 async function enrollInvoiceDripClient(jobId) {
   if (!jobId) return false;
   return enrollSubjectInDrip('invoice', 'job', jobId, null);
+}
+
+// ---- Google review ask (prompt 60) -----------------------------------------
+// Review-request enrollment, mirroring enrollReviewDrip in _pec-drip.cjs
+// INCLUDING its enroll-time guard (decision 15): the review campaign ships
+// mode='live' with no dry_run cushion, so while drip_approval_required is not
+// 'true' AND the campaign has never had an approved send, enrollment refuses
+// and says why. Do not remove the guard here without removing it server-side.
+async function enrollReviewDripClient(jobId) {
+  if (!jobId) return { enrolled: false, reason: 'no_job' };
+  try {
+    const campRes = await supabase.from('pec_drip_campaigns').select('id,mode')
+      .eq('kind', 'review').eq('status', 'active').order('created_at').limit(1).maybeSingle();
+    if (campRes.error || !campRes.data) return { enrolled: false, reason: 'no_active_campaign' };
+    if (campRes.data.mode === 'live') {
+      const gRes = await supabase.from('settings').select('value').eq('key', 'drip_approval_required').maybeSingle();
+      const gateOn = !gRes.error && gRes.data && gRes.data.value === 'true';
+      if (!gateOn) {
+        const sentRes = await supabase.from('pec_drip_sends').select('id')
+          .eq('campaign_id', campRes.data.id).eq('status', 'sent').limit(1);
+        if (sentRes.error || !(sentRes.data && sentRes.data.length)) {
+          console.warn('[reviews] enrollment refused: the review campaign is live, the approval gate is off, and no send has ever been approved.');
+          return { enrolled: false, reason: 'approval_gate_off' };
+        }
+      }
+    }
+    const ok = await enrollSubjectInDrip('review', 'job', jobId, null);
+    return { enrolled: ok, reason: ok ? null : 'enroll_failed' };
+  } catch (e) {
+    console.warn('[reviews] enroll failed:', (e && e.message) || e);
+    return { enrolled: false, reason: 'error' };
+  }
+}
+
+// Bridge public.jobs -> pec_prod_jobs for the crew-lead SNAPSHOT (decision 9):
+// dripjobs_deal_id first, else the same normalized name+address key the status
+// mirror uses. The snapshot is taken ONCE at ask time and frozen on the
+// request row; later schedule edits must not rewrite attribution history.
+async function resolveProdJobForReview({ dealId, name, addr } = {}) {
+  try {
+    if (dealId) {
+      const r = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id')
+        .eq('dripjobs_deal_id', dealId).limit(1).maybeSingle();
+      if (!r.error && r.data) return r.data;
+    }
+    const key = _nameAddrKey(name, addr);
+    if (!key) return null;
+    const res = await supabase.from('pec_prod_jobs').select('id,crew_lead,crew_id,customer_name,address')
+      .is('dripjobs_deal_id', null);
+    if (res.error) return null;
+    return (res.data || []).find(p => _nameAddrKey(p.customer_name, p.address) === key) || null;
+  } catch (_) { return null; }
+}
+
+// The close-out popup (Part B) + the job detail "Request review" flow. Both
+// branches write a pec_review_requests row: Send snapshots the crew leader
+// and enrolls the review drip; Skip records the CHOICE (skipped_at/_by),
+// which is how "we chose not to ask" stays distinguishable from "we forgot".
+// This is an INTERNAL choice about whom to ask. It must never become a
+// customer-facing "are you happy first?" screen (Google forbids rating-routed
+// gating); do not add one.
+// Uses openModal (#pecModalRoot) from ALL callers, including the production
+// job detail: this new flow is one pattern in one place, not a third modal
+// style, and the pec root overlays every view.
+// source: 'completion' (popup after a completion write; silent when a request
+// already exists) or 'button' (explicit ask; explains why when it cannot ask).
+async function openReviewAskModal(jobId, { source = 'completion', onDone = null } = {}) {
+  if (!jobId) return;
+  let jobRes, reqRes, setRes;
+  try {
+    [jobRes, reqRes, setRes] = await Promise.all([
+      supabase.from('jobs').select('id,address,customer_id,completed_date,dripjobs_deal_id,customers(name,first_name)').eq('id', jobId).maybeSingle(),
+      supabase.from('pec_review_requests').select('id,status').eq('job_id', jobId),
+      supabase.from('settings').select('key,value').eq('key', 'review_ask_default_on'),
+    ]);
+  } catch (e) { console.warn('[reviews] ask modal load failed:', (e && e.message) || e); return; }
+  if (jobRes.error || !jobRes.data) return;
+  if (reqRes.error) { console.warn('[reviews] request read failed (migration applied?):', reqRes.error.message); return; }
+  const job = jobRes.data;
+  const reqs = reqRes.data || [];
+  const openOrDone = reqs.find(r => ['asked', 'clicked', 'reviewed'].includes(r.status));
+  if (openOrDone) {
+    if (source === 'button') {
+      showToast(openOrDone.status === 'reviewed'
+        ? 'This customer already left a review for this job.'
+        : 'A review request is already out for this job.', { ttl: 3500 });
+    }
+    return;
+  }
+  // The popup fires once per completion decision: a recorded skip (or stop)
+  // is recoverable from the job's Request review button, not by re-completing.
+  if (source === 'completion' && reqs.length) return;
+
+  const defaultOn = !((setRes.data || [])[0] && setRes.data[0].value === 'false');
+  const prod = await resolveProdJobForReview({ dealId: job.dripjobs_deal_id, name: job.customers?.name, addr: job.address });
+  const custName = job.customers?.name || 'this customer';
+  const crewLead = (prod && prod.crew_lead) || null;
+
+  openModal(`
+    <h3>Send a Google review request?</h3>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">
+      <strong>${esc(custName)}</strong> will get a text tomorrow asking for a Google review${crewLead ? `, mentioning ${esc(crewLead)} and the crew` : ''}. The link is one tap.
+      <br><span style="font-size:.78rem">Skipping is not a dead end. You can start it later from the job with the Request review button.</span>
+    </div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" id="pecReviewAskSkip">Skip for now</button>
+      <button type="button" class="pec-btn" id="pecReviewAskSend">Send request</button>
+    </div>
+  `, { onMount: modal => {
+    const sendB = modal.querySelector('#pecReviewAskSend');
+    const skipB = modal.querySelector('#pecReviewAskSkip');
+    (defaultOn ? sendB : skipB).focus();
+    const who = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'staff';
+    const base = {
+      job_id: jobId,
+      prod_job_id: (prod && prod.id) || null,
+      customer_id: job.customer_id || null,
+      crew_lead: crewLead,                       // SNAPSHOT, frozen here
+      crew_id: (prod && prod.crew_id) || null,
+      brand: 'epoxy',
+      job_completed_date: job.completed_date || mstTodayIso(),
+    };
+    const lock = (on) => { sendB.disabled = on; skipB.disabled = on; };
+    sendB.addEventListener('click', async () => {
+      lock(true); sendB.textContent = 'Sending…';
+      const ins = await supabase.from('pec_review_requests')
+        .insert({ ...base, status: 'asked', asked_at: new Date().toISOString() });
+      if (ins.error) {
+        lock(false); sendB.textContent = 'Send request';
+        showToast(/duplicate|23505/i.test(ins.error.message || '')
+          ? 'A review request is already open for this job.'
+          : 'Could not create the review request: ' + esc(ins.error.message || ''), { ttl: 5000 });
+        return;
+      }
+      const enr = await enrollReviewDripClient(jobId);
+      closeModal();
+      if (enr.enrolled) {
+        showToast('Review request scheduled. The first text goes out tomorrow (via Drip Approvals while the gate is on).', { ttl: 4500 });
+      } else if (enr.reason === 'approval_gate_off') {
+        showToast('Request recorded, but the drip did NOT start: the approval gate is off and this campaign has never sent. Turn on Drip approvals (Drips view), then use Request review on the job.', { ttl: 8000 });
+      } else {
+        showToast('Request recorded, but drip enrollment did not start (' + esc(enr.reason || 'unknown') + '). Check the Drips view.', { ttl: 6000 });
+      }
+      if (typeof onDone === 'function') onDone();
+    });
+    skipB.addEventListener('click', async () => {
+      lock(true); skipB.textContent = 'Skipping…';
+      const ins = await supabase.from('pec_review_requests')
+        .insert({ ...base, status: 'skipped', skipped_at: new Date().toISOString(), skipped_by: who });
+      closeModal();
+      if (ins.error) showToast('Could not record the skip: ' + esc(ins.error.message || ''), { ttl: 5000 });
+      else showToast('Skipped. You can start a review request later from the job.', { ttl: 3500 });
+      if (typeof onDone === 'function') onDone();
+    });
+  } });
+}
+
+// The production dashboard is a SEPARATE module scope; completeActiveJob
+// reaches this via the window bridge, same pattern as pecParseLocalDay.
+window.pecOpenReviewAskModal = openReviewAskModal;
+
+// Job detail review-status chip (Part F / decision 14): Not asked / Asked
+// (day N) / Clicked / Reviewed (N stars) / Skipped, plus the Request review
+// button when there is no open ask. This chip and the Reviews-view filter are
+// ALL Anne gets on the ask side (no call list, no queue count, no bell), by
+// her own choice.
+async function hydrateJobReviewChip(jobId) {
+  const wrap = $('pecJobReviewWrap');
+  if (!wrap) return;
+  const res = await supabase.from('pec_review_requests').select('*')
+    .eq('job_id', jobId).order('created_at', { ascending: false });
+  if (res.error) { wrap.innerHTML = ''; return; }   // pre-migration: no chip
+  const reqs = res.data || [];
+  const live = reqs.find(r => ['asked', 'clicked', 'reviewed'].includes(r.status)) || reqs[0] || null;
+  let chip = '<span class="pec-age">Not asked</span>';
+  let showBtn = true;
+  if (live) {
+    if (live.status === 'reviewed') {
+      let stars = '';
+      if (live.review_id) {
+        const rv = await supabase.from('reviews').select('rating').eq('id', live.review_id).maybeSingle();
+        if (!rv.error && rv.data) stars = ` (${rv.data.rating} star${rv.data.rating === 1 ? '' : 's'})`;
+      }
+      chip = `<span class="pec-age" style="color:#16a34a;font-weight:600">Reviewed${stars}</span>`; showBtn = false;
+    } else if (live.status === 'clicked') {
+      chip = '<span class="pec-age" style="color:#2563eb">Review link clicked</span>'; showBtn = false;
+    } else if (live.status === 'asked') {
+      const days = live.asked_at ? Math.max(0, Math.floor((Date.now() - new Date(live.asked_at).getTime()) / 864e5)) : 0;
+      chip = `<span class="pec-age">Asked (day ${days})</span>`; showBtn = false;
+    } else if (live.status === 'skipped') {
+      chip = '<span class="pec-age" style="color:var(--muted)">Review ask skipped</span>';
+    } else if (live.status === 'stopped') {
+      chip = `<span class="pec-age" style="color:var(--muted)">Review drip stopped${live.stop_reason ? ` (${esc(live.stop_reason)})` : ''}</span>`;
+    }
+  }
+  wrap.innerHTML = `
+    <label style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Google review</label>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:2px;flex-wrap:wrap">${chip}
+      ${showBtn ? '<button class="pec-btn sm ghost" id="pecJobReviewAsk">Request review</button>' : ''}</div>`;
+  const b = $('pecJobReviewAsk');
+  if (b) b.addEventListener('click', () =>
+    openReviewAskModal(jobId, { source: 'button', onDone: () => hydrateJobReviewChip(jobId) }));
 }
 
 // ---- Drips admin view (prompt 34) ------------------------------------------
@@ -36409,6 +36625,14 @@ function _mergeAcrossAreas(areaPlans) {
       // a null so a re-complete keeps the original date.
       if (j.dripjobs_deal_id) {
         try { await supabase.from('jobs').update({ completed_date: mstTodayIso() }).eq('dripjobs_deal_id', j.dripjobs_deal_id).is('completed_date', null); } catch (_) {}
+        // Prompt 60: the close-out review ask rides every completion path.
+        // pec_review_requests hangs off public.jobs, so a manual prod-only job
+        // (no deal id, no CRM row) has nothing to ask against and is skipped.
+        try {
+          const crm = await supabase.from('jobs').select('id').eq('dripjobs_deal_id', j.dripjobs_deal_id).limit(1).maybeSingle();
+          // Separate module scope: the CRM module exposes the modal on window.
+          if (!crm.error && crm.data && window.pecOpenReviewAskModal) window.pecOpenReviewAskModal(crm.data.id).catch(() => {});
+        } catch (_) {}
       }
       okEl.textContent = 'Marked complete.';
       await loadJobs();
