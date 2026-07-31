@@ -20,9 +20,11 @@ Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration 
 
 Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration (2026-08-03_lead_stage_estimate_scheduled.sql, applied via MCP): `leads.estimate_scheduled_at` (timestamptz, nullable) and `leads_stage_check` replaced to admit `estimate_scheduled` (seven stages, verified live via pg_get_constraintdef). Only the leads section changed.
 
+Refreshed 2026-07-31 (Claude Code) after the review-drip migration (2026-08-04_review_drip.sql, applied via MCP): two new tables `pec_review_requests` and `pec_review_bonuses`; `reviews` widened for the Zapier Google feed (source/platform/external_id/reviewer_name/review_text/review_url/posted_at/match_status/matched_by/matched_at/crew_lead/crew_id/review_request_id) with `job_id` and `customer_id` NOT NULL DROPPED (a Google review arrives before we know whose job it is); `pec_drip_campaigns_kind_check` recreated to admit 'review' (verified live via pg_get_constraintdef); seven `review_*` settings keys (settings 58 rows to 65). The seeded Review request campaign is mode **'live'** (decision 15): the approval gate is its only safety.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
-82 tables documented, 82 live, all in `public`, all with RLS enabled. No gaps.
+84 tables documented, 84 live, all in `public`, all with RLS enabled. No gaps.
 
 ## Key relationships
 
@@ -727,7 +729,7 @@ RLS: enabled · rows: 3
 | updated_at | timestamptz | no | now() |
 
 PK: id
-Note: kind CHECK in ('lead','estimate','invoice'); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded campaigns: lead (8-step taper, days 1,2,4,7,11,16,22,30), estimate (4 steps, days 1,3,7,14), invoice (4 steps, days 0,3,7,14). All dry_run. RLS staff-only.
+Note: kind CHECK in ('lead','estimate','invoice','review') (extended 2026-07-31, prompt 60); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded campaigns: lead (8-step taper, days 1,2,4,7,11,16,22,30), estimate (4 steps, days 1,3,7,14), invoice (4 steps, days 0,3,7,14), review (4 steps, days 1,3,7,14, channels sms/sms/email/sms). Lead/estimate/invoice shipped dry_run; **review shipped mode 'live'** (decision 15: the drip_approval_required gate is its safety, plus an enroll-time guard in _pec-drip.cjs). RLS staff-only.
 
 ### pec_drip_enrollments
 RLS: enabled · rows: 0
@@ -1575,6 +1577,63 @@ RLS: enabled · rows: 14
 PK: id
 FK: crew_id → pec_prod_crews.id
 
+### pec_review_bonuses
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| review_id | uuid | no |  |
+| job_id | uuid | yes |  |
+| prod_job_id | uuid | yes |  |
+| crew_lead | text | no |  |
+| crew_member_id | uuid | yes |  |
+| amount | numeric | no | 0 |
+| status | text | no | 'pending' |
+| approved_by | text | yes |  |
+| approved_at | timestamptz | yes |  |
+| paid_on | date | yes |  |
+| payroll_date | date | yes |  |
+| paid_by | text | yes |  |
+| voided_at | timestamptz | yes |  |
+| voided_by | text | yes |  |
+| void_reason | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: review_id → reviews.id (**UNIQUE**: one review can never pay twice, including a Confirm double-click); job_id → jobs.id; prod_job_id → pec_prod_jobs.id; crew_member_id → pec_prod_crew_members.id
+Note: added 2026-07-31 (prompt 60). Flat-amount bonus per HUMAN-CONFIRMED 5-star review (amount from settings.review_bonus_amount at confirm time). status CHECK in ('pending','approved','paid','voided'). **Deliberately parallel to pec_prod_job_bonuses and deliberately NOT it**: this ledger must never write pec_prod_job_bonuses or contribute to pec_prod_job_costing.bonus_cost / computeCostingRow / any GP number (decision 13; the prompt-56 lesson: a late bonus moved 34 finalized jobs by $4,785). RLS staff-only.
+
+### pec_review_requests
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| job_id | uuid | no |  |
+| prod_job_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
+| token | uuid | no | gen_random_uuid() |
+| status | text | no | 'asked' |
+| crew_lead | text | yes |  |
+| crew_id | uuid | yes |  |
+| brand | text | no | 'epoxy' |
+| asked_at | timestamptz | yes |  |
+| job_completed_date | date | yes |  |
+| first_clicked_at | timestamptz | yes |  |
+| click_count | integer | no | 0 |
+| review_id | uuid | yes |  |
+| skipped_at | timestamptz | yes |  |
+| skipped_by | text | yes |  |
+| stop_reason | text | yes |  |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: job_id → jobs.id (cascade); prod_job_id → pec_prod_jobs.id; customer_id → customers.id; review_id → reviews.id
+Note: added 2026-07-31 (prompt 60). One row per review ask; token is the /r/&lt;token&gt; tracking-link key (UNIQUE). status CHECK in ('asked','clicked','reviewed','skipped','stopped'). crew_lead/crew_id are SNAPSHOTS taken at ask time from pec_prod_jobs and never re-derived (schedule edits must not rewrite attribution history). job_completed_date preserves the real completion date for backfilled asks (asked_at is stamped at enrollment). PARTIAL UNIQUE idx_pec_review_req_one_open on (job_id) WHERE status in ('asked','clicked'): a job never holds two open asks. Index idx_pec_review_req_status_asked on (status, asked_at). RLS staff-only, no anon policy (the public redirect uses the service key).
+
 ### pec_sales_member_google_tokens
 RLS: enabled (NO policies — default-deny token vault, service-role only) · rows: 0
 
@@ -1835,17 +1894,31 @@ RLS: enabled · rows: 0
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
-| job_id | uuid | no |  |
-| customer_id | uuid | no |  |
+| job_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
 | rating | integer | no |  |
 | feedback | text | yes |  |
 | created_at | timestamptz | no | now() |
+| source | text | no | 'manual' |
+| platform | text | no | 'google' |
+| external_id | text | yes |  |
+| reviewer_name | text | yes |  |
+| review_text | text | yes |  |
+| review_url | text | yes |  |
+| posted_at | timestamptz | yes |  |
+| match_status | text | no | 'unmatched' |
+| matched_by | text | yes |  |
+| matched_at | timestamptz | yes |  |
+| crew_lead | text | yes |  |
+| crew_id | uuid | yes |  |
+| review_request_id | uuid | yes |  |
 
 PK: id
-FK: customer_id → customers.id; job_id → jobs.id
+FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_review_requests.id (on delete set null)
+Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 58
+RLS: enabled · rows: 65
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1854,6 +1927,7 @@ RLS: enabled · rows: 58
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-07-31 (prompt 60), all in Settings > Reviews: review_drip_enabled ('true', master switch for the review campaign, checked ALONGSIDE drip_sending_enabled: both must be 'true'), review_ask_default_on ('true', whether the job close-out popup pre-selects Send), review_bonus_amount ('25', dollars per human-confirmed 5-star review), review_bonus_min_stars ('5', minimum rating that earns credit and a bonus), review_match_window_days ('45', how far back the intake looks for a candidate ask), review_stop_on_touchup ('true', a touch-up or callback opening stops the drip), review_alert_max_stars ('3', a review at or below this raises a bell for Dylan and Anne and stops the enrollment). The Google review URL itself stays on the pre-existing google_review_link_epoxy key. Inserted insert-only. Settings 58 rows to 65.
 Keys added 2026-07-28 (prompt 55): twelve `ops_*` keys, all surfaced in Settings > General under "Ops Queue". Ten on/off switches, one per derived check (ops_check_busybusy_unmapped, ops_check_costing_unfinalized, ops_check_missing_revenue, ops_check_never_invoiced, ops_check_missing_salesperson, ops_check_missing_system, ops_check_drip_approvals, ops_check_touchup_age, ops_check_deposit_uncollected, ops_check_system_health, each 'true'), plus two day thresholds: ops_touchup_age_days ('7', a touch-up open longer than this lands on the queue, NOT the same knob as touchup_aging_days '14', which only reddens the Touch-ups panel row) and ops_deposit_age_days ('7', days after signing before an uncollected deposit is flagged). Inserted insert-only, so live edits are never clobbered by a re-run.
 Keys added 2026-07-28 (prompt 54): people_mirror_enabled ('true'; set to 'false' and EVERY people sync trigger becomes a no-op, which is the build's real rollback, no deploy needed), birthday_reminder_enabled ('true', master switch for the dashboard banner and the daily bell), birthday_reminder_lead_days ('7', how many days ahead a birthday surfaces).
 Keys added 2026-07-28 (prompt 53): datasheet_max_upload_mb ('10', the max PDF size the catalog's data-sheet upload accepts, in MB; the pec-datasheets bucket enforces 10 MB server-side regardless, so raising this above 10 needs a bucket change too).
