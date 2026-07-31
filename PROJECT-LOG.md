@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-31 MST] Cowork: wrote prompt 61 (estimator inline on the estimate detail page, native job info editing, lead source unification and manual editing), 16 decisions locked
+By: Cowork
+
+Changed: one new file, claude-code-prompt-61-estimator-inline-lead-source.md. No code, no schema, no prod change. Sixteen multiple-choice questions were asked before writing (project rule); the answers are the LOCKED lines in the prompt.
+
+WHAT DYLAN ASKED FOR, verbatim: "estimator pre fills job info. Instead of a pop up modal, can you make it all on the estimate detail page? The flow is confusing right now" and "Ability to update lead source manually."
+
+THE FORK THAT SHAPED THE BUILD: "make it all on the estimate detail page" spans a 10x range, from moving the iframe out of the modal to porting 2,373 lines of React into index.html. Dylan chose **inline hosting, not a rewrite**: the estimator PWA stays exactly as it is architecturally (own service worker, offline outbox, /estimator/ standalone) and gets rendered inline in the estimate detail page instead of over it. He also named the three things that actually bother him: two UIs for one estimate, editing one field costing a full estimator reopen, and the modal trapping him over the dashboard. Inlining alone only fixes the third, which is why Parts B and C exist.
+
+THE FINDING WORTH REMEMBERING, and landmine 1 in the prompt: **a whole-page re-render while the estimator is mounted destroys the iframe, reloads the PWA, and silently discards the rep's unsaved work.** renderEstimateDetail(est.id) is called from roughly a dozen handlers in index.html (line-item toggles, scope edits, status changes, archive/restore). Today that is free because the estimator lives in a modal that is never inside the re-rendered region. The moment the frame lives inside the page, every one of those calls is a data-loss path. The prompt makes auditing them the first landmine and criterion 2 tests it. This is the single most likely way to ship something worse than the modal.
+
+THE SECOND FINDING: **Dylan wants New estimate to create a draft row immediately**, which is what lets creation land on the detail page too. estimates is permissive enough for it (every column nullable or defaulted; an insert of lead_id + created_by is legal), and job info gets prefilled ONTO THE ROW rather than only into form state, which is the "pre fills job info" half of his sentence. Two consequences he accepted knowingly: abandoned empty drafts accumulate (he declined auto-archive, hiding, and a Draft filter, and will archive by hand), and estimate_number is a sequence default so abandoned drafts burn numbers and customer-facing numbering will show gaps. Also written in: the estimator currently seeds a single Main area only on the CREATE path, so a freshly created empty draft opened via ?estimate_id= renders with no area row at all. That fix belongs in the estimator, not in a fake database row.
+
+THE THIRD FINDING, on lead source: **it is two columns with two vocabularies.** leads.source holds code tokens (manual, meta, google_lsa, webform, angi, openphone, dripjobs), is set once in the New lead modal, and has no edit UI anywhere. customers.lead_source holds pec_lead_sources names (19 managed rows with a Settings CRUD already built). Dylan ruled one vocabulary: unify on pec_lead_sources, migrate the stored data, and map incoming feed tokens at intake, with a new aliases column so a future feed is a data change not a code change. He also wants both fields kept in sync and every change logged on the lead timeline (lead_events), and he declined an original_source column, a role gate, bulk edit, and kanban-card editing.
+
+THE BUG THAT MIGRATION WOULD HAVE CAUSED, caught while writing: pec-lead-intake.cjs dedupes with /leads?source=eq.<source>&source_ref=eq.<ref>. Rewrite the stored values to canonical names while the endpoint still queries with the raw token and idempotency breaks, so every Zapier retry creates a duplicate lead. The prompt makes "map before dedupe" landmine 9 and acceptance criterion 10. Same class of thing: LEAD_SOURCE_COLORS / LEAD_SOURCE_LABELS are keyed by token, so post-migration every source badge silently goes gray unless the lookup key is normalized.
+
+His first answer put the source editor on the customer page only. That was put back to him with the observation that most leads have no customer record until they book, and that Metrics conversion-by-source reads leads.source, so customer-only editing leaves the number that matters uncorrectable. He added the lead detail page.
+
+WHAT COWORK COULD NOT DO: the Supabase MCP returned 502 three times, so the live pec_lead_sources rows and the live distinct source values were never read. Rather than guess a mapping, Part D step 1 is an inventory step: Claude Code queries prod, prints the counts, and proposes the token-to-name mapping in chat for Dylan to approve BEFORE the migration is applied. Nothing in the prompt hardcodes a mapping.
+
+Correction to my own reading of state: this session started by reading the last 3 log entries, at which point the top entry was the prompt-60 revision and prompt 60 was unrun. Prompt 60 shipped (commits 9802b39 through dba990a) while these questions were being asked, so the sequencing answer ("one prompt 61, both features, run after 60") is already satisfied and 61 is simply next.
+
+Why: Dylan brought two feature requests; project rule requires 10+ scoping questions and a written prompt before Claude Code touches code.
+Files touched: claude-code-prompt-61-estimator-inline-lead-source.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 61 in Claude Code.
+Handoff to Dylan: four items are in the prompt's own Handoff section. The one with teeth is reviewing the token-to-name mapping in Part D step 1 before the migration is applied, since that mapping becomes how marketing reporting is grouped from then on. Unrelated and still open: the Routemize AppointmentUpdated reschedule bug (newStartTime/newEndTime unmapped) and Bobette Weiss's Unapprove/Approve/Finalize.
+
+---
+
 ## [2026-07-31 MST] Prompt 60 shipped: Google review ask drip, Zapier review intake, crew leader attribution, review bonus ledger
 By: Claude Code
 
