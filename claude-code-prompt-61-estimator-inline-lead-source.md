@@ -110,7 +110,8 @@ Changes:
 4. Changing the salesperson must keep `intake.salesperson_name` and the salesperson id in `intake` consistent, and must not clobber the rest of the `intake` jsonb. Read-modify-write the whole object; never PATCH a partial `intake`.
 5. Propagation, when confirmed: update `leads` (full_name, email, phone, address, city, state, zip) and/or `customers` (first_name, last_name, company_name, email, phone, billing_address_*). Write a `lead_events` row `{ event_type: 'lead_updated', payload: { from, to, via: 'estimate', estimate_id } }` so the lead timeline shows why its address changed. `leadEventHtml` (25194) needs a case for it.
 6. If the rep declines propagation, the estimate keeps its own values and the block shows a small "differs from lead" note with a one-click "push to lead" action. Divergence is legal; invisible divergence is not.
-7. Non-idempotent write discipline (CLAUDE.md architecture gotchas): these are ordinary PATCHes, so use `withDeadline`, not a blind auto-retry.
+7. **Say which record is authoritative, on the page.** Dylan's fourth complaint (added after the first pass) is that job info lives on the lead, in the estimator, and on the estimate, and it is not clear which one wins. The rule this build establishes, and the block must state it in one plain line: **the estimate carries its own snapshot of job info; the lead and customer are only updated when someone says yes.** Show the source of each block's values ("from lead <name>" when they still match, "edited on this estimate" when they do not), so the answer is on screen instead of in someone's head.
+8. Non-idempotent write discipline (CLAUDE.md architecture gotchas): these are ordinary PATCHes, so use `withDeadline`, not a blind auto-retry.
 
 ---
 
