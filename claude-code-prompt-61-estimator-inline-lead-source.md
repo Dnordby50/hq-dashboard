@@ -4,7 +4,7 @@ Written by Cowork 2026-07-31 after 16 scoping questions. Every **LOCKED** line b
 
 Two features in one build:
 
-1. **The estimate flow.** Dylan: "estimator pre fills job info. Instead of a pop up modal, can you make it all on the estimate detail page? The flow is confusing right now." Three specific complaints, in his words: two UIs for one estimate, editing one field means reopening the whole estimator, and the modal traps you over the dashboard.
+1. **The estimate flow.** Dylan: "estimator pre fills job info. Instead of a pop up modal, can you make it all on the estimate detail page? The flow is confusing right now." Asked three times across the scoping session, he named five complaints: two UIs for one estimate, editing one field means reopening the whole estimator, the modal traps you over the dashboard, it is unclear which record is authoritative, and it is unclear what saved and where you land. **The build answers all five: the estimator moves inline (no modal), job info becomes natively editable on the page (no estimator round trip for a phone number), the page states which record is authoritative, and saving keeps you where you are with visible confirmation.** The one thing deliberately NOT done is porting the estimator's pricing UI into index.html; that is the rewrite Dylan ruled out, and it would cost the offline path he kept.
 2. **Lead source.** Dylan: "Ability to update lead source manually." It is currently write-once at lead creation and never editable.
 
 ## Read first
@@ -66,7 +66,8 @@ Changes:
    - Inline, and the saved id is the estimate already open: **do NOT re-render the page and do NOT navigate.** Toast, refresh the summary data and the status header in place, leave the iframe mounted and untouched.
    - Inline, but the saved id differs from the open one (should not happen, defend anyway): behave as today, navigate to the saved estimate.
    - Modal (offline fallback path): behave exactly as today.
-8. Keep `openEstimatorModal` and `showDuplicateEstimateModal` alive. The modal is no longer the normal path, but it is the offline fallback (Part B item 5) and the duplicate guard is reused. Update the comment block at index.html:7106-7123 so the next reader knows the modal is now the exception, not the rule.
+8. **LOCKED: saving must be legible.** The fifth complaint is "unclear what saved and where you land". After any save, inline or offline-modal: a toast naming the estimate (EST-###), the status header and totals visibly refreshed in place, and the estimator's own save state reflecting saved. The user must never have to guess whether the row exists. If the save came from the offline outbox, say that in the toast instead of implying it reached the server.
+9. Keep `openEstimatorModal` and `showDuplicateEstimateModal` alive. The modal is no longer the normal path, but it is the offline fallback (Part B item 5) and the duplicate guard is reused. Update the comment block at index.html:7106-7123 so the next reader knows the modal is now the exception, not the rule.
 
 **LOCKED: the standalone `/estimator/` page keeps working unchanged.** Reps rarely estimate offline but Dylan wants the safety net intact. `embed=0` behavior (Back button, Dashboard links, outbox) is untouched.
 
