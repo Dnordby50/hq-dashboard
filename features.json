@@ -295,7 +295,7 @@
     {
       "name": "Lead drip engine",
       "area": "dashboard",
-      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip and Invoice payment reminders entries for the two Phase 3 kinds. Prompt 42 (go-live prep) added a GLOBAL approval gate: while the settings key drip_approval_required is 'true', a due step on a LIVE campaign renders its real copy into a 'pending' pec_drip_sends row (one per sendable leg, held once per step by a partial unique index) and the enrollment does NOT advance until a human approves, edits, or skips it in the Drip Approvals view; approving re-runs consent + kill-switches + quiet hours at that moment (a reply/STOP/payment/lost between render and approve voids the item with the reason shown), sends through the same providers, and advances with the same claim. SMS approved outside the window sits as 'queued' and is flushed by the runner at the window open with a final consent re-check. Quiet hours are settings-driven (drip_quiet_start/end/days, default 08:00-20:00 Phoenix Mon-Sat) and editable in Settings > Drips along with the master switch and the gate.",
+      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip, Invoice payment reminders, and Review request drip entries for the other kinds; the review kind (prompt 60) is the fourth, and the only one that shipped mode='live' behind the approval gate instead of dry_run, with its own enroll-time gate guard, its own master switch (review_drip_enabled), and per-kind stop conditions (reviewed / touchup_opened / job_closed / bad_review). Prompt 42 (go-live prep) added a GLOBAL approval gate: while the settings key drip_approval_required is 'true', a due step on a LIVE campaign renders its real copy into a 'pending' pec_drip_sends row (one per sendable leg, held once per step by a partial unique index) and the enrollment does NOT advance until a human approves, edits, or skips it in the Drip Approvals view; approving re-runs consent + kill-switches + quiet hours at that moment (a reply/STOP/payment/lost between render and approve voids the item with the reason shown), sends through the same providers, and advances with the same claim. SMS approved outside the window sits as 'queued' and is flushed by the runner at the window open with a final consent re-check. Quiet hours are settings-driven (drip_quiet_start/end/days, default 08:00-20:00 Phoenix Mon-Sat) and editable in Settings > Drips along with the master switch and the gate.",
       "code": {
         "indexHtml": [
           "renderDrips",
@@ -1552,16 +1552,62 @@
     {
       "name": "Reviews",
       "area": "dashboard",
-      "description": "Read-only view of collected customer reviews.",
+      "description": "The working surface for Google review attribution (prompt 60). Lists EVERY review 1-5 stars (stars, reviewer, text, source, matched job + crew leader) with a match-status badge that keeps inference visually distinct from fact: Unmatched / Auto-matched (amber, machine guess) / Confirmed (green, human) / Rejected. Per row: Confirm match (auto -> confirmed; on a qualifying rating this is the ONLY thing that creates a pec_review_bonuses row), Reassign to a different job (searchable picker; a human pick lands as confirmed, crew snapshot from that job's ask), and Reject (clears linkage, reopens the claimed ask). A second tab, 'Asked, no review yet', lists open asks with days-since-ask, phone and email: a FILTER for Anne, deliberately not a queue (no notifications, no Ops count, no bell; decision 14). Bad-review bells (pec-review-intake) click through to this view.",
       "code": {
         "indexHtml": [
-          "renderReviews"
+          "renderReviews",
+          "pecConfirmReviewMatch",
+          "pecRejectReviewMatch",
+          "openReviewReassignModal",
+          "createReviewBonusForConfirmed",
+          "stopReviewEnrollmentClient"
         ]
       },
       "tables": [
-        "reviews"
+        "reviews",
+        "pec_review_requests",
+        "pec_review_bonuses"
       ],
-      "since": null
+      "since": "2026-07"
+    },
+    {
+      "name": "Review request drip",
+      "area": "dashboard",
+      "description": "NiceJob-style Google review campaign (prompt 60). Marking a job complete (any of the four completion paths) pops 'Send a Google review request?' with Send preselected (review_ask_default_on); BOTH branches write a pec_review_requests row (a recorded skip is distinguishable from forgetting), Send snapshots crew_lead/crew_id from pec_prod_jobs at ask time (frozen; schedule edits never rewrite attribution) and enrolls the 'review' drip kind: 4 touches, day 1 SMS / 3 SMS / 7 email / 14 SMS, copy naming the crew leader when one is on the snapshot and generic wording when not, the /r/<token> tracking link appended by CODE (pec-review-redirect logs the click first-write-wins and ALWAYS 302s to google_review_link_epoxy, even on total failure). Stops on: review detected, customer reply, touch-up/callback opened (review_stop_on_touchup), job closed, STOP/opt-out, and bad_review (a review at or below review_alert_max_stars raises a pec_notifications bell for Dylan and Anne and stops the drip). Google-policy rails: no incentives ever (system prompt + mechanical reviewCopyViolation scrub) and no rating-gating anywhere; the close-out popup is an internal choice about whom to ask, never a customer-facing happiness screen. SHIPPED mode='live' behind the approval gate (decision 15, unlike the other three kinds): an enroll-time guard refuses to enroll while drip_approval_required is not 'true' and the campaign has never had an approved send. Reviews arrive via pec-review-intake.cjs (Zapier Google Business Profile webhook, REVIEW_INTAKE_SECRET header): idempotent on external_id, auto-matches at most match_status='auto' (name similarity + crew-leader mention + click evidence, ties stay unmatched), NEVER writes 'confirmed'. Confirmed reviews at or above review_bonus_min_stars pay a flat review_bonus_amount to the crew leader via pec_review_bonuses, a ledger deliberately separate from job costing (never touches pec_prod_job_bonuses or bonus_cost/GP; decision 13). Metrics > Reviews shows the ask funnel and the per-crew-leader confirmed-count scoreboard; Settings > Reviews holds the seven review_* keys; scripts/backfill-review-asks.cjs enrolls the last 30 days of completions anchored to enrollment time (one due step, never three).",
+      "code": {
+        "indexHtml": [
+          "openReviewAskModal",
+          "enrollReviewDripClient",
+          "resolveProdJobForReview",
+          "hydrateJobReviewChip",
+          "renderReviews",
+          "renderMetrics",
+          "renderBonusReport"
+        ],
+        "netlifyFunctions": [
+          "_pec-drip.cjs",
+          "pec-drip-runner.cjs",
+          "pec-review-redirect.cjs",
+          "pec-review-intake.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-08-04_review_drip.sql",
+          "scripts/backfill-review-asks.cjs",
+          "production/review-drip.test.cjs",
+          "production/review-intake.test.cjs"
+        ]
+      },
+      "tables": [
+        "pec_review_requests",
+        "reviews",
+        "pec_review_bonuses",
+        "pec_drip_campaigns",
+        "pec_drip_steps",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "pec_notifications"
+      ],
+      "since": "2026-07"
     },
     {
       "name": "Schedule status auto-sync",

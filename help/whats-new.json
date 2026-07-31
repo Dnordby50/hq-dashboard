@@ -1,5 +1,16 @@
 [
   {
+    "id": "review-request-drip",
+    "date": "2026-07-31",
+    "title": "Google review requests and a crew leader review scoreboard",
+    "summary": "When you mark a job complete, TopCoat now asks whether to send the customer a Google review request (Send is preselected, Skip is one click). The customer gets a short text the next day with a one tap review link, then a gentle follow up on days 3, 7 and 14 that stops the moment they review, reply, or a touch up opens. Reviews from Google flow into the rebuilt Reviews view, where confirming a match credits the crew leader and queues their review bonus. Metrics has a new Reviews section with the ask funnel and a per crew leader scoreboard. Every message currently waits in Drip Approvals for a human OK before it sends.",
+    "howto": [
+      "Mark a job complete anywhere and choose Send request in the popup (or Skip; you can start it later from the job with the Request review button).",
+      "When a review arrives, open Reviews and click Confirm match if the suggested job is right. That is what credits the crew leader and creates the bonus.",
+      "Tune everything under Settings, Reviews: the bonus amount, the popup default, and the bad review alert threshold."
+    ]
+  },
+  {
     "id": "sales-pipeline-estimate-scheduled",
     "date": "2026-07-29",
     "title": "The Leads board is now Sales Pipeline, with a new Estimate Scheduled column",
