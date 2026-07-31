@@ -100,6 +100,18 @@ function estimateIdForSave(editingId, draftId) {
   return editingId != null && editingId !== '' ? editingId : draftId;
 }
 
+// Prompt 61 Part B: a dashboard-created draft loads through ?estimate_id=
+// with ZERO areas (the row exists before the estimator ever opens), and the
+// old editing path would render a form with no area row at all. Rule: an
+// edited estimate WITH areas maps them straight in; one with none seeds the
+// SAME single Main area the create path uses, defaults included. Pure so the
+// fixture test drives the exact logic the screen runs; makeDefaultArea is
+// injected because the default slot values come from the live catalog.
+function initialAreas({ editingAreas, makeDefaultArea }) {
+  if (Array.isArray(editingAreas) && editingAreas.length) return editingAreas;
+  return [makeDefaultArea()];
+}
+
 module.exports = {
   missingDraftFields,
   draftReady,
@@ -107,4 +119,5 @@ module.exports = {
   defaultSalespersonId,
   userUnmapped,
   estimateIdForSave,
+  initialAreas,
 };

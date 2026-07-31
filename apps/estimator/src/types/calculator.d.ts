@@ -166,6 +166,9 @@ declare module '*/production/estimate-draft.cjs' {
     currentUserId?: string | null,
   ): boolean;
   export function estimateIdForSave(editingId: string | null | undefined, draftId: string): string;
+  // Prompt 61 Part B: seed the create-path Main area when an edited estimate
+  // (a dashboard-created draft) has no areas.
+  export function initialAreas<A>(args: { editingAreas: A[] | null; makeDefaultArea: () => A }): A[];
 }
 
 // Outbox drain policy (repo-root production/outbox-drain.cjs, prompt 48):

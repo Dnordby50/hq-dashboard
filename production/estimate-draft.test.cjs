@@ -13,7 +13,7 @@
 'use strict';
 const {
   missingDraftFields, draftReady, createDraftTrigger,
-  defaultSalespersonId, userUnmapped, estimateIdForSave,
+  defaultSalespersonId, userUnmapped, estimateIdForSave, initialAreas,
 } = require('./estimate-draft.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
@@ -117,6 +117,22 @@ const FULL = {
     // to the SAME id, which is what makes the outbox upsert one row.
     const draftId = 'e0e0-1111';
     ok(estimateIdForSave(null, draftId) === estimateIdForSave(null, draftId), 'draft save and full save resolve identically');
+  }
+
+  console.log('# empty-draft load shape (prompt 61 Part B): seed the Main area');
+  {
+    // A dashboard-created draft loads via ?estimate_id= with ZERO areas; the
+    // rep must land on the same single Main area (defaults included) the
+    // create path seeds, never an empty area list.
+    const mk = () => ({ name: 'Main', sqft: '', systemTypeId: 'sysA', mvb: false, slotValues: { slot1: 'prodX' } });
+    const seeded = initialAreas({ editingAreas: [], makeDefaultArea: mk });
+    ok(seeded.length === 1 && seeded[0].name === 'Main' && seeded[0].systemTypeId === 'sysA', 'zero areas seeds exactly one Main area');
+    ok(seeded[0].slotValues.slot1 === 'prodX', 'the seeded area carries the system default slot values (same as the create path)');
+    const nul = initialAreas({ editingAreas: null, makeDefaultArea: mk });
+    ok(nul.length === 1 && nul[0].name === 'Main', 'a brand-new (non-editing) open seeds the same Main area');
+    const real = [{ name: 'Garage', sqft: '800', systemTypeId: 'sysB', mvb: true, slotValues: {} }];
+    const kept = initialAreas({ editingAreas: real, makeDefaultArea: mk });
+    ok(kept === real && kept.length === 1 && kept[0].name === 'Garage', 'an edited estimate WITH areas maps them straight through, untouched');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

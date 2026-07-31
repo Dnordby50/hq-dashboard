@@ -7207,23 +7207,29 @@ function openEstimatorFrame({ leadId = null, estimateId = null, offlineNote = fa
   return wrap;
 }
 
+// The lead's open estimates, for the duplicate guard. A failed check must not
+// block estimating; it reads as "none".
+async function leadOpenEstimates(leadId) {
+  try {
+    const { data, error } = await supabase.from('estimates')
+      .select('id,estimate_number,status,price,created_at')
+      .eq('lead_id', leadId)
+      .in('status', OPEN_ESTIMATE_STATUSES)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    console.warn('[estimates] duplicate check skipped:', err && err.message ? err.message : err);
+    return [];
+  }
+}
+
 async function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
   // Editing an existing estimate or a walk-up (no lead) never triggers the
   // guard; only CREATING a new estimate for a lead does.
   if (leadId && !estimateId) {
-    let openEstimates = [];
-    try {
-      const { data } = await supabase.from('estimates')
-        .select('id,estimate_number,status,price,created_at')
-        .eq('lead_id', leadId)
-        .in('status', OPEN_ESTIMATE_STATUSES)
-        .is('deleted_at', null)
-        .order('created_at', { ascending: false });
-      openEstimates = data || [];
-    } catch (err) {
-      // A failed check must not block estimating; proceed as if none exist.
-      console.warn('[estimates] duplicate check skipped:', err && err.message ? err.message : err);
-    }
+    const openEstimates = await leadOpenEstimates(leadId);
     if (openEstimates.length) {
       showDuplicateEstimateModal(openEstimates, () => openEstimatorFrame({ leadId }));
       return;
@@ -7232,6 +7238,87 @@ async function openEstimatorModal({ leadId = null, estimateId = null } = {}) {
   return openEstimatorFrame({ leadId, estimateId });
 }
 window.pecOpenEstimatorModal = openEstimatorModal;
+
+// ---- Draft-on-create (prompt 61 Part B) ------------------------------------
+// New estimate / Start estimate creates the DRAFT ROW immediately and lands on
+// its detail page with the estimator open inline, so creation happens on the
+// estimate page like everything else. The duplicate guard runs BEFORE the
+// insert (landmine 6: guarding after would orphan a draft every time the
+// answer is no). Abandoned empty drafts are left alone by Dylan's choice (he
+// archives by hand), and estimate-number gaps from them are accepted.
+async function createDraftEstimate({ leadId = null } = {}) {
+  if (leadId) {
+    const open = await leadOpenEstimates(leadId);
+    if (open.length) {
+      showDuplicateEstimateModal(open, () => createDraftEstimateNow({ leadId }));
+      return;
+    }
+  }
+  return createDraftEstimateNow({ leadId });
+}
+
+async function createDraftEstimateNow({ leadId = null } = {}) {
+  // Offline: the insert needs the network, so this is the ONE remaining modal
+  // launch path: today's behavior exactly (outbox save, modal frame), plus a
+  // note that the estimate is created for real once the device is back online.
+  if (!navigator.onLine) { openEstimatorFrame({ leadId, offlineNote: true }); return; }
+
+  const row = { created_by: (state.session && state.session.user && state.session.user.id) || null };
+  if (leadId) {
+    row.lead_id = leadId;
+    // Prefill the job info ONTO THE ROW from the lead (the "pre fills job
+    // info" half of the ask). Both shapes are written: the split columns AND
+    // the legacy combined customer_name/customer_address, in the same shape
+    // the estimator's save composes them, because readers are split across
+    // both. The name split mirrors the estimator's splitLegacyName. Best
+    // effort: a failed lead read still creates the draft, just unprefilled.
+    const lr = await supabase.from('leads')
+      .select('full_name,email,phone,address,city,state,zip').eq('id', leadId).maybeSingle();
+    if (!lr.error && lr.data) {
+      const d = lr.data;
+      const name = String(d.full_name || '').trim();
+      const sp = name.indexOf(' ');
+      const first = sp < 0 ? name : name.slice(0, sp);
+      const last = sp < 0 ? '' : name.slice(sp + 1).trim();
+      row.customer_first_name = first || null;
+      row.customer_last_name = last || null;
+      row.customer_email = d.email || null;
+      row.customer_phone = d.phone || null;
+      row.customer_address1 = d.address || null;
+      row.customer_city = d.city || null;
+      row.customer_state = d.state || null;
+      row.customer_zip = d.zip || null;
+      row.customer_name = name || null;
+      row.customer_address = [d.address, d.city, d.state, d.zip]
+        .map(v => String(v || '').trim()).filter(Boolean).join(', ') || null;
+    } else if (lr.error) {
+      console.warn('[estimates] draft prefill skipped:', lr.error.message);
+    }
+  }
+
+  let ins;
+  try {
+    // Non-idempotent insert: withDeadline, never a blind auto-retry (a retry
+    // could double-create).
+    ins = await withDeadline(() => supabase.from('estimates').insert(row).select('id,estimate_number').single(), { label: 'estimate-draft-create' });
+  } catch (e) { ins = { error: e }; }
+  if (ins.error || !ins.data) {
+    const msg = String((ins.error && ins.error.message) || '');
+    // A network-shaped failure falls back to the offline modal path; anything
+    // else surfaces. Either way the user is NEVER left on a detail page for a
+    // row that does not exist.
+    if (isSessionTimeout(ins.error) || /failed to fetch|networkerror|load failed|fetch failed/i.test(msg)) {
+      openEstimatorFrame({ leadId, offlineNote: true });
+      return;
+    }
+    showToast('Could not create the estimate: ' + esc(msg || 'no row returned'), { ttl: 6000 });
+    return;
+  }
+  pecEstInline.closedFor = null;   // a fresh draft always opens with the estimator up
+  state.openEstimateId = String(ins.data.id);
+  showToast(`${ins.data.estimate_number != null ? 'EST-' + ins.data.estimate_number : 'Draft estimate'} created`, { ttl: 2500 });
+  switchView('estimates');
+}
 
 // The "this lead already has an open estimate" prompt. Lists every open
 // estimate (Open goes to its page); Create new anyway proceeds; Cancel backs
@@ -23493,6 +23580,11 @@ function leadValueMapFrom(estRows) {
   const valueMap = {};
   const acceptedSeen = {};
   for (const e of estRows || []) {
+    // A priceless row carries no value information and must not move a
+    // number (prompt 61 Part B item 7): with draft rows now created BEFORE
+    // pricing, the newest-row rule would otherwise zero out a lead that has
+    // an older, real estimate the moment a fresh draft starts.
+    if (e.price == null) continue;
     const v = Number(e.price) || 0;
     if (e.status === 'accepted') {
       if (!acceptedSeen[e.lead_id]) { acceptedSeen[e.lead_id] = true; valueMap[e.lead_id] = v; }
@@ -25526,7 +25618,7 @@ async function renderLeadDetail(leadId) {
       <button class="pec-btn ghost" id="leadBack">← Back to leads</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="pec-btn sm" id="leadScheduleEstimate" title="Book the on-site estimate visit on the Appointments calendar">Schedule Estimate</button>
-        <button class="pec-btn sm" id="leadStartEstimate" title="Opens the estimator over the dashboard with this lead attached">Start estimate</button>
+        <button class="pec-btn sm" id="leadStartEstimate" title="Creates a draft estimate for this lead and opens it on its own page with the estimator ready">Start estimate</button>
         ${lead.stage === 'accepted' ? '' : '<button class="pec-btn sm" id="leadMarkAccepted">Mark accepted</button>'}
         <button class="pec-btn sm primary" id="leadAiRefresh">Refresh analysis</button>
       </div>
@@ -25604,7 +25696,7 @@ async function renderLeadDetail(leadId) {
   // Estimator opens as an iframe modal OVER this page (not a tab), so saving
   // returns the rep right here; the postMessage listener near
   // openEstimatorModal handles close + navigation to the new estimate.
-  $('leadStartEstimate').addEventListener('click', () => openEstimatorModal({ leadId: lead.id }));
+  $('leadStartEstimate').addEventListener('click', () => createDraftEstimate({ leadId: lead.id }));
   // Book the estimate visit; on save the stage may advance, so re-enter the
   // detail render to show the fresh stage select.
   $('leadScheduleEstimate').addEventListener('click', () =>
@@ -25849,7 +25941,7 @@ async function renderEstimates() {
   $('pecEstSearch').addEventListener('input', e => { state.estimatesSearch = e.target.value; draw(); });
   $('pecEstArchivedToggle').addEventListener('click', () => { state.estimatesShowArchived = !showArchived; renderEstimates(); });
   const newBtn = $('pecEstNew');
-  if (newBtn) newBtn.addEventListener('click', () => openEstimatorModal());
+  if (newBtn) newBtn.addEventListener('click', () => createDraftEstimate({}));
   draw();
 }
 

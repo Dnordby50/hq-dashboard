@@ -37,7 +37,7 @@ import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank,
 // Card-first draft + salesperson default rules (prompt 47): shared CJS module
 // (the scope.cjs pattern) so the fixture tests exercise the exact logic the
 // screen runs.
-import { createDraftTrigger, defaultSalespersonId, draftReady, estimateIdForSave, userUnmapped } from '../../../../../production/estimate-draft.cjs';
+import { createDraftTrigger, defaultSalespersonId, draftReady, estimateIdForSave, initialAreas, userUnmapped } from '../../../../../production/estimate-draft.cjs';
 
 type AreaForm = { name: string; sqft: string; systemTypeId: string; mvb: boolean; slotValues: Record<string, string> };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
@@ -284,17 +284,21 @@ export default function EstimatorScreen({
   // areas (a dashboard-created draft, prompt 61 Part B: the row exists before
   // the estimator ever opens) seeds the SAME single Main area the create path
   // uses, defaults included, instead of an empty area list the rep cannot
-  // price from. The fix lives here, not in a fake database row.
+  // price from. The rule lives in estimate-draft.cjs (initialAreas) so the
+  // fixture test drives it; the fix lives here, not in a fake database row.
   const [areas, setAreas] = useState<AreaForm[]>(() =>
-    editing && editing.areas.length
-      ? editing.areas.map((a) => ({
-          name: a.name,
-          sqft: a.sqft,
-          systemTypeId: a.systemTypeId ?? fallbackSystemId,
-          mvb: a.mvb === true,
-          slotValues: a.slotValues,
-        }))
-      : [{ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }],
+    initialAreas({
+      editingAreas: editing
+        ? editing.areas.map((a) => ({
+            name: a.name,
+            sqft: a.sqft,
+            systemTypeId: a.systemTypeId ?? fallbackSystemId,
+            mvb: a.mvb === true,
+            slotValues: a.slotValues,
+          }))
+        : null,
+      makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }),
+    }) as AreaForm[],
   );
   const [addonForms, setAddonForms] = useState<AddonForm[]>(() =>
     (editing?.addonLines ?? []).map((li) => ({
