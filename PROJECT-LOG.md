@@ -4,6 +4,27 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-07-31 MST] Cowork: prompt 61 refined after three more answer passes (source of truth, save legibility, visual continuity)
+By: Cowork
+
+Changed: claude-code-prompt-61-estimator-inline-lead-source.md, three follow-up commits (d863438, f84fcaa, c5f4f56). Extension of the entry immediately below; prompt 61 has still not been run in Claude Code.
+
+The same four scoping questions came back three more times after the prompt was written. The shape answer was "inline the estimator" three times out of four and "split it: job info native, pricing in estimator" once; those are not in conflict (Part A is the no-modal half, Part C is the split half), so nothing was flipped. What DID change is that two more complaints surfaced and one was singled out as primary.
+
+**"Unclear which record is authoritative" is now Part C item 7.** Job info lives on the lead, in the estimator, and on the estimate. The rule this build establishes, and which the page must state in plain words: the estimate carries its own snapshot, the lead and customer change only when someone says yes. Each block shows its provenance ("from lead <name>" vs "edited on this estimate") so the answer is on screen instead of in someone's head.
+
+**"Unclear what saved and where you land" is now Part A item 8.** After any save the user stays put, header and totals refresh in place, and the toast names the estimate. An outbox save must SAY it was queued offline rather than implying it reached the server. Today's silent close-and-jump is what makes this ambiguous.
+
+**THE ONE WITH TEETH: asked a fourth time for the single most confusing thing, Dylan's answer was "two different-looking UIs for one estimate", and inlining the iframe does not fix that.** A React app in a frame still renders with its own stylesheet inside the dashboard. So Part A item 9 makes visual continuity a deliverable, not polish: align the estimator's styles.css with the dashboard's design tokens, drive dark mode from the parent by postMessage (a light panel inside a dark dashboard is the seam at its most obvious), drop the estimator's duplicated header chrome when embedded, and verify by screenshot in both themes. It also says out loud that a full rewrite is the only complete cure and Dylan ruled it out knowingly, so if the seam still reads as a separate app after token alignment, the log entry says so rather than declaring the complaint fixed.
+
+Offline answer softened across passes, from "rarely, but it has saved us" to "on-site but essentially always online". The modal plus outbox fallback stays exactly as specified; the prompt now says build for the online case and keep the offline case working.
+
+Why: three more answer passes on the same questions, with one changed answer and two added complaints.
+Files touched: claude-code-prompt-61-estimator-inline-lead-source.md, PROJECT-LOG.md (this entry).
+Next steps: unchanged. Dylan runs prompt 61 in Claude Code.
+
+---
+
 ## [2026-07-31 MST] Cowork: wrote prompt 61 (estimator inline on the estimate detail page, native job info editing, lead source unification and manual editing), 16 decisions locked
 By: Cowork
 
