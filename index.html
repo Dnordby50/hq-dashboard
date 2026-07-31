@@ -6266,6 +6266,9 @@ function notifTarget(n) {
   // Manual Ops Queue items (prompt 55): whole-view destination, admin-gated
   // like the view itself; for everyone else the bell row stays text-only.
   if (n.target_view === 'ops') return isAdmin() ? { view: 'ops', id: n.target_id || 'panel' } : null;
+  // Bad-review bells (prompt 60): land on the Reviews view. Whole-view
+  // destination; the list shows the review (newest first).
+  if (n.target_view === 'reviews') return { view: 'reviews', id: n.target_id || 'panel' };
   if (n.target_view && n.target_id) {
     if (n.target_view === 'costing') return can('can_view_job_costing') ? { view: 'costing', id: n.target_id } : null;
     if (n.target_view === 'invoicing' || n.target_view === 'jobs') return { view: n.target_view, id: n.target_id };
@@ -6318,6 +6321,7 @@ function renderBellPanel(rows) {
       else if (navView === 'estimates') state.openEstimateId = navId;
       else if (navView === 'schema-drift') { /* whole-view destination, no open-id */ }
       else if (navView === 'ops') { /* whole-view destination; the queue lists the item */ }
+      else if (navView === 'reviews') { state.reviewsTab = 'reviews'; /* whole-view destination */ }
       else if (navView === 'settings') state.settingsTab = navId;   // birthday bells land on Settings > People
       else state.openJobId = navId;
       panel.style.display = 'none';
@@ -11880,7 +11884,7 @@ async function renderMetrics() {
       supabase.from('pec_job_ar').select(arColsBase + ',invoice_first_sent_at').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
       supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback,revenue'),
-      supabase.from('reviews').select('created_at,rating,job_id'),
+      supabase.from('reviews').select('created_at,rating,job_id,match_status,crew_lead,posted_at'),
       // Costing data for the GP-by-crew section, same three sources the Job
       // Costing tab derives from (narrow column lists to keep payloads small).
       // Hours live on pec_prod_jobs, NOT on pec_prod_job_costing, so they are
@@ -11896,7 +11900,7 @@ async function renderMetrics() {
       supabase.from('estimates').select('lead_id,price,status,created_at').is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
       supabase.from('jobs').select('id,sqft,system_type_id,job_areas(sqft,system_type_id)'),
       supabase.from('pec_prod_system_types').select('id,name'),
-      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate', ...COSTING_BONUS_SETTING_KEYS]),
+      supabase.from('settings').select('key,value').in('key', ['metrics_sales_ai_insight', 'metrics_default_window', 'metrics_tab_ai_insights', 'default_labor_hourly_rate', 'review_bonus_min_stars', ...COSTING_BONUS_SETTING_KEYS]),
       qoStaffNames(),
       // Outbound-touch logs for the contact-count stat card (prompt 33 Part
       // C), same loader + matcher as the leads board. Degrades to null.
@@ -11923,12 +11927,15 @@ async function renderMetrics() {
       supabase.from('pec_salesask_recordings').select('id,sales_member_id,lead_id,occurred_at,duration_seconds,process_followed,process_total,status'),
       supabase.from('pec_appointments').select('id,appt_type,status,sales_member_id,start_at'),
       cachedRef('salesTeam', () => supabase.from('pec_sales_team_members').select('*').order('name')),
+      // Review asks for the Metrics Reviews section (prompt 60). Degrades
+      // independently: pre-migration 400 renders the honest empty card.
+      supabase.from('pec_review_requests').select('job_id,status,asked_at,first_clicked_at,crew_lead,created_at'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
-    saRecRes, saApptRes, saRosterRes] = res;
+    saRecRes, saApptRes, saRosterRes, reviewReqRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -12216,6 +12223,39 @@ async function renderMetrics() {
     if (inWin(day) && rv.rating != null) { ratingSum += Number(rv.rating); ratingN++; }
   }
   const avgRating = ratingN ? ratingSum / ratingN : null;
+
+  // ---- Reviews section (prompt 60) ----------------------------------------
+  // Two honest numbers, kept separate on purpose: the FUNNEL counts asks
+  // (jobs completed -> asked -> clicked -> reviewed, window = when the ask
+  // went out), and the SCOREBOARD counts human-CONFIRMED reviews at or above
+  // review_bonus_min_stars per crew leader (all-time; auto-matched reviews
+  // are inference and deliberately do not score). A number nobody can define
+  // is a number that starts arguments, so the labels below say exactly this.
+  const reviewMinStars = Number((metSettingsRows.find(r => r.key === 'review_bonus_min_stars') || {}).value) || 5;
+  const reviewReqsReady = !(reviewReqRes && reviewReqRes.error);
+  const reviewReqsAll = reviewReqsReady ? (reviewReqRes.data || []) : [];
+  const asksInWin = reviewReqsAll.filter(r => r.status !== 'skipped' && r.asked_at && inWin(mstDay(r.asked_at)));
+  const reviewFunnel = {
+    completed: compInWin.length,
+    asked: asksInWin.length,
+    clicked: asksInWin.filter(r => r.first_clicked_at).length,
+    reviewed: asksInWin.filter(r => r.status === 'reviewed').length,
+  };
+  const allReviewsMet = revRes.data || [];   // INCLUDES unmatched (job_id null) rows
+  const reviewStarCounts = [0, 0, 0, 0, 0];  // index = stars - 1, window by posted/created date
+  for (const rv of allReviewsMet) {
+    if (rv.rating >= 1 && rv.rating <= 5 && inWin(mstDay(rv.posted_at || rv.created_at))) reviewStarCounts[rv.rating - 1]++;
+  }
+  const crewReviewRows = (() => {
+    const by = {};
+    for (const rv of allReviewsMet) {
+      if (!rv.crew_lead || rv.match_status === 'rejected') continue;
+      const g = (by[rv.crew_lead] ||= { confirmed: 0, all: 0, sum: 0 });
+      g.all++; g.sum += Number(rv.rating || 0);
+      if (rv.match_status === 'confirmed' && rv.rating >= reviewMinStars) g.confirmed++;
+    }
+    return Object.entries(by).sort((a, b) => b[1].confirmed - a[1].confirmed || b[1].all - a[1].all);
+  })();
 
   // Sales volume grouped by salesperson (window sum of signed-job price).
   const spGroups = {};
@@ -12972,6 +13012,46 @@ async function renderMetrics() {
           ${salesInsight && salesInsight.generated_at ? `<div style="color:var(--muted);font-size:.68rem;margin-top:6px">Generated ${esc(fmtRelativeTime(salesInsight.generated_at))}</div>` : ''}
         </div>
       </div>
+    </div>
+    <div class="pec-card">
+      <div class="pec-metric-h">Reviews</div>
+      ${reviewReqsReady ? `
+        <div class="pec-grid-stats" style="margin-bottom:14px">
+          <div class="pec-stat"><div class="pec-stat-label">Jobs completed (window)</div><div class="pec-stat-val">${reviewFunnel.completed}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Review asks sent</div><div class="pec-stat-val">${reviewFunnel.asked}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Link clicked</div><div class="pec-stat-val">${reviewFunnel.clicked}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Reviewed</div><div class="pec-stat-val">${reviewFunnel.reviewed}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Ask rate</div><div class="pec-stat-val">${reviewFunnel.completed ? Math.round(100 * reviewFunnel.asked / reviewFunnel.completed) + '%' : '—'}</div></div>
+          <div class="pec-stat"><div class="pec-stat-label">Review rate (of asks)</div><div class="pec-stat-val">${reviewFunnel.asked ? Math.round(100 * reviewFunnel.reviewed / reviewFunnel.asked) + '%' : '—'}</div></div>
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+          <div style="flex:1 1 340px;min-width:280px">
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">By crew leader · counts HUMAN-CONFIRMED reviews of ${reviewMinStars}+ stars only (all-time; auto-matched reviews never score)</div>
+            <table class="pec-table">
+              <thead><tr><th>Crew leader</th><th style="text-align:right">Confirmed ${reviewMinStars}-star</th><th style="text-align:right">All reviews</th><th style="text-align:right">Avg rating</th></tr></thead>
+              <tbody>${crewReviewRows.map(([lead, g]) => `
+                <tr class="nohover"><td><strong>${esc(lead)}</strong></td>
+                  <td style="text-align:right;font-weight:600">${g.confirmed}</td>
+                  <td style="text-align:right">${g.all}</td>
+                  <td style="text-align:right">${g.all ? (g.sum / g.all).toFixed(1) : '—'}</td></tr>`).join('')
+                || '<tr class="nohover"><td colspan="4" class="pec-empty">No reviews attributed to a crew leader yet.</td></tr>'}</tbody>
+            </table>
+          </div>
+          <div style="flex:0 1 300px;min-width:240px">
+            <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Star breakdown (window, every review incl. unmatched)</div>
+            ${[5, 4, 3, 2, 1].map(s => {
+              const n = reviewStarCounts[s - 1];
+              const max = Math.max(1, ...reviewStarCounts);
+              return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+                <span style="width:56px;font-size:.78rem;color:var(--muted)">${s} star${s === 1 ? '' : 's'}</span>
+                <div style="flex:1;background:var(--rd-line,var(--border));border-radius:4px;height:12px;overflow:hidden"><div style="width:${Math.round(100 * n / max)}%;height:100%;background:#b45309;border-radius:4px"></div></div>
+                <span style="width:26px;text-align:right;font-size:.8rem">${n}</span>
+              </div>`;
+            }).join('')}
+            <div style="font-size:.68rem;color:var(--muted);margin-top:8px">Every review is listed in the Reviews view, 1 through 5 stars. Only a human Confirm click there credits a crew leader and creates a bonus.</div>
+          </div>
+        </div>`
+      : '<div class="pec-empty">Review tables are not live yet (apply the 2026-08-04_review_drip.sql migration first).</div>'}
     </div>
     <details class="pec-card pec-ar-sec">
       <summary>More metrics <span class="pec-ar-meta">deposits, jobs sold, reviews, payment timing, AR aging</span></summary>
@@ -15964,27 +16044,306 @@ function openReferralForm(r) {
 }
 
 // ============================================================
-// Reviews (read-only)
+// Reviews (prompt 60): the working surface for Google review attribution.
 // ============================================================
+// The design rule this view exists to uphold: attribution is INFERRED until a
+// human confirms it. Auto-matched is a guess and is styled as one; only the
+// Confirm click turns a match into crew-leader credit, and a confirmed review
+// at or above review_bonus_min_stars is the ONLY thing that creates a
+// pec_review_bonuses row (Part G). The "Asked, no review yet" tab is a FILTER
+// for Anne, not a queue: no notifications, no Ops count, no bell, ever
+// (decision 14).
+
+// Stop any active review-drip enrollment for a job (client mirror of the
+// intake's stopReviewEnrollment). Best-effort.
+async function stopReviewEnrollmentClient(jobId, reason) {
+  try {
+    const camps = await supabase.from('pec_drip_campaigns').select('id').eq('kind', 'review');
+    const ids = ((!camps.error && camps.data) || []).map(c => c.id);
+    if (!ids.length) return;
+    await supabase.from('pec_drip_enrollments')
+      .update({ status: 'stopped', stop_reason: reason, stopped_at: new Date().toISOString(), next_send_at: null })
+      .eq('subject_type', 'job').eq('subject_id', jobId).eq('status', 'active').in('campaign_id', ids);
+  } catch (_) {}
+}
+
+// Part G: one pec_review_bonuses row per HUMAN-CONFIRMED qualifying review.
+// The UNIQUE on review_id makes a double-click a clean no-op. crew_member_id
+// resolves from pec_prod_crew_members only when the name matches exactly one
+// member (full name, else first name); otherwise it stays null and the ledger
+// shows the name text. NEVER touches pec_prod_job_bonuses or job costing
+// (decision 13: a review landing after costing finalizes must not move GP).
+async function createReviewBonusForConfirmed(review) {
+  if (!review || review.match_status !== 'confirmed') return { created: false, reason: 'not_confirmed' };
+  const setRes = await supabase.from('settings').select('key,value').in('key', ['review_bonus_amount', 'review_bonus_min_stars']);
+  const sMap = Object.fromEntries(((!setRes.error && setRes.data) || []).map(r => [r.key, r.value]));
+  const minStars = Number(sMap.review_bonus_min_stars) || 5;
+  if (Number(review.rating) < minStars) return { created: false, reason: 'below_min_stars', minStars };
+  if (!review.crew_lead) return { created: false, reason: 'no_crew_lead' };
+  const amount = Number(sMap.review_bonus_amount) || 0;
+  let crewMemberId = null;
+  try {
+    const mRes = await supabase.from('pec_prod_crew_members').select('id,name').eq('active', true);
+    if (!mRes.error) {
+      const want = String(review.crew_lead).trim().toLowerCase();
+      let hits = (mRes.data || []).filter(m => String(m.name || '').trim().toLowerCase() === want);
+      if (!hits.length) hits = (mRes.data || []).filter(m => String(m.name || '').trim().toLowerCase().split(/\s+/)[0] === want.split(/\s+/)[0]);
+      if (hits.length === 1) crewMemberId = hits[0].id;
+    }
+  } catch (_) {}
+  let prodJobId = null;
+  if (review.review_request_id) {
+    const rq = await supabase.from('pec_review_requests').select('prod_job_id').eq('id', review.review_request_id).maybeSingle();
+    if (!rq.error && rq.data) prodJobId = rq.data.prod_job_id;
+  }
+  const ins = await supabase.from('pec_review_bonuses').insert({
+    review_id: review.id, job_id: review.job_id, prod_job_id: prodJobId,
+    crew_lead: review.crew_lead, crew_member_id: crewMemberId,
+    amount, status: 'pending',
+  });
+  if (ins.error) {
+    if (/duplicate|23505/i.test(ins.error.message || '')) return { created: false, reason: 'already_exists' };
+    return { created: false, reason: 'error', error: ins.error.message };
+  }
+  return { created: true, amount, crew_lead: review.crew_lead };
+}
+
+// Shared post-confirm effects: request -> reviewed, drip stopped, bonus row.
+async function afterReviewConfirmed(review) {
+  if (review.review_request_id) {
+    await supabase.from('pec_review_requests')
+      .update({ status: 'reviewed', review_id: review.id })
+      .eq('id', review.review_request_id).in('status', ['asked', 'clicked']);
+  }
+  if (review.job_id) await stopReviewEnrollmentClient(review.job_id, 'reviewed');
+  const bonus = await createReviewBonusForConfirmed(review);
+  if (bonus.created) {
+    showToast(`Confirmed. $${bonus.amount} review bonus queued for <strong>${esc(bonus.crew_lead)}</strong> (pending approval in Bonus Report).`, { ttl: 5000 });
+  } else if (bonus.reason === 'below_min_stars') {
+    showToast(`Confirmed and recorded. A ${review.rating}-star review credits no bonus (minimum is ${bonus.minStars}).`, { ttl: 4500 });
+  } else if (bonus.reason === 'no_crew_lead') {
+    showToast('Confirmed and recorded. No crew leader on the ask, so no bonus was created.', { ttl: 4500 });
+  } else if (bonus.reason === 'already_exists') {
+    showToast('Confirmed. The bonus for this review already exists (nothing duplicated).', { ttl: 4000 });
+  } else if (bonus.reason === 'error') {
+    showToast('Confirmed, but the bonus row failed: ' + esc(bonus.error || ''), { ttl: 6000 });
+  }
+}
+
+// Human confirm: auto (inference) -> confirmed (fact). Guarded on the current
+// match_status so a stale row or double-submit resolves cleanly.
+async function pecConfirmReviewMatch(reviewId) {
+  const who = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'staff';
+  const upd = await supabase.from('reviews')
+    .update({ match_status: 'confirmed', matched_by: who, matched_at: new Date().toISOString() })
+    .eq('id', reviewId).eq('match_status', 'auto').select().maybeSingle();
+  if (upd.error) { showToast('Confirm failed: ' + esc(upd.error.message), { ttl: 5000 }); return; }
+  if (!upd.data) { showToast('Already resolved by someone else.', { ttl: 3000 }); renderReviews(); return; }
+  await afterReviewConfirmed(upd.data);
+  renderReviews();
+}
+
+// Reject: not our review, or spam. Clears the job linkage and, if this review
+// had claimed an ask, reopens that ask so the drip history stays honest.
+async function pecRejectReviewMatch(reviewId) {
+  const cur = await supabase.from('reviews').select('id,review_request_id').eq('id', reviewId).maybeSingle();
+  if (cur.error || !cur.data) return;
+  const who = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'staff';
+  const upd = await supabase.from('reviews').update({
+    match_status: 'rejected', matched_by: who, matched_at: new Date().toISOString(),
+    job_id: null, customer_id: null, review_request_id: null, crew_lead: null, crew_id: null,
+  }).eq('id', reviewId).neq('match_status', 'rejected').select().maybeSingle();
+  if (upd.error) { showToast('Reject failed: ' + esc(upd.error.message), { ttl: 5000 }); return; }
+  if (cur.data.review_request_id) {
+    const rq = await supabase.from('pec_review_requests').select('id,status,review_id,first_clicked_at')
+      .eq('id', cur.data.review_request_id).maybeSingle();
+    if (!rq.error && rq.data && rq.data.review_id === reviewId) {
+      await supabase.from('pec_review_requests')
+        .update({ status: rq.data.first_clicked_at ? 'clicked' : 'asked', review_id: null })
+        .eq('id', rq.data.id);
+    }
+  }
+  showToast('Rejected. The review stays listed; it credits nobody.', { ttl: 3500 });
+  renderReviews();
+}
+
+// Reassign: the human picks the real job. A human pick IS a confirmation, so
+// the result lands as 'confirmed' directly, with the crew snapshot taken from
+// that job's ask when one exists (decision 9), else from the bridged prod job.
+function openReviewReassignModal(review) {
+  openModal(`
+    <h3>Reassign review to a job</h3>
+    <div style="font-size:.82rem;color:var(--muted);margin-bottom:10px">${'★'.repeat(review.rating)}${'☆'.repeat(Math.max(0, 5 - review.rating))} from <strong>${esc(review.reviewer_name || 'unknown reviewer')}</strong></div>
+    <div class="pec-field"><label>Search jobs (customer or address)</label><input id="pecRevJobSearch" placeholder="Start typing…" autocomplete="off"></div>
+    <div id="pecRevJobResults" style="max-height:260px;overflow:auto"></div>
+    <div class="pec-modal-actions"><button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button></div>
+  `, { onMount: modal => {
+    const input = modal.querySelector('#pecRevJobSearch');
+    const results = modal.querySelector('#pecRevJobResults');
+    input.focus();
+    let seq = 0;
+    input.addEventListener('input', async () => {
+      const q = input.value.trim();
+      const mySeq = ++seq;
+      if (q.length < 2) { results.innerHTML = ''; return; }
+      const [byName, byAddr] = await Promise.all([
+        supabase.from('jobs').select('id,address,completed_date,customer_id,customers!inner(name)')
+          .ilike('customers.name', `%${q}%`).is('archived_at', null).limit(8),
+        supabase.from('jobs').select('id,address,completed_date,customer_id,customers(name)')
+          .ilike('address', `%${q}%`).is('archived_at', null).limit(8),
+      ]);
+      if (mySeq !== seq) return;
+      const seen = new Set();
+      const rows = [...((!byName.error && byName.data) || []), ...((!byAddr.error && byAddr.data) || [])]
+        .filter(j => !seen.has(j.id) && seen.add(j.id)).slice(0, 10);
+      results.innerHTML = rows.map(j => `
+        <button type="button" class="pec-btn ghost sm" data-rev-pick="${esc(j.id)}" style="display:block;width:100%;text-align:left;margin:3px 0">
+          <strong>${esc(j.customers?.name || '—')}</strong> · ${esc(j.address || 'no address')}${j.completed_date ? ` · completed ${esc(fmtDate(j.completed_date))}` : ''}
+        </button>`).join('') || '<div class="pec-empty">No matching jobs.</div>';
+      results.querySelectorAll('[data-rev-pick]').forEach(b => b.addEventListener('click', async () => {
+        b.disabled = true;
+        const job = rows.find(j => j.id === b.dataset.revPick);
+        const rq = await supabase.from('pec_review_requests').select('id,status,crew_lead,crew_id,prod_job_id')
+          .eq('job_id', job.id).order('created_at', { ascending: false }).limit(1).maybeSingle();
+        const req = (!rq.error && rq.data) || null;
+        let crewLead = req ? req.crew_lead : null, crewId = req ? req.crew_id : null;
+        if (!crewLead) {
+          const prod = await resolveProdJobForReview({ dealId: null, name: job.customers?.name, addr: job.address });
+          if (prod) { crewLead = prod.crew_lead || null; crewId = prod.crew_id || null; }
+        }
+        const who = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'staff';
+        // If this review had claimed a DIFFERENT ask, release it first.
+        if (review.review_request_id) {
+          const old = await supabase.from('pec_review_requests').select('id,review_id,first_clicked_at')
+            .eq('id', review.review_request_id).maybeSingle();
+          if (!old.error && old.data && old.data.review_id === review.id && old.data.id !== (req && req.id)) {
+            await supabase.from('pec_review_requests')
+              .update({ status: old.data.first_clicked_at ? 'clicked' : 'asked', review_id: null }).eq('id', old.data.id);
+          }
+        }
+        const upd = await supabase.from('reviews').update({
+          match_status: 'confirmed', matched_by: who, matched_at: new Date().toISOString(),
+          job_id: job.id, customer_id: job.customer_id || null,
+          review_request_id: req ? req.id : null, crew_lead: crewLead, crew_id: crewId,
+        }).eq('id', review.id).select().maybeSingle();
+        closeModal();
+        if (upd.error || !upd.data) { showToast('Reassign failed: ' + esc(upd.error?.message || 'no row'), { ttl: 5000 }); return; }
+        await afterReviewConfirmed(upd.data);
+        renderReviews();
+      }));
+    });
+  } });
+}
+
 async function renderReviews() {
   const root = $('pecViewRoot');
-  const { data } = await supabase.from('reviews').select('*,customers(name),jobs(type,address)').order('created_at', { ascending: false });
-  state.reviews = data || [];
+  root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading reviews…</div>';
+  const tab = state.reviewsTab || 'reviews';
+  let revRes, reqRes;
+  try {
+    [revRes, reqRes] = await Promise.all([
+      supabase.from('reviews').select('*').order('created_at', { ascending: false }),
+      supabase.from('pec_review_requests').select('*').order('asked_at', { ascending: false }),
+    ]);
+  } catch (e) { revRes = { error: e }; reqRes = { error: e }; }
+  if (revRes.error) {
+    root.innerHTML = `<div class="pec-empty">Could not load reviews.<br><span style="font-size:.75rem;color:var(--muted)">${esc(revRes.error.message || '')}</span></div>`;
+    return;
+  }
+  const reviews = revRes.data || [];
+  const requests = (!reqRes.error && reqRes.data) || [];
+  // One join pass for job + customer context on both tabs.
+  const jobIds = [...new Set([...reviews.map(r => r.job_id), ...requests.map(r => r.job_id)].filter(Boolean))];
+  let jobMap = new Map();
+  if (jobIds.length) {
+    const jRes = await supabase.from('jobs').select('id,address,customers(name,phone,email)').in('id', jobIds);
+    if (!jRes.error) jobMap = new Map((jRes.data || []).map(j => [j.id, j]));
+  }
+
+  // Auto-matched must read as inference at a glance (amber, labeled), never
+  // the same as the green human-confirmed badge.
+  const MATCH_BADGE = {
+    unmatched: ['Unmatched', '#64748b'],
+    auto: ['Auto-matched (inferred)', '#b45309'],
+    confirmed: ['Confirmed', '#16a34a'],
+    rejected: ['Rejected', '#dc2626'],
+  };
+  const stars = n => `<span style="color:#b45309;letter-spacing:1px">${'★'.repeat(n)}</span><span style="color:var(--muted);letter-spacing:1px">${'☆'.repeat(Math.max(0, 5 - n))}</span>`;
+  const openAsks = requests.filter(r => ['asked', 'clicked'].includes(r.status));
+
+  const reviewRows = reviews.map(r => {
+    const job = r.job_id ? jobMap.get(r.job_id) : null;
+    const [label, color] = MATCH_BADGE[r.match_status] || MATCH_BADGE.unmatched;
+    const isAuto = r.match_status === 'auto';
+    return `
+      <tr class="nohover">
+        <td>${stars(r.rating)}<div style="font-size:.72rem;color:var(--muted)">${esc(r.source === 'zapier_gbp' ? 'Google' : r.source || '')}</div></td>
+        <td><strong>${esc(r.reviewer_name || '—')}</strong><div style="font-size:.72rem;color:var(--muted)">${r.posted_at ? esc(fmtDate(r.posted_at)) : esc(fmtDate(r.created_at))}</div></td>
+        <td style="max-width:340px"><div style="white-space:pre-wrap;font-size:.82rem">${esc(r.review_text || r.feedback || '')}</div>${r.review_url ? `<a href="${esc(r.review_url)}" target="_blank" rel="noopener" style="font-size:.72rem">View on Google</a>` : ''}</td>
+        <td>
+          ${job ? `<button type="button" class="pec-cust-name" data-rev-openjob="${esc(r.job_id)}">${esc(job.customers?.name || '—')}</button><div style="font-size:.72rem;color:var(--muted)">${esc(job.address || '')}</div>` : '<span style="color:var(--muted)">—</span>'}
+          ${r.crew_lead ? `<div style="font-size:.75rem;margin-top:2px">Crew: <strong>${esc(r.crew_lead)}</strong></div>` : ''}
+        </td>
+        <td><span class="pec-badge system" style="--pec-badge-bg:${color}" title="${isAuto ? 'Matched by name similarity and click evidence. Inference, not fact: it credits nobody until a human confirms it.' : ''}">${label}</span></td>
+        <td style="white-space:nowrap">
+          ${isAuto ? `<button class="pec-btn sm" data-rev-confirm="${esc(r.id)}">Confirm match</button>` : ''}
+          <button class="pec-btn sm ghost" data-rev-reassign="${esc(r.id)}">${r.job_id ? 'Reassign' : 'Assign to job'}</button>
+          ${r.match_status !== 'rejected' ? `<button class="pec-btn sm ghost" data-rev-reject="${esc(r.id)}" style="color:var(--danger,#dc2626)">Reject</button>` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+
+  const askRows = openAsks.map(r => {
+    const job = r.job_id ? jobMap.get(r.job_id) : null;
+    const cust = job && job.customers;
+    const days = r.asked_at ? Math.max(0, Math.floor((Date.now() - new Date(r.asked_at).getTime()) / 864e5)) : null;
+    return `
+      <tr class="nohover">
+        <td>${job ? `<button type="button" class="pec-cust-name" data-rev-openjob="${esc(r.job_id)}">${esc(cust?.name || '—')}</button>` : '—'}<div style="font-size:.72rem;color:var(--muted)">${esc(job?.address || '')}</div></td>
+        <td>${days == null ? '—' : `Day ${days}`}<div style="font-size:.72rem;color:var(--muted)">asked ${r.asked_at ? esc(fmtDate(r.asked_at)) : '—'}${r.job_completed_date && r.asked_at && r.job_completed_date < r.asked_at.slice(0, 10) ? `, completed ${esc(fmtDate(r.job_completed_date))}` : ''}</div></td>
+        <td>${r.status === 'clicked' ? '<span class="pec-badge system" style="--pec-badge-bg:#2563eb">Clicked the link</span>' : '<span class="pec-badge system" style="--pec-badge-bg:#64748b">No click yet</span>'}</td>
+        <td>${esc(cust?.phone || '—')}<div style="font-size:.72rem;color:var(--muted)">${esc(cust?.email || '')}</div></td>
+        <td>${r.crew_lead ? esc(r.crew_lead) : '<span style="color:var(--muted)">—</span>'}</td>
+      </tr>`;
+  }).join('');
+
   root.innerHTML = `
     <div class="pec-card">
-      <table class="pec-table">
-        <thead><tr><th>Customer</th><th>Job</th><th>Rating</th><th>Feedback</th><th>Date</th></tr></thead>
-        <tbody>${state.reviews.map(r => `
-          <tr class="nohover">
-            <td>${esc(r.customers?.name || '—')}</td>
-            <td><span class="pec-badge ${r.jobs?.type || ''}">${esc(r.jobs?.type || '')}</span> ${esc(r.jobs?.address || '')}</td>
-            <td>${'★'.repeat(r.rating)}${'☆'.repeat(5-r.rating)}</td>
-            <td>${esc(r.feedback || '')}</td>
-            <td>${fmtDate(r.created_at)}</td>
-          </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No reviews</td></tr>'}</tbody>
-      </table>
-    </div>
-  `;
+      <nav class="pec-subnav" style="margin:0 0 14px">
+        <button data-rev-tab="reviews" ${tab === 'reviews' ? 'class="active"' : ''}>Reviews (${reviews.length})</button>
+        <button data-rev-tab="asked" ${tab === 'asked' ? 'class="active"' : ''}>Asked, no review yet (${openAsks.length})</button>
+      </nav>
+      ${tab === 'asked' ? `
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">Open review asks, for whoever wants to work the phone. This is a filter, not a queue: it raises no notifications and no counts anywhere.</div>
+        <table class="pec-table">
+          <thead><tr><th>Customer</th><th>Days since ask</th><th>Link</th><th>Phone / email</th><th>Crew leader</th></tr></thead>
+          <tbody>${askRows || '<tr class="nohover"><td colspan="5" class="pec-empty">No open review asks.</td></tr>'}</tbody>
+        </table>`
+      : `
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">Every review, 1 through 5 stars. <strong>Auto-matched</strong> is a machine guess and pays nobody; the <strong>Confirm match</strong> click is what credits the crew leader and queues the bonus on a qualifying rating. A bad review is never hidden.</div>
+        <table class="pec-table">
+          <thead><tr><th>Rating</th><th>Reviewer</th><th>Review</th><th>Matched job</th><th>Match</th><th style="width:230px"></th></tr></thead>
+          <tbody>${reviewRows || '<tr class="nohover"><td colspan="6" class="pec-empty">No reviews yet. They arrive automatically from Google once the Zapier feed is connected.</td></tr>'}</tbody>
+        </table>`}
+    </div>`;
+
+  root.querySelectorAll('[data-rev-tab]').forEach(b => b.addEventListener('click', () => {
+    state.reviewsTab = b.dataset.revTab; renderReviews();
+  }));
+  root.querySelectorAll('[data-rev-openjob]').forEach(b => b.addEventListener('click', () => {
+    state.openJobId = b.dataset.revOpenjob; state.openInvoiceJobId = null; switchView('jobs');
+  }));
+  root.querySelectorAll('[data-rev-confirm]').forEach(b => b.addEventListener('click', () => {
+    b.disabled = true; pecConfirmReviewMatch(b.dataset.revConfirm);
+  }));
+  root.querySelectorAll('[data-rev-reject]').forEach(b => b.addEventListener('click', () => {
+    if (!confirm('Reject this review? It stays listed but is marked as not ours (or spam) and credits nobody.')) return;
+    b.disabled = true; pecRejectReviewMatch(b.dataset.revReject);
+  }));
+  root.querySelectorAll('[data-rev-reassign]').forEach(b => b.addEventListener('click', () => {
+    const r = reviews.find(x => x.id === b.dataset.revReassign);
+    if (r) openReviewReassignModal(r);
+  }));
 }
 
 // Staff (admin_users) management lives on Settings > People (prompt 57 Part H:
@@ -16536,9 +16895,14 @@ async function renderBonusReport() {
       // this report shows the crew-share % and reverse-derives savings from it,
       // so it hydrates the same settings the costing surfaces read.
       supabase.from('settings').select('key,value').in('key', ['bonus_lock_days', ...COSTING_BONUS_SETTING_KEYS]),
+      // Review bonuses (prompt 60 Part G): their OWN ledger, deliberately
+      // outside job costing and the labor-savings math above. Degrades to an
+      // absent section pre-migration.
+      supabase.from('pec_review_bonuses').select('*').order('created_at', { ascending: false }),
+      supabase.from('reviews').select('id,rating,reviewer_name'),
     ]), { label: 'renderBonusReport' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}]; }
-  const [bonRes, poRes, jobRes, crmRes, lockSetRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}]; }
+  const [bonRes, poRes, jobRes, crmRes, lockSetRes, rvBonRes, rvRowsRes] = res;
   if (bonRes.error) {
     const hint = /pec_prod_job_bonuses/.test(bonRes.error.message || '') ? ' (Apply the job-costing migrations first.)' : '';
     root.innerHTML = `<div class="pec-empty">${esc(bonRes.error.message)}${hint}</div>`; return;
@@ -16809,7 +17173,80 @@ async function renderBonusReport() {
       </table>
     </div>
     ` : reportHTML}
+
+    ${(() => {
+      // ---- Review bonuses (prompt 60 Part G) --------------------------------
+      // A separate card because it is a separate LEDGER: flat-amount bonuses
+      // for human-confirmed reviews, never part of job costing, labor savings,
+      // or GP (decision 13). Pending -> Approve -> Mark paid (payroll date),
+      // with Void as the reversal path (voided_at/_by/void_reason, mirroring
+      // the payout reversal columns). The pay-period date filter above does
+      // not apply; this lists the whole ledger, newest first.
+      if (rvBonRes && rvBonRes.error) return '';   // pre-migration: no section
+      const rvBonuses = (rvBonRes && rvBonRes.data) || [];
+      const rvById = Object.fromEntries((((rvRowsRes && !rvRowsRes.error && rvRowsRes.data) || [])).map(r => [r.id, r]));
+      const crmNameById = Object.fromEntries((((crmRes && !crmRes.error && crmRes.data) || [])).map(j => [j.id, (j.customers && j.customers.name) || null]));
+      const RVB_BADGE = { pending: '#b45309', approved: '#2563eb', paid: '#16a34a', voided: '#dc2626' };
+      const rvRows = rvBonuses.map(b => {
+        const rv = rvById[b.review_id] || {};
+        return `<tr class="nohover">
+          <td><strong>${esc(b.crew_lead)}</strong></td>
+          <td>${esc(crmNameById[b.job_id] || rv.reviewer_name || '—')}<div style="font-size:.7rem;color:var(--muted)">${rv.rating ? rv.rating + '-star review' : ''}${rv.reviewer_name ? ' by ' + esc(rv.reviewer_name) : ''}</div></td>
+          <td style="text-align:right"><strong>${invUSD(Number(b.amount || 0))}</strong></td>
+          <td><span class="pec-badge system" style="--pec-badge-bg:${RVB_BADGE[b.status] || '#64748b'}">${esc(b.status)}</span>
+            ${b.status === 'paid' && b.payroll_date ? `<div style="font-size:.7rem;color:var(--muted)">payroll ${esc(invFmtDate(b.payroll_date))}</div>` : ''}
+            ${b.status === 'voided' ? `<div style="font-size:.7rem;color:var(--muted)">${esc(b.void_reason || '')}</div>` : ''}</td>
+          <td>${esc(fmtDate(b.created_at))}</td>
+          ${isAdm ? `<td style="text-align:right;white-space:nowrap">
+            ${b.status === 'pending' ? `<button class="pec-btn sm" data-rvb-approve="${esc(b.id)}">Approve</button>` : ''}
+            ${b.status === 'approved' ? `<button class="pec-btn sm" data-rvb-paid="${esc(b.id)}">Mark paid</button>` : ''}
+            ${b.status !== 'voided' ? `<button class="pec-btn sm ghost" data-rvb-void="${esc(b.id)}" style="color:#dc2626">Void</button>` : ''}
+          </td>` : ''}
+        </tr>`;
+      }).join('');
+      return `<div class="pec-card">
+        <h3 style="margin-top:0">Review bonuses <span style="color:var(--muted);font-size:.75rem;font-weight:400">human-confirmed Google reviews · a separate ledger, never part of job costing or GP</span></h3>
+        <table class="pec-table">
+          <thead><tr><th>Crew leader</th><th>Customer / review</th><th style="text-align:right">Amount</th><th>Status</th><th>Created</th>${isAdm ? '<th></th>' : ''}</tr></thead>
+          <tbody>${rvRows || `<tr class="nohover"><td colspan="${isAdm ? 6 : 5}" class="pec-empty">No review bonuses yet. One is created each time a qualifying review is confirmed in the Reviews view.</td></tr>`}</tbody>
+        </table>
+      </div>`;
+    })()}
   `;
+
+  // ---- Review bonus actions (prompt 60 Part G) ------------------------------
+  if (isAdm) {
+    const rvbWho = (state.adminUser && (state.adminUser.name || state.adminUser.email)) || 'admin';
+    root.querySelectorAll('[data-rvb-approve]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      const up = await supabase.from('pec_review_bonuses')
+        .update({ status: 'approved', approved_by: rvbWho, approved_at: new Date().toISOString() })
+        .eq('id', b.dataset.rvbApprove).eq('status', 'pending').select().maybeSingle();
+      if (up.error || !up.data) showToast('Approve failed: ' + esc(up.error?.message || 'already resolved'), { ttl: 4500 });
+      renderBonusReport();
+    }));
+    root.querySelectorAll('[data-rvb-paid]').forEach(b => b.addEventListener('click', async () => {
+      const d = prompt('Payroll date this bonus goes out on (YYYY-MM-DD):', today);
+      if (d == null) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) { alert('Enter the date as YYYY-MM-DD.'); return; }
+      b.disabled = true;
+      const up = await supabase.from('pec_review_bonuses')
+        .update({ status: 'paid', paid_on: today, payroll_date: d.trim(), paid_by: rvbWho })
+        .eq('id', b.dataset.rvbPaid).eq('status', 'approved').select().maybeSingle();
+      if (up.error || !up.data) showToast('Mark paid failed: ' + esc(up.error?.message || 'already resolved'), { ttl: 4500 });
+      renderBonusReport();
+    }));
+    root.querySelectorAll('[data-rvb-void]').forEach(b => b.addEventListener('click', async () => {
+      const reason = prompt('Void this review bonus? Enter a reason (kept on the row):');
+      if (reason == null) return;
+      b.disabled = true;
+      const up = await supabase.from('pec_review_bonuses')
+        .update({ status: 'voided', voided_at: new Date().toISOString(), voided_by: rvbWho, void_reason: reason.trim() || null })
+        .eq('id', b.dataset.rvbVoid).neq('status', 'voided').select().maybeSingle();
+      if (up.error || !up.data) showToast('Void failed: ' + esc(up.error?.message || 'already resolved'), { ttl: 4500 });
+      renderBonusReport();
+    }));
+  }
 
   // --- Wire toolbar ---
   $('bonFrom').addEventListener('change', e => { state.bonusReportRange = { start: e.target.value, end }; renderBonusReport(); });
@@ -19391,8 +19828,34 @@ async function renderSettings() {
     <div class="pec-card">
       <h3>Settings</h3>
       <form id="pecSettingsForm">
-        <div class="pec-field"><label>Google review link — Epoxy</label><input name="google_review_link_epoxy" value="${esc(map.google_review_link_epoxy || '')}"></div>
+        <div class="pec-field"><label>Google review link — Epoxy</label><input name="google_review_link_epoxy" value="${esc(map.google_review_link_epoxy || '')}"><span style="color:var(--muted);font-size:.68rem">Where the review drip's tracking link sends customers. Use the one-tap review URL (g.page/.../review), not the plain business listing.</span></div>
         <div class="pec-field"><label>Google review link — Paint</label><input name="google_review_link_paint" value="${esc(map.google_review_link_paint || '')}"></div>
+        <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--rd-line,var(--border))">Reviews</div>
+        <div class="pec-field"><label>Review request drip</label>
+          <select name="review_drip_enabled">
+            <option value="true" ${(map.review_drip_enabled || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.review_drip_enabled || 'true') === 'false' ? 'selected' : ''}>Off</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">Master switch for the Google review campaign, on top of the global drip switch. Off holds every review drip in place; nothing is lost.</span>
+        </div>
+        <div class="pec-field"><label>Close-out popup default</label>
+          <select name="review_ask_default_on">
+            <option value="true" ${(map.review_ask_default_on || 'true') !== 'false' ? 'selected' : ''}>Send request preselected</option>
+            <option value="false" ${(map.review_ask_default_on || 'true') === 'false' ? 'selected' : ''}>Skip preselected</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">Which button the "Send a Google review request?" popup focuses when a job is marked complete.</span>
+        </div>
+        <div class="pec-field"><label>Review bonus amount ($)</label><input name="review_bonus_amount" type="number" min="0" step="1" value="${esc(map.review_bonus_amount || '25')}"><span style="color:var(--muted);font-size:.68rem">Flat bonus per HUMAN-CONFIRMED 5-star review, paid to the crew leader. Applied at confirm time; changing it never touches bonuses already created.</span></div>
+        <div class="pec-field"><label>Minimum stars for credit</label><input name="review_bonus_min_stars" type="number" min="1" max="5" step="1" value="${esc(map.review_bonus_min_stars || '5')}"><span style="color:var(--muted);font-size:.68rem">Only confirmed reviews at or above this rating count on the scoreboard and pay a bonus. Every review is still recorded and visible.</span></div>
+        <div class="pec-field"><label>Review match window (days)</label><input name="review_match_window_days" type="number" min="1" step="1" value="${esc(map.review_match_window_days || '45')}"><span style="color:var(--muted);font-size:.68rem">How far back the intake looks for an open ask when auto-matching an incoming Google review.</span></div>
+        <div class="pec-field"><label>Stop drip on touch-up</label>
+          <select name="review_stop_on_touchup">
+            <option value="true" ${(map.review_stop_on_touchup || 'true') !== 'false' ? 'selected' : ''}>On</option>
+            <option value="false" ${(map.review_stop_on_touchup || 'true') === 'false' ? 'selected' : ''}>Off</option>
+          </select>
+          <span style="color:var(--muted);font-size:.68rem">A touch-up or callback opening on the job stops its review drip.</span>
+        </div>
+        <div class="pec-field"><label>Bad review alert threshold (stars)</label><input name="review_alert_max_stars" type="number" min="1" max="5" step="1" value="${esc(map.review_alert_max_stars || '3')}"><span style="color:var(--muted);font-size:.68rem">A review at or below this raises a bell for Dylan and Anne and stops the job's review drip.</span></div>
         <div class="pec-field"><label>Referral reward amount ($)</label><input name="referral_reward_amount" type="number" step="1" value="${esc(map.referral_reward_amount || '50')}"></div>
         <div class="pec-field"><label>Metrics default time window</label>
           <select name="metrics_default_window">
