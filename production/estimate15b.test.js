@@ -748,20 +748,27 @@ await section('duplicate guard: open-status set + every-path wiring', async () =
   ok(!isOpen('rejected') && !isOpen('lost') && !isOpen('accepted'), 'guard stays silent on rejected/lost/accepted');
   ok(statuses.length === 4, 'exactly the four open statuses, nothing else');
 
-  // The guard lives in the SHARED openEstimatorModal (so every caller is
-  // covered), keyed on the lead and the open statuses.
+  // Prompt 61: the guard's QUERY lives in the shared leadOpenEstimates
+  // helper, and BOTH launch paths (the offline modal openEstimatorModal and
+  // the normal draft-on-create createDraftEstimate) run it before opening or
+  // inserting anything. Same invariant as before, one query, two callers.
+  ok(/async function leadOpenEstimates/.test(html), 'the shared leadOpenEstimates guard query exists');
+  const qStart = html.indexOf('async function leadOpenEstimates');
+  const qSlice = html.slice(qStart, qStart + 900);
+  ok(/\.eq\('lead_id', leadId\)/.test(qSlice) && /\.in\('status', OPEN_ESTIMATE_STATUSES\)/.test(qSlice), 'the guard queries the lead\'s estimates filtered to the open statuses');
   ok(/async function openEstimatorModal/.test(html), 'openEstimatorModal is async (can await the check)');
   const fnStart = html.indexOf('async function openEstimatorModal');
-  const fnSlice = html.slice(fnStart, fnStart + 1600);
-  ok(/\.eq\('lead_id', leadId\)/.test(fnSlice) && /\.in\('status', OPEN_ESTIMATE_STATUSES\)/.test(fnSlice), 'the guard queries the lead\'s estimates filtered to the open statuses');
-  ok(/showDuplicateEstimateModal\(openEstimates/.test(fnSlice), 'when open estimates exist it shows the duplicate prompt instead of opening');
+  const fnSlice = html.slice(fnStart, fnStart + 900);
+  ok(/leadOpenEstimates\(leadId\)/.test(fnSlice) && /showDuplicateEstimateModal\(openEstimates/.test(fnSlice), 'the modal path runs the guard and shows the duplicate prompt');
   ok(/leadId && !estimateId/.test(fnSlice), 'editing an existing estimate and walk-ups skip the guard');
+  const cdStart = html.indexOf('async function createDraftEstimate');
+  const cdSlice = html.slice(cdStart, cdStart + 900);
+  ok(cdStart > 0 && /leadOpenEstimates\(leadId\)/.test(cdSlice) && /showDuplicateEstimateModal\(open/.test(cdSlice), 'draft-on-create runs the guard BEFORE the insert (a declined duplicate leaves no orphan row)');
 
-  // Every create-for-a-lead path routes through openEstimatorModal (the lead
-  // detail button does; there is no other lead-attached create call).
-  ok(/leadStartEstimate.*openEstimatorModal\(\{ leadId: lead\.id \}\)/s.test(html) || /openEstimatorModal\(\{ leadId: lead\.id \}\)/.test(html), 'the Start-estimate button routes through the guarded openEstimatorModal');
-  const leadIdCreateCalls = (html.match(/openEstimatorFrame\(\{ leadId \}\)/g) || []).length;
-  ok(leadIdCreateCalls >= 1 && !/openEstimatorFrame\(\{ leadId: lead/.test(html), 'the raw frame opener is only reached AFTER the guard (never called directly with a fresh lead)');
+  // Every create-for-a-lead path routes through the guarded
+  // createDraftEstimate (prompt 61: the lead button creates the draft row).
+  ok(/leadStartEstimate.*createDraftEstimate\(\{ leadId: lead\.id \}\)/s.test(html) || /createDraftEstimate\(\{ leadId: lead\.id \}\)/.test(html), 'the Start-estimate button routes through the guarded createDraftEstimate');
+  ok(!/openEstimatorFrame\(\{ leadId: lead/.test(html), 'the raw frame opener is never called directly with a fresh lead (only after the guard)');
 
   // The prompt lists all open estimates, offers Open + Create new anyway.
   ok(/function showDuplicateEstimateModal/.test(html), 'the duplicate modal exists');
