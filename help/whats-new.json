@@ -1,5 +1,27 @@
 [
   {
+    "id": "estimator-inline-estimate-page",
+    "date": "2026-07-31",
+    "title": "The estimator now lives on the estimate page, and job info is editable right there",
+    "summary": "No more popup window. Starting an estimate creates it immediately and opens its own page with the estimator built in; a draft opens ready to work, and Edit on a sent estimate swaps the estimator in on the same page. Saving keeps you where you are, with the header and totals refreshing in place. The customer and job info block is now editable without opening the estimator at all, and when you change something that also lives on the lead or customer, TopCoat asks whether to update them too (your choice each time). If you are offline, the classic window still works and saves to the device.",
+    "howto": [
+      "Click Start estimate on a lead (or New estimate): you land on the new estimate's page with the estimator open and the customer info already filled in.",
+      "To fix just a phone number or address, use Edit job info on the estimate page. Tick or untick the boxes when asked about updating the lead and customer.",
+      "Close inside the estimator to see the read-only summary; Edit brings the estimator back. Nothing you typed is lost when totals refresh."
+    ]
+  },
+  {
+    "id": "lead-source-editing",
+    "date": "2026-07-31",
+    "title": "Lead sources are one list now, and you can change them anytime",
+    "summary": "Lead sources used to be set once at creation and written in two different vocabularies. Now one managed list (Settings, Lead sources) drives everything: the leads board, the customer list, and what the intake feeds write. Click the source badge on a lead (or the source line on a customer) to change it; the linked record updates with it and the change is recorded on the lead's timeline with who made it. New feed spellings can be mapped from Settings with the new Aliases field, no code change needed.",
+    "howto": [
+      "Open a lead and click its source badge, pick the right source, Save. The linked customer updates too.",
+      "Same thing from a customer page: click the source line next to the brand badge.",
+      "To map a new feed's spelling, open Settings, Lead sources, Edit, and add the raw token to Aliases (comma separated)."
+    ]
+  },
+  {
     "id": "review-request-drip",
     "date": "2026-07-31",
     "title": "Google review requests and a crew leader review scoreboard",

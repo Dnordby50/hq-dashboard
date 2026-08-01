@@ -4,11 +4,15 @@
     {
       "name": "In-house estimator PWA",
       "area": "estimator",
-      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects. Prompt 47: a new estimate defaults its salesperson to the LOGGED-IN rep, mapped explicitly by pec_sales_team_members.auth_user_id (set per member in Settings > Sales Team via openSalesTeamModal's Login picker; migration 2026-07-22_sales_member_auth_user.sql). An unmapped login gets a blank salesperson plus a get-mapped prompt, never a silent first-in-list fallback. Prompt 55 NARROWS prompt 47: once a salesperson is set, the select is read-only text for non-admins (admin check = admin_users.role threaded from App.tsx, FAIL CLOSED); the blank/unmapped case stays editable for everyone so the get-mapped path never dead-ends. Shared rules (draft gate, trigger, default priority) live in production/estimate-draft.cjs, fixture-tested.",
+      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects. Prompt 47: a new estimate defaults its salesperson to the LOGGED-IN rep, mapped explicitly by pec_sales_team_members.auth_user_id (set per member in Settings > Sales Team via openSalesTeamModal's Login picker; migration 2026-07-22_sales_member_auth_user.sql). An unmapped login gets a blank salesperson plus a get-mapped prompt, never a silent first-in-list fallback. Prompt 55 NARROWS prompt 47: once a salesperson is set, the select is read-only text for non-admins (admin check = admin_users.role threaded from App.tsx, FAIL CLOSED); the blank/unmapped case stays editable for everyone so the get-mapped path never dead-ends. Shared rules (draft gate, trigger, default priority) live in production/estimate-draft.cjs, fixture-tested. Prompt 61 (Part A): the estimator's NORMAL home is now INLINE on the estimate detail page (no modal); the app posts its content height (pec-estimator-height, ResizeObserver + rAF) so the page grows instead of nesting scrollbars, follows the DASHBOARD's theme via pec-theme postMessage (never the OS), drops its duplicated header chrome when embedded, and its styles.css mirrors the dashboard's --rd-* design tokens (PEC orange, same surfaces/ink/lines) so the panel reads as part of the page. A draft loaded with zero areas seeds the create-path Main area (initialAreas in estimate-draft.cjs, fixture-tested). The old #pecModalRoot modal remains ONLY as the offline create fallback; the standalone /estimator/ page and the offline outbox are untouched.",
       "code": {
         "indexHtml": [
-          "renderSettings",
-          "openSalesTeamModal"
+          "createDraftEstimate",
+          "estimatorFrameSrc",
+          "mountInlineEstimator",
+          "openEstimatorModal",
+          "openSalesTeamModal",
+          "renderSettings"
         ],
         "other": [
           "apps/estimator/src/main.tsx",
@@ -36,14 +40,18 @@
     {
       "name": "Numbered estimate records",
       "area": "estimator",
-      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel. Prompt 47 (card first): the estimate ROW now exists the moment the rep makes their first real edit in the estimator, written by an early draft save (parent row only, requires name/phone/email/address/salesperson, all prefilled in the lead flow) under the same pre-minted id the full Save upserts. Draft-status estimates show an 'In Draft' badge on the list rows and the detail header (the shared EST_STATUS_META draft label; numbering stays the Postgres sequence, so an unnumbered card reads '(unnumbered)' until its first sync).",
+      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel. Prompt 47 (card first): the estimate ROW now exists the moment the rep makes their first real edit in the estimator, written by an early draft save (parent row only, requires name/phone/email/address/salesperson, all prefilled in the lead flow) under the same pre-minted id the full Save upserts. Draft-status estimates show an 'In Draft' badge on the list rows and the detail header (the shared EST_STATUS_META draft label; numbering stays the Postgres sequence, so an unnumbered card reads '(unnumbered)' until its first sync). Prompt 61 (Parts A-C): New estimate / Start estimate now INSERTS the draft row immediately (duplicate guard via leadOpenEstimates BEFORE the insert; job info prefilled onto the row from the lead in both split and legacy column shapes) and lands on the estimate detail page with the estimator open inline; a sent/signed/rejected estimate renders the read-only summary with Edit swapping the estimator in on the page. renderEstimateDetail guards landmine 1 at its top: while the inline estimator is alive, refreshes rebuild the chrome and summary around the untouched iframe, so no handler can reload the PWA and drop typed work. The job info block (#estJobInfo) is natively editable (renderEstJobInfoBlock): split + composed legacy columns written in the estimator's exact shape, salesperson admin-locked fail-closed with intake read-modify-written whole, and propagation to the linked lead/customer is ASK EACH TIME with pre-checked boxes (lead_events 'lead_updated' records it; a declined push shows a differs-from-lead note with one-click Push to lead). The authority rule is stated on the page: the estimate carries its own snapshot; lead and customer change only on a yes. Abandoned empty drafts are left alone (Dylan archives by hand) and estimate-number gaps are accepted; leadValueMapFrom skips priceless rows so an early draft never zeroes a lead's value.",
       "code": {
         "indexHtml": [
+          "createDraftEstimate",
           "ensureEstimateToken",
+          "estCustomerColumns",
           "estimateBlankScopeOk",
           "markEstimateSent",
+          "openEstPropagateModal",
           "openEstimateSendModal",
           "openEstimatorModal",
+          "renderEstJobInfoBlock",
           "renderEstimateDetail",
           "renderEstimates",
           "sendEstimateText",
@@ -267,28 +275,39 @@
     {
       "name": "Sales Pipeline board",
       "area": "dashboard",
-      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip.",
+      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip. Prompt 61 (Parts D-E): leads.source and customers.lead_source now share ONE vocabulary, the managed pec_lead_sources names (aliases column maps raw feed tokens at intake via resolveLeadSourceName, editable in Settings > Lead sources); badge color/label lookups normalize through leadSourceKey so canonical names stay colored. The source is manually editable on the lead detail (click the badge) and the customer detail (click the source line), the two stay in sync, and every change writes a source_changed lead_events row with the actor. No permission gate, no bulk edit, no kanban-card editor, all by explicit decision.",
       "code": {
         "indexHtml": [
-          "renderLeads",
-          "loadLeadsData",
-          "loadOutboundTouchLogs",
+          "changeLeadSource",
           "leadContactStats",
           "leadScoreBadge",
+          "leadSourceKey",
+          "leadSourceOptionsHtml",
+          "loadLeadsData",
+          "loadOutboundTouchLogs",
           "moveLeadStage",
+          "openLeadLostModal",
           "openNewLeadModal",
-          "openLeadLostModal"
+          "renderLeads",
+          "wireLeadSourceEditor"
         ],
         "netlifyFunctions": [
           "pec-lead-intake.cjs",
           "pec-lead-ai.cjs"
+        ],
+        "other": [
+          "netlify/functions/_pec-lead-source.cjs",
+          "supabase/migrations/2026-08-05_lead_source_unification.sql",
+          "production/lead-source.test.cjs"
         ]
       },
       "tables": [
         "leads",
         "pec_call_log",
         "pec_sms_log",
-        "pec_email_log"
+        "pec_email_log",
+        "pec_lead_sources",
+        "lead_events"
       ],
       "since": "2026-07"
     },
@@ -1765,7 +1784,7 @@
     {
       "name": "Estimator stuck-sync visibility",
       "area": "estimator",
-      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online · N to sync, or a RED 'N saves not syncing · oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
+      "description": "Replaces the quiet 'N to sync' counter that hid a week of failing saves. Retry policy (production/outbox-drain.cjs, fixture-tested by production/outbox-backoff.test.cjs): per-op backoff 1m/5m/30m then hourly, deliberately NO maximum-attempts cap (the crew_notes incident self-healed only because ops were still retrying); children of a failed or deferred parent are skipped for the pass, transitively, with attempts untouched, so one root cause reads as one problem. Header shows three states: Online, Online \u00b7 N to sync, or a RED 'N saves not syncing \u00b7 oldest X days' once any op reaches sync_stuck_threshold_attempts (default 2, reaches the PWA via catalog.ts settings). The red state expands to per-op detail (attempts, stuck-for, lastError verbatim) with a Retry now that force-clears backoff. Server escalation: once per session the PWA POSTs stuck-op metadata (ids and error only) to pec-sync-stuck.cjs, which upserts pec_sync_stuck_reports on op_id and bells the office once per op; gated by sync_stuck_escalation_enabled. Knobs live in Settings > Estimates.",
       "code": {
         "indexHtml": [
           "renderSettingsEstimates",
