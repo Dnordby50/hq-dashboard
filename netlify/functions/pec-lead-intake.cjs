@@ -39,6 +39,7 @@ const { enrollLead } = require('./_pec-drip.cjs');
 // Same-human matching lives in _pec-lead-match.cjs (prompt 56) so this
 // intake and the Routemize appointment intake share ONE dedupe rule.
 const { normPhone, findRecentLiveLead } = require('./_pec-lead-match.cjs');
+const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 
 const ENDPOINT = 'lead-intake';
 
@@ -88,7 +89,12 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); }
   catch { return json(400, { success: false, error: 'Invalid JSON' }); }
 
-  const source = cleanStr(body.source) || 'webform';
+  // Prompt 61 Part D: the raw feed token maps to the managed
+  // pec_lead_sources NAME here, BEFORE the source+source_ref dedupe query
+  // below (landmine 9): stored rows are canonical names now, so deduping on
+  // the raw token would miss every prior row and turn each Zapier retry into
+  // a duplicate lead. Map first, then dedupe.
+  const source = await resolveLeadSourceName(sb, cleanStr(body.source) || 'webform');
   const sourceRef = cleanStr(body.source_ref);
   const firstName = cleanStr(body.first_name);
   const lastName = cleanStr(body.last_name);

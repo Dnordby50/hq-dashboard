@@ -19892,15 +19892,16 @@ async function renderSettings() {
         </div>
         ${leadsOpen ? `
           <table class="pec-table">
-            <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Active</th><th>Notes</th><th>Aliases</th><th></th></tr></thead>
             <tbody>
               ${state.leadSources.map(s => `
                 <tr data-lead-id="${esc(s.id)}">
                   <td><strong>${esc(s.name)}</strong></td>
                   <td>${s.active ? 'Yes' : '<span style="color:var(--muted)">Inactive</span>'}</td>
                   <td>${esc(s.notes || '')}</td>
+                  <td style="color:var(--muted);font-size:.75rem">${esc(Array.isArray(s.aliases) ? s.aliases.join(', ') : '')}</td>
                   <td><button class="pec-btn sm ghost" data-edit-lead="${esc(s.id)}">Edit</button></td>
-                </tr>`).join('') || '<tr class="nohover"><td colspan="4" class="pec-empty">No lead sources yet.</td></tr>'}
+                </tr>`).join('') || '<tr class="nohover"><td colspan="5" class="pec-empty">No lead sources yet.</td></tr>'}
             </tbody>
           </table>
         ` : ''}
@@ -21979,6 +21980,10 @@ function openLeadSourceModal(leadId) {
       </div>
       <div class="pec-field"><label>Notes</label><input id="leadNotes" value="${esc(s.notes || '')}"></div>
     </div>
+    <div class="pec-field"><label>Aliases <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(comma separated)</span></label>
+      <input id="leadAliases" value="${esc(Array.isArray(s.aliases) ? s.aliases.join(', ') : '')}" placeholder="meta, webform">
+      <span style="color:var(--muted);font-size:.68rem">The raw tokens intake feeds send (Zapier, Routemize) that should file under this source. Adding one here is how a new feed vocabulary maps with no code change.</span>
+    </div>
     <div class="pec-modal-actions">
       ${existing ? '<button class="pec-btn danger" id="leadDelete">Delete</button>' : ''}
       <span style="flex:1"></span>
@@ -22006,6 +22011,7 @@ function openLeadSourceModal(leadId) {
           name: modal.querySelector('#leadName').value.trim(),
           active: modal.querySelector('#leadActive').value === 'true',
           notes: modal.querySelector('#leadNotes').value || null,
+          aliases: modal.querySelector('#leadAliases').value.split(',').map(a => a.trim().toLowerCase()).filter(Boolean),
         };
         if (!payload.name) return errEl.textContent = 'Name is required.';
         try {
@@ -23539,15 +23545,26 @@ const LEAD_STAGE_TS = {
   lost: 'lost_at',
 };
 // Source badge colors (kanban card + filter). Unknown sources fall back gray.
+// Prompt 61 Part D: lead.source now holds MANAGED NAMES ('Facebook'), not
+// tokens ('meta'), so every lookup normalizes through leadSourceKey
+// (lowercase, spaces/hyphens to underscores) or every badge silently goes
+// gray (landmine 11). The maps stay the color source; canonical-name keys
+// were added alongside the legacy token keys, which still resolve for any
+// unmapped leftover value.
+const leadSourceKey = (s) => String(s || '').toLowerCase().replace(/[\s-]+/g, '_');
 const LEAD_SOURCE_COLORS = {
   meta: '#1877f2', google_lsa: '#188038', webform: '#7c3aed', manual: '#475569',
   referral: '#64748b', angi: '#ea580c', openphone: '#0ea5e9', dripjobs: '#b45309',
+  facebook: '#1877f2', google: '#4285f4', google_ppc: '#188038', website: '#7c3aed',
+  manual_entry: '#475569', phone_call: '#0ea5e9', word_of_mouth: '#64748b',
+  instagram: '#d62976', home_show: '#b45309', repeat_customer: '#16a34a',
+  walk_in: '#475569', other: '#64748b',
 };
 const LEAD_SOURCE_LABELS = {
   meta: 'Meta', google_lsa: 'Google LSA', webform: 'Web form', manual: 'Manual',
   openphone: 'OpenPhone', dripjobs: 'DripJobs', angi: 'Angi',
 };
-const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[s] || titleCaseValue(s || 'unknown');
+const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[leadSourceKey(s)] || titleCaseValue(s || 'unknown');
 
 // AI score bands (prompt 33 Part B), the ONE place the cutoffs live: hot is
 // 70-100, warm 40-69, cold 1-39 (same thresholds the old color-only chip
@@ -24919,10 +24936,12 @@ async function loadLeadsData() {
   const dripActive = (dripRes && !dripRes.error && dripRes.data) ? new Set(dripRes.data.map(r => r.lead_id)) : new Set();
   const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
   // Source options: schema tokens + anything already in the data + the active
-  // pec_lead_sources names (free-text sources are legal on manual leads).
-  const sources = ['manual', 'meta', 'google_lsa', 'webform', 'angi', 'openphone', 'dripjobs'];
-  for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
+  // ONE vocabulary (prompt 61 Part D): the managed pec_lead_sources names
+  // drive the pickers, and values already present in the data ride along so
+  // an unmapped legacy value stays selectable, never silently replaced.
+  const sources = [];
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
+  for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
   return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts };
 }
 
@@ -24944,7 +24963,7 @@ function leadContactChipHtml(lead, stats) {
 function leadCardHtml(lead) {
   const value = (state.leadsData && state.leadsData.valueMap[lead.id]) || 0;
   const flags = (lead.ai_analysis && Array.isArray(lead.ai_analysis.risk_flags)) ? lead.ai_analysis.risk_flags : [];
-  const srcColor = LEAD_SOURCE_COLORS[lead.source] || '#64748b';
+  const srcColor = LEAD_SOURCE_COLORS[leadSourceKey(lead.source)] || '#64748b';
   const elapsed = lead.stage === 'new' ? leadElapsed(lead.created_at) : null;
   // Next scheduled on-site estimate, e.g. "Est Mon 8/3 8:00 AM" (local time is
   // Phoenix for all staff, matching every other date on the board).
@@ -25128,7 +25147,7 @@ function openNewLeadModal(prefill) {
     </div>
     <div class="pec-row-2">
       <div class="pec-field"><label>Email</label><input id="nlEmail" placeholder="phone or email required"></div>
-      <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${s === 'manual' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
+      <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${String(s).toLowerCase() === 'manual entry' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
     </div>
     <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Start typing a street address" autocomplete="off"></div>
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
@@ -25644,7 +25663,7 @@ async function renderLeadDetail(leadId) {
               </div>
               ${ai && ai.score_reason ? `<div style="font-size:.78rem;color:var(--muted);margin-top:4px">${esc(ai.score_reason)}</div>` : ''}
               <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
-                <span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[lead.source] || '#64748b')}">${esc(leadSourceLabel(lead.source))}</span>
+                <span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[leadSourceKey(lead.source)] || '#64748b')}">${esc(leadSourceLabel(lead.source))}</span>
                 ${lead.campaign ? `<span style="font-size:.75rem;color:var(--muted)">${esc(lead.campaign)}</span>` : ''}
               </div>
             </div>

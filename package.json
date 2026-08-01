@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node production/calculator.test.js && node production/estimate15b.test.js && node production/estimate-draft.test.cjs && node production/outbox-backoff.test.cjs && node production/appt-intake.test.cjs && node production/review-drip.test.cjs && node production/review-intake.test.cjs"
+    "test": "node production/calculator.test.js && node production/estimate15b.test.js && node production/estimate-draft.test.cjs && node production/outbox-backoff.test.cjs && node production/appt-intake.test.cjs && node production/review-drip.test.cjs && node production/review-intake.test.cjs && node production/lead-source.test.cjs"
   },
   "engines": {
     "node": ">=18"

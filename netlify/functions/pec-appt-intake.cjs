@@ -85,6 +85,7 @@
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
 const { sameHumanOr } = require('./_pec-lead-match.cjs');
+const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 
 const ENDPOINT = 'appt-intake';
 const APPT_TYPES = ['on_site_estimate', 'project_walkthrough', 'site_visit', 'other'];
@@ -539,12 +540,17 @@ async function processApptIntake(deps, body) {
     // block). resolveContact just ran the shared same-human match with NO
     // window, strictly broader than lead-intake's 90-day dedupe, so a miss
     // here proves the windowed dedupe cannot hit either: creating is safe.
+    // Prompt 61 Part D: Routemize's leadSource token maps to the managed
+    // pec_lead_sources name here (both the create and the fill-when-null
+    // paths). Mapping the value does NOT license overwriting an existing
+    // source (prompt 56 decision 10 stands: fill only when null).
+    const rzSource = rz ? await resolveLeadSourceName(db, rz.leadSource) : null;
     let leadCreated = false;
     if (rz && !contact.lead_id && !contact.customer_id && customerName && (phone10 || email)) {
       try {
         const lead = await createRoutemizeLead(db, {
           customerName, firstName: rz.firstName, lastName: rz.lastName,
-          phone10, email, source: rz.leadSource, contactId: rz.contactId, rmId,
+          phone10, email, source: rzSource, contactId: rz.contactId, rmId,
           address: cleanStr(body.address), city: cleanStr(body.city),
           state: cleanStr(body.state), zip: cleanStr(body.zip),
         });
@@ -559,7 +565,7 @@ async function processApptIntake(deps, body) {
     if (rz && contact.lead_id && !leadCreated) {
       // Existing lead: fill the source only if blank, NEVER overwrite
       // (decision 10: overwriting would rewrite marketing attribution).
-      await db('PATCH', `/leads?id=eq.${encodeURIComponent(contact.lead_id)}&source=is.null`, { source: rz.leadSource })
+      await db('PATCH', `/leads?id=eq.${encodeURIComponent(contact.lead_id)}&source=is.null`, { source: rzSource })
         .catch(e => console.warn('pec-appt-intake: lead source fill failed (non-fatal):', e && e.message));
     }
     if (rz) {
