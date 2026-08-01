@@ -8413,7 +8413,7 @@ async function renderCustomerDetail(id) {
           <div style="font-size:1.2rem;font-weight:700">${esc(c.name || '—')}</div>
           <div style="margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <span class="pec-badge ${c.company === 'prescott-epoxy' ? 'epoxy' : 'paint'}">${brand}</span>
-            ${c.lead_source ? `<span style="font-size:.72rem;color:var(--muted)">${esc(c.lead_source)}</span>` : ''}
+            <span id="custSourceEditHost"><span style="font-size:.72rem;color:var(--muted)">${c.lead_source ? esc(c.lead_source) : 'No source'} ✎</span></span>
             ${(c.tags || []).map(t => `<span style="font-size:.7rem;background:var(--rd-soft, var(--s3));color:var(--rd-ink, var(--text));border:1px solid var(--rd-line, var(--border));padding:2px 8px;border-radius:999px">${esc(t)}</span>`).join('')}
           </div>
         </div>
@@ -8473,6 +8473,22 @@ async function renderCustomerDetail(id) {
     state.openCustomerId = null;
     switchView('customers');
   });
+  // Manual source editing (prompt 61 Part E), customer side. Syncs back to
+  // the linked lead (leads.customer_id -> this customer) and logs the
+  // source_changed event on that lead's timeline. A customer with no lead
+  // has nowhere to log it; the value still updates, and that is accepted
+  // rather than growing a parallel events table.
+  (async () => {
+    const lr = await supabase.from('leads').select('id,source').eq('customer_id', c.id)
+      .is('deleted_at', null).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (lr.error) console.warn('[customers] linked-lead lookup failed:', lr.error.message);
+    const linkedLead = (!lr.error && lr.data) || null;
+    wireLeadSourceEditor($('custSourceEditHost'), {
+      leadId: linkedLead ? linkedLead.id : null, customerId: c.id,
+      current: c.lead_source || null, via: 'customer',
+      onSaved: () => renderCustomerDetail(c.id),
+    });
+  })();
   $('pecCustEdit').addEventListener('click', () => openCustomerForm(c));
   // Soft-delete (archive) the customer. Reversible (sets archived_at, the same
   // pattern jobs use), never touches the linked jobs. Warns hard if the customer
@@ -8581,7 +8597,10 @@ async function openCustomerForm(c) {
       <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
         <select name="lead_source" required>
           <option value="">Pick a source…</option>
-          ${leadSources.map(s => `<option value="${esc(s.name)}" ${s.name === c?.lead_source ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+          ${/* Shared option builder (prompt 61 Part E item 3): same list the
+               lead/customer source editors use, so the pickers cannot drift,
+               and an unmapped stored value stays selectable. */''}
+          ${leadSourceOptionsHtml(leadSources.map(s => s.name), c?.lead_source || null)}
         </select>
       </div>
 
@@ -23566,6 +23585,89 @@ const LEAD_SOURCE_LABELS = {
 };
 const leadSourceLabel = (s) => LEAD_SOURCE_LABELS[leadSourceKey(s)] || titleCaseValue(s || 'unknown');
 
+// ---- Manual lead-source editing (prompt 61 Part E) --------------------------
+// One concept, one value: the source is editable on the lead detail AND the
+// customer detail, the two stay in sync (lead <-> linked customer), and every
+// change writes a source_changed lead_events row so the timeline records why
+// conversion-by-source moved for past periods. Deliberately NO permission
+// gate (any signed-in staff; Dylan declined the admin-only variant), no
+// kanban-card editor, and no bulk edit (both declined).
+
+async function activeLeadSourceNames() {
+  const r = await supabase.from('pec_lead_sources').select('name,active').order('name');
+  if (r.error) { console.warn('[leads] lead sources read failed:', r.error.message); return []; }
+  return (r.data || []).filter(s => s.active !== false).map(s => s.name);
+}
+// THE option builder every source picker shares (lead editor, customer
+// editor, customer form) so they cannot drift. The current value stays
+// selectable even when it is not in the managed list, so an unmapped legacy
+// value is never silently replaced.
+function leadSourceOptionsHtml(names, current) {
+  const list = [...names];
+  if (current && !list.includes(current)) list.push(current);
+  return list.map(n => `<option value="${esc(n)}" ${n === current ? 'selected' : ''}>${esc(n)}</option>`).join('');
+}
+// The one writer. via: 'lead' | 'customer' (where the edit happened). A
+// customer with no lead simply has nowhere to log the change; that is
+// accepted (the value still updates) rather than growing a new events table.
+async function changeLeadSource({ leadId = null, customerId = null, from = null, to, via }) {
+  if (!to || to === from) return { changed: false };
+  if (leadId) {
+    const upd = await withDeadline(() => supabase.from('leads').update({ source: to }).eq('id', leadId), { label: 'lead-source' });
+    if (upd.error) throw upd.error;
+  }
+  if (customerId) {
+    const upd = await withDeadline(() => supabase.from('customers').update({ lead_source: to }).eq('id', customerId), { label: 'customer-source' });
+    if (upd.error) throw upd.error;
+  }
+  if (leadId) {
+    const evt = await supabase.from('lead_events').insert({
+      lead_id: leadId, event_type: 'source_changed',
+      actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+      payload: { from: from || null, to, via },
+    });
+    if (evt.error) console.warn('[leads] source_changed event failed:', evt.error.message);
+  }
+  return { changed: true };
+}
+// Swap a host element's content for the source select; save writes through
+// changeLeadSource, then onSaved re-renders the page it lives on.
+function wireLeadSourceEditor(hostEl, { leadId = null, customerId = null, current = null, via, onSaved }) {
+  if (!hostEl) return;
+  hostEl.style.cursor = 'pointer';
+  hostEl.title = 'Click to change the lead source';
+  hostEl.addEventListener('click', async function openEditor() {
+    hostEl.removeEventListener('click', openEditor);
+    const names = await activeLeadSourceNames();
+    hostEl.style.cursor = '';
+    hostEl.innerHTML = `
+      <span style="display:inline-flex;gap:6px;align-items:center">
+        <select id="pecSrcEditSel" style="max-width:180px;font-size:.78rem;padding:4px 8px">
+          ${current ? '' : '<option value="" selected>Pick a source…</option>'}
+          ${leadSourceOptionsHtml(names, current)}
+        </select>
+        <button class="pec-btn sm" id="pecSrcEditSave">Save</button>
+        <button class="pec-btn sm ghost" id="pecSrcEditCancel">Cancel</button>
+      </span>`;
+    hostEl.querySelector('#pecSrcEditCancel').addEventListener('click', (e) => { e.stopPropagation(); onSaved(false); });
+    hostEl.querySelector('#pecSrcEditSave').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const to = hostEl.querySelector('#pecSrcEditSel').value;
+      if (!to || to === current) { onSaved(false); return; }
+      const btn = hostEl.querySelector('#pecSrcEditSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        await changeLeadSource({ leadId, customerId, from: current, to, via });
+        showToast(`Source changed to ${esc(to)}`, { ttl: 2500 });
+        onSaved(true);
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save';
+        showToast('Could not change the source: ' + esc(err.message || String(err)), { ttl: 5000 });
+      }
+    });
+  });
+}
+
 // AI score bands (prompt 33 Part B), the ONE place the cutoffs live: hot is
 // 70-100, warm 40-69, cold 1-39 (same thresholds the old color-only chip
 // used). The band WORD rides the badge so meaning never depends on color
@@ -25663,7 +25765,7 @@ async function renderLeadDetail(leadId) {
               </div>
               ${ai && ai.score_reason ? `<div style="font-size:.78rem;color:var(--muted);margin-top:4px">${esc(ai.score_reason)}</div>` : ''}
               <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
-                <span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[leadSourceKey(lead.source)] || '#64748b')}">${esc(leadSourceLabel(lead.source))}</span>
+                <span id="leadSourceEditHost"><span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[leadSourceKey(lead.source)] || '#64748b')}">${esc(leadSourceLabel(lead.source))} ✎</span></span>
                 ${lead.campaign ? `<span style="font-size:.75rem;color:var(--muted)">${esc(lead.campaign)}</span>` : ''}
               </div>
             </div>
@@ -25726,6 +25828,13 @@ async function renderLeadDetail(leadId) {
   // returns the rep right here; the postMessage listener near
   // openEstimatorModal handles close + navigation to the new estimate.
   $('leadStartEstimate').addEventListener('click', () => createDraftEstimate({ leadId: lead.id }));
+  // Manual source editing (prompt 61 Part E): click the badge, pick, save.
+  // Syncs the linked customer and logs source_changed on this lead's timeline.
+  wireLeadSourceEditor($('leadSourceEditHost'), {
+    leadId: lead.id, customerId: lead.customer_id || null,
+    current: lead.source || null, via: 'lead',
+    onSaved: () => renderLeadDetail(lead.id),
+  });
   // Book the estimate visit; on save the stage may advance, so re-enter the
   // detail render to show the fresh stage select.
   $('leadScheduleEstimate').addEventListener('click', () =>
