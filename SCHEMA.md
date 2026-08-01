@@ -22,6 +22,8 @@ Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration 
 
 Refreshed 2026-07-31 (Claude Code) after the review-drip migration (2026-08-04_review_drip.sql, applied via MCP): two new tables `pec_review_requests` and `pec_review_bonuses`; `reviews` widened for the Zapier Google feed (source/platform/external_id/reviewer_name/review_text/review_url/posted_at/match_status/matched_by/matched_at/crew_lead/crew_id/review_request_id) with `job_id` and `customer_id` NOT NULL DROPPED (a Google review arrives before we know whose job it is); `pec_drip_campaigns_kind_check` recreated to admit 'review' (verified live via pg_get_constraintdef); seven `review_*` settings keys (settings 58 rows to 65). The seeded Review request campaign is mode **'live'** (decision 15): the approval gate is its only safety.
 
+Refreshed 2026-07-31 (Claude Code) after the lead-source-unification migration (2026-08-05_lead_source_unification.sql, applied via MCP): `pec_lead_sources.aliases` (text[] not null default '{}'), six new managed rows (19 to 25), and a data-only rewrite of `leads.source` (9 rows: meta->Facebook, google->Google, manual->Manual entry, other->Other, webform->Website, word_of_mouth->Word of Mouth) and `customers.lead_source` (0 rows changed; values were already managed names, 55 nulls untouched). Only the pec_lead_sources section changed shape.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 84 tables documented, 84 live, all in `public`, all with RLS enabled. No gaps.
@@ -900,7 +902,7 @@ Indexes: idx_pec_invoice_installments_job (job_id, seq); idx_pec_invoice_install
 Live since 2026-07-22_invoice_installments.sql (partial invoicing, prompt 45). Documented 2026-07-28; it was the one live-but-undocumented table called out in this file's header from 2026-07-27 to 2026-07-28.
 
 ### pec_lead_sources
-RLS: enabled · rows: 19
+RLS: enabled · rows: 25
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -910,8 +912,10 @@ RLS: enabled · rows: 19
 | notes | text | yes |  |
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
+| aliases | text[] | no | '{}' |
 
 PK: id
+Note: since 2026-07-31 (prompt 61 Part D) this is THE one lead-source vocabulary: `leads.source` and `customers.lead_source` both hold `name` values (the stored data was rewritten; rows matching nothing were left alone). `aliases` holds the raw tokens intake feeds send ('meta', 'webform', 'google_lsa', ...); `resolveLeadSourceName` (netlify/functions/_pec-lead-source.cjs) maps exact name > case-insensitive name > alias and returns the raw string unchanged (with a warn) on no match. Six rows added by the unification for tokens with no counterpart: Google LSA, Manual entry, Word of Mouth, Angi, Phone Call, DripJobs. Aliases are editable in Settings > Lead sources, so a new feed vocabulary is a data change, not a deploy.
 
 ### pec_notifications
 RLS: enabled · rows: 20
