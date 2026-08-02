@@ -4,6 +4,43 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-08-01 MST] Cowork: prompt 62 written (lead/customer name model, estimate-start rework, pipeline drafts + estimate cards, lost reasons, global search, estimator layout)
+By: Cowork
+
+Changed: new file `claude-code-prompt-62-lead-customer-estimate-pipeline.md`. Nothing else in the codebase touched. Prompt 62 has NOT been run in Claude Code.
+
+Dylan pasted eight one-line asks. Twenty scoping questions later, four of them turned out to be things that already exist and three of them grew into a data-model change. What the code audit found before any question was asked:
+
+- **Lost already exists.** `leads_stage_check` admits `lost`, `LEAD_STAGES` (index.html:23546) has a Lost column, `renderLeads` renders it, and `openLeadLostModal` (25193) already forces a reason from six hardcoded options. What is actually missing is Lost in the Metrics pipeline widget (12854 filters it out), a notes field separate from the reason (today "Other" overwrites `lost_reason` with the note), and any AI involvement.
+- **The work order questions already exist**, inside the collapsed `More detail` block in the estimator (EstimatorScreen.tsx:2133/2165), along with a warning at 2310 that never blocks. `estimates.crew_notes` already saves, copies to `jobs.crew_notes` on accept, and prints on the crew card.
+- **Google Places is fully built on both surfaces.** Dashboard key hardcoded at index.html:22735; estimator gated on `VITE_GOOGLE_MAPS_KEY`. Dylan reports it dead on BOTH, which points at the Google Cloud key (API not enabled, billing, or referrer restriction), not the code. Prompt 62 Part C is a diagnose-then-hand-off, explicitly forbidding key creation per CLAUDE.md rule 7.
+- **`leads.first_name` / `last_name` already exist** and both intake webhooks already populate them (pec-lead-intake.cjs:148-150, pec-appt-intake.cjs:387-390). Only the dashboard UI writes a single `full_name`. There is no business-name column on leads at all; customers have `company_name`.
+- **`estimates` has `lead_id` but no `customer_id`.** Every estimate hangs off a lead. That is the blocker behind Dylan's "we need to be selecting our current customer, creating it from an existing lead, or creating a new customer".
+
+## Locked decisions
+
+1. **Names**: lead form mirrors the customer form (Individual/Business radio). First AND last, OR business name, always required. New `leads.business_name`. `full_name` stays as the derived display column so nothing downstream changes. Applies to the New lead modal, lead detail, the estimate page's job-info editor, the customer form, and both intake webhooks. One-time backfill splits existing `full_name` / `customers.name`; business names are never guessed.
+2. **Archive**: new `leads.archived_at`. Clears the lead off the board, stops drips, drops it out of the follow-up queue. Stage untouched, contact untouched. **Archived leads deliberately STAY in conversion metrics** (Dylan's choice); the consequence, that a never-resolved archived lead sits in the denominator forever, is called out in the prompt's handoff requirements.
+3. **Estimate start**: new `estimates.customer_id`. Three paths: existing customer, from existing lead, new customer. An estimate does not need a lead.
+4. **Pipeline**: new **Drafts** column (derived from `estimates.status = 'draft'`, NOT a new stage, no CHECK change) between Estimate Scheduled and Estimate Sent. The board renders **two card shapes**: lead cards as today, plus estimate cards for estimates with no lead. Estimate cards move by estimate status, not by drag. Lost added to the Metrics pipeline widget.
+5. **Lost**: keep the six reasons, no Settings surface. New `leads.lost_notes`, optional and always available. AI pre-fills the reason and notes from a recent call at Mark-lost time (suggestion only), plus a nightly backfill for already-lost leads that never overwrites a human value.
+6. **Estimator**: the `More detail` accordion is deleted and its fields render always-visible. `special_notes` is retired in favor of one large "Notes for the crew" box at the bottom bound to `crew_notes`. MOHS and moisture get a loud red banner and are **never blocked** (Dylan wrote "required for every quote" but chose warning-only and confirmed on a second pass).
+7. **Search**: `#rdSearch` becomes one global bar on every page across jobs, estimates, leads, customers, grouped results, 5 per group. The existing in-list search boxes are kept; Dylan said he did not know the difference between the two, and they filter a visible table rather than jump to a record.
+
+## Landmines recorded in the prompt
+
+- **Prompt 61 is unverified** and prompt 62 rebuilds the same estimate-start path. Dylan was offered a verify-first sequencing and chose to run one prompt straight through; the prompt tells Claude Code to stop and report if 61's behavior contradicts its log entry.
+- **`estimates.lead_id` can now be null.** Part E requires an audit of every reader (leadValueMapFrom, kanban value, Metrics, Ops Queue, drips, accept path, pec-webhook-proposal-accepted, estimator load/save) before building.
+- **Two card shapes touch every board behavior**: column sort, score sort, value rollup, source badge, filters, appointment sort, empty state, drag. It will look fine on 6 leads and break at 60.
+- **`pec_call_log` has `customer_id`, not `lead_id`** (474 rows). Lost-reason matching has to go through `phone_norm`; the prompt requires reporting the actual match rate so a decorative feature gets caught.
+- `full_name` must never be null for a Business lead. supabase-js still returns an empty response for a nonexistent column without throwing.
+
+Why: Dylan's pasted list of eight items, expanded by his own answers into the lead/customer/estimate rework.
+Files touched: claude-code-prompt-62-lead-customer-estimate-pipeline.md (new), PROJECT-LOG.md (this entry). No code, no schema, no prod changes.
+Next step for Dylan: run prompt 62 in Claude Code. Before that, two things worth five minutes each: walk the prompt 61 estimator flow, and check whether the Places API is enabled and billing is on for key AIzaSyBUqd... in Google Cloud, since Part C is otherwise going to hand that back to you anyway.
+
+---
+
 ## [2026-07-31 MST] Prompt 61 shipped: estimator inline on the estimate page, draft-on-create, native job info editing, lead source unification and manual editing
 By: Claude Code
 
