@@ -90,6 +90,14 @@
 [functions."pec-google-calendar-pull"]
   schedule = "*/15 * * * *"
 
+# Lost-reason AI backfill (prompt 62 Part G). Nightly at 15:00 UTC = 08:00
+# MST: fills lost_reason / lost_notes on already-lost leads that have a
+# matching call and no reason yet. Never overwrites a human value (the PATCH
+# re-asserts lost_reason=is.null); every fill is tagged with a
+# lost_reason_ai lead_events row. Gated by lost_reason_ai_backfill_enabled.
+[functions."pec-lost-reason-backfill"]
+  schedule = "0 15 * * *"
+
 # SalesAsk sync: push upcoming appointments to SalesAsk as scheduled tasks
 # (event_id = our appointment id, so the rep's recording auto-attaches),
 # reconcile recent recordings (SalesAsk webhooks have NO retries, this sweep

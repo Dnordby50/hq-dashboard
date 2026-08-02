@@ -18040,11 +18040,13 @@ function wireSettingsTabs(root) {
 async function renderSettingsDrips() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days']),
+    .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days', 'lost_reason_ai_backfill_enabled']),
     { label: 'settings-drips' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const masterOn = map.drip_sending_enabled === 'true';
   const gateOn = map.drip_approval_required === 'true';
+  // Missing row = ON (the nightly function defaults the same way).
+  const lostAiOn = map.lost_reason_ai_backfill_enabled !== 'false';
   const qStart = map.drip_quiet_start || '08:00';
   const qEnd = map.drip_quiet_end || '20:00';
   const qDays = String(map.drip_quiet_days || 'mon,tue,wed,thu,fri,sat').toLowerCase().split(',').map(s => s.trim());
@@ -18091,8 +18093,23 @@ async function renderSettingsDrips() {
         <button type="button" class="pec-btn primary sm" id="setQuietSave">Save window</button>
         <span id="setQuietErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
       </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">AI lost-reason backfill: ${lostAiOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">A nightly pass fills the lost reason and notes on already-lost leads from their most recent call, when no reason was recorded. It never overwrites what a person typed, and every fill is tagged on the lead's timeline.</div>
+        </div>
+        <button type="button" class="pec-btn sm ${lostAiOn ? '' : 'primary'}" id="setLostAi">${lostAiOn ? 'Turn it OFF' : 'Turn it ON'}</button>
+      </div>
     </div>`;
   wireSettingsTabs(root);
+
+  $('setLostAi').addEventListener('click', async () => {
+    const btn = $('setLostAi'); btn.disabled = true;
+    try { await saveSetting('lost_reason_ai_backfill_enabled', lostAiOn ? 'false' : 'true'); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
 
   $('setDripMaster').addEventListener('click', async () => {
     const to = masterOn ? 'false' : 'true';
@@ -25349,6 +25366,7 @@ async function commitLeadStage(lead, toStage, extra = {}) {
   const fromStage = lead.stage;
   const patch = { stage: toStage };
   if (extra.lost_reason) patch.lost_reason = extra.lost_reason;
+  if ('lost_notes' in extra) patch.lost_notes = extra.lost_notes;
   const tsCol = LEAD_STAGE_TS[toStage];
   if (tsCol && !lead[tsCol]) patch[tsCol] = new Date().toISOString();
   // A booked estimate visit proves contact was made: a NEW lead jumping
@@ -25365,7 +25383,7 @@ async function commitLeadStage(lead, toStage, extra = {}) {
     from_stage: fromStage,
     to_stage: toStage,
     actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
-    payload: extra.lost_reason ? { lost_reason: extra.lost_reason } : {},
+    payload: extra.lost_reason ? { lost_reason: extra.lost_reason, ...(extra.lost_notes ? { lost_notes: extra.lost_notes } : {}) } : {},
   });
   if (evt.error) console.warn('[leads] stage_change event failed:', evt.error.message);
   Object.assign(lead, patch);
@@ -25465,15 +25483,35 @@ async function toggleLeadArchive(lead, onDone) {
 
 // Lost needs a reason (Dylan's conversion metrics depend on it). Mirrors the
 // openPipelineMoveModal shape: required pick, disable-while-saving, toast.
+// The SIX reasons are fixed by choice (prompt 62 Part G: no Settings surface
+// for them). lost_reason always stores one of these; free text goes to
+// lost_notes. Shared with the nightly AI backfill's classifier below.
+const LEAD_LOST_REASONS = ['Price', 'Went with competitor', 'Timing / not ready', 'No response', 'Not a fit', 'Other'];
+
+// Deterministic keyword classifier over a call summary: maps the text to the
+// closest of the six reasons. Mirrors suggestLostReason in
+// pec-lost-reason-backfill.cjs; keep the two in sync.
+function suggestLostReason(text) {
+  const t = String(text || '').toLowerCase();
+  if (/(price|expensive|cost|budget|afford|cheaper|too much|lower (bid|quote))/.test(t)) return 'Price';
+  if (/(competitor|another company|other company|someone else|went with|hired (another|someone))/.test(t)) return 'Went with competitor';
+  if (/(not ready|later|next year|next spring|timing|postpon|hold off|delay|push(ed)? (it|back))/.test(t)) return 'Timing / not ready';
+  if (/(no answer|no response|voicemail|left a message|didn'?t (pick up|answer|respond|call back)|unreachable|never heard)/.test(t)) return 'No response';
+  if (/(not a fit|out of (our |the )?(area|service)|too (small|far)|don'?t (do|offer|service)|wrong (kind|type))/.test(t)) return 'Not a fit';
+  return 'Other';
+}
+
 function openLeadLostModal(lead, onDone) {
-  const REASONS = ['Price', 'Went with competitor', 'Timing / not ready', 'No response', 'Not a fit', 'Other'];
   openModal(`
     <h3>Mark lost: ${esc(lead.full_name || 'lead')}</h3>
     <div style="font-size:.85rem;color:var(--muted);margin-bottom:12px">Why was this lead lost? This feeds the conversion-by-source numbers, so pick the closest reason.</div>
     <div class="pec-field"><label>Reason</label>
-      <select id="leadLostReason"><option value="">Pick a reason…</option>${REASONS.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
+      <select id="leadLostReason"><option value="">Pick a reason…</option>${LEAD_LOST_REASONS.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('')}</select>
     </div>
-    <div class="pec-field" id="leadLostOtherWrap" style="display:none"><label>What happened?</label><input id="leadLostOther" maxlength="200" placeholder="Short note"></div>
+    <div class="pec-field"><label>Notes <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional, any reason</span></label>
+      <textarea id="leadLostNotes" rows="3" placeholder="What happened, in your words"></textarea>
+    </div>
+    <div id="leadLostAi" style="display:none;margin-bottom:10px;padding:8px 10px;background:color-mix(in srgb,#7c3aed 8%,transparent);border-radius:8px;font-size:.78rem"></div>
     <div class="prod-msg-err" id="leadLostErr" style="min-height:16px"></div>
     <div class="pec-modal-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -25481,23 +25519,69 @@ function openLeadLostModal(lead, onDone) {
     </div>
   `, { onMount: modal => {
     const sel = modal.querySelector('#leadLostReason');
-    const otherWrap = modal.querySelector('#leadLostOtherWrap');
-    const otherEl = modal.querySelector('#leadLostOther');
+    const notesEl = modal.querySelector('#leadLostNotes');
     const errEl = modal.querySelector('#leadLostErr');
     const go = modal.querySelector('#leadLostGo');
-    sel.addEventListener('change', () => { otherWrap.style.display = sel.value === 'Other' ? '' : 'none'; });
+
+    // AI pre-fill (prompt 62 Part G item 2): the most recent call for this
+    // lead pre-selects the closest reason and pre-fills the notes with the
+    // call summary, with the source snippet + date shown. It is ONLY a
+    // suggestion: the rep can change both, and nothing saves without a human
+    // clicking Mark lost. Matching is via leads.customer_id or the last-10
+    // phone digits against from/to (pec_call_log has customer_id, NOT
+    // lead_id). Best-effort: a miss or an error just leaves the modal plain.
+    (async () => {
+      try {
+        let call = null;
+        if (lead.customer_id) {
+          const r = await supabase.from('pec_call_log').select('summary,transcript,occurred_at,direction')
+            .eq('customer_id', lead.customer_id).order('occurred_at', { ascending: false }).limit(1).maybeSingle();
+          if (!r.error && r.data) call = r.data;
+        }
+        const tail = String(lead.phone_norm || String(lead.phone || '').replace(/\D/g, '').slice(-10) || '');
+        if (!call && tail.length === 10) {
+          const r = await supabase.from('pec_call_log').select('summary,transcript,occurred_at,direction')
+            .or(`from_number.ilike.%${tail},to_number.ilike.%${tail}`)
+            .order('occurred_at', { ascending: false }).limit(1).maybeSingle();
+          if (!r.error && r.data) call = r.data;
+        }
+        if (!call) return;
+        // Prefer the stored summary; only dig into the transcript when the
+        // summary is empty (prompt 62 Part G item 5).
+        let text = String(call.summary || '').trim();
+        if (!text && call.transcript) {
+          try {
+            const t = call.transcript;
+            const parts = Array.isArray(t) ? t : (Array.isArray(t.dialogue) ? t.dialogue : []);
+            text = parts.map(p => (p && (p.content || p.text)) || '').filter(Boolean).join(' ').slice(0, 400);
+          } catch (_) { /* unreadable transcript: no suggestion */ }
+        }
+        if (!text) return;
+        const suggested = suggestLostReason(text);
+        const oneLine = text.split(/(?<=[.!?])\s+/)[0].slice(0, 200);
+        if (!sel.value) sel.value = suggested;
+        if (!notesEl.value.trim()) notesEl.value = oneLine;
+        const aiEl = modal.querySelector('#leadLostAi');
+        if (aiEl) {
+          aiEl.style.display = '';
+          aiEl.innerHTML = `<strong>Suggested from the last call</strong> (${esc(new Date(call.occurred_at).toLocaleDateString())}, ${call.direction === 'outgoing' ? 'outbound' : 'inbound'}):
+            <div style="color:var(--muted);margin-top:4px;white-space:pre-wrap">${esc(text.slice(0, 300))}${text.length > 300 ? '…' : ''}</div>
+            <div style="color:var(--muted);margin-top:4px">Reason and notes were pre-filled; change either before saving.</div>`;
+        }
+      } catch (e) { console.warn('[leads] lost-reason suggestion skipped:', e && e.message); }
+    })();
+
     go.addEventListener('click', async () => {
       errEl.textContent = '';
-      let reason = sel.value;
+      const reason = sel.value;
       if (!reason) { errEl.textContent = 'Pick a reason.'; return; }
-      if (reason === 'Other') {
-        const note = (otherEl.value || '').trim();
-        if (!note) { errEl.textContent = 'Say what happened in a few words.'; return; }
-        reason = note;
-      }
+      // Other stores 'Other' in lost_reason and the text in lost_notes; the
+      // old behavior (note text overwriting lost_reason) is gone on purpose.
+      const notes = (notesEl.value || '').trim();
+      if (reason === 'Other' && !notes) { errEl.textContent = 'Say what happened in a few words (notes).'; return; }
       go.disabled = true; go.textContent = 'Saving…';
       try {
-        await commitLeadStage(lead, 'lost', { lost_reason: reason });
+        await commitLeadStage(lead, 'lost', { lost_reason: reason, lost_notes: notes || null });
         closeModal();
         showToast('Marked lost', { ttl: 1800 });
         if (typeof onDone === 'function') onDone();
@@ -25989,6 +26073,10 @@ function leadEventHtml(ev, staffNames) {
     // Prompt 61 Part E: manual lead-source change (from the lead or customer
     // page). The record of WHY conversion-by-source moved for past periods.
     body = `Source changed from <strong>${esc(p.from || '(blank)')}</strong> to <strong>${esc(p.to || '(blank)')}</strong>${p.via === 'customer' ? ' (edited on the customer)' : ''}`;
+  } else if (ev.event_type === 'lost_reason_ai') {
+    // Nightly backfill provenance (prompt 62 Part G item 4): the reason /
+    // notes on this lead were AI-filled from a call, not typed by a human.
+    body = `AI filled the lost reason from a call: <strong>${esc(p.lost_reason || '?')}</strong>${p.lost_notes ? `<div style="font-size:.75rem;color:var(--muted);margin-top:2px">${esc(p.lost_notes)}</div>` : ''}<div style="font-size:.68rem;color:var(--muted);margin-top:2px">Source: call summary${p.call_at ? ` from ${esc(new Date(p.call_at).toLocaleDateString())}` : ''} (automatic; a human can overwrite it any time)</div>`;
   } else if (ev.event_type === 'archived') {
     body = 'Lead archived (off the board, follow-ups stopped)';
   } else if (ev.event_type === 'unarchived') {
@@ -26240,6 +26328,7 @@ async function renderLeadDetail(leadId) {
             ${contactRow('Owner', owner, null)}
             ${contactRow('Created', new Date(lead.created_at).toLocaleString(), null)}
             ${lead.lost_reason ? contactRow('Lost reason', lead.lost_reason, null) : ''}
+            ${lead.lost_notes ? contactRow('Lost notes', lead.lost_notes, null) : ''}
           </div>
           ${touchLine}
         </div>
