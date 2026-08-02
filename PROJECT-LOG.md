@@ -4,6 +4,30 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-08-02 MST] Cowork: multi-tenancy readiness assessment (no code changed)
+By: Cowork
+
+Changed: nothing. Read-only survey answering Dylan's question "how hard would it be to set this up for another company."
+
+Findings, measured not guessed:
+- No tenant model exists. 84 tables in SCHEMA.md, zero company_id / tenant_id / org_id columns. A `company` column exists on exactly three tables (admin_users default 'both', customers default 'prescott-epoxy', pec_webhook_ingest_log) and is the PEC/FTP brand flag, not a tenant key.
+- RLS is staff-wide, not tenant-scoped. supabase/policies.sql has 17 policies, mostly blanket `authenticated` / is_staff_or_admin. Nothing would separate two companies inside one database.
+- Single stack. One Supabase project, one Netlify site, 30 distinct process.env vars in netlify/functions plus 3 VITE_ vars, all single-valued. All 63 functions use the service role key, which bypasses RLS entirely, so each is a potential cross-tenant leak in any shared-instance design.
+- Brand config partly exists already: pec_brand_identity (18 columns: logo, colors, business name, address, license, invoice copy) and the settings table (66 keys). That is the seed of a white-label layer.
+- Hardcoded brand strings in index.html: PEC 102, FTP 43, "Prescott Epoxy" 34, "Finishing Touch" 11, plus the three Google Sheet IDs.
+- Trade-specific depth: index.html mentions flake 312x, basecoat 208x, topcoat 121x, quartz 46x, moisture 25x, MOHS 22x. Catalog carries 182 products, 24 recipe slots, 11 system types, 21 colors, 25 lead sources. production/calculator.js is 938 lines of epoxy spread-rate math. A non-epoxy trade cannot reuse this half.
+- Scale for reference: index.html 39,741 lines, 148 migrations, 953 commits since 2026-04-15.
+
+Two paths were costed for Dylan in chat: (A) clone-per-company, separate Supabase + Netlify + third-party accounts, roughly 40 to 80 hours for the first one if the target is another epoxy contractor, plus a permanent two-fork maintenance tax; (B) true multi-tenant, company_id on ~84 tables, full RLS rewrite, per-tenant secrets, webhook routing, 3 to 6 months.
+
+Highest-value de-risking step identified, not yet done: verify that supabase/migrations replays cleanly into an empty database and produces today's schema. Many migrations were applied live via MCP rather than by replay, so a fresh-database build is currently unproven. Every clone plan is blocked on that being true.
+
+Why: Dylan asked a scoping question before committing to anything.
+Files touched: PROJECT-LOG.md (this entry) only.
+Next steps: Dylan decides between one-off clone and product before any build work starts. If he wants the migration replay test, that is a standalone Claude Code task.
+
+---
+
 ## [2026-08-01 MST] Prompt 62 shipped: name model, archive, estimate-start picker, pipeline drafts + estimate cards, lost notes + AI, estimator layout, global search, and a deploy unblock
 
 By: Claude Code
