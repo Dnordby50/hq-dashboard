@@ -13040,11 +13040,16 @@ async function renderMetrics() {
 
   // 4. Open pipeline by stage (all open leads, any date) + the cached AI read.
   const openLeads = salesLeads.filter(l => l.stage !== 'accepted' && l.stage !== 'lost');
-  const pipeByStage = LEAD_STAGES.filter(s => s.key !== 'accepted' && s.key !== 'lost').map(s => {
-    const list = openLeads.filter(l => l.stage === s.key);
-    return { title: s.title, n: list.length, value: list.reduce((sum, l) => sum + (leadValueMap[l.id] || 0), 0) };
+  // Prompt 62 Part F item 6: Lost is IN the widget so the funnel shows where
+  // deals die. Accepted stays excluded: this table is titled open pipeline
+  // and its total feeds open_pipeline in the AI fact block, so folding wins
+  // into it is not trivially correct. Lost rows are likewise kept OUT of the
+  // Open total line below.
+  const pipeByStage = LEAD_STAGES.filter(s => s.key !== 'accepted').map(s => {
+    const list = (s.key === 'lost' ? salesLeads : openLeads).filter(l => l.stage === s.key);
+    return { key: s.key, title: s.title, n: list.length, value: list.reduce((sum, l) => sum + (leadValueMap[l.id] || 0), 0) };
   });
-  const openPipeValue = pipeByStage.reduce((s, r) => s + r.value, 0);
+  const openPipeValue = pipeByStage.filter(r => r.key !== 'lost').reduce((s, r) => s + r.value, 0);
 
   // Conversion-rate chart rows: sources with leads in the window, as plotted
   // by the horizontal bar chart above the tables (top 8; the tables below
@@ -13204,7 +13209,7 @@ async function renderMetrics() {
     speed_to_lead: { median_minutes: rnd(s2lMedian), leads_contacted: s2lMins.length, leads_created_in_window: leadsInWin.length },
     conversion_by_source: convBySource.map(([name, g]) => ({ source: name, leads: g.leads, accepted: g.accepted, accepted_value: rnd(g.value) })),
     conversion_by_campaign: convByCampaign.map(([name, g]) => ({ campaign: name, leads: g.leads, accepted: g.accepted, accepted_value: rnd(g.value) })),
-    open_pipeline: { total_leads: openLeads.length, total_value: rnd(openPipeValue), by_stage: pipeByStage.map(r => ({ stage: r.title, leads: r.n, value: rnd(r.value) })) },
+    open_pipeline: { total_leads: openLeads.length, total_value: rnd(openPipeValue), by_stage: pipeByStage.filter(r => r.key !== 'lost').map(r => ({ stage: r.title, leads: r.n, value: rnd(r.value) })) },
     outbound_touches: { avg_touches_to_win: rnd(avgTouchesToWin), avg_touches_to_estimate_out: rnd(avgTouchesToEst), open_leads_never_contacted: openNeverContacted },
     drip_performance: dripKindRows.map(r => ({ sequence: KIND_LABEL[r.kind], active_now: r.active, sent: r.sent, previews: r.dryRun, replies: r.replied, converted: r.converted, ended: r.endedN })),
   };
@@ -25206,8 +25211,11 @@ async function loadLeadsData() {
   // showing a false "Not contacted" when the logs simply failed to load.
   const [leadsRes, estRes, srcRes, staffNames, touchLogs, dripRes] = await withFreshSession(() => Promise.all([
     supabase.from('leads').select('*').is('deleted_at', null).order('created_at', { ascending: false }),
-    supabase.from('estimates').select('id,lead_id,price,status,created_at')
-      .is('deleted_at', null).not('lead_id', 'is', null).order('created_at', { ascending: false }),
+    // Prompt 62 Part F: the board now needs estimate rows twice over: the
+    // lead value map (lead-linked rows, as before) AND the estimate cards
+    // (rows with NO lead), so the lead_id-not-null filter moved client-side.
+    supabase.from('estimates').select('id,lead_id,customer_id,price,status,created_at,updated_at,sent_at,estimate_number,customer_name,customer_phone')
+      .is('deleted_at', null).order('created_at', { ascending: false }),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
     qoStaffNames(),
     loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
@@ -25232,7 +25240,15 @@ async function loadLeadsData() {
   }
   const contactStats = touchLogs ? leadContactStats(leads, touchLogs) : null;
   const dripActive = (dripRes && !dripRes.error && dripRes.data) ? new Set(dripRes.data.map(r => r.lead_id)) : new Set();
-  const valueMap = leadValueMapFrom(estRes.error ? [] : estRes.data || []);
+  const allEstimates = estRes.error ? [] : estRes.data || [];
+  // Value map input stays lead-linked rows only: leadValueMapFrom keys by
+  // lead_id, and a null key would collapse every no-lead estimate onto one.
+  const valueMap = leadValueMapFrom(allEstimates.filter(e => e.lead_id));
+  // Estimate cards (prompt 62 Part F): rows with NO lead render as their own
+  // card shape; rows WITH a lead ride their lead card (Draft chip below), so
+  // nothing ever gets two cards.
+  const boardEstimates = allEstimates.filter(e => !e.lead_id);
+  const leadsWithDraft = new Set(allEstimates.filter(e => e.lead_id && e.status === 'draft' && !e.sent_at).map(e => e.lead_id));
   // Source options: schema tokens + anything already in the data + the active
   // ONE vocabulary (prompt 61 Part D): the managed pec_lead_sources names
   // drive the pickers, and values already present in the data ride along so
@@ -25240,7 +25256,7 @@ async function loadLeadsData() {
   const sources = [];
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -25284,6 +25300,7 @@ function leadCardHtml(lead) {
       ${leadScoreBadge(lead)}
       ${apptChip}
       ${state.leadsData && state.leadsData.dripActive && state.leadsData.dripActive.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#7c3aed 14%,transparent);color:#7c3aed" title="Active drip: automatic follow-ups are running for this lead">Drip</span>' : ''}
+      ${state.leadsData && state.leadsData.leadsWithDraft && state.leadsData.leadsWithDraft.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#64748b 14%,transparent);color:#475569" title="A draft estimate is in progress for this lead (it rides this card; drafts with no lead get their own card in the Drafts column)">Draft</span>' : ''}
     </div>
     ${lead.campaign ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${esc(lead.campaign)}</div>` : ''}
     ${lead.phone ? `<div style="font-size:.76rem;margin-top:5px">${pecPhoneActionsHtml(lead.phone, { name: lead.full_name || '', isLead: true, customerId: lead.customer_id || null })}</div>` : ''}
@@ -25298,6 +25315,29 @@ function leadCardHtml(lead) {
     ${/* estimate_scheduled deliberately excluded: that lead already has an appointment; a second one is a deliberate trip through the Appointments screen */''}
     ${['new', 'contacted'].includes(lead.stage) && !lead.archived_at ? `<div style="margin-top:8px"><button type="button" class="pec-btn ghost sm" data-schedule-est="${esc(lead.id)}" style="width:100%">Schedule Estimate</button></div>` : ''}
     <div style="margin-top:6px;text-align:right"><button type="button" class="pec-btn ghost sm" data-archive-lead="${esc(lead.id)}" style="font-size:.68rem;padding:2px 8px;color:var(--rd-muted,#6b7280)">${lead.archived_at ? 'Unarchive' : 'Archive'}</button></div>
+  </div>`;
+}
+
+// The board's SECOND card shape (prompt 62 Part F): an estimate with no lead.
+// Not draggable: its column follows the estimate's own status, and the drop
+// handler ignores it anyway; the tooltip says why. Click opens the estimate.
+function estimateCardHtml(est) {
+  const price = Number(est.price) > 0 ? Number(est.price) : null;
+  return `<div class="pipeline-card est-card" data-est-card="${esc(est.id)}"
+      title="This card follows the estimate's own status (send, present, accept). Open the estimate to move it."
+      style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #64748b;color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,20,32,.04)">
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
+      <strong style="font-size:.9rem;line-height:1.2">${esc(est.customer_name || '(no name)')}</strong>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+      <span class="pec-badge" style="--pec-badge-bg:#334155">Estimate</span>
+      ${estStatusChip(est.status)}
+    </div>
+    <div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${est.estimate_number != null ? 'EST-' + esc(est.estimate_number) : '(unnumbered)'}</div>
+    ${price ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(price)}</div>` : ''}
+    <div style="display:flex;justify-content:space-between;gap:6px;margin-top:8px;font-size:.7rem;color:var(--rd-muted,#6b7280)">
+      <span>created ${esc(fmtRelativeTime(est.created_at))}</span>
+    </div>
   </div>`;
 }
 
@@ -25705,7 +25745,41 @@ async function renderLeads() {
   const sel = (val, cur) => (val === cur ? 'selected' : '');
   const optList = (vals, cur, labelFor) => `<option value="">All</option>` + vals.map(v => `<option value="${esc(v)}" ${sel(v, cur)}>${esc(labelFor ? labelFor(v) : v)}</option>`).join('');
 
-  const columnsHtml = LEAD_STAGES.map(col => {
+  // ---- Estimate cards (prompt 62 Part F) ------------------------------------
+  // The board renders TWO card shapes: lead cards (as always) and estimate
+  // cards for estimates with NO lead. An estimate card's column follows the
+  // ESTIMATE'S OWN status, never a drag. Drafts is a derived column (status
+  // 'draft', sent_at null), NOT a leads.stage value.
+  const EST_CARD_COLUMN = { sent: 'estimate_sent', change_requested: 'presented', signed: 'accepted', accepted: 'accepted', rejected: 'lost', lost: 'lost' };
+  const estColOf = e => e.status === 'draft' ? (e.sent_at ? 'estimate_sent' : 'drafts') : (EST_CARD_COLUMN[e.status] || null);
+  const estCards = (f.archived === 'archived' ? [] : (data.boardEstimates || [])).filter(e => {
+    // Attribute filters an estimate card cannot answer (source, campaign,
+    // owner) EXCLUDE it: a filtered board shows only cards the filter can
+    // actually vouch for, never a card that merely lacks the field.
+    if (f.source || f.campaign || f.owner) return false;
+    const day = String(e.created_at || '').slice(0, 10);
+    if (f.from && day < f.from) return false;
+    if (f.to && day > f.to) return false;
+    if (qNorm) {
+      const num = e.estimate_number != null ? String(e.estimate_number) : '';
+      const hitNum = !!num && (num.includes(qNorm.replace(/^est-?/i, '')) || ('est-' + num).includes(qNorm));
+      const hitName = (e.customer_name || '').toLowerCase().includes(qNorm);
+      const hitPhone = !!qDigits && String(e.customer_phone || '').replace(/\D/g, '').includes(qDigits);
+      if (!hitNum && !hitName && !hitPhone) return false;
+    }
+    return !!estColOf(e);
+  });
+  // Open value counts the no-lead estimate cards in open columns too, same
+  // exclusion rule as leads (Accepted and Lost stay out).
+  const openEstCardValue = estCards.filter(e => ['drafts', 'estimate_sent', 'presented'].includes(estColOf(e)))
+    .reduce((s, e) => s + (Number(e.price) > 0 ? Number(e.price) : 0), 0);
+
+  const BOARD_COLUMNS = [
+    ...LEAD_STAGES.slice(0, 3),
+    { key: 'drafts', title: 'Drafts' },   // between Estimate Scheduled and Estimate Sent
+    ...LEAD_STAGES.slice(3),
+  ];
+  const columnsHtml = BOARD_COLUMNS.map(col => {
     const colRows = rows.filter(l => l.stage === col.key);
     // Default: New sorts OLDEST first (the longest-waiting lead is the most
     // urgent); Estimate Scheduled sorts by appointment start ascending
@@ -25723,17 +25797,32 @@ async function renderLeads() {
     colRows.sort(f.sort === 'score'
       ? (a, b) => ((b.score ?? -1) - (a.score ?? -1)) || defaultCmp(a, b)
       : defaultCmp);
-    const colValue = colRows.reduce((s, l) => s + (data.valueMap[l.id] || 0), 0);
-    const body = colRows.length
-      ? colRows.map(leadCardHtml).join('')
-      : `<div class="pec-empty" style="font-size:.8rem;padding:16px 8px">No leads</div>`;
+    // Estimate cards in this column. Drafts: oldest first (the longest-idle
+    // draft is the most likely to be forgotten); elsewhere newest activity
+    // first, matching the lead default. They render AFTER lead cards, which
+    // also satisfies the score sort (an estimate card has no score, and
+    // unscored sorts last).
+    const colEsts = estCards.filter(e => estColOf(e) === col.key).sort(col.key === 'drafts'
+      ? (a, b) => String(a.created_at).localeCompare(String(b.created_at))
+      : (a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+    const estValue = colEsts.reduce((s, e) => s + (Number(e.price) > 0 ? Number(e.price) : 0), 0);
+    const colValue = colRows.reduce((s, l) => s + (data.valueMap[l.id] || 0), 0) + estValue;
+    const body = (colRows.length || colEsts.length)
+      ? colRows.map(leadCardHtml).join('') + colEsts.map(estimateCardHtml).join('')
+      : `<div class="pec-empty" style="font-size:.8rem;padding:16px 8px">${col.key === 'drafts' ? 'No drafts' : 'No leads'}</div>`;
+    // Drafts footer: when every card in it is priceless, a $0 total reads as
+    // a bug; the count is the honest number (prompt 61 kept null-price drafts
+    // out of the value map, and that stays).
+    const footer = col.key === 'drafts' && colValue === 0
+      ? `${colEsts.length + colRows.length} draft${colEsts.length + colRows.length === 1 ? '' : 's'}`
+      : invUSD0(colValue);
     return `<div class="pipeline-col lead-col" data-stage="${col.key}" style="flex:0 0 260px;display:flex;flex-direction:column;background:var(--rd-soft,#f5f6f8);color:var(--rd-ink,#0f1420);border-radius:10px;padding:10px;max-height:calc(100vh - 230px)">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <strong style="font-size:.82rem;text-transform:uppercase;letter-spacing:.5px">${esc(col.title)}</strong>
-        <span class="pec-badge" style="--pec-badge-bg:#475569">${colRows.length}</span>
+        <span class="pec-badge" style="--pec-badge-bg:#475569">${colRows.length + colEsts.length}</span>
       </div>
       <div class="pipeline-col-body" style="overflow-y:auto;flex:1">${body}</div>
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--rd-line,#e6e8ec);font-size:.8rem;font-weight:600">${invUSD0(colValue)}</div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--rd-line,#e6e8ec);font-size:.8rem;font-weight:600">${footer}</div>
     </div>`;
   }).join('');
 
@@ -25743,11 +25832,11 @@ async function renderLeads() {
       <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
         <div style="display:flex;gap:12px;flex-wrap:wrap">
           <div class="pec-stat" style="min-width:150px"><div class="pec-stat-label">Open leads</div><div class="pec-stat-val">${open.length}</div></div>
-          <div class="pec-stat" style="min-width:170px"><div class="pec-stat-label">Open pipeline value</div><div class="pec-stat-val">${invUSD0(openValue)}</div></div>
+          <div class="pec-stat" style="min-width:170px"><div class="pec-stat-label">Open pipeline value</div><div class="pec-stat-val">${invUSD0(openValue + openEstCardValue)}</div></div>
         </div>
         <button type="button" class="pec-btn primary" id="leadNewBtn">+ New Lead</button>
       </div>
-      <div style="color:var(--muted);font-size:.78rem;margin-top:6px">Total leads: ${rows.length} shown${rows.length === data.leads.length ? '' : ` of ${data.leads.length}`} · value is each lead's latest estimate; open value excludes Accepted and Lost</div>
+      <div style="color:var(--muted);font-size:.78rem;margin-top:6px">Total leads: ${rows.length} shown${rows.length === data.leads.length ? '' : ` of ${data.leads.length}`} · value is each lead's latest estimate plus no-lead estimate cards; open value excludes Accepted and Lost</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:12px 0">
         <div class="pec-field" style="margin:0"><label>Source</label><select id="leadFilterSource">${optList(data.sources, f.source, leadSourceLabel)}</select></div>
         <div class="pec-field" style="margin:0"><label>Campaign</label><select id="leadFilterCampaign">${optList(campaigns, f.campaign)}</select></div>
@@ -25814,9 +25903,22 @@ async function renderLeads() {
     colEl.addEventListener('drop', e => {
       e.preventDefault();
       if (!draggedId) return;
+      // Drafts is not a leads.stage value (prompt 62 Part F): a lead card
+      // cannot be dropped there, and the CHECK constraint would reject it
+      // anyway. Say so instead of failing quietly.
+      if (colEl.dataset.stage === 'drafts') {
+        showToast('Drafts holds started estimates, not leads. Start an estimate for this lead instead.', { ttl: 3500 });
+        return;
+      }
       moveLeadStage(draggedId, colEl.dataset.stage);
     });
   });
+
+  // Estimate cards open their estimate; they never drag (prompt 62 Part F).
+  root.querySelectorAll('[data-est-card]').forEach(card => card.addEventListener('click', () => {
+    state.openEstimateId = card.dataset.estCard;
+    switchView('estimates');
+  }));
 
   // Schedule Estimate straight off the card (prompt 37). stopPropagation so
   // the card's own click handler doesn't also open the detail pane.
