@@ -4,6 +4,36 @@ Newest entries on top. Append only. Never edit or delete past entries. If a prev
 
 ---
 
+## [2026-08-01 MST] Cowork: Google Places was a two-character typo in the API key, not a disabled API
+By: Cowork
+
+Changed: netlify.toml only (index.html was already corrected by the in-flight Claude Code prompt-62 run).
+
+Diagnosed live from https://prescottepoxy.netlify.app via the browser, not by inspection. The repo key returned `400 API_KEY_INVALID` from Places API (New), Maps JavaScript, Geocoding AND Sheets: every Google API, same reason. That rules out the two theories in the prompt-62 Part C write-up (`SERVICE_DISABLED` would mean an API is off, `API_KEY_HTTP_REFERRER_BLOCKED` would mean the referrer list is wrong). `API_KEY_INVALID` means the key string does not exist.
+
+Read the live key out of the Google Cloud console DOM (project `cowork-automations`, key "New Google Sheets - Dashboard") and diffed it against the repo:
+
+- live: `AIzaSyBUqdRk4e**I**iEoc0vXK7XZz-4TiGdxnoG**l**Y`
+- repo: `AIzaSyBUqdRk4e**l**iEoc0vXK7XZz-4TiGdxnoG**I**Y`
+
+Two characters, a capital `I` and a lowercase `l`, swapped in two positions. A transcription error. The key was never dead. Google Cloud already had Maps JavaScript API, Places API (New) and Google Sheets API enabled on it, and the referrer list already covered both `https://prescottepoxy.netlify.app/*` and `https://hq-prescott.netlify.app/*`. Nothing in Google Cloud needed changing.
+
+Verified with the corrected key from the real origin: `places:autocomplete` returned 200 with "1234 N Montezuma St, Prescott, AZ, USA".
+
+netlify.toml changes: corrected `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES`, and added `VITE_GOOGLE_MAPS_KEY` to `[build.environment]`. The estimator's Places has never worked because that var was never set; Vite inlines it at BUILD time, so **the estimator needs a redeploy** before its address autocomplete works.
+
+Two things found in passing that are NOT fixed:
+1. `CONFIG.ELEVENLABS_API_KEY` (index.html:2645) is a live secret shipped in plaintext to every browser. Unlike a referrer-restricted browser key, that one is genuinely exposed. Rotate it and move it server-side.
+2. `CONFIG.SHEETS_API_KEY` (index.html:2632) is declared and never referenced anywhere in the client. Dead config.
+
+Also noted: the `cowork-automations` project is on a Google Cloud free trial, $300 credit with 79 days remaining as of today. Maps Platform usage bills against that, then against a real card once the trial converts.
+
+Why: Dylan asked for the Places fix to be done, not described.
+Files touched: netlify.toml, PROJECT-LOG.md (this entry).
+Next step for Dylan: redeploy Netlify so the estimator picks up VITE_GOOGLE_MAPS_KEY, then confirm suggestions appear in both the dashboard New lead modal and the estimator Address 1 field.
+
+---
+
 ## [2026-08-01 MST] Cowork: prompt 62 written (lead/customer name model, estimate-start rework, pipeline drafts + estimate cards, lost reasons, global search, estimator layout)
 By: Cowork
 

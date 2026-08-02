@@ -13,6 +13,11 @@
 [build.environment]
   # Pin Node so the estimator build is reproducible on Netlify (Vite 5 needs 18+).
   NODE_VERSION = "20"
+  # Build-time key for the estimator PWA's Google Places address autocomplete
+  # (apps/estimator/src/lib/places.ts reads import.meta.env.VITE_GOOGLE_MAPS_KEY).
+  # Same referrer- and API-restricted browser key the dashboard uses; Vite inlines
+  # it at build time, so the estimator needs a REDEPLOY after any key change.
+  VITE_GOOGLE_MAPS_KEY = "AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY"
   # Tell Netlify's secret scanner that this Google API key value is intentional.
   # The key is used client-side for BOTH the Google Sheets proxy and Google Maps
   # (index.html around lines 2612 and 19368). It is safe to ship in the client
@@ -22,7 +27,7 @@
   # NOTE: after any domain rename, update the referrer restriction in Google Cloud
   # Console or Maps/Sheets calls from the new domain will be rejected (Dylan handoff).
   # If the key is rotated, update every occurrence in index.html AND this value.
-  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY"
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY"
 
 [functions]
   node_bundler = "esbuild"
