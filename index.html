@@ -5085,7 +5085,7 @@ if (document.readyState === 'loading') {
     main.id = 'rdMain';
     main.innerHTML = `
       <div id="rdTopbar">
-        <input id="rdSearch" placeholder="Search jobs by customer, address, phone…" />
+        <input id="rdSearch" placeholder="Search jobs, estimates, leads, customers…" />
         <button class="rd-icon-btn" id="rdBtnRefresh" title="Refresh">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
@@ -9273,12 +9273,20 @@ async function renderJobs() {
 }
 
 // ============================================================
-// Global job search (the topbar #rdSearch box). Lives in this module so it can
-// reach supabase / state / switchView; the RD-shell handler (a separate script
-// block, classic scope) just forwards keystrokes to window.pecJobSearchInput.
-// Backed by the search_jobs RPC (pg_trgm, typo-tolerant). If that function is
-// not deployed yet it returns a PostgREST missing-function error, so we fall
-// back to substring-filtering the already-loaded jobs and never regress.
+// GLOBAL search (prompt 62 Part A; the topbar #rdSearch box). One box, four
+// record types: Jobs, Estimates, Leads, Customers, grouped in that order,
+// capped at 5 per group with a "+N more" line. The topbar is part of the
+// persistent RD shell above every tab and view (audited: nothing hides or
+// replaces it; Ordering/Catalog only swap the CONTENT roots beneath it), so
+// the box is on every page by construction. Lives in this module so it can
+// reach supabase / state / switchView; the RD-shell handler (a separate
+// script block, classic scope) just forwards keystrokes to
+// window.pecJobSearchInput. Jobs stay backed by the search_jobs RPC
+// (pg_trgm, typo-tolerant, unchanged match fields) with the local fallback;
+// the other three types are direct PostgREST ilike queries. The in-list
+// search boxes (pecEstSearch, pecCustSearch, costSearch, the leads board
+// search, pecEmailLogSearch) are DELIBERATELY kept: they filter a visible
+// table; this box jumps to a record. Different jobs.
 // ============================================================
 let _jobSearchTimer = null;
 let _jobSearchSeq = 0;   // monotonic; lets a newer query discard a slower one
@@ -9307,32 +9315,136 @@ function hideJobSearchResults() {
   if (dd) { dd.style.display = 'none'; dd.innerHTML = ''; }
 }
 
-function renderJobSearchResults(rows, q) {
+// or() ilike patterns break on commas/parens/percent; strip them rather than
+// trying to escape PostgREST's syntax characters.
+function gsSanitize(q) { return String(q || '').replace(/[%,()*\\]/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+async function gsSearchEstimates(q) {
+  const s = gsSanitize(q);
+  if (!s) return { rows: [], count: 0 };
+  const parts = [`customer_name.ilike.%${s}%`, `customer_address.ilike.%${s}%`];
+  const digits = s.replace(/\D/g, '');
+  if (digits.length >= 4) parts.push(`customer_phone.ilike.%${digits}%`);
+  // Accept both 102026 and EST-102026 for the number.
+  const numTok = s.replace(/^est-?/i, '');
+  if (/^\d+$/.test(numTok)) parts.push(`estimate_number.eq.${numTok}`);
+  const r = await supabase.from('estimates')
+    .select('id,estimate_number,status,price,customer_name,customer_address,created_at', { count: 'exact' })
+    .is('deleted_at', null).or(parts.join(','))
+    .order('created_at', { ascending: false }).limit(5);
+  if (r.error) { console.warn('[search] estimates:', r.error.message); return { rows: [], count: 0 }; }
+  return { rows: r.data || [], count: r.count || 0 };
+}
+
+async function gsSearchLeads(q) {
+  const s = gsSanitize(q);
+  if (!s) return { rows: [], count: 0 };
+  const parts = [`full_name.ilike.%${s}%`, `business_name.ilike.%${s}%`, `first_name.ilike.%${s}%`, `last_name.ilike.%${s}%`, `email.ilike.%${s}%`];
+  const digits = s.replace(/\D/g, '');
+  if (digits.length >= 4) parts.push(`phone.ilike.%${digits}%`);
+  const r = await supabase.from('leads')
+    .select('id,full_name,business_name,stage,phone,email,archived_at', { count: 'exact' })
+    .is('deleted_at', null).or(parts.join(','))
+    .order('created_at', { ascending: false }).limit(5);
+  if (r.error) { console.warn('[search] leads:', r.error.message); return { rows: [], count: 0 }; }
+  return { rows: r.data || [], count: r.count || 0 };
+}
+
+async function gsSearchCustomers(q) {
+  const s = gsSanitize(q);
+  if (!s) return { rows: [], count: 0 };
+  const parts = [`name.ilike.%${s}%`, `company_name.ilike.%${s}%`, `first_name.ilike.%${s}%`, `last_name.ilike.%${s}%`, `email.ilike.%${s}%`];
+  const digits = s.replace(/\D/g, '');
+  if (digits.length >= 4) parts.push(`phone.ilike.%${digits}%`);
+  const r = await supabase.from('customers')
+    .select('id,name,company_name,first_name,last_name,email,phone', { count: 'exact' })
+    .or(parts.join(','))
+    .order('name').limit(5);
+  if (r.error) { console.warn('[search] customers:', r.error.message); return { rows: [], count: 0 }; }
+  return { rows: r.data || [], count: r.count || 0 };
+}
+
+function renderGlobalSearchResults(res, q) {
   const dd = ensureJobSearchDropdown();
   if (!dd) return;
-  if (!rows.length) {
+  const { jobs, estimates, leads, customers } = res;
+  const any = jobs.length || estimates.rows.length || leads.rows.length || customers.rows.length;
+  if (!any) {
     dd.innerHTML = `<div class="rd-search-empty">No matches for "${esc(q)}"</div>`;
     dd.style.display = 'block';
     return;
   }
-  dd.innerHTML = rows.map(r => `
-    <button class="rd-search-row" data-job-id="${esc(r.job_id)}">
+  const header = t => `<div style="padding:8px 12px 4px;font-size:.62rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--rd-muted,#6b7280)">${t}</div>`;
+  const more = (n, act) => n > 0 ? `<button class="rd-search-row" data-gs-more="${act}" style="font-size:.75rem;color:var(--rd-accent,#D8531C)">+${n} more</button>` : '';
+  const jobRow = r => `
+    <button class="rd-search-row" data-gs-job="${esc(r.job_id)}">
       <span class="rd-search-row-top">
         <span class="rd-search-name">${esc(r.customer_name || '—')}</span>
         <span class="pec-badge ${esc(r.status || '')}">${esc((r.status || '').replace('_',' ')) || '—'}</span>
         <span class="rd-search-price">${fmtMoney(r.price)}</span>
       </span>
       <span class="rd-search-row-sub">${esc(r.address || 'No address')}${r.phone ? ' · ' + esc(r.phone) : ''} · ${fmtDate(r.created_at)}</span>
-    </button>`).join('');
+    </button>`;
+  const jobsShown = dd.dataset.gsJobsExpanded === q ? jobs : jobs.slice(0, 5);
+  const html = [
+    jobs.length ? header('Jobs') + jobsShown.map(jobRow).join('')
+      // Jobs have no in-list text filter to hand the query to (this box WAS
+      // the jobs search), so +N more expands the group here instead.
+      + (jobs.length > jobsShown.length ? more(jobs.length - jobsShown.length, 'jobs') : '') : '',
+    estimates.rows.length ? header('Estimates') + estimates.rows.map(r => `
+      <button class="rd-search-row" data-gs-est="${esc(r.id)}">
+        <span class="rd-search-row-top">
+          <span class="rd-search-name">${r.estimate_number != null ? 'EST-' + esc(r.estimate_number) : '(unnumbered)'} · ${esc(r.customer_name || '(no name)')}</span>
+          ${estStatusChip(r.status)}
+          <span class="rd-search-price">${fmtMoney(r.price)}</span>
+        </span>
+        <span class="rd-search-row-sub">${esc(r.customer_address || 'No address')}</span>
+      </button>`).join('') + more(estimates.count - estimates.rows.length, 'estimates') : '',
+    leads.rows.length ? header('Leads') + leads.rows.map(r => `
+      <button class="rd-search-row" data-gs-lead="${esc(r.id)}">
+        <span class="rd-search-row-top">
+          <span class="rd-search-name">${esc(r.full_name || '(no name)')}</span>
+          <span class="pec-badge" style="--pec-badge-bg:#475569">${esc(titleCaseValue(r.stage))}</span>
+          ${r.archived_at ? '<span class="pec-badge" style="--pec-badge-bg:#64748b">Archived</span>' : ''}
+        </span>
+        <span class="rd-search-row-sub">${esc([r.phone ? qoFmtPhone(r.phone) : null, r.email].filter(Boolean).join(' · ') || '')}</span>
+      </button>`).join('') + more(leads.count - leads.rows.length, 'leads') : '',
+    customers.rows.length ? header('Customers') + customers.rows.map(r => `
+      <button class="rd-search-row" data-gs-cust="${esc(r.id)}">
+        <span class="rd-search-row-top">
+          <span class="rd-search-name">${esc(r.company_name || [r.first_name, r.last_name].filter(Boolean).join(' ') || r.name || '(no name)')}</span>
+        </span>
+        <span class="rd-search-row-sub">${esc([r.phone, r.email].filter(Boolean).join(' · ') || '')}</span>
+      </button>`).join('') + more(customers.count - customers.rows.length, 'customers') : '',
+  ].join('');
+  dd.innerHTML = html;
   dd.style.display = 'block';
-  dd.querySelectorAll('.rd-search-row').forEach(btn => btn.addEventListener('click', () => {
-    const id = btn.dataset.jobId;
-    hideJobSearchResults();
-    const input = document.getElementById('rdSearch');
-    if (input) input.value = '';
-    state.openJobId = id;
-    state.view = 'jobs';
-    switchView('jobs');   // renderJobs sees state.openJobId and delegates to renderJobDetail
+  dd.style.maxHeight = '70vh';
+  dd.style.overflowY = 'auto';
+
+  const go = (fn) => { hideJobSearchResults(); const input = document.getElementById('rdSearch'); if (input) input.value = ''; fn(); };
+  dd.querySelectorAll('[data-gs-job]').forEach(b => b.addEventListener('click', () => go(() => {
+    state.openJobId = b.dataset.gsJob; state.view = 'jobs'; switchView('jobs');
+  })));
+  dd.querySelectorAll('[data-gs-est]').forEach(b => b.addEventListener('click', () => go(() => {
+    state.openEstimateId = b.dataset.gsEst; switchView('estimates');
+  })));
+  dd.querySelectorAll('[data-gs-lead]').forEach(b => b.addEventListener('click', () => go(() => {
+    state.openLeadId = b.dataset.gsLead; switchView('leads');
+  })));
+  dd.querySelectorAll('[data-gs-cust]').forEach(b => b.addEventListener('click', () => go(() => {
+    state.openCustomerId = b.dataset.gsCust; switchView('customers');
+  })));
+  // "+N more" hands the query to that type's FULL list view, filtered (the
+  // in-list boxes those views already have). Jobs expand in place instead.
+  dd.querySelectorAll('[data-gs-more]').forEach(b => b.addEventListener('click', () => {
+    const kind = b.dataset.gsMore;
+    if (kind === 'jobs') { dd.dataset.gsJobsExpanded = q; renderGlobalSearchResults(res, q); return; }
+    go(() => {
+      if (kind === 'estimates') { state.openEstimateId = null; state.estimatesSearch = q; switchView('estimates'); }
+      else if (kind === 'leads') { state.openLeadId = null; state.leadsFilters.q = q; switchView('leads'); }
+      else if (kind === 'customers') { state.openCustomerId = null; state.customersSearch = q; state.customersPage = 1; switchView('customers'); }
+    });
   }));
 }
 
@@ -9349,32 +9461,45 @@ function localJobFallback(q) {
   }));
 }
 
-async function runJobSearch(raw) {
-  const q = (raw || '').trim();
-  if (q.length < 2) { hideJobSearchResults(); return; }
-  const seq = ++_jobSearchSeq;
+async function gsSearchJobs(q) {
   try {
     const { data, error } = await withFreshSession(() => supabase.rpc('search_jobs', { q, lim: 20 }), { label: 'search_jobs' });
-    if (seq !== _jobSearchSeq) return;   // superseded by a newer keystroke
     if (error) {
       const code = error.code || '';
       const missing = code === 'PGRST202' || code === '42883' || /search_jobs/.test(error.message || '');
-      if (missing) { renderJobSearchResults(localJobFallback(q), q); return; }   // RPC not deployed yet
-      hideJobSearchResults();
-      return;
+      return missing ? localJobFallback(q) : [];   // RPC not deployed yet -> degrade
     }
-    renderJobSearchResults(data || [], q);
-  } catch (err) {
-    if (seq !== _jobSearchSeq) return;
-    renderJobSearchResults(localJobFallback(q), q);   // network/wedge -> degrade, don't crash
+    return data || [];
+  } catch (_) {
+    return localJobFallback(q);   // network/wedge -> degrade, don't crash
   }
 }
 
+async function runGlobalSearch(raw) {
+  const q = (raw || '').trim();
+  if (q.length < 2) { hideJobSearchResults(); return; }
+  const seq = ++_jobSearchSeq;
+  const dd = ensureJobSearchDropdown();
+  if (dd) delete dd.dataset.gsJobsExpanded;
+  // Four parallel queries; the seq guard is the cancellation: a stale result
+  // set is DISCARDED wholesale, so slow responders can never paint a stale
+  // group over a fresh one (prompt 62 Part A item 7).
+  const [jobs, estimates, leads, customers] = await Promise.all([
+    gsSearchJobs(q),
+    gsSearchEstimates(q),
+    gsSearchLeads(q),
+    gsSearchCustomers(q),
+  ]);
+  if (seq !== _jobSearchSeq) return;   // superseded by a newer keystroke
+  renderGlobalSearchResults({ jobs, estimates, leads, customers }, q);
+}
+
 // Entry point the RD-shell input handler forwards to. Debounced 250ms (matches
-// the customers search).
+// the customers search). Name kept from the jobs-only era so the shell
+// forwarder needs no change.
 window.pecJobSearchInput = (raw) => {
   clearTimeout(_jobSearchTimer);
-  _jobSearchTimer = setTimeout(() => runJobSearch(raw), 250);
+  _jobSearchTimer = setTimeout(() => runGlobalSearch(raw), 250);
 };
 
 // ============================================================
