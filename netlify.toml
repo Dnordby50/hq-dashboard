@@ -27,7 +27,14 @@
   # NOTE: after any domain rename, update the referrer restriction in Google Cloud
   # Console or Maps/Sheets calls from the new domain will be rejected (Dylan handoff).
   # If the key is rotated, update every occurrence in index.html AND this value.
-  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY"
+  # Second value: the OLD transposed (I/l swapped) key string that the 1d8d514
+  # fix retired. It is INVALID at Google (that key never existed) but the
+  # string survives in append-only PROJECT-LOG entries and the prompt-37 doc,
+  # and once the omit value was corrected the scanner started failing every
+  # deploy on it ("AIza*** detected as a likely secret" in
+  # claude-code-prompt-37-appointments-calendar.md). Omitting a nonexistent
+  # key is safe; do not remove either value.
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY,AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY"
 
 [functions]
   node_bundler = "esbuild"
