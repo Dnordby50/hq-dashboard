@@ -468,6 +468,13 @@ function dripEmailHtml(bodyText) {
 // duplicate a clean 409 ('already_active').
 async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now) {
   try {
+    // Prompt 62 Part D: an archived lead never (re-)enrolls in any drip.
+    // Mirrors the client guard in index.html enrollSubjectInDrip.
+    if (leadId) {
+      const lr = await sb('GET', `/leads?id=eq.${encodeURIComponent(leadId)}&select=archived_at&limit=1`);
+      const lead = Array.isArray(lr) ? lr[0] : null;
+      if (lead && lead.archived_at) return { enrolled: false, reason: 'archived' };
+    }
     const camps = await sb('GET', `/pec_drip_campaigns?kind=eq.${kind}&status=eq.active&select=id&order=created_at.asc&limit=1`);
     const camp = Array.isArray(camps) ? camps[0] : null;
     if (!camp) return { enrolled: false, reason: 'no_active_campaign' };
@@ -649,6 +656,8 @@ const KIND_CHECKS = {
   // hand-drag fires nothing server-side, so this check is its safety net.
   async lead(sb, enr, rcpt) {
     const lead = rcpt.lead;
+    // Prompt 62 Part D: archive means all automatic follow-up stops.
+    if (lead.archived_at) return { action: 'stopped', reason: 'archived' };
     if (lead.stage === 'lost') return { action: 'stopped', reason: 'lost' };
     if (['estimate_scheduled', 'estimate_sent', 'presented', 'accepted'].includes(lead.stage)) {
       return { action: 'stopped', reason: 'stage_advanced' };
@@ -660,6 +669,8 @@ const KIND_CHECKS = {
   // drip nags a customer who just signed. change_requested means the customer
   // engaged through the portal, so a human takes over (stop as 'replied').
   async estimate(sb, enr, rcpt) {
+    // Prompt 62 Part D: an archived lead stops estimate follow-up too.
+    if (rcpt.lead && rcpt.lead.archived_at) return { action: 'stopped', reason: 'archived' };
     const ests = await sb('GET',
       `/estimates?lead_id=eq.${encodeURIComponent(enr.subject_id || enr.lead_id)}&deleted_at=is.null&select=id,status,sent_at,price,public_token,estimate_number&order=sent_at.desc`);
     const list = Array.isArray(ests) ? ests : [];

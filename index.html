@@ -6765,7 +6765,7 @@ const state = {
   pendingWorkOrderJobId: null,
   // Leads pipeline (pre-sale kanban, separate from the Jobs pipeline; feeds it
   // on accept through the estimator). openLeadId drives the detail pane.
-  leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '' },
+  leadsFilters: { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '', archived: '' },
   leadsData: null, openLeadId: null,
   // Estimates (first-class numbered objects, 2026-07-12 build). openEstimateId
   // drives the detail page; estimatesSearch is the list view's filter text.
@@ -23322,7 +23322,8 @@ async function openAppointmentForm(existing, prefill = {}) {
   let leadOpts = '';
   if (isNew && !leadId) {
     const lr = await supabase.from('leads').select('id,full_name,stage')
-      .is('deleted_at', null).in('stage', ['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented'])
+      .is('deleted_at', null).is('archived_at', null)
+      .in('stage', ['new', 'contacted', 'estimate_scheduled', 'estimate_sent', 'presented'])
       .order('created_at', { ascending: false }).limit(200);
     if (!lr.error && (lr.data || []).length) {
       leadOpts = `<option value="">No linked lead</option>` +
@@ -23837,6 +23838,12 @@ function leadContactStats(leads, logs) {
 // the Phase 2 shape (no subject columns) so the UI works on either schema.
 async function enrollSubjectInDrip(kind, subjectType, subjectId, leadId) {
   try {
+    // Prompt 62 Part D: an archived lead never (re-)enrolls. Mirrors the
+    // server-side guard in _pec-drip.cjs enrollSubject.
+    if (leadId) {
+      const lr = await supabase.from('leads').select('archived_at').eq('id', leadId).maybeSingle();
+      if (!lr.error && lr.data && lr.data.archived_at) return false;
+    }
     const campRes = await supabase.from('pec_drip_campaigns').select('id')
       .eq('kind', kind).eq('status', 'active').order('created_at').limit(1).maybeSingle();
     if (campRes.error || !campRes.data) return false;
@@ -25102,7 +25109,8 @@ function leadCardHtml(lead) {
       </span>
     </div>
     ${/* estimate_scheduled deliberately excluded: that lead already has an appointment; a second one is a deliberate trip through the Appointments screen */''}
-    ${['new', 'contacted'].includes(lead.stage) ? `<div style="margin-top:8px"><button type="button" class="pec-btn ghost sm" data-schedule-est="${esc(lead.id)}" style="width:100%">Schedule Estimate</button></div>` : ''}
+    ${['new', 'contacted'].includes(lead.stage) && !lead.archived_at ? `<div style="margin-top:8px"><button type="button" class="pec-btn ghost sm" data-schedule-est="${esc(lead.id)}" style="width:100%">Schedule Estimate</button></div>` : ''}
+    <div style="margin-top:6px;text-align:right"><button type="button" class="pec-btn ghost sm" data-archive-lead="${esc(lead.id)}" style="font-size:.68rem;padding:2px 8px;color:var(--rd-muted,#6b7280)">${lead.archived_at ? 'Unarchive' : 'Archive'}</button></div>
   </div>`;
 }
 
@@ -25189,6 +25197,43 @@ function openScheduleEstimateFromLead(lead, onDone) {
       if (typeof onDone === 'function') { try { onDone(appt); } catch (_) {} }
     },
   });
+}
+
+// Archive / unarchive a dead lead (prompt 62 Part D). Archiving clears the
+// lead off the board WITHOUT deleting the contact and WITHOUT touching stage
+// (an archived lead is not lost). It eagerly stops any active drip
+// (stop_reason 'archived'); the send-time guard in the drip engine is the
+// safety net for anything this misses. Archived leads deliberately STAY in
+// conversion metrics (Dylan's choice).
+async function toggleLeadArchive(lead, onDone) {
+  const archiving = !lead.archived_at;
+  if (archiving && !confirm(`Archive ${lead.full_name || 'this lead'}? It comes off the pipeline board and all automatic follow-ups stop. The contact and its history are kept, and you can unarchive it any time from the Archived filter.`)) return;
+  try {
+    const patch = { archived_at: archiving ? new Date().toISOString() : null };
+    const upd = await withFreshWriteRetry(() => supabase.from('leads').update(patch).eq('id', lead.id), { label: 'lead-archive' });
+    if (upd.error) throw upd.error;
+    Object.assign(lead, patch);
+    const evt = await supabase.from('lead_events').insert({
+      lead_id: lead.id,
+      event_type: archiving ? 'archived' : 'unarchived',
+      actor_user_id: (state.session && state.session.user && state.session.user.id) || null,
+      payload: {},
+    });
+    if (evt.error) console.warn('[leads] archive event failed:', evt.error.message);
+    if (archiving) {
+      // Eager drip stop, best-effort: the enrollment guard + send-time check
+      // both also refuse archived leads, so a miss here cannot leak a send.
+      const stop = await supabase.from('pec_drip_enrollments')
+        .update({ status: 'stopped', stop_reason: 'archived', stopped_at: new Date().toISOString(), next_send_at: null })
+        .eq('lead_id', lead.id).eq('status', 'active');
+      if (stop.error) console.warn('[leads] archive drip-stop failed:', stop.error.message);
+    }
+    showToast(archiving ? 'Lead archived' : 'Lead unarchived', { ttl: 2200 });
+    if (typeof onDone === 'function') onDone();
+  } catch (err) {
+    console.error('[leads] archive toggle:', err);
+    showToast('Could not ' + (archiving ? 'archive' : 'unarchive') + ': ' + (err && err.message ? err.message : err), { ttl: 5000 });
+  }
 }
 
 // Lost needs a reason (Dylan's conversion metrics depend on it). Mirrors the
@@ -25448,6 +25493,9 @@ async function renderLeads() {
   const qNorm = (f.q || '').trim().toLowerCase();
   const qDigits = qNorm.replace(/\D/g, '');
   const rows = data.leads.filter(l => {
+    // Archived leads are OFF the board (and out of its value totals) unless
+    // the Archived filter is on, which shows ONLY them (prompt 62 Part D).
+    if (f.archived === 'archived' ? !l.archived_at : l.archived_at) return false;
     if (f.source && l.source !== f.source) return false;
     if (f.campaign && (l.campaign || '') !== f.campaign) return false;
     if (f.owner && (l.owner_user_id || '') !== f.owner) return false;
@@ -25524,6 +25572,10 @@ async function renderLeads() {
           <option value="" ${f.sort ? '' : 'selected'}>Urgency (default)</option>
           <option value="score" ${f.sort === 'score' ? 'selected' : ''}>AI score: hot first</option>
         </select></div>
+        <div class="pec-field" style="margin:0"><label>Show</label><select id="leadFilterArchived">
+          <option value="" ${f.archived ? '' : 'selected'}>Active</option>
+          <option value="archived" ${f.archived === 'archived' ? 'selected' : ''}>Archived</option>
+        </select></div>
         <button type="button" class="pec-btn" id="leadFilterGo">Go</button>
         <button type="button" class="pec-btn ghost" id="leadFilterReset">Reset</button>
       </div>
@@ -25540,15 +25592,19 @@ async function renderLeads() {
       to: $('leadFilterTo').value,
       q: $('leadFilterQ').value,
       sort: $('leadFilterSort').value,
+      archived: $('leadFilterArchived').value,
     };
     renderLeads();
   });
+  // Archived is a view switch like Sort: applying it immediately reads as
+  // expected, making it wait for Go reads as broken.
+  $('leadFilterArchived').addEventListener('change', e => { state.leadsFilters.archived = e.target.value; renderLeads(); });
   // Sort applies immediately (it is a view preference, not a query filter, so
   // making it wait for Go would just read as broken).
   $('leadFilterSort').addEventListener('change', e => { state.leadsFilters.sort = e.target.value; renderLeads(); });
   $('leadFilterQ').addEventListener('keydown', e => { if (e.key === 'Enter') $('leadFilterGo').click(); });
   $('leadFilterReset').addEventListener('click', () => {
-    state.leadsFilters = { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '' };
+    state.leadsFilters = { source: '', campaign: '', owner: '', from: '', to: '', q: '', sort: '', archived: '' };
     renderLeads();
   });
 
@@ -25581,6 +25637,14 @@ async function renderLeads() {
     e.stopPropagation();
     const lead = _leadsById[btn.dataset.scheduleEst];
     if (lead) openScheduleEstimateFromLead(lead, () => { if (state.view === 'leads' && !state.openLeadId) renderLeads(); });
+  }));
+
+  // Archive / unarchive off the card (prompt 62 Part D). stopPropagation so
+  // the card's click handler doesn't also open the detail pane.
+  root.querySelectorAll('[data-archive-lead]').forEach(btn => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const lead = _leadsById[btn.dataset.archiveLead];
+    if (lead) toggleLeadArchive(lead, () => renderLeads());
   }));
 
   startLeadsElapsedTimer();
@@ -25636,6 +25700,10 @@ function leadEventHtml(ev, staffNames) {
     // Prompt 61 Part E: manual lead-source change (from the lead or customer
     // page). The record of WHY conversion-by-source moved for past periods.
     body = `Source changed from <strong>${esc(p.from || '(blank)')}</strong> to <strong>${esc(p.to || '(blank)')}</strong>${p.via === 'customer' ? ' (edited on the customer)' : ''}`;
+  } else if (ev.event_type === 'archived') {
+    body = 'Lead archived (off the board, follow-ups stopped)';
+  } else if (ev.event_type === 'unarchived') {
+    body = 'Lead unarchived (back on the board)';
   } else if (ev.event_type === 'note') {
     body = `<span style="white-space:pre-wrap">${esc(p.text || '')}</span>`;
   } else if (ev.event_type === 'ai_analysis') {
@@ -25848,9 +25916,11 @@ async function renderLeadDetail(leadId) {
         <button class="pec-btn sm" id="leadScheduleEstimate" title="Book the on-site estimate visit on the Appointments calendar">Schedule Estimate</button>
         <button class="pec-btn sm" id="leadStartEstimate" title="Creates a draft estimate for this lead and opens it on its own page with the estimator ready">Start estimate</button>
         ${lead.stage === 'accepted' ? '' : '<button class="pec-btn sm" id="leadMarkAccepted">Mark accepted</button>'}
+        <button class="pec-btn sm ghost" id="leadArchiveToggle">${lead.archived_at ? 'Unarchive' : 'Archive'}</button>
         <button class="pec-btn sm primary" id="leadAiRefresh">Refresh analysis</button>
       </div>
     </div>
+    ${lead.archived_at ? `<div style="padding:8px 12px;margin-bottom:10px;background:color-mix(in srgb,#64748b 12%,transparent);border-radius:8px;font-size:.82rem">This lead is archived (${esc(fmtRelativeTime(lead.archived_at))}). It is off the pipeline board and automatic follow-ups are stopped. The contact and history are kept.</div>` : ''}
     <div style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
       <div>
         <div class="pec-card">
@@ -25924,6 +25994,7 @@ async function renderLeadDetail(leadId) {
 
   $('leadBack').addEventListener('click', back);
   $('leadNameEdit').addEventListener('click', () => openLeadNameModal(lead, () => renderLeadDetail(lead.id)));
+  $('leadArchiveToggle').addEventListener('click', () => toggleLeadArchive(lead, () => renderLeadDetail(lead.id)));
   // Estimator opens as an iframe modal OVER this page (not a tab), so saving
   // returns the rep right here; the postMessage listener near
   // openEstimatorModal handles close + navigation to the new estimate.
