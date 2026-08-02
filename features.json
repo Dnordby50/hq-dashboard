@@ -4,7 +4,7 @@
     {
       "name": "In-house estimator PWA",
       "area": "estimator",
-      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects. Prompt 47: a new estimate defaults its salesperson to the LOGGED-IN rep, mapped explicitly by pec_sales_team_members.auth_user_id (set per member in Settings > Sales Team via openSalesTeamModal's Login picker; migration 2026-07-22_sales_member_auth_user.sql). An unmapped login gets a blank salesperson plus a get-mapped prompt, never a silent first-in-list fallback. Prompt 55 NARROWS prompt 47: once a salesperson is set, the select is read-only text for non-admins (admin check = admin_users.role threaded from App.tsx, FAIL CLOSED); the blank/unmapped case stays editable for everyone so the get-mapped path never dead-ends. Shared rules (draft gate, trigger, default priority) live in production/estimate-draft.cjs, fixture-tested. Prompt 61 (Part A): the estimator's NORMAL home is now INLINE on the estimate detail page (no modal); the app posts its content height (pec-estimator-height, ResizeObserver + rAF) so the page grows instead of nesting scrollbars, follows the DASHBOARD's theme via pec-theme postMessage (never the OS), drops its duplicated header chrome when embedded, and its styles.css mirrors the dashboard's --rd-* design tokens (PEC orange, same surfaces/ink/lines) so the panel reads as part of the page. A draft loaded with zero areas seeds the create-path Main area (initialAreas in estimate-draft.cjs, fixture-tested). The old #pecModalRoot modal remains ONLY as the offline create fallback; the standalone /estimator/ page and the offline outbox are untouched.",
+      "description": "A mobile, installable estimating app that reps use in the driveway to price coating jobs from square footage and system type using the same catalog and margin math as job costing. It works fully offline (service worker plus local cache with a sync outbox) so an estimate built with no signal saves and uploads once the phone reconnects. Prompt 47: a new estimate defaults its salesperson to the LOGGED-IN rep, mapped explicitly by pec_sales_team_members.auth_user_id (set per member in Settings > Sales Team via openSalesTeamModal's Login picker; migration 2026-07-22_sales_member_auth_user.sql). An unmapped login gets a blank salesperson plus a get-mapped prompt, never a silent first-in-list fallback. Prompt 55 NARROWS prompt 47: once a salesperson is set, the select is read-only text for non-admins (admin check = admin_users.role threaded from App.tsx, FAIL CLOSED); the blank/unmapped case stays editable for everyone so the get-mapped path never dead-ends. Shared rules (draft gate, trigger, default priority) live in production/estimate-draft.cjs, fixture-tested. Prompt 61 (Part A): the estimator's NORMAL home is now INLINE on the estimate detail page (no modal); the app posts its content height (pec-estimator-height, ResizeObserver + rAF) so the page grows instead of nesting scrollbars, follows the DASHBOARD's theme via pec-theme postMessage (never the OS), drops its duplicated header chrome when embedded, and its styles.css mirrors the dashboard's --rd-* design tokens (PEC orange, same surfaces/ink/lines) so the panel reads as part of the page. A draft loaded with zero areas seeds the create-path Main area (initialAreas in estimate-draft.cjs, fixture-tested). The old #pecModalRoot modal remains ONLY as the offline create fallback; the standalone /estimator/ page and the offline outbox are untouched. Prompt 62 (Part H): the More detail accordion is gone; products, colors, and the work order questions render always visible in both standard and custom modes. special_notes is retired in favor of the one 8-row 'Notes for the crew' box bound to estimates.crew_notes (saves no longer write intake.special_notes; old rows keep the key). A blank moisture or MOHS raises an unmissable red banner (wo-banner) on the estimator and the estimate detail page; save and send are never blocked.",
       "code": {
         "indexHtml": [
           "createDraftEstimate",
@@ -40,7 +40,7 @@
     {
       "name": "Numbered estimate records",
       "area": "estimator",
-      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel. Prompt 47 (card first): the estimate ROW now exists the moment the rep makes their first real edit in the estimator, written by an early draft save (parent row only, requires name/phone/email/address/salesperson, all prefilled in the lead flow) under the same pre-minted id the full Save upserts. Draft-status estimates show an 'In Draft' badge on the list rows and the detail header (the shared EST_STATUS_META draft label; numbering stays the Postgres sequence, so an unnumbered card reads '(unnumbered)' until its first sync). Prompt 61 (Parts A-C): New estimate / Start estimate now INSERTS the draft row immediately (duplicate guard via leadOpenEstimates BEFORE the insert; job info prefilled onto the row from the lead in both split and legacy column shapes) and lands on the estimate detail page with the estimator open inline; a sent/signed/rejected estimate renders the read-only summary with Edit swapping the estimator in on the page. renderEstimateDetail guards landmine 1 at its top: while the inline estimator is alive, refreshes rebuild the chrome and summary around the untouched iframe, so no handler can reload the PWA and drop typed work. The job info block (#estJobInfo) is natively editable (renderEstJobInfoBlock): split + composed legacy columns written in the estimator's exact shape, salesperson admin-locked fail-closed with intake read-modify-written whole, and propagation to the linked lead/customer is ASK EACH TIME with pre-checked boxes (lead_events 'lead_updated' records it; a declined push shows a differs-from-lead note with one-click Push to lead). The authority rule is stated on the page: the estimate carries its own snapshot; lead and customer change only on a yes. Abandoned empty drafts are left alone (Dylan archives by hand) and estimate-number gaps are accepted; leadValueMapFrom skips priceless rows so an early draft never zeroes a lead's value.",
+      "description": "Every saved estimate becomes a sequential, searchable record (EST-102026 and up) with its own page showing customer info, price and margin, line items, optional add-ons, flake color, and the comps and AI price read behind the number. A dedicated Estimates list holds them all, and estimates can be archived and restored as a soft delete. Prompt 38: estimates can now be TEXTED as well as emailed. The same split Send control as invoices (default both channels); the text goes through pec-send-sms kind='estimate' (server-built body with the /e/<token> review-and-sign link + STOP line, lead/customer opt-out enforced, logged to pec_sms_log kind 'estimate' so it stays out of Last-invoiced), and a text-only send runs the same markEstimateSent flip + estimateSentLeadEffects as email so the estimate goes live either way. The blank-scope warn gate fires on any channel. Prompt 47 (card first): the estimate ROW now exists the moment the rep makes their first real edit in the estimator, written by an early draft save (parent row only, requires name/phone/email/address/salesperson, all prefilled in the lead flow) under the same pre-minted id the full Save upserts. Draft-status estimates show an 'In Draft' badge on the list rows and the detail header (the shared EST_STATUS_META draft label; numbering stays the Postgres sequence, so an unnumbered card reads '(unnumbered)' until its first sync). Prompt 61 (Parts A-C): New estimate / Start estimate now INSERTS the draft row immediately (duplicate guard via leadOpenEstimates BEFORE the insert; job info prefilled onto the row from the lead in both split and legacy column shapes) and lands on the estimate detail page with the estimator open inline; a sent/signed/rejected estimate renders the read-only summary with Edit swapping the estimator in on the page. renderEstimateDetail guards landmine 1 at its top: while the inline estimator is alive, refreshes rebuild the chrome and summary around the untouched iframe, so no handler can reload the PWA and drop typed work. The job info block (#estJobInfo) is natively editable (renderEstJobInfoBlock): split + composed legacy columns written in the estimator's exact shape, salesperson admin-locked fail-closed with intake read-modify-written whole, and propagation to the linked lead/customer is ASK EACH TIME with pre-checked boxes (lead_events 'lead_updated' records it; a declined push shows a differs-from-lead note with one-click Push to lead). The authority rule is stated on the page: the estimate carries its own snapshot; lead and customer change only on a yes. Abandoned empty drafts are left alone (Dylan archives by hand) and estimate-number gaps are accepted; leadValueMapFrom skips priceless rows so an early draft never zeroes a lead's value. Prompt 62 (Part E): starting an estimate from the Estimates list opens a three-path picker: existing customer (estimates.customer_id set, lead_id null), existing lead (unchanged, duplicate guard before the insert, the lead's customer_id carried along), or a new customer created inline with the Individual/Business name rules. Draft prefill also works from a customer row; the detail page links the customer when there is no lead; on accept, pec-public-estimate resolves the customer by estimates.customer_id first so a no-lead estimate converts to a job directly. A blank moisture or MOHS reading raises a red banner on the detail page (and in the estimator); never a block.",
       "code": {
         "indexHtml": [
           "createDraftEstimate",
@@ -67,7 +67,8 @@
         ]
       },
       "tables": [
-        "estimates"
+        "estimates",
+        "customers"
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-15-estimator-rework.md",
       "since": "2026-07"
@@ -275,7 +276,7 @@
     {
       "name": "Sales Pipeline board",
       "area": "dashboard",
-      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip. Prompt 61 (Parts D-E): leads.source and customers.lead_source now share ONE vocabulary, the managed pec_lead_sources names (aliases column maps raw feed tokens at intake via resolveLeadSourceName, editable in Settings > Lead sources); badge color/label lookups normalize through leadSourceKey so canonical names stay colored. The source is manually editable on the lead detail (click the badge) and the customer detail (click the source line), the two stay in sync, and every change writes a source_changed lead_events row with the actor. No permission gate, no bulk edit, no kanban-card editor, all by explicit decision.",
+      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip. Prompt 61 (Parts D-E): leads.source and customers.lead_source now share ONE vocabulary, the managed pec_lead_sources names (aliases column maps raw feed tokens at intake via resolveLeadSourceName, editable in Settings > Lead sources); badge color/label lookups normalize through leadSourceKey so canonical names stay colored. The source is manually editable on the lead detail (click the badge) and the customer detail (click the source line), the two stay in sync, and every change writes a source_changed lead_events row with the actor. No permission gate, no bulk edit, no kanban-card editor, all by explicit decision. Prompt 62: a derived Drafts column (estimates with status draft and no sent_at; NOT a leads.stage value) sits between Estimate Scheduled and Estimate Sent, and the board renders TWO card shapes: lead cards (now with a Draft chip when a draft estimate rides them, and a Contact line for business leads) plus estimate cards for estimates with no lead, which move by the estimate's own status and cannot be dragged (dropping a lead on Drafts explains itself). Counts, value rollups, search and date filters handle both shapes; source/campaign/owner filters exclude estimate cards; the Drafts footer shows a count when every card is priceless. Leads can be ARCHIVED off the board (archived_at; stage untouched, drips stopped three ways, contact kept) behind a Show: Archived filter, and the New lead modal uses the Individual/Business name model (first+last OR business_name always required, full_name stays the derived display column).",
       "code": {
         "indexHtml": [
           "changeLeadSource",
@@ -289,7 +290,9 @@
           "openLeadLostModal",
           "openNewLeadModal",
           "renderLeads",
-          "wireLeadSourceEditor"
+          "wireLeadSourceEditor",
+          "estimateCardHtml",
+          "toggleLeadArchive"
         ],
         "netlifyFunctions": [
           "pec-lead-intake.cjs",
@@ -307,7 +310,8 @@
         "pec_sms_log",
         "pec_email_log",
         "pec_lead_sources",
-        "lead_events"
+        "lead_events",
+        "estimates"
       ],
       "since": "2026-07"
     },
@@ -497,10 +501,13 @@
     {
       "name": "Lead detail with AI game plan",
       "area": "dashboard",
-      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip section shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, the messages already sent or held (full body behind expandable rows, with a Review shortcut to Drip Approvals when something is waiting), and the UPCOMING steps with their planned dates, so the card answers what is coming next, not just what already went out. Drip messages also appear in the Activity timeline.",
+      "description": "Clicking a lead opens its full page: contact info, an Outreach line (times contacted broken down by calls/texts/emails/drip messages with the last touch, derived from the outbound comms logs and the drip send ledger), notes, and activity timeline on one side, and an AI read on the other with the Hot/Warm/Cold score badge (also shown beside the name up top with the AI's one-line reason), the single best next step, call talking points, and ready-to-copy text and email drafts. Stage changes, note edits, analysis refresh, and Start estimate (which opens the estimator already tied to the lead) all live on the page, and once OpenPhone is connected calls and transcripts appear in the timeline automatically. A Drip section shows the enrollment (active step / stopped reason) with Stop and Enroll buttons, the messages already sent or held (full body behind expandable rows, with a Review shortcut to Drip Approvals when something is waiting), and the UPCOMING steps with their planned dates, so the card answers what is coming next, not just what already went out. Drip messages also appear in the Activity timeline. Prompt 62: an Edit name modal (Individual/Business, same rules as the customer form), an Archive/Unarchive toolbar action with an archived banner, lost notes shown under the lost reason, and the Mark-lost modal gained an always-available optional notes box plus an AI suggestion pre-filled from the lead's most recent call (matched via customer_id or last-10 phone digits against pec_call_log, which has no lead_id); Other now stores 'Other' with the text in lost_notes.",
       "code": {
         "indexHtml": [
-          "renderLeadDetail"
+          "renderLeadDetail",
+          "openLeadNameModal",
+          "toggleLeadArchive",
+          "openLeadLostModal"
         ],
         "netlifyFunctions": [
           "pec-lead-ai.cjs",
@@ -1921,6 +1928,49 @@
         "financing_min_amount"
       ],
       "since": "2026-07"
+    },
+    {
+      "name": "Global search",
+      "area": "dashboard",
+      "description": "The one topbar search box (#rdSearch, part of the persistent shell so it is on every page) searches jobs, estimates, leads, and customers at once, grouped in that order and capped at 5 per group with a +N more line that opens the type's full list view with its in-list filter set to the query (jobs, which have no in-list text filter, expand in place). Jobs keep the search_jobs RPC (pg_trgm) with a local fallback; estimates match number (102026 or EST-102026), customer name, phone, address; leads match full/business/first/last name, email, phone (archived leads included and badged); customers match name, company, first/last, email, phone. Debounced 250ms with a sequence guard that discards stale result sets wholesale. The in-list search boxes are deliberately kept: they filter a visible table, this box jumps to a record. Clicking a result opens that record's detail page.",
+      "code": {
+        "indexHtml": [
+          "runGlobalSearch",
+          "renderGlobalSearchResults",
+          "gsSearchEstimates",
+          "gsSearchLeads",
+          "gsSearchCustomers"
+        ]
+      },
+      "tables": [
+        "jobs",
+        "estimates",
+        "leads",
+        "customers"
+      ],
+      "since": "2026-08"
+    },
+    {
+      "name": "Lost reason AI backfill",
+      "area": "dashboard",
+      "description": "A nightly pass (15:00 UTC) fills lost_reason and lost_notes on already-lost leads that have a matching call and no reason yet, using the same deterministic keyword classifier as the Mark-lost modal's suggestion over the call summary (transcript only when the summary is empty). It can never overwrite a human value (the PATCH re-asserts lost_reason is null) and every fill writes a lost_reason_ai lead_events row the timeline renders as provenance. Gated by the lost_reason_ai_backfill_enabled setting in Settings > Drips (missing row = on).",
+      "code": {
+        "indexHtml": [
+          "suggestLostReason",
+          "openLeadLostModal",
+          "renderSettingsDrips"
+        ],
+        "netlifyFunctions": [
+          "pec-lost-reason-backfill.cjs"
+        ]
+      },
+      "tables": [
+        "leads",
+        "pec_call_log",
+        "lead_events",
+        "settings"
+      ],
+      "since": "2026-08"
     }
   ]
 }

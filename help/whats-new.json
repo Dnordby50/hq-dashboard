@@ -1,5 +1,68 @@
 [
   {
+    "id": "global-search-topbar",
+    "date": "2026-08-01",
+    "title": "One search box finds everything",
+    "summary": "The search bar at the top of the page now searches jobs, estimates, leads, and customers at the same time, from any page. Results are grouped by type, and clicking one takes you straight to that record. The small search boxes inside each list still work as before; they narrow down the list you are looking at, while the top bar jumps you to a record.",
+    "howto": [
+      "Type a name, phone number, address, or estimate number (102026 or EST-102026 both work) into the search bar at the top.",
+      "Click a result to open that job, estimate, lead, or customer.",
+      "Click +N more under a group to see the full filtered list for that type."
+    ]
+  },
+  {
+    "id": "lead-business-names",
+    "date": "2026-08-01",
+    "title": "Leads can be a business or a person, like customers",
+    "summary": "The New lead form now asks whether the lead is an individual or a business, the same way the customer form does. A person needs a first and last name; a business needs the business name, with an optional contact person. You can also fix a lead's name later with the pencil button on the lead page.",
+    "howto": [
+      "On New lead, pick Individual or Business at the top and fill in the matching name fields.",
+      "To change a name later, open the lead and click the pencil next to the name."
+    ]
+  },
+  {
+    "id": "lead-archive",
+    "date": "2026-08-01",
+    "title": "Archive dead leads without deleting them",
+    "summary": "Archiving clears a lead off the pipeline board and stops all automatic follow-ups, but keeps the contact and its full history. The lead's stage does not change; an archived lead is not the same as a lost one. Find archived leads any time with the Show: Archived filter on the board, and unarchive with one click.",
+    "howto": [
+      "Click Archive on a lead card or at the top of the lead page, and confirm.",
+      "To bring one back, set the Show filter on the pipeline board to Archived and click Unarchive."
+    ]
+  },
+  {
+    "id": "pipeline-drafts-estimate-cards",
+    "date": "2026-08-01",
+    "title": "Drafts on the pipeline, and estimates without a lead",
+    "summary": "Starting an estimate now offers three paths: pick an existing customer, pick an existing lead, or create a new customer on the spot. An estimate does not need a lead anymore. The pipeline board gained a Drafts column showing started estimates that have not been sent, and estimates without a lead appear as their own cards that move with the estimate itself (send it and the card moves to Estimate Sent). Lead cards with a draft in progress show a small Draft chip.",
+    "howto": [
+      "Click New estimate on the Estimates page and choose Existing customer, From a lead, or New customer.",
+      "Watch the Drafts column between Estimate Scheduled and Estimate Sent for anything started but not sent.",
+      "Estimate cards cannot be dragged; open the estimate and send, present, or accept it to move the card."
+    ]
+  },
+  {
+    "id": "lost-reason-notes-ai",
+    "date": "2026-08-01",
+    "title": "Lost leads: notes plus a suggested reason from the last call",
+    "summary": "Marking a lead lost now has a notes box you can always use, alongside the required reason. If the lead has a recent phone call on record, TopCoat pre-selects the closest reason and pre-fills the notes from the call summary, showing you the source; you can change both before saving. A nightly pass also fills in reasons for old lost leads that never got one, and anything filled automatically is tagged on the lead's timeline so you can tell it apart from what a person typed.",
+    "howto": [
+      "Drag a lead to Lost (or pick Lost in the stage dropdown), check the suggested reason, adjust the notes, and click Mark lost.",
+      "Turn the nightly auto-fill on or off in Settings under Drips."
+    ]
+  },
+  {
+    "id": "estimator-open-layout-mohs-banner",
+    "date": "2026-08-01",
+    "title": "Estimator: everything visible, one crew notes box, loud reminder for site readings",
+    "summary": "The collapsed More detail section is gone; products, colors, and the site questions are always on screen. Special notes merged into the big Notes for the crew box at the bottom, which is what prints on the crew work order. If moisture or MOHS hardness is blank, a red banner appears on the estimator and the estimate page reminding you the work order will print blank. It is a reminder only; saving and sending always work.",
+    "howto": [
+      "Scroll the estimate form; the products, colors, and site questions are right there, no section to expand.",
+      "Put anything the crew needs to know in the Notes for the crew box at the bottom.",
+      "When you see the red banner, fill in moisture and MOHS under Work order and it goes away."
+    ]
+  },
+  {
     "id": "estimator-inline-estimate-page",
     "date": "2026-07-31",
     "title": "The estimator now lives on the estimate page, and job info is editable right there",
