@@ -24,6 +24,8 @@ Refreshed 2026-07-31 (Claude Code) after the review-drip migration (2026-08-04_r
 
 Refreshed 2026-07-31 (Claude Code) after the lead-source-unification migration (2026-08-05_lead_source_unification.sql, applied via MCP): `pec_lead_sources.aliases` (text[] not null default '{}'), six new managed rows (19 to 25), and a data-only rewrite of `leads.source` (9 rows: meta->Facebook, google->Google, manual->Manual entry, other->Other, webform->Website, word_of_mouth->Word of Mouth) and `customers.lead_source` (0 rows changed; values were already managed names, 55 nulls untouched). Only the pec_lead_sources section changed shape.
 
+Refreshed 2026-08-01 (Claude Code) after the prompt-62 migration (2026-08-06_prompt62_lead_customer_estimate.sql, applied via MCP and verified by information_schema/pg_indexes re-query): `leads.business_name` / `leads.archived_at` / `leads.lost_notes` (all nullable), `estimates.customer_id` (uuid, nullable, FK -> customers.id), and indexes `estimates_customer_id_idx` + `leads_archived_at_idx`. Row counts refreshed off live: leads 6 to 11, estimates 5 to 9. Additive only; no CHECK constraint changed (there is deliberately NO estimate_draft lead stage; the pipeline Drafts column is derived from estimates.status).
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 84 tables documented, 84 live, all in `public`, all with RLS enabled. No gaps.
@@ -210,12 +212,13 @@ PK: id
 FK: addon_id → pec_prod_addons.id; estimate_area_id → estimate_areas.id; estimate_id → estimates.id
 
 ### estimates
-RLS: enabled · rows: 5
+RLS: enabled · rows: 9
 
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
 | lead_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
 | brand | text | no | 'PEC' |
 | system_type_id | uuid | yes |  |
 | status | text | no | 'draft' |
@@ -292,7 +295,7 @@ RLS: enabled · rows: 5
 | custom_price | numeric | yes |  |
 
 PK: id
-FK: job_id → jobs.id; lead_id → leads.id; pec_prod_job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id
+FK: customer_id → customers.id; job_id → jobs.id; lead_id → leads.id; pec_prod_job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id
 
 ### job_area_materials
 RLS: enabled · rows: 253
@@ -431,7 +434,7 @@ PK: id
 FK: lead_id → leads.id
 
 ### leads
-RLS: enabled · rows: 6
+RLS: enabled · rows: 11
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -441,6 +444,7 @@ RLS: enabled · rows: 6
 | source_ref | text | yes |  |
 | first_name | text | yes |  |
 | last_name | text | yes |  |
+| business_name | text | yes |  |
 | full_name | text | yes |  |
 | email | text | yes |  |
 | phone | text | yes |  |
@@ -451,6 +455,8 @@ RLS: enabled · rows: 6
 | gate_code | text | yes |  |
 | stage | text | no | 'new' |
 | lost_reason | text | yes |  |
+| lost_notes | text | yes |  |
+| archived_at | timestamptz | yes |  |
 | owner_user_id | uuid | yes |  |
 | score | integer | yes |  |
 | sms_consent | boolean | no | false |
