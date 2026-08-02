@@ -767,7 +767,22 @@ async function ensureJobCreated(est) {
   if (est.customer_last_name) splitIdentity.last_name = est.customer_last_name;
   if (est.customer_company) splitIdentity.company_name = est.customer_company;
   let customer = null;
-  if (est.customer_email) {
+  // Prompt 62 Part E: an estimate started FROM a customer carries
+  // estimates.customer_id; that row wins outright (no lead is invented, no
+  // duplicate customer is created by the name/email matching below).
+  if (est.customer_id) {
+    const found = await sb('GET', `/customers?id=eq.${encodeURIComponent(est.customer_id)}&select=*&limit=1`);
+    if (found.length) {
+      const updated = await sb('PATCH', `/customers?id=eq.${found[0].id}`, {
+        name: est.customer_name || found[0].name,
+        phone: est.customer_phone || found[0].phone,
+        email: est.customer_email || found[0].email,
+        ...splitIdentity,
+      }, true);
+      customer = updated[0];
+    }
+  }
+  if (!customer && est.customer_email) {
     const found = await sb('GET', `/customers?email=eq.${encodeURIComponent(est.customer_email)}&select=*&limit=1`);
     if (found.length) {
       const updated = await sb('PATCH', `/customers?id=eq.${found[0].id}`, {

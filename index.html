@@ -2629,7 +2629,7 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
 // CONFIG - Replace these values before deploying
 // ============================================================
 const CONFIG = {
-  SHEETS_API_KEY: 'AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY',
+  SHEETS_API_KEY: 'AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY',
   // ANTHROPIC_API_KEY removed — now server-side only (Netlify env var)
   SHEETS: {
     BOOKED_JOBS: '1oNMMiuPmtrmu-x9Vxcy4kz0xxzQV00WNCGvk35rGLr4',
@@ -7246,7 +7246,7 @@ window.pecOpenEstimatorModal = openEstimatorModal;
 // insert (landmine 6: guarding after would orphan a draft every time the
 // answer is no). Abandoned empty drafts are left alone by Dylan's choice (he
 // archives by hand), and estimate-number gaps from them are accepted.
-async function createDraftEstimate({ leadId = null } = {}) {
+async function createDraftEstimate({ leadId = null, customerId = null } = {}) {
   if (leadId) {
     const open = await leadOpenEstimates(leadId);
     if (open.length) {
@@ -7254,34 +7254,44 @@ async function createDraftEstimate({ leadId = null } = {}) {
       return;
     }
   }
-  return createDraftEstimateNow({ leadId });
+  return createDraftEstimateNow({ leadId, customerId });
 }
 
-async function createDraftEstimateNow({ leadId = null } = {}) {
+async function createDraftEstimateNow({ leadId = null, customerId = null } = {}) {
   // Offline: the insert needs the network, so this is the ONE remaining modal
   // launch path: today's behavior exactly (outbox save, modal frame), plus a
   // note that the estimate is created for real once the device is back online.
   if (!navigator.onLine) { openEstimatorFrame({ leadId, offlineNote: true }); return; }
 
   const row = { created_by: (state.session && state.session.user && state.session.user.id) || null };
+  if (customerId) row.customer_id = customerId;
   if (leadId) {
     row.lead_id = leadId;
     // Prefill the job info ONTO THE ROW from the lead (the "pre fills job
     // info" half of the ask). Both shapes are written: the split columns AND
     // the legacy combined customer_name/customer_address, in the same shape
     // the estimator's save composes them, because readers are split across
-    // both. The name split mirrors the estimator's splitLegacyName. Best
-    // effort: a failed lead read still creates the draft, just unprefilled.
+    // both. Best effort: a failed lead read still creates the draft, just
+    // unprefilled. Part B: the lead's own split names + business_name win
+    // over re-splitting full_name; Part E: a lead that already belongs to a
+    // customer carries that customer_id onto the estimate.
     const lr = await supabase.from('leads')
-      .select('full_name,email,phone,address,city,state,zip').eq('id', leadId).maybeSingle();
+      .select('full_name,first_name,last_name,business_name,email,phone,address,city,state,zip,customer_id').eq('id', leadId).maybeSingle();
     if (!lr.error && lr.data) {
       const d = lr.data;
       const name = String(d.full_name || '').trim();
-      const sp = name.indexOf(' ');
-      const first = sp < 0 ? name : name.slice(0, sp);
-      const last = sp < 0 ? '' : name.slice(sp + 1).trim();
+      let first = String(d.first_name || '').trim();
+      let last = String(d.last_name || '').trim();
+      if (!first && !last) {
+        const sp = name.indexOf(' ');
+        first = sp < 0 ? name : name.slice(0, sp);
+        last = sp < 0 ? '' : name.slice(sp + 1).trim();
+      }
+      if (d.customer_id) row.customer_id = d.customer_id;
       row.customer_first_name = first || null;
       row.customer_last_name = last || null;
+      row.customer_company = d.business_name || null;
+      row.customer_is_commercial = d.business_name ? true : null;
       row.customer_email = d.email || null;
       row.customer_phone = d.phone || null;
       row.customer_address1 = d.address || null;
@@ -7293,6 +7303,32 @@ async function createDraftEstimateNow({ leadId = null } = {}) {
         .map(v => String(v || '').trim()).filter(Boolean).join(', ') || null;
     } else if (lr.error) {
       console.warn('[estimates] draft prefill skipped:', lr.error.message);
+    }
+  } else if (customerId) {
+    // Existing-customer path (prompt 62 Part E): prefill from the customer
+    // row, both column shapes, exactly like the lead path. lead_id stays
+    // null; nothing downstream may assume it is set.
+    const cr = await supabase.from('customers')
+      .select('name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_address_line2,billing_city,billing_state,billing_zip')
+      .eq('id', customerId).maybeSingle();
+    if (!cr.error && cr.data) {
+      const c = cr.data;
+      row.customer_first_name = c.first_name || null;
+      row.customer_last_name = c.last_name || null;
+      row.customer_company = c.company_name || null;
+      row.customer_is_commercial = c.company_name ? true : null;
+      row.customer_email = c.email || null;
+      row.customer_phone = c.phone || null;
+      row.customer_address1 = c.billing_address_line1 || null;
+      row.customer_address2 = c.billing_address_line2 || null;
+      row.customer_city = c.billing_city || null;
+      row.customer_state = c.billing_state || null;
+      row.customer_zip = c.billing_zip || null;
+      row.customer_name = c.company_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || null;
+      row.customer_address = [c.billing_address_line1, c.billing_city, c.billing_state, c.billing_zip]
+        .map(v => String(v || '').trim()).filter(Boolean).join(', ') || null;
+    } else if (cr.error) {
+      console.warn('[estimates] draft prefill skipped:', cr.error.message);
     }
   }
 
@@ -7356,6 +7392,157 @@ function showDuplicateEstimateModal(estimates, onCreateNew) {
       onCreateNew();
     });
   } });
+}
+
+// ---- Estimate-start picker (prompt 62 Part E) -------------------------------
+// "New estimate" / "Start estimate" from the Estimates list offers THREE
+// paths: an existing customer (customer_id set, lead_id null), an existing
+// lead (today's behavior, plus the lead's customer_id when it has one), or a
+// brand-new customer (created here with the Part B name rules). Starting from
+// a lead's own detail page still skips this picker entirely.
+async function openEstimateStartPicker() {
+  // One load up front; both lists are small (91 customers, 200 newest leads)
+  // so filtering is client-side and instant. Errors degrade to empty lists
+  // with the New-customer tab still working.
+  const [custRes, leadRes, srcRes] = await Promise.all([
+    supabase.from('customers').select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_city').is('archived_at', null).order('name'),
+    supabase.from('leads').select('id,full_name,stage,phone,email,customer_id').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
+    supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
+  ]);
+  const customers = (!custRes.error && custRes.data) || [];
+  const leads = (!leadRes.error && leadRes.data) || [];
+  const sources = (!srcRes.error && srcRes.data) || [];
+
+  const tabBtn = (key, label) => `<button type="button" class="pec-btn sm" data-esp-tab="${key}" style="flex:1">${label}</button>`;
+  openModal(`
+    <h3>Start an estimate</h3>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      ${tabBtn('customer', 'Existing customer')}${tabBtn('lead', 'From a lead')}${tabBtn('new', 'New customer')}
+    </div>
+    <div data-esp-pane="customer">
+      <div class="pec-field"><label>Find the customer</label><input id="espCustQ" placeholder="Name, company, phone, email, or address" autocomplete="off"></div>
+      <div id="espCustList" style="max-height:280px;overflow-y:auto"></div>
+    </div>
+    <div data-esp-pane="lead" style="display:none">
+      <div class="pec-field"><label>Find the lead</label><input id="espLeadQ" placeholder="Name, phone, or email" autocomplete="off"></div>
+      <div id="espLeadList" style="max-height:280px;overflow-y:auto"></div>
+    </div>
+    <div data-esp-pane="new" style="display:none">
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+        <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="espType" value="individual" checked style="width:auto">Individual</label>
+        <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="espType" value="business" style="width:auto">Business</label>
+      </div>
+      <div id="espBizWrap" style="display:none"><div class="pec-field"><label>Business name <span style="color:var(--accent,#D8531C)">*</span></label><input id="espBusiness"></div></div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label id="espFirstLabel">First name</label><input id="espFirst"></div>
+        <div class="pec-field"><label id="espLastLabel">Last name</label><input id="espLast"></div>
+      </div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Phone</label><input id="espPhone"></div>
+        <div class="pec-field"><label>Email</label><input id="espEmail"></div>
+      </div>
+      <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
+        <select id="espSource"><option value="">Pick a source…</option>${sources.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('')}</select>
+      </div>
+      <div class="prod-msg-err" id="espErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="espCreateGo">Create customer + estimate</button>
+      </div>
+    </div>
+  `, { onMount: modal => {
+    const setTab = (key) => {
+      modal.querySelectorAll('[data-esp-pane]').forEach(p => { p.style.display = p.dataset.espPane === key ? '' : 'none'; });
+      modal.querySelectorAll('[data-esp-tab]').forEach(b => b.classList.toggle('primary', b.dataset.espTab === key));
+      const focus = { customer: '#espCustQ', lead: '#espLeadQ', new: '#espFirst' }[key];
+      const el = modal.querySelector(focus); if (el) el.focus();
+    };
+    modal.querySelectorAll('[data-esp-tab]').forEach(b => b.addEventListener('click', () => setTab(b.dataset.espTab)));
+
+    const custLabel = c => c.company_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '(no name)';
+    const rowHtml = (id, title, sub, attr) => `
+      <div ${attr}="${esc(id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid var(--rd-line,var(--border));cursor:pointer">
+        <div><strong style="font-size:.86rem">${esc(title)}</strong>${sub ? `<div style="color:var(--muted);font-size:.72rem">${esc(sub)}</div>` : ''}</div>
+        <span class="pec-btn ghost sm" style="pointer-events:none">Start</span>
+      </div>`;
+    const drawCust = () => {
+      const q = (modal.querySelector('#espCustQ').value || '').trim().toLowerCase();
+      const qd = q.replace(/\D/g, '');
+      const hits = customers.filter(c => !q
+        || custLabel(c).toLowerCase().includes(q)
+        || (c.email || '').toLowerCase().includes(q)
+        || (qd && String(c.phone || '').replace(/\D/g, '').includes(qd))
+        || (c.billing_address_line1 || '').toLowerCase().includes(q)
+        || (c.billing_city || '').toLowerCase().includes(q)).slice(0, 30);
+      modal.querySelector('#espCustList').innerHTML = hits.length
+        ? hits.map(c => rowHtml(c.id, custLabel(c), [c.phone, c.email].filter(Boolean).join(' · '), 'data-esp-cust')).join('')
+        : '<div class="pec-empty" style="padding:14px 6px">No matching customers.</div>';
+      modal.querySelectorAll('[data-esp-cust]').forEach(r => r.addEventListener('click', () => {
+        closeModal();
+        createDraftEstimateNow({ customerId: r.dataset.espCust });
+      }));
+    };
+    const drawLead = () => {
+      const q = (modal.querySelector('#espLeadQ').value || '').trim().toLowerCase();
+      const qd = q.replace(/\D/g, '');
+      const hits = leads.filter(l => !q
+        || (l.full_name || '').toLowerCase().includes(q)
+        || (l.email || '').toLowerCase().includes(q)
+        || (qd && String(l.phone || '').replace(/\D/g, '').includes(qd))).slice(0, 30);
+      modal.querySelector('#espLeadList').innerHTML = hits.length
+        ? hits.map(l => rowHtml(l.id, l.full_name || '(no name)', `${titleCaseValue(l.stage)}${l.phone ? ' · ' + qoFmtPhone(l.phone) : ''}`, 'data-esp-lead')).join('')
+        : '<div class="pec-empty" style="padding:14px 6px">No matching leads.</div>';
+      modal.querySelectorAll('[data-esp-lead]').forEach(r => r.addEventListener('click', () => {
+        closeModal();
+        // The lead path keeps the duplicate-estimate guard, which runs BEFORE
+        // the insert (prompt 61 landmine 6).
+        createDraftEstimate({ leadId: r.dataset.espLead });
+      }));
+    };
+    modal.querySelector('#espCustQ').addEventListener('input', drawCust);
+    modal.querySelector('#espLeadQ').addEventListener('input', drawLead);
+    drawCust(); drawLead();
+
+    const isBizNow = () => modal.querySelector('input[name="espType"][value="business"]').checked;
+    modal.querySelectorAll('input[name="espType"]').forEach(r => r.addEventListener('change', () => {
+      modal.querySelector('#espBizWrap').style.display = isBizNow() ? '' : 'none';
+      modal.querySelector('#espFirstLabel').textContent = isBizNow() ? 'Contact first name (optional)' : 'First name';
+      modal.querySelector('#espLastLabel').textContent = isBizNow() ? 'Contact last name (optional)' : 'Last name';
+    }));
+    modal.querySelector('#espCreateGo').addEventListener('click', async () => {
+      const errEl = modal.querySelector('#espErr');
+      errEl.textContent = '';
+      const val = id => (modal.querySelector('#' + id).value || '').trim();
+      const first = val('espFirst'), last = val('espLast');
+      const business = isBizNow() ? val('espBusiness') : '';
+      if (isBizNow() && !business) { errEl.textContent = 'Business name is required.'; return; }
+      if (!isBizNow() && (!first || !last)) { errEl.textContent = 'First and last name are both required.'; return; }
+      if (!val('espSource')) { errEl.textContent = 'Pick a lead source.'; return; }
+      const btn = modal.querySelector('#espCreateGo');
+      btn.disabled = true; btn.textContent = 'Creating…';
+      try {
+        const ins = await withDeadline(() => supabase.from('customers').insert({
+          token: randomToken(),
+          name: business || [first, last].filter(Boolean).join(' '),
+          first_name: first || null,
+          last_name: last || null,
+          company_name: business || null,
+          phone: val('espPhone') || null,
+          email: val('espEmail').toLowerCase() || null,
+          company: 'prescott-epoxy',
+          lead_source: val('espSource'),
+        }).select('id').single(), { label: 'estimate-start-new-customer' });
+        if (ins.error) throw ins.error;
+        closeModal();
+        createDraftEstimateNow({ customerId: ins.data.id });
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Create customer + estimate';
+        errEl.textContent = 'Could not create: ' + (err && err.message ? err.message : err);
+      }
+    });
+
+    setTab('customer');
+  }});
 }
 
 // The iframe talks back with postMessage. The origin check is NOT optional:
@@ -22734,7 +22921,7 @@ async function renderPipeline() {
 // the Maps JavaScript + Places APIs are enabled on that key in Google Cloud
 // Console (Dylan handoff); until then this no-ops safely.
 // ============================================================
-const PEC_MAPS_KEY = 'AIzaSyBUqdRk4eliEoc0vXK7XZz-4TiGdxnoGIY';
+const PEC_MAPS_KEY = 'AIzaSyBUqdRk4eIiEoc0vXK7XZz-4TiGdxnoGlY';
 
 let _pecPlacesLoading = null;
 function pecLoadPlaces() {
@@ -26250,7 +26437,7 @@ async function renderEstimates() {
   $('pecEstSearch').addEventListener('input', e => { state.estimatesSearch = e.target.value; draw(); });
   $('pecEstArchivedToggle').addEventListener('click', () => { state.estimatesShowArchived = !showArchived; renderEstimates(); });
   const newBtn = $('pecEstNew');
-  if (newBtn) newBtn.addEventListener('click', () => createDraftEstimate({}));
+  if (newBtn) newBtn.addEventListener('click', () => openEstimateStartPicker());
   draw();
 }
 
@@ -26624,7 +26811,7 @@ async function renderEstimateDetail(estimateId) {
   let res;
   try {
     res = await withFreshSession(() => supabase.from('estimates')
-      .select('*,estimate_areas(name,sqft,sort_order,system_type_id,mvb),estimate_line_items(*),pec_prod_system_types(name),leads(full_name)')
+      .select('*,estimate_areas(name,sqft,sort_order,system_type_id,mvb),estimate_line_items(*),pec_prod_system_types(name),leads(full_name),customers(name)')
       .eq('id', estimateId).maybeSingle(), { label: 'renderEstimateDetail' });
       // NOTE: deleted_at is NOT filtered here on purpose: viewing an archived
       // estimate's detail (to restore it, or read it) must work.
@@ -26643,6 +26830,8 @@ async function renderEstimateDetail(estimateId) {
   const intake = est.intake || {};
   const sysName = est.pec_prod_system_types && est.pec_prod_system_types.name ? est.pec_prod_system_types.name : null;
   const leadName = est.leads && est.leads.full_name ? est.leads.full_name : null;
+  // Prompt 62 Part E: an estimate can hang off a customer with NO lead.
+  const custLinkName = !leadName && est.customer_id && est.customers && est.customers.name ? est.customers.name : null;
   const areas = (est.estimate_areas || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const sqft = estimateSqft(est);
   // Line items are ROWS now (estimate_line_items, 2026-07-13). The legacy
@@ -26770,6 +26959,7 @@ async function renderEstimateDetail(estimateId) {
             ${detailRow('Sqft', sqft > 0 ? Math.round(sqft).toLocaleString() : null)}
             ${detailRow('MVB', esc(mvbLabel))}
             ${leadName ? detailRow('Lead', `<a href="#" id="estOpenLead" style="color:var(--rd-accent,var(--accent))">${esc(leadName)}</a>`) : ''}
+            ${custLinkName ? detailRow('Customer', `<a href="#" id="estOpenCustomer" style="color:var(--rd-accent,var(--accent))">${esc(custLinkName)}</a>`) : ''}
           </div>
           <div style="display:flex;gap:8px;align-items:flex-end;margin-top:10px">
             <div class="pec-field" style="margin:0;max-width:240px">
@@ -27049,6 +27239,12 @@ async function renderEstimateDetail(estimateId) {
     e.preventDefault();
     state.openLeadId = est.lead_id;
     switchView('leads');
+  });
+  const openCust = $('estOpenCustomer');
+  if (openCust) openCust.addEventListener('click', (e) => {
+    e.preventDefault();
+    state.openCustomerId = est.customer_id;
+    switchView('customers');
   });
 
   const setStatus = async (patch, confirmMsg) => {
