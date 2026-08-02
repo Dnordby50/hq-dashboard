@@ -303,8 +303,13 @@ async function mapRoutemizeEnvelope(db, env) {
 
   const firstName = cleanStr(contact.firstName);
   const lastName = cleanStr(contact.lastName);
+  // Prompt 62 Part B: an incoming company / business / organization field
+  // maps onto leads.business_name (created leads only; matching is untouched).
+  const businessName = cleanStr(contact.companyName) || cleanStr(contact.company)
+    || cleanStr(contact.businessName) || cleanStr(contact.organization);
   const customerName = cleanStr(data.contactName)
-    || (firstName ? `${firstName}${lastName ? ' ' + lastName : ''}` : null);
+    || (firstName ? `${firstName}${lastName ? ' ' + lastName : ''}` : null)
+    || businessName;
 
   // appt_type via the settings map; serviceName wins, eventTypeId is the
   // secondary key (decision 5).
@@ -363,6 +368,7 @@ async function mapRoutemizeEnvelope(db, env) {
     contactId: cleanStr(contact.contactId),
     firstName,
     lastName,
+    businessName,
     // leadSourceText is the meaningful value when leadSource is a bucket
     // ("Other"/"Google" on the real sample); fall back to 'routemize' when
     // Routemize sends nothing (decision 10).
@@ -387,6 +393,7 @@ async function createRoutemizeLead(db, args) {
     first_name: args.firstName || (args.customerName ? args.customerName.split(' ')[0] : null),
     last_name: args.lastName || (args.customerName && args.customerName.includes(' ')
       ? args.customerName.split(' ').slice(1).join(' ') : null),
+    business_name: args.businessName || null,
     full_name: args.customerName,
     email: args.email,
     phone: args.phone10 || null,
@@ -550,6 +557,7 @@ async function processApptIntake(deps, body) {
       try {
         const lead = await createRoutemizeLead(db, {
           customerName, firstName: rz.firstName, lastName: rz.lastName,
+          businessName: rz.businessName || null,
           phone10, email, source: rzSource, contactId: rz.contactId, rmId,
           address: cleanStr(body.address), city: cleanStr(body.city),
           state: cleanStr(body.state), zip: cleanStr(body.zip),

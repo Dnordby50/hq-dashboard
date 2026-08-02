@@ -8665,7 +8665,9 @@ async function openCustomerForm(c) {
       const company_name = isBiz ? (fd.get('company_name') || null) : null;
       // Validation
       if (isBiz && !company_name) { alert('Company name is required for businesses.'); return; }
-      if (!isBiz && !first_name && !last_name) { alert('First or last name is required.'); return; }
+      // Prompt 62 Part B: an individual needs BOTH names (first-or-last used
+      // to pass; that left half-named customers the search cannot find well).
+      if (!isBiz && (!first_name || !last_name)) { alert('First and last name are both required.'); return; }
       if (!fd.get('lead_source')) { alert('Lead source is required.'); return; }
 
       // Denormalized display name keeps customer portal renderers happy
@@ -25082,6 +25084,7 @@ function leadCardHtml(lead) {
       <strong style="font-size:.9rem;line-height:1.2">${esc(lead.full_name || '(no name)')}</strong>
       ${flags.length ? `<span title="${esc('AI risk: ' + flags.join('; '))}" style="width:9px;height:9px;border-radius:50%;background:var(--rd-danger,#ef4444);flex-shrink:0;margin-top:4px"></span>` : ''}
     </div>
+    ${lead.business_name && (lead.first_name || lead.last_name) ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">Contact: ${esc([lead.first_name, lead.last_name].filter(Boolean).join(' '))}</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
       ${leadScoreBadge(lead)}
@@ -25235,6 +25238,70 @@ function openLeadLostModal(lead, onDone) {
   }});
 }
 
+// Edit a lead's name in place (prompt 62 Part B): same Individual/Business
+// shape as the customer form. full_name is ALWAYS rewritten as the derived
+// display value (business name, else first + last) so nothing downstream
+// changes how it reads a lead's name.
+function openLeadNameModal(lead, onSaved) {
+  const initialBiz = !!lead.business_name;
+  openModal(`
+    <h3>Edit name</h3>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+      <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="lnType" value="individual" ${initialBiz ? '' : 'checked'} style="width:auto">Individual</label>
+      <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="lnType" value="business" ${initialBiz ? 'checked' : ''} style="width:auto">Business</label>
+    </div>
+    <div id="lnBizWrap" style="${initialBiz ? '' : 'display:none'}">
+      <div class="pec-field"><label>Business name <span style="color:var(--accent,#D8531C)">*</span></label><input id="lnBusiness" value="${esc(lead.business_name || '')}"></div>
+    </div>
+    <div class="pec-row-2">
+      <div class="pec-field"><label id="lnFirstLabel">First name</label><input id="lnFirst" value="${esc(lead.first_name || '')}"></div>
+      <div class="pec-field"><label id="lnLastLabel">Last name</label><input id="lnLast" value="${esc(lead.last_name || '')}"></div>
+    </div>
+    <div class="prod-msg-err" id="lnErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="lnSave">Save name</button>
+    </div>
+  `, { onMount: modal => {
+    const errEl = modal.querySelector('#lnErr');
+    const isBizNow = () => modal.querySelector('input[name="lnType"][value="business"]').checked;
+    const syncLabels = () => {
+      modal.querySelector('#lnBizWrap').style.display = isBizNow() ? '' : 'none';
+      modal.querySelector('#lnFirstLabel').textContent = isBizNow() ? 'Contact first name (optional)' : 'First name';
+      modal.querySelector('#lnLastLabel').textContent = isBizNow() ? 'Contact last name (optional)' : 'Last name';
+    };
+    syncLabels();
+    modal.querySelectorAll('input[name="lnType"]').forEach(r => r.addEventListener('change', syncLabels));
+    modal.querySelector('#lnSave').addEventListener('click', async () => {
+      errEl.textContent = '';
+      const first = (modal.querySelector('#lnFirst').value || '').trim();
+      const last = (modal.querySelector('#lnLast').value || '').trim();
+      const business = isBizNow() ? (modal.querySelector('#lnBusiness').value || '').trim() : '';
+      if (isBizNow() && !business) { errEl.textContent = 'Business name is required.'; return; }
+      if (!isBizNow() && (!first || !last)) { errEl.textContent = 'First and last name are both required.'; return; }
+      const btn = modal.querySelector('#lnSave');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const patch = {
+          first_name: first || null,
+          last_name: last || null,
+          business_name: business || null,
+          full_name: business || [first, last].filter(Boolean).join(' '),
+        };
+        const upd = await withFreshWriteRetry(() => supabase.from('leads').update(patch).eq('id', lead.id), { label: 'lead-name' });
+        if (upd.error) throw upd.error;
+        Object.assign(lead, patch);
+        closeModal();
+        showToast('Name saved', { ttl: 1800 });
+        if (typeof onSaved === 'function') onSaved();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = 'Save name';
+        errEl.textContent = 'Could not save: ' + (err && err.message ? err.message : err);
+      }
+    });
+  }});
+}
+
 // Manual lead entry. Same validation contract as the intake webhook (name
 // required, phone or email required) so a manual lead is never a lesser row.
 function openNewLeadModal(prefill) {
@@ -25243,14 +25310,26 @@ function openNewLeadModal(prefill) {
   const pfPhone = prefill && prefill.phone ? qoFmtPhone(prefill.phone) : '';
   openModal(`
     <h3>New lead</h3>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+      <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="nlType" value="individual" checked style="width:auto">Individual</label>
+      <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="nlType" value="business" style="width:auto">Business</label>
+    </div>
+    <div id="nlIndivFields" class="pec-row-2">
+      <div class="pec-field"><label>First name <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlFirst" autocomplete="off"></div>
+      <div class="pec-field"><label>Last name <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlLast" autocomplete="off"></div>
+    </div>
+    <div id="nlBizFields" style="display:none">
+      <div class="pec-field"><label>Business name <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlBusiness" autocomplete="off"></div>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Contact first name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input id="nlFirstBiz" autocomplete="off"></div>
+        <div class="pec-field"><label>Contact last name <span style="color:var(--muted);text-transform:none;letter-spacing:0;font-size:.65rem">optional</span></label><input id="nlLastBiz" autocomplete="off"></div>
+      </div>
+    </div>
     <div class="pec-row-2">
-      <div class="pec-field"><label>Name <span style="color:var(--accent,#D8531C)">*</span></label><input id="nlName" autocomplete="off"></div>
       <div class="pec-field"><label>Phone</label><input id="nlPhone" placeholder="(928) 555-1212" value="${esc(pfPhone)}"></div>
-    </div>
-    <div class="pec-row-2">
       <div class="pec-field"><label>Email</label><input id="nlEmail" placeholder="phone or email required"></div>
-      <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${String(s).toLowerCase() === 'manual entry' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
     </div>
+    <div class="pec-field"><label>Source</label><select id="nlSource">${sources.map(s => `<option value="${esc(s)}" ${String(s).toLowerCase() === 'manual entry' ? 'selected' : ''}>${esc(leadSourceLabel(s))}</option>`).join('')}</select></div>
     <div class="pec-field"><label>Address</label><input id="nlAddress" placeholder="Start typing a street address" autocomplete="off"></div>
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
       <div class="pec-field"><label>City</label><input id="nlCity"></div>
@@ -25271,7 +25350,15 @@ function openNewLeadModal(prefill) {
   `, { onMount: modal => {
     const errEl = modal.querySelector('#nlErr');
     const save = modal.querySelector('#nlSave');
-    modal.querySelector('#nlName').focus();
+    modal.querySelector('#nlFirst').focus();
+    // Individual / Business toggle, same shape as openCustomerForm: the lead
+    // form follows the rest of the CRM (prompt 62 Part B).
+    modal.querySelectorAll('input[name="nlType"]').forEach(r => r.addEventListener('change', () => {
+      const isBiz = modal.querySelector('input[name="nlType"][value="business"]').checked;
+      modal.querySelector('#nlIndivFields').style.display = isBiz ? 'none' : '';
+      modal.querySelector('#nlBizFields').style.display = isBiz ? '' : 'none';
+      (isBiz ? modal.querySelector('#nlBusiness') : modal.querySelector('#nlFirst')).focus();
+    }));
     // Places autocomplete on the street field: a pick fills city/state/zip,
     // all hand-editable; offline/no-key it is just a text input (prompt 37).
     pecAttachPlacesAutocomplete(modal.querySelector('#nlAddress'), (addr) => {
@@ -25283,10 +25370,17 @@ function openNewLeadModal(prefill) {
     save.addEventListener('click', async () => {
       errEl.textContent = '';
       const val = id => (modal.querySelector('#' + id).value || '').trim();
-      const name = val('nlName');
+      const isBiz = modal.querySelector('input[name="nlType"][value="business"]').checked;
+      const firstName = isBiz ? val('nlFirstBiz') : val('nlFirst');
+      const lastName = isBiz ? val('nlLastBiz') : val('nlLast');
+      const businessName = isBiz ? val('nlBusiness') : '';
+      // full_name stays the derived display column (prompt 62 Part B): every
+      // reader downstream keeps working without knowing about the split.
+      const name = businessName || [firstName, lastName].filter(Boolean).join(' ');
       const phone = val('nlPhone').replace(/\D/g, '');
       const email = val('nlEmail').toLowerCase();
-      if (!name) { errEl.textContent = 'Name is required.'; return; }
+      if (isBiz && !businessName) { errEl.textContent = 'Business name is required.'; return; }
+      if (!isBiz && (!firstName || !lastName)) { errEl.textContent = 'First and last name are both required.'; return; }
       if (!phone && !email) { errEl.textContent = 'Enter a phone or an email.'; return; }
       save.disabled = true; save.textContent = 'Saving…';
       try {
@@ -25294,6 +25388,9 @@ function openNewLeadModal(prefill) {
         const ins = await withFreshWrite(() => supabase.from('leads').insert({
           brand: 'PEC',
           source: val('nlSource') || 'manual',
+          first_name: firstName || null,
+          last_name: lastName || null,
+          business_name: businessName || null,
           full_name: name,
           phone: phone ? phone.slice(-10) : null,
           email: email || null,
@@ -25761,8 +25858,10 @@ async function renderLeadDetail(leadId) {
             <div>
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                 <span style="font-size:1.2rem;font-weight:700">${esc(lead.full_name || '(no name)')}</span>
+                <button type="button" class="pec-btn ghost sm" id="leadNameEdit" title="Edit name" style="padding:2px 8px">✎</button>
                 ${leadScoreBadge(lead, { big: true })}
               </div>
+              ${lead.business_name && (lead.first_name || lead.last_name) ? `<div style="font-size:.78rem;color:var(--muted);margin-top:2px">Contact: ${esc([lead.first_name, lead.last_name].filter(Boolean).join(' '))}</div>` : ''}
               ${ai && ai.score_reason ? `<div style="font-size:.78rem;color:var(--muted);margin-top:4px">${esc(ai.score_reason)}</div>` : ''}
               <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap">
                 <span id="leadSourceEditHost"><span class="pec-badge" style="--pec-badge-bg:${esc(LEAD_SOURCE_COLORS[leadSourceKey(lead.source)] || '#64748b')}">${esc(leadSourceLabel(lead.source))} ✎</span></span>
@@ -25824,6 +25923,7 @@ async function renderLeadDetail(leadId) {
   `;
 
   $('leadBack').addEventListener('click', back);
+  $('leadNameEdit').addEventListener('click', () => openLeadNameModal(lead, () => renderLeadDetail(lead.id)));
   // Estimator opens as an iframe modal OVER this page (not a tab), so saving
   // returns the rep right here; the postMessage listener near
   // openEstimatorModal handles close + navigation to the new estimate.
@@ -26371,8 +26471,13 @@ async function renderEstJobInfoBlock(container, estimateId) {
     container.querySelector('#estJiCancel').addEventListener('click', () => renderEstJobInfoBlock(container, estimateId));
     container.querySelector('#estJiSave').addEventListener('click', async () => {
       const btn = container.querySelector('#estJiSave');
-      btn.disabled = true; btn.textContent = 'Saving…';
       const get = (k) => String((container.querySelector(`[data-ji="${k}"]`) || {}).value || '');
+      // Prompt 62 Part B: same name rule as the rest of the CRM. Commercial
+      // requires the company name; residential requires first AND last.
+      const isCom = container.querySelector('input[name="estJiType"][value="com"]').checked;
+      if (isCom && !get('company').trim()) { showToast('Company name is required for a commercial job.', { ttl: 4000 }); return; }
+      if (!isCom && (!get('firstName').trim() || !get('lastName').trim())) { showToast('First and last name are both required.', { ttl: 4000 }); return; }
+      btn.disabled = true; btn.textContent = 'Saving…';
       const next = {
         isCommercial: container.querySelector('input[name="estJiType"][value="com"]').checked,
         firstName: get('firstName'), lastName: get('lastName'),

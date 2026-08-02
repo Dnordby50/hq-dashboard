@@ -98,8 +98,14 @@ exports.handler = async (event) => {
   const sourceRef = cleanStr(body.source_ref);
   const firstName = cleanStr(body.first_name);
   const lastName = cleanStr(body.last_name);
+  // Prompt 62 Part B: a company / business / organization field maps onto
+  // leads.business_name. It also backstops full_name so a business-only
+  // submission is not rejected as nameless.
+  const businessName = cleanStr(body.business_name) || cleanStr(body.company_name)
+    || cleanStr(body.company) || cleanStr(body.business) || cleanStr(body.organization);
   const fullName = cleanStr(body.full_name) || cleanStr(body.name)
-    || (firstName ? `${firstName}${lastName ? ' ' + lastName : ''}` : null);
+    || (firstName ? `${firstName}${lastName ? ' ' + lastName : ''}` : null)
+    || businessName;
   const email = cleanStr(body.email) ? cleanStr(body.email).toLowerCase() : null;
   const phoneRaw = cleanStr(body.phone);
   const phone10 = normPhone(phoneRaw);
@@ -147,6 +153,7 @@ exports.handler = async (event) => {
       source_ref: sourceRef,
       first_name: firstName,
       last_name: lastName,
+      business_name: businessName,
       full_name: fullName,
       email,
       phone: phoneRaw ? (phone10 || phoneRaw) : null,
