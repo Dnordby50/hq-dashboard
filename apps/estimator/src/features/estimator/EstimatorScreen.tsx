@@ -1006,7 +1006,6 @@ export default function EstimatorScreen({
           mohs_hardness: intake.mohs_hardness ? Number(intake.mohs_hardness) : null,
           additional_non_slip: intake.additional_non_slip || null,
           grinder_tooling_grit: intake.grinder_tooling_grit || null,
-          special_notes: intake.special_notes || null,
           base_price: null,
           discount_pct: null,
         },
@@ -1280,7 +1279,6 @@ export default function EstimatorScreen({
         'coat past garage door': intake.coat_past_garage ? 'yes' : null,
         'additional non-slip': intake.additional_non_slip || null,
         'grinder tooling / grit': intake.grinder_tooling_grit || null,
-        'special notes': intake.special_notes || null,
         'add-on lines': addonForms.map((f) => f.label.trim() + (f.optional ? ' (optional)' : '')).filter(Boolean).join('; ') || null,
       };
       const res = await fetch('/.netlify/functions/pec-estimate-crew-notes', {
@@ -1382,7 +1380,6 @@ export default function EstimatorScreen({
         mohs_hardness: intake.mohs_hardness ? Number(intake.mohs_hardness) : null,
         additional_non_slip: intake.additional_non_slip || null,
         grinder_tooling_grit: intake.grinder_tooling_grit || null,
-        special_notes: intake.special_notes || null,
         base_price: basePrice,
         discount_pct: discounted && adjusted ? adjusted.discountPct : null,
       };
@@ -1681,10 +1678,11 @@ export default function EstimatorScreen({
         <label className="check"><input type="checkbox" checked={intake.coat_past_garage} onChange={(e) => setIntakeField('coat_past_garage', e.target.checked)} /><span>Coat past garage door</span></label>
         <label className="check"><input type="checkbox" checked={intake.stem_walls} onChange={(e) => setIntakeField('stem_walls', e.target.checked)} /><span>Stem walls</span></label>
       </div>
-      <label className="field"><span>Special notes</span><textarea rows={2} value={intake.special_notes} onChange={(e) => setIntakeField('special_notes', e.target.value)} /></label>
-      {woMissingFields.length > 0 && (
-        <p className="warn">{woMissingFields.join(' and ')} not filled in yet. The crew work order prints them blank; saving and sending still work.</p>
-      )}
+      {/* Special notes retired (prompt 62 Part H): the one crew text box is
+          "Notes for the crew" (crew_notes) at the bottom of the page. Old
+          intake.special_notes values were migrated into crew_notes; the key
+          stays readable in old rows but is never written again. The quiet
+          missing-fields line is replaced by the red wo-banner up top. */}
     </>
   );
 
@@ -1787,6 +1785,16 @@ export default function EstimatorScreen({
 
       <main className="cols">
         <div className="left">
+          {/* MOHS + moisture banner (prompt 62 Part H): loud, never a block.
+              Dylan wrote "required for every quote" but chose warning-only
+              and confirmed it on a second pass, so this is an unmissable red
+              banner (here AND on the estimate detail page), not a gate. It
+              replaces the old quiet woMissingFields line. */}
+          {woMissingFields.length > 0 && (
+            <div className="wo-banner" role="alert">
+              {woMissingFields.join(' and ')} {woMissingFields.length === 1 ? 'is' : 'are'} blank. The crew work order will print {woMissingFields.length === 1 ? 'it' : 'them'} blank. Fill {woMissingFields.length === 1 ? 'it' : 'them'} in under Work order below. Saving and sending still work.
+            </div>
+          )}
           {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
               system type: Custom turns the whole estimate into typed scope +
               typed price for one-off work. Non-destructive: hidden area and
@@ -2127,11 +2135,13 @@ export default function EstimatorScreen({
             </section>
           )}
 
-          {/* Everything below is OPTIONAL and collapsed: a rep who never opens
-              it still gets a correct price off the recipe defaults. Hidden in
-              custom mode (it is all recipe/area detail). */}
-          {!isCustom && <details className="card more-detail">
-            <summary>More detail <span className="muted">(products, colors, work order)</span></summary>
+          {/* Products, colors, and the work order questions render ALWAYS
+              VISIBLE (prompt 62 Part H dropped the More detail accordion: a
+              collapsed section kept getting skipped in the driveway). Still
+              optional: a rep who never touches it gets a correct price off
+              the recipe defaults. Hidden in custom mode (recipe/area detail). */}
+          {!isCustom && <section className="card">
+            <div className="areas-head"><span>Products and colors</span></div>
             {areas.map((a, i) => {
               const areaSlots = slotsFor(a.systemTypeId);
               if (!areaSlots.length) return null;
@@ -2157,22 +2167,23 @@ export default function EstimatorScreen({
             <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
             <div className="areas-head" style={{ marginTop: 10 }}><span>Work order</span></div>
             {workOrderFields}
-          </details>}
+          </section>}
 
           {/* Custom mode still needs the site questions (prompt 58 Part E):
-              same field list as above, its own details block because the rest
-              of More detail is recipe/area machinery custom mode hides. */}
-          {isCustom && <details className="card more-detail">
-            <summary>Work order <span className="muted">(site questions)</span></summary>
+              same field list as above, its own always-visible card because
+              the products/colors card is recipe/area machinery custom mode
+              hides. */}
+          {isCustom && <section className="card">
+            <div className="areas-head"><span>Work order (site questions)</span></div>
             {workOrderFields}
-          </details>}
+          </section>}
 
           {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
               the crew work order only; never on the customer proposal, the
               customer estimate page, or the PDF. Generate is manual-only. */}
           <section className="card">
             <div className="areas-head">
-              <span>Crew notes (internal)</span>
+              <span>Notes for the crew (internal)</span>
               <span className="scope-actions">
                 {preGenCrewNotes != null && (
                   <button type="button" className="link" onClick={undoCrewNotes}>Undo generate</button>
@@ -2184,7 +2195,7 @@ export default function EstimatorScreen({
             </div>
             <p className="hint">Only the crew sees this; it prints on the work order, never on the customer proposal. Generate drafts cliff notes and watch-outs from the proposal; you can edit or undo.</p>
             <textarea
-              rows={6}
+              rows={8}
               value={crewNotes}
               onChange={(e) => { setCrewNotes(e.target.value); setCrewNotesEdited(true); setSaveState('idle'); }}
               placeholder="Cliff notes and watch-outs for the crew: access, prep, site conditions, customer asks…"

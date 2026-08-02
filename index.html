@@ -27121,6 +27121,14 @@ async function renderEstimateDetail(estimateId) {
       </div>
     </div>
     ${isArchived ? `<div style="background:rgba(100,116,139,.12);border:1px solid rgba(100,116,139,.4);border-radius:8px;padding:10px 12px;font-size:.84rem;margin-bottom:10px"><strong>This estimate is archived.</strong> Its public link is inactive. Restore it to make it active again.</div>` : ''}
+    ${(() => {
+      // MOHS + moisture banner (prompt 62 Part H): same loud warning as the
+      // estimator, never a block. Blank means the crew work order prints
+      // blank; Edit opens the estimator where the fields live.
+      const ik = est.intake || {};
+      const missing = [!ik.moisture ? 'Moisture' : null, !ik.mohs_hardness ? 'MOHS hardness' : null].filter(Boolean);
+      return missing.length ? `<div role="alert" style="background:#dc2626;color:#fff;border-radius:8px;padding:10px 14px;font-size:.9rem;font-weight:600;margin-bottom:10px">${esc(missing.join(' and '))} ${missing.length === 1 ? 'is' : 'are'} blank on this estimate. The crew work order will print ${missing.length === 1 ? 'it' : 'them'} blank. Use Edit to fill ${missing.length === 1 ? 'it' : 'them'} in. Saving and sending still work.</div>` : '';
+    })()}
   `;
   bodyEl.innerHTML = `
     <div id="estSummaryGrid" style="display:grid;grid-template-columns:minmax(300px,5fr) minmax(300px,4fr);gap:14px;align-items:start">
