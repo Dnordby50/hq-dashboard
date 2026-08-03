@@ -1,5 +1,26 @@
 [
   {
+    "id": "estimator-cleaner-estimate-view",
+    "date": "2026-08-02",
+    "title": "A cleaner estimator: product dropdowns wait until after the sale",
+    "summary": "The Basecoat, Topcoat, and Flake dropdowns no longer show while you build an estimate. The price already includes standard materials, so nothing changes about the number. Colors and products get picked on the job page after the sale, where they drive ordering and the crew work order. The work order questions stay right where they were. Also fixed: the big blank gap that could appear under the estimator on short estimates.",
+    "howto": [
+      "Build the estimate as usual. You will only see the questions that matter during the sale.",
+      "If a job needs a product spec now (a commercial bid, or a customer who already picked a color), click Specify products in the Products and colors card to show the dropdowns.",
+      "After the job is sold, pick the flake color and products on the job page's line items, then order materials as usual."
+    ]
+  },
+  {
+    "id": "estimate-preview-exit",
+    "date": "2026-08-02",
+    "title": "The estimate preview can be closed now",
+    "summary": "The Preview window on an estimate used to have no close button, and the only way out was reloading the page. It now has a header with the estimate number and an X, and it also closes with the Escape key or a click outside the window. Forms like payments and change orders still require their own Cancel button, so a stray click cannot wipe what you typed.",
+    "howto": [
+      "Open an estimate and click Preview to see exactly what the customer will get.",
+      "Close it with the X in the corner, the Escape key, or a click anywhere outside the window."
+    ]
+  },
+  {
     "id": "global-search-topbar",
     "date": "2026-08-01",
     "title": "One search box finds everything",
