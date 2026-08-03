@@ -2543,13 +2543,16 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
                user can read the email history; RLS (is_admin_staff) is the
                actual boundary. -->
           <button data-pec-view="email-log">Email Log</button>
-          <div class="pec-subnav-group">Sales Pipeline</div>
+          <div class="pec-subnav-group">Sales Activity</div>
           <!-- data-pec-view stays "leads": switchView, the hash router, and
-               old #leads bookmarks all key off it. data-pec-title gives
-               refreshTitle the long page-header form ("Sales Pipeline") so
-               the header never reads a bare "Pipeline", ambiguous against
-               the Production Jobs pipeline. -->
-          <button data-pec-view="leads" data-pec-title="Sales Pipeline">Pipeline</button>
+               old #leads bookmarks all key off it. The button label and the
+               group were renamed together (prompt 65 Part D: button
+               "Pipeline" -> "Sales Pipeline", group "Sales Pipeline" ->
+               "Sales Activity") so the rail flyout never reads
+               "Sales Pipeline > Sales Pipeline". data-pec-title keeps
+               refreshTitle's page-header form ("Sales Pipeline"),
+               unambiguous against the Production Jobs pipeline. -->
+          <button data-pec-view="leads" data-pec-title="Sales Pipeline">Sales Pipeline</button>
           <!-- Sales appointments calendar (prompt 37). Deliberately separate
                from the crew Job Schedule below: this is estimates and
                walkthroughs for the sales roster, not install days. All-staff
