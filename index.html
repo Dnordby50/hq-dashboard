@@ -8017,8 +8017,14 @@ function openModal(html, { onMount, dismissible = false } = {}) {
     wrap.dataset.pecDismissible = '1';
     wrap.addEventListener('click', e => { if (e.target === wrap) pecCloseModalWrap(wrap); });
     pecBindModalEscape();
-  } else if (!wrap.querySelector('form, input, textarea, select, iframe')) {
-    wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
+  } else {
+    // The guard runs at CLICK time, not open time: a modal that opens as a
+    // loading shell and grows its form async (change order) used to pass the
+    // open-time check and stay backdrop-closable with a half-typed form
+    // inside (found by prompt 63 Part D's negative tests).
+    wrap.addEventListener('click', e => {
+      if (e.target === wrap && !wrap.querySelector('form, input, textarea, select, iframe')) closeModal();
+    });
   }
   $('pecModalRoot').appendChild(wrap);
   if (onMount) onMount(wrap.querySelector('.pec-modal'));
