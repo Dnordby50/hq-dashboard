@@ -7291,18 +7291,18 @@ window.pecOpenEstimatorModal = openEstimatorModal;
 // insert (landmine 6: guarding after would orphan a draft every time the
 // answer is no). Abandoned empty drafts are left alone by Dylan's choice (he
 // archives by hand), and estimate-number gaps from them are accepted.
-async function createDraftEstimate({ leadId = null, customerId = null } = {}) {
+async function createDraftEstimate({ leadId = null, customerId = null, extras = null } = {}) {
   if (leadId) {
     const open = await leadOpenEstimates(leadId);
     if (open.length) {
-      showDuplicateEstimateModal(open, () => createDraftEstimateNow({ leadId }));
+      showDuplicateEstimateModal(open, () => createDraftEstimateNow({ leadId, extras }));
       return;
     }
   }
-  return createDraftEstimateNow({ leadId, customerId });
+  return createDraftEstimateNow({ leadId, customerId, extras });
 }
 
-async function createDraftEstimateNow({ leadId = null, customerId = null } = {}) {
+async function createDraftEstimateNow({ leadId = null, customerId = null, extras = null } = {}) {
   // Offline: the insert needs the network, so this is the ONE remaining modal
   // launch path: today's behavior exactly (outbox save, modal frame), plus a
   // note that the estimate is created for real once the device is back online.
@@ -7377,6 +7377,30 @@ async function createDraftEstimateNow({ leadId = null, customerId = null } = {})
     }
   }
 
+  // Prompt 65 (Parts B/C): fields chosen in the New Estimate modal, or carried
+  // from an appointment, land ON TOP of the record prefill above. The job
+  // address writes BOTH column shapes (readers are split across the split
+  // columns and the legacy combined customer_address; writing one is a bug).
+  // The salesperson composes intake INSIDE the insert, safe ONLY because this
+  // row is brand new; never PATCH a partial intake onto an existing estimate
+  // (prompt 61 landmine 8). Appointment job-site notes go to crew_notes, the
+  // estimator's one notes box (prompt 62 Part H retired special_notes).
+  if (extras && typeof extras === 'object') {
+    const adr = extras.address;
+    if (adr && [adr.address1, adr.city, adr.state, adr.zip].some(v => String(v || '').trim())) {
+      row.customer_address1 = String(adr.address1 || '').trim() || null;
+      row.customer_city = String(adr.city || '').trim() || null;
+      row.customer_state = String(adr.state || '').trim() || null;
+      row.customer_zip = String(adr.zip || '').trim() || null;
+      row.customer_address = [adr.address1, adr.city, adr.state, adr.zip]
+        .map(v => String(v || '').trim()).filter(Boolean).join(', ') || null;
+    }
+    if (extras.salesperson && extras.salesperson.id) {
+      row.intake = { salesperson_id: extras.salesperson.id, salesperson_name: extras.salesperson.name || null };
+    }
+    if (String(extras.crewNotes || '').trim()) row.crew_notes = String(extras.crewNotes).trim();
+  }
+
   let ins;
   try {
     // Non-idempotent insert: withDeadline, never a blind auto-retry (a retry
@@ -7439,133 +7463,187 @@ function showDuplicateEstimateModal(estimates, onCreateNew) {
   } });
 }
 
-// ---- Estimate-start picker (prompt 62 Part E) -------------------------------
-// "New estimate" / "Start estimate" from the Estimates list offers THREE
-// paths: an existing customer (customer_id set, lead_id null), an existing
-// lead (today's behavior, plus the lead's customer_id when it has one), or a
-// brand-new customer (created here with the Part B name rules). Starting from
-// a lead's own detail page still skips this picker entirely.
-async function openEstimateStartPicker() {
-  // One load up front; both lists are small (91 customers, 200 newest leads)
-  // so filtering is client-side and instant. Errors degrade to empty lists
-  // with the New-customer tab still working.
-  const [custRes, leadRes, srcRes] = await Promise.all([
-    supabase.from('customers').select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_city').is('archived_at', null).order('name'),
-    supabase.from('leads').select('id,full_name,stage,phone,email,customer_id').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
+// ---- New Estimate modal (prompt 65 Part B, replacing the prompt 62 tabs) ----
+// One contact-first form in the DripJobs "New Proposal" shape, used at EVERY
+// entry point: the Estimates list button and Start estimate on an appointment
+// (Part C). The Contact dropdown defaults to New Contact, with existing
+// customers and leads (Leads optgroup) below it; picking an existing record
+// collapses the contact fields into a read-only summary (that row stays the
+// source of truth; this modal never edits it). Stage is DISPLAY-ONLY
+// "In Draft": estimates has no stage column and must not grow one. Data-entry
+// modal: deliberately NOT dismissible (prompt 63 Part D), so Escape and a
+// backdrop click with a half-typed form do nothing.
+// opts.prefill (Part C, an appointment with no lead or customer): { first,
+// last, phone, email, address1, city, state, zip, crewNotes } pre-loads the
+// New Contact form and the job address; crewNotes ride onto the estimate
+// whichever path ends up picked.
+async function openEstimateStartPicker(opts = {}) {
+  const prefill = (opts && opts.prefill) || {};
+  // One load up front; all lists are small, so everything below is
+  // client-side. Errors degrade to empty lists with New Contact still working.
+  const [custRes, leadRes, srcRes, spRes] = await Promise.all([
+    supabase.from('customers').select('id,name,first_name,last_name,company_name,email,phone,billing_address_line1,billing_city,billing_state,billing_zip').is('archived_at', null).order('name'),
+    supabase.from('leads').select('id,full_name,stage,phone,email,address,city,state,zip').is('deleted_at', null).is('archived_at', null).order('created_at', { ascending: false }).limit(200),
     supabase.from('pec_lead_sources').select('name').eq('active', true).order('name'),
+    supabase.from('pec_sales_team_members').select('id,name,auth_user_id,active').order('name'),
   ]);
   const customers = (!custRes.error && custRes.data) || [];
   const leads = (!leadRes.error && leadRes.data) || [];
   const sources = (!srcRes.error && srcRes.data) || [];
+  const salespeople = ((!spRes.error && spRes.data) || []).filter(s => s.active !== false);
 
-  const tabBtn = (key, label) => `<button type="button" class="pec-btn sm" data-esp-tab="${key}" style="flex:1">${label}</button>`;
+  const custLabel = c => c.company_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '(no name)';
+  // Salesperson default: the member mapped to THIS login (auth_user_id,
+  // prompt 47), else blank; never salespeople[0]. Reported landmine: once
+  // salesperson_id lands in intake, renderEstJobInfoBlock's lock means a
+  // non-admin can never change it. The lock rule is deliberately unchanged
+  // here; the default keeps the common case (rep starts their own estimate)
+  // correct without a deliberate click.
+  const uid = (state.session && state.session.user && state.session.user.id) || '';
+  const mine = uid ? salespeople.find(s => s.auth_user_id && String(s.auth_user_id) === String(uid)) : null;
+
+  const secHead = (t, first) => `<div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin:${first ? '0' : '14px'} 0 8px;padding-bottom:4px;border-bottom:1px solid var(--rd-line,var(--border))">${t}</div>`;
   openModal(`
-    <h3>Start an estimate</h3>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      ${tabBtn('customer', 'Existing customer')}${tabBtn('lead', 'From a lead')}${tabBtn('new', 'New customer')}
+    <h3>New estimate</h3>
+    ${secHead('Contact information', true)}
+    <div class="pec-field"><label>Contact</label>
+      <select id="espContact">
+        <option value="">New Contact</option>
+        ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="cust:${esc(c.id)}">${esc(custLabel(c))}</option>`).join('')}</optgroup>` : ''}
+        ${leads.length ? `<optgroup label="Leads">${leads.map(l => `<option value="lead:${esc(l.id)}">${esc(l.full_name || '(no name)')} · ${esc(titleCaseValue(l.stage))}</option>`).join('')}</optgroup>` : ''}
+      </select>
     </div>
-    <div data-esp-pane="customer">
-      <div class="pec-field"><label>Find the customer</label><input id="espCustQ" placeholder="Name, company, phone, email, or address" autocomplete="off"></div>
-      <div id="espCustList" style="max-height:280px;overflow-y:auto"></div>
-    </div>
-    <div data-esp-pane="lead" style="display:none">
-      <div class="pec-field"><label>Find the lead</label><input id="espLeadQ" placeholder="Name, phone, or email" autocomplete="off"></div>
-      <div id="espLeadList" style="max-height:280px;overflow-y:auto"></div>
-    </div>
-    <div data-esp-pane="new" style="display:none">
+    <div id="espSummary" style="display:none;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:.82rem"></div>
+    <div id="espNewWrap">
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
         <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="espType" value="individual" checked style="width:auto">Individual</label>
         <label class="check" style="display:flex;gap:6px;align-items:center;font-size:.85rem;font-weight:400;text-transform:none;cursor:pointer"><input type="radio" name="espType" value="business" style="width:auto">Business</label>
       </div>
       <div id="espBizWrap" style="display:none"><div class="pec-field"><label>Business name <span style="color:var(--accent,#D8531C)">*</span></label><input id="espBusiness"></div></div>
       <div class="pec-row-2">
-        <div class="pec-field"><label id="espFirstLabel">First name</label><input id="espFirst"></div>
-        <div class="pec-field"><label id="espLastLabel">Last name</label><input id="espLast"></div>
+        <div class="pec-field"><label id="espFirstLabel">First name</label><input id="espFirst" value="${esc(prefill.first || '')}"></div>
+        <div class="pec-field"><label id="espLastLabel">Last name</label><input id="espLast" value="${esc(prefill.last || '')}"></div>
       </div>
       <div class="pec-row-2">
-        <div class="pec-field"><label>Phone</label><input id="espPhone"></div>
-        <div class="pec-field"><label>Email</label><input id="espEmail"></div>
+        <div class="pec-field"><label>E-mail</label><input id="espEmail" value="${esc(prefill.email || '')}"></div>
+        <div class="pec-field"><label>Phone</label><input id="espPhone" value="${esc(prefill.phone || '')}"></div>
       </div>
       <div class="pec-field"><label>Lead source <span style="color:var(--danger);font-size:.65rem;text-transform:none;letter-spacing:0">important</span></label>
         <select id="espSource"><option value="">Pick a source…</option>${sources.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('')}</select>
       </div>
-      <div class="prod-msg-err" id="espErr" style="min-height:16px"></div>
-      <div class="pec-modal-actions">
-        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
-        <button type="button" class="pec-btn primary" id="espCreateGo">Create customer + estimate</button>
-      </div>
+    </div>
+    <div class="pec-field"><label>Stage</label>
+      <input value="In Draft" readonly disabled title="Every estimate starts as a draft. It moves on its own when you send it."></div>
+    ${secHead('Job address')}
+    <div class="pec-field"><label>Street</label><input id="espAddr1" value="${esc(prefill.address1 || '')}" autocomplete="off"></div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
+      <div class="pec-field"><label>City</label><input id="espCity" value="${esc(prefill.city || '')}"></div>
+      <div class="pec-field"><label>State</label><input id="espState" value="${esc(prefill.state || '')}" maxlength="2" placeholder="AZ"></div>
+      <div class="pec-field"><label>Postal code</label><input id="espZip" value="${esc(prefill.zip || '')}" maxlength="10"></div>
+    </div>
+    ${secHead('Assignment')}
+    <div class="pec-field"><label>Salesperson</label>
+      <select id="espSalesperson"><option value="">Pick later in the estimator…</option>${salespeople.map(s =>
+        `<option value="${esc(s.id)}"${mine && String(mine.id) === String(s.id) ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+    </div>
+    <div class="prod-msg-err" id="espErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="espGo">Start estimate</button>
     </div>
   `, { onMount: modal => {
-    const setTab = (key) => {
-      modal.querySelectorAll('[data-esp-pane]').forEach(p => { p.style.display = p.dataset.espPane === key ? '' : 'none'; });
-      modal.querySelectorAll('[data-esp-tab]').forEach(b => b.classList.toggle('primary', b.dataset.espTab === key));
-      const focus = { customer: '#espCustQ', lead: '#espLeadQ', new: '#espFirst' }[key];
-      const el = modal.querySelector(focus); if (el) el.focus();
+    const q = sel => modal.querySelector(sel);
+    const val = id => (q('#' + id) ? (q('#' + id).value || '').trim() : '');
+    const setAddr = (a1, city, stt, zip) => {
+      q('#espAddr1').value = a1 || ''; q('#espCity').value = city || '';
+      q('#espState').value = stt || ''; q('#espZip').value = zip || '';
     };
-    modal.querySelectorAll('[data-esp-tab]').forEach(b => b.addEventListener('click', () => setTab(b.dataset.espTab)));
 
-    const custLabel = c => c.company_name || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.name || '(no name)';
-    const rowHtml = (id, title, sub, attr) => `
-      <div ${attr}="${esc(id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid var(--rd-line,var(--border));cursor:pointer">
-        <div><strong style="font-size:.86rem">${esc(title)}</strong>${sub ? `<div style="color:var(--muted);font-size:.72rem">${esc(sub)}</div>` : ''}</div>
-        <span class="pec-btn ghost sm" style="pointer-events:none">Start</span>
-      </div>`;
-    const drawCust = () => {
-      const q = (modal.querySelector('#espCustQ').value || '').trim().toLowerCase();
-      const qd = q.replace(/\D/g, '');
-      const hits = customers.filter(c => !q
-        || custLabel(c).toLowerCase().includes(q)
-        || (c.email || '').toLowerCase().includes(q)
-        || (qd && String(c.phone || '').replace(/\D/g, '').includes(qd))
-        || (c.billing_address_line1 || '').toLowerCase().includes(q)
-        || (c.billing_city || '').toLowerCase().includes(q)).slice(0, 30);
-      modal.querySelector('#espCustList').innerHTML = hits.length
-        ? hits.map(c => rowHtml(c.id, custLabel(c), [c.phone, c.email].filter(Boolean).join(' · '), 'data-esp-cust')).join('')
-        : '<div class="pec-empty" style="padding:14px 6px">No matching customers.</div>';
-      modal.querySelectorAll('[data-esp-cust]').forEach(r => r.addEventListener('click', () => {
-        closeModal();
-        createDraftEstimateNow({ customerId: r.dataset.espCust });
-      }));
+    const isBizNow = () => q('input[name="espType"][value="business"]').checked;
+    modal.querySelectorAll('input[name="espType"]').forEach(r => r.addEventListener('change', () => {
+      q('#espBizWrap').style.display = isBizNow() ? '' : 'none';
+      q('#espFirstLabel').textContent = isBizNow() ? 'Contact first name (optional)' : 'First name';
+      q('#espLastLabel').textContent = isBizNow() ? 'Contact last name (optional)' : 'Last name';
+    }));
+
+    // Contact switch: an existing record collapses the New Contact fields
+    // into a read-only summary and prefills the job address from that record
+    // (customer billing / lead address), still editable. Back to New Contact
+    // restores the opts prefill (blank when there is none).
+    const applyContact = () => {
+      const v = q('#espContact').value;
+      const sum = q('#espSummary');
+      q('#espNewWrap').style.display = v ? 'none' : '';
+      if (!v) {
+        sum.style.display = 'none';
+        setAddr(prefill.address1, prefill.city, prefill.state, prefill.zip);
+        return;
+      }
+      if (v.startsWith('cust:')) {
+        const c = customers.find(x => 'cust:' + x.id === v);
+        if (!c) return;
+        sum.innerHTML = `<strong>${esc(custLabel(c))}</strong>
+          <div style="color:var(--muted);font-size:.74rem;margin-top:2px">${esc([c.phone ? qoFmtPhone(c.phone) : '', c.email].filter(Boolean).join(' · ') || 'No phone or email on file')}</div>
+          <div style="color:var(--muted);font-size:.68rem;margin-top:2px">Existing customer. Edit contact details on the customer page, not here.</div>`;
+        sum.style.display = '';
+        setAddr(c.billing_address_line1, c.billing_city, c.billing_state, c.billing_zip);
+      } else if (v.startsWith('lead:')) {
+        const l = leads.find(x => 'lead:' + x.id === v);
+        if (!l) return;
+        sum.innerHTML = `<strong>${esc(l.full_name || '(no name)')}</strong> <span class="pec-badge system" style="--pec-badge-bg:#64748b;margin-left:4px">${esc(titleCaseValue(l.stage))}</span>
+          <div style="color:var(--muted);font-size:.74rem;margin-top:2px">${esc([l.phone ? qoFmtPhone(l.phone) : '', l.email].filter(Boolean).join(' · ') || 'No phone or email on file')}</div>
+          <div style="color:var(--muted);font-size:.68rem;margin-top:2px">Existing lead. The estimate stays linked to it, and the open-estimate check still runs.</div>`;
+        sum.style.display = '';
+        setAddr(l.address, l.city, l.state, l.zip);
+      }
     };
-    const drawLead = () => {
-      const q = (modal.querySelector('#espLeadQ').value || '').trim().toLowerCase();
-      const qd = q.replace(/\D/g, '');
-      const hits = leads.filter(l => !q
-        || (l.full_name || '').toLowerCase().includes(q)
-        || (l.email || '').toLowerCase().includes(q)
-        || (qd && String(l.phone || '').replace(/\D/g, '').includes(qd))).slice(0, 30);
-      modal.querySelector('#espLeadList').innerHTML = hits.length
-        ? hits.map(l => rowHtml(l.id, l.full_name || '(no name)', `${titleCaseValue(l.stage)}${l.phone ? ' · ' + qoFmtPhone(l.phone) : ''}`, 'data-esp-lead')).join('')
-        : '<div class="pec-empty" style="padding:14px 6px">No matching leads.</div>';
-      modal.querySelectorAll('[data-esp-lead]').forEach(r => r.addEventListener('click', () => {
+    q('#espContact').addEventListener('change', applyContact);
+    applyContact();
+
+    // Address autocomplete (Places), same guarded attach as the appointment
+    // form: absent key / offline it is just a text field.
+    if (typeof pecAttachPlacesAutocomplete === 'function') {
+      pecAttachPlacesAutocomplete(q('#espAddr1'), (addr) => {
+        q('#espAddr1').value = addr.address1 || q('#espAddr1').value;
+        if (addr.city) q('#espCity').value = addr.city;
+        if (addr.state) q('#espState').value = addr.state;
+        if (addr.zip) q('#espZip').value = addr.zip;
+      });
+    }
+
+    q('#espGo').addEventListener('click', async () => {
+      const errEl = q('#espErr');
+      errEl.textContent = '';
+      const spPick = salespeople.find(s => String(s.id) === val('espSalesperson')) || null;
+      const extras = {
+        address: { address1: val('espAddr1'), city: val('espCity'), state: val('espState'), zip: val('espZip') },
+        salesperson: spPick ? { id: spPick.id, name: spPick.name } : null,
+        crewNotes: prefill.crewNotes || null,
+      };
+      const v = q('#espContact').value;
+      if (v.startsWith('cust:')) {
+        closeModal();
+        createDraftEstimateNow({ customerId: v.slice(5), extras });
+        return;
+      }
+      if (v.startsWith('lead:')) {
         closeModal();
         // The lead path keeps the duplicate-estimate guard, which runs BEFORE
         // the insert (prompt 61 landmine 6).
-        createDraftEstimate({ leadId: r.dataset.espLead });
-      }));
-    };
-    modal.querySelector('#espCustQ').addEventListener('input', drawCust);
-    modal.querySelector('#espLeadQ').addEventListener('input', drawLead);
-    drawCust(); drawLead();
-
-    const isBizNow = () => modal.querySelector('input[name="espType"][value="business"]').checked;
-    modal.querySelectorAll('input[name="espType"]').forEach(r => r.addEventListener('change', () => {
-      modal.querySelector('#espBizWrap').style.display = isBizNow() ? '' : 'none';
-      modal.querySelector('#espFirstLabel').textContent = isBizNow() ? 'Contact first name (optional)' : 'First name';
-      modal.querySelector('#espLastLabel').textContent = isBizNow() ? 'Contact last name (optional)' : 'Last name';
-    }));
-    modal.querySelector('#espCreateGo').addEventListener('click', async () => {
-      const errEl = modal.querySelector('#espErr');
-      errEl.textContent = '';
-      const val = id => (modal.querySelector('#' + id).value || '').trim();
+        createDraftEstimate({ leadId: v.slice(5), extras });
+        return;
+      }
+      // New Contact: the prompt 62 Part B name rules, unchanged.
       const first = val('espFirst'), last = val('espLast');
       const business = isBizNow() ? val('espBusiness') : '';
       if (isBizNow() && !business) { errEl.textContent = 'Business name is required.'; return; }
       if (!isBizNow() && (!first || !last)) { errEl.textContent = 'First and last name are both required.'; return; }
       if (!val('espSource')) { errEl.textContent = 'Pick a lead source.'; return; }
-      const btn = modal.querySelector('#espCreateGo');
+      const btn = q('#espGo');
       btn.disabled = true; btn.textContent = 'Creating…';
       try {
+        // company: 'prescott-epoxy' is the existing hardcode (FTP gap, noted
+        // in the log; not fixed here).
         const ins = await withDeadline(() => supabase.from('customers').insert({
           token: randomToken(),
           name: business || [first, last].filter(Boolean).join(' '),
@@ -7579,14 +7657,14 @@ async function openEstimateStartPicker() {
         }).select('id').single(), { label: 'estimate-start-new-customer' });
         if (ins.error) throw ins.error;
         closeModal();
-        createDraftEstimateNow({ customerId: ins.data.id });
+        createDraftEstimateNow({ customerId: ins.data.id, extras });
       } catch (err) {
-        btn.disabled = false; btn.textContent = 'Create customer + estimate';
+        btn.disabled = false; btn.textContent = 'Start estimate';
         errEl.textContent = 'Could not create: ' + (err && err.message ? err.message : err);
       }
     });
 
-    setTab('customer');
+    const sel = q('#espContact'); if (sel) sel.focus();
   }});
 }
 
