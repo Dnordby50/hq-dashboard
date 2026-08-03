@@ -76,7 +76,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only).",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a \u2715, and closes on \u2715, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated \u2715 only).",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -1972,6 +1972,36 @@
         "lead_events",
         "settings"
       ],
+      "since": "2026-08"
+    },
+    {
+      "name": "On-site presentation view (Present mode)",
+      "area": "estimates",
+      "description": "SumoQuote-style on-site presentation for closing in the driveway. A Present button on the estimate detail page opens a full-screen, iPad-friendly, dark walkthrough: literature slides (why us + warranty, process, photo gallery + live Google reviews, financing) followed by the estimate itself. The literature comes from pec_presentation_sections, ONE content store with TWO consumers: the same active sections, in the same Settings sort order, also render read-only on the public estimate page below the actions card, so the spouse who was not home re-reads the story from the emailed link. Nothing is stored per estimate; the rep skips or jumps live via the header select, dots, arrow keys, or the Back/Next bar. The estimate slide embeds the EXISTING ?preview= render from pec-public-estimate.cjs via the same staff-JWT srcdoc fetch as the Preview button; there is deliberately NO second line-item or price renderer anywhere (the governing rule: present = the customer view plus literature, never a new estimate). Closing on site: Open for signing runs the shared markEstimateSent flip (confirm-gated when unsent) then loads the REAL public page in the frame as ?token=<public_token>&present=1, so an on-site signature runs the byte-identical accept path as the emailed link (same POST /api/estimate/action, same handleAccept, same job/customer/deposit/webhook effects; proven side-by-side in the 2026-08-02 log entry). present=1's ONLY effect is skipping logEstimateView: the rep is driving, so presenting is not a customer view and must not light the bell mid-pitch. A 5s poll surfaces the signature to the rep chrome (Accepted and signed). Present mode is ONLINE ONLY by decision (no offline caching, no queued signatures). Settings > Presentation (admin): per-brand (PEC/FTP, brand REQUIRED on every row) section editor with create/edit/reorder/activate/delete, markdown body (the mdToSafeHtml subset, customer-facing so no em dashes), and manually curated photos resized client-side to 1600 px JPEG q0.82 before upload to the public pec-presentation bucket (5 MB server backstop); reviews count + minimum star rating are settings keys (presentation_reviews_count, presentation_reviews_min_rating) pulling live from the prompt-60 reviews table. Optional line items render as upgrade CARDS (optcard) on the customer page with the same .opt-toggle inputs and running total, replacing the bare checkbox rows. Tiered good/better/best packages are explicitly out of scope (one price plus optional items).",
+      "code": {
+        "indexHtml": [
+          "openPresentMode",
+          "presentMdToHtml",
+          "renderSettingsPresentation",
+          "openPresentationSectionModal",
+          "pecResizePresentationImage",
+          "renderEstimateDetail",
+          "markEstimateSent"
+        ],
+        "netlifyFunctions": [
+          "pec-public-estimate.cjs"
+        ],
+        "other": [
+          "supabase/migrations/2026-08-07_prompt64_presentation.sql"
+        ]
+      },
+      "tables": [
+        "pec_presentation_sections",
+        "reviews",
+        "settings",
+        "estimates"
+      ],
+      "spec": "claude-code-prompt-64-presentation-view.md",
       "since": "2026-08"
     }
   ]

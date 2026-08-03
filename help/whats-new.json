@@ -1,5 +1,27 @@
 [
   {
+    "id": "present-mode-onsite",
+    "date": "2026-08-02",
+    "title": "Present an estimate on site, and let the customer sign right there",
+    "summary": "Every estimate now has a Present button that opens a full-screen presentation for the driveway: your company story, how the work happens, photos and reviews, ways to pay, and then the estimate itself. The customer can tick optional add-ons and sign on your tablet, and it counts exactly the same as signing from the emailed link. The same story sections also appear on the customer's estimate page, so whoever was not home can read them later.",
+    "howto": [
+      "Open an estimate and click Present. Use the arrows, the dots, or the dropdown at the top to move between sections.",
+      "The last slide is the estimate. Click Open for signing to make it live, then hand the customer your tablet to tick options and sign.",
+      "Write and turn on your presentation sections in Settings, Presentation. They ship turned off until you review them."
+    ]
+  },
+  {
+    "id": "presentation-sections-settings",
+    "date": "2026-08-02",
+    "title": "Your sales story lives in Settings now",
+    "summary": "Settings has a new Presentation tab where you write the sections customers see: why us, our process, a photo gallery with your Google reviews, and financing. Photos are shrunk automatically on upload so pages stay fast on cell data. Four draft sections are already written and waiting for your review; they are turned off until you switch them on.",
+    "howto": [
+      "Go to Settings, Presentation. Edit the four draft sections, add real job photos to the gallery, and click Turn on for each one you want live.",
+      "Reorder sections with the arrows; the presentation and the customer page follow this order.",
+      "Set how many recent reviews show, and the minimum star rating, at the bottom of the tab."
+    ]
+  },
+  {
     "id": "estimator-cleaner-estimate-view",
     "date": "2026-08-02",
     "title": "A cleaner estimator: product dropdowns wait until after the sale",
