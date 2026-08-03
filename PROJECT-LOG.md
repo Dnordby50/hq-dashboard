@@ -2,6 +2,37 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-02 MST] Cowork: scoped prompt 63 (estimator product slots, inline-estimator gap, preview-modal exit, job-page picks) and prompt 64 (presentation view)
+By: Cowork
+
+Changed: two new prompt files only. No code, no schema, no data.
+
+- `claude-code-prompt-63-estimator-slots-iframe-gap-preview-exit.md` (new)
+- `claude-code-prompt-64-presentation-view.md` (new)
+
+Dylan brought four items: (1) hide Basecoat/flake/topcoat from the estimate, (2) "estimate detail scrolls forever", (3) the customer preview modal cannot be exited, (4) a SumoQuote-style on-site presentation view. 28 multiple-choice questions were asked before writing anything. Dylan chose to split the work: prompt 63 is the three fixes plus the job-page picks, prompt 64 is the presentation on its own.
+
+**Two root causes diagnosed from the code, not guessed:**
+
+1. **The "scrolls forever" complaint is not a layout-taste problem.** Dylan clarified it is a large blank gap between the estimator's Notes-for-the-crew box and the Customer view card on draft estimates. Cause: `apps/estimator/src/styles.css:48` sets `html, body, #root { height: 100% }` unconditionally, and the embed height reporter (`EstimatorScreen.tsx` ~1178) measures `#root.scrollHeight`. In an iframe that means the reported height can never be LESS than the frame's current height, so the frame (mounted at `min(1100px, 85vh)`, `index.html:7171`) ratchets: it grows with content but never shrinks. `body.embed .screen { min-height: 0 }` at styles.css:54 was the attempted fix and it misses `#root`. Fix specified: `body.embed #root { height: auto }` plus a forced re-post, with a browser-verified SHRINK test as the acceptance criterion.
+
+2. **The preview modal is a genuine dead end, by construction.** `estPreview` (`index.html` ~27515) passes iframe-only HTML to `openModal`, so there is no ✕ and no header. `openModal` (7982-7999) deliberately disables backdrop-click-to-close when the content matches `form, input, textarea, select, iframe` — `iframe` is in that guard to protect the ESTIMATOR modal's inputs, and the preview inherits protection it does not need. No Escape listener covers `.pec-modal-bg`. Only exit today is a page reload. Fix specified as an opt-in `dismissible` flag so no existing data-entry modal loses its stray-click protection, with three negative regression tests (change order, payment, compose must still refuse Escape and backdrop).
+
+**Finding that made Part A safe:** `defaultSlotValues` (`EstimatorScreen.tsx` ~156-174) prefills every product slot from `default_product_id`, and `planForArea` resolves `pick || default_product_id`. Hiding the product dropdowns therefore cannot change `calc_price` or `materials_cost`. Prompt 63 requires proving it on three existing estimates rather than assuming it. One real behavior change is called out: `flakeColorFromPicks` will stop writing `estimates.flake_color` (swatch slots are deliberately unprefilled), so the manual `#estFlakeColor` field on the estimate detail page becomes the only writer. Dylan chose to keep that field for exactly this reason.
+
+**Irony worth recording:** prompt 62 Part H is what made this card always visible. It deleted the `More detail` accordion because "a collapsed section kept getting skipped in the driveway". That was right for the work-order questions and wrong for the product dropdowns. Prompt 63 keeps the work-order questions always visible and hides only the product-kind slots, with a `Specify products` link as the escape hatch for commercial specs.
+
+**Locked decisions, prompt 63:** hide EVERY product-kind slot (via the existing `kindOf(s)` helper) not just the three named ones, so a future product material_type hides automatically; keep choice/text slots and the system picker; keep the Work order block; `Specify products` link, session-only, defaults collapsed; job-page product picks are display-and-ordering ONLY and must never touch `computeCostingRow`, `materials_cost` or GP (the prompt-56 lesson is cited at the write site); preview gets ✕ + Escape + backdrop, the offline estimator fallback gets ✕ only.
+
+**Locked decisions, prompt 64:** dashboard-side present mode, ONLINE ONLY; the estimate slide embeds the existing `?preview=` render from `pec-public-estimate.cjs` and never reimplements price or line items (Dylan said "never a new estimate itself" three times); the same Settings-managed section content ALSO renders read-only on the public estimate page so the literature reaches the spouse who was not home; four section types (why-us + warranty, process, gallery + reviews, financing); all active sections in Settings sort order, rep skips live, no per-estimate toggles; photos manually curated in Settings, reviews pulled from the prompt-60 reviews table; customer can sign on the rep's device, reusing the existing accept path with the approach to be reported before it is built.
+
+**Conflict flagged rather than silently resolved:** Dylan answered the good/better/best tiering question three times across rounds and answered "no tiers" twice and "yes, and it's the point" once. Prompt 64 is written as NO tiers (one price plus a better visual treatment of the existing optional line items) and states the conflict explicitly so Dylan can overrule it. Real tiers would touch the calculator, the accept path, costing and metrics, and belong in their own prompt.
+
+**Risk named to Dylan and accepted by him:** a dashboard-only present mode is a second surface, and online-only means a dead signal in a driveway kills the pitch. He kept the choice after being told. The drift risk is mitigated by the embed-the-real-renderer rule, which is the reason that rule is the governing constraint of prompt 64.
+
+Files touched: claude-code-prompt-63-estimator-slots-iframe-gap-preview-exit.md (new), claude-code-prompt-64-presentation-view.md (new), PROJECT-LOG.md (this entry). No prod schema change. No prod data change.
+Next steps: Dylan runs prompt 63 in Claude Code. Prompt 64 waits until 63 is verified. Prompt 62's own open items (walk the two-card board, confirm the change_requested/signed column mapping) are still outstanding, as is rotating the plaintext ELEVENLABS_API_KEY.
+
 ---
 
 ## [2026-08-02 MST] Cowork: multi-tenancy readiness assessment (no code changed)
