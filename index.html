@@ -24160,7 +24160,8 @@ async function openAppointmentForm(existing, prefill = {}) {
     <div class="pec-modal-actions" style="justify-content:space-between">
       <div style="display:flex;gap:8px">
         ${isNew ? '' : `<button type="button" class="pec-btn ghost sm danger" id="afDelete">Delete</button>
-        <button type="button" class="pec-btn ghost sm" id="afCancelAppt">${a.status === 'canceled' ? 'Restore' : 'Cancel appt'}</button>`}
+        <button type="button" class="pec-btn ghost sm" id="afCancelAppt">${a.status === 'canceled' ? 'Restore' : 'Cancel appt'}</button>
+        <button type="button" class="pec-btn ghost sm" id="afStartEstimate" title="Creates a draft estimate for this appointment's lead or customer and opens it. The appointment's address and job notes carry over.">Start estimate</button>`}
       </div>
       <div style="display:flex;gap:8px">
         <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
@@ -24314,6 +24315,40 @@ async function openAppointmentForm(existing, prefill = {}) {
         delBtn.disabled = false;
         errEl.textContent = 'Could not delete: ' + (err && err.message ? err.message : err);
       }
+    });
+
+    // Start estimate from this appointment (prompt 65 Part C). Edit mode
+    // only; reads the SAVED row (unsaved form edits do not ride along).
+    // Lead linked -> createDraftEstimate (the duplicate guard runs BEFORE the
+    // insert, prompt 61 landmine 6); customer-only -> createDraftEstimateNow;
+    // both -> the lead path (it already carries the lead's customer_id onto
+    // the estimate). Neither -> the Part B modal on New Contact, prefilled
+    // from this appointment, so the customer row is created FIRST; never a
+    // silent auto-create. The appointment's address is the actual job site,
+    // so it wins over the customer's billing address, and the customer's own
+    // appointment notes land in crew_notes (the estimator's one notes box).
+    const startEstBtn = modal.querySelector('#afStartEstimate');
+    if (startEstBtn) startEstBtn.addEventListener('click', () => {
+      const extras = {
+        address: (a.location_address || a.location_city || a.location_zip)
+          ? { address1: a.location_address, city: a.location_city, state: a.location_state, zip: a.location_zip }
+          : null,
+        crewNotes: a.customer_notes || null,
+      };
+      closeModal();
+      if (leadId) { createDraftEstimate({ leadId, extras }); return; }
+      if (customerId) { createDraftEstimateNow({ customerId, extras }); return; }
+      // Unlinked: the title's name half ("Jane Doe, Estimate" -> "Jane Doe")
+      // seeds the New Contact split; the appointment stores no phone/email.
+      const nm = String(a.title || '').split(',')[0].trim();
+      const sp = nm.indexOf(' ');
+      openEstimateStartPicker({ prefill: {
+        first: sp < 0 ? nm : nm.slice(0, sp),
+        last: sp < 0 ? '' : nm.slice(sp + 1).trim(),
+        address1: a.location_address || '', city: a.location_city || '',
+        state: a.location_state || '', zip: a.location_zip || '',
+        crewNotes: a.customer_notes || null,
+      } });
     });
 
     const cancelBtn = modal.querySelector('#afCancelAppt');
