@@ -26,6 +26,8 @@ Refreshed 2026-07-31 (Claude Code) after the lead-source-unification migration (
 
 Refreshed 2026-08-01 (Claude Code) after the prompt-62 migration (2026-08-06_prompt62_lead_customer_estimate.sql, applied via MCP and verified by information_schema/pg_indexes re-query): `leads.business_name` / `leads.archived_at` / `leads.lost_notes` (all nullable), `estimates.customer_id` (uuid, nullable, FK -> customers.id), and indexes `estimates_customer_id_idx` + `leads_archived_at_idx`. Row counts refreshed off live: leads 6 to 11, estimates 5 to 9. Additive only; no CHECK constraint changed (there is deliberately NO estimate_draft lead stage; the pipeline Drafts column is derived from estimates.status).
 
+Refreshed 2026-08-02 (Claude Code) after the prompt-64 migration (2026-08-07_prompt64_presentation.sql, applied via MCP and verified by re-query): new table `pec_presentation_sections` (presentation literature: brand + kind CHECKs, jsonb images of storage paths, sort_order, active; index idx_pec_presentation_brand_order; RLS policy pec_presentation_staff), two settings keys `presentation_reviews_count` (seeded '3') and `presentation_reviews_min_rating` (seeded '4') (settings 66 rows to 68), and NOT a public-schema table: the `pec-presentation` Storage bucket (public, image/jpeg+png+webp, 5 MB) with four pec_presentation_* storage.objects policies. Additive only.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 84 tables documented, 84 live, all in `public`, all with RLS enabled. No gaps.
@@ -1002,6 +1004,25 @@ RLS: enabled · rows: 0
 PK: id
 FK: customer_id → customers.id; job_id → jobs.id
 
+### pec_presentation_sections
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| brand | text | no |  |
+| kind | text | no |  |
+| title | text | no |  |
+| body | text | yes |  |
+| images | jsonb | no | '[]'::jsonb |
+| sort_order | integer | no | 0 |
+| active | boolean | no | true |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+Note: prompt 64 presentation literature, ONE content store for TWO consumers: the dashboard's full-screen Present mode and the public estimate page both render every ACTIVE row for the estimate's brand in sort_order (no per-estimate storage). CHECKs: brand in ('prescott-epoxy','finishing-touch') (the long pec_brand_identity keys; estimates.brand short forms PEC/FTP are mapped at read time), kind in ('why_us','process','gallery','financing'). `images` is a jsonb array of paths inside the public `pec-presentation` Storage bucket (resized to 1600 px JPEG client-side on upload). body is the mdToSafeHtml markdown subset, customer-facing (no em dashes). Reviews are NOT stored here; the gallery kind pulls them live from `reviews` using the presentation_reviews_count / presentation_reviews_min_rating settings.
+
 ### pec_prod_addons
 RLS: enabled · rows: 6
 
@@ -1928,7 +1949,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 66
+RLS: enabled · rows: 68
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1937,6 +1958,7 @@ RLS: enabled · rows: 66
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-08-02 (prompt 64), in Settings > Presentation: presentation_reviews_count ('3', how many recent reviews the gallery section shows, 1 to 10) and presentation_reviews_min_rating ('4', minimum star rating that qualifies, 1 to 5). Read by pec-public-estimate.cjs (loadLiterature) and the dashboard's Present mode. Inserted insert-only. Settings 66 rows to 68.
 Key added 2026-08-01 (prompt 62 Part G), in Settings > Drips: lost_reason_ai_backfill_enabled ('true'; the nightly pec-lost-reason-backfill treats a MISSING row as on too, so this seed is for Settings visibility, and 'false' is the only value that turns the pass off). Settings 65 rows to 66.
 Keys added 2026-07-31 (prompt 60), all in Settings > Reviews: review_drip_enabled ('true', master switch for the review campaign, checked ALONGSIDE drip_sending_enabled: both must be 'true'), review_ask_default_on ('true', whether the job close-out popup pre-selects Send), review_bonus_amount ('25', dollars per human-confirmed 5-star review), review_bonus_min_stars ('5', minimum rating that earns credit and a bonus), review_match_window_days ('45', how far back the intake looks for a candidate ask), review_stop_on_touchup ('true', a touch-up or callback opening stops the drip), review_alert_max_stars ('3', a review at or below this raises a bell for Dylan and Anne and stops the enrollment). The Google review URL itself stays on the pre-existing google_review_link_epoxy key. Inserted insert-only. Settings 58 rows to 65.
 Keys added 2026-07-28 (prompt 55): twelve `ops_*` keys, all surfaced in Settings > General under "Ops Queue". Ten on/off switches, one per derived check (ops_check_busybusy_unmapped, ops_check_costing_unfinalized, ops_check_missing_revenue, ops_check_never_invoiced, ops_check_missing_salesperson, ops_check_missing_system, ops_check_drip_approvals, ops_check_touchup_age, ops_check_deposit_uncollected, ops_check_system_health, each 'true'), plus two day thresholds: ops_touchup_age_days ('7', a touch-up open longer than this lands on the queue, NOT the same knob as touchup_aging_days '14', which only reddens the Touch-ups panel row) and ops_deposit_age_days ('7', days after signing before an uncollected deposit is flagged). Inserted insert-only, so live edits are never clobbered by a re-run.

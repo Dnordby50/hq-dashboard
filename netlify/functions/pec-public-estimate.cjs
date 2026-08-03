@@ -201,30 +201,42 @@ function scopeRowsHtml(est, sysName, totalSqft) {
   return rows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${v}</td></tr>`).join('');
 }
 
-function lineItemRowsHtml(items, readOnly) {
+// The per-line description is the AI-assembled scope of work (markdown),
+// rendered through mdToSafeHtml (escape-then-format) so it reads like the
+// DripJobs proposal under each line and can never inject markup.
+const liDescHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : '';
+
+function lineItemRowsHtml(items) {
   const list = Array.isArray(items) ? items : [];
   const required = list.filter(li => li && !isOptionalLine(li));
-  const optional = list.filter(li => isOptionalLine(li));
-  // The per-line description is now the AI-assembled scope of work (markdown),
-  // rendered through mdToSafeHtml (escape-then-format) so it reads like the
-  // DripJobs proposal under each line and can never inject markup.
-  const descHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : '';
-  const row = (li, opt) => `<tr>
-      <td>${opt ? `<label style="display:flex;gap:10px;align-items:flex-start;cursor:${readOnly ? 'default' : 'pointer'}">
-          <input type="checkbox" class="opt-toggle" data-li-id="${esc(li.id)}" data-li-total="${Number(li.total) || 0}" ${li.selected_by_customer ? 'checked' : ''} ${readOnly ? 'disabled' : ''} style="margin-top:3px;width:17px;height:17px;accent-color:#D8531C">
-          <span><span style="font-weight:600">${esc(li.label || '')}</span>${descHtml(li)}</span>
-        </label>` : `<span style="font-weight:600">${esc(li.label || '')}</span>${descHtml(li)}`}</td>
+  const row = (li) => `<tr>
+      <td><span style="font-weight:600">${esc(li.label || '')}</span>${liDescHtml(li)}</td>
       <td>${usd(li.total)}</td>
     </tr>`;
-  const requiredRows = required.length ? required.map(li => row(li, false)).join('')
+  return required.length ? required.map(row).join('')
     : '<tr><td colspan="2" style="padding:14px 12px;color:#6b7280;text-align:center">No line items.</td></tr>';
-  const optionalBlock = optional.length ? `
-      <tr><td colspan="2" style="border-bottom:none;padding-top:22px">
-        <div style="font-size:11px;font-weight:800;letter-spacing:2.2px;text-transform:uppercase;color:#D8531C">Optional items</div>
-        <div style="color:#6b7280;font-size:13px;margin-top:3px">${readOnly ? 'The selection below is what was chosen.' : 'Tick any you would like to add. The total updates as you choose.'}</div>
-      </td></tr>
-      ${optional.map(li => row(li, true)).join('')}` : '';
-  return requiredRows + optionalBlock;
+}
+
+// Optional add-ons as upgrade CARDS (prompt 64): same .opt-toggle inputs, same
+// data attributes, same helper copy, so the tick-to-update script and the
+// signature freeze are untouched; only the visual container changed from a
+// bare checkbox table row to a card the rep can point at on an iPad. The
+// running total is the hero + grand total the script already updates.
+function optionalCardsHtml(items, readOnly) {
+  const optional = (Array.isArray(items) ? items : []).filter(li => isOptionalLine(li));
+  if (!optional.length) return '';
+  const card = (li) => `
+      <label class="optcard" style="cursor:${readOnly ? 'default' : 'pointer'}">
+        <input type="checkbox" class="opt-toggle" data-li-id="${esc(li.id)}" data-li-total="${Number(li.total) || 0}" ${li.selected_by_customer ? 'checked' : ''} ${readOnly ? 'disabled' : ''} style="margin-top:3px;width:19px;height:19px;flex:0 0 auto;accent-color:#D8531C">
+        <span style="flex:1;min-width:0"><span style="font-weight:700">${esc(li.label || '')}</span>${liDescHtml(li)}</span>
+        <span style="font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums">${usd(li.total)}</span>
+      </label>`;
+  return `
+        <div style="margin-top:24px">
+          <div class="eyebrow">Optional items</div>
+          <div style="color:#6b7280;font-size:13px;margin-top:3px">${readOnly ? 'The selection below is what was chosen.' : 'Tick any you would like to add. The total updates as you choose.'}</div>
+          <div style="display:grid;gap:12px;margin-top:12px">${optional.map(card).join('')}</div>
+        </div>`;
 }
 
 // Status banner + whether the action buttons render. accepted / rejected /
@@ -382,7 +394,9 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   table.li th { text-align:left; padding:0 12px 10px; font-size:11px; font-weight:800; letter-spacing:1.8px; text-transform:uppercase; color:#98a1ad; border-bottom:2px solid ${primary}; }
   table.li td { padding:14px 12px; border-bottom:1px solid #eef0f3; vertical-align:top; line-height:1.5; }
   table.li th:last-child, table.li td:last-child { text-align:right; width:130px; white-space:nowrap; }
-  table.li .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:pre-wrap; font-weight:400; }
+  .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:pre-wrap; font-weight:400; }
+  .optcard { display:flex; gap:12px; align-items:flex-start; border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; transition:border-color .15s, box-shadow .15s; }
+  .optcard:has(.opt-toggle:checked) { border-color:${accent}; box-shadow:0 0 0 1px ${accent}; }
   table.scope { width:100%; border-collapse:collapse; font-size:14.5px; }
   table.scope td { padding:9px 0; border-bottom:1px solid #eef0f3; vertical-align:top; }
   table.scope td.k { color:#6b7280; width:180px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:1.8px; padding-right:12px; }
@@ -457,8 +471,9 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
         <div class="eyebrow" style="margin-top:26px">Your estimate</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items, !interactive)}</tbody>
+          <tbody>${lineItemRowsHtml(items)}</tbody>
         </table>
+        ${optionalCardsHtml(items, !interactive)}
         <table class="tot">
           <tr class="total"><td>Total</td><td id="grandTotal">${usd(total)}</td></tr>
         </table>
@@ -467,6 +482,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
 
     ${financingBlock}${signedBlock}
     ${actions}
+    ${literatureBlockHtml(opts && opts.literature, b.accent_color)}
 
     <div class="noprint" style="text-align:center;margin-top:24px">
       <button class="printbtn" onclick="window.print()">Print / Save as PDF</button>
@@ -612,6 +628,76 @@ async function loadSystemName(systemTypeId) {
     const rows = await sb('GET', `/pec_prod_system_types?id=eq.${encodeURIComponent(systemTypeId)}&select=name&limit=1`);
     return Array.isArray(rows) && rows[0] ? rows[0].name : null;
   } catch (_) { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Presentation literature (prompt 64). One content store, two consumers: these
+// same pec_presentation_sections rows render as slides in the dashboard's
+// Present mode AND read-only on this public page, so the story the rep told in
+// the driveway is the one the spouse re-reads at the kitchen table. brand is
+// REQUIRED on every row; estimates.brand carries the short forms (PEC/FTP),
+// pec_presentation_sections keys on pec_brand_identity's long forms, and this
+// map is the same PEC/FTP <-> company convention the dashboard uses everywhere.
+// ---------------------------------------------------------------------------
+const presentationBrandKey = (brand) =>
+  (brand === 'FTP' || brand === 'finishing-touch') ? 'finishing-touch' : 'prescott-epoxy';
+
+const presentationImageUrl = (p) =>
+  `${SUPABASE_URL}/storage/v1/object/public/pec-presentation/${String(p).split('/').map(encodeURIComponent).join('/')}`;
+
+async function loadLiterature(estBrand) {
+  try {
+    const brandKey = presentationBrandKey(estBrand);
+    const sections = await sb('GET', `/pec_presentation_sections?brand=eq.${encodeURIComponent(brandKey)}&active=is.true&select=id,kind,title,body,images,sort_order&order=sort_order.asc`);
+    if (!Array.isArray(sections) || !sections.length) return { sections: [], reviews: [] };
+    let reviews = [];
+    // Reviews ride the gallery section, pulled live from the prompt-60 reviews
+    // table. Count and minimum rating are Settings values, not constants.
+    if (sections.some(s => s.kind === 'gallery')) {
+      const set = await sb('GET', '/settings?key=in.(presentation_reviews_count,presentation_reviews_min_rating)&select=key,value');
+      const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+      const count = Math.min(10, Math.max(1, Number(cfg.presentation_reviews_count) || 3));
+      const minRating = Math.min(5, Math.max(1, Number(cfg.presentation_reviews_min_rating) || 4));
+      const rows = await sb('GET', `/reviews?rating=gte.${minRating}&review_text=not.is.null&select=reviewer_name,rating,review_text,posted_at,created_at&order=posted_at.desc.nullslast&limit=${count}`);
+      reviews = Array.isArray(rows) ? rows : [];
+    }
+    return { sections, reviews };
+  } catch (_) { return { sections: [], reviews: [] }; }
+}
+
+const SECTION_KIND_LABELS = {
+  why_us: 'Why choose us', process: 'How the work happens',
+  gallery: 'Our work', financing: 'Ways to pay',
+};
+
+function literatureBlockHtml(literature, accent) {
+  const sections = literature && Array.isArray(literature.sections) ? literature.sections : [];
+  if (!sections.length) return '';
+  const reviews = Array.isArray(literature.reviews) ? literature.reviews : [];
+  const stars = (n) => '&#9733;'.repeat(Math.max(1, Math.min(5, Number(n) || 5)));
+  const reviewsHtml = reviews.length ? `
+      <div style="display:grid;gap:12px;margin-top:18px">
+        ${reviews.map((r) => `<div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px">
+          <div style="color:${esc(accent)};font-size:15px;letter-spacing:2px">${stars(r.rating)}</div>
+          <div style="font-size:14px;color:#374151;line-height:1.65;margin-top:8px;white-space:pre-wrap">${esc(r.review_text || '')}</div>
+          <div style="font-weight:700;font-size:13px;margin-top:10px">${esc(r.reviewer_name || 'Verified customer')}</div>
+        </div>`).join('')}
+      </div>` : '';
+  const imagesHtml = (imgs) => {
+    const list = Array.isArray(imgs) ? imgs.filter(Boolean) : [];
+    if (!list.length) return '';
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:16px">
+      ${list.map((p) => `<img src="${esc(presentationImageUrl(p))}" alt="" loading="lazy" style="width:100%;height:160px;object-fit:cover;border-radius:10px;background:#eef0f3">`).join('')}
+    </div>`;
+  };
+  return sections.map((s) => `
+    <div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">${esc(SECTION_KIND_LABELS[s.kind] || 'About us')}</div>
+      <h3 class="sec">${esc(s.title || '')}</h3>
+      ${s.body ? `<div style="font-size:14px;color:#374151;line-height:1.7">${mdToSafeHtml(s.body)}</div>` : ''}
+      ${imagesHtml(s.images)}
+      ${s.kind === 'gallery' ? reviewsHtml : ''}
+    </div>`).join('');
 }
 
 async function loadBrand(brandKey) {
@@ -1157,14 +1243,15 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, sysName, areas, financing] = await Promise.all([
+      const [brand, sysName, areas, financing, literature] = await Promise.all([
         loadBrand(est.brand),
         loadSystemName(est.system_type_id),
         loadAreas(est.id),
         loadFinancingSettings(sb),
+        loadLiterature(est.brand),
       ]);
       const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing });
+      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing, literature });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -1177,17 +1264,23 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, sysName, areas, financing] = await Promise.all([
+    const [brand, sysName, areas, financing, literature] = await Promise.all([
       loadBrand(est.brand),
       loadSystemName(est.system_type_id),
       loadAreas(est.id),
       loadFinancingSettings(sb),
+      loadLiterature(est.brand),
     ]);
     const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
-    await logEstimateView(est, event);
-    return estimatePage(est, brand, sysName, totalSqft, { financing });
+    // present=1 (prompt 64): the dashboard's Present mode loads this live page
+    // in its signing step with the REP driving, so it is not a customer view
+    // and must not light the bell mid-presentation. The param's ONLY effect is
+    // skipping this log; render, buttons, and the action path are identical.
+    // A customer who hand-added the param would only skip a convenience log.
+    if (String(qs.present || '') !== '1') await logEstimateView(est, event);
+    return estimatePage(est, brand, sysName, totalSqft, { financing, literature });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();
@@ -1199,5 +1292,5 @@ exports.handler = async (event) => {
 exports._internals = {
   deterministicUuid, includedTotal, freezeLineItems, ensureJobCreated,
   loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
-  mdToSafeHtml, applySelection,
+  mdToSafeHtml, applySelection, loadLiterature, literatureBlockHtml, presentationBrandKey,
 };
