@@ -300,6 +300,14 @@ export default function EstimatorScreen({
       makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }),
     }) as AreaForm[],
   );
+  // Prompt 63 Part A: product-kind slots are HIDDEN at estimate time (Dylan:
+  // "only things that drive sales on the estimate"). This flag is the escape
+  // hatch for commercial bids / a customer who already picked: session-only,
+  // never persisted, defaults collapsed on every open, reveals for ALL areas.
+  // Hiding is display-only: slotValues keeps the prefilled defaults either
+  // way, so the material plan, the price, and the saved slot rows are
+  // byte-identical whether or not the dropdowns render.
+  const [specifyProducts, setSpecifyProducts] = useState(false);
   const [addonForms, setAddonForms] = useState<AddonForm[]>(() =>
     (editing?.addonLines ?? []).map((li) => ({
       key: uuid(),
@@ -2135,36 +2143,67 @@ export default function EstimatorScreen({
             </section>
           )}
 
-          {/* Products, colors, and the work order questions render ALWAYS
-              VISIBLE (prompt 62 Part H dropped the More detail accordion: a
-              collapsed section kept getting skipped in the driveway). Still
-              optional: a rep who never touches it gets a correct price off
-              the recipe defaults. Hidden in custom mode (recipe/area detail). */}
+          {/* The work order questions render ALWAYS VISIBLE (prompt 62 Part H
+              dropped the More detail accordion: a collapsed section kept
+              getting skipped in the driveway). Product dropdowns are hidden
+              behind Specify products (prompt 63 Part A: they detract from the
+              sale; picks happen later, on the job). Still optional: a rep who
+              never touches any of it gets a correct price off the recipe
+              defaults. Hidden in custom mode (recipe/area detail). */}
           {!isCustom && <section className="card">
-            <div className="areas-head"><span>Products and colors</span></div>
-            {areas.map((a, i) => {
-              const areaSlots = slotsFor(a.systemTypeId);
-              if (!areaSlots.length) return null;
-              return (
-                <div className="area" key={i}>
-                  {areas.length > 1 && <div className="area-label">{a.name || `Area ${i + 1}`} <span className="muted">({systemTypes.find((s) => s.id === a.systemTypeId)?.name ?? ''})</span></div>}
-                  <div className="slots">
-                    {areaSlots.map((s) => (
-                      <label className="field" key={s.id}>
-                        <span>{s.label || s.material_type}{s.required ? ' *' : ''}</span>
-                        <SlotControl
-                          slot={s}
-                          value={a.slotValues[s.id] ?? ''}
-                          products={productsByType[s.material_type] ?? []}
-                          onChange={(v) => setSlot(i, s.id, v)}
-                        />
-                      </label>
-                    ))}
+            {(() => {
+              // Prompt 63 Part A: product-kind slots (Basecoat, Topcoat, Flake,
+              // Quartz, ... anything kindOf === 'product', so a future product
+              // material_type hides automatically) are hidden while selling;
+              // choice/text slots (e.g. Topcoat cure speed) stay, and the
+              // Specify products link reveals everything for this session.
+              // Display-only: slotValues keeps the prefilled defaults, so
+              // pricing and the saved rows never change.
+              const areaBlocks = areas.map((a, i) => {
+                const areaSlots = slotsFor(a.systemTypeId)
+                  .filter((s) => specifyProducts || kindOf(s) !== 'product');
+                if (!areaSlots.length) return null;
+                return (
+                  <div className="area" key={i}>
+                    {areas.length > 1 && <div className="area-label">{a.name || `Area ${i + 1}`} <span className="muted">({systemTypes.find((s) => s.id === a.systemTypeId)?.name ?? ''})</span></div>}
+                    <div className="slots">
+                      {areaSlots.map((s) => (
+                        <label className="field" key={s.id}>
+                          <span>{s.label || s.material_type}{s.required ? ' *' : ''}</span>
+                          <SlotControl
+                            slot={s}
+                            value={a.slotValues[s.id] ?? ''}
+                            products={productsByType[s.material_type] ?? []}
+                            onChange={(v) => setSlot(i, s.id, v)}
+                          />
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                );
+              });
+              // Never leave an empty titled card: when no area has a visible
+              // slot, the heading and hint go too and only the link renders.
+              const anyVisible = areaBlocks.some(Boolean);
+              const specifyLink = (
+                <button type="button" className="link" onClick={() => setSpecifyProducts((v) => !v)}>
+                  {specifyProducts ? 'Hide products' : 'Specify products'}
+                </button>
               );
-            })}
-            <p className="hint">Flake color can stay unpicked; the price already includes standard flake, the customer usually chooses after the presentation, and it stays editable on the estimate page.</p>
+              return (
+                <>
+                  {anyVisible ? (
+                    <>
+                      <div className="areas-head"><span>Products and colors</span><span className="scope-actions">{specifyLink}</span></div>
+                      {areaBlocks}
+                      <p className="hint">Colors and products are picked after the sale, on the job. The price already includes standard materials. Use Specify products if this job needs a spec now.</p>
+                    </>
+                  ) : (
+                    <div className="areas-head"><span /><span className="scope-actions">{specifyLink}</span></div>
+                  )}
+                </>
+              );
+            })()}
             <div className="areas-head" style={{ marginTop: 10 }}><span>Work order</span></div>
             {workOrderFields}
           </section>}
