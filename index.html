@@ -598,11 +598,17 @@ button.pec-stat:hover{border-color:var(--accent)}
 /* Estimator iframe modal: near-fullscreen shell, zero padding so the PWA owns
    the whole surface. The iframe fills it; the app inside provides its own
    chrome (topbar, Close button that postMessages the dashboard). */
-.pec-modal.pec-modal-estimator{max-width:min(1180px,96vw);width:96vw;height:92vh;max-height:92vh;padding:0;overflow:hidden}
+.pec-modal.pec-modal-estimator{max-width:min(1180px,96vw);width:96vw;height:92vh;max-height:92vh;padding:0;overflow:hidden;display:flex;flex-direction:column}
+/* Slim header bar for iframe modals (prompt 63 Part D): title left, ✕ right.
+   The preview modal had NO exit at all before this; the offline estimator
+   modal gets the same ✕ (confirm-gated) but stays non-dismissible. */
+.pec-modal-xhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex:0 0 auto;font-size:.85rem}
+.pec-modal-xclose{background:none;border:0;color:var(--muted);font-size:1.05rem;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}
+.pec-modal-xclose:hover{color:inherit;background:var(--s2)}
 /* Email Log row detail: wider than the 520px default so the 600px email
    chrome renders without horizontal scrolling inside its iframe. */
 .pec-modal.pec-modal-email-log{max-width:min(720px,94vw)}
-.pec-estimator-frame{display:block;width:100%;height:100%;border:0}
+.pec-estimator-frame{display:block;width:100%;height:100%;border:0;flex:1 1 auto;min-height:0}
 /* Inline estimator (prompt 61): lives INSIDE the estimate detail page, sized
    by the app's own height messages (fallback height set in JS). No border of
    its own: the estimator's cards carry the page look, and a visible frame
@@ -7199,11 +7205,22 @@ function openEstimatorFrame({ leadId = null, estimateId = null, offlineNote = fa
   const note = offlineNote
     ? '<div style="background:rgba(217,119,6,.12);border-bottom:1px solid rgba(217,119,6,.4);padding:8px 12px;font-size:.8rem">You are offline, so the estimate opens in the classic window and saves to this device. It is created for real, with its number, as soon as the device is back online.</div>'
     : '';
+  // NOT dismissible and no Escape (prompt 63 Part D): the frame holds a live
+  // half-built estimate, so backdrop/Escape must never close it. The ✕ exists
+  // because this modal previously had no exit outside the app's own Close;
+  // it confirms first because the parent cannot see the frame's unsaved state.
   const wrap = openModal(
-    `${note}<iframe class="pec-estimator-frame" src="${estimatorFrameSrc({ leadId, estimateId })}" title="PEC Estimator"></iframe>`,
+    `<div class="pec-modal-xhead">
+      <strong>Estimator</strong>
+      <button type="button" class="pec-modal-xclose" id="pecEstFrameClose" aria-label="Close estimator" title="Close the estimator. Anything typed but not saved is lost.">✕</button>
+    </div>${note}<iframe class="pec-estimator-frame" src="${estimatorFrameSrc({ leadId, estimateId })}" title="PEC Estimator"></iframe>`,
   );
   const modal = wrap.querySelector('.pec-modal');
   if (modal) modal.classList.add('pec-modal-estimator');
+  const closeBtn = wrap.querySelector('#pecEstFrameClose');
+  if (closeBtn) closeBtn.addEventListener('click', () => {
+    if (window.confirm('Close the estimator? Anything typed but not saved yet is lost. Offline saves already queued are safe.')) closeModal();
+  });
   return wrap;
 }
 
@@ -7979,7 +7996,7 @@ function showCrmRenderError(err, view) {
 // ============================================================
 // Modal helpers
 // ============================================================
-function openModal(html, { onMount } = {}) {
+function openModal(html, { onMount, dismissible = false } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-modal-bg';
   wrap.innerHTML = `<div class="pec-modal">${html}</div>`;
@@ -7990,14 +8007,62 @@ function openModal(html, { onMount } = {}) {
   // in the guard because the estimator modal's inputs live INSIDE its iframe
   // where this selector cannot see them; without it a stray backdrop click
   // would wipe a half-built estimate.
-  if (!wrap.querySelector('form, input, textarea, select, iframe')) {
+  //
+  // dismissible: true (prompt 63 Part D) OPTS IN to backdrop-click + Escape
+  // for content that matches the guard selector but has nothing to protect
+  // (the read-only estimate preview iframe was a genuine dead end). It is
+  // never the default: every existing caller keeps today's behavior, and a
+  // half-typed change order still cannot die to a stray click or Escape.
+  if (dismissible === true) {
+    wrap.dataset.pecDismissible = '1';
+    wrap.addEventListener('click', e => { if (e.target === wrap) pecCloseModalWrap(wrap); });
+    pecBindModalEscape();
+  } else if (!wrap.querySelector('form, input, textarea, select, iframe')) {
     wrap.addEventListener('click', e => { if (e.target === wrap) closeModal(); });
   }
   $('pecModalRoot').appendChild(wrap);
   if (onMount) onMount(wrap.querySelector('.pec-modal'));
   return wrap;
 }
-function closeModal() { $('pecModalRoot').innerHTML = ''; }
+function closeModal() { $('pecModalRoot').innerHTML = ''; pecUnbindModalEscape(); }
+
+// Escape-to-close for DISMISSIBLE modals only, top-most first. The document
+// listener exists only while a dismissible modal is open and is removed on
+// close (the attach-while-open pattern the schedule + Add menu uses), so
+// non-dismissible data-entry modals never see it. Closing removes just the
+// top-most dismissible wrap, never the whole root, so a dismissible modal
+// stacked over a data-entry one cannot take it down with it.
+let pecModalEscBound = false;
+function pecModalEscape(e) {
+  if (e.key !== 'Escape') return;
+  const root = $('pecModalRoot');
+  const top = root ? root.lastElementChild : null;
+  if (top && top.dataset.pecDismissible === '1') {
+    e.preventDefault();
+    pecCloseModalWrap(top);
+  } else if (!root || !root.querySelector('[data-pec-dismissible]')) {
+    // Self-clean: something else (closeModal) already removed every
+    // dismissible modal, so the listener has nothing left to do.
+    pecUnbindModalEscape();
+  }
+}
+function pecBindModalEscape() {
+  if (pecModalEscBound) return;
+  pecModalEscBound = true;
+  document.addEventListener('keydown', pecModalEscape);
+}
+function pecUnbindModalEscape() {
+  if (!pecModalEscBound) return;
+  pecModalEscBound = false;
+  document.removeEventListener('keydown', pecModalEscape);
+}
+// Close ONE modal wrap (not the whole root) and drop the Escape listener once
+// no dismissible modal remains.
+function pecCloseModalWrap(wrap) {
+  if (wrap && wrap.parentNode) wrap.remove();
+  const root = $('pecModalRoot');
+  if (!root || !root.querySelector('[data-pec-dismissible]')) pecUnbindModalEscape();
+}
 window.pecCloseModal = closeModal;
 
 // Lightweight toast notification. Stacks at the bottom-right. opts:
@@ -27511,9 +27576,19 @@ async function renderEstimateDetail(estimateId) {
       });
       const html = await res.text();
       if (!res.ok) throw new Error('Preview failed (' + res.status + ')');
-      const wrap = openModal('<iframe id="estPreviewFrame" title="Estimate preview" style="width:100%;height:78vh;border:0;border-radius:8px;background:#fff"></iframe>');
+      // Dismissible (prompt 63 Part D): the preview is read-only, so ✕,
+      // Escape, and backdrop click all close it. Before this it was a dead
+      // end (iframe content tripped openModal's data-entry guard, no ✕).
+      const estNum = est.estimate_number != null ? `EST-${est.estimate_number}` : 'Estimate';
+      const wrap = openModal(`
+        <div class="pec-modal-xhead">
+          <strong>${esc(estNum)} · customer preview</strong>
+          <button type="button" class="pec-modal-xclose" id="estPreviewClose" aria-label="Close preview" title="Close">✕</button>
+        </div>
+        <iframe id="estPreviewFrame" title="Estimate preview" style="flex:1 1 auto;min-height:0;width:100%;border:0;background:#fff"></iframe>`, { dismissible: true });
       const modal = wrap.querySelector('.pec-modal');
       if (modal) { modal.classList.add('pec-modal-estimator'); }
+      wrap.querySelector('#estPreviewClose').addEventListener('click', () => pecCloseModalWrap(wrap));
       const frame = wrap.querySelector('#estPreviewFrame');
       // srcdoc keeps the whole document sandboxed inside the modal; the staff
       // JWT stayed in the fetch header and never reaches the iframe.
