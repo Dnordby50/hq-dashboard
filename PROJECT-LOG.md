@@ -2,6 +2,38 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-03 MST] Cowork: scoped prompt 65 (appointment note UUIDs, Start Estimate entry points, unified New Estimate modal, Sales Pipeline rename)
+By: Cowork
+
+Changed: one new prompt file. No code, no schema, no data. One read-only live query was run against zdfpzmmrgotynrwkeakd to size Part A.
+
+- `claude-code-prompt-65-appt-notes-estimate-entry-points.md` (new)
+
+Dylan brought four items: (1) appointment notes should not show ID numbers, (2) create an estimate for the associated customer from an appointment card, (3) create a new estimate at the top of the sales pipeline, (4) rename "Pipeline" to "Sales Pipeline". 16 multiple-choice questions were asked across four rounds before writing anything.
+
+**Root cause found for item 1, and it is worse than a display bug.** `netlify/functions/pec-appt-intake.cjs:328-336` builds customer-facing job notes as `` `${a.question}: ${a.answer}` `` from Routemize's `customerAnswers`. Routemize is sending a question UUID where we expect question text, so notes read `605f816a-b861-c865-3e12-3a2177755a80: Had epoxy system installed...`. That field is NOT internal: `netlify/functions/_pec-appt.cjs:143-145` appends `customer_notes` to every appointment confirmation and reminder on BOTH channels, so customers have been receiving raw UUIDs in texts and emails. Live counts taken 2026-08-03: 6 of 8 appointments have customer notes, **6 of 6 of those contain UUIDs**, and **1 has a future start_at**, meaning its pending reminders will still send a UUID. Dylan chose intake-only (no backfill), so the prompt ships that way, with a gated one-line UPDATE and the future-appointment name printed for a yes/no.
+
+**Items 2 and 3 turned out to be wiring, not new machinery.** `createDraftEstimate({leadId})` (index.html:7288, duplicate guard) and `createDraftEstimateNow({leadId, customerId})` (index.html:7305, insert + both address column shapes) already exist, `openEstimateStartPicker()` (index.html:7448) already offers three start paths, and `pec_appointments` already carries `lead_id` and `customer_id`.
+
+**Correction to Dylan's mental model, recorded because it shaped Part C:** there is no separate appointment "card" to hang a button on. The Appointments view is FullCalendar (index.html:23730); an event is a chip and `eventClick` opens `openAppointmentForm` (index.html:24002). The button goes in that modal's footer. An inline chip button was rejected: month chips are ~20px and `editable: true` drag-to-reschedule is live on them.
+
+**Scope grew on item 3, deliberately and by Dylan's choice.** He sent a screenshot of DripJobs' "New Proposal" modal and chose "rebuild the picker in this shape, used everywhere". So prompt 65 replaces the three-tab start picker with a single contact-first form (Contact dropdown defaulting to New Contact, leads in an optgroup, read-only "In Draft" stage) used at every entry point. He selected the Job Address block and Salesperson assignment; he did NOT select the template picker or the drips toggle, and Deal Name / Project Manager / Stage have no TopCoat columns, so all five are explicitly out of scope with a stop-and-ask instruction rather than an invented equivalent.
+
+**Landmine that needs Dylan's answer before Part B ships:** `renderEstJobInfoBlock` (index.html:27377-27390) locks the salesperson once `intake.salesperson_id` is set, for anyone who is not an admin, failing closed on an errored role read, because commission attribution flows into GP. Putting a salesperson field on the create modal means a non-admin who picks wrong can never fix it. The estimator already sets it from the current-user default (prompt 47) so this is not new, but the modal makes it a deliberate click. The prompt requires reporting this before shipping with a recommendation (allow the creator to change it while the estimate is still an unsent draft) and forbids changing the lock unilaterally.
+
+**Architecture question raised and deliberately deferred.** Dylan said he wants the customer to be the source of truth with leads attached to customers, not the reverse. Cowork pushed back on bolting that onto a four-item cleanup and he agreed to scope it separately. Recorded for the discovery prompt: the DATA MODEL is already pointed that way (`leads.customer_id` is a real FK; prompt 62 added the existing-customer estimate path and no-lead estimate cards on the board). What is lead-first is the UI and the flow. Flipping it touches the board, the accept path, Routemize intake, dedupe, drips, and the follow-up queue. Prompt 65 does not block it, and Part B's contact-first modal moves with that grain.
+
+**Rename resolved past the literal request.** The rail button reading "Pipeline" already sits inside a group named "Sales Pipeline" (index.html:2546-2552), so renaming the button alone would render "Sales Pipeline > Sales Pipeline". Dylan chose button -> "Sales Pipeline" plus group -> "Sales Activity" (still holding Sales Pipeline and Appointments). `data-pec-view="leads"` and `data-pec-title` stay untouched; the routing and old `#leads` bookmarks key off them. Production's "Jobs pipeline" is not renamed.
+
+Naming note: Dylan first said "Create Proposal" (DripJobs' word) then settled on "Create Estimate" / "Start Estimate". The prompt uses Start Estimate throughout, since EST numbers, the rail item, and the public pages all say estimate. A full Estimates -> Proposals rename was offered and not taken.
+
+Verification bar set by Cowork (Dylan declined the question, so this is overridable): browser-verify the modal and both buttons on the live deploy including a three-way create with database re-queries proving both address column shapes, re-run prompt 63's Escape/backdrop negative tests with the new modal added, unit-test the intake change with a synthetic payload since a real Routemize call cannot be faked honestly, and delete every test row with a zero-residue re-query.
+
+Files touched: claude-code-prompt-65-appt-notes-estimate-entry-points.md (new), PROJECT-LOG.md (this entry). No prod schema change. No prod data change.
+Next steps: Dylan runs prompt 65 in Claude Code. Two things need his word during that run: the Part A backfill (yes/no) and the salesperson-lock recommendation. The customer-first discovery prompt is unwritten and waiting on his go-ahead.
+
+---
+
 ## [2026-08-02 MST] Prompt 64 shipped: on-site presentation view (Present mode), literature on the public estimate page, on-site signing via the real accept path
 By: Claude Code
 
