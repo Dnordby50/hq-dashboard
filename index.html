@@ -28393,7 +28393,11 @@ async function openPresentMode(est) {
       catch (err) { showToast('Could not mark the estimate as sent: ' + esc(err.message || String(err)), { ttl: 8000 }); return; }
     }
     live = true;
-    q('#presentEstFrame').src = liveUrl();
+    const frame = q('#presentEstFrame');
+    // srcdoc wins over src while both are set, so the walkthrough document
+    // must be dropped or the frame silently stays on the disabled preview.
+    frame.removeAttribute('srcdoc');
+    frame.src = liveUrl();
     renderSignArea();
     startPoll();
   }
