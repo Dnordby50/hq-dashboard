@@ -52,6 +52,12 @@ body { background: var(--rd-bg); color: var(--ink); }
    instead of a window with its own backdrop. */
 body.embed { background: transparent; }
 body.embed .screen { min-height: 0; }
+/* Embed height ratchet fix (prompt 63 Part C): the height reporter measures
+   #root.scrollHeight, and #root at height:100% can never measure LESS than
+   the iframe viewport, so the frame could grow but never shrink (the blank
+   gap under short estimates). height:auto makes #root track content in both
+   directions. html/body keep 100% for the standalone PWA. */
+body.embed #root { height: auto; }
 
 .centered {
   min-height: 100%;
