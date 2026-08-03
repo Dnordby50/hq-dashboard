@@ -263,6 +263,37 @@ async function getRoutemizeTypeMap(db) {
   }
 }
 
+// Routemize sends a question UUID where question text belongs (observed live
+// 2026-08-03), and customer_notes ends up in every customer-facing
+// confirmation/reminder on both channels, so an ID-shaped question key must
+// never survive into the note. Conservative on purpose: only a key that is
+// clearly not human text is dropped; a real question like "What's the
+// project?" keeps the "Question: answer" shape.
+function isIdLikeQuestionKey(q) {
+  const s = String(q || '').trim();
+  if (!s) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return true;
+  // Opaque token: one long space-free run of id-ish characters with at least
+  // one digit. A long plain word ("Approximately…") has no digit and stays.
+  return !/\s/.test(s) && s.length >= 16 && /^[0-9a-z_-]+$/i.test(s) && /\d/.test(s);
+}
+
+// customerAnswers -> note lines. When the question key is an ID, the line is
+// just the answer (no prefix, no placeholder); a real question keeps
+// "Question: answer"; a missing question keeps the bare answer; an empty
+// answer drops the line entirely.
+function mapCustomerAnswers(list) {
+  return (Array.isArray(list) ? list : [])
+    .map(a => {
+      if (!a || typeof a !== 'object') return null;
+      const q = cleanStr(a.question);
+      const ans = cleanStr(a.answer);
+      if (!ans) return null;
+      return (q && !isIdLikeQuestionKey(q)) ? `${q}: ${ans}` : ans;
+    })
+    .filter(Boolean);
+}
+
 // Envelope -> hand-rolled contract. Returns { recognized: false } for any
 // eventType we do not handle (the caller answers 200 no-op: Routemize retries
 // non-2xx and tracks webhook health, so an unknown event must never 4xx), or
@@ -326,14 +357,7 @@ async function mapRoutemizeEnvelope(db, env) {
 
   // customerAnswers -> customer-facing Job notes (decision 4: the customer
   // wrote them). Q&A pairs, one per line; the send path scrubs em dashes.
-  const answers = (Array.isArray(data.customerAnswers) ? data.customerAnswers : [])
-    .map(a => {
-      if (!a || typeof a !== 'object') return null;
-      const q = cleanStr(a.question);
-      const ans = cleanStr(a.answer);
-      return q && ans ? `${q}: ${ans}` : ans;
-    })
-    .filter(Boolean);
+  const answers = mapCustomerAnswers(data.customerAnswers);
 
   const addr = [cleanStr(address.addressLine1), cleanStr(address.addressLine2)].filter(Boolean).join(', ');
 
@@ -718,3 +742,5 @@ exports.parseApptDate = parseApptDate;
 exports.normApptType = normApptType;
 exports.normalizeEventType = normalizeEventType;
 exports.mapRoutemizeEnvelope = mapRoutemizeEnvelope;
+exports.mapCustomerAnswers = mapCustomerAnswers;
+exports.isIdLikeQuestionKey = isIdLikeQuestionKey;
