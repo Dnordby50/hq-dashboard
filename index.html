@@ -16239,6 +16239,16 @@ async function renderJobDetailInner(id) {
     // Build the atomic-save payloads (deterministic from `areas`). area_index
     // ties each material to its area's order_index so the RPC can resolve it to
     // the newly-inserted job_areas.id after the insert.
+    //
+    // COST BOUNDARY (prompt 63 Part B, Dylan's rule): a product/color pick on
+    // the job changes what gets ORDERED and what PRINTS (computeMaterialPlan /
+    // resolveJobLines / the crew work order all read these picks), but it must
+    // NEVER move money. jobs.price + line_items derive from the TYPED per-area
+    // prices above, never from picks; costing (computeCostingRow) reads
+    // pec_prod_material_lines cost snapshots + entered costs, never these rows.
+    // If you find yourself making a pick write a cost column here, stop: the
+    // prompt-56 lesson (a derived-beats-stored rule silently moved 34 finalized
+    // jobs' GP by $4,785) is exactly this boundary.
     const areaPayload = areas.map((a, idx) => ({
       order_index: idx,
       name: (a.name && a.name.trim()) ? a.name.trim() : (idx === 0 ? 'Main' : `Area ${idx+1}`),
