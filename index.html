@@ -594,6 +594,34 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-row-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 @media (max-width:720px){.pec-row-2,.pec-row-3{grid-template-columns:1fr}}
 .pec-modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px}
+/* Present mode (prompt 64): full-screen, rep-facing, iPad-first. Sits below
+   the modal layer (10000) so nothing here can trap a modal underneath it. */
+.pec-present{position:fixed;inset:0;z-index:9995;background:#14181C;color:#fff;display:flex;flex-direction:column}
+.pec-present-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid rgba(255,255,255,.12);flex:0 0 auto;flex-wrap:wrap}
+.pec-present-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.pec-present-sechost{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.pec-present-slide{max-width:940px;margin:0 auto;padding:36px 26px 64px}
+.pec-present-slide h2{font-size:clamp(1.7rem,3.6vw,2.5rem);font-weight:800;letter-spacing:-.01em;margin:0 0 18px;color:#fff}
+.pec-present-eyebrow{font-size:.72rem;font-weight:800;letter-spacing:2.4px;text-transform:uppercase;color:#D8531C;margin-bottom:10px}
+.pec-present-mdbody{font-size:clamp(1.02rem,2vw,1.22rem);line-height:1.75;color:rgba(255,255,255,.88)}
+.pec-present-mdbody .pres-h{font-weight:800;font-size:1.12em;margin:20px 0 8px;color:#fff}
+.pec-present-mdbody p{margin:10px 0}
+.pec-present-mdbody ul{margin:8px 0 14px;padding-left:22px}
+.pec-present-mdbody li{margin:4px 0}
+.pec-present-mdbody hr{border:none;border-top:1px solid rgba(255,255,255,.18);margin:20px 0}
+.pec-present-imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:22px}
+.pec-present-imgs img{width:100%;height:210px;object-fit:cover;border-radius:12px;background:#222}
+.pec-present-review{border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:16px 18px;margin-top:14px}
+.pec-present-estwrap{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.pec-present-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 18px;border-top:1px solid rgba(255,255,255,.12);flex:0 0 auto}
+.pec-present-btn{border:0;border-radius:12px;padding:14px 26px;font-size:1rem;font-weight:700;cursor:pointer;font-family:inherit;min-height:48px}
+.pec-present-btn.primary{background:#D8531C;color:#fff}
+.pec-present-btn.ghost{background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,.4)}
+.pec-present-btn:disabled{opacity:.35;cursor:default}
+.pec-present-dots{display:flex;gap:9px;align-items:center;justify-content:center;flex-wrap:wrap}
+.pec-present-dot{width:11px;height:11px;border-radius:50%;background:rgba(255,255,255,.25);border:0;padding:0;cursor:pointer}
+.pec-present-dot.on{background:#D8531C}
+.pec-present-jump{background:#22262b;color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:8px;padding:9px 10px;font-family:inherit;font-size:.86rem;max-width:220px}
 .pec-modal{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:520px;width:100%;max-height:92vh;overflow-y:auto}
 /* Estimator iframe modal: near-fullscreen shell, zero padding so the PWA owns
    the whole surface. The iframe fills it; the app inside provides its own
@@ -18221,6 +18249,7 @@ function settingsTabBar(active) {
     ${btn('drips', 'Drips')}
     ${btn('estimates', 'Estimates')}
     ${btn('invoicing', 'Invoicing')}
+    ${btn('presentation', 'Presentation')}
     ${btn('busybusy', 'BusyBusy')}
     ${btn('brand', 'Brand')}
     </div>
@@ -18426,6 +18455,271 @@ async function renderSettingsEstimates() {
     const v = Math.floor(Number($('setSyncThreshold').value));
     if (!Number.isFinite(v) || v < 1 || v > 20) { showToast('Threshold must be between 1 and 20.', { ttl: 4000 }); btn.disabled = false; return; }
     try { await saveSetting('sync_stuck_threshold_attempts', v); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+}
+
+// Settings > Presentation (prompt 64): the literature the on-site Present mode
+// and the public estimate page BOTH render (one content store, two consumers).
+// Four section kinds (why us + warranty, process, gallery + reviews,
+// financing), per brand, ordered here; all active sections show everywhere,
+// nothing is stored per estimate. Photos are manually curated uploads,
+// resized client-side (1600 px long edge, JPEG q0.82) before hitting the
+// public pec-presentation bucket so a driveway iPad on cell data can load
+// them; the bucket's 5 MB limit is only the backstop.
+async function pecResizePresentationImage(file, maxEdge = 1600, quality = 0.82) {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); // flatten PNG transparency
+  ctx.drawImage(img, 0, 0, w, h);
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+  if (!blob) throw new Error('Could not process the image.');
+  return blob;
+}
+
+async function renderSettingsPresentation() {
+  const root = $('pecViewRoot');
+  const brandKey = state.presentationBrand || 'prescott-epoxy';
+  const [secRes, setRes] = await Promise.all([
+    withFreshSession(() => supabase.from('pec_presentation_sections').select('*')
+      .eq('brand', brandKey).order('sort_order', { ascending: true }), { label: 'settings-presentation' }),
+    withFreshSession(() => supabase.from('settings').select('key,value')
+      .in('key', ['presentation_reviews_count', 'presentation_reviews_min_rating']), { label: 'settings-presentation-knobs' }),
+  ]);
+  const sections = (secRes && secRes.data) || [];
+  const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const revCount = Math.min(10, Math.max(1, Number(map.presentation_reviews_count) || 3));
+  const revMin = Math.min(5, Math.max(1, Number(map.presentation_reviews_min_rating) || 4));
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-presentation-save' });
+    if (w && w.error) throw w.error;
+  };
+
+  const brandBtn = (key, label) => `<button type="button" class="pec-btn sm ${brandKey === key ? 'primary' : 'ghost'}" data-pres-brand="${key}">${label}</button>`;
+  const sectionRow = (s, i) => `
+    <div class="pec-card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;${s.active ? '' : 'opacity:.55'}">
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <button type="button" class="pec-btn ghost sm" data-pres-up="${esc(s.id)}" ${i === 0 ? 'disabled' : ''} title="Move up">↑</button>
+        <button type="button" class="pec-btn ghost sm" data-pres-down="${esc(s.id)}" ${i === sections.length - 1 ? 'disabled' : ''} title="Move down">↓</button>
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div style="font-weight:700">${esc(s.title || '(untitled)')} ${s.active ? '' : '<span style="font-size:.7rem;font-weight:800;color:var(--muted)">(OFF)</span>'}</div>
+        <div style="color:var(--muted);font-size:.74rem;margin-top:2px">${esc(PRESENT_KIND_LABELS[s.kind] || s.kind)}${Array.isArray(s.images) && s.images.length ? ` · ${s.images.length} photo${s.images.length === 1 ? '' : 's'}` : ''}</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="pec-btn sm ${s.active ? 'ghost' : 'primary'}" data-pres-toggle="${esc(s.id)}">${s.active ? 'Turn off' : 'Turn on'}</button>
+        <button type="button" class="pec-btn sm" data-pres-edit="${esc(s.id)}">Edit</button>
+        <button type="button" class="pec-btn ghost sm danger" data-pres-del="${esc(s.id)}">Delete</button>
+      </div>
+    </div>`;
+
+  root.innerHTML = `
+    ${settingsTabBar('presentation')}
+    <div class="pec-card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between">
+      <div>
+        <div style="font-weight:700">Presentation sections</div>
+        <div style="color:var(--muted);font-size:.76rem;margin-top:4px">These slides open from Present on any estimate, and the same content shows on the customer's estimate page below the price. Active sections show everywhere, in this order. Photos are resized on upload so the presentation stays fast on cell data.</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${brandBtn('prescott-epoxy', 'PEC')}
+        ${brandBtn('finishing-touch', 'FTP')}
+        <button type="button" class="pec-btn sm primary" id="presAddSection">+ Add section</button>
+      </div>
+    </div>
+    ${sections.length ? sections.map(sectionRow).join('') : '<div class="pec-card" style="color:var(--muted)">No sections for this brand yet. Add the first one; a good starting set is one of each kind: why us, process, gallery, financing.</div>'}
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Reviews on the gallery section</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">Pulled live from the Reviews table (Google reviews). How many recent reviews show, and the minimum star rating that qualifies.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:.76rem;color:var(--muted)">Show</label>
+          <input type="number" id="presRevCount" min="1" max="10" value="${revCount}" style="width:64px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          <label style="font-size:.76rem;color:var(--muted)">Min stars</label>
+          <input type="number" id="presRevMin" min="1" max="5" value="${revMin}" style="width:64px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          <button type="button" class="pec-btn ghost sm" id="presRevSave">Save</button>
+        </div>
+      </div>
+    </div>`;
+  wireSettingsTabs(root);
+
+  root.querySelectorAll('[data-pres-brand]').forEach(b => b.addEventListener('click', () => {
+    state.presentationBrand = b.dataset.presBrand; renderSettings();
+  }));
+
+  $('presRevSave').addEventListener('click', async () => {
+    const btn = $('presRevSave'); btn.disabled = true;
+    const c = Math.floor(Number($('presRevCount').value)), m = Math.floor(Number($('presRevMin').value));
+    if (!Number.isFinite(c) || c < 1 || c > 10 || !Number.isFinite(m) || m < 1 || m > 5) {
+      showToast('Count must be 1 to 10 and minimum stars 1 to 5.', { ttl: 4000 }); btn.disabled = false; return;
+    }
+    try { await saveSetting('presentation_reviews_count', c); await saveSetting('presentation_reviews_min_rating', m); }
+    catch (err) { showToast('Could not save: ' + esc(err.message || String(err)), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+
+  const bySectionId = Object.fromEntries(sections.map(s => [String(s.id), s]));
+
+  const swapOrder = async (a, b) => {
+    const w1 = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections')
+      .update({ sort_order: b.sort_order, updated_at: new Date().toISOString() }).eq('id', a.id), { label: 'presentation-reorder' });
+    if (w1 && w1.error) throw w1.error;
+    const w2 = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections')
+      .update({ sort_order: a.sort_order, updated_at: new Date().toISOString() }).eq('id', b.id), { label: 'presentation-reorder' });
+    if (w2 && w2.error) throw w2.error;
+  };
+  root.querySelectorAll('[data-pres-up]').forEach(b => b.addEventListener('click', async () => {
+    const i = sections.findIndex(s => String(s.id) === b.dataset.presUp);
+    if (i <= 0) return;
+    b.disabled = true;
+    try { await swapOrder(sections[i], sections[i - 1]); } catch (err) { showToast('Could not reorder: ' + esc(err.message || String(err)), { ttl: 5000 }); }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-pres-down]').forEach(b => b.addEventListener('click', async () => {
+    const i = sections.findIndex(s => String(s.id) === b.dataset.presDown);
+    if (i < 0 || i >= sections.length - 1) return;
+    b.disabled = true;
+    try { await swapOrder(sections[i], sections[i + 1]); } catch (err) { showToast('Could not reorder: ' + esc(err.message || String(err)), { ttl: 5000 }); }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-pres-toggle]').forEach(b => b.addEventListener('click', async () => {
+    const s = bySectionId[b.dataset.presToggle]; if (!s) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections')
+      .update({ active: !s.active, updated_at: new Date().toISOString() }).eq('id', s.id), { label: 'presentation-toggle' });
+    if (w && w.error) { showToast('Could not save: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-pres-del]').forEach(b => b.addEventListener('click', async () => {
+    const s = bySectionId[b.dataset.presDel]; if (!s) return;
+    if (!confirm(`Delete the section "${s.title || '(untitled)'}"? Its photos are removed from storage too. This cannot be undone.`)) return;
+    b.disabled = true;
+    const w = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections').delete().eq('id', s.id), { label: 'presentation-delete' });
+    if (w && w.error) { showToast('Could not delete: ' + esc(w.error.message || ''), { ttl: 5000 }); b.disabled = false; return; }
+    if (Array.isArray(s.images) && s.images.length) {
+      supabase.storage.from('pec-presentation').remove(s.images)
+        .catch(err => console.warn('presentation photo cleanup failed (orphaned files, harmless):', err));
+    }
+    renderSettings();
+  }));
+  root.querySelectorAll('[data-pres-edit]').forEach(b => b.addEventListener('click', () => openPresentationSectionModal(bySectionId[b.dataset.presEdit], brandKey, sections)));
+  $('presAddSection').addEventListener('click', () => openPresentationSectionModal(null, brandKey, sections));
+}
+
+// Create/edit one presentation section. Data-entry modal: NOT dismissible
+// (stray-click protection, same rule as every other form modal). Photos are
+// uploaded only on Save so Cancel never orphans files; removed photos are
+// deleted from storage only after the row save succeeds.
+function openPresentationSectionModal(existing, brandKey, allSections) {
+  const s = existing || { kind: 'why_us', title: '', body: '', images: [], active: true };
+  const keptImages = Array.isArray(s.images) ? s.images.slice() : [];
+  const removedPaths = [];
+  const pendingFiles = [];
+  const kindOpts = Object.entries(PRESENT_KIND_LABELS)
+    .map(([k, label]) => `<option value="${k}" ${s.kind === k ? 'selected' : ''}>${label}</option>`).join('');
+  const wrap = openModal(`
+    <div style="max-width:640px;width:min(640px,92vw)">
+      <h3 style="margin:0 0 14px">${existing ? 'Edit section' : 'New section'} · ${brandKey === 'finishing-touch' ? 'FTP' : 'PEC'}</h3>
+      <div class="pec-field"><label>Type</label><select id="psKind">${kindOpts}</select></div>
+      <div class="pec-field"><label>Title</label><input id="psTitle" maxlength="120" value="${esc(s.title || '')}" placeholder="e.g. Why homeowners choose Prescott Epoxy"></div>
+      <div class="pec-field"><label>Body</label><textarea id="psBody" rows="8" placeholder="The story, in the customer's language.">${esc(s.body || '')}</textarea>
+      <span style="color:var(--muted);font-size:.68rem">Formatting: **bold**, # headings, - bullets, --- for a divider. This text is customer-facing: no em dashes; use commas, parentheses, or two sentences.</span></div>
+      <div class="pec-field"><label>Photos</label>
+        <div id="psThumbs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px"></div>
+        <input type="file" id="psFiles" accept="image/jpeg,image/png,image/webp" multiple>
+        <span style="color:var(--muted);font-size:.68rem;display:block;margin-top:4px">Resized automatically to 1600 px. Pick the before/afters you would show a customer yourself.</span>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:.86rem;margin:10px 0 16px"><input type="checkbox" id="psActive" ${s.active ? 'checked' : ''}> Active (shows in Present mode and on customer estimates)</label>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button type="button" class="pec-btn ghost" id="psCancel">Cancel</button>
+        <button type="button" class="pec-btn primary" id="psSave">Save section</button>
+      </div>
+    </div>`);
+  const q = (sel) => wrap.querySelector(sel);
+
+  const renderThumbs = () => {
+    const host = q('#psThumbs');
+    host.innerHTML = keptImages.map((p, i) =>
+      `<span style="position:relative;display:inline-block"><img src="${esc(presentImageUrl(p))}" alt="" style="width:86px;height:66px;object-fit:cover;border-radius:8px;background:#333">
+        <button type="button" data-ps-rm="${i}" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#dc2626;color:#fff;font-size:12px;cursor:pointer;line-height:1">✕</button></span>`).join('')
+      + pendingFiles.map((f, i) =>
+      `<span style="position:relative;display:inline-block"><img src="${esc(f._url)}" alt="" style="width:86px;height:66px;object-fit:cover;border-radius:8px;background:#333;opacity:.85">
+        <button type="button" data-ps-rmnew="${i}" title="Remove" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#dc2626;color:#fff;font-size:12px;cursor:pointer;line-height:1">✕</button></span>`).join('');
+    host.querySelectorAll('[data-ps-rm]').forEach(b => b.addEventListener('click', () => {
+      removedPaths.push(keptImages.splice(Number(b.dataset.psRm), 1)[0]); renderThumbs();
+    }));
+    host.querySelectorAll('[data-ps-rmnew]').forEach(b => b.addEventListener('click', () => {
+      const f = pendingFiles.splice(Number(b.dataset.psRmnew), 1)[0];
+      try { URL.revokeObjectURL(f._url); } catch (_) {}
+      renderThumbs();
+    }));
+  };
+  renderThumbs();
+
+  q('#psFiles').addEventListener('change', () => {
+    for (const f of Array.from(q('#psFiles').files || [])) {
+      f._url = URL.createObjectURL(f);
+      pendingFiles.push(f);
+    }
+    q('#psFiles').value = '';
+    renderThumbs();
+  });
+
+  q('#psCancel').addEventListener('click', () => {
+    pendingFiles.forEach(f => { try { URL.revokeObjectURL(f._url); } catch (_) {} });
+    pecCloseModalWrap(wrap);
+  });
+
+  q('#psSave').addEventListener('click', async () => {
+    const btn = q('#psSave');
+    const title = (q('#psTitle').value || '').trim();
+    if (!title) { showToast('The section needs a title.', { ttl: 4000 }); return; }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    const uploadedNow = [];
+    try {
+      for (const f of pendingFiles) {
+        const blob = await pecResizePresentationImage(f);
+        const path = `${brandKey}/${(crypto.randomUUID && crypto.randomUUID()) || Date.now() + '-' + Math.random().toString(36).slice(2)}.jpg`;
+        const { error } = await supabase.storage.from('pec-presentation').upload(path, blob, { contentType: 'image/jpeg' });
+        if (error) throw new Error(`Photo upload failed (${f.name}): ${error.message}`);
+        uploadedNow.push(path);
+      }
+      const row = {
+        brand: brandKey,
+        kind: q('#psKind').value,
+        title,
+        body: (q('#psBody').value || '').trim() || null,
+        images: keptImages.concat(uploadedNow),
+        active: q('#psActive').checked,
+        updated_at: new Date().toISOString(),
+      };
+      let w;
+      if (existing) {
+        w = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections').update(row).eq('id', existing.id), { label: 'presentation-save' });
+      } else {
+        row.sort_order = (allSections || []).reduce((m, x) => Math.max(m, Number(x.sort_order) || 0), 0) + 1;
+        w = await withFreshWriteRetry(() => supabase.from('pec_presentation_sections').insert(row), { label: 'presentation-save' });
+      }
+      if (w && w.error) throw w.error;
+    } catch (err) {
+      // The row save failed after some uploads landed: clean up so nothing
+      // orphans, then let the admin retry with everything still in the form.
+      if (uploadedNow.length) supabase.storage.from('pec-presentation').remove(uploadedNow).catch(() => {});
+      showToast('Could not save: ' + esc(err.message || String(err)), { ttl: 6000 });
+      btn.disabled = false; btn.textContent = 'Save section';
+      return;
+    }
+    if (removedPaths.length) {
+      supabase.storage.from('pec-presentation').remove(removedPaths)
+        .catch(err => console.warn('presentation photo cleanup failed (orphaned files, harmless):', err));
+    }
+    pendingFiles.forEach(f => { try { URL.revokeObjectURL(f._url); } catch (_) {} });
+    pecCloseModalWrap(wrap);
     renderSettings();
   });
 }
@@ -20289,6 +20583,7 @@ async function renderSettings() {
   if (state.settingsTab === 'drips') return renderSettingsDrips();
   if (state.settingsTab === 'estimates') return renderSettingsEstimates();
   if (state.settingsTab === 'invoicing') return renderSettingsInvoicing();
+  if (state.settingsTab === 'presentation') return renderSettingsPresentation();
   if (state.settingsTab === 'busybusy') return renderSettingsBusybusy();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes, adminUsersRes] = await withFreshSession(() => Promise.all([
@@ -27315,6 +27610,7 @@ async function renderEstimateDetail(estimateId) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="pec-btn sm" id="estEdit" title="Opens the estimator right here on the page; saving edits this estimate in place">Edit</button>
         <button class="pec-btn sm" id="estPreview" title="See exactly what the customer will get, without sending">Preview</button>
+        <button class="pec-btn sm" id="estPresent" title="Full-screen on-site presentation: your story, process, photos, and reviews, ending on this estimate. The customer can sign right on your device.">Present</button>
         ${est.status === 'accepted' ? '' : '<button class="pec-btn sm" id="estMarkAccepted">Mark accepted</button>'}
         ${est.status === 'lost' ? '' : '<button class="pec-btn sm" id="estMarkLost">Mark lost</button>'}
         <button class="pec-btn sm ghost" id="estCopyLink" ${est.sent_at ? '' : 'disabled title="The link is private (404) until the estimate is sent. Send it first."'}>Copy link</button>
@@ -27615,6 +27911,8 @@ async function renderEstimateDetail(estimateId) {
       btn.disabled = false; btn.textContent = label;
     }
   });
+  // Present (prompt 64): full-screen on-site presentation. Online only.
+  $('estPresent').addEventListener('click', () => openPresentMode(est));
   const copyLinkBtn = $('estCopyLink');
   if (copyLinkBtn && est.sent_at) copyLinkBtn.addEventListener('click', async () => {
     const url = `${location.origin}/e/${est.public_token}`;
@@ -27920,6 +28218,245 @@ async function ensureEstimateToken(est) {
 function estimateBlankScopeOk(est) {
   return !/\bBLANK\b/.test(String(est.scope_of_work || ''))
     || confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?');
+}
+
+// ============================================================
+// Present mode (prompt 64): full-screen, rep-facing, on-site presentation.
+// Literature slides come from pec_presentation_sections, the SAME rows the
+// public estimate page renders (one content store, two consumers), ending on
+// the estimate itself. The estimate slide embeds the ?preview= render from
+// pec-public-estimate.cjs via the same staff-JWT srcdoc fetch as the Preview
+// button. NOTHING here re-renders price, line items, or totals; the
+// presentation presents the customer view plus literature, never a second
+// estimate. Signing on site loads the REAL public page (?token=...&present=1)
+// after the shared markEstimateSent flip, so an on-site signature runs the
+// byte-identical accept path the emailed link runs; present=1 only skips the
+// customer-view log (the rep is driving, not the customer). Online only.
+// ============================================================
+
+// Mirrors mdToSafeHtml in pec-public-estimate.cjs (same escape-then-format
+// subset: **bold**, #-#### headings, - bullets, --- rules; raw HTML can never
+// pass through). Output uses classes instead of inline styles so the slides
+// can size the type. If the server's subset changes, change this with it.
+function presentMdToHtml(text) {
+  const lines = String(text == null ? '' : text).split(/\r?\n/);
+  const out = []; let list = null;
+  const flushList = () => { if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; } };
+  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^\s*[-*]\s+/.test(line)) { (list ??= []).push(`<li>${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`); continue; }
+    flushList();
+    if (!line.trim()) continue;
+    if (/^---+$/.test(line.trim())) { out.push('<hr>'); continue; }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<div class="pres-h">${inline(h[2])}</div>`); continue; }
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  flushList();
+  return out.join('');
+}
+
+// Shared with the server's SECTION_KIND_LABELS and the Settings editor.
+const PRESENT_KIND_LABELS = { why_us: 'Why choose us', process: 'How the work happens', gallery: 'Our work', financing: 'Ways to pay' };
+
+// estimates.brand carries the short forms (PEC/FTP); pec_presentation_sections
+// keys on pec_brand_identity's long forms. Same mapping the server uses.
+const presentBrandKey = (brand) => (brand === 'FTP' || brand === 'finishing-touch') ? 'finishing-touch' : 'prescott-epoxy';
+
+const presentImageUrl = (path) => {
+  try { return supabase.storage.from('pec-presentation').getPublicUrl(path).data.publicUrl; } catch (_) { return ''; }
+};
+
+async function openPresentMode(est) {
+  if (document.querySelector('.pec-present')) return;
+  // All ACTIVE sections for the estimate's brand, in Settings sort order.
+  // Nothing per-estimate is stored; the rep skips or jumps live instead.
+  const secRes = await withFreshSession(() => supabase.from('pec_presentation_sections')
+    .select('id,kind,title,body,images,sort_order')
+    .eq('brand', presentBrandKey(est.brand)).eq('active', true)
+    .order('sort_order', { ascending: true }), { label: 'present-sections' });
+  if (secRes && secRes.error) { showToast('Could not load presentation sections: ' + esc(secRes.error.message || String(secRes.error)), { ttl: 6000 }); return; }
+  const sections = (secRes && secRes.data) || [];
+  if (!sections.length) showToast('No presentation sections yet. Add your story in Settings, Presentation. Showing just the estimate.', { ttl: 6000 });
+
+  // Reviews ride the gallery slide, pulled live from the reviews table; count
+  // and minimum rating are Settings values. Best-effort: no reviews, no block.
+  let reviews = [];
+  if (sections.some(s => s.kind === 'gallery')) {
+    try {
+      const setRes = await supabase.from('settings').select('key,value').in('key', ['presentation_reviews_count', 'presentation_reviews_min_rating']);
+      const cfg = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+      const count = Math.min(10, Math.max(1, Number(cfg.presentation_reviews_count) || 3));
+      const minRating = Math.min(5, Math.max(1, Number(cfg.presentation_reviews_min_rating) || 4));
+      const rv = await supabase.from('reviews').select('reviewer_name,rating,review_text,posted_at')
+        .gte('rating', minRating).not('review_text', 'is', null)
+        .order('posted_at', { ascending: false, nullsFirst: false }).limit(count);
+      reviews = (rv && rv.data) || [];
+    } catch (_) { reviews = []; }
+  }
+
+  const estNum = est.estimate_number != null ? `EST-${est.estimate_number}` : 'Estimate';
+  const slides = sections.map(s => ({ type: 'section', s })).concat([{ type: 'estimate' }]);
+  const starHtml = (n) => '★'.repeat(Math.max(1, Math.min(5, Number(n) || 5)));
+  const sectionSlideHtml = (s) => `
+    <div class="pec-present-slide">
+      <div class="pec-present-eyebrow">${esc(PRESENT_KIND_LABELS[s.kind] || 'About us')}</div>
+      <h2>${esc(s.title || '')}</h2>
+      ${s.body ? `<div class="pec-present-mdbody">${presentMdToHtml(s.body)}</div>` : ''}
+      ${(Array.isArray(s.images) && s.images.length) ? `<div class="pec-present-imgs">${s.images.map(p => `<img src="${esc(presentImageUrl(p))}" alt="" loading="lazy">`).join('')}</div>` : ''}
+      ${s.kind === 'gallery' && reviews.length ? `<div style="margin-top:28px"><div class="pec-present-eyebrow">What customers say</div>${reviews.map(r => `
+        <div class="pec-present-review">
+          <div style="color:#D8531C;letter-spacing:2px">${starHtml(r.rating)}</div>
+          <div style="margin-top:8px;line-height:1.7;color:rgba(255,255,255,.88);white-space:pre-wrap">${esc(r.review_text || '')}</div>
+          <div style="font-weight:700;margin-top:10px">${esc(r.reviewer_name || 'Verified customer')}</div>
+        </div>`).join('')}</div>` : ''}
+    </div>`;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'pec-present';
+  overlay.innerHTML = `
+    <div class="pec-present-head">
+      <strong style="font-size:1rem">${esc(estNum)}${est.customer_name ? ' · ' + esc(est.customer_name) : ''}</strong>
+      <div style="display:flex;gap:10px;align-items:center">
+        <select id="presentJump" class="pec-present-jump" title="Jump to a section"></select>
+        <button type="button" class="pec-present-btn ghost" id="presentExit" style="padding:10px 18px;min-height:44px">✕ Exit</button>
+      </div>
+    </div>
+    <div class="pec-present-body" id="presentBody">
+      <div class="pec-present-sechost" id="presentSecHost"></div>
+      <div class="pec-present-estwrap" id="presentEstHost" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 18px;flex:0 0 auto;flex-wrap:wrap">
+          <div class="pec-present-eyebrow" style="margin:0">Your estimate</div>
+          <div id="presentSignArea" style="display:flex;gap:10px;align-items:center"></div>
+        </div>
+        <iframe id="presentEstFrame" title="Estimate" style="flex:1 1 auto;min-height:0;width:100%;border:0;background:#fff"></iframe>
+      </div>
+    </div>
+    <div class="pec-present-foot">
+      <button type="button" class="pec-present-btn ghost" id="presentPrev">← Back</button>
+      <div class="pec-present-dots" id="presentDots"></div>
+      <button type="button" class="pec-present-btn primary" id="presentNext">Next →</button>
+    </div>`;
+  const q = (sel) => overlay.querySelector(sel);
+  q('#presentJump').innerHTML = slides.map((sl, i) =>
+    `<option value="${i}">${sl.type === 'estimate' ? 'The estimate' : esc(sl.s.title || PRESENT_KIND_LABELS[sl.s.kind] || 'Section')}</option>`).join('');
+  q('#presentDots').innerHTML = slides.map((_, i) => `<button type="button" class="pec-present-dot" data-i="${i}" aria-label="Slide ${i + 1}"></button>`).join('');
+  document.body.appendChild(overlay);
+
+  let idx = 0;
+  let live = false;         // the frame is showing the REAL public page
+  let sentFlipped = false;  // this session ran markEstimateSent
+  let acceptedSeen = false; // flips true only when a signature lands DURING this presentation
+  let previewHtml = null;   // cached ?preview= render for the walkthrough
+  let pollTimer = null;
+
+  const liveUrl = () => `/.netlify/functions/pec-public-estimate?token=${encodeURIComponent(est.public_token)}&present=1`;
+
+  const renderSignArea = () => {
+    const area = q('#presentSignArea'); if (!area) return;
+    if (est.status === 'accepted') {
+      area.innerHTML = `<span style="color:#4ade80;font-weight:800">Accepted and signed ✓</span>`;
+      return;
+    }
+    if (live) {
+      area.innerHTML = `<span style="color:#fbbf24;font-weight:700">Live: the customer can tick options and sign below</span>`;
+      return;
+    }
+    area.innerHTML = `<button type="button" class="pec-present-btn primary" id="presentSign" style="padding:11px 20px;min-height:44px">Open for signing</button>`;
+    q('#presentSign').addEventListener('click', openForSigning);
+  };
+
+  // The signature poll: the accept runs inside the iframe on the untouched
+  // public path, so the parent learns about it by re-reading the row. Cheap
+  // (one select every 5s, only while live and unsigned).
+  const startPoll = () => {
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      try {
+        const r = await supabase.from('estimates').select('status,signed_at,signed_name').eq('id', est.id).single();
+        if (r && r.data && r.data.status === 'accepted') {
+          est.status = 'accepted'; est.signed_at = r.data.signed_at; est.signed_name = r.data.signed_name;
+          acceptedSeen = true;
+          clearInterval(pollTimer); pollTimer = null;
+          renderSignArea();
+        }
+      } catch (_) { /* next tick */ }
+    }, 5000);
+  };
+
+  async function openForSigning() {
+    if (!(await ensureEstimateToken(est))) return;
+    if (!est.sent_at) {
+      if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
+      try { await markEstimateSent(est); sentFlipped = true; }
+      catch (err) { showToast('Could not mark the estimate as sent: ' + esc(err.message || String(err)), { ttl: 8000 }); return; }
+    }
+    live = true;
+    q('#presentEstFrame').src = liveUrl();
+    renderSignArea();
+    startPoll();
+  }
+
+  async function loadEstimateFrame() {
+    const frame = q('#presentEstFrame');
+    renderSignArea();
+    if (live) return; // already on the real page; do not clobber typed input
+    if (frame.getAttribute('srcdoc')) return;
+    if (previewHtml == null) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session && session.access_token;
+        if (!token) throw new Error('Not signed in.');
+        const res = await fetch(`/.netlify/functions/pec-public-estimate?preview=${encodeURIComponent(est.id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error('Preview failed (' + res.status + ')');
+        previewHtml = await res.text();
+      } catch (err) {
+        showToast('Could not load the estimate slide: ' + esc(err.message || String(err)), { ttl: 7000 });
+        return;
+      }
+    }
+    frame.srcdoc = previewHtml;
+  }
+
+  const go = (i) => {
+    idx = Math.max(0, Math.min(slides.length - 1, i));
+    const isEst = slides[idx].type === 'estimate';
+    q('#presentSecHost').style.display = isEst ? 'none' : '';
+    q('#presentEstHost').style.display = isEst ? '' : 'none';
+    if (isEst) loadEstimateFrame();
+    else { q('#presentSecHost').innerHTML = sectionSlideHtml(slides[idx].s); q('#presentSecHost').scrollTop = 0; }
+    overlay.querySelectorAll('.pec-present-dot').forEach((d) => d.classList.toggle('on', Number(d.dataset.i) === idx));
+    q('#presentJump').value = String(idx);
+    q('#presentPrev').disabled = idx === 0;
+    q('#presentNext').disabled = idx === slides.length - 1;
+    q('#presentNext').textContent = (!isEst && idx === slides.length - 2) ? 'The estimate →' : 'Next →';
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closePresent(); }
+    else if (e.key === 'ArrowRight') go(idx + 1);
+    else if (e.key === 'ArrowLeft') go(idx - 1);
+  };
+
+  function closePresent() {
+    if (live && est.status !== 'accepted' && !confirm('Close the presentation? The estimate stays live and can still be signed from its link.')) return;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+    // The flip or a signature changed what the detail page shows; refresh it.
+    if (sentFlipped || acceptedSeen) renderEstimateDetail(est.id);
+  }
+
+  q('#presentExit').addEventListener('click', closePresent);
+  q('#presentPrev').addEventListener('click', () => go(idx - 1));
+  q('#presentNext').addEventListener('click', () => go(idx + 1));
+  q('#presentJump').addEventListener('change', () => go(Number(q('#presentJump').value)));
+  overlay.querySelectorAll('.pec-present-dot').forEach((d) => d.addEventListener('click', () => go(Number(d.dataset.i))));
+  document.addEventListener('keydown', onKey);
+  go(0);
 }
 
 // The one sent-state flip, shared by every channel (prompt 38): sending is
