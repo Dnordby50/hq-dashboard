@@ -1,5 +1,37 @@
 [
   {
+    "id": "new-estimate-modal-everywhere",
+    "date": "2026-08-03",
+    "title": "One New Estimate form, used everywhere",
+    "summary": "Starting an estimate now opens a single form no matter where you start from. Pick an existing customer or lead from the Contact dropdown, or fill in a new contact, then add the job address and the salesperson right there. The estimate opens with all of it already filled in. In the side menu, the Pipeline button is now called Sales Pipeline, inside a group called Sales Activity.",
+    "howto": [
+      "Go to Estimates and click New estimate.",
+      "Pick a contact from the dropdown, or leave it on New Contact and enter the name and lead source.",
+      "Add the job address and check the salesperson, then click Start estimate."
+    ]
+  },
+  {
+    "id": "start-estimate-from-appointment",
+    "date": "2026-08-03",
+    "title": "Start an estimate straight from an appointment",
+    "summary": "Open any appointment on the Appointments calendar and click Start estimate. The estimate is created for the appointment's lead or customer, with the appointment's address and the customer's notes carried over. If the appointment is not linked to anyone yet, the New Estimate form opens so you create the customer first.",
+    "howto": [
+      "On the Appointments calendar, click an appointment to open it.",
+      "Click Start estimate in the bottom left of the window.",
+      "You land on the new estimate with the address and notes already filled in."
+    ]
+  },
+  {
+    "id": "appt-notes-no-id-codes",
+    "date": "2026-08-03",
+    "title": "Appointment notes no longer show ID codes",
+    "summary": "Notes that came in from online bookings could start with a long ID code instead of the question text, and that code was showing up in the customer's confirmation and reminder messages. New bookings now store just the customer's own words.",
+    "howto": [
+      "Nothing to do. New online bookings come in clean automatically.",
+      "Appointments booked before today keep their old notes; you can tidy those by editing the Job notes field on the appointment."
+    ]
+  },
+  {
     "id": "present-mode-onsite",
     "date": "2026-08-02",
     "title": "Present an estimate on site, and let the customer sign right there",
