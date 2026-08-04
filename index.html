@@ -24911,7 +24911,20 @@ async function openReviewAskModal(jobId, { source = 'completion', onDone = null 
   const defaultOn = !((setRes.data || [])[0] && setRes.data[0].value === 'false');
   const prod = await resolveProdJobForReview({ dealId: job.dripjobs_deal_id, name: job.customers?.name, addr: job.address });
   const custName = job.customers?.name || 'this customer';
-  const crewLead = (prod && prod.crew_lead) || null;
+  // prompt 66 Part E (Dylan-approved 2026-08-03): pec_prod_jobs.crew_lead is a
+  // dead column (0 of 93 rows populated, nothing writes it), so a snapshot
+  // taken from it was always null and createReviewBonusForConfirmed always hit
+  // the no_crew_lead branch. Derive the lead from crew_id ->
+  // pec_prod_crews.name (a PEC crew is named for its lead), the same rule as
+  // the Metrics by-crew cards. This is still a SNAPSHOT: taken once at ask
+  // time and frozen on the request row; schedule edits never rewrite it.
+  let crewLead = (prod && prod.crew_lead) || null;
+  if (!crewLead && prod && prod.crew_id) {
+    try {
+      const cRes = await supabase.from('pec_prod_crews').select('name').eq('id', prod.crew_id).maybeSingle();
+      if (!cRes.error && cRes.data && cRes.data.name) crewLead = cRes.data.name;
+    } catch (_) { /* no crew name resolvable: the snapshot stays null, honest */ }
+  }
 
   openModal(`
     <h3>Send a Google review request?</h3>

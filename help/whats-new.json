@@ -1,5 +1,38 @@
 [
   {
+    "id": "metrics-category-tabs",
+    "date": "2026-08-03",
+    "title": "Metrics now has All, Sales, Production, and Admin tabs",
+    "summary": "The Metrics page can now show just the cards for one part of the business. Pick Sales, Production, or Admin next to the time window buttons, and the page shows only those cards. All shows everything, like before.",
+    "howto": [
+      "Open Metrics from the Overview menu.",
+      "Click Sales, Production, or Admin next to the time window buttons.",
+      "Click All to see every card again. Your pick sticks until you leave the app."
+    ]
+  },
+  {
+    "id": "metrics-crew-cards-real-crews",
+    "date": "2026-08-03",
+    "title": "The by-crew Metrics cards now show real crews",
+    "summary": "Revenue collected, gross profit, and callback rate by crew lead used to lump everything under Unassigned. They now read the crew from the job itself, so Davey, Dylan, Kyle, and Landen each get credit for their own jobs. The callback rate also counts touch-up visits now, charged to the crew that installed the original job.",
+    "howto": [
+      "Open Metrics and scroll to the by-crew cards.",
+      "Click any crew row to see the exact jobs and payments behind the number.",
+      "Jobs with no crew on the schedule still show under Unassigned; assign a crew on the Job Schedule to fix one."
+    ]
+  },
+  {
+    "id": "comps-gp-corrected",
+    "date": "2026-08-03",
+    "title": "Comps GP% now uses the real job costs",
+    "summary": "The GP% column in the estimator's comparable jobs panel now uses the same math as Job Costing: materials actually used, crew hours, bonuses, and commission. The old number ignored materials and read about 20 points too high. A comp with no cost data shows a dash instead of a made-up number.",
+    "howto": [
+      "Open an estimate in the estimator and set the system and square footage.",
+      "Read the GP% column in the Comparable jobs panel; the line under the table says how many comps have a GP%.",
+      "Expect lower numbers than before. Around 59% average is the true figure, not 80%."
+    ]
+  },
+  {
     "id": "salesperson-editable-on-drafts",
     "date": "2026-08-03",
     "title": "You can fix the salesperson on your own drafts now",
