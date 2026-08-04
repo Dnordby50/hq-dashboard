@@ -2,6 +2,38 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-03 MST] Cowork: scoped prompt 66 (crew-lead attribution, callback rate, comps GP%, Metrics category tabs)
+By: Cowork
+
+Changed: one new prompt file. No code, no schema, no data. Read-only live queries were run against zdfpzmmrgotynrwkeakd to diagnose before writing.
+
+- `claude-code-prompt-66-metrics-crew-gp-categories.md` (new)
+
+Dylan brought five items: (1) the appointment calendar looks bland, (2) revenue collected / GP / callback by crew lead all return 0 on Metrics, (3) GP% on past jobs in the estimator returns no data, (4) filter Metrics by category, (5) BusyBusy clock-in ID in TopCoat plus auto-creating a BusyBusy project on acceptance. 12 multiple-choice questions were asked across three rounds. He chose to split: prompt 66 is the three broken numbers plus the category filter; the calendar restyle and the BusyBusy work become prompt 67, not yet scoped.
+
+**Root cause of items 2 and 3, found in the code and confirmed against live data: `pec_prod_jobs.crew_lead` is a DEAD COLUMN.** 0 of 93 rows populated. Nothing writes it; index.html:8236 and index.html:29320 both insert `crew_lead: null`, and no save path fills it. Crew identity lives on `crew_id` (56 of 93 rows) and PEC crews are named for their leads (Davey, Dylan, Kyle, Landen). All three "by crew lead" Metrics cards therefore bucket everything under Unassigned. Coverage after the fix, measured: 47 completed production jobs, 35 attributable via crew_id, 12 with no crew anywhere (not on the job row and not on any schedule day).
+
+**The callback rate is structurally zero, not broken.** `pec_prod_jobs.callback = true` count: 0, ever. It is a manual checkbox written only at index.html:15390. `is_callback` (touch-ups, a different column) is also 0 because touch-up intake shipped 2026-07-27 and has not been used. Dylan chose "touch-ups OR the flag", attributed to the ORIGINAL job's crew via `original_job_id`, and the prompt states plainly that the card will still read 0 for everyone until touch-ups get logged.
+
+**Item 3 is a second, wrong GP formula, and it has been lying to reps.** `production/comps.js` `actualGpPct()` reads `materials_ordered_cost` + `materials_used_cost` off `pec_prod_job_costing`. Live: **0 of 40 costing rows carry a non-zero value in either column.** Real materials live in `pec_prod_material_lines` (154 rows, 136 with a real used cost, covering 45 jobs), which is where `computeCostingRow` (index.html:33073) reads them. So comps GP% has been `(price - wages - commission) / price` and `costingComplete()` has returned false for every row in the database. Measured over the last 365 days of completed jobs: today 29 jobs carry a GP% averaging **79.7%**; with used materials and bonuses folded in, 38 jobs carry a GP% averaging **59.1%**. Reps have been pricing against a number roughly 20 points too generous, on fewer rows than the data supports.
+
+**Architectural cost named rather than hidden:** Dylan chose "use computeCostingRow, the one canonical formula", but that function exists ONLY inside index.html and index.html cannot import from `production/`. The prompt therefore requires extracting it to a new `production/costing.js` with its own fixture test wired into npm test, mirroring it back into index.html under the same byte-identical convention the `production/calculator.js` mirrors already use, and having the estimator import the real module. The estimator gains five small reads (material lines, bonuses, BusyBusy entries, manual labor, crew members); RLS on all five is `is_admin_staff()` with no permission gate, verified live, so every rep can read them.
+
+**Fourth bug found while diagnosing, not reported by Dylan: review bonuses are dead on arrival for the same reason.** index.html:24833 snapshots `prod.crew_lead` into `pec_review_requests.crew_lead` at ask time. Live: 2 asks, 0 with a crew lead, so every confirm would hit the `no_crew_lead` branch (index.html:16834) and create no bonus. The prompt makes this Part E with a STOP-and-ask: the going-forward fix is the same derivation, and whether to fill the 2 existing asks is Dylan's call. Existing snapshots are never re-derived (SCHEMA.md forbids it).
+
+**Landmine flagged and deliberately deferred:** the `dealToProd` bridge (index.html:12657) drops any production job with a NULL `dripjobs_deal_id`. 20 of 93 production rows have none, and it is worsening because TopCoat-native accepted estimates do not mint a DripJobs deal (August so far: 1 of 1 with no deal id). Prompt 66 requires MEASURING the blind spot and reporting it, and forbids fixing it. It is its own prompt.
+
+**Category filter resolved past the literal request.** "Category" means Sales / Production / Admin. Dylan approved a card-by-card mapping of all 21 cards and chose tabs (All / Sales / Production / Admin) that remember the last pick. The prompt requires a DISPLAY filter (data attributes plus a class), not a re-render, because a tab click through `renderMetrics()` would re-run 25 Supabase queries. Two traps are called out: the AI insights panel must keep reading the whole window regardless of the visible tab, and Chart.js canvases that mount hidden measure zero, so a chart in a non-default tab has to be proven full width after switching. CLAUDE.md rule 12 was considered and judged not applicable (a view toggle has no threshold to tune); the prompt says so explicitly so a later session does not invent a settings row.
+
+Verification bar set: browser-verify on the live deploy with database re-queries (Dylan's pick), including a cent-exact SQL cross-check of one crew's GP, a count proving all 21 cards land in exactly one category, before/after GP% on the same estimate in the estimator, and a three-way reconciliation of one job's GP across Metrics, Job Costing, and comps.
+
+Sequencing note: prompt 65 shipped in Claude Code WHILE this scoping session was running, so this entry sits above the prompt-65 ship entry despite being started before it. Nothing in prompt 65 touches Metrics, comps, or crew attribution, so prompt 66 is unaffected; the only carry-over is that npm test is now 586 checks, not 579.
+
+Files touched: claude-code-prompt-66-metrics-crew-gp-categories.md (new), PROJECT-LOG.md (this entry). No prod schema change. No prod data change.
+Next steps: Dylan runs prompt 66 in Claude Code. Part E needs his word during the run. Prompt 67 (appointment calendar restyle, BusyBusy clock-in ID surfacing, BusyBusy project auto-creation) is unscoped; note for that scoping session: the BusyBusy Payroll Export API is read-only, the GraphQL API has returned 401 since 2026-06-13, and Zapier lists a BusyBusy app with 37 write actions, which is the likeliest write path.
+
+---
+
 ## [2026-08-03 MST] Prompt 65 shipped: intake UUID strip, one New Estimate modal everywhere, Start estimate from appointments, Sales Activity rail rename
 By: Claude Code
 
