@@ -2,6 +2,42 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-04 MST] Cowork: prompt 69 spec written (per-line pricing, custom lines inside a normal estimate, per-line GP, per-line notes and scope)
+
+By: Cowork
+
+Changed: one new file, `claude-code-prompt-69-per-line-pricing-custom-lines.md`, plus this entry. No code, no schema, no data, no migration, nothing deployed. This is a spec handoff to Claude Code, not a build.
+
+**What Dylan asked for**, in his words: AI pricing suggestions based on the specific system and not just square footage; the ability to add a custom system onto an estimate that already has Pricing Estimator areas (his example: a quartz estimate that also needs a custom system on it); the ability to price each line item individually with each line carrying its own scope of work generated from its system type and notes; and AI price suggestions per line item rather than per job total.
+
+**The diagnosis that shaped the split.** "AI prices off square footage, not the system" is not an AI-prompt problem. `buildComps` (production/comps.js:126-160) runs a widen ladder: exact, then same system at any size, then **any system** at similar size, then any completed job. With roughly 35 completed jobs in the 12-month window, most estimates fall past the same-system rung, so the median $/sqft the model reasons over is frequently blended across systems. The model is reporting its comps faithfully; the comps are the problem. Rewriting the system prompt without fixing the ladder would only make it more confidently wrong. That put the comps fix and the AI rebuild together in a second prompt rather than bolted onto this one.
+
+**The build was split into two prompts (Dylan's choice among three options).** Prompt 69, written today, is the data model and pricing half. Prompt 70, not yet written, is the comps hard filter and the per-line AI. Rationale: per-line pricing lands and gets used on a few real estimates before the AI is rebuilt on top of it, and prompt 70's per-line recommendations need per-line prices to exist first.
+
+**Twelve multiple-choice questions were asked before writing anything**, per the project instruction, plus a follow-up round of three once the GP math surfaced a hole. Decisions Dylan locked, all recorded in the prompt so Claude Code does not relitigate them:
+
+1. A custom line is a custom `estimate_areas` row (new nullable columns), not a bare line item and not a new `pec_prod_system_types` record. It reuses the existing area to line-item pipeline, the scope writer, and the public page.
+2. Each line solves its own price; the job total is the sum. The proportional back-allocation of a single job price goes away for the calc price.
+3. The sell/discount override stays job-level and allocates across lines. `estimates.price_override_reason` stays the audit trail.
+4. GP is shown per line AND combined.
+5. A custom line takes a typed material cost and typed labor hours, not one blended cost and not price-only. Without a cost it would show 100% GP and drag the combined number up; typed hours also keep gp_per_hour and crew day planning honest.
+6. A custom line pulls no catalog products in this build. Typed cost only, nothing into the material plan, so the kit-rounding path is untouched.
+7. On accept, a custom line becomes a real `job_areas` row carrying its scope and price, so the crew sees it on the work order.
+8. Per-line internal notes are a new field on each area and custom line, feeding that line's scope generation.
+9. Scope generation stays ONE action with its never-overwrite rule. No per-line buttons, no auto-regeneration.
+10. Forward-only migration, no backfill. Existing estimates keep their stored line amounts.
+
+**The trap the prompt spends the most words on.** The obvious per-line implementation, "call `computeEstimatePricing` once per area and sum", is wrong, and the existing code already knows it: `soloByArea` (EstimatorScreen.tsx:1440) is used only as allocation weights, never as money. Materials kit-round ACROSS areas via `mergeAcrossAreas` (calculator.js:849), so two areas each needing 0.6 of a kit consume one kit, not two; solving each area alone buys two and inflates the total. The prompt specifies keeping one estimate-wide material plan, attributing its cost `M` back to areas by pre-merge raw cost via `allocateProportionally` so the parts sum to `M` exactly, then solving each area at its OWN system's labor% and target GP%. It also requires a hard test invariant: a single-area estimate must price to the identical cent as today.
+
+**A behavior change Claude Code is required to quantify before shipping.** Today a mixed estimate uses a sqft-weighted average target GP, so no individual system hits its own target; a high-margin system silently subsidizes a low-margin one. Per-line solving corrects that, which is the point, but multi-area totals will move. The prompt requires an old-vs-new total report over every existing estimate, in the log entry, before the behavior change is committed, with sent and accepted rows left frozen. That requirement is a direct callback to prompt 56, where a derived-beats-stored rule moved GP on 34 finalized jobs by $4,785 before anyone counted.
+
+**One decision refined after Dylan reviewed the draft.** The prompt originally required a written reason whenever the final total landed under the calculated total by any route, closing the loophole where a rep edits three lines down instead of using the discount box. Dylan agreed but took the relief valve: the reason is now only demanded when the shortfall exceeds the greater of `line_pricing_reason_threshold_pct` (default 2%) or `line_pricing_reason_threshold_dollars` (default $100), measured on the whole estimate rather than per line, so several small trims that add up still ask. Both are settings keys, not rep-editable.
+
+Files touched: `claude-code-prompt-69-per-line-pricing-custom-lines.md` (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 69 in Claude Code. After it ships and a few real mixed estimates have been quoted, Cowork writes prompt 70 (comps hard filter on system type, one AI call returning a recommendation per line plus a job roll-up, server-computed confidence flags, custom lines reasoning from typed scope with an explicit no-comparables statement). Prompt 69 deliberately leaves two seams for it: `estimates.pricing_snapshot` stays jsonb and un-restructured so prompt 70 can key it by line, and per-line inputs stay cheaply hashable so the `inputs_key` cache discipline survives.
+
+---
+
 ## [2026-08-04 MST] Cowork: end-to-end accept test run; BusyBusy step no-opped at the env check (redeploy needed)
 By: Cowork
 
