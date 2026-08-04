@@ -15,3 +15,6 @@ build/
 # Local staging area for stale git lock-file / tmp-object backups awaiting
 # deletion (recurring HEAD.lock incidents, 2026-07-27/28). Never repo content.
 /_to_delete/
+
+# TypeScript incremental build state (local artifact)
+apps/estimator/tsconfig.tsbuildinfo
