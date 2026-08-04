@@ -18659,7 +18659,8 @@ async function renderSettingsDrips() {
 async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled']),
+    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
+      'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -18667,6 +18668,15 @@ async function renderSettingsEstimates() {
   const dedupOn = (map.estimator_customer_search_enabled || 'true') !== 'false';
   const stuckEscOn = (map.sync_stuck_escalation_enabled || 'true') !== 'false';
   const stuckThreshold = Math.max(1, Number(map.sync_stuck_threshold_attempts) || 2);
+  // Line pricing (prompt 69). Defaults here MUST match the estimator's
+  // catalog.ts and the migration seeds: floor falls back to the estimator
+  // floor (then 40), block false, label 'Custom work', thresholds 2% / $100.
+  const lpFloor = Number(map.line_pricing_gp_floor_pct) > 0 ? Number(map.line_pricing_gp_floor_pct)
+    : (Number(map.estimator_floor_gp_pct) > 0 ? Number(map.estimator_floor_gp_pct) : 40);
+  const lpBlock = (map.line_pricing_block_below_floor || 'false') === 'true';
+  const lpLabel = (map.line_pricing_custom_label_default || '').trim() || 'Custom work';
+  const lpReasonPct = Number.isFinite(Number(map.line_pricing_reason_threshold_pct)) && map.line_pricing_reason_threshold_pct !== '' && map.line_pricing_reason_threshold_pct != null ? Number(map.line_pricing_reason_threshold_pct) : 2;
+  const lpReasonDollars = Number.isFinite(Number(map.line_pricing_reason_threshold_dollars)) && map.line_pricing_reason_threshold_dollars !== '' && map.line_pricing_reason_threshold_dollars != null ? Number(map.line_pricing_reason_threshold_dollars) : 100;
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -18704,6 +18714,28 @@ async function renderSettingsEstimates() {
           <button type="button" class="pec-btn ghost sm" id="setSyncThresholdSave">Save</button>
         </div>
       </div>
+    </div>
+    <div class="pec-card">
+      <div style="font-weight:700">Line pricing</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">Each estimate line prices on its own now (prompt 69): the per-line GP floor, whether a below-floor line forces a confirmation, the prefilled label on a new custom line, and how far under the calculated total the final price may land before a written reason is required (the greater of the percent and dollar values applies). Reps cannot change these from the estimator.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+        <label style="display:block;font-size:.76rem;color:var(--muted)">Per-line GP floor (%)
+          <input type="number" id="lpSetFloor" min="0" max="90" step="0.5" value="${lpFloor}" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <label style="display:block;font-size:.76rem;color:var(--muted)">Default custom line label
+          <input type="text" id="lpSetLabel" value="${esc(lpLabel)}" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <label style="display:block;font-size:.76rem;color:var(--muted)">Reason threshold (% under calculated)
+          <input type="number" id="lpSetReasonPct" min="0" max="50" step="0.5" value="${lpReasonPct}" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <label style="display:block;font-size:.76rem;color:var(--muted)">Reason threshold ($ under calculated)
+          <input type="number" id="lpSetReasonDollars" min="0" max="100000" step="10" value="${lpReasonDollars}" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.8rem">
+        <input type="checkbox" id="lpSetBlock" ${lpBlock ? 'checked' : ''}> A line below the floor forces the save confirmation (off: the line only warns and goes red)
+      </label>
+      <div style="margin-top:10px"><button type="button" class="pec-btn ghost sm" id="lpSave">Save line pricing</button></div>
     </div>`;
   wireSettingsTabs(root);
 
@@ -18721,6 +18753,28 @@ async function renderSettingsEstimates() {
     const v = Math.floor(Number($('setSyncThreshold').value));
     if (!Number.isFinite(v) || v < 1 || v > 20) { showToast('Threshold must be between 1 and 20.', { ttl: 4000 }); btn.disabled = false; return; }
     try { await saveSetting('sync_stuck_threshold_attempts', v); } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('lpSave').addEventListener('click', async () => {
+    const btn = $('lpSave'); btn.disabled = true;
+    const floor = Number($('lpSetFloor').value);
+    const label = String($('lpSetLabel').value || '').trim();
+    const rPct = Number($('lpSetReasonPct').value);
+    const rDollars = Number($('lpSetReasonDollars').value);
+    if (!Number.isFinite(floor) || floor < 0 || floor > 90) { showToast('The per-line GP floor must be between 0 and 90.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!label) { showToast('The custom line label cannot be blank.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(rPct) || rPct < 0 || rPct > 50) { showToast('The percent threshold must be between 0 and 50.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(rDollars) || rDollars < 0) { showToast('The dollar threshold cannot be negative.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      for (const [key, value] of [
+        ['line_pricing_gp_floor_pct', floor],
+        ['line_pricing_block_below_floor', $('lpSetBlock').checked ? 'true' : 'false'],
+        ['line_pricing_custom_label_default', label],
+        ['line_pricing_reason_threshold_pct', rPct],
+        ['line_pricing_reason_threshold_dollars', rDollars],
+      ]) await saveSetting(key, value);
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    showToast('Line pricing settings saved.');
     renderSettings();
   });
 }
