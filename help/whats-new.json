@@ -1,5 +1,16 @@
 [
   {
+    "id": "appointments-calendar-chips",
+    "date": "2026-08-03",
+    "title": "The Appointments calendar looks like a modern calendar now",
+    "summary": "Appointment cards follow the Google Calendar style. In Month view each appointment is a soft colored pill showing a type dot, the start time, and the customer's name. In Week and Day view it is a solid colored block showing the name, the visit type, and the city. Colors still mean the same thing: the background is the salesperson, the dot is the appointment type.",
+    "howto": [
+      "Open Appointments from the Sales Activity menu.",
+      "Month view shows time and customer name on each pill; Week and Day show more detail in each block.",
+      "Everything still works the same: click a card to open it, drag it to reschedule, or drag its bottom edge to change the length."
+    ]
+  },
+  {
     "id": "metrics-category-tabs",
     "date": "2026-08-03",
     "title": "Metrics now has All, Sales, Production, and Admin tabs",
