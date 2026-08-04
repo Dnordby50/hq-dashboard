@@ -13838,9 +13838,18 @@ async function renderMetrics() {
     });
     // A Chart.js canvas mounted while its holder was display:none measured
     // zero; resize every chart on reveal so a non-default tab's charts render
-    // at full width. Cheap (a handful of charts), and a no-op for visible ones.
+    // at full width. Charts are found through Chart.getChart on the canvases
+    // actually in this view (the DOM is the source of truth), NOT the
+    // metricsCharts registry: on the live deploy the registry read empty from
+    // this handler while getChart-based resize provably restored the 0x0
+    // charts, so the registry cannot be trusted for this path. Cheap (a
+    // handful of charts), and a no-op for already-visible ones.
     requestAnimationFrame(() => {
-      for (const k in metricsCharts) { try { metricsCharts[k].resize(); } catch (_) { /* destroyed chart */ } }
+      if (!window.Chart || typeof Chart.getChart !== 'function') return;
+      root.querySelectorAll('canvas').forEach(cv => {
+        const ch = Chart.getChart(cv);
+        if (ch) { try { ch.resize(); } catch (_) { /* destroyed chart */ } }
+      });
     });
   }));
 
