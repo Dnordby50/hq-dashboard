@@ -28,6 +28,8 @@ Refreshed 2026-08-01 (Claude Code) after the prompt-62 migration (2026-08-06_pro
 
 Refreshed 2026-08-02 (Claude Code) after the prompt-64 migration (2026-08-07_prompt64_presentation.sql, applied via MCP and verified by re-query): new table `pec_presentation_sections` (presentation literature: brand + kind CHECKs, jsonb images of storage paths, sort_order, active; index idx_pec_presentation_brand_order; RLS policy pec_presentation_staff), two settings keys `presentation_reviews_count` (seeded '3') and `presentation_reviews_min_rating` (seeded '4') (settings 66 rows to 68), and NOT a public-schema table: the `pec-presentation` Storage bucket (public, image/jpeg+png+webp, 5 MB) with four pec_presentation_* storage.objects policies. Additive only.
 
+Refreshed 2026-08-04 (Claude Code) after the prompt-68 migration (2026-08-08_prompt68_busybusy_autocreate.sql, applied via MCP and verified by re-query): three `busybusy_autocreate_*` settings keys seeded (busybusy_autocreate_enabled 'true', busybusy_autocreate_radius_m '150', busybusy_autocreate_reminders 'false'; settings 68 rows to 71). Data-only: no table or column changed. Behavioral note recorded here because it reuses existing columns: a `pec_prod_busybusy_projects` row with `linked_by`/`linked_at` NULL and a `job_id` set is a PENDING link created by the accept path (netlify/functions/_pec-busybusy.cjs) at estimate acceptance, carrying the estimate digits as `project_number`; the importer's number-first match confirms it when hours arrive.
+
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
 
 84 tables documented, 84 live, all in `public`, all with RLS enabled. No gaps.

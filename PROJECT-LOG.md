@@ -2,6 +2,57 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-04 MST] Prompt 68 shipped: BusyBusy project auto-creation on acceptance (Zapier Catch Hook) and the Clock in # on the work order; Zap build handed to Cowork
+
+By: Claude Code
+
+Changed: one code commit, pushed and deployed (07713f9), plus this docs commit. One data-only migration (2026-08-08_prompt68_busybusy_autocreate.sql, applied via MCP, verified by re-query: 3 `busybusy_autocreate_*` settings rows, settings 68 -> 71). No table or column changed; the pending-link state reuses `pec_prod_busybusy_projects.linked_by/linked_at` NULL (the table's existing nullable convention), exactly as the prompt preferred over a new column. npm test green before the code commit and unchanged since: **646 checks, 0 failed, exit 0** (618 baseline + 28 new in production/busybusy-project.test.cjs). All 7 real inline script blocks and both changed .cjs files parse clean.
+
+**Part A, the outbound call.** `ensureJobCreated` (pec-public-estimate.cjs) now ends with `maybeCreateBusybusyProject` (_pec-busybusy.cjs): settings gate -> idempotency check (existing row for this job_id OR project_number) -> LOCAL pending `pec_prod_busybusy_projects` row (project_number = estimate digits, project_name = customer name, job_id) -> POST to `process.env.ZAPIER_BUSYBUSY_HOOK_URL` with a 4s abort and the shared secret (`ZAPIER_BUSYBUSY_HOOK_SECRET`) in BOTH an `x-topcoat-secret` header and a body `secret` field (a Catch Hook exposes the body to a Filter step reliably; the header covers future receivers). The local row lands BEFORE the POST so the number-first importer match works even when the Zap run fails, and the unique partial indexes make a concurrent double-accept lose the insert race and skip the POST. The helper never throws AND the call site wraps it again; running at the end of ensureJobCreated also covers the heal path, where the idempotency check no-ops it. No env var = clean silent no-op. Payload per the locked decisions: title/customer = the stored customer name (NO estimate number in the title, so the importer's normalized name match stays viable), project_number = digits, split address + phone, radius (min 100, default 150), reminders from settings (default false), onsite_verification 'none', plus topcoat_job_id/estimate_number for Zap-history traceability.
+
+**Settings surface (rule 12):** Settings > BusyBusy gained a "Project auto-create" card: on/off (`busybusy_autocreate_enabled`), geofence radius (`busybusy_autocreate_radius_m`, min-100 validated), reminders (`busybusy_autocreate_reminders`), saved with the same upsert pattern as the import knobs. Server and client read the keys with IDENTICAL defaults, so behavior is the same whether or not the seed rows exist.
+
+**Part B, the work order.** The dead `DJ #` pair in the Job Identity grid (dripjobs_deal_id, blank on every TopCoat-native job) became **Clock in #**, resolved from `pec_prod_busybusy_projects.project_number` via the existing deal-id bridge or, for native jobs, `estimates.pec_prod_job_id` (both silent-miss). **Dylan approved the fallback in chat:** when there is no clock-in number and a legacy DripJobs id exists, the pair prints `DJ #` with that id; neither -> a blank `Clock in #` box (never "null", never "pending"). Same single pair swapped in place, so the 2-pairs-per-row grid and the prompt-53 header height math are untouched.
+
+**Verification, all against the live deploy (prescottepoxy.netlify.app), signed in as Dylan, with database re-queries:**
+
+1. **npm test 646/0/exit 0.** The 28 new checks drive the REAL modules: builder fixtures (residential full address, business customer, no-address, callback -> NO payload, no-name -> no payload, digit extraction from "EST-102050", radius clamp), orchestrator gates (unconfigured = zero reads zero network; settings 'false' = gated before any write), idempotency (same job twice -> exactly ONE insert and ONE hook POST), and secret placement.
+2. **The single most important test:** the REAL `ensureJobCreated` (require-cache-mocked `_pec-supabase`, live-shaped settings rows) was driven with `global.fetch` throwing ECONNREFUSED and again returning a 500: both times it returned jobId + prodJobId and wrote BOTH job rows; the 500 case also kept the pending link row for a human to see. The acceptance cannot fail because BusyBusy did.
+3. **Work order prints, three cases, one layout.** Method note: popup windows are blocked/inaccessible under automation (the first attempt tripped the pop-up-blocked `alert`, twice, including once from an async un-patch race), so `window.open` was patched to render into a same-page iframe; `renderWorkOrder` writes byte-identical HTML either way. Jennifer Italiano (legacy job whose project the importer had ALREADY auto-linked): **Clock in #: 1990865**, her real 7-digit BusyBusy number, which is the fallback rule paying off unprompted. Chris Hill (deal id 3114988, no BusyBusy row): **DJ #: 3114988** (the approved fallback). Larry Bowles (native, no deal id, no row): **Clock in #:** blank. All three: 16 label pairs, `.wo-header` height 48px, identical.
+4. **Settings gate round trip:** the card renders with enabled/150/off, unchecking + Save flipped the live `busybusy_autocreate_enabled` row to 'false' (re-queried), restored to 'true' (re-queried). The fixture suite separately proves the server reads that exact key and stops before any write.
+5. **Zero residue:** the one test link row (ZZ TEST prompt68 / 9990001) was deleted and re-queried to 0 matches; totals unchanged (pec_prod_busybusy_projects 26, jobs 97, pec_prod_jobs 93, estimates 10). No estimate was accepted and no Zap exists yet, so no BusyBusy project was created anywhere.
+
+**What is NOT done and is Cowork's (the Zap does not exist yet, so the feature is live-but-inert):** build the Catch Hook Zap and hand back the env vars. Handoff below, also printed in chat.
+
+Files touched: netlify/functions/_pec-busybusy.cjs (new), netlify/functions/pec-public-estimate.cjs, index.html, production/busybusy-project.test.cjs (new), package.json, supabase/migrations/2026-08-08_prompt68_busybusy_autocreate.sql (new), SCHEMA.md (refresh note), features.json (new entry + import-entry pointer), help/whats-new.json (1 entry, no em dashes), PROJECT-LOG.md (this entry).
+Next steps: Cowork builds the Zap (handoff below); after Dylan sets the env vars, the first real acceptance proves the loop end to end. The deal-bridge blind spot prompt is still queued.
+Handoff to Dylan: Nothing changes until the Zap exists. After Cowork's handoff completes, set ZAPIER_BUSYBUSY_HOOK_URL and ZAPIER_BUSYBUSY_HOOK_SECRET in Netlify (Site settings > Environment variables) and redeploy; from then on every accepted estimate creates its BusyBusy project automatically and the work order prints the clock-in number. The knobs live in Settings > BusyBusy > Project auto-create.
+
+## Handoff to Cowork (prompt 68: build the BusyBusy Catch Hook Zap)
+
+### Context
+Prompt 68 shipped in Claude Code (commit 07713f9, deployed to prescottepoxy.netlify.app): when a customer accepts an estimate, the accept path POSTs a JSON payload to a Zapier Catch Hook so a Zap can run BusyBusy Create Project. The code is live but INERT: the hook URL env var is unset until this Zap exists. The Zapier BusyBusy connector (BusybusyCLIAPI) is already enabled and authenticated on Dylan's Zapier account (verified 2026-08-03; nothing needs re-auth).
+
+### Tasks
+1. Create a new Zap. Trigger: **Webhooks by Zapier > Catch Hook**. Copy the generated hook URL; it becomes `ZAPIER_BUSYBUSY_HOOK_URL`.
+2. Add a **Filter** step: only continue when `secret` (body field) **exactly matches** a random shared secret you generate (32+ chars; a password generator is fine). That secret becomes `ZAPIER_BUSYBUSY_HOOK_SECRET`. Do not reuse an existing secret.
+3. Action step: **BusyBusy > Create Project**, mapped field-for-field from the POST body:
+   - `title` <- body `title` (the customer name; do NOT append anything to it)
+   - `project_number` <- body `project_number`
+   - `customer` <- body `customer`
+   - `address_1` <- body `address_1`; `city` <- body `city`; `state` <- body `state`; `postal_code` <- body `postal_code`; `phone` <- body `phone`
+   - `radius` <- body `radius`
+   - `reminders` <- body `reminders` (will be False on this first build)
+   - `onsite_verification` <- body `onsite_verification` (will be `none`; do not hardcode a different value)
+   - Leave `project_group`, `latitude`, `longitude`, `cost_codes`, `sub_projects`, `additional_information` unmapped.
+   - Body fields `topcoat_job_id`, `estimate_number`, and `secret` are deliberately NOT mapped into BusyBusy; they exist for the Filter and for run-history traceability.
+4. Acceptance test: POST one payload to the hook (Zapier's test tool or curl) shaped like: `{"title":"ZZ Zap Test","project_number":"9999999","customer":"ZZ Zap Test","address_1":"123 Test St","city":"Prescott","state":"AZ","postal_code":"86301","phone":"","radius":150,"reminders":false,"onsite_verification":"none","secret":"<your secret>"}`. Confirm the project appears in BusyBusy with title "ZZ Zap Test" and number 9999999, then **archive it with BusyBusy > Archive Project** (never leave it in the crew's clock-in picker). Also send one payload with a WRONG secret and confirm the Filter stops it.
+5. Turn the Zap on. Hand `ZAPIER_BUSYBUSY_HOOK_URL` and `ZAPIER_BUSYBUSY_HOOK_SECRET` to Dylan to set in Netlify (Site settings > Environment variables), then trigger a redeploy.
+6. Guardrails: do not touch the existing BusyBusy import Zaps/flows or the pec-busybusy-export function; do not enable reminders or onsite verification in this build; do not put the secret anywhere but the Zap's Filter and Netlify.
+
+### After
+Append a PROJECT-LOG entry (`By: Cowork`) recording: the Zap name, that the test project was created AND archived (with its BusyBusy project id), that the wrong-secret payload was filtered, and that both env var VALUES went to Dylan only (never into the repo or the log). Report to Dylan that the loop goes live on his Netlify env var save + redeploy.
+
 ## [2026-08-03 MST] Prompt 67 shipped: Appointments calendar chips in the Google Calendar shape (month tinted pills, week/day solid blocks, real name resolution)
 
 By: Claude Code

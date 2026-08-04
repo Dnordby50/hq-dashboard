@@ -1,5 +1,16 @@
 [
   {
+    "id": "work-order-clock-in-number",
+    "date": "2026-08-04",
+    "title": "The work order now shows the BusyBusy clock-in number",
+    "summary": "The printed crew work order replaces the old DJ number with the Clock in number, which is the BusyBusy project number for the job. New jobs get their BusyBusy project created automatically the moment the customer accepts the estimate, so the number is ready before the crew arrives. Older jobs that only have a DripJobs number still show it.",
+    "howto": [
+      "Open a job and click View Work Order.",
+      "The Job Identity box shows Clock in # with the number the crew picks in BusyBusy.",
+      "Turn auto-creation on or off, and set the geofence radius, in Settings then BusyBusy under Project auto-create."
+    ]
+  },
+  {
     "id": "appointments-calendar-chips",
     "date": "2026-08-03",
     "title": "The Appointments calendar looks like a modern calendar now",
