@@ -28,6 +28,8 @@ Refreshed 2026-08-01 (Claude Code) after the prompt-62 migration (2026-08-06_pro
 
 Refreshed 2026-08-02 (Claude Code) after the prompt-64 migration (2026-08-07_prompt64_presentation.sql, applied via MCP and verified by re-query): new table `pec_presentation_sections` (presentation literature: brand + kind CHECKs, jsonb images of storage paths, sort_order, active; index idx_pec_presentation_brand_order; RLS policy pec_presentation_staff), two settings keys `presentation_reviews_count` (seeded '3') and `presentation_reviews_min_rating` (seeded '4') (settings 66 rows to 68), and NOT a public-schema table: the `pec-presentation` Storage bucket (public, image/jpeg+png+webp, 5 MB) with four pec_presentation_* storage.objects policies. Additive only.
 
+Refreshed 2026-08-04 (Claude Code) after the prompt-69 migration (2026-08-09_prompt69_per_line_pricing.sql, applied via MCP and verified by information_schema re-query): `estimate_areas` gained eight nullable/defaulted columns for per-line pricing and custom lines (`is_custom` boolean not null default false, `custom_label`, `custom_scope`, `custom_material_cost`, `custom_labor_hours`, `notes` [INTERNAL, never customer-facing], `calc_price`, `price_override`), and five `line_pricing_*` settings keys were seeded (line_pricing_gp_floor_pct '40' [copied from the live estimator_floor_gp_pct so day-one behavior is unchanged], line_pricing_block_below_floor 'false', line_pricing_custom_label_default 'Custom work', line_pricing_reason_threshold_pct '2', line_pricing_reason_threshold_dollars '100'; settings 71 rows to 76). Forward-only, NO backfill: existing estimate_areas rows keep every stored amount. A row with `is_custom=true` is a typed custom line (label/scope/material cost/labor hours typed; its price lives in `price_override`, `calc_price` stays null); on a calculator area `calc_price` is that line's own solved cost-plus price and `price_override` is a rep-typed per-line price (null = use calc_price).
+
 Refreshed 2026-08-04 (Claude Code) after the prompt-68 migration (2026-08-08_prompt68_busybusy_autocreate.sql, applied via MCP and verified by re-query): three `busybusy_autocreate_*` settings keys seeded (busybusy_autocreate_enabled 'true', busybusy_autocreate_radius_m '150', busybusy_autocreate_reminders 'false'; settings 68 rows to 71). Data-only: no table or column changed. Behavioral note recorded here because it reuses existing columns: a `pec_prod_busybusy_projects` row with `linked_by`/`linked_at` NULL and a `job_id` set is a PENDING link created by the accept path (netlify/functions/_pec-busybusy.cjs) at estimate acceptance, carrying the estimate digits as `project_number`; the importer's number-first match confirms it when hours arrive.
 
 **Rule: Consult this before writing any SQL or supabase-js select. Regenerate after applying migrations.**
@@ -188,9 +190,19 @@ RLS: enabled · rows: 6
 | sort_order | integer | no | 0 |
 | created_at | timestamptz | no | now() |
 | mvb | boolean | no | false |
+| is_custom | boolean | no | false |
+| custom_label | text | yes |  |
+| custom_scope | text | yes |  |
+| custom_material_cost | numeric | yes |  |
+| custom_labor_hours | numeric | yes |  |
+| notes | text | yes |  |
+| calc_price | numeric | yes |  |
+| price_override | numeric | yes |  |
 
 PK: id
 FK: basecoat_product_id → pec_prod_products.id; estimate_id → estimates.id; flake_product_id → pec_prod_products.id; system_type_id → pec_prod_system_types.id; topcoat_product_id → pec_prod_products.id
+
+Per-line pricing / custom lines (prompt 69, 2026-08-04): an estimate_areas row is the ONE line unit. Calculator area: `calc_price` = that line's own solved cost-plus price, `price_override` = rep-typed per-line price (null = use calc_price). Custom line: `is_custom=true`, typed `custom_label`/`custom_scope`/`custom_material_cost`/`custom_labor_hours`, typed price in `price_override`, `calc_price` null, no catalog products. `notes` is INTERNAL per-line context fed to scope generation, never rendered customer-facing. All nullable/defaulted, no backfill: pre-69 rows have them null/false and render unchanged.
 
 ### estimate_line_items
 RLS: enabled · rows: 10
@@ -1951,7 +1963,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 68
+RLS: enabled · rows: 76
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1960,6 +1972,8 @@ RLS: enabled · rows: 68
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-08-04 (prompt 69), in Settings > Estimates under "Line pricing": line_pricing_gp_floor_pct ('40', seeded from the live estimator_floor_gp_pct; the per-line GP floor that turns a line red in the estimator), line_pricing_block_below_floor ('false', whether a below-floor LINE forces the save confirmation, or only warns), line_pricing_custom_label_default ('Custom work', the prefilled label on a new custom line), line_pricing_reason_threshold_pct ('2') and line_pricing_reason_threshold_dollars ('100') (a written reason is required when the final total lands under the calculated total by more than the GREATER of the two). Inserted insert-only. Settings 71 rows to 76.
+Keys added 2026-08-04 (prompt 68), in Settings > BusyBusy under "Project auto-create": busybusy_autocreate_enabled ('true'), busybusy_autocreate_radius_m ('150'), busybusy_autocreate_reminders ('false'). Settings 68 rows to 71.
 Keys added 2026-08-02 (prompt 64), in Settings > Presentation: presentation_reviews_count ('3', how many recent reviews the gallery section shows, 1 to 10) and presentation_reviews_min_rating ('4', minimum star rating that qualifies, 1 to 5). Read by pec-public-estimate.cjs (loadLiterature) and the dashboard's Present mode. Inserted insert-only. Settings 66 rows to 68.
 Key added 2026-08-01 (prompt 62 Part G), in Settings > Drips: lost_reason_ai_backfill_enabled ('true'; the nightly pec-lost-reason-backfill treats a MISSING row as on too, so this seed is for Settings visibility, and 'false' is the only value that turns the pass off). Settings 65 rows to 66.
 Keys added 2026-07-31 (prompt 60), all in Settings > Reviews: review_drip_enabled ('true', master switch for the review campaign, checked ALONGSIDE drip_sending_enabled: both must be 'true'), review_ask_default_on ('true', whether the job close-out popup pre-selects Send), review_bonus_amount ('25', dollars per human-confirmed 5-star review), review_bonus_min_stars ('5', minimum rating that earns credit and a bonus), review_match_window_days ('45', how far back the intake looks for a candidate ask), review_stop_on_touchup ('true', a touch-up or callback opening stops the drip), review_alert_max_stars ('3', a review at or below this raises a bell for Dylan and Anne and stops the enrollment). The Google review URL itself stays on the pre-existing google_review_link_epoxy key. Inserted insert-only. Settings 58 rows to 65.
