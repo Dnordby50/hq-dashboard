@@ -599,7 +599,10 @@ async function loadEstimate(token) {
 
 async function loadLineItems(estimateId) {
   try {
-    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
+    // estimate_area_id rides along (prompt 69) so ensureJobCreated can carry
+    // each line's price + scope onto its job_areas row; the page render
+    // ignores it.
+    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,estimate_area_id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -618,7 +621,10 @@ async function loadEstimateById(id) {
 
 async function loadAreas(estimateId) {
   try {
-    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed&order=sort_order.asc`);
+    // id / is_custom / custom_label added for the accept path (prompt 69).
+    // estimate_areas.notes is INTERNAL and is deliberately NOT selected here:
+    // nothing this function loads can leak it onto the customer page.
+    const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed,is_custom,custom_label&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -957,16 +963,30 @@ async function ensureJobCreated(est) {
   if (areas.length) {
     const existingAreas = await sb('GET', `/job_areas?job_id=eq.${jobId}&select=id&limit=1`);
     if (!existingAreas.length) {
-      await sb('POST', '/job_areas', areas.map((a, i) => ({
-        job_id: jobId,
-        name: a.name || 'Area',
-        sqft: a.sqft != null ? a.sqft : null,
-        system_type_id: a.system_type_id || null,
-        flake_product_id: a.flake_product_id || null,
-        basecoat_product_id: a.basecoat_product_id || null,
-        topcoat_cure_speed: a.topcoat_cure_speed || null,
-        order_index: a.sort_order != null ? a.sort_order : i,
-      })));
+      // Each area's line item (prompt 69): its FINAL price and its scope
+      // description ride onto the job_areas row so the crew sees the line's
+      // money and words on the work order. A custom line becomes a REAL area
+      // (decision 7): name from custom_label, no system, sqft only if typed.
+      const liByArea = new Map();
+      for (const li of included) {
+        if (li && li.estimate_area_id && !liByArea.has(li.estimate_area_id)) liByArea.set(li.estimate_area_id, li);
+      }
+      await sb('POST', '/job_areas', areas.map((a, i) => {
+        const li = a.id ? liByArea.get(a.id) : null;
+        const isCustomLine = a.is_custom === true;
+        return {
+          job_id: jobId,
+          name: isCustomLine ? (a.custom_label || a.name || 'Custom work') : (a.name || 'Area'),
+          sqft: a.sqft != null ? a.sqft : null,
+          system_type_id: isCustomLine ? null : (a.system_type_id || null),
+          flake_product_id: isCustomLine ? null : (a.flake_product_id || null),
+          basecoat_product_id: isCustomLine ? null : (a.basecoat_product_id || null),
+          topcoat_cure_speed: a.topcoat_cure_speed || null,
+          order_index: a.sort_order != null ? a.sort_order : i,
+          price: li && li.total != null ? Number(li.total) : null,
+          description: li && li.description ? String(li.description) : null,
+        };
+      }));
     }
   }
 

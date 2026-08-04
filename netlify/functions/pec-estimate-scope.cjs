@@ -88,6 +88,7 @@ Rules, in order of importance:
 3. Fill in the square footage, the flake color, the area names, and the expected project duration where the template has a slot for them and the facts provide a value.
 4. When the data does not say, LEAVE THE PLACEHOLDER exactly as it is in the template rather than guessing. That includes "BLANK", empty "Tentative start date:" lines, and any is/is-not line whose fact is not provided.
 5. You may NOT invent scope, may NOT soften an exclusion, and may NOT add a warranty term.
+6. A line item may carry "internal_notes": the salesperson's private context for that line. Treat it as additional FACTS for resolving that line's placeholders and is/is-not choices ONLY. Never quote or paraphrase internal_notes into the scope text, never let it add scope beyond what the template provides, and never let it override rule 1 or rule 5.
 
 You receive one template (or snippet) per line item plus the estimate facts. Respond with ONLY a JSON object, no markdown fences:
 {
@@ -129,7 +130,7 @@ exports.handler = async (event) => {
     }
 
     const [areas, lines] = await Promise.all([
-      sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,system_type_id,mvb,sort_order&order=sort_order.asc`),
+      sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,system_type_id,mvb,sort_order,is_custom,custom_scope,notes&order=sort_order.asc`),
       sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,addon_id,estimate_area_id,label,description,is_optional,selected_by_customer,sort_order&order=sort_order.asc`),
     ]);
     if (!Array.isArray(lines) || !lines.length) {
@@ -188,6 +189,14 @@ exports.handler = async (event) => {
     for (const li of lines) {
       if (li.estimate_area_id) {
         const area = areaById.get(li.estimate_area_id);
+        // A CUSTOM line (prompt 69): the rep's typed scope is used VERBATIM
+        // as this line's description (the save already wrote it there). The
+        // writer must never rewrite it; only the explicit Polish button
+        // touches custom text, and only when the rep presses it.
+        if (area && area.is_custom === true) {
+          skipped.push({ id: li.id, label: li.label, reason: 'custom line; typed scope used verbatim' });
+          continue;
+        }
         const sys = area ? systemById.get(area.system_type_id) : null;
         // Per-line MVB template (build 17): the MVB variant when THIS AREA has a
         // moisture barrier, else the standard template. Mirrors the estimator's
@@ -205,6 +214,10 @@ exports.handler = async (event) => {
             area: area ? { name: area.name, sqft: Number(area.sqft) || 0 } : null,
             system_name: sys ? sys.name : null,
             template: applyAnswers(rawTemplate, scopeAnswers, contextLabel),
+            // Per-line INTERNAL notes (prompt 69): extra facts for THIS
+            // line's substitution only. Constrained by the system prompt:
+            // never quoted verbatim, never new scope.
+            internal_notes: area && area.notes && String(area.notes).trim() ? String(area.notes).trim() : null,
           });
         } else {
           skipped.push({ id: li.id, label: li.label, reason: sys ? `no scope template on system "${sys.name}"` : 'area has no system' });
