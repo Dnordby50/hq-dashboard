@@ -27433,7 +27433,7 @@ function openEstPropagateModal({ est, c, lead, cust, leadDiffs, custDiffs, onDon
 async function renderEstJobInfoBlock(container, estimateId) {
   if (!container) return;
   const res = await supabase.from('estimates')
-    .select('id,intake,customer_name,customer_phone,customer_email,customer_address,customer_first_name,customer_last_name,customer_company,customer_is_commercial,customer_address1,customer_address2,customer_city,customer_state,customer_zip,lead_id')
+    .select('id,intake,customer_name,customer_phone,customer_email,customer_address,customer_first_name,customer_last_name,customer_company,customer_is_commercial,customer_address1,customer_address2,customer_city,customer_state,customer_zip,lead_id,status,sent_at,created_by')
     .eq('id', estimateId).maybeSingle();
   if (res.error || !res.data) { container.innerHTML = `<div style="color:var(--muted);font-size:.8rem">Job info unavailable${res.error ? ': ' + esc(res.error.message) : ''}</div>`; return; }
   const est = res.data;
@@ -27491,13 +27491,19 @@ async function renderEstJobInfoBlock(container, estimateId) {
   };
 
   const renderEditForm = async () => {
-    // Salesperson lock (Part C item 3, the highest-risk item): once one is
-    // set, only an admin changes it, and an errored/absent role read FAILS
-    // CLOSED (isAdmin() is false unless the loaded admin row says admin),
-    // mirroring the estimator's App.tsx check. Commission attribution flows
-    // into GP; a native editor that skipped this would be a hole.
+    // Salesperson lock (prompt 61 Part C item 3), loosened by Dylan's call
+    // 2026-08-03 (prompt 65 follow-up): the CREATOR may change the
+    // salesperson while the estimate is still an unsent draft; the lock
+    // lands at send. Everything else stays fail-closed: an errored/absent
+    // role read (isAdmin() false unless the loaded admin row says admin), a
+    // null created_by, or a missing session all keep the lock for
+    // non-admins, mirroring the estimator's check. Commission attribution
+    // flows into GP; a sent estimate's salesperson only moves by admin hand.
     const spSet = !!(intake.salesperson_id || intake.salesperson_name);
-    const spLocked = spSet && !isAdmin();
+    const spCreatorUnsentDraft = est.status === 'draft' && !est.sent_at
+      && !!est.created_by && !!(state.session && state.session.user)
+      && String(est.created_by) === String(state.session.user.id);
+    const spLocked = spSet && !isAdmin() && !spCreatorUnsentDraft;
     let salespeople = [];
     if (!spLocked) {
       const sr = await supabase.from('pec_sales_team_members').select('id,name,commission_pct,active').order('name');
@@ -27520,7 +27526,7 @@ async function renderEstJobInfoBlock(container, estimateId) {
       <div class="pec-row-3">${f('City', 'city', c.city)}${f('State', 'state', c.state)}${f('Zip', 'zip', c.zip)}</div>
       <div class="pec-field" style="margin-bottom:8px"><label>Salesperson</label>
         ${spLocked
-          ? `<input value="${esc(intake.salesperson_name || 'Unassigned')}" readonly disabled title="Set when the estimate was started. Only an admin can change it (commission attribution). If the role check cannot run, this stays locked on purpose.">`
+          ? `<input value="${esc(intake.salesperson_name || 'Unassigned')}" readonly disabled title="Locked: the person who started a draft can change this until the estimate is sent; after that only an admin can (commission attribution). If the role check cannot run, this stays locked on purpose.">`
           : `<select id="estJiSalesperson">
               <option value="">Select…</option>
               ${salespeople.map(s => `<option value="${esc(s.id)}" ${String(intake.salesperson_id || '') === String(s.id) ? 'selected' : ''}>${esc(s.name)}${s.commission_pct != null ? ` (${s.commission_pct}% commission)` : ''}</option>`).join('')}

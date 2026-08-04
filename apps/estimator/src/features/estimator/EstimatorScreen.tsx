@@ -198,8 +198,17 @@ export default function EstimatorScreen({
   // 47's fallback) keeps the select enabled for everyone for this session,
   // otherwise an unmapped rep could never save an estimate and the
   // block-with-a-clear-message path would be a dead end.
+  // Loosened by Dylan's call 2026-08-03 (prompt 65 follow-up): the CREATOR
+  // may change the salesperson while the estimate is still an unsent draft;
+  // the lock lands at send. A brand-new estimate (editing null) is by
+  // definition an unsent draft this login is creating. Fail-closed otherwise:
+  // a null createdBy on either side keeps the lock for non-admins.
   const [salespersonSetAtOpen] = useState<boolean>(() => salespersonId !== '');
-  const salespersonLocked = salespersonSetAtOpen && !viewerIsAdmin;
+  const creatorUnsentDraft = editing == null
+    || (editing.status === 'draft' && editing.sentAt == null
+      && editing.createdBy != null && createdBy != null
+      && String(editing.createdBy) === String(createdBy));
+  const salespersonLocked = salespersonSetAtOpen && !viewerIsAdmin && !creatorUnsentDraft;
   // Split customer shape (build 23): Residential/Commercial toggle, split
   // name / company, split address. Prefill priority: the estimate being
   // edited (estimateLoad already mapped split columns, with legacy fallback),
@@ -1924,7 +1933,7 @@ export default function EstimatorScreen({
                 <>
                   <input value={salesperson ? salesperson.name : 'Unassigned'} readOnly disabled />
                   <p className="muted" style={{ fontSize: '.75rem', margin: '4px 0 0' }}>
-                    Set when the estimate was started. An admin can change it.
+                    Locked once the estimate is sent, or when someone else started it. An admin can change it.
                   </p>
                 </>
               ) : (

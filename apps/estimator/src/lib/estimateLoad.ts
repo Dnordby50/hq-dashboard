@@ -26,6 +26,9 @@ export type LoadedEstimate = {
   id: string;
   estimateNumber: number | null;
   status: string;
+  // Non-null once the estimate has been sent; with status it decides whether
+  // the creator may still change the salesperson (prompt 65 follow-up).
+  sentAt: string | null;
   systemTypeId: string | null;
   mvb: 'none' | 'addon' | 'standalone';
   flakeColor: string | null;
@@ -156,6 +159,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     id: String(e.id),
     estimateNumber: e.estimate_number != null ? Number(e.estimate_number) : null,
     status: String(e.status || 'draft'),
+    sentAt: (e.sent_at as string | null) ?? null,
     systemTypeId: (e.system_type_id as string | null) ?? null,
     mvb: (['none', 'addon', 'standalone'].includes(String(e.mvb)) ? String(e.mvb) : 'none') as 'none' | 'addon' | 'standalone',
     flakeColor: (e.flake_color as string | null) ?? null,
