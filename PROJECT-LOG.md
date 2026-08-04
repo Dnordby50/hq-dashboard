@@ -2,6 +2,30 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-04 MST] Cowork: end-to-end accept test run; BusyBusy step no-opped at the env check (redeploy needed)
+By: Cowork
+
+Changed: no code, no schema. One throwaway estimate was created, accepted through the REAL public endpoint, and every row it produced was deleted; zero residue re-queried and confirmed.
+
+**What was tested.** Dylan reported the two Netlify env vars created. EST-102053 ("ZZ BusyBusy E2E", $1,234, 742 E2E Test Way, Prescott AZ 86301) was inserted as `status='sent'` with a real `public_token`, then accepted via `POST https://prescottepoxy.netlify.app/api/estimate/action` with `action:'accept'` (the same endpoint the customer's Sign button calls, not a shortcut).
+
+**The accept path itself is healthy.** HTTP 200, `{"ok":true,"job_id":"8a5efe38-..."}`, and the acceptance produced exactly what it should: 1 jobs row, 1 pec_prod_jobs row, 1 customers row, 7 timeline_stages.
+
+**The BusyBusy step did not fire, and the failure is isolated.** No `pec_prod_busybusy_projects` row was written and no BusyBusy project with number 102053 exists (both re-queried live). The local row is written BEFORE the POST, so its absence places the exit at the very first gate in `maybeCreateBusybusyProject` (`_pec-busybusy.cjs:77`): `if (!hook) return { skipped: 'unconfigured' }`. Ruled out by direct check: the settings gate is open (`busybusy_autocreate_enabled` = 'true', radius 150, reminders false), the call site exists and is reached (`pec-public-estimate.cjs:1056`), and `isCallback` was false. So `process.env.ZAPIER_BUSYBUSY_HOOK_URL` is not present in the running function.
+
+Two candidate causes, indistinguishable from outside Netlify: (1) the site has not been redeployed since the variables were saved, which is required for Netlify functions to see new env, or (2) a variable NAME does not match exactly. The names must be `ZAPIER_BUSYBUSY_HOOK_URL` and `ZAPIER_BUSYBUSY_HOOK_SECRET`.
+
+**Worth stating plainly: this is the designed failure mode working correctly.** A missing hook URL produced a clean no-op, the estimate still accepted, the job still got created, and nothing errored or bothered anyone. That is exactly the prompt-68 contract. It is also why this silently-fails-forever risk needs the Ops Queue check noted in the prior entry.
+
+**Cleanup, re-queried:** estimate, job, prod job, customer, and all 7 timeline stages deleted; 0 rows remain under the ZZ BusyBusy name. No estimate_line_items, installments, or estimate views had been created. The test acceptance did fire the usual office notifications (Slack + email); Dylan was told before the accept and again after.
+
+The Zap side needs no change: it is published, ON, and both halves of its own acceptance test passed in the prior entry.
+
+Files touched: PROJECT-LOG.md (this entry). No prod schema change. Prod data changed only by the test, fully reverted.
+Next steps: Dylan redeploys Netlify (or fixes the variable names), then says the word and the same end-to-end test re-runs in one pass: fresh throwaway estimate, real accept, verify the BusyBusy project appears with project_number = the estimate digits, archive it, delete every row.
+
+---
+
 ## [2026-08-04 MST] Cowork: BusyBusy Catch Hook Zap built, tested, and published (prompt 68 handoff complete)
 By: Cowork
 
