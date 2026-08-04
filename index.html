@@ -14531,7 +14531,7 @@ async function renderWorkOrder(ctx) {
   // Resolve the matching pec_prod_jobs row for install date + crew, plus
   // the crew name (separate table). Misses are silent: the work order
   // just shows blank for those fields, exactly like the paper sheet.
-  let installDate = null, crewName = null;
+  let installDate = null, crewName = null, prodJobIdForBb = null;
   try {
     if (job.dripjobs_deal_id) {
       // List (NOT maybeSingle, which errors on duplicate deal-id rows), then
@@ -14543,12 +14543,32 @@ async function renderWorkOrder(ctx) {
       ]);
       if (!pjRes.error && (pjRes.data || []).length) {
         const prodJob = (pjRes.data || []).find(p => p.install_date) || pjRes.data[0];
+        prodJobIdForBb = prodJob.id;
         const dayRes = await supabase.from('pec_prod_job_schedule_days').select('scheduled_date,crew_id,job_id').eq('job_id', prodJob.id);
         const days = (dayRes && !dayRes.error) ? (dayRes.data || []) : [];
         const s = deriveScheduleState([prodJob], days, crewsRes.error ? [] : (crewsRes.data || []));
         installDate = s.installDate;
         crewName = s.crewName || null;
       }
+    }
+  } catch (e) { /* silent: work order still renders */ }
+
+  // Clock-in number (prompt 68): the BusyBusy project number for this job,
+  // read from pec_prod_busybusy_projects (source of truth: covers both the
+  // auto-created projects, whose number IS the estimate digits, and legacy
+  // projects the importer or a human linked with BusyBusy's own 7-digit
+  // number). TopCoat-native jobs have no dripjobs_deal_id, so their prod-job
+  // id comes from estimates.pec_prod_job_id (stamped by the accept path).
+  // Every miss is silent: the header just prints its fallback.
+  let clockInNumber = null;
+  try {
+    if (!prodJobIdForBb) {
+      const estRes = await supabase.from('estimates').select('pec_prod_job_id').eq('job_id', job.id).not('pec_prod_job_id', 'is', null).limit(1);
+      if (!estRes.error && (estRes.data || []).length) prodJobIdForBb = estRes.data[0].pec_prod_job_id;
+    }
+    if (prodJobIdForBb) {
+      const bbRes = await supabase.from('pec_prod_busybusy_projects').select('project_number').eq('job_id', prodJobIdForBb).not('project_number', 'is', null).limit(1);
+      if (!bbRes.error && (bbRes.data || []).length) clockInNumber = bbRes.data[0].project_number || null;
     }
   } catch (e) { /* silent: work order still renders */ }
 
@@ -14785,7 +14805,13 @@ async function renderWorkOrder(ctx) {
   </div>
   <div class="intake">
     <div class="grp">Job Identity</div>
-    <div class="lbl">DJ #:</div>           <div class="val num">${e(job.dripjobs_deal_id || '')}</div>
+    <!-- Clock in # (prompt 68) REPLACES the dead DJ # pair; same one pair,
+         so the 2-pairs-per-row grid and the prompt-53 header height math are
+         untouched. Label follows what actually prints: the BusyBusy clock-in
+         number when the job has one, else the legacy DripJobs id when THAT
+         exists (Dylan-approved fallback for the ~73 pre-TopCoat jobs), else
+         a blank Clock in # box (never "null", never "pending"). -->
+    <div class="lbl">${clockInNumber || !job.dripjobs_deal_id ? 'Clock in #:' : 'DJ #:'}</div> <div class="val num">${e(clockInNumber || job.dripjobs_deal_id || '')}</div>
     <div class="lbl">Address:</div>        <div class="val">${e(job.address || '')}</div>
     <div class="lbl">Location:</div>       <div class="val"></div>
     <div class="lbl">Gate Code#:</div>     <div class="val num">${e(job.gate_code || '')}</div>
@@ -19456,6 +19482,12 @@ async function renderSettingsBusybusy() {
   const windowWeeks = Number(map.busybusy_import_window_weeks) > 0 ? Number(map.busybusy_import_window_weeks) : 2;
   const anomalyThreshold = map.busybusy_anomaly_hours_threshold || '16';
   const overheadNames = map.busybusy_overhead_project_names || 'Shop';
+  // Project auto-create knobs (prompt 68, rule 12). Defaults mirror the
+  // server (_pec-busybusy.cjs): enabled unless explicitly 'false', radius
+  // 150 (BusyBusy minimum 100), reminders off.
+  const autoCreateEnabled = String(map.busybusy_autocreate_enabled == null ? 'true' : map.busybusy_autocreate_enabled) !== 'false';
+  const autoCreateRadius = Number(map.busybusy_autocreate_radius_m) >= 100 ? Number(map.busybusy_autocreate_radius_m) : 150;
+  const autoCreateReminders = String(map.busybusy_autocreate_reminders || 'false') === 'true';
 
   // Default window: the last `windowWeeks` FULL weeks, Monday through Sunday
   // (the week being costed plus the one before, per the locked cadence).
@@ -19538,6 +19570,19 @@ async function renderSettingsBusybusy() {
         <span id="bbSetErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
       </div>
       <div style="color:var(--muted);font-size:.7rem;margin-top:8px">The API token lives in the Netlify env var BUSYBUSY_EXPORT_TOKEN, never here. If a pull starts failing with a 401, the BusyBusy session died (logout or password change) and Dylan pastes a fresh token into Netlify.</div>
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin-top:0">Project auto-create</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin:0 0 10px">When a customer accepts an estimate, TopCoat creates the matching BusyBusy project (title = customer name, project number = the estimate number) so the crew can clock in without anyone hand-creating it. Runs through a Zapier hook; without the ZAPIER_BUSYBUSY_HOOK_URL env var in Netlify it does nothing.</div>
+      <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;margin:0"><input type="checkbox" id="bbSetAutoCreate"${autoCreateEnabled ? ' checked' : ''}> Create BusyBusy projects on acceptance</label>
+        <div class="pec-field" style="margin:0"><label>Geofence radius (meters, min 100)</label><input type="number" id="bbSetRadius" min="100" step="10" value="${esc(String(autoCreateRadius))}" style="width:110px"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;margin:0"><input type="checkbox" id="bbSetReminders"${autoCreateReminders ? ' checked' : ''}> BusyBusy reminders on new projects</label>
+        <button type="button" class="pec-btn primary sm" id="bbAutoSave">Save</button>
+        <span id="bbAutoErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+      <div style="color:var(--muted);font-size:.7rem;margin-top:8px">On-site verification stays off on new projects; the radius is stored now so verification can be switched on in BusyBusy later without re-creating anything.</div>
     </div>`;
   wireSettingsTabs(root);
   renderBbEmployeeCard(root, bbEmployees, crewMembers, hoursByName);
@@ -19671,6 +19716,26 @@ async function renderSettingsBusybusy() {
         if (w && w.error) throw w.error;
       }
       showToast('BusyBusy import settings saved', { ttl: 2500 });
+    } catch (err) { errEl.textContent = err.message || String(err); }
+    btn.disabled = false;
+  });
+
+  // ---- Project auto-create knobs (prompt 68) -----------------------------
+  $('bbAutoSave').addEventListener('click', async () => {
+    const errEl = $('bbAutoErr'); errEl.textContent = '';
+    const radius = Number($('bbSetRadius').value);
+    if (!Number.isFinite(radius) || radius < 100) { errEl.textContent = 'Radius must be at least 100 meters (the BusyBusy minimum).'; return; }
+    const btn = $('bbAutoSave'); btn.disabled = true;
+    try {
+      for (const [key, value] of [
+        ['busybusy_autocreate_enabled', $('bbSetAutoCreate').checked ? 'true' : 'false'],
+        ['busybusy_autocreate_radius_m', String(Math.round(radius))],
+        ['busybusy_autocreate_reminders', $('bbSetReminders').checked ? 'true' : 'false'],
+      ]) {
+        const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value }, { onConflict: 'key' }), { label: 'settings-busybusy-autocreate' });
+        if (w && w.error) throw w.error;
+      }
+      showToast('BusyBusy auto-create settings saved', { ttl: 2500 });
     } catch (err) { errEl.textContent = err.message || String(err); }
     btn.disabled = false;
   });

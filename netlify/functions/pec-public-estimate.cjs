@@ -35,6 +35,7 @@
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
 const { prepareDepositInstallment } = require('./_pec-installments.cjs');
 const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
+const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
 const crypto = require('crypto');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -1042,6 +1043,20 @@ async function ensureJobCreated(est) {
 
   // -- Lead to accepted (first-touch accepted_at + one deterministic event).
   await moveLead(est, 'accepted', null);
+
+  // -- BusyBusy project auto-create (prompt 68). Best-effort BY CONTRACT:
+  // maybeCreateBusybusyProject never throws (settings gate, idempotency
+  // check, pending pec_prod_busybusy_projects row, then the Catch Hook POST
+  // with a 4s abort), and this belt-and-suspenders try/catch means even a
+  // bug in it cannot reject an acceptance. Running here (not in handleAccept)
+  // also covers the heal path, where the idempotency check makes it a no-op.
+  // isCallback is literal false: this path only ever creates fresh jobs from
+  // signed estimates; touch-up jobs are minted elsewhere and never come here.
+  try {
+    await maybeCreateBusybusyProject({ sb, env: process.env, est, prodJobId, isCallback: false });
+  } catch (err) {
+    console.warn('busybusy kick failed (acceptance unaffected):', String(err && err.message || err));
+  }
 
   return { jobId, prodJobId, customerId: customer.id };
 }
