@@ -2,6 +2,33 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-03 MST] Cowork: scoped prompt 67 (appointment calendar chips) and prompt 68 (BusyBusy project automation)
+By: Cowork
+
+Changed: two new prompt files, plus one third-party config check. No code, no schema, no data. The Zapier BusyBusy connector was inspected (it was ALREADY enabled and authenticated on Dylan's account; nothing was enabled, executed, or written there). Read-only live queries were run against zdfpzmmrgotynrwkeakd.
+
+- `claude-code-prompt-67-appointment-calendar-chips.md` (new)
+- `claude-code-prompt-68-busybusy-project-automation.md` (new)
+
+These are the second half of the same batch as prompt 66. Dylan chose to split again: the calendar restyle is self-contained UI he can judge by looking, and the BusyBusy work depended on a credential question that could have stalled it. 10 more multiple-choice questions were asked across three rounds (18 total for the batch).
+
+**Calendar finding: there is no custom event renderer at all.** `apptEventFromRow` (index.html:23751) hands FullCalendar a title of `"<type or title> · <salesperson>"` plus two colors, and that is the entire visual layer beyond the `--fc-*` token block at index.html:1970-1992. Every chip in a rep's column therefore reads the same two facts. Live shape, measured: 8 appointments, ALL `source='routemize'`, `title` formatted `"Tom Bechtel, Estimate"`, **customer_id NULL on every row**, lead_id set on 7 of 8, one row with no name at all. Dylan chose a real join to leads + customers for the name rather than parsing the title, so the prompt specifies PostgREST embeds in the existing range query (never per-event lookups) with a five-step precedence and the prompt-65 suffix-strip helper as the fallback.
+
+Locked for 67: time + customer name on the chip with the type as a colored dot; color stays by salesperson so the existing legend still reads true; Google's actual two-treatment behavior (tinted pills in month, solid blocks in week/day); dayMaxEventRows stays 4; the crew Job Schedule calendar is explicitly NOT touched. Two traps written into the prompt: a custom `eventContent` is the classic way to break drag-and-drop and resize (both are live on this calendar), and tinted pills are where dark mode dies, since `--fc-event-text-color: #fff` at index.html:1976 is a solid-chip assumption and APPT_MEMBER_COLORS was chosen against a light card. Verification bar is six screenshots (desktop/iPad/phone x light/dark) plus a drag-and-resize regression with database re-queries, per Dylan's pick.
+
+**BusyBusy: the write path exists and is already authenticated, which changed one of Dylan's own answers.** The Zapier BusyBusy app (`BusybusyCLIAPI`) is enabled with **196 actions**, `needs_auth: false`, 2 connections, including `create_project`, `update_project`, `archive_project`, and `search_projects`. `create_project` accepts a **`project_number` we supply ourselves**, plus separate `customer`, address, GPS, geofence radius, reminders, and onsite-verification fields.
+
+That killed the naming answer Dylan had just given. He picked "customer name plus estimate number" as the project title; once the number field was found, that option became strictly worse, because `pec_prod_busybusy_projects` links by NAME ONCE THEN NUMBER (SCHEMA.md) and a title of "Tom Bechtel EST-102047" fails the importer's normalized name match, forcing a manual mapping for every job. He was told this and switched: **title = customer name, project_number = the estimate number's digits, customer = the customer name.** Because TopCoat sets the number at creation and writes the `pec_prod_busybusy_projects` row itself, the link never has to be discovered at all and the name match becomes a fallback rather than the mechanism.
+
+**The architectural constraint the prompt states twice: Zapier MCP tools are assistant-side and a Netlify function cannot call them.** The accept path must POST to a Zapier Catch Hook, which runs Create Project. That is the Routemize pattern in reverse and the only proven outbound path today; `export.busybusy.io` is a read-only CSV snapshot and `graphql.busybusy.io` has 401'd since 2026-06-13. Prompt 68 forbids silently switching to a direct API call and requires a stop-and-report if one is found.
+
+Also locked for 68: trigger on estimate accepted; address plus a geofence radius with `reminders` OFF and `onsite_verification` `none`; the clock-in number REPLACES the dead `DJ #` pair on the printed work order (index.html:14710), not added beside it, because prompt 53 verified the header height math against 2 pairs per row and `dripjobs_deal_id` is now blank on every TopCoat-native job (20 of 93 production rows carry no deal id; every August row so far has none). The single most important requirement in that prompt: **a failing BusyBusy call must never fail an estimate acceptance**, fire-and-forget with a clean no-op when unconfigured, idempotent against a double accept, and a simulated rejected fetch and 500 are both required tests. Rule 12 applies here (real feature): on/off, radius, and reminders go in Settings > BusyBusy. The Zap build itself is a web-UI action, so prompt 68 requires a Cowork handoff block rather than attempting it from the Claude Code session.
+
+Files touched: claude-code-prompt-67-appointment-calendar-chips.md (new), claude-code-prompt-68-busybusy-project-automation.md (new), PROJECT-LOG.md (this entry). No prod schema change. No prod data change. No Zapier action was enabled or executed (the connector was already on).
+Next steps: Dylan runs prompt 66 first, then 67 and 68 in either order. Prompt 68 ends in a Cowork handoff to build the Catch Hook Zap and hand back `ZAPIER_BUSYBUSY_HOOK_URL` plus a shared secret for Netlify.
+
+---
+
 ## [2026-08-03 MST] Prompt 66 shipped: by-crew cards read real crews, callback rate counts touch-ups, ONE canonical GP formula, Metrics category tabs, review-ask crew snapshot fixed (Dylan-approved)
 
 By: Claude Code
