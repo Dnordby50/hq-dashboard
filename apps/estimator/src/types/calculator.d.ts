@@ -74,10 +74,10 @@ declare module '*/production/calculator.js' {
 declare module '*/production/comps.js' {
   export function parseSqft(text: unknown): number | null;
   export function median(nums: Array<number | null>): number | null;
-  export function actualGpPct(price: unknown, costing: unknown): number | null;
-  export function costingMaterials(costing: unknown): number;
-  export function costingComplete(costing: unknown): boolean;
-  export function joinCompsSources(jobs: unknown[], prodJobs: unknown[], costings: unknown[]): Array<{
+  export function compGp(price: unknown, costing: unknown, agg?: unknown): { gpPct: number | null; complete: boolean };
+  export function actualGpPct(price: unknown, costing: unknown, agg?: unknown): number | null;
+  export function costingComplete(costing: unknown, agg?: unknown): boolean;
+  export function joinCompsSources(jobs: unknown[], prodJobs: unknown[], costings: unknown[], aggregates?: unknown): Array<{
     id: string;
     customer_name: string | null;
     system_type_id: string | null;
@@ -115,6 +115,43 @@ declare module '*/production/comps.js' {
   };
   export function compsRuleLabel(comps: unknown, systemName?: string | null): string;
   export function compsGpCaveat(comps: unknown): string | null;
+}
+
+// Canonical job-costing GP formula (repo-root production/costing.js), shared
+// by the dashboard (byte-identical mirror), Metrics, and the comps engine.
+declare module '*/production/costing.js' {
+  export function computeCostingRow(
+    job: unknown,
+    cost: unknown,
+    sysName: unknown,
+    derivedOrderedCost?: number | null,
+    derivedUsedCost?: number | null,
+    derivedBonusCost?: number | null,
+    derived?: unknown,
+  ): {
+    revenue: number;
+    buckets: Record<string, number>;
+    totalVar: number;
+    gp: number;
+    gpPct: number | null;
+    actHrs: number;
+  };
+  export function buildCostAggregates(
+    sources: {
+      materialLines: unknown[];
+      bonuses: unknown[];
+      timeEntries: unknown[];
+      crewMembers: unknown[];
+      manualLabor: unknown[];
+      costings: unknown[];
+    },
+    opts?: { burden?: number; otMultiplier?: number; defaultRate?: number },
+  ): {
+    orderedByJob: Record<string, number>;
+    usedByJob: Record<string, number>;
+    bonusByJob: Record<string, number>;
+    laborByJob: Record<string, { laborCost: number; actHrs: number }>;
+  };
 }
 
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared

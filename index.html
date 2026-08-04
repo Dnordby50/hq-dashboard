@@ -530,6 +530,13 @@ button.pec-stat:hover{border-color:var(--accent)}
 /* Metrics tab redesign (DripJobs-style stats). pec-m- classes are scoped to the
    CRM tab so nothing leaks into other PEC views. */
 #tab-prescott-crm .pec-m-group-h{font-size:.68rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--rd-muted,var(--muted));font-weight:700;margin:16px 0 10px}
+/* Metrics category tabs (prompt 66 Part D): pure display filter. Cards carry
+   data-metcat (space-separated list for group headers spanning categories);
+   the active tab lives on the wrapper's data-metcat-active. ~= matches one
+   word in the list. 'all' applies no rule, so untagged chrome never hides. */
+#tab-prescott-crm [data-metcat-active="sales"] [data-metcat]:not([data-metcat~="sales"]),
+#tab-prescott-crm [data-metcat-active="production"] [data-metcat]:not([data-metcat~="production"]),
+#tab-prescott-crm [data-metcat-active="admin"] [data-metcat]:not([data-metcat~="admin"]){display:none}
 #tab-prescott-crm .pec-m-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 #tab-prescott-crm .pec-m-kpi{background:var(--rd-card,var(--s1));border:1px solid var(--rd-line,var(--border));border-radius:14px;padding:16px 18px;text-align:left;cursor:pointer;font:inherit;color:inherit;display:flex;flex-direction:column;gap:8px;transition:box-shadow .15s,border-color .15s}
 #tab-prescott-crm .pec-m-kpi:hover{border-color:var(--rd-accent,var(--accent));box-shadow:0 4px 14px rgba(16,24,40,.08)}
@@ -6797,6 +6804,9 @@ const state = {
   // metrics_default_window setting on first render (prompt 50 Part A).
   arRows: [], metricsWindow: '', metricsSalesperson: '', openInvoiceJobId: null,
   metricsCustomFrom: '', metricsCustomTo: '',
+  // Metrics category tab (prompt 66 Part D): a DISPLAY filter over the cards
+  // (All / Sales / Production / Admin). In-session memory like metricsWindow.
+  metricsCategory: 'all',
   // Jobs Pipeline (kanban). Filters apply on Go; window is the changed-date range.
   pipelineFilters: { salesperson: '', crew: '', leadSource: '', window: 'any' },
   pendingWorkOrderJobId: null,
@@ -12578,7 +12588,7 @@ async function renderMetrics() {
     res = await withFreshSession(() => Promise.all([
       supabase.from('pec_job_ar').select(arColsBase + ',invoice_first_sent_at').eq('customer_company', 'prescott-epoxy'),
       supabase.from('pec_payments').select('job_id,amount,method,received_date'),
-      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_lead,callback,status,customer_name,install_date,is_callback,revenue'),
+      supabase.from('pec_prod_jobs').select('id,dripjobs_deal_id,crew_id,original_job_id,callback,status,customer_name,install_date,is_callback,revenue'),
       supabase.from('reviews').select('created_at,rating,job_id,match_status,crew_lead,posted_at'),
       // Costing data for the GP-by-crew section, same three sources the Job
       // Costing tab derives from (narrow column lists to keep payloads small).
@@ -12625,12 +12635,15 @@ async function renderMetrics() {
       // Review asks for the Metrics Reviews section (prompt 60). Degrades
       // independently: pre-migration 400 renders the honest empty card.
       supabase.from('pec_review_requests').select('job_id,status,asked_at,first_clicked_at,crew_lead,created_at'),
+      // Crew roster for crew-lead attribution (prompt 66 Part A): PEC crews
+      // are named for their leads, so crew name == crew lead.
+      supabase.from('pec_prod_crews').select('id,name'),
     ]), { label: 'renderMetrics' });
-  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
+  } catch (e) { res = [{ error: e }, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, null, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]; }
   const [jobsRes0, payRes, prodRes, revRes, costRes, lineRes, bonusRes,
     leadsRes, leadEstRes, sqftRes, sysRes, metSettingsRes, staffNames, metricsTouchLogs,
     dripCampRes, dripEnrRes, dripSendRes, blastHdrRes, bbTimeRes, crewMemRes, metManualLaborRes,
-    saRecRes, saApptRes, saRosterRes, reviewReqRes] = res;
+    saRecRes, saApptRes, saRosterRes, reviewReqRes, crewsRes] = res;
   const metSettingsRows = (metSettingsRes && !metSettingsRes.error && metSettingsRes.data) || [];
   // Hydrate the Job Costing & Bonus knobs (burden, OT, kill switches) before
   // any labor math below; missing keys keep the shipped defaults.
@@ -12662,11 +12675,14 @@ async function renderMetrics() {
   (prodRes.data || []).forEach(r => { if (r.dripjobs_deal_id) dealToProd[r.dripjobs_deal_id] = r; });
   const arByDeal = {};
   for (const j of jobs) { if (j.dripjobs_deal_id) arByDeal[j.dripjobs_deal_id] = j; }
-  // Touch-up callback VISITS with no revenue are $0 warranty revisits, not
-  // jobs; they are excluded from every metric here, including the callback-rate
-  // denominator. A BILLABLE callback (revenue > 0, prompt 51 Part D) counts
-  // like a job. The `callback` boolean is the quality flag on the real job.
-  const prodJobs = (prodRes.data || []).filter(r => !(r.is_callback && !(Number(r.revenue) > 0)));
+  // pec_prod_jobs.crew_lead is a dead column (0 of 93 rows populated; nothing
+  // has written it since the prompt-54 people model). Crew identity lives on
+  // crew_id, and a PEC crew is named for its lead, so the crew name IS the
+  // crew lead for attribution purposes. One helper, so the three by-crew cards
+  // can never disagree about who owns a job. (prompt 66 Part A)
+  const crewNameById = Object.fromEntries(((crewsRes && !crewsRes.error && crewsRes.data) || []).map(c => [c.id, c.name]));
+  const crewLeadOf = (prod) => (prod && crewNameById[prod.crew_id]) || 'Unassigned';
+  const prodById = Object.fromEntries((prodRes.data || []).map(r => [r.id, r]));
   // Per-prod-job cost aggregates, built exactly like loadCostingData does for
   // the Job Costing tab: ordered = sum(line_cost), used = sum(actual_used_qty
   // * unit_cost_snapshot), bonus = sum(amount). computeCostingRow (the ONE
@@ -12754,7 +12770,11 @@ async function renderMetrics() {
     rows: list.slice().sort((a, b) => (a.install_date || '').localeCompare(b.install_date || ''))
       .map(r => {
         const ar = r.dripjobs_deal_id ? arByDeal[r.dripjobs_deal_id] : null;
-        return { openjob: ar ? ar.id : null, cells: [r.customer_name || '—', invFmtDate(r.install_date), r.crew_lead || 'Unassigned', ar ? invUSD(ar.price) : '—'] };
+        // Crew cell shows the ATTRIBUTED crew (the original job's crew for a
+        // touch-up); a touch-up with no original job is charged to its own
+        // crew and labeled, so the fallback is never silent. (prompt 66 Part B)
+        const at = cbAttrib(r);
+        return { openjob: ar ? ar.id : null, cells: [r.customer_name || '—', invFmtDate(r.install_date), at.fallback ? `${at.lead} (own crew, no original job)` : at.lead, ar ? invUSD(ar.price) : '—'] };
       }),
     total: [countOf(list.length, 'callback'), '', '', ''],
     footnote: opts.footnote || null,
@@ -12968,7 +12988,7 @@ async function renderMetrics() {
   for (const p of payments) {
     if (!payOk(p) || !inWin(p.received_date)) continue;
     const deal = jobById[p.job_id]?.dripjobs_deal_id;
-    const lead = (deal && dealToProd[deal]?.crew_lead) ? dealToProd[deal].crew_lead : 'Unassigned';
+    const lead = crewLeadOf(deal ? dealToProd[deal] : null);
     (crewPayments[lead] ||= []).push(p);
   }
   const crewLeadRows = Object.entries(crewPayments)
@@ -12994,7 +13014,7 @@ async function renderMetrics() {
       const prod = j.dripjobs_deal_id ? dealToProd[j.dripjobs_deal_id] : null;
       if (!prod || (!costByProdJob[prod.id] && !usedByJob[prod.id] && !bonusByJob[prod.id] && !laborByProd[prod.id])) { gpMissing++; continue; }
       const row = computeCostingRow({ revenue: j.price }, costByProdJob[prod.id], null, orderedByJob[prod.id], usedByJob[prod.id], bonusByJob[prod.id], laborByProd[prod.id] || {});
-      const lead = prod.crew_lead || 'Unassigned';
+      const lead = crewLeadOf(prod);
       (gpByLead[lead] ||= { price: 0, cost: 0, gp: 0, jobs: [] });
       gpByLead[lead].price += j.price;
       gpByLead[lead].cost += row.totalVar;
@@ -13065,18 +13085,28 @@ async function renderMetrics() {
     };
   };
 
-  // Callback rate, all-time: jobs flagged callback=true over completed
-  // production jobs (touch-up visit rows excluded from both sides). The flag
-  // is undated and prod jobs carry no salesperson, so neither the window nor
-  // the salesperson filter applies; the labels say so when a salesperson is
-  // selected.
+  // Callback rate, all-time (prompt 66 Part B). NUMERATOR: a production row
+  // that is a touch-up (is_callback=true, INCLUDING $0 warranty revisits) OR
+  // carries the legacy manual callback=true quality flag. A touch-up is
+  // charged to the ORIGINAL job's crew via original_job_id; one with no
+  // resolvable original falls back to its own crew and the drill row says so.
+  // DENOMINATOR: completed production jobs per crew, EXCLUDING every touch-up
+  // row, billable or not: a billable touch-up already counts as a callback,
+  // and letting it also count as a completed job would put the same row on
+  // both sides of the ratio. The flag is undated and prod jobs carry no
+  // salesperson, so neither the window nor the salesperson filter applies;
+  // the labels say so when a salesperson is selected.
+  const cbAttrib = (r) => {
+    const orig = (r.is_callback && r.original_job_id) ? prodById[r.original_job_id] : null;
+    if (orig) return { lead: crewLeadOf(orig), fallback: false };
+    return { lead: crewLeadOf(r), fallback: !!r.is_callback };
+  };
+  const callbackJobs = (prodRes.data || []).filter(r => r.is_callback === true || r.callback === true);
   const cbByLead = {}, compByLead = {};
-  for (const r of prodJobs) {
-    const lead = r.crew_lead || 'Unassigned';
-    if (r.status === 'completed') compByLead[lead] = (compByLead[lead] || 0) + 1;
-    if (r.callback === true) cbByLead[lead] = (cbByLead[lead] || 0) + 1;
+  for (const r of (prodRes.data || [])) {
+    if (!r.is_callback && r.status === 'completed') { const lead = crewLeadOf(r); compByLead[lead] = (compByLead[lead] || 0) + 1; }
   }
-  const callbackJobs = prodJobs.filter(r => r.callback === true);
+  for (const r of callbackJobs) { const { lead } = cbAttrib(r); cbByLead[lead] = (cbByLead[lead] || 0) + 1; }
   const totalCallbacks = callbackJobs.length;
   const totalProdCompleted = Object.values(compByLead).reduce((s, n) => s + n, 0);
   const callbackPct = totalProdCompleted ? totalCallbacks / totalProdCompleted : null;
@@ -13189,7 +13219,7 @@ async function renderMetrics() {
   // metrics (callback rate, avg job size, invoice timing) stay sparkline-free
   // rather than plotting a made-up series.
   const chartInk = metricsChartInk();
-  const kpiCard = (drillId, icon, label, desc, val, delta, spark) => `<button type="button" class="pec-m-kpi" data-drill="${esc(drillId)}" title="Click for the underlying records">
+  const kpiCard = (drillId, icon, label, desc, val, delta, spark, cat) => `<button type="button" class="pec-m-kpi"${cat ? ` data-metcat="${cat}"` : ''} data-drill="${esc(drillId)}" title="Click for the underlying records">
     <div class="pec-m-kpi-top"><span class="pec-m-kpi-chip">${ico[icon]}</span><span class="pec-m-kpi-label">${label}</span></div>
     <div class="pec-m-kpi-desc">${desc}</div>
     <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px;flex-wrap:wrap">
@@ -13223,7 +13253,7 @@ async function renderMetrics() {
     total: [countOf(g.jobs.length, 'job'), '', invUSD(g.price), invUSD(g.cost), invUSD(g.gp)],
     footnote: null,
   })));
-  const cbRowIds = callbackRows.map(r => regDrill(callbacksDrill(`${r.lead}: callback jobs (all time)`, callbackJobs.filter(c => (c.crew_lead || 'Unassigned') === r.lead), {
+  const cbRowIds = callbackRows.map(r => regDrill(callbacksDrill(`${r.lead}: callback jobs (all time)`, callbackJobs.filter(c => cbAttrib(c).lead === r.lead), {
     summary: `${r.cb} callback${r.cb === 1 ? '' : 's'} / ${r.comp} completed job${r.comp === 1 ? '' : 's'} = ${invPct(r.pct)}`,
   })));
 
@@ -13494,6 +13524,11 @@ async function renderMetrics() {
     const row = metSettingsRows.find(r => r.key === 'metrics_tab_ai_insights');
     tabAiCached = row ? (JSON.parse(row.value) || {})[tabCacheId] || null : null;
   } catch (_) { tabAiCached = null; }
+  // NOTE (prompt 66 Part D): this payload deliberately covers the WHOLE
+  // window across every category, regardless of which category tab is
+  // visible. The tabs are a display filter only; do NOT "fix" this into
+  // reading just the visible category, or the AI read (and its cache key)
+  // would silently change meaning per tab.
   const tabAiPayload = {
     kpis: {
       sales_volume_signed: rnd(salesVolume), sales_volume_prior_period: rnd(prevSalesVolume),
@@ -13532,10 +13567,19 @@ async function renderMetrics() {
   // Custom (pick any range); the active preset drives EVERY consumer below,
   // not just the KPI cards, because they all read wStart/wEnd/weeks.
   const winOpts = [['mtd', 'MTD'], ['ytd', 'YTD'], ['4w', 'Last 4 weeks'], ['custom', 'Custom']];
+  // Category tabs (prompt 66 Part D): a DISPLAY filter, never a data filter.
+  // Switching tabs toggles data-metcat-active on the wrapper (CSS does the
+  // hiding); it must NOT call renderMetrics(), which re-runs ~25 Supabase
+  // queries. Every card computes on every render regardless of the tab.
+  const catOpts = [['all', 'All'], ['sales', 'Sales'], ['production', 'Production'], ['admin', 'Admin']];
   root.innerHTML = `
+    <div data-metcat-active="${esc(state.metricsCategory || 'all')}">
     <div class="pec-toolbar" style="flex-wrap:wrap;row-gap:8px">
       <div style="display:flex;gap:4px" role="group" aria-label="Time window">
         ${winOpts.map(([v, l]) => `<button type="button" class="pec-btn sm ${state.metricsWindow === v ? 'primary' : 'ghost'}" data-metwin="${v}">${l}</button>`).join('')}
+      </div>
+      <div style="display:flex;gap:4px" role="group" aria-label="Category">
+        ${catOpts.map(([v, l]) => `<button type="button" class="pec-btn sm ${(state.metricsCategory || 'all') === v ? 'primary' : 'ghost'}" data-metcatbtn="${v}">${l}</button>`).join('')}
       </div>
       ${state.metricsWindow === 'custom' ? `
       <div style="display:flex;gap:6px;align-items:center">
@@ -13549,55 +13593,56 @@ async function renderMetrics() {
       <span style="color:var(--muted);font-size:.72rem;margin-left:auto">Click any card, row, or bar for the records behind it.</span>
     </div>
     ${tabAiPanel}
-    <div class="pec-m-group-h" style="margin-top:2px">Revenue &amp; wins</div>
+    <div class="pec-m-group-h" data-metcat="sales admin" style="margin-top:2px">Revenue &amp; wins</div>
     <div class="pec-m-kpis">
-      ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume), salesVolWeekly)}
-      ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected), revCollected)}
-      ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize))}
+      ${kpiCard(kpiIds.salesVolume, 'dollar', 'Sales volume', 'Job value signed in this window.', invUSD0(salesVolume), deltaHtml(salesVolume, prevSalesVolume), salesVolWeekly, 'sales')}
+      ${kpiCard(kpiIds.revCollected, 'banknote', 'Revenue collected', 'Payments received in this window.', invUSD0(revCollectedTotal), deltaHtml(revCollectedTotal, prevRevCollected), revCollected, 'admin')}
+      ${kpiCard(kpiIds.avgJobSize, 'trend', 'Average job size', 'Average signed value per job in this window.', invUSD0(avgJobSize), deltaHtml(avgJobSize, prevAvgJobSize), null, 'sales')}
     </div>
-    <div class="pec-m-group-h">Production &amp; quality</div>
+    <div class="pec-m-group-h" data-metcat="production admin">Production &amp; quality</div>
     <div class="pec-m-kpis" style="margin-bottom:16px">
-      ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted), jobsCompleted)}
-      ${kpiCard(kpiIds.callbackPct, 'redo', 'Callback rate', `Callbacks over completed production jobs, all time${allSp}.`, invPct(callbackPct), '')}
-      ${kpiCard(kpiIds.invAhead, 'clock', 'Invoiced before completion', 'Completed jobs (with an invoice on record) whose invoice went out before completion day.', invPct(pctInvAhead), invNoSendCount > 0 ? `<div class="pec-m-kpi-delta flat" style="text-transform:none;letter-spacing:0">${invNoSendCount} completed w/o invoice on record</div>` : '')}
+      ${kpiCard(kpiIds.jobsCompleted, 'check', 'Jobs completed', 'Jobs with a completed date in this window.', String(compInWin.length), deltaHtml(compInWin.length, prevJobsCompleted), jobsCompleted, 'production')}
+      ${kpiCard(kpiIds.callbackPct, 'redo', 'Callback rate', `Touch-ups and flagged callbacks over completed production jobs, all time${allSp}.`, invPct(callbackPct), '', null, 'production')}
+      ${kpiCard(kpiIds.invAhead, 'clock', 'Invoiced before completion', 'Completed jobs (with an invoice on record) whose invoice went out before completion day.', invPct(pctInvAhead), invNoSendCount > 0 ? `<div class="pec-m-kpi-delta flat" style="text-transform:none;letter-spacing:0">${invNoSendCount} completed w/o invoice on record</div>` : '', null, 'admin')}
     </div>
     <div class="pec-m-rank-grid">
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Sales by salesperson (signed in window)</div>
         ${rankRows(spRankRows, 'No jobs signed in this window.')}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
+      <div class="pec-card" data-metcat="production" style="margin-bottom:0"><div class="pec-metric-h">Revenue collected by crew lead (this window)</div>
         ${rankRows(crewRankRows, 'No payments in this window.')}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
+      <div class="pec-card" data-metcat="production" style="margin-bottom:0"><div class="pec-metric-h">GP by crew lead (jobs completed in window)</div>
         <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">GP = job price minus tracked costs: materials used, equipment, crew labor (loaded from BusyBusy or manual hours, incl. burden), subs, bonuses, commission, misc.</div>
         ${costingOk ? rankRows(gpRankRows, 'No completed jobs with costing data in this window.')
           + (gpMissing > 0 ? `<div style="color:var(--muted);font-size:.7rem;margin-top:6px">${gpMissing} completed job${gpMissing === 1 ? '' : 's'} excluded: no costing data (no costing entry, materials, bonus, or crew hours).</div>` : '')
           : '<div class="pec-empty">Costing data could not be loaded; GP is unavailable right now.</div>'}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
+      <div class="pec-card" data-metcat="production" style="margin-bottom:0"><div class="pec-metric-h">Callback rate by crew lead (all time${allSp})</div>
+        <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">Counts touch-ups and flagged callbacks, charged to the crew that installed the original job.</div>
         ${rankRows(cbRankRows, 'No completed production jobs yet.')}
       </div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Revenue collected per week</div>
+    <div class="pec-card" data-metcat="admin"><div class="pec-metric-h">Revenue collected per week</div>
       <div class="pec-m-chart-wrap" id="pecChartRevCollected">${invBarChart(revCollected, weeks, barIds.revCollected, invUSD0)}</div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">AR per week (end-of-week snapshot)</div>
+    <div class="pec-card" data-metcat="admin"><div class="pec-metric-h">AR per week (end-of-week snapshot)</div>
       <div class="pec-m-chart-wrap" id="pecChartAr">${invBarChart(arPerWeek, weeks, barIds.ar, invUSD0)}</div>
       <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${esc(arCaption)} Latest point uses today as the snapshot date and matches the Invoicing Total AR headline.</div>
     </div>
-    <div class="pec-card"><div class="pec-metric-h">Jobs completed per week</div>
+    <div class="pec-card" data-metcat="production"><div class="pec-metric-h">Jobs completed per week</div>
       <div class="pec-m-chart-wrap" id="pecChartJobsCompleted">${invBarChart(jobsCompleted, weeks, barIds.jobsCompleted, String)}</div>
     </div>
-    <div class="pec-m-group-h">Sales</div>
+    <div class="pec-m-group-h" data-metcat="sales">Sales</div>
     <div class="pec-m-rank-grid">
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Price per sq ft (sold jobs, by month)</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Price per sq ft (sold jobs, by month)</div>
         <div class="pec-m-chart-wrap" id="pecChartDpsf">${invBarChart(dpsfMonthly, months, dpsfMonthIds, v => v > 0 ? '$' + v.toFixed(1) : '')}</div>
         <div style="color:var(--muted);font-size:.68rem;margin-top:6px">$/sqft available for ${dpsfJobs.length} of ${soldForSqft.length} sold job${soldForSqft.length === 1 ? '' : 's'} in these months. Backfill the Sqft field on the job page to raise coverage.</div>
         ${dpsfSystemRows.length ? `<table class="pec-table" style="margin-top:8px;font-size:.78rem"><thead><tr><th>System</th><th style="text-align:right">Avg $/sqft</th><th style="text-align:right">Median $/sqft</th><th style="text-align:right">Jobs</th></tr></thead><tbody>
           ${dpsfSystemRows.map(([name, g]) => `<tr class="nohover"><td>${esc(name)}</td><td style="text-align:right">$${(g.sum / g.n).toFixed(2)}</td><td style="text-align:right">$${dpsfMedian(g.vals).toFixed(2)}</td><td style="text-align:right">${g.n}</td></tr>`).join('')}
         </tbody></table>` : ''}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Speed to lead (created to first contact)</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Speed to lead (created to first contact)</div>
         <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px">
           <span style="font-size:1.6rem;font-weight:700">${fmtMins(s2lMedian)}</span>
           <span style="color:var(--muted);font-size:.72rem">median for leads created in this window (${s2lMins.length} contacted)</span>
@@ -13607,13 +13652,13 @@ async function renderMetrics() {
           ${s2lOwnerRows.map(r => `<tr class="nohover"><td>${esc(r.name)}</td><td style="text-align:right">${fmtMins(r.md)}</td><td style="text-align:right">${r.n}</td></tr>`).join('')}
         </tbody></table>` : '<div style="color:var(--muted);font-size:.72rem">No contacted leads in this window yet.</div>'}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Conversion by source and campaign</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Conversion by source and campaign</div>
         <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 4px">Which ad money works: leads created in this window, accepted = sold.</div>
         <div id="pecChartConv" style="position:relative"></div>
         ${convTable('Source', convBySource)}
         ${convTable('Campaign', convByCampaign)}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Outbound touches (calls, texts, emails, drips)</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Outbound touches (calls, texts, emails, drips)</div>
         ${!touchStats ? '<div class="pec-empty">Touch logs could not be loaded right now. Refresh in a moment.</div>' : `
         <div style="color:var(--muted);font-size:.7rem;margin:-4px 0 8px">How many times we reach out per lead, from the same outbound call, text, and email logs as the Contacted count on the Leads board.</div>
         <div class="pec-grid-stats">
@@ -13626,7 +13671,7 @@ async function renderMetrics() {
           : `<div style="color:var(--muted);font-size:.68rem;margin-top:8px">Touches counted on or before the milestone. Based on ${wonTouchCounts.length} won lead${wonTouchCounts.length === 1 ? '' : 's'} and ${estTouchCounts.length} lead${estTouchCounts.length === 1 ? '' : 's'} with an estimate out, in this window, that have logged outreach; leads with no logged touches are excluded (logs start at the Quo integration).</div>`}
         `}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Sales coaching (SalesAsk)</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Sales coaching (SalesAsk)</div>
         ${!saMigrated ? '<div class="pec-empty">Apply the 2026-07-31_salesask_integration.sql migration to enable coaching stats.</div>'
         : !saRecs.length ? '<div class="pec-empty">No sales visit recordings in this window yet. Turn on SalesAsk sync under Settings, Appointments, and have reps record their visits.</div>'
         : `
@@ -13652,7 +13697,7 @@ async function renderMetrics() {
         `}
       </div>
       <!-- PHASE 3 SLOT, filled (prompt 35 Part E): drip + blast performance. -->
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Drip performance</div>
+      <div class="pec-card" data-metcat="admin" style="margin-bottom:0"><div class="pec-metric-h">Drip performance</div>
         ${!dripReady ? '<div class="pec-empty">Drip tables are not migrated yet (apply the drip migrations first).</div>'
         : !dripHasAny ? '<div class="pec-empty">No drip activity yet in this window. Campaigns are seeded in dry run; flip the master switch on the Drips page to start previews.</div>'
         : `
@@ -13674,7 +13719,7 @@ async function renderMetrics() {
         <div id="pecChartDripStops" style="position:relative"></div>` : ''}
         `}
       </div>
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Blast performance</div>
+      <div class="pec-card" data-metcat="admin" style="margin-bottom:0"><div class="pec-metric-h">Blast performance</div>
         ${(blastHdrRes && blastHdrRes.error) ? '<div class="pec-empty">Blast tables are not migrated yet (apply the 2026-07-19_drip_phase3.sql migration first).</div>'
         : !blastHasAny ? '<div class="pec-empty">No blasts sent yet. Compose one from the Drips page.</div>'
         : `
@@ -13698,7 +13743,7 @@ async function renderMetrics() {
         `}
       </div>
 
-      <div class="pec-card" style="margin-bottom:0"><div class="pec-metric-h">Open pipeline and AI read</div>
+      <div class="pec-card" data-metcat="sales" style="margin-bottom:0"><div class="pec-metric-h">Open pipeline and AI read</div>
         <table class="pec-table" style="font-size:.78rem"><thead><tr><th>Stage</th><th style="text-align:right">Leads</th><th style="text-align:right">Value</th></tr></thead><tbody>
           ${pipeByStage.map(r => `<tr class="nohover"><td>${esc(r.title)}</td><td style="text-align:right">${r.n}</td><td style="text-align:right">${invUSD0(r.value)}</td></tr>`).join('')}
           <tr class="li-total"><td><strong>Open total</strong></td><td style="text-align:right"><strong>${openLeads.length}</strong></td><td style="text-align:right"><strong>${invUSD0(openPipeValue)}</strong></td></tr>
@@ -13713,7 +13758,7 @@ async function renderMetrics() {
         </div>
       </div>
     </div>
-    <div class="pec-card">
+    <div class="pec-card" data-metcat="production">
       <div class="pec-metric-h">Reviews</div>
       ${reviewReqsReady ? `
         <div class="pec-grid-stats" style="margin-bottom:14px">
@@ -13756,21 +13801,48 @@ async function renderMetrics() {
     <details class="pec-card pec-ar-sec">
       <summary>More metrics <span class="pec-ar-meta">deposits, jobs sold, reviews, payment timing, AR aging</span></summary>
       <div style="padding:14px 18px">
-        <div class="pec-card" style="margin-top:0"><div class="pec-metric-h">Revenue completed per week</div>${invBarChart(revCompleted, weeks, barIds.revCompleted, invUSD0)}</div>
-        <div class="pec-card"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, barIds.deposits, invUSD0)}</div>
-        <div class="pec-card"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, barIds.jobsSold, String)}</div>
-        <div class="pec-card"><div class="pec-metric-h">Reviews per week</div>${invBarChart(reviewsPerWeek, weeks, barIds.reviews, String)}</div>
-        <div class="pec-grid-stats">
+        <!-- Split by category (prompt 66 Part D): this block holds cards from
+             three categories, so each card carries its own tag instead of the
+             whole <details> living in one. Every tab keeps at least one card
+             here, so the shell is never an empty box. -->
+        <div class="pec-card" data-metcat="production" style="margin-top:0"><div class="pec-metric-h">Revenue completed per week</div>${invBarChart(revCompleted, weeks, barIds.revCompleted, invUSD0)}</div>
+        <div class="pec-card" data-metcat="admin"><div class="pec-metric-h">Deposits collected per week</div>${invBarChart(deposits, weeks, barIds.deposits, invUSD0)}</div>
+        <div class="pec-card" data-metcat="sales"><div class="pec-metric-h">Jobs sold per week</div>${invBarChart(jobsSold, weeks, barIds.jobsSold, String)}</div>
+        <div class="pec-card" data-metcat="production"><div class="pec-metric-h">Reviews per week</div>${invBarChart(reviewsPerWeek, weeks, barIds.reviews, String)}</div>
+        <div class="pec-grid-stats" data-metcat="admin">
           <div class="pec-stat"><div class="pec-stat-label">Avg days sign to deposit</div><div class="pec-stat-val">${invDays(avgSignToDep)}</div></div>
           <div class="pec-stat"><div class="pec-stat-label">Avg days completion to paid</div><div class="pec-stat-val">${invDays(avgComplToFinal)}</div></div>
           <div class="pec-stat"><div class="pec-stat-label">Paid in full on completion day</div><div class="pec-stat-val">${invPct(pctPaidOnDay)}</div></div>
           <div class="pec-stat"><div class="pec-stat-label">AR aged 30+ days</div><div class="pec-stat-val">${invUSD0(arAged30)}</div></div>
+        </div>
+        <div class="pec-grid-stats" data-metcat="production" style="margin-top:10px">
           <div class="pec-stat"><div class="pec-stat-label">Average review rating</div><div class="pec-stat-val">${avgRating == null ? '—' : avgRating.toFixed(1)}</div></div>
           <div class="pec-stat"><div class="pec-stat-label">Reviews (window)</div><div class="pec-stat-val">${ratingN}</div></div>
         </div>
       </div>
     </details>
+    </div>
   `;
+
+  root.querySelectorAll('[data-metcatbtn]').forEach(b => b.addEventListener('click', () => {
+    const v = b.dataset.metcatbtn;
+    if (v === state.metricsCategory) return;
+    state.metricsCategory = v;
+    // Display filter only: flip the wrapper attribute and restyle the buttons
+    // in place. No renderMetrics() here (see catOpts comment above).
+    const wrap = root.querySelector('[data-metcat-active]');
+    if (wrap) wrap.setAttribute('data-metcat-active', v);
+    root.querySelectorAll('[data-metcatbtn]').forEach(x => {
+      x.classList.toggle('primary', x.dataset.metcatbtn === v);
+      x.classList.toggle('ghost', x.dataset.metcatbtn !== v);
+    });
+    // A Chart.js canvas mounted while its holder was display:none measured
+    // zero; resize every chart on reveal so a non-default tab's charts render
+    // at full width. Cheap (a handful of charts), and a no-op for visible ones.
+    requestAnimationFrame(() => {
+      for (const k in metricsCharts) { try { metricsCharts[k].resize(); } catch (_) { /* destroyed chart */ } }
+    });
+  }));
 
   root.querySelectorAll('[data-metwin]').forEach(b => b.addEventListener('click', () => {
     const v = b.dataset.metwin;
@@ -27928,15 +28000,15 @@ async function renderEstimateDetail(estimateId) {
                 </tr>`).join('')}</tbody>
               </table></div>
               ${(() => {
-                // Prefer the caveat stored at pricing time; fall back to
-                // recomputing from the snapshot rows for estimates saved before
-                // 15c (gp_complete per row was not stored then, so count what
-                // has a GP% at all and say materials completeness is unknown).
+                // Prefer the caveat stored at pricing time (old snapshots keep
+                // their old wording on purpose: they record what the rep saw);
+                // fall back to recomputing coverage from the snapshot rows for
+                // estimates saved before the caveat was stored. Wording matches
+                // production/comps.js compsGpCaveat (prompt 66 Part C).
                 if (snapComps.gp_caveat) return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">${esc(snapComps.gp_caveat)}.</div>`;
                 const withGp = snapComps.rows.filter(r => r.gp_pct != null);
                 if (!withGp.length) return '';
-                const complete = snapComps.rows.filter(r => r.gp_complete === true).length;
-                return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">GP% from job costing; ${complete} of ${snapComps.rows.length} comps have materials costed.</div>`;
+                return `<div style="color:var(--muted);font-size:.72rem;margin-top:6px">GP% shown for ${withGp.length} of ${snapComps.rows.length} comps.</div>`;
               })()}` : ''}
           ` : '<div style="color:var(--muted);font-size:.82rem">No comps snapshot on this estimate.</div>'}
           <div style="border-top:1px solid var(--rd-line,var(--border));margin-top:12px;padding-top:12px">
@@ -33076,15 +33148,23 @@ function commissionDerivedField(r, derivedField) {
   return derivedField('Commission', `${fmtMoneyOrDash(r.buckets.commission_cost)} <span style="color:var(--muted);font-size:.65rem">${esc(note)}</span>`, '', 'commission-box');
 }
 
+// The ONE canonical GP formula (mirror of production/costing.js
+// computeCostingRow; keep the two byte-identical). The Job Costing tab,
+// Metrics' GP-by-crew card, and the estimator's comps panel all derive GP
+// from this, so they can never disagree. The estimate ({ budgetedHours,
+// laborBudget }) arrives via derived.estimate because the pure module cannot
+// read dashboard state; costingDerivedForJob injects it for this file's
+// callers.
 function computeCostingRow(job, cost, sysName, derivedOrderedCost, derivedUsedCost, derivedBonusCost, derived = {}) {
   const c = cost || {};
   const revenue = Number(job.revenue || 0);
   // Estimated hours + labor budget come from the ONE shared estimate (the same
-  // window.computeJobEstimate the front-end Budget card uses), built per job in
-  // loadCostingData. Computed ALWAYS wins; the old manual estimated_hours field
-  // is no longer read for the displayed estimate (Dylan: nothing different from
-  // the front end). GP below still uses the prod job's actual revenue.
-  const est = (state.estimateByJob || {})[job.id] || {};
+  // window.computeJobEstimate the front-end Budget card uses). The formula is
+  // pure (mirrored from production/costing.js), so the estimate arrives via
+  // derived.estimate instead of a state lookup; callers with no estimate pass
+  // nothing and the estimate-derived fields stay zero/null. GP below still
+  // uses the prod job's actual revenue.
+  const est = derived.estimate || {};
   const estHrs = Number(est.budgetedHours || 0);
   const estLaborBudget = est.laborBudget == null ? null : Number(est.laborBudget);
   // Crew hours (prompt 56): the derived per-member sum (BusyBusy, else manual
@@ -33242,12 +33322,15 @@ function pendingBonusForJob(job, labor) {
 // Metrics builds its own equivalent from its own reads (it does not hydrate
 // this module's costing state) but uses the same computeCrewBonus math.
 function costingDerivedForJob(job, sys) {
+  // The shared estimate rides along here because computeCostingRow is now the
+  // pure mirror of production/costing.js and cannot read state itself.
+  const estimate = (state.estimateByJob || {})[job.id] || {};
   // costing_labor_from_hours off = the rollback path (prompt 56 verify 12):
   // no derived labor, hours, or pending bonus anywhere, so every surface
   // reverts to the pre-fix stored-fields behavior without a deploy.
-  if (!COSTING_LABOR_FROM_HOURS) return {};
+  if (!COSTING_LABOR_FROM_HOURS) return { estimate };
   const labor = crewLaborForJob(job, sys);
-  return { laborCost: labor.laborCost, actHrs: labor.hours, pendingBonus: pendingBonusForJob(job, labor), labor };
+  return { estimate, laborCost: labor.laborCost, actHrs: labor.hours, pendingBonus: pendingBonusForJob(job, labor), labor };
 }
 
 // Effective completion for Job Costing. The prod row's own status is usually

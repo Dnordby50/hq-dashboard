@@ -13,7 +13,9 @@
 //             commission_cost }
 // public.jobs and pec_prod_jobs are SIBLING tables (see CLAUDE.md); the only
 // bridge between them is dripjobs_deal_id, so actual GP is only available for
-// jobs that flowed through the DripJobs webhook AND have a costing row.
+// jobs that flowed through the DripJobs webhook AND carry a cost signal.
+
+import { computeCostingRow } from './costing.js';
 
 // jobs.sqft is a TEXT column. Parse it the same way jobEffectiveSqft does
 // client-side and the SQL rule does server-side: strip everything but digits
@@ -35,51 +37,45 @@ export function median(nums) {
   return xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2;
 }
 
-// Materials cost from a costing row, counted ONCE. materials_ordered_cost and
-// materials_used_cost are two views of the SAME spend (what was ordered vs what
-// actually went down), NOT two separate buckets: summing both double-counts
-// materials. Prefer the USED figure once it is populated (it is the truer
-// number), else fall back to ORDERED. Today both are $0 on every prod row, so
-// this is invisible; the day Dylan backfills, this is what keeps every comp
-// from silently understating GP by a full materials load (2026-07-13, 15c).
-export function costingMaterials(costing) {
-  if (!costing) return 0;
-  const used = Number(costing.materials_used_cost) || 0;
-  const ordered = Number(costing.materials_ordered_cost) || 0;
-  return used > 0 ? used : ordered;
-}
-
-// Actual GP fraction from a costing row: (price - all cost buckets) / price.
-// null when there is no costing row, no positive price, or the row's costs sum
-// to zero (an untouched costing row would otherwise read as a 100% GP job).
-// Materials are counted once (costingMaterials); the other buckets are summed
-// as-is.
-export function actualGpPct(price, costing) {
+// GP for one comp, from the ONE canonical formula (production/costing.js
+// computeCostingRow, the same math the Job Costing tab and Metrics use;
+// prompt 66 Part C replaced this module's old second formula, which read the
+// always-zero materials_ordered_cost/materials_used_cost columns). agg is the
+// job's derived cost aggregates (buildCostAggregates shape): { ordered, used,
+// bonus, labor }. `complete` means the job has a REAL cost signal, used
+// materials or loaded labor present (typed Salary & Wages counts, via the
+// formula's fallback); without one the GP% is null and the panel shows a
+// dash, because (price - nothing) / price would read as a fantasy 100% job.
+export function compGp(price, costing, agg) {
   const p = Number(price);
-  if (!costing || !(p > 0)) return null;
-  const otherBuckets = [
-    'equipment_rental_cost', 'salary_wages_cost', 'subcontractor_cost',
-    'misc_cost', 'bonus_cost', 'commission_cost',
-  ];
-  const total = costingMaterials(costing) + otherBuckets.reduce((s, k) => s + (Number(costing[k]) || 0), 0);
-  if (!(total > 0)) return null;
-  return (p - total) / p;
+  const a = agg || {};
+  const row = computeCostingRow({ revenue: p > 0 ? p : 0 }, costing || null, null, a.ordered, a.used, a.bonus, a.labor || {});
+  const complete = row.buckets.materials_used_cost > 0 || row.buckets.salary_wages_cost > 0;
+  return { gpPct: (p > 0 && complete) ? row.gpPct : null, complete };
 }
 
-// Whether a costing row is COMPLETE enough for its GP% to be trustworthy:
-// both a positive materials cost AND a positive labor (salary/wages) cost. A
-// wages-only row (31 of 34 prod rows today) computes (price - labor) / price
-// and reads ~30 points too high, so the panel counts completeness next to the
-// number instead of presenting it as gospel. NOT a suppression: Dylan chose to
-// keep the number visible and backfill the data himself.
-export function costingComplete(costing) {
-  if (!costing) return false;
-  return costingMaterials(costing) > 0 && (Number(costing.salary_wages_cost) || 0) > 0;
+// Actual GP fraction for a comp. null when there is no positive price or no
+// real cost signal (see compGp). Kept as a named export for the tests.
+export function actualGpPct(price, costing, agg) {
+  return compGp(price, costing, agg).gpPct;
 }
 
-// Join the three sources into comp candidates. Kept here (not in UI code) so
-// the dripjobs_deal_id bridge is covered by the same tests as the rules.
-export function joinCompsSources(jobs, prodJobs, costings) {
+// Whether a comp's GP% is backed by a real cost signal: used materials or
+// loaded labor present (from child rows via agg, or the legacy stored costing
+// columns via the formula's fallback). The old definition (materials AND
+// labor on the costing row's own columns) was false for 100% of live rows
+// because those columns are never written; cost truth lives in
+// pec_prod_material_lines / crew hours.
+export function costingComplete(costing, agg) {
+  return compGp(1, costing, agg).complete;
+}
+
+// Join the sources into comp candidates. Kept here (not in UI code) so the
+// dripjobs_deal_id bridge is covered by the same tests as the rules.
+// aggregates is the buildCostAggregates result (per-prod-job ordered/used/
+// bonus/labor maps); omitted or partial means those jobs fall back to the
+// costing row's stored columns, exactly like the dashboard.
+export function joinCompsSources(jobs, prodJobs, costings, aggregates = {}) {
   const prodByDeal = new Map();
   for (const pj of prodJobs || []) {
     if (pj && pj.dripjobs_deal_id != null) prodByDeal.set(String(pj.dripjobs_deal_id), pj.id);
@@ -91,8 +87,15 @@ export function joinCompsSources(jobs, prodJobs, costings) {
   return (jobs || []).map((j) => {
     const prodJobId = j.dripjobs_deal_id != null ? prodByDeal.get(String(j.dripjobs_deal_id)) : undefined;
     const costing = prodJobId != null ? (costingByProdJob.get(prodJobId) || null) : null;
+    const agg = prodJobId != null ? {
+      ordered: (aggregates.orderedByJob || {})[prodJobId],
+      used: (aggregates.usedByJob || {})[prodJobId],
+      bonus: (aggregates.bonusByJob || {})[prodJobId],
+      labor: (aggregates.laborByJob || {})[prodJobId],
+    } : {};
     const sqft = parseSqft(j.sqft);
     const price = Number(j.price) > 0 ? Number(j.price) : null;
+    const g = compGp(price, costing, agg);
     return {
       id: j.id,
       customer_name: j.customer_name || null,
@@ -101,11 +104,10 @@ export function joinCompsSources(jobs, prodJobs, costings) {
       sqft,
       price,
       ppsf: sqft != null && price != null ? price / sqft : null,
-      gp_pct: actualGpPct(price, costing),
-      // Carried so the panel can say "N of M comps have materials costed"
-      // without re-fetching the costing rows. True only when both materials
-      // and labor are present, so a wages-only row does not read as complete.
-      gp_complete: costingComplete(costing),
+      gp_pct: g.gpPct,
+      // Carried so the panel can count GP% coverage without re-fetching the
+      // costing rows. True when the job has a real cost signal (compGp).
+      gp_complete: g.complete,
     };
   });
 }
@@ -164,9 +166,9 @@ export function buildComps({ candidates, systemTypeId, sqft, now }) {
     rule: rows.length ? chosen.rule : 'none',
     sample_size: rows.length,
     exact_count: exactCount,
-    // How many of the shown comps have COMPLETE costing (materials AND labor),
-    // so the panel can qualify the GP% column honestly. gp_pct_count is how
-    // many have any GP% at all (a positive cost total). complete <= gp_pct.
+    // How many of the shown comps have a real cost signal (gp_complete), so
+    // the panel can qualify the GP% column honestly. gp_pct_count is how many
+    // actually show a GP% (signal AND a positive price); gp_pct <= complete.
     complete_count: rows.filter((r) => r.gp_complete).length,
     gp_pct_count: rows.filter((r) => r.gp_pct != null).length,
     median_ppsf: median(rows.map((r) => r.ppsf)),
@@ -175,12 +177,13 @@ export function buildComps({ candidates, systemTypeId, sqft, now }) {
   };
 }
 
-// One honest sentence about how trustworthy the GP% column is, shown under the
-// comps table on both surfaces. null when no comp carries a GP% at all (the
-// column is empty, so there is nothing to caveat).
+// One honest sentence about GP% coverage, shown under the comps table on both
+// surfaces AND on the public estimate page's lineage, so it is customer-facing
+// text: no em dashes (CLAUDE.md rule 6). null when no comp carries a GP% at
+// all (the column is empty, so there is nothing to caveat).
 export function compsGpCaveat(comps) {
   if (!comps || !(comps.sample_size > 0) || !(comps.gp_pct_count > 0)) return null;
-  return `GP% from job costing; ${comps.complete_count} of ${comps.sample_size} comps have materials costed`;
+  return `GP% shown for ${comps.gp_pct_count} of ${comps.sample_size} comps`;
 }
 
 // Honest, human-readable statement of which rule produced the set. This string
