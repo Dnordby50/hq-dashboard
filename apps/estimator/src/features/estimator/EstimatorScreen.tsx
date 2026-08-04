@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Addon, Catalog, SalesPerson } from '../../lib/catalog';
 import {
   allocateProportionally,
-  applySellPrice,
-  computeEstimatePricing,
+  applyLineSellPrice,
+  computePerLinePricing,
+  customLinePricing,
   lineItemsGp,
   lineItemsTotal,
   roundEstimatePrice,
   type Area,
-  type PricingResult,
+  type CustomLineMoney,
+  type LineSellResult,
+  type PerLinePricingResult,
+  type PricedLine,
   type Product,
   type RecipeSlot,
 } from '../../lib/calculator';
@@ -39,7 +43,27 @@ import { applyAnswers as scopeApplyAnswers, containsBlank as scopeContainsBlank,
 // screen runs.
 import { createDraftTrigger, defaultSalespersonId, draftReady, estimateIdForSave, initialAreas, userUnmapped } from '../../../../../production/estimate-draft.cjs';
 
-type AreaForm = { name: string; sqft: string; systemTypeId: string; mvb: boolean; slotValues: Record<string, string> };
+// One LINE of the estimate (prompt 69). A calculator area (isCustom false)
+// prices through the engine and may carry a per-line price override
+// (priceInput). A CUSTOM line (isCustom true) is a typed one-off ON the same
+// estimate: name doubles as the customer-facing label, priceInput IS its typed
+// price (required), and its cost basis is typed material cost + typed labor
+// hours so its GP has the same shape as every other line. notes is INTERNAL
+// per-line context fed to the scope writer, never customer-facing.
+type AreaForm = {
+  name: string;
+  sqft: string;
+  systemTypeId: string;
+  mvb: boolean;
+  slotValues: Record<string, string>;
+  notes: string;
+  priceInput: string;
+  isCustom: boolean;
+  customScope: string;
+  customMaterialCost: string;
+  customLaborHours: string;
+};
+const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '' };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
 // the per-area MVB checkbox is redundant there and is hidden.
 const MVB_ONLY_SYSTEM_NAME = 'MVB Only';
@@ -152,6 +176,9 @@ export default function EstimatorScreen({
   // offline rep still prices (the add-on picker is just empty until a refresh).
   const addonCatalog: Addon[] = catalog.addons ?? [];
   const online = useOnline();
+  // Prefilled label on a new custom line (prompt 69). Tolerates a pre-69
+  // cached catalog (key absent) with the same default the migration seeds.
+  const customLabelDefault = config.linePricingCustomLabelDefault || 'Custom work';
 
   // Product slots start PREFILLED with the system's default_product_id, so the
   // collapsed "More detail" section shows real picks instead of empty selects.
@@ -301,12 +328,19 @@ export default function EstimatorScreen({
         ? editing.areas.map((a) => ({
             name: a.name,
             sqft: a.sqft,
-            systemTypeId: a.systemTypeId ?? fallbackSystemId,
+            // A custom line has no system on purpose; do not backfill one.
+            systemTypeId: a.systemTypeId ?? (a.isCustom ? '' : fallbackSystemId),
             mvb: a.mvb === true,
             slotValues: a.slotValues,
+            notes: a.notes ?? '',
+            priceInput: a.priceOverride ?? '',
+            isCustom: a.isCustom === true,
+            customScope: a.customScope ?? '',
+            customMaterialCost: a.customMaterialCost ?? '',
+            customLaborHours: a.customLaborHours ?? '',
           }))
         : null,
-      makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {} }),
+      makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields }),
     }) as AreaForm[],
   );
   // Prompt 63 Part A: product-kind slots are HIDDEN at estimate time (Dylan:
@@ -459,10 +493,20 @@ export default function EstimatorScreen({
     [slotsFor],
   );
 
-  // The pricable areas, in form order, each with its own system. engineAreas
-  // and the save's areaInputs both derive from this ONE filtered list so their
-  // indexes stay aligned (line items bind to areas by position).
-  const pricedAreas = useMemo(() => areas.filter((a) => Number(a.sqft) > 0 && a.systemTypeId), [areas]);
+  // The pricable CALCULATOR areas, in form order, each with its own system.
+  // Custom lines (isCustom) never enter the engine: their price is typed.
+  // engineAreas derives from this ONE filtered list so pricing.lines stays
+  // index-aligned with it.
+  const pricedAreas = useMemo(() => areas.filter((a) => !a.isCustom && Number(a.sqft) > 0 && a.systemTypeId), [areas]);
+  // Every SAVEABLE line in form order: calculator areas that price, plus every
+  // custom line. The save's areaInputs and the line items both walk this list,
+  // so line items bind to areas by position across both kinds.
+  const lineForms = useMemo(
+    () => areas
+      .map((a, formIdx) => ({ a, formIdx }))
+      .filter(({ a }) => (a.isCustom ? true : Number(a.sqft) > 0 && !!a.systemTypeId)),
+    [areas],
+  );
 
   const engineAreas: Area[] = useMemo(
     () =>
@@ -529,12 +573,21 @@ export default function EstimatorScreen({
   const localScopePreview = useMemo(() => {
     if (isCustom) return '';
     const sections: string[] = [];
-    pricedAreas.forEach((a, i) => {
+    const calcCount = lineForms.filter(({ a }) => !a.isCustom).length;
+    lineForms.forEach(({ a }, i) => {
+      if (a.isCustom) {
+        // A custom line's typed scope is used VERBATIM (prompt 69, Part E):
+        // the scope writer never rewrites it, and neither does this preview.
+        const label = a.name.trim() || customLabelDefault;
+        const body = a.customScope.trim();
+        sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
+        return;
+      }
       const sys = systemTypes.find((s) => s.id === a.systemTypeId);
       if (!sys) return;
       const isMvbOnly = sys.name === MVB_ONLY_SYSTEM_NAME;
       const name = a.name || `Area ${i + 1}`;
-      const label = pricedAreas.length > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`;
+      const label = calcCount > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`;
       const tpl = (a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
       const body = tpl ? scopeApplyAnswers(tpl, scopeAnswers, sys.name) : `${Math.round(Number(a.sqft) || 0)} sqft`;
       sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
@@ -547,7 +600,7 @@ export default function EstimatorScreen({
       sections.push(body ? `${head}\n\n${body}` : head);
     }
     return sections.join('\n\n---\n\n');
-  }, [isCustom, pricedAreas, systemTypes, scopeAnswers, addonForms, addonCatalog]);
+  }, [isCustom, lineForms, customLabelDefault, systemTypes, scopeAnswers, addonForms, addonCatalog]);
 
   const scopeEditedAny = panelEdited || dbScopeEdited;
   // What the panel shows: the rep's or the server's document once one exists,
@@ -605,14 +658,17 @@ export default function EstimatorScreen({
   const anyAreaMvb = useMemo(() => engineAreas.some((a) => a.mvb === true), [engineAreas]);
   const mvbMissing = anyAreaMvb && !mvbProduct;
 
-  const pricing: PricingResult | null = useMemo(() => {
+  const pricing: PerLinePricingResult | null = useMemo(() => {
     // Custom mode: the engine is fully dormant. Everything downstream of
     // `pricing` (hasPrice, finalSell, GP, the AI read) branches off this one
     // null instead of each guarding isCustom separately.
     if (isCustom) return null;
     if (!salesperson || !engineAreas.length) return null;
     if (mvbMissing) return null; // surfaced below
-    return computeEstimatePricing({
+    // Per-line solve (prompt 69): ONE estimate-wide kit-merged material plan,
+    // attributed back to areas, each area solved at its OWN system's rates.
+    // The job price is the SUM of the line prices; pricing.lines carries them.
+    return computePerLinePricing({
       areas: engineAreas,
       productsById,
       recipeSlotsBySystemType,
@@ -629,12 +685,59 @@ export default function EstimatorScreen({
       sundriesPct: config.sundriesPct,
       // Per-area MVB adds this product at each mvb=true area's sqft.
       mvbProductId: mvbProduct?.id ?? null,
-    } as Parameters<typeof computeEstimatePricing>[0]);
+    } as Parameters<typeof computePerLinePricing>[0]);
   }, [isCustom, engineAreas, salesperson, productsById, recipeSlotsBySystemType, systemTypes, config, mvbProduct, mvbMissing]);
 
   const err = pricing?.error ?? null;
   const hasPrice = !!pricing && !err && pricing.price != null;
-  const basePrice = hasPrice && pricing ? pricing.price! : null;
+  const engineLines: PricedLine[] = useMemo(
+    () => (hasPrice && pricing && pricing.lines ? pricing.lines : []),
+    [hasPrice, pricing],
+  );
+
+  // ---- Per-line rows (prompt 69) -------------------------------------------
+  // ONE ordered list of the estimate's lines: calculator areas carry the
+  // engine's solved calc price plus an optional per-line typed override;
+  // custom lines carry their typed price. `current` is what the job base sums.
+  type LineRow = {
+    formIdx: number; // index into areas[]
+    kind: 'calc' | 'custom';
+    label: string;
+    line: PricedLine | null;
+    calcPrice: number | null;
+    override: number | null;
+    current: number | null;
+  };
+  const lineRows: LineRow[] = useMemo(() => {
+    let calcIdx = 0;
+    return lineForms.map(({ a, formIdx }) => {
+      if (a.isCustom) {
+        const p = Number(a.priceInput);
+        const typed = Number.isFinite(p) && p > 0 ? r2(p) : null;
+        return { formIdx, kind: 'custom' as const, label: a.name.trim() || customLabelDefault, line: null, calcPrice: null, override: typed, current: typed };
+      }
+      const line = engineLines[calcIdx] ?? null;
+      calcIdx++;
+      const ov = Number(a.priceInput);
+      const override = a.priceInput.trim() !== '' && Number.isFinite(ov) && ov > 0 ? r2(ov) : null;
+      return { formIdx, kind: 'calc' as const, label: a.name || 'Area', line, calcPrice: line ? line.price : null, override, current: override ?? (line ? line.price : null) };
+    });
+  }, [lineForms, engineLines, customLabelDefault]);
+  const customLineRows = useMemo(() => lineRows.filter((r) => r.kind === 'custom'), [lineRows]);
+  // A custom line missing its typed price blocks pricing the job (its share
+  // of the total would be a guess). Engine errors already null the calc rows.
+  const customLineUnpriced = customLineRows.some((r) => r.current == null);
+  const linesReady = hasPrice && lineRows.length > 0 && lineRows.every((r) => r.current != null);
+
+  // The system-portion BASE price: the sum of the lines' current prices
+  // (per-line overrides applied). The job-level sell/discount operates on it.
+  const basePrice = linesReady ? r2(lineRows.reduce((s, r) => s + (r.current ?? 0), 0)) : null;
+  // The CALCULATED system total, the reason rule's baseline: each calc line's
+  // solved price (ignoring per-line edits) plus each custom line's typed
+  // price. A rep must not route around the audit trail by editing lines
+  // instead of using the discount box, so the shortfall compares against
+  // THIS, not against basePrice.
+  const calcTotal = linesReady ? r2(lineRows.reduce((s, r) => s + (r.kind === 'calc' ? (r.calcPrice ?? 0) : (r.current ?? 0)), 0)) : null;
 
   // ---- Sell price / discount (decision 9: nothing is blocked, GP goes red) --
   const [sellInput, setSellInput] = useState('');
@@ -644,8 +747,9 @@ export default function EstimatorScreen({
   // trail for who is discounting and why). Prefilled from a reopened override.
   const [overrideReason, setOverrideReason] = useState<string>(() => editing?.priceOverrideReason ?? '');
 
-  // A structural change to the price (system, sqft, MVB, products) resets any
-  // manual override: the old discount was negotiated against the old number.
+  // A structural change to the price (system, sqft, MVB, products, a per-line
+  // edit) resets any manual override: the old discount was negotiated against
+  // the old number.
   useEffect(() => {
     setPriceOverride(null);
     setSellInput('');
@@ -667,11 +771,79 @@ export default function EstimatorScreen({
     return basePrice;
   }, [basePrice, priceOverride, sellInput, discInput]);
 
-  const adjusted = useMemo(
-    () => (pricing && hasPrice && finalSell != null ? applySellPrice(pricing, finalSell) : null),
-    [pricing, hasPrice, finalSell],
-  );
+  // Each line's FINAL amount: the current prices as-is, or, when the rep set
+  // a job-level sell/discount, the typed total allocated across the lines
+  // proportionally to their current prices. allocateProportionally makes the
+  // parts sum to the typed number exactly (the last line absorbs the cent).
+  const finalLineAmounts: number[] | null = useMemo(() => {
+    if (basePrice == null || finalSell == null) return null;
+    const currents = lineRows.map((r) => r.current ?? 0);
+    if (Math.abs(finalSell - basePrice) < 0.005) return currents;
+    return allocateProportionally(finalSell, currents);
+  }, [basePrice, finalSell, lineRows]);
+
+  // Per-line money at the FINAL amounts, GP included, decision 4: per-line
+  // pricing without per-line GP lets a rep discount a line into the negative
+  // and never see it. Calc lines rescale labor/commission/sundries at the new
+  // price over their fixed attributed materials; custom lines keep their
+  // typed cost basis (material cost + hours x rate).
+  const lineMoney: (LineSellResult | CustomLineMoney)[] | null = useMemo(() => {
+    if (!finalLineAmounts) return null;
+    return lineRows.map((r, k) => {
+      const amt = finalLineAmounts[k];
+      if (r.kind === 'calc' && r.line) {
+        return applyLineSellPrice(r.line, amt, { commissionPct: config.standardCommissionPct, sundriesPct: config.sundriesPct, laborRate: config.laborRate });
+      }
+      const a = areas[r.formIdx];
+      return customLinePricing({
+        price: amt,
+        materialCost: Number(a.customMaterialCost) || 0,
+        laborHours: Number(a.customLaborHours) || 0,
+        laborRate: config.laborRate,
+        commissionPct: config.standardCommissionPct,
+        sundriesPct: config.sundriesPct,
+      });
+    });
+  }, [lineRows, finalLineAmounts, areas, config.standardCommissionPct, config.sundriesPct, config.laborRate]);
+
+  // System-portion money = SUM of the line buckets (the job total is the sum
+  // of the lines, decision 2; there is no second job-level solve).
+  const adjusted = useMemo(() => {
+    if (!lineMoney || finalSell == null || basePrice == null) return null;
+    const sum = (pick: (m: LineSellResult | CustomLineMoney) => number | null) =>
+      r2(lineMoney.reduce((s, m) => s + (Number(pick(m)) || 0), 0));
+    const laborDollars = sum((m) => m.laborDollars);
+    const commissionDollars = sum((m) => m.commissionDollars);
+    const sundriesDollars = sum((m) => m.sundriesDollars);
+    const gpDollars = sum((m) => m.gpDollars);
+    const hoursSum = r2(lineMoney.reduce((s, m) => s + (Number(m.budgetedHours) || 0), 0));
+    const budgetedHours = hoursSum > 0 ? hoursSum : null;
+    return {
+      sellPrice: finalSell,
+      discountPct: basePrice > 0 ? r2((1 - finalSell / basePrice) * 100) : null,
+      laborDollars,
+      commissionDollars,
+      sundriesDollars,
+      gpDollars,
+      gpPct: finalSell > 0 ? gpDollars / finalSell : null,
+      budgetedHours,
+      gpPerHour: budgetedHours != null ? r2(gpDollars / budgetedHours) : null,
+    };
+  }, [lineMoney, finalSell, basePrice]);
   const discounted = basePrice != null && finalSell != null && Math.abs(finalSell - basePrice) >= 0.5;
+  // Any route below the calculated total counts toward the reason rule: a
+  // per-line edit, the job discount, or both (they all land in finalSell vs
+  // calcTotal). The threshold keeps a rounding nudge from nagging: a reason
+  // is demanded only when the shortfall exceeds the GREATER of the pct and
+  // dollar thresholds, measured on the WHOLE estimate.
+  const shortfall = calcTotal != null && finalSell != null ? r2(calcTotal - finalSell) : 0;
+  const reasonThreshold = Math.max(
+    (calcTotal ?? 0) * ((Number(config.linePricingReasonThresholdPct ?? 2) || 0) / 100),
+    Number(config.linePricingReasonThresholdDollars ?? 100) || 0,
+  );
+  const reasonRequired = shortfall > reasonThreshold + 1e-9;
+  const anyLineEdited = lineRows.some((r) => r.kind === 'calc' && r.override != null && r.calcPrice != null && Math.abs(r.override - r.calcPrice) >= 0.5);
+  const priceMoved = discounted || anyLineEdited;
 
   // ---- Add-on / one-off line money -----------------------------------------
   // Optional lines are EXCLUDED from the total and from GP until the customer
@@ -751,10 +923,29 @@ export default function EstimatorScreen({
     : null;
   // Did charm-pricing fire? Compare the shipped price to what plain rounding
   // (no charm) would have produced from the same raw price.
-  const charmFired = pricing && !err && pricing.priceRaw != null && basePrice != null &&
-    roundEstimatePrice(pricing.priceRaw, { increment: config.priceIncrement, charmThreshold: 0, charmBand: 0 }) !== basePrice;
+  // Heuristic since per-line rounding (prompt 69): compares the summed raw
+  // price plain-rounded against the summed charm-rounded line prices.
+  const charmFired = pricing && !err && pricing.priceRaw != null && pricing.price != null &&
+    roundEstimatePrice(pricing.priceRaw, { increment: config.priceIncrement, charmThreshold: 0, charmBand: 0 }) !== pricing.price;
   // Floor GP: below it a save asks a hard confirm (warns, does not block).
   const belowFloor = combinedGpPct != null && combinedGpPct * 100 < config.floorGpPct - 0.05;
+  // Per-LINE floor (prompt 69): a line under it goes red; whether it also
+  // forces the save confirmation is the line_pricing_block_below_floor knob.
+  // Tolerates a pre-69 cached catalog (keys absent) by falling back to the
+  // estimate-wide floor.
+  const lineFloorPct = Number(config.linePricingGpFloorPct ?? config.floorGpPct) || config.floorGpPct;
+  const belowFloorLines = useMemo(() => {
+    if (!lineMoney) return [] as Array<{ label: string; gpPct: number }>;
+    return lineRows
+      .map((r, k) => ({ label: r.label, gpPct: lineMoney[k].gpPct }))
+      .filter((x): x is { label: string; gpPct: number } => x.gpPct != null && x.gpPct * 100 < lineFloorPct - 0.05);
+  }, [lineRows, lineMoney, lineFloorPct]);
+  // Typed material cost across the custom lines, shown with the engine's
+  // materials number so the cost stack covers the whole estimate.
+  const customMaterialsTotal = useMemo(
+    () => r2(customLineRows.reduce((s, r) => s + (Number(areas[r.formIdx].customMaterialCost) || 0), 0)),
+    [customLineRows, areas],
+  );
 
   const onSellInput = (v: string) => {
     const cleaned = v.replace(/[^0-9.]/g, '');
@@ -1093,12 +1284,28 @@ export default function EstimatorScreen({
     );
   const addArea = () =>
     setAreas((prev) => {
-      // New areas inherit the previous area's system (a second garage bay is
-      // likelier than a system switch; one tap changes it either way).
-      const sysId = prev[prev.length - 1]?.systemTypeId ?? fallbackSystemId;
-      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId) }];
+      // New areas inherit the previous CALCULATOR area's system (a second
+      // garage bay is likelier than a system switch; one tap changes it
+      // either way). Custom lines carry no system, so they are skipped.
+      const lastCalc = [...prev].reverse().find((a) => !a.isCustom);
+      const sysId = lastCalc?.systemTypeId ?? fallbackSystemId;
+      return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId), ...emptyLineFields }];
     });
-  const removeArea = (i: number) => setAreas((prev) => prev.filter((_, idx) => idx !== i));
+  // A custom LINE on a normal estimate (prompt 69, decision 1): a typed
+  // one-off scope with its own price, cost, and hours, riding the same
+  // area-row pipeline. No system, no recipe, no catalog products.
+  const addCustomLine = () =>
+    setAreas((prev) => [...prev, {
+      name: customLabelDefault, sqft: '', systemTypeId: '', mvb: false, slotValues: {},
+      ...emptyLineFields, isCustom: true,
+    }]);
+  const removeArea = (i: number) => {
+    setAreas((prev) => prev.filter((_, idx) => idx !== i));
+    // Indexes shift on removal: drop the per-line polish undo state rather
+    // than let an undo land on the wrong line.
+    setLinePrePolish({});
+    setLinePolishError({});
+  };
 
   const onAreaSystemChange = (i: number, sysId: string) => {
     // New system, new slot set: re-seed THIS area with the new defaults.
@@ -1139,8 +1346,11 @@ export default function EstimatorScreen({
   const removeAddonForm = (key: string) => setAddonForms((prev) => prev.filter((f) => f.key !== key));
 
   const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
-  // An override (system sell price moved off the engine price) needs a reason.
-  const overrideNeedsReason = discounted && !overrideReason.trim();
+  // The reason rule (prompt 69, tightened with a threshold): a written reason
+  // is required whenever the FINAL system total lands below the CALCULATED
+  // total by more than the threshold, no matter how the rep got there (a
+  // per-line edit, the job discount, or both). Small trims pass silently.
+  const overrideNeedsReason = reasonRequired && !overrideReason.trim();
   // Identity gate (build 23): a commercial estimate needs its company, a
   // residential one a last name. Deliberately nothing else; the address is
   // never a gate (a rep standing in the driveway knows where they are).
@@ -1154,11 +1364,12 @@ export default function EstimatorScreen({
     !intake.mohs_hardness ? 'MOHS hardness' : null,
   ].filter(Boolean) as string[];
   // Custom mode gates on customer + a typed price > 0, nothing else: no
-  // areas, no materials, no calculated price. Standard mode is unchanged.
+  // areas, no materials, no calculated price. Standard mode now gates on
+  // linesReady: the engine priced AND every custom line has its typed price.
   const canSave = !!salesperson && !addonsIncomplete && !customerIncomplete && saveState !== 'saving' &&
     (isCustom
       ? customPrice != null
-      : hasPrice && !mvbMissing && !overrideNeedsReason);
+      : linesReady && !mvbMissing && !overrideNeedsReason);
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
@@ -1268,6 +1479,48 @@ export default function EstimatorScreen({
     setPrePolish(null);
   }, [prePolish]);
 
+  // Per-line Polish (prompt 69): the same pec-estimate-custom-polish endpoint
+  // and the same in-memory undo, but scoped to ONE custom line's typed scope.
+  // Keyed by the line's index into areas[]; removing a line clears the map so
+  // an undo can never land on the wrong line after indexes shift.
+  const [linePrePolish, setLinePrePolish] = useState<Record<number, string>>({});
+  const [linePolishBusy, setLinePolishBusy] = useState<number | null>(null);
+  const [linePolishError, setLinePolishError] = useState<Record<number, string>>({});
+  const polishLineScope = useCallback(async (i: number) => {
+    const text = (areas[i]?.customScope ?? '').trim();
+    if (!text || linePolishBusy != null) return;
+    setLinePolishBusy(i);
+    setLinePolishError((prev) => ({ ...prev, [i]: '' }));
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error('Sign in to use polish.');
+      const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ text }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Polish failed (${res.status})`);
+      setLinePrePolish((prev) => ({ ...prev, [i]: areas[i]?.customScope ?? '' }));
+      setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, customScope: String(out.polished) } : a)));
+    } catch (e) {
+      setLinePolishError((prev) => ({ ...prev, [i]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setLinePolishBusy(null);
+    }
+  }, [areas, linePolishBusy]);
+  const revertLinePolish = useCallback((i: number) => {
+    setLinePrePolish((prev) => {
+      if (prev[i] == null) return prev;
+      const text = prev[i];
+      setAreas((cur) => cur.map((a, idx) => (idx === i ? { ...a, customScope: text } : a)));
+      const next = { ...prev };
+      delete next[i];
+      return next;
+    });
+  }, []);
+
   // "Generate from proposal" for the crew notes: sends the assembled proposal
   // (or the custom typed scope) plus the site facts already on the estimate to
   // pec-estimate-crew-notes, which drafts the two-part brief (Cliff notes /
@@ -1345,10 +1598,21 @@ export default function EstimatorScreen({
       setSaveError('Saving again rewrites this estimate\'s saved areas, which needs a connection. Reconnect and save again.');
       return null;
     }
-    // Floor-GP guard (build 17): warn, do not block. Same philosophy as the 15c
-    // BLANK-scope send gate.
-    if (belowFloor && !window.confirm(`Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor. Save this estimate anyway?`)) {
-      return null;
+    // Floor-GP guard (build 17, per-line since prompt 69): warn, do not
+    // block. The confirmation NAMES the below-floor lines, not just the
+    // combined percentage; line_pricing_block_below_floor makes a below-floor
+    // LINE force the confirm even when the combined GP clears the floor.
+    const lineFloorConfirm = !isCustom && config.linePricingBlockBelowFloor === true && belowFloorLines.length > 0;
+    if (belowFloor || lineFloorConfirm) {
+      const lineList = belowFloorLines.length
+        ? ` Below the ${lineFloorPct}% line floor: ${belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.`
+        : '';
+      const combinedPart = belowFloor
+        ? `Gross profit is ${combinedGpPct != null ? (combinedGpPct * 100).toFixed(1) : '--'}%, below the ${config.floorGpPct}% floor.`
+        : `Combined GP is above the floor, but a line is not.`;
+      if (!window.confirm(`${combinedPart}${lineList} Save this estimate anyway?`)) {
+        return null;
+      }
     }
     setSaveState('saving');
     setSaveError('');
@@ -1356,7 +1620,38 @@ export default function EstimatorScreen({
       // A custom estimate persists NO area rows: any hidden area state stays
       // in the form (the toggle is non-destructive) but never lands in the
       // database, so the proposal shows only the composed custom line.
-      const areaInputs: AreaInput[] = isCustom ? [] : pricedAreas.map((a) => {
+      // Standard mode walks lineRows (prompt 69): calculator areas AND custom
+      // lines, in form order, so estimate_areas carries BOTH kinds and the
+      // line items bind to them by position.
+      const areaInputs: AreaInput[] = isCustom ? [] : lineRows.map((row) => {
+        const a = areas[row.formIdx];
+        if (row.kind === 'custom') {
+          const label = a.name.trim() || customLabelDefault;
+          const matCost = Number(a.customMaterialCost);
+          const hours = Number(a.customLaborHours);
+          const sqftNum = Number(a.sqft);
+          return {
+            name: label,
+            sqft: Number.isFinite(sqftNum) && sqftNum > 0 ? sqftNum : null,
+            systemTypeId: null,
+            flakeProductId: null,
+            basecoatProductId: null,
+            topcoatProductId: null,
+            mvb: false,
+            answers: {},
+            materials: [],
+            isCustom: true,
+            customLabel: label,
+            customScope: a.customScope.trim() || null,
+            customMaterialCost: Number.isFinite(matCost) && matCost > 0 ? r2(matCost) : null,
+            customLaborHours: Number.isFinite(hours) && hours > 0 ? hours : null,
+            notes: a.notes.trim() || null,
+            calcPrice: null,
+            // Decision 5/1: a custom line's typed price lives in
+            // price_override (calc_price stays null: nothing was calculated).
+            priceOverride: row.current,
+          };
+        }
         const d = deriveProducts(a.slotValues, a.systemTypeId);
         const areaSlots = slotsFor(a.systemTypeId);
         const materials: AreaMaterialInput[] = areaSlots
@@ -1386,6 +1681,16 @@ export default function EstimatorScreen({
           mvb: a.mvb === true,
           answers: a.slotValues,
           materials,
+          isCustom: false,
+          customLabel: null,
+          customScope: null,
+          customMaterialCost: null,
+          customLaborHours: null,
+          notes: a.notes.trim() || null,
+          // This line's own solved price and the rep's per-line override
+          // (null = sell at calc_price). The job discount stays estimate-level.
+          calcPrice: row.calcPrice,
+          priceOverride: row.override,
         };
       });
 
@@ -1401,13 +1706,15 @@ export default function EstimatorScreen({
         discount_pct: discounted && adjusted ? adjusted.discountPct : null,
       };
 
-      // ---- Line items: one per AREA (its share of the system sell price),
-      // then the add-ons and one-offs. Areas' amounts are allocated from each
-      // area's own solo cost-plus solve, so a big garage carries more of the
-      // price than a small patio and the parts sum EXACTLY to the sell price.
-      // Custom mode instead composes ONE line carrying the typed price +
-      // scope, so the proposal page and the PDF render a row with zero
-      // special-casing (the edit loader filters it back out by label).
+      // ---- Line items: one per LINE (prompt 69). Each line's amount is its
+      // OWN solved (or typed) price, adjusted per-line by the rep's edit and
+      // the job-level discount allocation; the parts sum EXACTLY to the sell
+      // price because finalLineAmounts comes from allocateProportionally.
+      // The old proportional back-allocation of a single job price is gone.
+      // unit_cost carries the line's REAL cost (materials + labor +
+      // commission + sundries at its final price, i.e. price minus its GP$).
+      // Custom mode (whole-estimate, build 24) still composes ONE line
+      // carrying the typed price + scope, unchanged.
       const lineItems: LineItemInput[] = [];
       if (isCustom) {
         lineItems.push({
@@ -1424,43 +1731,47 @@ export default function EstimatorScreen({
           sortOrder: 0,
         });
       } else {
-        const soloByArea = engineAreas.map((a) => {
-          const solo = computeEstimatePricing({
-            areas: [a],
-            productsById,
-            recipeSlotsBySystemType,
-            systemTypes,
-            laborRate: config.laborRate,
-            commissionPct: config.standardCommissionPct,
-            targetGpPct: config.targetGpPct,
-            priceIncrement: 1,
-            charmThreshold: 0,
-            charmBand: 0,
-            sundriesPct: config.sundriesPct,
-            mvbProductId: mvbProduct?.id ?? null,
-          } as Parameters<typeof computeEstimatePricing>[0]);
-          return solo && !solo.error ? solo : null;
-        });
-        const weights = soloByArea.map((s, i) => (s && s.priceRaw ? s.priceRaw : engineAreas[i].sqft));
-        const parts = allocateProportionally(sellPrice, weights);
-        engineAreas.forEach((a, i) => {
-          const sys = systemTypes.find((s) => s.id === a.system_type_id);
+        const calcCount = lineRows.filter((r) => r.kind === 'calc').length;
+        lineRows.forEach((row, k) => {
+          const a = areas[row.formIdx];
+          const amt = finalLineAmounts ? finalLineAmounts[k] : (row.current ?? 0);
+          const money = lineMoney ? lineMoney[k] : null;
+          const unitCost = money && money.gpDollars != null ? r2(amt - money.gpDollars) : 0;
+          if (row.kind === 'custom') {
+            lineItems.push({
+              addonId: null,
+              areaIndex: k,
+              label: row.label,
+              // The typed scope is used VERBATIM as this line's description
+              // (Part E); the scope writer never rewrites it.
+              description: a.customScope.trim() || null,
+              qty: 1,
+              unitPrice: amt,
+              unitCost,
+              total: amt,
+              isOptional: false,
+              selectedByCustomer: true,
+              sortOrder: k,
+            });
+            return;
+          }
+          const sys = systemTypes.find((s) => s.id === a.systemTypeId);
           const sysName = sys?.name ?? 'Floor coating';
           const isMvbOnly = sys?.name === MVB_ONLY_SYSTEM_NAME;
           lineItems.push({
             addonId: null,
-            areaIndex: i,
-            label: engineAreas.length > 1 ? `${a.name}: ${sysName}` : (isMvbOnly ? sysName : `${sysName} floor coating system`),
+            areaIndex: k,
+            label: calcCount > 1 || lineRows.length > 1 ? `${a.name || 'Area'}: ${sysName}` : (isMvbOnly ? sysName : `${sysName} floor coating system`),
             description:
-              `${Math.round(a.sqft)} sqft` +
+              `${Math.round(Number(a.sqft) || 0)} sqft` +
               (a.mvb && !isMvbOnly ? ', includes moisture vapor barrier (MVB)' : ''),
             qty: 1,
-            unitPrice: parts[i],
-            unitCost: r2(Number(soloByArea[i]?.materialsCost) || 0),
-            total: parts[i],
+            unitPrice: amt,
+            unitCost,
+            total: amt,
             isOptional: false,
             selectedByCustomer: true,
-            sortOrder: i,
+            sortOrder: k,
           });
         });
       }
@@ -1565,11 +1876,16 @@ export default function EstimatorScreen({
         areas: areaInputs,
         pricing,
         totals,
-        // Provenance: the engine price, and the override reason/who when the rep
-        // moved the system sell price off it. Both null in custom mode: the
-        // typed price is not an override of anything.
-        calcPrice: basePrice,
-        priceOverride: discounted ? { reason: overrideReason.trim(), by: createdBy } : null,
+        // Provenance: the CALCULATED total (sum of the lines' solved prices,
+        // custom lines at their typed price), and the override reason/who
+        // when the price moved off it BY ANY ROUTE (a per-line edit, the job
+        // discount, or both) and a reason exists. The reason is only DEMANDED
+        // past the threshold; a recorded one is kept regardless. Both null in
+        // custom mode: the typed price is not an override of anything.
+        calcPrice: isCustom ? null : calcTotal,
+        priceOverride: !isCustom && (priceMoved || shortfall >= 0.5) && overrideReason.trim()
+          ? { reason: overrideReason.trim(), by: createdBy }
+          : null,
         createdBy: editing?.createdBy ?? createdBy,
         // The dedup pick (linkedLead) outranks the URL lead link: the rep
         // explicitly chose that record. An edit keeps its stored lead.
@@ -1637,7 +1953,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, pricedAreas, engineAreas, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, mvbProduct, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, productsById, recipeSlotsBySystemType, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -1985,43 +2301,143 @@ export default function EstimatorScreen({
           )}
 
           {!isCustom && <section className="card">
-            <div className="areas-head"><span>Areas</span><button type="button" className="link" onClick={addArea}>+ Add area</button></div>
-            {/* Each area picks its own system: a garage plus a patio plus stem
-                walls is ONE estimate now. Pricing weights every area's own
-                system; the dominant (most sqft) system is what reports. */}
-            {areas.map((a, i) => (
-              <div className="area" key={i}>
-                <div className="area-top">
-                  <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Area name" />
-                  <select
-                    className="area-system"
-                    value={a.systemTypeId}
-                    onChange={(e) => onAreaSystemChange(i, e.target.value)}
-                    aria-label={`System for ${a.name || `Area ${i + 1}`}`}
-                  >
-                    {systemTypes.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                  <input
-                    className="area-sqft"
-                    inputMode="decimal"
-                    value={a.sqft}
-                    onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })}
-                    placeholder="sq ft"
-                  />
-                  {areas.length > 1 && <button type="button" className="x" aria-label="Remove area" onClick={() => removeArea(i)}>×</button>}
+            <div className="areas-head">
+              <span>Areas</span>
+              <span className="scope-actions">
+                <button type="button" className="link" onClick={addCustomLine}>+ Add custom line</button>
+                <button type="button" className="link" onClick={addArea}>+ Add area</button>
+              </span>
+            </div>
+            {/* Each area picks its own system AND solves its own price
+                (prompt 69): the job total is the sum of the lines, so the rep
+                can see and move each line without moving the others. Custom
+                lines (typed scope + typed price/cost/hours) live in the same
+                list. */}
+            {areas.map((a, i) => {
+              const rowIdx = lineRows.findIndex((r) => r.formIdx === i);
+              const row = rowIdx >= 0 ? lineRows[rowIdx] : null;
+              const lm = row && lineMoney ? lineMoney[rowIdx] : null;
+              const finalAmt = row && finalLineAmounts ? finalLineAmounts[rowIdx] : null;
+              const lineRed = lm?.gpPct != null && lm.gpPct * 100 < lineFloorPct - 0.05;
+              const moneyStrip = row && row.current != null && (
+                <div className="line-money" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline', fontSize: '.8rem', marginTop: 6 }}>
+                  {row.kind === 'calc' && (
+                    <span className="muted">calc {money2(row.calcPrice)}{row.override != null ? ` · selling ${money2(row.override)}` : ''}</span>
+                  )}
+                  {finalAmt != null && Math.abs(finalAmt - (row.current ?? 0)) >= 0.005 && (
+                    <span className="muted">after discount {money2(finalAmt)}</span>
+                  )}
+                  {lm && lm.gpPct != null && (
+                    <span className={lineRed ? 'gp-red' : ''} style={lineRed ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                      GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}
+                    </span>
+                  )}
                 </div>
-                {/* Per-area MVB (build 17), default OFF. Hidden on an MVB Only
-                    area, whose system already IS the barrier. */}
-                {!isMvbOnlySystem(a.systemTypeId) && (
-                  <label className="check area-mvb">
-                    <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
-                    <span>Add moisture vapor barrier (MVB) to this area</span>
-                  </label>
-                )}
-              </div>
-            ))}
+              );
+              if (a.isCustom) {
+                return (
+                  <div className="area area-custom" key={i} style={{ borderLeft: '3px solid #D8531C', paddingLeft: 10 }}>
+                    <div className="area-top">
+                      <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Custom line label (customer sees this)" />
+                      <span className="oneoff-badge" title="Custom line: typed scope and price, no recipe, no catalog materials.">custom</span>
+                      <button type="button" className="x" aria-label={`Remove ${a.name || 'custom line'}`} onClick={() => removeArea(i)}>×</button>
+                    </div>
+                    <div className="areas-head" style={{ marginTop: 6 }}>
+                      <span style={{ fontSize: '.8rem' }}>Scope (customer sees this, used word for word)</span>
+                      <span className="scope-actions">
+                        {linePrePolish[i] != null && (
+                          <button type="button" className="link" onClick={() => revertLinePolish(i)}>Undo polish</button>
+                        )}
+                        <button type="button" className="link" onClick={() => polishLineScope(i)} disabled={linePolishBusy === i || !online || !a.customScope.trim()}>
+                          {linePolishBusy === i ? 'Polishing…' : 'Polish with AI'}
+                        </button>
+                      </span>
+                    </div>
+                    <textarea
+                      className="custom-scope"
+                      rows={5}
+                      value={a.customScope}
+                      onChange={(e) => setArea(i, { customScope: e.target.value })}
+                      placeholder="Describe this line's work: prep, what gets done, what is excluded…"
+                    />
+                    {linePolishError[i] && <p className="warn">Polish failed: {linePolishError[i]}</p>}
+                    <div className="addon-nums">
+                      <label className="field"><span>Price $ (you set it{Number(a.priceInput) > 0 ? '' : ', required'})</span>
+                        <input inputMode="decimal" value={a.priceInput} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Material cost $</span>
+                        <input inputMode="decimal" value={a.customMaterialCost} onChange={(e) => setArea(i, { customMaterialCost: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Crew hours</span>
+                        <input inputMode="decimal" value={a.customLaborHours} onChange={(e) => setArea(i, { customLaborHours: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Sq ft (optional)</span>
+                        <input inputMode="decimal" value={a.sqft} onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                    </div>
+                    {Number(a.priceInput) > 0 && !(Number(a.customMaterialCost) > 0) && !(Number(a.customLaborHours) > 0) && (
+                      <p className="warn addon-warn">No material cost or hours on this line: it books as pure margin and inflates GP until they are typed.</p>
+                    )}
+                    {moneyStrip}
+                    <label className="field" style={{ marginTop: 6 }}><span>Internal notes (never shown to the customer)</span>
+                      <input value={a.notes} onChange={(e) => setArea(i, { notes: e.target.value })} placeholder="Context for this line…" />
+                    </label>
+                  </div>
+                );
+              }
+              return (
+                <div className="area" key={i}>
+                  <div className="area-top">
+                    <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Area name" />
+                    <select
+                      className="area-system"
+                      value={a.systemTypeId}
+                      onChange={(e) => onAreaSystemChange(i, e.target.value)}
+                      aria-label={`System for ${a.name || `Area ${i + 1}`}`}
+                    >
+                      {systemTypes.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      className="area-sqft"
+                      inputMode="decimal"
+                      value={a.sqft}
+                      onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })}
+                      placeholder="sq ft"
+                    />
+                    {areas.length > 1 && <button type="button" className="x" aria-label="Remove area" onClick={() => removeArea(i)}>×</button>}
+                  </div>
+                  {/* Per-area MVB (build 17), default OFF. Hidden on an MVB Only
+                      area, whose system already IS the barrier. */}
+                  {!isMvbOnlySystem(a.systemTypeId) && (
+                    <label className="check area-mvb">
+                      <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
+                      <span>Add moisture vapor barrier (MVB) to this area</span>
+                    </label>
+                  )}
+                  {/* Per-line price + GP (prompt 69): the line's solved price,
+                      an editable sell price for THIS line only, and its own
+                      GP, red under the line floor. */}
+                  {row && row.calcPrice != null && (
+                    <div className="addon-nums" style={{ marginTop: 4 }}>
+                      <label className="field"><span>Line price $ (calc {money(row.calcPrice)})</span>
+                        <input inputMode="decimal" value={a.priceInput} placeholder={String(row.calcPrice)} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} />
+                      </label>
+                    </div>
+                  )}
+                  {moneyStrip}
+                  {Number(a.sqft) > 0 && (
+                    <label className="field" style={{ marginTop: 6 }}><span>Internal notes (fed to the scope writer, never shown to the customer)</span>
+                      <input value={a.notes} onChange={(e) => setArea(i, { notes: e.target.value })} placeholder="Context for this line's scope…" />
+                    </label>
+                  )}
+                </div>
+              );
+            })}
+            {customLineRows.length > 0 && engineAreas.length === 0 && (
+              <p className="hint">Custom lines ride on a normal estimate: give at least one area a system and square footage, or switch the whole estimate to Custom.</p>
+            )}
           </section>}
 
           <section className="card">
@@ -2302,17 +2718,20 @@ export default function EstimatorScreen({
               </>
             )}
             {!isCustom && salesperson && !hasPrice && !err && !mvbMissing && <p className="hint">Enter the square footage to price the job.</p>}
-            {err && <p className="error">{ERROR_COPY[err] ?? err}</p>}
+            {err && <p className="error">{(ERROR_COPY[err] ?? err) + (pricing?.errorArea ? ` (area: ${pricing.errorArea})` : '')}</p>}
+            {!isCustom && hasPrice && customLineUnpriced && (
+              <p className="warn">A custom line has no price yet. Type its price on the line (Areas card) to price the job.</p>
+            )}
             {hasPrice && pricing && adjusted && (
               <>
                 <div className="price">{money(totalPrice)}</div>
                 {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
                   <p className="hint">with every optional item: {money(totalAllOptions)}</p>
                 )}
-                {(discounted || addonsBaseTotal > 0) && (
+                {(discounted || anyLineEdited || addonsBaseTotal > 0) && (
                   <p className="hint">
                     system {money(finalSell)}
-                    {discounted ? ` (calculated ${money(basePrice)}${adjusted.discountPct != null ? `, ${adjusted.discountPct.toFixed(1)}% discount` : ''})` : ''}
+                    {calcTotal != null && finalSell != null && Math.abs(finalSell - calcTotal) >= 0.5 ? ` (calculated ${money(calcTotal)}${shortfall > 0 ? `, ${money(shortfall)} under` : ''})` : ''}
                     {addonsBaseTotal > 0 ? ` + add-ons ${money(addonsBaseTotal)}` : ''}
                   </p>
                 )}
@@ -2328,19 +2747,23 @@ export default function EstimatorScreen({
                     <input inputMode="decimal" value={discInput} placeholder="0" onChange={(e) => onDiscInput(e.target.value)} />
                   </label>
                 </div>
-                {/* Override reason: required to save when the price was moved. */}
-                {discounted && (
+                {/* Override reason (prompt 69): shown whenever the price
+                    moved off the calculated total by ANY route (a per-line
+                    edit, the job discount, or both); REQUIRED only when the
+                    shortfall exceeds the threshold, so a rounding nudge does
+                    not nag but three small line trims that add up still ask. */}
+                {(priceMoved || shortfall >= 0.5 || overrideReason.trim() !== '') && (
                   <label className="field override-reason">
                     <span>Why the price was changed{overrideNeedsReason ? ' (required)' : ''}</span>
                     <input value={overrideReason} onChange={(e) => setOverrideReason(e.target.value)} placeholder="problem customer, large sqft, competitor match…" />
                   </label>
                 )}
-                {overrideNeedsReason && <p className="warn">A reason is required to save a changed price.</p>}
+                {overrideNeedsReason && <p className="warn">The final price is {money(shortfall)} under the calculated total, past the allowed {money(reasonThreshold)} leeway. A written reason is required to save.</p>}
                 <dl className="metrics">
                   <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
                   <div><dt>Target GP</dt><dd>{Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}%</dd></div>
                   <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
-                  <div><dt>Materials</dt><dd>{money2(pricing.materialsCost)}</dd></div>
+                  <div><dt>Materials</dt><dd>{money2(r2((pricing.materialsCost ?? 0) + customMaterialsTotal))}{customMaterialsTotal > 0 ? <span className="muted"> · incl. {money2(customMaterialsTotal)} custom</span> : null}</dd></div>
                   <div><dt>Labor ({pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%)</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
                   <div><dt>Sundries ({Number(pricing.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
                   <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
@@ -2348,15 +2771,21 @@ export default function EstimatorScreen({
                 </dl>
                 {/* How the price was reached, in one plain-English line. */}
                 <p className="derivation">
-                  {engineCost != null && basePrice != null
-                    ? `cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(basePrice)}${mixedSystems ? `, weighted across ${systemsBySqft.length} systems` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`
+                  {engineCost != null && pricing.price != null
+                    ? `cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(pricing.price)}${mixedSystems ? `, each area solved at its own system's target` : ''}${customLineRows.length > 0 ? ` + ${customLineRows.length} custom line${customLineRows.length > 1 ? 's' : ''} at typed prices` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`
                     : ''}
                 </p>
                 {gpBelowTarget && (
-                  <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (sqft-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
+                  <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (price-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
                 )}
                 {belowFloor && (
                   <p className="warn gp-warn">GP is below the {config.floorGpPct}% floor. Saving asks you to confirm.</p>
+                )}
+                {!belowFloor && belowFloorLines.length > 0 && (
+                  <p className="warn gp-warn">
+                    Below the {lineFloorPct}% line floor: {belowFloorLines.map((l) => `${l.label} (${(l.gpPct * 100).toFixed(1)}%)`).join(', ')}.
+                    {config.linePricingBlockBelowFloor === true ? ' Saving asks you to confirm.' : ' Saving still works; the line is red on purpose.'}
+                  </p>
                 )}
                 {pricing.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
                   <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>

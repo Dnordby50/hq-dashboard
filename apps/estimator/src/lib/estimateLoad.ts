@@ -51,7 +51,23 @@ export type LoadedEstimate = {
   scopeStale: boolean;
   scopeAnswers: Record<string, string>;
   priceOverrideReason: string | null;
-  areas: Array<{ name: string; sqft: string; systemTypeId: string | null; mvb: boolean; slotValues: Record<string, string> }>;
+  // Per-line pricing / custom lines (prompt 69): the new columns round-trip as
+  // ready-to-edit input strings (the areas.sqft pattern). A pre-69 row loads
+  // them all empty/false and the form behaves exactly as before.
+  areas: Array<{
+    name: string;
+    sqft: string;
+    systemTypeId: string | null;
+    mvb: boolean;
+    slotValues: Record<string, string>;
+    isCustom: boolean;
+    customLabel: string;
+    customScope: string;
+    customMaterialCost: string;
+    customLaborHours: string;
+    notes: string;
+    priceOverride: string;
+  }>;
   addonLines: LoadedAddonLine[];
   // Custom estimate mode (build 24). customScope/customPrice are the
   // ready-to-edit form values (customPrice as an input string, same shape as
@@ -112,7 +128,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       .maybeSingle(),
     supabase
       .from('estimate_areas')
-      .select('name,sqft,system_type_id,mvb,answers,sort_order')
+      .select('name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
     supabase
@@ -125,13 +141,26 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   if (!estRes.data) return null;
   const e = estRes.data as Record<string, unknown>;
   const areas = ((areasRes.error ? [] : areasRes.data) ?? []).map((a) => {
-    const row = a as { name: string | null; sqft: number | null; system_type_id: string | null; mvb: boolean | null; answers: Record<string, string> | null };
+    const row = a as {
+      name: string | null; sqft: number | null; system_type_id: string | null; mvb: boolean | null;
+      answers: Record<string, string> | null; is_custom: boolean | null; custom_label: string | null;
+      custom_scope: string | null; custom_material_cost: number | null; custom_labor_hours: number | null;
+      notes: string | null; price_override: number | null;
+    };
+    const isCustomLine = row.is_custom === true;
     return {
-      name: row.name || 'Main',
+      name: row.name || (isCustomLine ? (row.custom_label || 'Custom work') : 'Main'),
       sqft: row.sqft != null ? String(row.sqft) : '',
       systemTypeId: row.system_type_id ?? null,
       mvb: row.mvb === true,
       slotValues: row.answers ?? {},
+      isCustom: isCustomLine,
+      customLabel: row.custom_label != null ? String(row.custom_label) : '',
+      customScope: row.custom_scope != null ? String(row.custom_scope) : '',
+      customMaterialCost: row.custom_material_cost != null ? String(row.custom_material_cost) : '',
+      customLaborHours: row.custom_labor_hours != null ? String(row.custom_labor_hours) : '',
+      notes: row.notes != null ? String(row.notes) : '',
+      priceOverride: row.price_override != null ? String(row.price_override) : '',
     };
   });
   // Only add-on / one-off lines round-trip into the form; area/system lines

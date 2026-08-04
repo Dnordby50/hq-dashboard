@@ -19,14 +19,28 @@ export type AreaMaterialInput = {
 
 export type AreaInput = {
   name: string;
-  sqft: number;
-  systemTypeId: string;
+  sqft: number | null;
+  systemTypeId: string | null; // null on a custom line (prompt 69): no recipe
   flakeProductId: string | null;
   basecoatProductId: string | null;
   topcoatProductId: string | null;
   mvb: boolean; // per-area moisture vapor barrier (build 17)
   answers: Record<string, string>; // raw slotId -> value (audit / re-open)
   materials: AreaMaterialInput[];
+  // Per-line pricing (prompt 69). A calculator area carries its own solved
+  // price (calcPrice) and an optional rep-typed price (priceOverride, null =
+  // use calcPrice). A CUSTOM line is isCustom=true with typed label / scope /
+  // material cost / labor hours; its typed price lives in priceOverride and
+  // calcPrice stays null. notes is INTERNAL per-line context for the scope
+  // writer, never customer-facing.
+  isCustom: boolean;
+  customLabel: string | null;
+  customScope: string | null;
+  customMaterialCost: number | null;
+  customLaborHours: number | null;
+  notes: string | null;
+  calcPrice: number | null;
+  priceOverride: number | null;
 };
 
 // The one line item a CUSTOM estimate always carries (build 24): it holds the
@@ -271,6 +285,16 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       mvb: a.mvb === true,
       answers: a.answers,
       sort_order: i,
+      // Per-line pricing / custom lines (prompt 69). Written on every save
+      // (null when not set) so clearing a per-line override persists.
+      is_custom: a.isCustom === true,
+      custom_label: a.customLabel ?? null,
+      custom_scope: a.customScope ?? null,
+      custom_material_cost: a.customMaterialCost ?? null,
+      custom_labor_hours: a.customLaborHours ?? null,
+      notes: a.notes ?? null,
+      calc_price: a.calcPrice ?? null,
+      price_override: a.priceOverride ?? null,
     };
     await enqueue({ table: 'estimate_areas', id: areaId, row: areaRow, client_updated_at: now });
 

@@ -3,6 +3,9 @@
 // and `npm test` use) rather than reimplementing anything in the PWA.
 import {
   computeEstimatePricing as _computeEstimatePricing,
+  computePerLinePricing as _computePerLinePricing,
+  applyLineSellPrice as _applyLineSellPrice,
+  customLinePricing as _customLinePricing,
   computeJobEstimate as _computeJobEstimate,
   computeMaterialPlan as _computeMaterialPlan,
   roundEstimatePrice as _roundEstimatePrice,
@@ -84,6 +87,62 @@ export type PricingInput = {
 export type PricingResult = ReturnType<typeof _computeEstimatePricing>;
 export type SellPriceResult = ReturnType<typeof _applySellPrice>;
 
+// One solved calculator line from computePerLinePricing (prompt 69): the
+// area's own cost-plus price at its own system's labor% and target GP%, with
+// its attributed share of the ONE estimate-wide (kit-merged) material cost.
+export type PricedLine = {
+  areaId: string | null;
+  index: number;
+  name: string;
+  systemTypeId: string;
+  sqft: number;
+  materialsCost: number;
+  fixedAddons: number;
+  laborPct: number;
+  targetGpPct: number;
+  divisor: number;
+  priceRaw: number;
+  price: number;
+  laborDollars: number;
+  commissionDollars: number;
+  sundriesDollars: number;
+  gpDollars: number;
+  gpPct: number | null;
+  budgetedHours: number | null;
+  gpPerHour: number | null;
+};
+
+// computePerLinePricing returns the computeEstimatePricing shape (so the
+// screen's downstream money code keeps working) PLUS `lines`, and names the
+// offending area on TARGET_UNREACHABLE / NO_LABOR_PCT via errorArea.
+export type PerLinePricingResult = PricingResult & {
+  lines?: PricedLine[];
+  errorArea?: string;
+};
+
+export type LineSellResult = {
+  sellPrice: number | null;
+  laborDollars: number | null;
+  commissionDollars: number | null;
+  sundriesDollars: number | null;
+  gpDollars: number | null;
+  gpPct: number | null;
+  budgetedHours: number | null;
+  gpPerHour: number | null;
+};
+
+export type CustomLineMoney = {
+  price: number | null;
+  materialsCost: number | null;
+  laborDollars: number | null;
+  commissionDollars: number | null;
+  sundriesDollars: number | null;
+  gpDollars: number | null;
+  gpPct: number | null;
+  budgetedHours: number | null;
+  gpPerHour: number | null;
+};
+
 // Money shape lineItemsTotal / lineItemsGp accept (matches estimate_line_items
 // rows; the legacy jsonb `optional` key is also tolerated by the canonical fns).
 export type MoneyLineItem = {
@@ -96,6 +155,21 @@ export type MoneyLineItem = {
 
 export const computeEstimatePricing = (input: PricingInput): PricingResult =>
   _computeEstimatePricing(input);
+export const computePerLinePricing = (input: PricingInput): PerLinePricingResult =>
+  _computePerLinePricing(input) as PerLinePricingResult;
+export const applyLineSellPrice = (
+  line: PricedLine,
+  sellPrice: number,
+  opts: { commissionPct?: number; sundriesPct?: number; laborRate?: number },
+): LineSellResult => _applyLineSellPrice(line, sellPrice, opts) as LineSellResult;
+export const customLinePricing = (input: {
+  price: number | null;
+  materialCost?: number;
+  laborHours?: number;
+  laborRate?: number;
+  commissionPct?: number;
+  sundriesPct?: number;
+}): CustomLineMoney => _customLinePricing(input) as CustomLineMoney;
 export const computeJobEstimate = _computeJobEstimate;
 export const computeMaterialPlan = _computeMaterialPlan;
 export const roundEstimatePrice = _roundEstimatePrice;

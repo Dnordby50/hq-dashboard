@@ -50,6 +50,64 @@ declare module '*/production/calculator.js' {
     priceRaw: number,
     opts?: { increment?: number; charmThreshold?: number; charmBand?: number },
   ): number;
+  // Per-line pricing (prompt 69): same input shape as computeEstimatePricing,
+  // same result shape PLUS `lines` (one solved entry per area) and errorArea.
+  export function computePerLinePricing(input: unknown): ReturnType<typeof computeEstimatePricing> & {
+    lines?: Array<{
+      areaId: string | null;
+      index: number;
+      name: string;
+      systemTypeId: string;
+      sqft: number;
+      materialsCost: number;
+      fixedAddons: number;
+      laborPct: number;
+      targetGpPct: number;
+      divisor: number;
+      priceRaw: number;
+      price: number;
+      laborDollars: number;
+      commissionDollars: number;
+      sundriesDollars: number;
+      gpDollars: number;
+      gpPct: number | null;
+      budgetedHours: number | null;
+      gpPerHour: number | null;
+    }>;
+    errorArea?: string;
+  };
+  export function applyLineSellPrice(
+    line: unknown,
+    sellPrice: number,
+    opts?: { commissionPct?: number; sundriesPct?: number; laborRate?: number },
+  ): {
+    sellPrice: number | null;
+    laborDollars: number | null;
+    commissionDollars: number | null;
+    sundriesDollars: number | null;
+    gpDollars: number | null;
+    gpPct: number | null;
+    budgetedHours: number | null;
+    gpPerHour: number | null;
+  };
+  export function customLinePricing(input: {
+    price: number | null;
+    materialCost?: number;
+    laborHours?: number;
+    laborRate?: number;
+    commissionPct?: number;
+    sundriesPct?: number;
+  }): {
+    price: number | null;
+    materialsCost: number | null;
+    laborDollars: number | null;
+    commissionDollars: number | null;
+    sundriesDollars: number | null;
+    gpDollars: number | null;
+    gpPct: number | null;
+    budgetedHours: number | null;
+    gpPerHour: number | null;
+  };
   export function lineItemsTotal(items: unknown[], opts?: { withAllOptions?: boolean }): number;
   export function lineItemsGp(items: unknown[], standardCommissionPct?: number, opts?: { withAllOptions?: boolean }): number;
   export function allocateProportionally(total: number, weights: number[]): number[];

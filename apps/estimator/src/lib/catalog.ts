@@ -35,6 +35,15 @@ export type PricingConfig = {
   charmBand: number;
   sundriesPct: number; // estimator_sundries_pct: sundries + disposables as % of total cost (build 17)
   floorGpPct: number;  // estimator_floor_gp_pct: GP% floor below which an override warns (build 17)
+  // Line pricing (prompt 69). Defaults here MUST match the migration seeds and
+  // any server-side reader: floor falls back to the estimator floor so day one
+  // behaves identically; thresholds gate when a written reason is demanded
+  // (final total under calculated total by more than the GREATER of the two).
+  linePricingGpFloorPct: number;            // line_pricing_gp_floor_pct: per-line GP floor that turns a line red
+  linePricingBlockBelowFloor: boolean;      // line_pricing_block_below_floor: a below-floor LINE forces the confirm (vs warn only)
+  linePricingCustomLabelDefault: string;    // line_pricing_custom_label_default: prefilled label on a new custom line
+  linePricingReasonThresholdPct: number;    // line_pricing_reason_threshold_pct (default 2)
+  linePricingReasonThresholdDollars: number; // line_pricing_reason_threshold_dollars (default 100)
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
   customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
@@ -98,6 +107,11 @@ export async function loadCatalog(): Promise<Catalog> {
         'estimator_default_commission_pct',
         'estimator_sundries_pct',
         'estimator_floor_gp_pct',
+        'line_pricing_gp_floor_pct',
+        'line_pricing_block_below_floor',
+        'line_pricing_custom_label_default',
+        'line_pricing_reason_threshold_pct',
+        'line_pricing_reason_threshold_dollars',
         'estimator_customer_search_enabled',
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
@@ -134,6 +148,11 @@ export async function loadCatalog(): Promise<Catalog> {
     charmBand: num('estimator_charm_band', 250),
     sundriesPct: num('estimator_sundries_pct', 2),
     floorGpPct: num('estimator_floor_gp_pct', 40),
+    linePricingGpFloorPct: num('line_pricing_gp_floor_pct', num('estimator_floor_gp_pct', 40)),
+    linePricingBlockBelowFloor: String(settings['line_pricing_block_below_floor'] ?? 'false').toLowerCase() === 'true',
+    linePricingCustomLabelDefault: String(settings['line_pricing_custom_label_default'] ?? '').trim() || 'Custom work',
+    linePricingReasonThresholdPct: num('line_pricing_reason_threshold_pct', 2),
+    linePricingReasonThresholdDollars: num('line_pricing_reason_threshold_dollars', 100),
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&
