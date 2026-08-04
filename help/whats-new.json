@@ -1,5 +1,16 @@
 [
   {
+    "id": "salesperson-editable-on-drafts",
+    "date": "2026-08-03",
+    "title": "You can fix the salesperson on your own drafts now",
+    "summary": "If you started an estimate and the wrong salesperson is on it, you can change it yourself as long as the estimate is still a draft that has not been sent. Once it goes out to the customer, the salesperson is locked and only an admin can change it, because commission follows that name.",
+    "howto": [
+      "Open your draft estimate and change the salesperson in the estimator, or use Edit job info on the estimate page.",
+      "Send the estimate only once the right salesperson is on it.",
+      "After sending, ask an admin if it still needs to change."
+    ]
+  },
+  {
     "id": "new-estimate-modal-everywhere",
     "date": "2026-08-03",
     "title": "One New Estimate form, used everywhere",

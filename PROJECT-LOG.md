@@ -2,6 +2,26 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-03 MST] Salesperson lock loosened: the creator can change it while the estimate is an unsent draft (prompt 65 follow-up, Dylan-approved)
+By: Claude Code
+
+Changed: one code commit, pushed and deployed (8737910), plus this bookkeeping commit. No migration, no schema change. npm test green (586 checks, 0 failed, exit 0); estimator built clean locally (tsc + vite) and Netlify rebuilt it on deploy (new bundle hash verified live, carrying the new lock copy).
+
+Dylan approved the recommendation from the prompt 65 entry in chat ("yes to salesperson lock recommendation"). The rule, applied identically at BOTH lock sites:
+
+- **New rule:** the estimate's CREATOR (`created_by` matches the signed-in auth user) may change the salesperson while the estimate is `status='draft'` AND `sent_at` is null. **The lock lands at send.** Admins unchanged (never locked).
+- **Fail-closed unchanged:** an errored/absent role read, a null `created_by`, or a missing session keeps the lock for non-admins. A sent estimate's salesperson still only moves by admin hand (commission attribution flows into GP).
+- Dashboard site: `renderEstJobInfoBlock`'s edit form (its estimates select now also carries status/sent_at/created_by; landmine 6 note: those are real columns, checked against SCHEMA.md). Lock tooltip rewritten to state the new rule.
+- Estimator site: `LoadedEstimate` gained `sentAt` (the load already selected `*`; only the mapping was missing) and the prompt 55 lock now excludes the creator's unsent draft. A brand-new estimate (`editing == null`) counts as the creator's unsent draft by definition, which also fixes the quiet wrinkle where a non-admin rep was locked onto the DEFAULT salesperson the moment they opened a new estimate. Locked-state copy updated.
+
+**Verification, honest scope:** browser-verified on the live deploy as Dylan that a draft's Edit job info renders the editable salesperson select with no errors (admin regression path), and that both deployed bundles carry the new logic (dashboard marker + the freshly built estimator bundle grepped live). **The non-admin creator/non-creator branches could not be exercised live: there is no non-admin test login, and creating accounts is off-limits.** The rule is a three-clause boolean read directly against columns proven above; if a non-admin rep reports a wrong lock state, that report falsifies exactly one clause.
+
+Why: the prompt 65 New Estimate modal made the salesperson an explicit choice at creation time, which made the permanent non-admin lock a real footgun; Dylan chose the recommended draft-window fix over accepting it.
+Files touched: index.html, apps/estimator/src/lib/estimateLoad.ts, apps/estimator/src/features/estimator/EstimatorScreen.tsx, features.json, help/whats-new.json (1 entry, no em dashes), PROJECT-LOG.md (this entry). Prod schema unchanged. Prod data unchanged.
+Next steps: none. If reps report lock behavior that reads wrong, start from the three clauses above.
+
+---
+
 ## [2026-08-03 MST] Cowork: scoped prompt 66 (crew-lead attribution, callback rate, comps GP%, Metrics category tabs)
 By: Cowork
 
