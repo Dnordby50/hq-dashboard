@@ -1995,6 +1995,84 @@ body:not(.pec-portal-mode) #tab-prescott-crm .pec-save-bar {
 #pecApptCal .fc-event { cursor: pointer; border-left-width: 4px; }
 #pecApptCal .fc-daygrid-event { padding: 1px 3px; }
 #pecApptCal a { color: inherit; }
+
+/* ---- Custom chips (prompt 67, Google Calendar shape) ----
+   apptChipContent hands each event a wrapper carrying --pec-member (the
+   salesperson color) and --pec-type (the appointment-type accent). The
+   FullCalendar harness goes transparent and the wrapper IS the chip, so an
+   inline backgroundColor can never fight these rules. Tints are mixed
+   against theme tokens (never hardcoded white) so a future dark CRM theme
+   flows through pecCurrentTheme() -> tokens -> here with no chip rework. */
+#pecApptCal .fc-event.pec-appt-chip {
+  background: transparent; border: none; box-shadow: none;
+}
+#pecApptCal .fc-daygrid-event.pec-appt-chip { padding: 0; margin: 1px 2px; }
+#pecApptCal .pec-appt-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--pec-type, #64748b); flex: none;
+}
+
+/* Month view: tinted pill, ink text, member color as the tint + left bar,
+   type as the dot. All-day keeps the solid treatment and shows no time. */
+#pecApptCal .pec-appt-pill {
+  display: flex; align-items: center; gap: 4px;
+  padding: 1px 6px 1px 4px;
+  border-radius: 6px;
+  border-left: 3px solid var(--pec-member, #64748b);
+  background: color-mix(in srgb, var(--pec-member, #64748b) 14%, var(--rd-card, #fff));
+  color: var(--rd-ink, #0f1420);
+  font-size: .74rem; line-height: 1.5;
+  overflow: hidden; white-space: nowrap;
+  transition: box-shadow .12s ease, transform .12s ease;
+}
+#pecApptCal .pec-appt-pill .pec-appt-time { font-weight: 600; flex: none; }
+#pecApptCal .pec-appt-pill .pec-appt-name { overflow: hidden; text-overflow: ellipsis; }
+#pecApptCal .pec-appt-pill.pec-appt-allday {
+  background: color-mix(in srgb, var(--pec-member, #64748b) 82%, #0b1220);
+  color: #fff;
+  border-left-color: color-mix(in srgb, var(--pec-member, #64748b) 60%, #0b1220);
+}
+#pecApptCal .pec-appt-pill.pec-appt-allday .pec-appt-dot { background: #fff; opacity: .85; }
+
+/* Week/day view: solid block in the member color, deepened slightly toward
+   ink so white text keeps >=4:1 contrast on every palette entry (the raw
+   sky/emerald hexes sit under 3:1 against white). Detail stack collapses by
+   DURATION via pec-appt-sm / pec-appt-xs, set in apptEventFromRow. */
+#pecApptCal .pec-appt-block {
+  height: 100%; box-sizing: border-box; min-width: 0;
+  background: color-mix(in srgb, var(--pec-member, #64748b) 78%, #0b1220);
+  color: #fff;
+  border-radius: 6px;
+  padding: 3px 6px;
+  overflow: hidden;
+  display: flex; flex-direction: column; gap: 1px;
+  font-size: .74rem; line-height: 1.35;
+  transition: box-shadow .12s ease, transform .12s ease;
+}
+#pecApptCal .pec-appt-block .pec-appt-head {
+  display: flex; gap: 6px; justify-content: space-between; align-items: baseline; min-width: 0;
+}
+#pecApptCal .pec-appt-block .pec-appt-name {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#pecApptCal .pec-appt-block .pec-appt-time { flex: none; opacity: .92; font-size: .7rem; }
+#pecApptCal .pec-appt-block .pec-appt-type,
+#pecApptCal .pec-appt-block .pec-appt-place {
+  opacity: .92; font-size: .7rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#pecApptCal .pec-appt-sm .pec-appt-place,
+#pecApptCal .pec-appt-xs .pec-appt-place,
+#pecApptCal .pec-appt-xs .pec-appt-type { display: none; }
+#pecApptCal .pec-appt-xs .pec-appt-block { padding: 1px 6px; justify-content: center; }
+
+/* Chrome polish: hover lift + today emphasis. The toolbar and legend are
+   deliberately untouched beyond the token block above. */
+#pecApptCal .fc-event.pec-appt-chip:hover .pec-appt-pill,
+#pecApptCal .fc-event.pec-appt-chip:hover .pec-appt-block {
+  box-shadow: 0 2px 8px rgba(16,24,40,.22); transform: translateY(-1px);
+}
+#pecApptCal .fc-day-today .fc-daygrid-day-number { font-weight: 700; color: var(--rd-accent, #D8531C); }
 .pec-appt-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: .72rem; color: var(--muted); }
 .pec-appt-legend .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: -1px; }
 </style>
@@ -23810,6 +23888,41 @@ function apptTimeInputVal(d) {
 function apptFmtTime(d) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
+// Chip time in Google's short shape: "9am", "9:30am". Distinct from
+// apptFmtTime (form fields keep the locale format with minutes).
+function apptChipTime(d) {
+  const h24 = d.getHours(), m = d.getMinutes();
+  const h = h24 % 12 || 12, ap = h24 >= 12 ? 'pm' : 'am';
+  return m ? `${h}:${String(m).padStart(2, '0')}${ap}` : `${h}${ap}`;
+}
+
+// The name half of a stored title ("Jane Doe, Estimate" -> "Jane Doe").
+// Extracted from the prompt-65 Start-estimate flow so chips and that flow
+// share one implementation.
+function apptTitleNameHalf(title) {
+  return String(title || '').split(',')[0].trim();
+}
+
+// Who the chip is about. Precedence, most specific first: the linked
+// customer, the linked lead (business -> full -> first+last), the title's
+// name half, the type label. Every source is optional and every miss falls
+// through; this can never throw (a throw inside FullCalendar's events
+// callback leaves the calendar empty with no error surfaced).
+function apptDisplayName(row) {
+  try {
+    if (row.customers && row.customers.name) return row.customers.name;
+    const l = row._lead;
+    if (l) {
+      if (l.business_name) return l.business_name;
+      if (l.full_name) return l.full_name;
+      const joined = [l.first_name, l.last_name].filter(Boolean).join(' ').trim();
+      if (joined) return joined;
+    }
+    return apptTitleNameHalf(row.title) || apptTypeInfo(row.appt_type).label;
+  } catch (_) {
+    return apptTypeInfo(row && row.appt_type).label;
+  }
+}
 
 // Range read with the active filters applied server-side. Returns { rows,
 // error }; a pre-migration read errors and the caller shows the honest
@@ -23817,31 +23930,102 @@ function apptFmtTime(d) {
 // supabase-js empty-vs-missing-column lesson).
 async function loadAppointmentsRange(startIso, endIso) {
   const f = state.apptFilters;
-  let q = supabase.from('pec_appointments').select('*')
-    .gte('start_at', startIso).lt('start_at', endIso)
-    .neq('status', 'canceled')
-    .order('start_at', { ascending: true }).limit(1000);
-  if (f.type) q = q.eq('appt_type', f.type);
-  if (f.member) q = q.eq('sales_member_id', f.member);
+  const buildQ = (sel) => {
+    let q = supabase.from('pec_appointments').select(sel)
+      .gte('start_at', startIso).lt('start_at', endIso)
+      .neq('status', 'canceled')
+      .order('start_at', { ascending: true }).limit(1000);
+    if (f.type) q = q.eq('appt_type', f.type);
+    if (f.member) q = q.eq('sales_member_id', f.member);
+    return q;
+  };
   try {
-    const res = await withFreshSession(() => q, { label: 'appointments-range' });
-    return { rows: res.data || [], error: res.error || null };
+    // customers rides in as a PostgREST embed (real FK). If the embed itself
+    // is what errors, retry once plain so a relation problem can never blank
+    // the calendar; the plain read's error (if any) is the one reported.
+    let res = await withFreshSession(() => buildQ('*, customers(name)'), { label: 'appointments-range' });
+    if (res.error) res = await withFreshSession(() => buildQ('*'), { label: 'appointments-range-plain' });
+    const rows = res.data || [];
+    // Lead names CANNOT be embedded: pec_appointments.lead_id deliberately
+    // has no FK (an appointment survives its lead's soft-delete), and
+    // PostgREST embeds require one. One batched read for the whole range,
+    // never per-event; a failure here only means the chip falls back to the
+    // title's name half.
+    const leadIds = [...new Set(rows.map(r => r.lead_id).filter(Boolean))];
+    if (leadIds.length) {
+      try {
+        const lr = await withFreshSession(
+          () => supabase.from('leads').select('id,first_name,last_name,full_name,business_name').in('id', leadIds),
+          { label: 'appointments-lead-names' });
+        const byId = new Map((lr.data || []).map(l => [l.id, l]));
+        rows.forEach(r => { r._lead = byId.get(r.lead_id) || null; });
+      } catch (_) { /* fall through to title-based names */ }
+    }
+    return { rows, error: res.error || null };
   } catch (e) { return { rows: [], error: e }; }
 }
 
 function apptEventFromRow(row, members) {
   const type = apptTypeInfo(row.appt_type);
-  const member = (members || []).find(m => m.id === row.sales_member_id);
-  const title = row.title || type.label;
+  const name = apptDisplayName(row);
+  // Colors ride on extendedProps and land as CSS custom properties in
+  // apptChipContent; backgroundColor/borderColor are deliberately NOT set so
+  // the chip CSS owns the visuals (an inline backgroundColor from
+  // FullCalendar would beat the stylesheet).
+  const durMin = (row.start_at && row.end_at)
+    ? Math.max(0, (new Date(row.end_at) - new Date(row.start_at)) / 60000) : 60;
   return {
     id: row.id,
-    title: member ? `${title} · ${member.name}` : title,
+    title: name,
     start: row.start_at,
     end: row.end_at,
     allDay: !!row.all_day,
-    backgroundColor: apptMemberColor(members, row.sales_member_id),
-    borderColor: type.accent,
+    classNames: ['pec-appt-chip'].concat(durMin < 30 ? ['pec-appt-xs'] : durMin < 60 ? ['pec-appt-sm'] : []),
+    extendedProps: {
+      chipName: name,
+      typeLabel: type.label,
+      typeAccent: type.accent,
+      memberColor: apptMemberColor(members, row.sales_member_id),
+      place: row.location_city || (row.location_address ? String(row.location_address).split(',')[0] : ''),
+    },
   };
+}
+
+// Custom chip renderer (prompt 67), Google Calendar's two-treatment shape:
+// month = tinted pill (type dot + short time + name, ink text on a low-alpha
+// member tint), week/day = solid member-color block with stacked detail
+// (name, type, place) that collapses by DURATION (classes set in
+// apptEventFromRow, never a resize observer). All-day keeps the solid
+// treatment in every view and shows no time. Returns plain divs/spans only,
+// so pointer events bubble to FullCalendar's harness and drag / resize /
+// eventClick keep working.
+function apptChipContent(arg) {
+  const ev = arg.event, p = ev.extendedProps || {};
+  const el = document.createElement('div');
+  el.style.setProperty('--pec-member', p.memberColor || '#64748b');
+  el.style.setProperty('--pec-type', p.typeAccent || '#64748b');
+  const mk = (cls, text) => {
+    const s = document.createElement('span');
+    s.className = cls;
+    if (text != null) s.textContent = text;
+    return s;
+  };
+  const inMonthGrid = arg.view.type === 'dayGridMonth' || ev.allDay;
+  if (inMonthGrid) {
+    el.className = 'pec-appt-pill' + (ev.allDay ? ' pec-appt-allday' : '');
+    el.appendChild(mk('pec-appt-dot'));
+    if (!ev.allDay && ev.start) el.appendChild(mk('pec-appt-time', apptChipTime(ev.start)));
+    el.appendChild(mk('pec-appt-name', p.chipName || ev.title || ''));
+  } else {
+    el.className = 'pec-appt-block';
+    const head = mk('pec-appt-line pec-appt-head');
+    head.appendChild(mk('pec-appt-name', p.chipName || ev.title || ''));
+    if (ev.start) head.appendChild(mk('pec-appt-time', apptChipTime(ev.start)));
+    el.appendChild(head);
+    if (p.typeLabel) el.appendChild(mk('pec-appt-line pec-appt-type', p.typeLabel));
+    if (p.place) el.appendChild(mk('pec-appt-line pec-appt-place', p.place));
+  }
+  return { domNodes: [el] };
 }
 
 async function renderAppointments() {
@@ -23931,6 +24115,7 @@ async function renderAppointments() {
         if (info.view.type === 'dayGridMonth') return; // dateClick covers month
         openAppointmentForm(null, { members, start: info.start, end: info.end });
       },
+      eventContent: apptChipContent,
       eventClick: (info) => { apptOpenById(info.event.id, members); },
       eventDrop: (info) => apptCommitMove(info, members),
       eventResize: (info) => apptCommitMove(info, members),
@@ -24424,7 +24609,7 @@ async function openAppointmentForm(existing, prefill = {}) {
       if (customerId) { createDraftEstimateNow({ customerId, extras }); return; }
       // Unlinked: the title's name half ("Jane Doe, Estimate" -> "Jane Doe")
       // seeds the New Contact split; the appointment stores no phone/email.
-      const nm = String(a.title || '').split(',')[0].trim();
+      const nm = apptTitleNameHalf(a.title);
       const sp = nm.indexOf(' ');
       openEstimateStartPicker({ prefill: {
         first: sp < 0 ? nm : nm.slice(0, sp),
