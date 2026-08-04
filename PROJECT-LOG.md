@@ -2,6 +2,31 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-04 MST] Cowork: BusyBusy Catch Hook Zap built, tested, and published (prompt 68 handoff complete)
+By: Cowork
+
+Changed: no code, no schema, no data in the repo. One new Zap in Dylan's Zapier account, one BusyBusy project created and then archived as the acceptance test.
+
+**The Zap: "TopCoat: create BusyBusy project on estimate accepted"** (Zapier Zap id 375163663, folder Dylan Nordby Personal, published as v1 and ON).
+
+1. Trigger: Webhooks by Zapier, Catch Hook. Hook URL is on the `hooks.zapier.com/hooks/catch/15433455/...` path (full URL and secret went to Dylan in chat only, never into this repo).
+2. Filter: continue only if body field `secret` (Text) Exactly matches a freshly generated 32-char secret. Nothing reused.
+3. Action: busybusy Create Project, connection **"Prescott Epoxy Company"**. Mapped field for field from the POST body: title -> Project Name, project_number -> Project Number, customer -> Customer, address_1 -> Address 1, city -> City, state -> State, postal_code -> Postal Code, phone -> Phone, radius -> Geofence Radius. Geofence Reminders and Onsite Verification were set STATICALLY to False and None rather than mapped, because both are radio/select controls and the payload only ever sends those two values on this build; mapping a string into a boolean control is a failure mode with no upside. project_group, latitude, longitude, cost_codes, sub_projects, additional_information left unmapped as specified. topcoat_job_id, estimate_number and secret are deliberately NOT mapped into BusyBusy (Filter plus run-history traceability only).
+
+**Acceptance test, both halves, verified by live re-query through the Zapier MCP (not by reading the Zap UI):**
+- Correct secret: project created in BusyBusy. `ZZ Zap Test`, number **9999999**, customer ZZ Zap Test, 123 Test St, Prescott AZ 86301, radius 150, reminders false, onsite_verification None, **id ed286834-2104-41d4-805d-6108d751c2b0**, created_on 2026-08-04T15:16:21Z. Every field landed exactly as sent.
+- Test project ARCHIVED immediately after verification: `archived_on` 2026-08-04T15:25:52Z, confirmed by re-query. It is out of the crew's clock-in picker.
+- Wrong secret: a second payload (title `ZZ Zap WRONGSECRET`, number 9999998) was sent with a deliberately bad secret. Zap history shows the run as **Filtered** at 08:18:28 MST, and a live search for project number 9999998 returns **zero results**. Both directions confirmed, so the filter is doing real work rather than the payload silently failing.
+
+**Answering the question Dylan asked mid-build, recorded because it is the architecture:** the Zapier MCP tools and the Zap are not alternatives. The MCP is assistant-side and only fires while a Cowork session is running, so it can never be what reacts to a customer signing an estimate at 9pm. The MCP WAS used, for the three things it is good at: confirming the busybusy connector was already authenticated, reading `create_project`'s real parameter schema (which is what killed the "customer name plus EST number" title plan and surfaced the `project_number` field), and verifying plus archiving the test project. The Zap is the unattended runner. Same connector underneath, different trigger.
+
+**Risk flagged, not fixed:** Dylan's Zapier account shows **9 held Zap runs** ("held until October 02, 2026") and at least one other Zap sitting On hold with "Step limit reached". If the account hits its task ceiling, accepted estimates will silently stop creating BusyBusy projects, and the TopCoat side is fire-and-forget by design so nothing in TopCoat will complain. Worth either a plan bump or an Ops Queue check that flags a scheduled job with no BusyBusy project.
+
+Files touched: PROJECT-LOG.md (this entry). No prod schema change. No prod data change. No secret committed.
+Next steps: Dylan sets ZAPIER_BUSYBUSY_HOOK_URL and ZAPIER_BUSYBUSY_HOOK_SECRET in Netlify (Site settings > Environment variables) and triggers a redeploy. The loop goes live on that save; until then the shipped code (commit 07713f9) stays inert. First real accepted estimate should be checked against BusyBusy to confirm the project appears with the estimate number as its project number.
+
+---
+
 ## [2026-08-04 MST] Prompt 68 shipped: BusyBusy project auto-creation on acceptance (Zapier Catch Hook) and the Clock in # on the work order; Zap build handed to Cowork
 
 By: Claude Code
