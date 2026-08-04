@@ -34,6 +34,17 @@ Next steps: Dylan runs prompt 66 in Claude Code. Part E needs his word during th
 
 ---
 
+## [2026-08-03 MST] Prompt 65 Part A3 backfill run: UUID prefixes stripped from stored appointment notes
+By: Claude Code
+
+Changed: prod DATA only (no code, no schema). Dylan approved the gated backfill in chat ("yes to the backfill"), same session as the prompt 65 build below. Ran the exact regexp UPDATE from prompt 65 Part A3 against zdfpzmmrgotynrwkeakd.
+
+Counts, re-queried live: **before 6** appointments with UUID-prefixed customer_notes, **after 0** (0 rows anywhere still containing a UUID; the 6 noted appointments keep their notes, now clean). Spot check: Tom Bechtel's Aug 4 appointment, the one with pending reminders, now reads `Pebble stone/epoxy on the front porch and the rear patio` / `Other` with no ID prefixes, so tomorrow's reminder goes out clean.
+
+Why: customers were receiving raw UUIDs in confirmation/reminder texts and emails; the intake fix (commit c72f7ba, entry below) only protected NEW bookings.
+Files touched: PROJECT-LOG.md (this entry) only.
+Next steps: none for this item. The salesperson-lock recommendation from the entry below still awaits Dylan's word.
+
 ## [2026-08-03 MST] Prompt 65 shipped: intake UUID strip, one New Estimate modal everywhere, Start estimate from appointments, Sales Activity rail rename
 By: Claude Code
 
