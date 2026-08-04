@@ -27,7 +27,7 @@ export class CalculatorError extends Error {
 // Bumped whenever the estimate/pricing math changes. The inline mirror in
 // index.html must carry the SAME value; a test asserts it so a drifted mirror
 // is visible. Date-stamped so a mismatch points at which copy is stale.
-export const CALC_VERSION = '2026-07-15.1';
+export const CALC_VERSION = '2026-08-04.1';
 
 /**
  * Round a raw cost-plus price to a clean, sell-able number.
@@ -467,6 +467,324 @@ export function applySellPrice(pricing, sellPrice) {
   const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
   const discountPct = base > 0 ? round2((1 - sell / base) * 100) : null;
   return { sellPrice: sell, discountPct, laborDollars, commissionDollars, sundriesDollars, gpDollars, gpPct, budgetedHours, gpPerHour };
+}
+
+/**
+ * PER-LINE pricing (prompt 69): each area solves its OWN price at its OWN
+ * system's labor% and target GP%; the job total is the sum of the lines.
+ * Replaces (for the estimator) computeEstimatePricing's single sqft-weighted
+ * divisor, under which no individual system hit its own target GP on a mixed
+ * estimate: only the blended average did, so a high-margin system silently
+ * subsidized a low-margin one.
+ *
+ * THE TRAP THIS IS BUILT AROUND: materials kit-round ACROSS the whole estimate
+ * (mergeAcrossAreas): two areas each needing 0.6 of a kit of the same basecoat
+ * consume ONE kit, not two. So this does NOT solve each area alone (that buys
+ * two kits and inflates the total). Instead:
+ *   1. ONE estimate-wide material plan (identical to computeEstimatePricing's
+ *      pass 1); its merged, kit-rounded total is M, still the ordering truth.
+ *   2. M is attributed to areas by each area's PRE-merge raw material cost
+ *      (its own recipe at its own sqft, fractional kits, unrounded) via
+ *      allocateProportionally, so the parts sum to M exactly and kit-rounding
+ *      overhead lands in proportion to what each area actually consumes.
+ *   3. Each area solves with the SAME closed form as computeEstimatePricing
+ *      but at its own rates: divisor_a = 1 - (laborFrac_a + commFrac)(1+s)
+ *      - gpFrac_a; priceRaw_a = (M_a + F_a)(1+s) / divisor_a; rounded per line
+ *      with the existing roundEstimatePrice rule.
+ * Fixed add-ons (F) are allocated across areas by the same raw-cost weights
+ * (in practice F is 0 here: the estimator's add-ons are their own line items).
+ *
+ * INVARIANT (tested): a SINGLE-area estimate prices identically, to the cent,
+ * to computeEstimatePricing with the same inputs; M_1 = M and the divisor is
+ * the same number, so the two solves are algebraically the same expression.
+ *
+ * Estimator-only export like applySellPrice: index.html never calls this, so
+ * it has NO inline mirror. Same input shape as computeEstimatePricing.
+ *
+ * @returns {Object} on success, the computeEstimatePricing result shape
+ *   (price, priceRaw, materialsCost, laborPct [effective], gpDollars, gpPct,
+ *   budgetedHours, materialLines, ...) PLUS `lines`: one entry per area, in
+ *   area order: { areaId, index, name, systemTypeId, sqft, materialsCost,
+ *   fixedAddons, laborPct, targetGpPct, divisor, priceRaw, price,
+ *   laborDollars, commissionDollars, sundriesDollars, gpDollars, gpPct,
+ *   budgetedHours, gpPerHour }. On failure { error, errorArea?, ... } with the
+ *   same error codes as computeEstimatePricing; TARGET_UNREACHABLE and
+ *   NO_LABOR_PCT name the offending area in errorArea.
+ */
+export function computePerLinePricing({
+  areas,
+  productsById,
+  recipeSlotsBySystemType,
+  defaultBasecoatByFlake = {},
+  systemTypes = [],
+  laborRate = 0,
+  commissionPct = 0,
+  actualCommissionPct = null,
+  targetGpPct = 50,
+  fixedAddons = 0,
+  priceIncrement = 5,
+  charmThreshold = 1000,
+  charmBand = 250,
+  sundriesPct = 0,
+  mvbProductId = null,
+}) {
+  // Normalize EXACTLY like computeJobEstimate (topcoat dropped, mvb carried),
+  // so the merged plan and M are byte-identical to computeEstimatePricing's.
+  const planAreas = (areas || []).map((a) => {
+    const sqftNum = Number(a.sqft);
+    return {
+      id: a.id,
+      name: a.name,
+      sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+      system_type_id: a.system_type_id,
+      flake_product_id: a.flake_product_id || null,
+      basecoat_product_id: a.basecoat_product_id || null,
+      mvb: a.mvb === true,
+    };
+  });
+
+  let plan = null;
+  let planError = null;
+  try {
+    plan = computeMaterialPlan({
+      areas: planAreas, productsById, recipeSlotsBySystemType,
+      defaultBasecoatByFlake, mvbProductId,
+    });
+  } catch (err) {
+    planError = err && err.message ? err.message : String(err);
+  }
+  const materialLines = plan ? plan.lines : [];
+  if (planError) {
+    return { error: planError, materialLines, calcVersion: CALC_VERSION };
+  }
+  const M = materialLines.reduce(
+    (s, l) => s + (Number(l.line_cost) > 0 ? Number(l.line_cost) : 0),
+    0
+  );
+
+  // PRE-merge raw cost per area: fractional kits at the area's own sqft
+  // (tint lines are pack-priced). Products with no unit_cost contribute 0,
+  // matching how M excludes them (materialsMissingCost flags them below).
+  const rawCostByArea = (plan.areaPlans || []).map(({ lines }) =>
+    lines.reduce((s, l) => {
+      const cost = l.unit_cost == null ? 0 : Number(l.unit_cost);
+      if (l._tint_packs != null) return s + l._tint_packs * cost;
+      if (!(l.sqft > 0)) return s;
+      return s + (l.sqft / l.spread_rate / l.kit_size) * cost;
+    }, 0)
+  );
+
+  const standardComm = Number(commissionPct) || 0;
+  const systemById = new Map((systemTypes || []).map((sys) => [sys.id, sys]));
+  if (!planAreas.length) {
+    return { error: 'NO_LABOR_PCT', materialLines, calcVersion: CALC_VERSION };
+  }
+  for (let i = 0; i < planAreas.length; i++) {
+    const sys = systemById.get(planAreas[i].system_type_id);
+    if (!sys || sys.labor_budget_pct == null) {
+      return {
+        error: 'NO_LABOR_PCT',
+        errorArea: planAreas[i].name || `Area ${i + 1}`,
+        materialLines,
+        calcVersion: CALC_VERSION,
+      };
+    }
+  }
+
+  const F = Number(fixedAddons) || 0;
+  const mParts = allocateProportionally(M, rawCostByArea);
+  const fParts = F ? allocateProportionally(F, rawCostByArea) : planAreas.map(() => 0);
+
+  const s = Number(sundriesPct) / 100 || 0;
+  const commFrac = standardComm / 100;
+  const rate = Number(laborRate) || 0;
+
+  const lines = [];
+  for (let i = 0; i < planAreas.length; i++) {
+    const a = planAreas[i];
+    const sys = systemById.get(a.system_type_id);
+    const laborPctSys = Number(sys.labor_budget_pct);
+    const sysTarget = sys.target_gp_pct != null ? Number(sys.target_gp_pct) : Number(targetGpPct);
+    const laborFrac = laborPctSys / 100;
+    const gpFrac = sysTarget / 100;
+    const divisor = 1 - (laborFrac + commFrac) * (1 + s) - gpFrac;
+    if (!(divisor > 0)) {
+      return {
+        error: 'TARGET_UNREACHABLE',
+        errorArea: a.name || `Area ${i + 1}`,
+        divisor,
+        materialLines,
+        calcVersion: CALC_VERSION,
+      };
+    }
+    const priceRaw = (mParts[i] + fParts[i]) * (1 + s) / divisor;
+    const price = roundEstimatePrice(priceRaw, { increment: priceIncrement, charmThreshold, charmBand });
+    const laborDollars = round2(laborFrac * price);
+    const commissionDollars = round2(commFrac * price);
+    const sundriesDollars = round2(s * (mParts[i] + fParts[i] + laborDollars + commissionDollars));
+    const gpDollars = round2(price - (mParts[i] + laborDollars + commissionDollars + fParts[i] + sundriesDollars));
+    const budgetedHours = rate > 0 ? round2((laborFrac * price) / rate) : null;
+    lines.push({
+      areaId: a.id != null ? a.id : null,
+      index: i,
+      name: a.name || `Area ${i + 1}`,
+      systemTypeId: a.system_type_id,
+      sqft: a.sqft,
+      materialsCost: round2(mParts[i]),
+      fixedAddons: round2(fParts[i]),
+      laborPct: laborPctSys,
+      targetGpPct: sysTarget,
+      divisor,
+      priceRaw: round2(priceRaw),
+      price,
+      laborDollars,
+      commissionDollars,
+      sundriesDollars,
+      gpDollars,
+      gpPct: price > 0 ? gpDollars / price : null,
+      budgetedHours,
+      gpPerHour: budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null,
+    });
+  }
+
+  // Job totals = SUMS of the lines. No second job-level solve, no
+  // back-allocation. laborBudget stays unrounded (matching
+  // computeEstimatePricing) so budgetedHours agrees on a single area.
+  const price = lines.reduce((sum, l) => sum + l.price, 0);
+  const priceRawTotal = lines.reduce((sum, l) => sum + l.priceRaw, 0);
+  const laborBudget = lines.reduce((sum, l) => sum + (l.laborPct / 100) * l.price, 0);
+  const laborDollars = round2(lines.reduce((sum, l) => sum + l.laborDollars, 0));
+  const commissionDollars = round2(lines.reduce((sum, l) => sum + l.commissionDollars, 0));
+  const sundriesDollars = round2(lines.reduce((sum, l) => sum + l.sundriesDollars, 0));
+  const gpDollars = round2(lines.reduce((sum, l) => sum + l.gpDollars, 0));
+  const gpPct = price > 0 ? gpDollars / price : null;
+  const budgetedHours = rate > 0 ? laborBudget / rate : null;
+  const gpPerHour = budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null;
+  // Effective (price-weighted) rates, so applySellPrice at a job sell price
+  // scales the same cost stack the lines sum to.
+  const laborPctEff = price > 0 ? (laborBudget / price) * 100 : lines[0].laborPct;
+  const targetGpEff = price > 0
+    ? lines.reduce((sum, l) => sum + l.targetGpPct * l.price, 0) / price
+    : lines[0].targetGpPct;
+
+  const actualComm = actualCommissionPct == null ? standardComm : (Number(actualCommissionPct) || 0);
+  const commissionPayout = round2((actualComm / 100) * price);
+  const gpVariance = round2(((standardComm - actualComm) / 100) * price);
+  const realizedGp = round2(gpDollars + gpVariance);
+
+  const materialsMissingCost = materialLines
+    .filter((l) => l.unit_cost_snapshot == null)
+    .map((l) => l.product_name);
+
+  return {
+    lines,
+    price,
+    priceRaw: round2(priceRawTotal),
+    materialsCost: M,
+    fixedAddons: F,
+    sundriesPct: Number(sundriesPct) || 0,
+    sundriesDollars,
+    laborPct: laborPctEff,
+    laborBudget,
+    laborDollars,
+    commissionPct: standardComm,
+    standardCommissionPct: standardComm,
+    actualCommissionPct: actualComm,
+    commissionDollars,
+    commissionPayout,
+    gpVariance,
+    targetGpPct: targetGpEff,
+    gpDollars,
+    gpPct,
+    realizedGp,
+    realizedGpPct: price > 0 ? realizedGp / price : null,
+    gpPerHour,
+    budgetedHours,
+    materialLines,
+    materialsMissingCost,
+    calcVersion: CALC_VERSION,
+    error: null,
+  };
+}
+
+/**
+ * Re-derive ONE calculator line's money buckets at a rep-chosen sell price
+ * (a per-line price edit, or this line's share of a job-level discount).
+ * Same bucket math as computePerLinePricing's per-line pass, so the two can
+ * never disagree at sellPrice === line.price. Materials and fixed add-ons are
+ * this line's attributed (fixed) cost; labor and commission scale with the
+ * sell price; sundries counts at the sell price too (the applySellPrice rule).
+ * Estimator-only export: no inline mirror.
+ *
+ * @param {Object} line  one entry of computePerLinePricing().lines
+ * @param {number} sellPrice
+ * @param {Object} opts  { commissionPct, sundriesPct, laborRate } - the
+ *   job-level rates (the line carries its own laborPct; these three are
+ *   estimate-wide by design)
+ */
+export function applyLineSellPrice(line, sellPrice, { commissionPct = 0, sundriesPct = 0, laborRate = 0 } = {}) {
+  const sell = Number(sellPrice);
+  if (!(sell > 0) || !line) {
+    return { sellPrice: null, laborDollars: null, commissionDollars: null, sundriesDollars: null, gpDollars: null, gpPct: null, budgetedHours: null, gpPerHour: null };
+  }
+  const M = Number(line.materialsCost) || 0;
+  const F = Number(line.fixedAddons) || 0;
+  const laborFrac = (Number(line.laborPct) || 0) / 100;
+  const commFrac = (Number(commissionPct) || 0) / 100;
+  const s = (Number(sundriesPct) || 0) / 100;
+  const laborDollars = round2(laborFrac * sell);
+  const commissionDollars = round2(commFrac * sell);
+  const sundriesDollars = round2(s * (M + F + laborDollars + commissionDollars));
+  const gpDollars = round2(sell - (M + laborDollars + commissionDollars + F + sundriesDollars));
+  const rate = Number(laborRate) || 0;
+  const budgetedHours = rate > 0 ? round2((laborFrac * sell) / rate) : null;
+  return {
+    sellPrice: sell,
+    laborDollars,
+    commissionDollars,
+    sundriesDollars,
+    gpDollars,
+    gpPct: gpDollars / sell,
+    budgetedHours,
+    gpPerHour: budgetedHours != null && budgetedHours > 0 ? round2(gpDollars / budgetedHours) : null,
+  };
+}
+
+/**
+ * Money buckets for a CUSTOM line (prompt 69, locked decision 5): the price is
+ * typed, the cost is typed material cost + typed labor hours x the hourly
+ * rate, plus commission and sundries at the typed price, so its GP has the
+ * same shape as every calculator line's and its hours are real for
+ * scheduling. No catalog products, nothing into the material plan (decision
+ * 6). Estimator-only export: no inline mirror.
+ *
+ * @returns {{ price, materialsCost, laborDollars, commissionDollars,
+ *   sundriesDollars, gpDollars, gpPct, budgetedHours, gpPerHour }} or the
+ *   all-null shape when price is not a positive number.
+ */
+export function customLinePricing({ price, materialCost = 0, laborHours = 0, laborRate = 0, commissionPct = 0, sundriesPct = 0 }) {
+  const sell = Number(price);
+  if (!(sell > 0)) {
+    return { price: null, materialsCost: null, laborDollars: null, commissionDollars: null, sundriesDollars: null, gpDollars: null, gpPct: null, budgetedHours: null, gpPerHour: null };
+  }
+  const M = Number(materialCost) > 0 ? Number(materialCost) : 0;
+  const hours = Number(laborHours) > 0 ? Number(laborHours) : 0;
+  const laborDollars = round2(hours * (Number(laborRate) || 0));
+  const commissionDollars = round2(((Number(commissionPct) || 0) / 100) * sell);
+  const sFrac = (Number(sundriesPct) || 0) / 100;
+  const sundriesDollars = round2(sFrac * (M + laborDollars + commissionDollars));
+  const gpDollars = round2(sell - (M + laborDollars + commissionDollars + sundriesDollars));
+  return {
+    price: sell,
+    materialsCost: M,
+    laborDollars,
+    commissionDollars,
+    sundriesDollars,
+    gpDollars,
+    gpPct: gpDollars / sell,
+    budgetedHours: hours > 0 ? hours : null,
+    gpPerHour: hours > 0 ? round2(gpDollars / hours) : null,
+  };
 }
 
 /**

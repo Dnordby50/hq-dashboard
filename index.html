@@ -37304,7 +37304,7 @@ function computeJobEstimate({ areas, productsById, recipeSlotsBySystemType, defa
 // PERCENTS. Rounds price UP to priceIncrement so realized GP never drops below
 // target. Guard: divisor <= 0 returns an error, never divides. CALC_VERSION must
 // match the canonical file (a test asserts it).
-const CALC_VERSION = '2026-07-15.1';
+const CALC_VERSION = '2026-08-04.1';
 function roundEstimatePrice(priceRaw, { increment = 5, charmThreshold = 0, charmBand = 0 } = {}) {
   const inc = Number(increment) > 0 ? Number(increment) : 1;
   let price = Math.round(Number(priceRaw) / inc) * inc;
