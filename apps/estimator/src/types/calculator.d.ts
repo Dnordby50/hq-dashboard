@@ -252,6 +252,7 @@ declare module '*/production/optional-lines.cjs' {
   export function filterAreasForJob<A>(areas: A[], declinedIds: Set<string> | string[]): A[];
   export function declinedNoteLine(declinedLines: unknown[]): string | null;
   export function selectedScopeDoc(includedLines: unknown[]): string;
+  export function optionalControlsVisible(enabled: boolean | undefined, isOptional: boolean | undefined): boolean;
 }
 
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared

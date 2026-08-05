@@ -39,7 +39,7 @@ import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
 // Optional-lines money rules (prompt 72): the same CJS module
 // pec-public-estimate.cjs uses, so the rep's totals and the customer's page
 // can never disagree about what required-only / all-in / opening mean.
-import { splitLineTotals } from '../../../../../production/optional-lines.cjs';
+import { optionalControlsVisible, splitLineTotals } from '../../../../../production/optional-lines.cjs';
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
@@ -2449,7 +2449,7 @@ export default function EstimatorScreen({
               // Optional seeds the preselect from Settings. An area's MVB
               // rides its area (dropping the line drops its barrier), so MVB
               // gets no separate control.
-              const optionalControls = (config.optionalLinesEnabled !== false || a.optional) && (
+              const optionalControls = optionalControlsVisible(config.optionalLinesEnabled, a.optional) && (
                 <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 4 }}>
                   <label className="check addon-opt">
                     <input

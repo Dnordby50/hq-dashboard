@@ -106,7 +106,17 @@ function selectedScopeDoc(includedLines) {
   return sections.join('\n\n---\n\n');
 }
 
+// The create-gate rule (optional_lines_enabled): when off, the Optional
+// checkbox does not render for a line that is not already optional, so no
+// NEW optional lines can be created; a line that IS optional keeps its
+// controls so existing estimates still render and still work. A data gate
+// would hide real state; this is a create gate only.
+function optionalControlsVisible(enabled, isOptional) {
+  return enabled !== false || isOptional === true;
+}
+
 module.exports = {
+  optionalControlsVisible,
   SEND_GATE_MESSAGE,
   isOptionalLine,
   isDeclinedLine,

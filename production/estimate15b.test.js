@@ -765,7 +765,9 @@ await section('preview: identical body to the public route, no send, no token', 
     .replace(/cursor:(pointer|default)/g, 'cursor:X')
     .replace('<div class="sub">Updates as you tick optional items</div>', '')
     .replace('Tick any you would like to add. The total updates as you choose.', 'OPTHELP')
+    // Prompt 72 renamed the read-only variant; both vintages normalize.
     .replace('The selection below is what was chosen.', 'OPTHELP')
+    .replace('These items were offered and not selected.', 'OPTHELP')
     .replace(/\s+/g, ' '); // collapse the empty-template-slot spacing so structural content compares cleanly
   ok(core(prevRes.body) === core(pubRes.body), 'preview customer content (hero -> decision card) matches the public page once the interactive chrome is normalized');
   // Preview-only chrome + safety:
