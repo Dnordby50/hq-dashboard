@@ -77,7 +77,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order.",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order. Prompt 72: the page renders 'Your project' (required lines, no checkbox, plus pre-selected optional lines with a ticked toggle) and 'Options to add'; accept guards against a zero-selection POST; on a partial accept the job is built from the selected areas only and declined lines stay on the estimate as the record. See 'Optional line items on any line'.",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -223,7 +223,7 @@
     {
       "name": "Per-line pricing and custom lines",
       "area": "estimator",
-      "description": "Prompt 69: every estimate line prices on its own. Each calculator area solves its OWN cost-plus price at its own system's labor% and target GP% (computePerLinePricing in production/calculator.js: ONE estimate-wide kit-merged material plan, attributed back to areas by pre-merge raw cost via allocateProportionally, so shared kits are never double-bought), and the job total is the sum of the lines; the old back-allocation of a single job price is gone. A CUSTOM LINE is an estimate_areas row (is_custom=true) with a typed label, verbatim scope, typed price (stored in price_override), typed material cost and crew hours, so its GP is computed like every other line; it pulls no catalog products and adds nothing to the material plan. Per-line GP shows on each line and goes red under the line_pricing_gp_floor_pct floor (line_pricing_block_below_floor decides warn vs forced confirm, and the save confirmation NAMES the below-floor lines). The job-level sell/discount allocates across the lines proportionally (parts sum to the typed total exactly), and a written reason is required whenever the final total lands under the CALCULATED total by more than the greater of line_pricing_reason_threshold_pct / line_pricing_reason_threshold_dollars, no matter how the rep got there. Per-line internal notes feed that line's scope generation and never render customer-facing. On accept, each job_areas row carries its line's final price and scope description; a custom line becomes a real job_areas row (custom_label, no system) but is skipped in pec_prod_areas (recipe side, NOT NULL sqft/system). Settings live in Settings > Estimates > Line pricing. Whole-estimate Custom mode (build 24) is unchanged. Prompt 70 built the per-line AI on top of this: each line's recommendation keys off the seams this build left (pricing_snapshot.ai.lines[].line_key, cheaply hashable per-line inputs).",
+      "description": "Prompt 69: every estimate line prices on its own. Each calculator area solves its OWN cost-plus price at its own system's labor% and target GP% (computePerLinePricing in production/calculator.js: ONE estimate-wide kit-merged material plan, attributed back to areas by pre-merge raw cost via allocateProportionally, so shared kits are never double-bought), and the job total is the sum of the lines; the old back-allocation of a single job price is gone. A CUSTOM LINE is an estimate_areas row (is_custom=true) with a typed label, verbatim scope, typed price (stored in price_override), typed material cost and crew hours, so its GP is computed like every other line; it pulls no catalog products and adds nothing to the material plan. Per-line GP shows on each line and goes red under the line_pricing_gp_floor_pct floor (line_pricing_block_below_floor decides warn vs forced confirm, and the save confirmation NAMES the below-floor lines). The job-level sell/discount allocates across the lines proportionally (parts sum to the typed total exactly), and a written reason is required whenever the final total lands under the CALCULATED total by more than the greater of line_pricing_reason_threshold_pct / line_pricing_reason_threshold_dollars, no matter how the rep got there. Per-line internal notes feed that line's scope generation and never render customer-facing. On accept, each job_areas row carries its line's final price and scope description; a custom line becomes a real job_areas row (custom_label, no system) but is skipped in pec_prod_areas (recipe side, NOT NULL sqft/system). Settings live in Settings > Estimates > Line pricing. Whole-estimate Custom mode (build 24) is unchanged. Prompt 70 built the per-line AI on top of this: each line's recommendation keys off the seams this build left (pricing_snapshot.ai.lines[].line_key, cheaply hashable per-line inputs). Prompt 72 builds on this: any of these lines can now be marked optional for the customer, and the per-line GP feeds the required-only GP warning.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-scope.cjs",
@@ -277,6 +277,44 @@
         "settings"
       ],
       "spec": "claude-code-prompt-69-per-line-pricing-custom-lines.md (the 'Explicitly out of scope' section defines prompt 70)",
+      "since": "2026-08"
+    },
+    {
+      "name": "Optional line items on any line",
+      "area": "estimator",
+      "description": "Prompt 72: any estimate line (calculator area, custom line, add-on) can be marked optional for the customer, with ONE structural floor: an estimate cannot be SENT with zero required lines (gated in the dashboard send email/text/present flows via estimateOptionalGateOk), which is what makes the customer floor automatic since required lines render with NO checkbox at all. Optional AREA and CUSTOM lines start TICKED (opt-out, 'Starts selected for the customer', default from optional_lines_preselect_default); add-ons keep their opt-in behavior. estimate_areas.is_optional/preselected are the source of truth (the estimator reloads areas by position) and mirror onto estimate_line_items at save. Two stored numbers: estimates.price = required-only floor while open (every stored GP bucket follows the same set) and price_all_options = the ceiling; the pipeline and list render '$X (up to $Y)' only while open and different; the send email quotes the OPENING total (required + pre-selected) computed live from the rows so it matches the page. The public page renders 'Your project' (required, no control, plus pre-selected optional lines with a ticked toggle and an Optional tag) and 'Options to add' (unselected), and a crafted zero-selection accept returns 400 before the status CAS. On accept the job is built from SELECTED areas only: job_areas, pec_prod_areas (the recipe side, so the material plan/ordering/costing re-cost on what was actually sold, deliberately NOT a price change), jobs.sqft, jobs.scope and pec_prod_jobs.notes (selected lines' scope + a 'Declined by customer: ...' line; byte-identical when nothing declined; an area with NO line item is structurally KEPT). estimates.scope_of_work is never rewritten after signature. Declined lines (is_optional AND NOT selected) are the record: struck through + Declined on the estimate detail, listed on a job 'Declined options' card with one-click Add to job (change-order modal prefilled at the ORIGINALLY quoted price, materials re-cost at current catalog; custom declined lines prefill Simple mode since they have no recipe), and one line each on the customer card. No automation fires on a decline. The required-only GP amber warning (optional_lines_gp_warn_pct) warns, never blocks. Settings > Estimates > Optional lines; optional_lines_enabled is a CREATE gate, never a data-hiding gate. Shared rules live in production/optional-lines.cjs (estimator + pec-public-estimate.cjs + 45 fixture checks).",
+      "code": {
+        "netlifyFunctions": [
+          "pec-public-estimate.cjs"
+        ],
+        "indexHtml": [
+          "renderSettingsEstimates",
+          "renderEstimateDetail",
+          "mountDeclinedOptionsCard",
+          "openChangeOrderModal (prefill)",
+          "estimateOptionalGateOk",
+          "estimateOpeningTotal",
+          "renderCustomerDetail (declined block)"
+        ],
+        "other": [
+          "production/optional-lines.cjs (new)",
+          "production/optional-lines.test.js (new)",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx",
+          "apps/estimator/src/offline/estimates.ts",
+          "apps/estimator/src/lib/estimateLoad.ts",
+          "apps/estimator/src/lib/catalog.ts"
+        ]
+      },
+      "tables": [
+        "estimate_areas",
+        "estimate_line_items",
+        "estimates",
+        "job_areas",
+        "pec_prod_areas",
+        "pec_prod_jobs",
+        "settings"
+      ],
+      "spec": "claude-code-prompt-72-optional-line-items.md",
       "since": "2026-08"
     },
     {
@@ -1041,7 +1079,7 @@
     {
       "name": "Change orders",
       "area": "dashboard",
-      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. An Additional coat mode adds an extra coat (MVB today, extensible ADDITIONAL_COATS list) to a chosen existing area at its square footage, with an editable price down to $0 for cost-only absorption; the coat rides the area machinery so its product reaches the material pull and costing automatically. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later. Prompt 58: change orders render itemized on the job detail page even when a signature row is missing (line-item boxes marked 'Recorded, no signature link', footer total tied to the line items / coSum), and the printed work order gets a CHANGE ORDERS section on page 1 near the scope with name, detail, sqft/system for scope-mode COs, and price.",
+      "description": "Staff add a change order to a job with a system and square footage so pricing suggests itself like the estimator (or a simple title-and-amount mode), and materials and labor flow into job costing. An Additional coat mode adds an extra coat (MVB today, extensible ADDITIONAL_COATS list) to a chosen existing area at its square footage, with an editable price down to $0 for cost-only absorption; the coat rides the area machinery so its product reaches the material pull and costing automatically. The customer signs online, and when a job has two or more unsigned change orders they can be bundled into one approval link and page where a single signature approves them all, with a live link that picks up any change order added later. Prompt 58: change orders render itemized on the job detail page even when a signature row is missing (line-item boxes marked 'Recorded, no signature link', footer total tied to the line items / coSum), and the printed work order gets a CHANGE ORDERS section on page 1 near the scope with name, detail, sqft/system for scope-mode COs, and price. Prompt 72: openChangeOrderModal accepts a prefill (the declined-line add-back opens AREA mode prefilled from the declined estimate area at the ORIGINALLY quoted price with a quoted-on note; the auto-pricer never overwrites it, and the declined area's product picks ride onto the CO row while the system still matches; a declined CUSTOM line prefills Simple mode).",
       "code": {
         "indexHtml": [
           "openChangeOrderModal",

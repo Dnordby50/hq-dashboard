@@ -1,5 +1,16 @@
 [
   {
+    "id": "optional-lines-any-line",
+    "date": "2026-08-05",
+    "title": "Make any estimate line optional, and keep a record of what the customer passed on",
+    "summary": "Any line on an estimate can now be optional, not just add-ons. Optional areas and custom lines start ticked for the customer, who can untick them before signing; the total updates live. At least one line always stays required, so an estimate can never be unticked to zero. The estimate stores two numbers, the required floor and the up-to ceiling, and anything the customer declines is kept on the estimate, listed on the job with a one click Add to job at the original quoted price, and noted on the customer card.",
+    "howto": [
+      "In the estimator, tick Optional (customer picks) on any line; use Starts selected to control whether it begins ticked for the customer.",
+      "Watch the Required only total and its GP under the price; an amber note warns you if the required lines alone run under your floor.",
+      "After a customer declines a line, find it on the job page under Declined options and tap Add to job to sell it later as a change order at the quoted price."
+    ]
+  },
+  {
     "id": "per-line-ai-price-read",
     "date": "2026-08-04",
     "title": "The AI price read now checks every line, and comps never mix systems",
