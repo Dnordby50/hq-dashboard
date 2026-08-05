@@ -27163,7 +27163,7 @@ async function renderLeadDetail(leadId) {
       supabase.from('leads').select('*').eq('id', leadId).is('deleted_at', null).maybeSingle(),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       qoStaffNames(),
-      supabase.from('estimates').select('id,estimate_number,status,price,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.from('estimates').select('id,estimate_number,status,price,price_all_options,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
       loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
       // Drip enrollment (latest) + this lead's send ledger. Pre-migration
       // both error and degrade to "no drip block".
@@ -27389,7 +27389,7 @@ async function renderLeadDetail(leadId) {
                 ${estStatusChip(est.status)}
               </div>
               <div style="display:flex;gap:12px;align-items:baseline">
-                <span style="font-weight:600">${fmtMoney(est.price)}</span>
+                <span style="font-weight:600">${fmtMoney(est.price)}${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5 ? ` <span style="color:var(--muted);font-size:.72rem;font-weight:400">(up to ${fmtMoney(est.price_all_options)})</span>` : ''}</span>
                 <span style="color:var(--muted);font-size:.72rem">${esc(fmtRelativeTime(est.created_at))}</span>
               </div>
             </div>`).join('') : '<div class="pec-empty" style="padding:12px 8px">No estimates yet. Start one from the button above.</div>'}
@@ -27603,7 +27603,7 @@ async function renderEstimates() {
   let res;
   try {
     let qb = supabase.from('estimates')
-      .select('id,estimate_number,status,price,calc_price,price_override_reason,gp_pct,created_at,deleted_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft,mvb,system_type_id),pec_prod_system_types(name)');
+      .select('id,estimate_number,status,price,price_all_options,calc_price,price_override_reason,gp_pct,created_at,deleted_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft,mvb,system_type_id),pec_prod_system_types(name)');
     // The one place we DELIBERATELY read archived rows.
     qb = showArchived ? qb.not('deleted_at', 'is', null) : qb.is('deleted_at', null);
     res = await withFreshSession(() => qb.order('created_at', { ascending: false }).limit(500), { label: 'renderEstimates' });
@@ -27628,7 +27628,7 @@ async function renderEstimates() {
         <td>${esc(est.customer_name || '(no name)')}</td>
         <td>${esc(sys)}${anyMvb ? ' <span style="color:var(--muted);font-size:.7rem">+MVB</span>' : ''}</td>
         <td style="text-align:right">${sqft > 0 ? Math.round(sqft).toLocaleString() : '--'}</td>
-        <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}</td>
+        <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5 ? `<div style="color:var(--muted);font-size:.68rem;font-weight:400">up to ${fmtMoney(est.price_all_options)}</div>` : ''}</td>
         <td style="text-align:right">${est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : '--'}</td>
         <td>${estStatusChip(est.status)}</td>
         <td style="white-space:nowrap;color:var(--muted)">${esc(fmtRelativeTime(est.created_at))}</td>
@@ -28117,18 +28117,29 @@ async function renderEstimateDetail(estimateId) {
     }
     return `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View scope</summary><div style="color:var(--muted);font-size:.75rem;white-space:pre-wrap;margin-top:4px;max-height:260px;overflow-y:auto">${esc(text)}</div></details>`;
   };
-  const lineRow = (li, optional) => `
-    <tr data-li-id="${esc(li.id)}">
-      ${optional ? `<td style="width:28px"><input type="checkbox" class="est-li-toggle" data-li-id="${esc(li.id)}" ${li.selected_by_customer ? 'checked' : ''} title="Include in the total"></td>` : ''}
+  // Optional-line state (prompt 72 F1): an "Optional" tag before acceptance;
+  // after acceptance a DECLINED line (optional, not selected) renders struck
+  // through with a Declined tag, read-only, and stays excluded from the
+  // total. The declined row IS the record of what was offered and refused.
+  const lineRow = (li, optional) => {
+    const declined = optional && est.status === 'accepted' && li.selected_by_customer !== true;
+    const readOnlyRow = est.status === 'accepted';
+    const tag = declined
+      ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#dc2626;border:1px solid rgba(220,38,38,.5);border-radius:999px;padding:1px 7px;vertical-align:middle">Declined</span>'
+      : (optional ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--rd-accent,var(--accent));border:1px solid currentColor;border-radius:999px;padding:1px 7px;vertical-align:middle">Optional</span>' : '');
+    return `
+    <tr data-li-id="${esc(li.id)}"${declined ? ' style="opacity:.75"' : ''}>
+      ${optional ? `<td style="width:28px">${readOnlyRow ? '' : `<input type="checkbox" class="est-li-toggle" data-li-id="${esc(li.id)}" ${li.selected_by_customer ? 'checked' : ''} title="Include in the total">`}</td>` : ''}
       <td ${optional ? '' : 'colspan="1"'}>
-        <div style="font-weight:600">${esc(li.label || '')}${!li.addon_id && !li.estimate_area_id && !/floor coating system$|^Moisture vapor barrier \(MVB\)$/.test(String(li.label || '')) ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#b45309;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:999px;padding:1px 7px;vertical-align:middle" title="Typed by hand, not from the add-on catalog. If this keeps getting typed, add it to the catalog.">one-off</span>' : ''}</div>
+        <div style="font-weight:600${declined ? ';text-decoration:line-through' : ''}">${esc(li.label || '')}${tag}${!li.addon_id && !li.estimate_area_id && !/floor coating system$|^Moisture vapor barrier \(MVB\)$/.test(String(li.label || '')) ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#b45309;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:999px;padding:1px 7px;vertical-align:middle" title="Typed by hand, not from the add-on catalog. If this keeps getting typed, add it to the catalog.">one-off</span>' : ''}</div>
         ${lineDesc(li)}
       </td>
       <td style="text-align:right">${Number(li.qty) || 1}</td>
       <td style="text-align:right">${fmtMoney(li.unit_price)}</td>
-      <td style="text-align:right;font-weight:600">${fmtMoney(li.total)}</td>
-      ${optional ? `<td style="width:28px"><button class="pec-btn ghost sm est-li-remove" data-li-id="${esc(li.id)}" title="Remove optional item">✕</button></td>` : '<td></td>'}
+      <td style="text-align:right;font-weight:600${declined ? ';text-decoration:line-through' : ''}">${fmtMoney(li.total)}</td>
+      ${optional ? `<td style="width:28px">${readOnlyRow ? '' : `<button class="pec-btn ghost sm est-li-remove" data-li-id="${esc(li.id)}" title="Remove optional item">✕</button>`}</td>` : '<td></td>'}
     </tr>`;
+  };
 
   // Activity trail from the row's own lifecycle timestamps (estimates have no
   // events table; these columns ARE the history).
@@ -28195,6 +28206,13 @@ async function renderEstimateDetail(estimateId) {
             </div>
             <div style="text-align:right">
               <div style="font-size:1.5rem;font-weight:800">${fmtMoney(est.price)}</div>
+              ${/* Optional lines (prompt 72, decision 7): while OPEN, price is
+                   the required-only floor; the ceiling renders next to it.
+                   Once accepted, price IS the signed total and the up-to
+                   line disappears. Estimates with no optional lines store the
+                   two equal, so nothing extra renders on them. */''}
+              ${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5
+                ? `<div style="color:var(--muted);font-size:.78rem">required · up to ${fmtMoney(est.price_all_options)}</div>` : ''}
               ${ppsfTxt ? `<div style="font-weight:700;font-size:.9rem">${ppsfTxt}</div>` : ''}
               <div style="color:var(--muted);font-size:.78rem">${gpPctTxt ? `GP ${gpPctTxt}` : ''}${discountTxt ? ` · ${discountTxt}` : ''}</div>
               ${overridden && est.price_override_reason ? `<div style="color:#b45309;font-size:.72rem;margin-top:2px" title="Manual price override">◆ ${esc(est.price_override_reason)}</div>` : ''}
@@ -28778,6 +28796,39 @@ function estimateBlankScopeOk(est) {
     || confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?');
 }
 
+// Prompt 72 send gate (decision 1): an estimate cannot be SENT with every
+// line optional, because required lines are what a customer cannot untick,
+// which is what makes the never-$0 floor automatic. A hard block (not a
+// confirm): the fix is one tap in the estimator. Checked at SEND only, so a
+// rep mid-build is never blocked by a half-built draft. Mirrors
+// production/optional-lines.cjs sendGateError.
+function estimateOptionalGateOk(est) {
+  const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  if (items.length && items.every(li => li && (li.is_optional === true || li.optional === true))) {
+    alert('At least one line has to be required. A customer cannot be sent an estimate they can untick to nothing. Edit the estimate and untick Optional on at least one line.');
+    return false;
+  }
+  return true;
+}
+
+// The customer's OPENING total: required lines plus currently selected
+// optional lines, the exact number the public page shows when the link
+// opens. Computed live from the rows (never stored; prompt 72 Part C), and
+// it is what the send email must quote so the email and the page can never
+// read as a bait-and-switch. Falls back to est.price for a pre-line-items
+// estimate. Mirrors production/optional-lines.cjs splitLineTotals().opening.
+function estimateOpeningTotal(est) {
+  const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  if (!items.length) return est.price != null ? Number(est.price) : null;
+  let t = 0;
+  for (const li of items) {
+    if (!li) continue;
+    const opt = li.is_optional === true || li.optional === true;
+    if (!opt || li.selected_by_customer === true) t += Number(li.total) || 0;
+  }
+  return Math.round(t * 100) / 100;
+}
+
 // ============================================================
 // Present mode (prompt 64): full-screen, rep-facing, on-site presentation.
 // Literature slides come from pec_presentation_sections, the SAME rows the
@@ -28946,6 +28997,9 @@ async function openPresentMode(est) {
   async function openForSigning() {
     if (!(await ensureEstimateToken(est))) return;
     if (!est.sent_at) {
+      // Same send gate as email/text (prompt 72): opening for signature IS
+      // sending.
+      if (!estimateOptionalGateOk(est)) return;
       if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
       try { await markEstimateSent(est); sentFlipped = true; }
       catch (err) { showToast('Could not mark the estimate as sent: ' + esc(err.message || String(err)), { ttl: 8000 }); return; }
@@ -29047,6 +29101,7 @@ async function markEstimateSent(est) {
 async function sendEstimateText(est, opts = {}) {
   if (!est.customer_phone) { showToast('No phone on file for this customer.', { ttl: 4000 }); return false; }
   if (!(await ensureEstimateToken(est))) return false;
+  if (!opts.skipGate && !estimateOptionalGateOk(est)) return false;
   if (!opts.skipGate && !estimateBlankScopeOk(est)) return false;
   if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
   try {
@@ -29076,9 +29131,12 @@ async function openEstimateSendModal(est, opts = {}) {
   const link = `${location.origin}/e/${est.public_token}`;
   const number = estNumberLabel(est);
   const firstName = (est.customer_name || '').trim().split(/\s+/)[0] || 'there';
-  // est.price is the stored base total (system sell + non-optional add-ons),
-  // kept current by the estimator's save; the jsonb line_items is legacy.
-  const totalTxt = fmtMoney(est.price);
+  // The email quotes the OPENING total (required + pre-selected optional),
+  // computed from the line-item rows at send time, so the number in the
+  // email matches the number on the page the link opens (prompt 72 Part C).
+  // est.price is the required-only floor now and would undersell a
+  // pre-selected option.
+  const totalTxt = fmtMoney(estimateOpeningTotal(est) ?? est.price);
   const staffEmail = state.adminUser?.email || '';
   const defaultSubject = `Your estimate ${number} from Prescott Epoxy Company`;
   const defaultBody = `<p>Hi ${esc(firstName)},</p>
@@ -29120,7 +29178,9 @@ async function openEstimateSendModal(est, opts = {}) {
       const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
-      // Blank-scope gate (shared with the text channel, prompt 38).
+      // Optional-lines send gate (prompt 72 decision 1), then the
+      // blank-scope gate (shared with the text channel, prompt 38).
+      if (!estimateOptionalGateOk(est)) return;
       if (!estimateBlankScopeOk(est)) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {

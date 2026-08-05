@@ -36,6 +36,16 @@ const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-s
 const { prepareDepositInstallment } = require('./_pec-installments.cjs');
 const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
 const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
+// Optional-lines rules (prompt 72): the same module the estimator bundles,
+// so the accept guard and the job-side filters share one implementation.
+const {
+  acceptSelectionInvalid,
+  declinedAreaIdSet,
+  filterAreasForJob,
+  isDeclinedLine,
+  declinedNoteLine,
+  selectedScopeDoc,
+} = require('../../production/optional-lines.cjs');
 const crypto = require('crypto');
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -207,24 +217,38 @@ function scopeRowsHtml(est, sysName, totalSqft) {
 // DripJobs proposal under each line and can never inject markup.
 const liDescHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : '';
 
-function lineItemRowsHtml(items) {
+// "Your project" (prompt 72 D1): required lines PLUS pre-selected optional
+// lines. A required line has NO control at all (not a disabled checkbox; a
+// disabled checkbox invites a support call). A pre-selected optional line is
+// part of the job the customer reads, with a ticked .opt-toggle and a small
+// Optional tag; unticking removes it from the total live through the same
+// script the add-on cards use.
+function lineItemRowsHtml(items, readOnly) {
   const list = Array.isArray(items) ? items : [];
-  const required = list.filter(li => li && !isOptionalLine(li));
-  const row = (li) => `<tr>
-      <td><span style="font-weight:600">${esc(li.label || '')}</span>${liDescHtml(li)}</td>
+  const shown = list.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer === true));
+  const row = (li) => {
+    const optional = isOptionalLine(li);
+    const control = optional
+      ? `<input type="checkbox" class="opt-toggle" data-li-id="${esc(li.id)}" data-li-total="${Number(li.total) || 0}" checked ${readOnly ? 'disabled' : ''} style="width:18px;height:18px;flex:0 0 auto;margin-top:2px;accent-color:#D8531C">`
+      : '';
+    const tag = optional
+      ? ' <span style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#D8531C;border:1px solid #D8531C;border-radius:999px;padding:1px 7px;vertical-align:2px">Optional</span>'
+      : '';
+    return `<tr>
+      <td><div style="display:flex;gap:10px;align-items:flex-start">${control}<div style="flex:1;min-width:0"><span style="font-weight:600">${esc(li.label || '')}</span>${tag}${liDescHtml(li)}</div></div></td>
       <td>${usd(li.total)}</td>
     </tr>`;
-  return required.length ? required.map(row).join('')
+  };
+  return shown.length ? shown.map(row).join('')
     : '<tr><td colspan="2" style="padding:14px 12px;color:#6b7280;text-align:center">No line items.</td></tr>';
 }
 
-// Optional add-ons as upgrade CARDS (prompt 64): same .opt-toggle inputs, same
-// data attributes, same helper copy, so the tick-to-update script and the
-// signature freeze are untouched; only the visual container changed from a
-// bare checkbox table row to a card the rep can point at on an iPad. The
-// running total is the hero + grand total the script already updates.
+// "Options to add" (prompt 72 D1): optional lines that start UNSELECTED
+// (add-ons keep their opt-in behavior, plus any area line the rep set to
+// start unselected). Same .opt-toggle inputs and data attributes as always,
+// so the tick-to-update script and the signature freeze are untouched.
 function optionalCardsHtml(items, readOnly) {
-  const optional = (Array.isArray(items) ? items : []).filter(li => isOptionalLine(li));
+  const optional = (Array.isArray(items) ? items : []).filter(li => isOptionalLine(li) && li.selected_by_customer !== true);
   if (!optional.length) return '';
   const card = (li) => `
       <label class="optcard" style="cursor:${readOnly ? 'default' : 'pointer'}">
@@ -234,8 +258,8 @@ function optionalCardsHtml(items, readOnly) {
       </label>`;
   return `
         <div style="margin-top:24px">
-          <div class="eyebrow">Optional items</div>
-          <div style="color:#6b7280;font-size:13px;margin-top:3px">${readOnly ? 'The selection below is what was chosen.' : 'Tick any you would like to add. The total updates as you choose.'}</div>
+          <div class="eyebrow">Options to add</div>
+          <div style="color:#6b7280;font-size:13px;margin-top:3px">${readOnly ? 'These items were offered and not selected.' : 'Tick any you would like to add. The total updates as you choose.'}</div>
           <div style="display:grid;gap:12px;margin-top:12px">${optional.map(card).join('')}</div>
         </div>`;
 }
@@ -328,7 +352,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
 
       <div id="panelAccept" class="panel" style="display:none">
         <div style="font-weight:700;margin-bottom:6px">Accept this estimate</div>
-        <div style="font-size:13.5px;color:#6b7280;line-height:1.6;margin-bottom:12px">By typing your name and signing, you accept this estimate for the total shown above (including any optional items you ticked). We will contact you to schedule the work and arrange the deposit.</div>
+        <div style="font-size:13.5px;color:#6b7280;line-height:1.6;margin-bottom:12px">By typing your name and signing, you accept this estimate for the total shown above, which reflects the items you have selected. We will contact you to schedule the work and arrange the deposit.</div>
         <label class="lbl">Type your full name as your signature</label>
         <input id="sigName" autocomplete="name" placeholder="Full name" maxlength="120">
         <div id="sigPreview" style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;min-height:34px;margin-top:8px;border-bottom:1.5px solid #94a3b8;max-width:360px;padding:2px 6px"></div>
@@ -469,10 +493,10 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
         ${est.scope_of_work && !items.some(li => li && li.description)
           ? `<div style="font-size:14px;color:#374151;line-height:1.7;margin-top:14px">${mdToSafeHtml(est.scope_of_work)}</div>`
           : ''}
-        <div class="eyebrow" style="margin-top:26px">Your estimate</div>
+        <div class="eyebrow" style="margin-top:26px">Your project</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items)}</tbody>
+          <tbody>${lineItemRowsHtml(items, !interactive)}</tbody>
         </table>
         ${optionalCardsHtml(items, !interactive)}
         <table class="tot">
@@ -829,8 +853,7 @@ async function moveLead(est, toStage, extra) {
 // ---------------------------------------------------------------------------
 async function ensureJobCreated(est) {
   const intake = est.intake || {};
-  const areas = await loadAreas(est.id);
-  const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+  const allAreas = await loadAreas(est.id);
   // Custom sqft (prompt 32): a custom estimate has no area rows, so totalSqft
   // is 0 and jobs.sqft used to land null (every $/sqft readout showed "no
   // sqft on file"). The typed estimates.custom_sqft fills that gap. Standard
@@ -845,6 +868,27 @@ async function ensureJobCreated(est) {
   // selection was frozen onto the rows by applySelection before this runs.
   const items = await loadLineItems(est.id);
   const included = items.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer));
+
+  // Decisions 5 and 9 (prompt 72): the job is built from the SELECTED areas
+  // only. This is the RE-COST, and it is deliberately NOT a pricing change:
+  // the signed total and every line price are honored exactly; what changes
+  // is the material plan, the ordering, and the costing rollup, which are
+  // computed on what was actually sold instead of what was offered (a
+  // declined bay's share of a kit-merged material plan has to be bought in
+  // full by the remaining areas). Declined lines stay on the estimate rows
+  // (is_optional AND NOT selected_by_customer) as the record of what was
+  // offered and refused. GUARDRAIL (in filterAreasForJob): an area with NO
+  // line item at all is KEPT; only areas named on a declined line drop.
+  const declinedLines = items.filter(isDeclinedLine);
+  const declinedIds = declinedAreaIdSet(items);
+  const areas = filterAreasForJob(allAreas, declinedIds);
+  const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
+  // Decision 10: estimates.scope_of_work is NEVER rewritten after signature
+  // (it is the document the customer read and signed). The JOB side shows
+  // only the selected lines' scope; when nothing was declined this is the
+  // full document, byte-for-byte as today.
+  const jobScope = declinedLines.length ? (selectedScopeDoc(included) || null) : (est.scope_of_work || null);
+  const declinedNote = declinedNoteLine(declinedLines);
 
   // -- Customer: reuse by email, then by exact name + company (the manual-job
   // rule), then by this path's own deterministic id; create only when all
@@ -917,7 +961,7 @@ async function ensureJobCreated(est) {
       customer_id: customer.id,
       type: 'epoxy',
       address: est.customer_address || null,
-      scope: est.scope_of_work || null,
+      scope: jobScope,
       // jobs.sqft is TEXT, so both paths write a string.
       sqft: totalSqft > 0 ? String(Math.round(totalSqft)) : (customSqft != null ? String(customSqft) : null),
       // Internal crew brief (prompt 32): rides to the job so the crew work
@@ -996,7 +1040,7 @@ async function ensureJobCreated(est) {
   if (!existingProd.length) {
     // The crew-facing note: the production detail in one glanceable block.
     const noteLines = [
-      est.scope_of_work || null,
+      jobScope,
       intake.gate_code ? `Gate code: ${intake.gate_code}` : null,
       intake.moisture != null ? `Moisture: ${intake.moisture}/5` : null,
       intake.mohs_hardness != null ? `MOHS: ${intake.mohs_hardness}` : null,
@@ -1006,6 +1050,9 @@ async function ensureJobCreated(est) {
       intake.coat_past_garage ? 'Coat past garage door: yes' : null,
       est.flake_color ? `Flake color: ${est.flake_color}` : null,
       intake.special_notes || null,
+      // Prompt 72 decision 11: the crew should know what was offered and not
+      // sold, so nobody coats a declined patio out of muscle memory.
+      declinedNote,
     ].filter(Boolean);
     await sb('POST', '/pec_prod_jobs', {
       id: prodJobId,
@@ -1109,6 +1156,13 @@ async function handleAccept(est, body, event) {
 
   const frozenItems = freezeLineItems(est.line_items, selectedIds);
   const total = Math.round(includedTotal(frozenItems) * 100) / 100;
+  // Decision 4 defense: the rep-side send gate (at least one required line)
+  // makes a zero-selection accept unreachable through the UI; this guard is
+  // for a hand-crafted POST, and it keeps a $0 accept from ever creating a
+  // real job. Checked BEFORE the CAS so status never flips.
+  if (acceptSelectionInvalid(frozenItems)) {
+    return json(400, { ok: false, error: 'Please select at least one item before signing.' });
+  }
   const nowIso = new Date().toISOString();
   const ip = (event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || null;
   const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
