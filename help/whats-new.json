@@ -1,5 +1,16 @@
 [
   {
+    "id": "per-line-pricing-custom-lines",
+    "date": "2026-08-04",
+    "title": "Every estimate line now has its own price, and you can add a custom line to a normal estimate",
+    "summary": "Each area on an estimate now solves its own price at its own system's target margin, with its own gross profit shown right on the line (red when it drops under the floor). You can also add a custom line, like a stair install or a repair, to the same estimate as your calculator areas: type its label, scope, price, material cost, and crew hours, and it prices and books like every other line. The job discount still works on the whole estimate and spreads across the lines fairly.",
+    "howto": [
+      "In the estimator, tap + Add custom line next to + Add area, then type the label, scope, price, material cost, and crew hours.",
+      "To change one line's price, type in that line's Line price box; its gross profit updates on the spot.",
+      "Adjust the per-line GP floor and the discount reason thresholds in Settings then Estimates under Line pricing."
+    ]
+  },
+  {
     "id": "work-order-clock-in-number",
     "date": "2026-08-04",
     "title": "The work order now shows the BusyBusy clock-in number",

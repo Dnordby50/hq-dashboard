@@ -77,7 +77,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only).",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order.",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -137,7 +137,7 @@
     {
       "name": "Auto-written scope of work",
       "area": "estimator",
-      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved.",
+      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved. Prompt 69: each area's internal notes ride that line's generation context as substitution facts (never quoted into customer text, never new scope), and a custom line's typed scope is used VERBATIM (the writer skips it; only the explicit Polish button touches custom text).",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-scope.cjs"
@@ -153,7 +153,7 @@
     {
       "name": "Multi-system estimates",
       "area": "estimator",
-      "description": "One estimate can cover several areas that each carry their own system (a flake garage plus a quartz patio), priced with each area's own recipe and rolled into a single price. The gross-profit target is the square-foot-weighted average of the systems in play so a small high-margin area does not skew the whole number.",
+      "description": "One estimate can cover several areas that each carry their own system (a flake garage plus a quartz patio), priced with each area's own recipe and rolled into a single price. The gross-profit target is the square-foot-weighted average of the systems in play so a small high-margin area does not skew the whole number. Prompt 69 REPLACES the estimator's sqft-weighted single-divisor solve: each area now solves its own price at its own system's rates and the job total is the sum (see 'Per-line pricing and custom lines'); a single-area estimate prices identically to the cent, and the dashboard's change-order pricer still uses computeEstimatePricing (single-area, unaffected).",
       "code": {
         "other": [
           "apps/estimator/src/lib/calculator.ts",
@@ -184,7 +184,7 @@
     {
       "name": "Estimate pricing engine and controls",
       "area": "estimator",
-      "description": "Estimates price from just the system and square footage using recipe default products and a per-system target gross profit, then show the full work behind the number: price per square foot, the cost stack (materials, labor, sundries, add-ons, commission, gross profit), and a plain-English explanation including charm rounding. Reps can override the sell price with a required reason and a floor confirmation, every estimate bakes in an adjustable 2% sundries cost, and moisture vapor barrier is chosen per area. Prompt 66: comps GP% comes from the ONE canonical formula (production/costing.js computeCostingRow, mirrored byte-identical in index.html), fed by real cost tables (pec_prod_material_lines used materials, pec_prod_job_bonuses, BusyBusy/manual hours with loaded labor incl. burden via buildCostAggregates); a comp with no cost signal shows a dash and the caveat reads 'GP% shown for N of M comps'.",
+      "description": "Estimates price from just the system and square footage using recipe default products and a per-system target gross profit, then show the full work behind the number: price per square foot, the cost stack (materials, labor, sundries, add-ons, commission, gross profit), and a plain-English explanation including charm rounding. Reps can override the sell price with a required reason and a floor confirmation, every estimate bakes in an adjustable 2% sundries cost, and moisture vapor barrier is chosen per area. Prompt 66: comps GP% comes from the ONE canonical formula (production/costing.js computeCostingRow, mirrored byte-identical in index.html), fed by real cost tables (pec_prod_material_lines used materials, pec_prod_job_bonuses, BusyBusy/manual hours with loaded labor incl. burden via buildCostAggregates); a comp with no cost signal shows a dash and the caveat reads 'GP% shown for N of M comps'. Prompt 69: the override-reason rule is threshold-gated (required only when the final total lands under the calculated total by more than the greater of line_pricing_reason_threshold_pct/_dollars, whether via per-line edits or the job discount), and a per-line GP floor (line_pricing_gp_floor_pct) reddens individual lines.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-ai.cjs"
@@ -205,7 +205,7 @@
     {
       "name": "Custom estimate mode",
       "area": "estimator",
-      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone. An optional square footage field shows a live read-only price per sqft (the price stays the typed number) and carries to the job's sqft on accept, lighting up the $/sqft readouts on Job Costing and the work order. Prompt 58: the Work order site questions (gate code, moisture, MOHS, tooling, non-slip, coat past garage, stem walls, special notes) render in custom mode too, from one shared field list. A blank Moisture or MOHS shows a soft warning on the estimator (near the grid and by both save rows) and on the job page's Job Card; it never blocks save, send, or accept.",
+      "description": "A Standard/Custom switch lets reps price one-off work that does not fit the material calculator by typing the scope and price themselves, with add-ons still available. An optional Polish with AI button cleans up the typed scope wording without changing meaning, exclusions, or dollar figures, and can be undone. An optional square footage field shows a live read-only price per sqft (the price stays the typed number) and carries to the job's sqft on accept, lighting up the $/sqft readouts on Job Costing and the work order. Prompt 58: the Work order site questions (gate code, moisture, MOHS, tooling, non-slip, coat past garage, stem walls, special notes) render in custom mode too, from one shared field list. A blank Moisture or MOHS shows a soft warning on the estimator (near the grid and by both save rows) and on the job page's Job Card; it never blocks save, send, or accept. Prompt 69 adds custom LINES inside a normal estimate (mixed quartz-plus-one-off proposals) without touching this whole-estimate mode; see 'Per-line pricing and custom lines'.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-custom-polish.cjs"
@@ -219,6 +219,36 @@
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-24-estimator-custom-mode.md",
       "since": "2026-07"
+    },
+    {
+      "name": "Per-line pricing and custom lines",
+      "area": "estimator",
+      "description": "Prompt 69: every estimate line prices on its own. Each calculator area solves its OWN cost-plus price at its own system's labor% and target GP% (computePerLinePricing in production/calculator.js: ONE estimate-wide kit-merged material plan, attributed back to areas by pre-merge raw cost via allocateProportionally, so shared kits are never double-bought), and the job total is the sum of the lines; the old back-allocation of a single job price is gone. A CUSTOM LINE is an estimate_areas row (is_custom=true) with a typed label, verbatim scope, typed price (stored in price_override), typed material cost and crew hours, so its GP is computed like every other line; it pulls no catalog products and adds nothing to the material plan. Per-line GP shows on each line and goes red under the line_pricing_gp_floor_pct floor (line_pricing_block_below_floor decides warn vs forced confirm, and the save confirmation NAMES the below-floor lines). The job-level sell/discount allocates across the lines proportionally (parts sum to the typed total exactly), and a written reason is required whenever the final total lands under the CALCULATED total by more than the greater of line_pricing_reason_threshold_pct / line_pricing_reason_threshold_dollars, no matter how the rep got there. Per-line internal notes feed that line's scope generation and never render customer-facing. On accept, each job_areas row carries its line's final price and scope description; a custom line becomes a real job_areas row (custom_label, no system) but is skipped in pec_prod_areas (recipe side, NOT NULL sqft/system). Settings live in Settings > Estimates > Line pricing. Whole-estimate Custom mode (build 24) is unchanged.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-scope.cjs",
+          "pec-public-estimate.cjs"
+        ],
+        "indexHtml": [
+          "renderSettingsEstimates"
+        ],
+        "other": [
+          "production/calculator.js (computePerLinePricing, applyLineSellPrice, customLinePricing)",
+          "production/per-line-pricing.test.js",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx",
+          "apps/estimator/src/lib/estimateLoad.ts",
+          "apps/estimator/src/offline/estimates.ts",
+          "apps/estimator/src/lib/catalog.ts"
+        ]
+      },
+      "tables": [
+        "estimate_areas",
+        "estimate_line_items",
+        "job_areas",
+        "settings"
+      ],
+      "spec": "claude-code-prompt-69-per-line-pricing-custom-lines.md",
+      "since": "2026-08"
     },
     {
       "name": "Crew notes on the work order",
