@@ -2,6 +2,27 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-05 07:20] Cowork: prompt 71 scoped (SalesAsk surfaces + global modal close). Found the SalesAsk migration was NEVER applied to prod.
+By: Cowork
+Changed: No code, no schema. Wrote claude-code-prompt-71-salesask-surfaces-modal-close.md after 12 scoping questions with Dylan and four read-only live queries against prod (zdfpzmmrgotynrwkeakd) via the Supabase MCP.
+
+Why: Dylan asked for two things: (1) SalesAsk appointment information on the customer card and the estimate card, (2) an X in the top right of the Email Log modal, because the bottom Close button is unreachable.
+
+**The finding that reframed request 1: the SalesAsk integration has no schema in production.** `select count(*) from pec_salesask_recordings` returns `42P01: relation does not exist`. information_schema shows zero for `pec_appointments.salesask_synced_at`, `pec_appointments.salesask_sync_hash`, and `pec_sales_team_members.salesask_email`. Zero settings rows like 'salesask%'. SCHEMA.md has no section for the table, consistent with that; features.json describes the feature as shipped and index.html renders `customerSalesAskCardHtml` today. So `2026-07-31_salesask_integration.sql` shipped in code and was never run. Every SalesAsk surface in prod is currently hitting the catch branch in `mountCustomerSalesAsk`. Nothing has ever pushed to SalesAsk and no recording has ever landed. Dylan did not know this; his request reads as a missing feature and is actually a broken one.
+
+**Second finding, the linkage.** Live counts: pec_appointments 11 (10 routemize), 8 with lead_id, **0 with customer_id**; estimates 11, 7 with lead_id, **0 with customer_id**; leads 15, **0 with customer_id**; only 2 of 11 estimates have any appointment on their lead. `mountCustomerSalesAsk` reads `.eq('customer_id', c.id)`, and a recording inherits customer_id from the appointment it matched, so applying the migration alone would leave the customer card permanently empty. Prompt 71 Part A therefore repairs the linkage (write-back on accept in pec-public-estimate.cjs, carry customer_id at appointment intake, a one-time email/phone/name backfill migration) and requires every read to resolve by customer_id OR the customer's lead ids.
+
+**Third finding, the modal.** "The box is too long" is not the mechanism. `.pec-modal` already has `max-height:92vh; overflow-y:auto` (index.html:632). The email body is a sandboxed 480px iframe, which consumes the wheel event where the pointer naturally sits, so the bottom Close never scrolls into view; separately, openModal's backdrop-click guard disables click-outside whenever the modal contains an iframe (by design, for the estimator), and Escape is off because the modal is not opened with `dismissible: true`. Three independent reasons it feels stuck. Prompt 71 Part E adds a sticky `.pec-modal-xhead` close header to openModal and to all seven hand-rolled #prodModalRoot sites, keeps Escape scoped to dismissible modals (a global Escape would silently wipe a half-typed change order, which prompt 63 Part D already litigated), and passes `dismissible: true` for the read-only email log modal.
+
+Dylan's locked decisions: insights = add the coaching and tags jsonb to what renders; score = prominent colored badge with thresholds in Settings; transcript collapsed by default (its `<summary>` is currently EMPTY, which is likely why he asked); surfaces = customer detail card + pipeline lead card (score chip only) + estimate detail page (not the estimator, not the list); all recordings on the customer, most recent on the estimate; RLS widened from is_admin_staff() to all staff; migration applied first, then build; full sync go-live with the env vars as a Cowork handoff.
+
+Files touched: claude-code-prompt-71-salesask-surfaces-modal-close.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 71 in Claude Code. Part 0 applies the 2026-07-31 migration and regenerates SCHEMA.md; nothing else in the prompt works until it does.
+Handoff to Cowork: After prompt 71 ships, set SALESASK_API_KEY and SALESASK_WEBHOOK_SECRET in Netlify and REDEPLOY (the 2026-08-04 BusyBusy entry proved env vars do not reach running functions without one), register the SalesAsk webhook at https://prescottepoxy.netlify.app/api/salesask/webhook?secret=<secret>, fill salesask_email per rep in pec_sales_team_members, then flip salesask_sync_enabled to true and confirm an appointment appears in SalesAsk with event_id matching our appointment id. Report the first real recording's coaching and tags payload shape back, since prompt 71 renders those defensively against an unverified shape.
+Handoff to Dylan: None beyond running the prompt.
+
+---
+
 ## [2026-08-04 MST] Cowork: BusyBusy end-to-end re-run PASSED. The full accept to BusyBusy loop is live in production.
 
 By: Cowork
