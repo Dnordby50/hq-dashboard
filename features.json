@@ -184,7 +184,7 @@
     {
       "name": "Estimate pricing engine and controls",
       "area": "estimator",
-      "description": "Estimates price from just the system and square footage using recipe default products and a per-system target gross profit, then show the full work behind the number: price per square foot, the cost stack (materials, labor, sundries, add-ons, commission, gross profit), and a plain-English explanation including charm rounding. Reps can override the sell price with a required reason and a floor confirmation, every estimate bakes in an adjustable 2% sundries cost, and moisture vapor barrier is chosen per area. Prompt 66: comps GP% comes from the ONE canonical formula (production/costing.js computeCostingRow, mirrored byte-identical in index.html), fed by real cost tables (pec_prod_material_lines used materials, pec_prod_job_bonuses, BusyBusy/manual hours with loaded labor incl. burden via buildCostAggregates); a comp with no cost signal shows a dash and the caveat reads 'GP% shown for N of M comps'. Prompt 69: the override-reason rule is threshold-gated (required only when the final total lands under the calculated total by more than the greater of line_pricing_reason_threshold_pct/_dollars, whether via per-line edits or the job discount), and a per-line GP floor (line_pricing_gp_floor_pct) reddens individual lines.",
+      "description": "Estimates price from just the system and square footage using recipe default products and a per-system target gross profit, then show the full work behind the number: price per square foot, the cost stack (materials, labor, sundries, add-ons, commission, gross profit), and a plain-English explanation including charm rounding. Reps can override the sell price with a required reason and a floor confirmation, every estimate bakes in an adjustable 2% sundries cost, and moisture vapor barrier is chosen per area. Prompt 66: comps GP% comes from the ONE canonical formula (production/costing.js computeCostingRow, mirrored byte-identical in index.html), fed by real cost tables (pec_prod_material_lines used materials, pec_prod_job_bonuses, BusyBusy/manual hours with loaded labor incl. burden via buildCostAggregates); a comp with no cost signal shows a dash and the caveat reads 'GP% shown for N of M comps'. Prompt 69: the override-reason rule is threshold-gated (required only when the final total lands under the calculated total by more than the greater of line_pricing_reason_threshold_pct/_dollars, whether via per-line edits or the job discount), and a per-line GP floor (line_pricing_gp_floor_pct) reddens individual lines. Prompt 70: the comps panel never shows cross-system jobs anymore (hard filter) and the AI read is per line; see 'Per-line AI price read and hard-filtered comps'.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-ai.cjs"
@@ -223,7 +223,7 @@
     {
       "name": "Per-line pricing and custom lines",
       "area": "estimator",
-      "description": "Prompt 69: every estimate line prices on its own. Each calculator area solves its OWN cost-plus price at its own system's labor% and target GP% (computePerLinePricing in production/calculator.js: ONE estimate-wide kit-merged material plan, attributed back to areas by pre-merge raw cost via allocateProportionally, so shared kits are never double-bought), and the job total is the sum of the lines; the old back-allocation of a single job price is gone. A CUSTOM LINE is an estimate_areas row (is_custom=true) with a typed label, verbatim scope, typed price (stored in price_override), typed material cost and crew hours, so its GP is computed like every other line; it pulls no catalog products and adds nothing to the material plan. Per-line GP shows on each line and goes red under the line_pricing_gp_floor_pct floor (line_pricing_block_below_floor decides warn vs forced confirm, and the save confirmation NAMES the below-floor lines). The job-level sell/discount allocates across the lines proportionally (parts sum to the typed total exactly), and a written reason is required whenever the final total lands under the CALCULATED total by more than the greater of line_pricing_reason_threshold_pct / line_pricing_reason_threshold_dollars, no matter how the rep got there. Per-line internal notes feed that line's scope generation and never render customer-facing. On accept, each job_areas row carries its line's final price and scope description; a custom line becomes a real job_areas row (custom_label, no system) but is skipped in pec_prod_areas (recipe side, NOT NULL sqft/system). Settings live in Settings > Estimates > Line pricing. Whole-estimate Custom mode (build 24) is unchanged.",
+      "description": "Prompt 69: every estimate line prices on its own. Each calculator area solves its OWN cost-plus price at its own system's labor% and target GP% (computePerLinePricing in production/calculator.js: ONE estimate-wide kit-merged material plan, attributed back to areas by pre-merge raw cost via allocateProportionally, so shared kits are never double-bought), and the job total is the sum of the lines; the old back-allocation of a single job price is gone. A CUSTOM LINE is an estimate_areas row (is_custom=true) with a typed label, verbatim scope, typed price (stored in price_override), typed material cost and crew hours, so its GP is computed like every other line; it pulls no catalog products and adds nothing to the material plan. Per-line GP shows on each line and goes red under the line_pricing_gp_floor_pct floor (line_pricing_block_below_floor decides warn vs forced confirm, and the save confirmation NAMES the below-floor lines). The job-level sell/discount allocates across the lines proportionally (parts sum to the typed total exactly), and a written reason is required whenever the final total lands under the CALCULATED total by more than the greater of line_pricing_reason_threshold_pct / line_pricing_reason_threshold_dollars, no matter how the rep got there. Per-line internal notes feed that line's scope generation and never render customer-facing. On accept, each job_areas row carries its line's final price and scope description; a custom line becomes a real job_areas row (custom_label, no system) but is skipped in pec_prod_areas (recipe side, NOT NULL sqft/system). Settings live in Settings > Estimates > Line pricing. Whole-estimate Custom mode (build 24) is unchanged. Prompt 70 built the per-line AI on top of this: each line's recommendation keys off the seams this build left (pricing_snapshot.ai.lines[].line_key, cheaply hashable per-line inputs).",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-scope.cjs",
@@ -248,6 +248,35 @@
         "settings"
       ],
       "spec": "claude-code-prompt-69-per-line-pricing-custom-lines.md",
+      "since": "2026-08"
+    },
+    {
+      "name": "Per-line AI price read and hard-filtered comps",
+      "area": "estimator",
+      "description": "Prompt 70 (built directly from the prompt-69 spec's locked scope; no standalone spec file was written). The comps engine is HARD-FILTERED on system type: buildComps' ladder is exact -> same-system any-size -> none, and it never crosses systems (the old widen ladder dropped the system filter under 3 same-system jobs, which is why AI suggestions read as square-foot-only; a quartz price built from polyaspartic comps is worse than no comp at all). The AI price read moved from one job-level recommendation to ONE model call returning a recommendation PER LINE plus a short job-level roll-up whose range is the SUM of the line ranges (server-derived). Each line carries a range, a why, and a SERVER-computed confidence flag (comps_backed / thin_sample / no_comps, from its own comps sample vs comps_min_sample), never model-claimed; the model's claims are overwritten. Custom lines reason from their typed scope and their why carries an explicit no-comparables statement, enforced deterministically in production/ai-lines.cjs. The inputs key is per-line (system+sqft+mvb for calc lines; typed price + scope hash for custom lines, joined in order) so reopening an unchanged estimate stays a zero-cost cache hit; pricing_snapshot.ai.lines[].line_key is the per-line keying the prompt-69 seam reserved, while the snapshot's top-level shape is unchanged. Settings > Estimates > Pricing intelligence: estimate_ai_enabled (clean disabled state, never an error) and comps_min_sample (the ONE knob the ladder and the confidence flag share). Legacy single-recommendation request bodies still work (deploy-skew safety), and pre-70 snapshots still render on the estimate detail page.",
+      "code": {
+        "netlifyFunctions": [
+          "pec-estimate-ai.cjs"
+        ],
+        "indexHtml": [
+          "renderSettingsEstimates",
+          "renderEstimateDetail (snapAi.lines)"
+        ],
+        "other": [
+          "production/comps.js (buildComps hard filter, minSample)",
+          "production/ai-lines.cjs (new: confidence, inputs key, prompt, parse/finalize)",
+          "production/ai-lines.test.cjs",
+          "production/estimate15b.test.js (per-line server sections)",
+          "apps/estimator/src/lib/ai.ts",
+          "apps/estimator/src/lib/comps.ts",
+          "apps/estimator/src/features/estimator/EstimatorScreen.tsx"
+        ]
+      },
+      "tables": [
+        "estimates",
+        "settings"
+      ],
+      "spec": "claude-code-prompt-69-per-line-pricing-custom-lines.md (the 'Explicitly out of scope' section defines prompt 70)",
       "since": "2026-08"
     },
     {

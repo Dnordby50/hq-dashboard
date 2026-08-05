@@ -76,7 +76,7 @@ const LINES_SYSTEM_PROMPT = `You are the pricing analyst for Prescott Epoxy Comp
 Respond with ONLY a JSON object, no markdown fences, exactly these keys:
 {
   "lines": [ { "line_key": "<exactly as given>", "recommended_low": <integer dollars>, "recommended_high": <integer dollars>, "why": "2-4 sentences for THIS line against ITS comps' $/sqft, ITS calculator price, and ITS target GP, with any sample-size caveat" } ],
-  "rollup_why": "one short paragraph (2-4 sentences) on the whole estimate: how the lines sit together, the biggest pricing risk or opportunity, and any line worth a second look",
+  "rollup_why": "one short paragraph (2-4 sentences) on the whole estimate: how the lines sit together, the biggest pricing risk or opportunity, and any line worth a second look. Refer to lines by their LABEL (e.g. the area name), never by line_key",
   "intent_read": "2-4 sentences on the customer's intent, each claim backed by a verbatim quote" OR null when there is no communication history
 }
 Return exactly one entry for every line you were given, in the same order.`;

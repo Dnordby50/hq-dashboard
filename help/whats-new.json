@@ -1,5 +1,16 @@
 [
   {
+    "id": "per-line-ai-price-read",
+    "date": "2026-08-04",
+    "title": "The AI price read now checks every line, and comps never mix systems",
+    "summary": "Comparable jobs are now always the same system as the line you are pricing. If there are no completed jobs on that system, the panel says so instead of borrowing numbers from a different system. The AI price read gives each line its own suggested range and a confidence tag (Comps-backed, Thin sample, or No comps), plus a short read on the whole estimate. A custom line is read from its typed scope and is always marked No comps.",
+    "howto": [
+      "Build an estimate as usual; the AI price read panel now lists each line with its own range and confidence tag.",
+      "Green means enough same-system comps back the number; amber means the sample is thin; gray means no comparable jobs exist.",
+      "Turn the read on or off, and set the minimum comps sample, in Settings then Estimates under Pricing intelligence."
+    ]
+  },
+  {
     "id": "per-line-pricing-custom-lines",
     "date": "2026-08-04",
     "title": "Every estimate line now has its own price, and you can add a custom line to a normal estimate",
