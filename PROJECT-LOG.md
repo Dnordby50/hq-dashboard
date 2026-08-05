@@ -2,6 +2,47 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-04 MST] Cowork: BusyBusy end-to-end re-run PASSED. The full accept to BusyBusy loop is live in production.
+
+By: Cowork
+
+Changed: no code, no schema, no migration. One throwaway estimate was created, accepted through the REAL public endpoint, verified, and every row it produced was deleted; zero residue re-queried and confirmed against a baseline captured before the test.
+
+**Result: the loop works end to end.** This closes the prompt 68 handoff and supersedes the open item in the prior entry. Dylan confirmed he redeployed Netlify after saving the env vars, and the redeploy is what fixed it.
+
+**Prerequisites, verified before touching anything.** Settings gate open by live re-query: `busybusy_autocreate_enabled` = 'true', `busybusy_autocreate_radius_m` = 150, `busybusy_autocreate_reminders` = 'false'. Baseline counts captured: estimates 11, jobs 95, pec_prod_jobs 94, customers 91, pec_prod_busybusy_projects 26, timeline_stages 469.
+
+**The test.** EST-102059 ("ZZ BusyBusy E2E2", $1,234, 742 E2E Test Way, Prescott AZ 86301, phone 9285550142) inserted as `status='sent'` with a real `public_token`, then accepted via `POST https://prescottepoxy.netlify.app/api/estimate/action` with `action:'accept'` (the same endpoint the customer's Sign button calls, not a shortcut). Returned HTTP 200, `{"ok":true,"job_id":"6f161e5a-bebd-530f-b11f-c8b3f503a5d7"}`.
+
+**Endpoint detail worth recording, because the prior entry did not have it and the next tester will need it:** the signer field on that endpoint is **`name`**, not `signed_name`. Sending `signed_name` (or `signedName`) returns HTTP 400 `{"ok":false,"error":"Please type your full name to sign."}`, which reads like a validation bug but is just the wrong key. Repeat POSTs after a successful accept return `{"ok":true,"already":true}` and create nothing, so the idempotency guard is doing its job (two extra probe requests were sent during field discovery and neither produced a duplicate job, customer, or BusyBusy project).
+
+**What the accept produced, all re-queried live:**
+- estimate 2888cbed → status `accepted`, `accepted_at` 2026-08-05T00:46:43Z, `job_id` set
+- 1 customer (b55b9203, "ZZ BusyBusy E2E2")
+- 1 job (6f161e5a, status `signed`, address carried through)
+- 1 pec_prod_jobs row (49932275, proposal_number `EST-102059`, status `unscheduled`)
+- 7 timeline_stages
+- **1 pec_prod_busybusy_projects link row: project_number 102059, project_name "ZZ BusyBusy E2E2", job_id set, `linked_by` NULL (the pending-link state, exactly as designed)**
+
+**The diagnostic that proves the fix.** In the 2026-08-04 failed run, NO link row was written, and because that row is written AFTER the `if (!hook) return { skipped: 'unconfigured' }` gate at `_pec-busybusy.cjs:77` and BEFORE the POST, its absence placed the exit at that gate: `process.env.ZAPIER_BUSYBUSY_HOOK_URL` was not present in the running function. This run wrote the link row, which means the env var IS now present. The redeploy was the missing step, not a variable name typo.
+
+**BusyBusy, verified by live re-query through the Zapier MCP (not by reading the Zap UI):** project created at **2026-08-05T00:46:50Z**, five seconds after the accept. `ZZ BusyBusy E2E2`, number **102059**, customer ZZ BusyBusy E2E2, 742 E2E Test Way, Prescott AZ 86301, phone 9285550142, radius 150, reminders false, onsite_verification None, **id e9c11928-314e-4622-a540-51efe2ab46e2**. Every mapped field landed exactly as the payload sent it.
+
+**Test project ARCHIVED and confirmed:** `archived_on` 2026-08-05T03:01:15Z, verified by re-querying the project after the archive. It is out of the crew's clock-in picker.
+
+**One tooling defect found and worked around, worth knowing before the next run.** The custom Zapier code action `busybusy_archive_project_by_number` is BROKEN: it cannot enumerate the busybusy app's actions ("Busybusy does not support direct HTTP requests") and then fails through eight guessed input shapes, all rejected. The native **`archive_project`** action with `search_project_id` set to the project UUID works fine and is what was used. Either fix or delete that code action; leaving it there means a future session burns a call discovering it does not work.
+
+**Cleanup, all re-queried.** Deleted: 7 timeline_stages, the link row, the estimate, the job, the prod job, the customer. Confirmed zero rows before deletion in estimate_line_items, estimate_areas, pec_estimate_views, pec_invoice_installments, job_areas and pec_prod_areas (the throwaway estimate had no areas or line items, so the accept created none). Post-cleanup counts match the pre-test baseline EXACTLY: estimates 11, jobs 95, pec_prod_jobs 94, customers 91, pec_prod_busybusy_projects 26, timeline_stages 469. Targeted residue queries for '%E2E2%' and project_number 102059 all return 0.
+
+**Side effects Dylan should expect:** the accept fired the usual office notifications (Slack + email) for a fake customer named ZZ BusyBusy E2E2. Dylan approved the run knowing this. The estimate_number sequence consumed 102059.
+
+**Still open from the prior entry, not fixed here:** the Zapier account had 9 held Zap runs and at least one Zap on hold with "Step limit reached" as of 2026-08-04. If the account hits its task ceiling, accepted estimates will silently stop creating BusyBusy projects, and the TopCoat side is fire-and-forget by design so nothing in TopCoat will complain. The suggested Ops Queue check (flag a scheduled job with no BusyBusy project) is still unbuilt.
+
+Files touched: PROJECT-LOG.md (this entry). No code, no schema change. Prod data changed only by the test, fully reverted.
+Next steps: nothing required. The first REAL accepted estimate should still be spot-checked against BusyBusy once, to confirm the loop behaves the same for a job with actual areas and line items. Worth building the Ops Queue check before volume makes a silent failure expensive.
+
+---
+
 ## [2026-08-04 MST] Prompt 70 shipped: comps hard-filtered on system type, one AI call returning a recommendation per line with server-computed confidence, custom lines read from typed scope
 
 By: Claude Code
