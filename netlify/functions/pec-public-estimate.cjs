@@ -1021,10 +1021,16 @@ async function ensureJobCreated(est) {
       notes: noteLines.length ? noteLines.join('\n') : null,
     }, true);
   }
-  if (areas.length) {
+  // pec_prod_areas is the RECIPE side (its sqft and system_type_id are NOT
+  // NULL): it drives the material plan, which a custom line contributes
+  // nothing to (decision 6). Custom lines are skipped here; their scope and
+  // price live on job_areas (decision 7) and in the prod job's notes (the
+  // scope_of_work document includes the custom section).
+  const prodAreas = areas.filter((a) => a.is_custom !== true && a.system_type_id && Number(a.sqft) > 0);
+  if (prodAreas.length) {
     const existingProdAreas = await sb('GET', `/pec_prod_areas?job_id=eq.${prodJobId}&select=id&limit=1`);
     if (!existingProdAreas.length) {
-      await sb('POST', '/pec_prod_areas', areas.map((a, i) => ({
+      await sb('POST', '/pec_prod_areas', prodAreas.map((a, i) => ({
         job_id: prodJobId,
         name: a.name || 'Area',
         sqft: a.sqft != null ? a.sqft : null,
