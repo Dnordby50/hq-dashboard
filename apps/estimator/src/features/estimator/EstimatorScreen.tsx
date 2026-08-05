@@ -33,7 +33,10 @@ import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps, type OutboxOp } from '../../offline/outbox';
 import { drainOutbox } from '../../offline/sync';
 import { buildComps, compsGpCaveat, compsRuleLabel, loadCompCandidates, type CompCandidate, type CompsResult } from '../../lib/comps';
-import { compsForAi, fetchAiRecommendation, type AiRecommendation } from '../../lib/ai';
+import { compsForAi, fetchAiRecommendation, type AiLineInput, type AiRecommendation } from '../../lib/ai';
+// Per-line AI inputs key (prompt 70): the same CJS module pec-estimate-ai.cjs
+// requires, so client and server can never disagree about what re-keys a read.
+import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
@@ -983,8 +986,8 @@ export default function EstimatorScreen({
   // panel says so instead of pretending the comps cover the whole job.
   const comps: CompsResult | null = useMemo(() => {
     if (!compCandidates || !dominantSystemId || !(totalSqft > 0)) return null;
-    return buildComps({ candidates: compCandidates, systemTypeId: dominantSystemId, sqft: totalSqft, now: new Date() });
-  }, [compCandidates, dominantSystemId, totalSqft]);
+    return buildComps({ candidates: compCandidates, systemTypeId: dominantSystemId, sqft: totalSqft, now: new Date(), minSample: config.compsMinSample });
+  }, [compCandidates, dominantSystemId, totalSqft, config.compsMinSample]);
   const compsLabel = comps ? compsRuleLabel(comps, dominantSystem?.name ?? null) : '';
   const compsCaveat = comps ? compsGpCaveat(comps) : null;
   const dominantSqft = systemsBySqft[0]?.sqft ?? 0;
@@ -993,20 +996,53 @@ export default function EstimatorScreen({
     : '';
 
   // ---- AI recommendation: automatic once system + sqft are present ---------
-  // Debounced (900ms) so sqft keystrokes do not each fire a model call. Keyed
-  // on (mvb + each system's sqft), the regeneration rule; the cached read on a
-  // reopened estimate's row short-circuits the call entirely.
-  const mvbSqft = useMemo(() => engineAreas.filter((a) => a.mvb).reduce((s, a) => s + a.sqft, 0), [engineAreas]);
-  const inputsKey = useMemo(
-    () => [`mvb:${Math.round(mvbSqft)}`, ...systemsBySqft.map((g) => `${g.systemId}:${Math.round(g.sqft)}`).sort()].join('|'),
-    [mvbSqft, systemsBySqft],
-  );
-  const [ai, setAi] = useState<{ key: string; status: 'loading' | 'ready' | 'error'; rec?: AiRecommendation; err?: string } | null>(null);
+  // PER-LINE since prompt 70: one debounced call sends every line with ITS
+  // OWN hard-filtered comps and gets back one recommendation per line plus a
+  // job roll-up. The inputs key is the join of per-line keys (ai-lines.cjs),
+  // so a sqft edit, an mvb toggle, a custom price change, or a custom scope
+  // edit each re-key exactly once; the cached read on a reopened estimate's
+  // row still short-circuits the call entirely.
+  const aiLines: AiLineInput[] = useMemo(() => {
+    return lineRows.map((r, k) => {
+      const a = areas[r.formIdx];
+      if (r.kind === 'custom') {
+        return {
+          line_key: `L${k}`,
+          kind: 'custom' as const,
+          label: r.label,
+          sqft: Number(a.sqft) > 0 ? Number(a.sqft) : null,
+          calc_price: r.current ?? 0,
+          scope_text: a.customScope.trim() || null,
+          comps: null,
+        };
+      }
+      const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+      // This LINE's comps: its own system (hard filter), its own sqft.
+      const lc = compCandidates && Number(a.sqft) > 0
+        ? buildComps({ candidates: compCandidates, systemTypeId: a.systemTypeId, sqft: Number(a.sqft), now: new Date(), minSample: config.compsMinSample })
+        : null;
+      return {
+        line_key: `L${k}`,
+        kind: 'calc' as const,
+        label: r.label,
+        system_type_id: a.systemTypeId,
+        system_type_name: sys?.name ?? 'Unknown system',
+        sqft: Number(a.sqft) > 0 ? Number(a.sqft) : null,
+        mvb: a.mvb === true,
+        calc_price: r.calcPrice ?? 0,
+        target_gp_pct: r.line?.targetGpPct ?? null,
+        comps: lc ? compsForAi(lc, compsRuleLabel(lc, sys?.name ?? null)) : null,
+      };
+    });
+  }, [lineRows, areas, systemTypes, compCandidates, config.compsMinSample]);
+  const inputsKey = useMemo(() => linesInputsKey(aiLines), [aiLines]);
+  const [ai, setAi] = useState<{ key: string; status: 'loading' | 'ready' | 'error' | 'disabled'; rec?: AiRecommendation; err?: string } | null>(null);
   const editingSnapshot = editing?.pricingSnapshot ?? null;
   const aiLeadId = editing?.leadId ?? leadLink?.id ?? null;
 
   useEffect(() => {
-    if (!hasPrice || !(totalSqft > 0) || !dominantSystemId || basePrice == null) return;
+    if (config.estimateAiEnabled === false) return; // Settings kill switch; the panel says so
+    if (!hasPrice || !(totalSqft > 0) || !dominantSystemId || basePrice == null || !linesReady) return;
     if (ai && ai.key === inputsKey && ai.status !== 'error') return;
     // Reopened estimate, unchanged inputs: serve the read that priced it.
     if (editingSnapshot && editingSnapshot.inputs_key === inputsKey && editingSnapshot.ai) {
@@ -1018,23 +1054,17 @@ export default function EstimatorScreen({
     const timer = setTimeout(async () => {
       setAi({ key: inputsKey, status: 'loading' });
       try {
-        const compsPayload = comps
-          ? compsForAi(comps, compsLabel)
-          : { rule: 'none', rule_label: 'comps unavailable', sample_size: 0, median_ppsf: null, rows: [] };
         const rec = await fetchAiRecommendation({
           estimate_id: editing?.id ?? null,
           lead_id: aiLeadId,
           inputs_key: inputsKey,
-          system_type_name: mixedSystems
-            ? `${dominantSystem?.name ?? 'Unknown system'} (dominant; estimate spans ${systemsBySqft.length} systems)`
-            : dominantSystem?.name ?? 'Unknown system',
+          lines: aiLines,
           sqft: totalSqft,
-          mvb: anyAreaMvb ? 'addon' : 'none',
-          calc_price: basePrice,
-          target_gp_pct: targetGpPctResolved,
-          comps: compsPayload,
+          calc_price: calcTotal ?? basePrice,
         });
-        setAi((cur) => (cur && cur.key === inputsKey ? { key: inputsKey, status: 'ready', rec } : cur));
+        setAi((cur) => (cur && cur.key === inputsKey
+          ? (rec ? { key: inputsKey, status: 'ready', rec } : { key: inputsKey, status: 'disabled' })
+          : cur));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setAi((cur) => (cur && cur.key === inputsKey ? { key: inputsKey, status: 'error', err: msg } : cur));
@@ -1042,7 +1072,7 @@ export default function EstimatorScreen({
     }, 900);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inputsKey, hasPrice, online, compCandidates, compsFailed, basePrice]);
+  }, [inputsKey, hasPrice, linesReady, online, compCandidates, compsFailed, basePrice]);
 
   const refreshPending = useCallback(async () => {
     try {
@@ -2853,14 +2883,43 @@ export default function EstimatorScreen({
 
           {!isCustom && <section className="card ai-panel">
             <div className="areas-head"><span>AI price read</span></div>
-            {!(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
+            {config.estimateAiEnabled === false && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
+            {config.estimateAiEnabled !== false && !(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
             {totalSqft > 0 && hasPrice && !online && ai?.status !== 'ready' && <p className="hint">Needs a connection; the calculated price and comps stand on their own.</p>}
-            {ai?.status === 'loading' && <p className="hint">Analyzing against comps…</p>}
+            {ai?.status === 'loading' && <p className="hint">Analyzing each line against its own comps…</p>}
+            {ai?.status === 'disabled' && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
             {ai?.status === 'error' && <p className="warn">AI read failed: {ai.err}</p>}
             {ai?.status === 'ready' && ai.rec && (
               <>
                 <div className="ai-range">{money(ai.rec.recommended_low)} to {money(ai.rec.recommended_high)}</div>
                 <p className="ai-why">{ai.rec.why}</p>
+                {/* Per-line reads (prompt 70): each line's range, its why, and
+                    a SERVER-computed confidence chip (comps-backed / thin
+                    sample / no comps), never model-claimed. */}
+                {Array.isArray(ai.rec.lines) && ai.rec.lines.length > 0 && (
+                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                    {ai.rec.lines.map((l) => (
+                      <div key={l.line_key} style={{ borderTop: '1px solid rgba(128,128,128,.25)', paddingTop: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700 }}>{l.label || l.line_key}</span>
+                          <span
+                            title={l.confidence === 'comps_backed' ? 'Enough same-system comps back this read.'
+                              : l.confidence === 'thin_sample' ? 'Fewer same-system comps than the minimum; treat as directional.'
+                              : 'No comparable jobs exist for this line.'}
+                            style={{
+                              fontSize: '.68rem', fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
+                              padding: '2px 8px', borderRadius: 999,
+                              background: l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)',
+                              color: l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit',
+                            }}
+                          >{l.confidence_label || l.confidence}</span>
+                        </div>
+                        <div style={{ fontWeight: 700, fontSize: '.9rem', marginTop: 2 }}>{money(l.recommended_low)} to {money(l.recommended_high)}</div>
+                        <p className="ai-why" style={{ marginTop: 4 }}>{l.why}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {ai.rec.history_available && ai.rec.intent_read && (
                   <p className="ai-why"><strong>Customer signal:</strong> {ai.rec.intent_read}</p>
                 )}

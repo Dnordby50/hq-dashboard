@@ -151,6 +151,10 @@ declare module '*/production/comps.js' {
     systemTypeId: string | null;
     sqft: number | null;
     now: Date | number;
+    // comps_min_sample (prompt 70): below it the exact rule widens to
+    // same-system any-size. The system filter itself is HARD: the ladder
+    // never crosses systems.
+    minSample?: number;
   }): {
     rule: string;
     sample_size: number;
@@ -210,6 +214,25 @@ declare module '*/production/costing.js' {
     bonusByJob: Record<string, number>;
     laborByJob: Record<string, { laborCost: number; actHrs: number }>;
   };
+}
+
+// Per-line AI recommendation logic (repo-root production/ai-lines.cjs,
+// prompt 70), shared with pec-estimate-ai.cjs so the inputs key and the
+// confidence semantics are one implementation.
+declare module '*/production/ai-lines.cjs' {
+  export const MIN_COMPS_SAMPLE: number;
+  export const CONFIDENCE_LABELS: Record<string, string>;
+  export const NO_COMPS_STATEMENT: string;
+  export function lineConfidence(comps: { sample_size?: number } | null | undefined, minSample?: number): 'comps_backed' | 'thin_sample' | 'no_comps';
+  export function scopeHash(text: unknown): string;
+  export function linesInputsKey(lines: Array<{
+    kind?: string;
+    system_type_id?: string | null;
+    sqft?: number | null;
+    mvb?: boolean;
+    calc_price?: number | null;
+    scope_text?: string | null;
+  }>): string;
 }
 
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared

@@ -18660,7 +18660,8 @@ async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
     .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
-      'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars']),
+      'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
+      'estimate_ai_enabled', 'comps_min_sample']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -18677,6 +18678,10 @@ async function renderSettingsEstimates() {
   const lpLabel = (map.line_pricing_custom_label_default || '').trim() || 'Custom work';
   const lpReasonPct = Number.isFinite(Number(map.line_pricing_reason_threshold_pct)) && map.line_pricing_reason_threshold_pct !== '' && map.line_pricing_reason_threshold_pct != null ? Number(map.line_pricing_reason_threshold_pct) : 2;
   const lpReasonDollars = Number.isFinite(Number(map.line_pricing_reason_threshold_dollars)) && map.line_pricing_reason_threshold_dollars !== '' && map.line_pricing_reason_threshold_dollars != null ? Number(map.line_pricing_reason_threshold_dollars) : 100;
+  // Pricing intelligence (prompt 70). Defaults MUST match the estimator's
+  // catalog.ts and pec-estimate-ai.cjs: true / 3.
+  const aiOn = (map.estimate_ai_enabled || 'true') !== 'false';
+  const compsMin = Number(map.comps_min_sample) > 0 ? Number(map.comps_min_sample) : 3;
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -18736,6 +18741,19 @@ async function renderSettingsEstimates() {
         <input type="checkbox" id="lpSetBlock" ${lpBlock ? 'checked' : ''}> A line below the floor forces the save confirmation (off: the line only warns and goes red)
       </label>
       <div style="margin-top:10px"><button type="button" class="pec-btn ghost sm" id="lpSave">Save line pricing</button></div>
+    </div>
+    <div class="pec-card">
+      <div style="font-weight:700">Pricing intelligence</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The comps table and the AI price read (prompt 70: comps never cross systems, and the AI reads each line against its own comps with a confidence flag). The minimum sample is the one knob both share: below it the comps widen to same-system any-size and a line's read is flagged as a thin sample.</div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
+          <input type="checkbox" id="piSetAiOn" ${aiOn ? 'checked' : ''}> AI price read on
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">Minimum comps sample
+          <input type="number" id="piSetCompsMin" min="1" max="20" value="${compsMin}" style="width:70px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <button type="button" class="pec-btn ghost sm" id="piSave">Save</button>
+      </div>
     </div>`;
   wireSettingsTabs(root);
 
@@ -18775,6 +18793,17 @@ async function renderSettingsEstimates() {
       ]) await saveSetting(key, value);
     } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     showToast('Line pricing settings saved.');
+    renderSettings();
+  });
+  $('piSave').addEventListener('click', async () => {
+    const btn = $('piSave'); btn.disabled = true;
+    const minV = Math.floor(Number($('piSetCompsMin').value));
+    if (!Number.isFinite(minV) || minV < 1 || minV > 20) { showToast('Minimum comps sample must be between 1 and 20.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('estimate_ai_enabled', $('piSetAiOn').checked ? 'true' : 'false');
+      await saveSetting('comps_min_sample', minV);
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    showToast('Pricing intelligence settings saved.');
     renderSettings();
   });
 }
@@ -28342,6 +28371,15 @@ async function renderEstimateDetail(estimateId) {
               <div style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">AI price read</div>
               <div style="font-weight:800">${fmtMoney(snapAi.recommended_low)} to ${fmtMoney(snapAi.recommended_high)}</div>
               <div style="font-size:.84rem;line-height:1.5;margin-top:6px">${esc(snapAi.why || '')}</div>
+              ${Array.isArray(snapAi.lines) && snapAi.lines.length ? snapAi.lines.map(l => `
+                <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+                  <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap">
+                    <span style="font-weight:700;font-size:.82rem">${esc(l.label || l.line_key || 'Line')}</span>
+                    <span style="font-size:.62rem;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:${l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)'};color:${l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit'}">${esc(l.confidence_label || l.confidence || '')}</span>
+                  </div>
+                  <div style="font-weight:700;font-size:.82rem;margin-top:2px">${fmtMoney(l.recommended_low)} to ${fmtMoney(l.recommended_high)}</div>
+                  <div style="font-size:.8rem;line-height:1.5;margin-top:3px">${esc(l.why || '')}</div>
+                </div>`).join('') : ''}
               ${snapAi.history_available && snapAi.intent_read ? `<div style="font-size:.84rem;line-height:1.5;margin-top:6px"><strong>Customer signal (from Quo calls/texts):</strong> ${esc(snapAi.intent_read)}</div>` : ''}
               ${snapAi.history_available === false ? '<div style="color:var(--muted);font-size:.78rem;margin-top:6px">No call or text history on file for this customer.</div>' : ''}
               <div style="color:var(--muted);font-size:.68rem;margin-top:6px">${snapAi.generated_at ? 'Generated ' + esc(fmtRelativeTime(snapAi.generated_at)) + ' · ' : ''}the AI never set this price; the rep did.</div>

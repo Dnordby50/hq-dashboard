@@ -44,6 +44,11 @@ export type PricingConfig = {
   linePricingCustomLabelDefault: string;    // line_pricing_custom_label_default: prefilled label on a new custom line
   linePricingReasonThresholdPct: number;    // line_pricing_reason_threshold_pct (default 2)
   linePricingReasonThresholdDollars: number; // line_pricing_reason_threshold_dollars (default 100)
+  // Pricing intelligence (prompt 70). Defaults MUST match the migration seeds
+  // and pec-estimate-ai.cjs: true / 3. compsMinSample is the ONE knob shared
+  // by the comps ladder and the AI confidence flag.
+  estimateAiEnabled: boolean;  // estimate_ai_enabled: master switch for the AI price read
+  compsMinSample: number;      // comps_min_sample: below it the ladder widens and a line reads thin_sample
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
   customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
@@ -112,6 +117,8 @@ export async function loadCatalog(): Promise<Catalog> {
         'line_pricing_custom_label_default',
         'line_pricing_reason_threshold_pct',
         'line_pricing_reason_threshold_dollars',
+        'estimate_ai_enabled',
+        'comps_min_sample',
         'estimator_customer_search_enabled',
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
@@ -153,6 +160,8 @@ export async function loadCatalog(): Promise<Catalog> {
     linePricingCustomLabelDefault: String(settings['line_pricing_custom_label_default'] ?? '').trim() || 'Custom work',
     linePricingReasonThresholdPct: num('line_pricing_reason_threshold_pct', 2),
     linePricingReasonThresholdDollars: num('line_pricing_reason_threshold_dollars', 100),
+    estimateAiEnabled: String(settings['estimate_ai_enabled'] ?? 'true').toLowerCase() !== 'false',
+    compsMinSample: Math.max(1, num('comps_min_sample', 3)) || 3,
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&
