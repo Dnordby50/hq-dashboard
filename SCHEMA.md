@@ -28,6 +28,8 @@ Refreshed 2026-08-01 (Claude Code) after the prompt-62 migration (2026-08-06_pro
 
 Refreshed 2026-08-02 (Claude Code) after the prompt-64 migration (2026-08-07_prompt64_presentation.sql, applied via MCP and verified by re-query): new table `pec_presentation_sections` (presentation literature: brand + kind CHECKs, jsonb images of storage paths, sort_order, active; index idx_pec_presentation_brand_order; RLS policy pec_presentation_staff), two settings keys `presentation_reviews_count` (seeded '3') and `presentation_reviews_min_rating` (seeded '4') (settings 66 rows to 68), and NOT a public-schema table: the `pec-presentation` Storage bucket (public, image/jpeg+png+webp, 5 MB) with four pec_presentation_* storage.objects policies. Additive only.
 
+Refreshed 2026-08-05 (Claude Code) after the prompt-72 migration (2026-08-11_prompt72_optional_lines.sql, applied via MCP and verified by information_schema re-query): `estimate_areas.is_optional` (boolean not null default false, the source of truth for an optional area/custom line, mirrored onto estimate_line_items at save) and `estimate_areas.preselected` (boolean not null default true, whether an optional line starts ticked for the customer); `estimates.price_all_options` (numeric nullable, the every-line-at-full-value ceiling; `estimates.price` becomes the required-only floor while open and the signed total after acceptance); three `optional_lines_*` settings keys (enabled 'true', preselect_default 'true', gp_warn_pct '40' seeded from the live line-pricing floor; settings 78 rows to 81). Forward-only, NO backfill: pre-72 rows read is_optional=false everywhere and behave byte-identically.
+
 Refreshed 2026-08-04 (Claude Code) after the prompt-70 migration (2026-08-10_prompt70_pricing_intelligence.sql, applied via MCP and verified by re-query): two settings keys seeded, estimate_ai_enabled 'true' and comps_min_sample '3' (settings 76 rows to 78). Data-only: no table or column changed. Behavioral notes recorded here because they change what stored jsonb means: production/comps.js buildComps is HARD-FILTERED on system type since prompt 70 (the ladder is exact -> same-system any-size -> none; the old similar_size/any rules can no longer be produced but stay renderable for pre-70 pricing_snapshot rows), and estimates.pricing_snapshot.ai now carries a `lines` array (one recommendation per estimate line with a server-computed confidence flag) whose top-level recommended_low/high/why keep the legacy shape (the roll-up), so both vintages render on the estimate detail page.
 
 Refreshed 2026-08-04 (Claude Code) after the prompt-69 migration (2026-08-09_prompt69_per_line_pricing.sql, applied via MCP and verified by information_schema re-query): `estimate_areas` gained eight nullable/defaulted columns for per-line pricing and custom lines (`is_custom` boolean not null default false, `custom_label`, `custom_scope`, `custom_material_cost`, `custom_labor_hours`, `notes` [INTERNAL, never customer-facing], `calc_price`, `price_override`), and five `line_pricing_*` settings keys were seeded (line_pricing_gp_floor_pct '40' [copied from the live estimator_floor_gp_pct so day-one behavior is unchanged], line_pricing_block_below_floor 'false', line_pricing_custom_label_default 'Custom work', line_pricing_reason_threshold_pct '2', line_pricing_reason_threshold_dollars '100'; settings 71 rows to 76). Forward-only, NO backfill: existing estimate_areas rows keep every stored amount. A row with `is_custom=true` is a typed custom line (label/scope/material cost/labor hours typed; its price lives in `price_override`, `calc_price` stays null); on a calculator area `calc_price` is that line's own solved cost-plus price and `price_override` is a rep-typed per-line price (null = use calc_price).
@@ -200,9 +202,13 @@ RLS: enabled · rows: 6
 | notes | text | yes |  |
 | calc_price | numeric | yes |  |
 | price_override | numeric | yes |  |
+| is_optional | boolean | no | false |
+| preselected | boolean | no | true |
 
 PK: id
 FK: basecoat_product_id → pec_prod_products.id; estimate_id → estimates.id; flake_product_id → pec_prod_products.id; system_type_id → pec_prod_system_types.id; topcoat_product_id → pec_prod_products.id
+
+Optional lines (prompt 72, 2026-08-05): `is_optional` on the AREA row is the source of truth for whether an area/custom line is optional (the estimator reloads areas by position, never by id) and is MIRRORED onto the matching estimate_line_items row at save; every downstream read keeps using estimate_line_items.is_optional/selected_by_customer. `preselected` = whether an optional line starts TICKED for the customer (opt-out; add-ons stay opt-in and ignore these columns). Ignored while is_optional is false.
 
 Per-line pricing / custom lines (prompt 69, 2026-08-04): an estimate_areas row is the ONE line unit. Calculator area: `calc_price` = that line's own solved cost-plus price, `price_override` = rep-typed per-line price (null = use calc_price). Custom line: `is_custom=true`, typed `custom_label`/`custom_scope`/`custom_material_cost`/`custom_labor_hours`, typed price in `price_override`, `calc_price` null, no catalog products. `notes` is INTERNAL per-line context fed to scope generation, never rendered customer-facing. All nullable/defaulted, no backfill: pre-69 rows have them null/false and render unchanged.
 
@@ -311,6 +317,7 @@ RLS: enabled · rows: 9
 | is_custom | boolean | yes | false |
 | custom_scope | text | yes |  |
 | custom_price | numeric | yes |  |
+| price_all_options | numeric | yes |  |
 
 PK: id
 FK: customer_id → customers.id; job_id → jobs.id; lead_id → leads.id; pec_prod_job_id → pec_prod_jobs.id; system_type_id → pec_prod_system_types.id
@@ -1965,7 +1972,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 78
+RLS: enabled · rows: 81
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -1974,6 +1981,7 @@ RLS: enabled · rows: 78
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-08-05 (prompt 72), in Settings > Estimates under "Optional lines": optional_lines_enabled ('true'; a CREATE gate: when false the Optional checkbox does not render in the estimator, but already-optional lines on existing estimates still render and work), optional_lines_preselect_default ('true'; whether a newly ticked-Optional area or custom line starts pre-selected for the customer; add-ons always start unselected), optional_lines_gp_warn_pct ('40', seeded from the live line_pricing_gp_floor_pct; the required-only GP% threshold below which the estimator shows the amber warn-not-block notice). Inserted insert-only. Settings 78 rows to 81.
 Keys added 2026-08-04 (prompt 70), in Settings > Estimates under "Pricing intelligence": estimate_ai_enabled ('true'; the master switch for the AI price read, gated server-side in pec-estimate-ai.cjs AND client-side, 'false' returns a clean disabled response, never an error) and comps_min_sample ('3'; the ONE sample-size knob shared by the comps ladder in production/comps.js and the per-line AI confidence flag in production/ai-lines.cjs, so the panel and the flag can never disagree about what "thin" means). Inserted insert-only. Settings 76 rows to 78.
 Keys added 2026-08-04 (prompt 69), in Settings > Estimates under "Line pricing": line_pricing_gp_floor_pct ('40', seeded from the live estimator_floor_gp_pct; the per-line GP floor that turns a line red in the estimator), line_pricing_block_below_floor ('false', whether a below-floor LINE forces the save confirmation, or only warns), line_pricing_custom_label_default ('Custom work', the prefilled label on a new custom line), line_pricing_reason_threshold_pct ('2') and line_pricing_reason_threshold_dollars ('100') (a written reason is required when the final total lands under the calculated total by more than the GREATER of the two). Inserted insert-only. Settings 71 rows to 76.
 Keys added 2026-08-04 (prompt 68), in Settings > BusyBusy under "Project auto-create": busybusy_autocreate_enabled ('true'), busybusy_autocreate_radius_m ('150'), busybusy_autocreate_reminders ('false'). Settings 68 rows to 71.
