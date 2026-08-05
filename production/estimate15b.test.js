@@ -422,6 +422,111 @@ await section('AI price read: no lead_id -> history read is a no-op, never break
 });
 
 // ===========================================================================
+// pec-estimate-ai.cjs PER-LINE mode (prompt 70): one call, one rec per line,
+// server-computed confidence, custom no-comparables, settings gate, cache.
+// ===========================================================================
+const perLineBody = () => ({
+  estimate_id: null, lead_id: null, inputs_key: 'pl-key-1',
+  sqft: 1200, calc_price: 8350,
+  lines: [
+    { line_key: 'L0', kind: 'calc', label: 'Garage: Standard Flake', system_type_id: 'sys-flake', system_type_name: 'Standard Flake', sqft: 800, mvb: false, calc_price: 3995, target_gp_pct: 50,
+      comps: { rule: 'exact', rule_label: '4 jobs, same system', sample_size: 4, median_ppsf: 6.1, rows: [{ sqft: 900, price: 6000, ppsf: 6.67, gp_pct: 0.55 }] } },
+    { line_key: 'L1', kind: 'calc', label: 'Patio: Quartz', system_type_id: 'sys-quartz', system_type_name: 'Quartz', sqft: 400, mvb: false, calc_price: 2855, target_gp_pct: 55,
+      comps: { rule: 'same_system', rule_label: 'widened: same system, any size', sample_size: 1, median_ppsf: 7.5, rows: [{ sqft: 2000, price: 15000, ppsf: 7.5, gp_pct: null }] } },
+    { line_key: 'L2', kind: 'custom', label: 'Stair install', calc_price: 1500, scope_text: 'Coat a set of shop stairs. Handrails are not included.', comps: null },
+  ],
+});
+const perLineModelReply = () => ({
+  lines: [
+    { line_key: 'L0', recommended_low: 3995, recommended_high: 4400, why: 'Sits under the 4-comp median; the calculator already hits the 50% target.' },
+    { line_key: 'L1', recommended_low: 2855, recommended_high: 3100, why: 'Only one same-system comp; thin sample, so the calculator price anchors it.' },
+    // The model "forgets" the no-comparables statement on purpose: the server
+    // must add it deterministically.
+    { line_key: 'L2', recommended_low: 1500, recommended_high: 1700, why: 'The typed scope reads like a half-day install.', confidence: 'comps_backed' },
+  ],
+  rollup_why: 'The package holds its margins; the quartz line is the one to watch.',
+  intent_read: null,
+});
+
+await section('AI per-line: one call -> one rec per line + rollup, confidence is a SERVER fact', async () => {
+  const db = { estimates: [], settings: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  let capturedReq = null;
+  global.fetch = async (url, opts) => { capturedReq = JSON.parse(opts.body); return modelResponse(perLineModelReply()); };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(perLineBody()));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.success === true, 'per-line read succeeds');
+  const rec = body.recommendation;
+  ok(rec.lines.length === 3 && rec.lines.map((l) => l.line_key).join(',') === 'L0,L1,L2', 'one recommendation per line, in line order');
+  ok(rec.lines[0].confidence === 'comps_backed' && rec.lines[1].confidence === 'thin_sample' && rec.lines[2].confidence === 'no_comps',
+    'confidence computed server-side from each line\'s sample (4 / 1 / none)');
+  ok(rec.lines[2].confidence === 'no_comps', 'the model\'s claimed "comps_backed" on the custom line is OVERWRITTEN');
+  ok(/No comparable completed jobs exist for this custom line\./.test(rec.lines[2].why), 'custom line why carries the explicit no-comparables statement even when the model forgot it');
+  ok(rec.recommended_low === 3995 + 2855 + 1500 && rec.recommended_high === 4400 + 3100 + 1700, 'roll-up range = sum of the line ranges (server-derived)');
+  ok(rec.why === 'The package holds its margins; the quartz line is the one to watch.', 'roll-up why is the model paragraph');
+  ok(capturedReq.max_tokens === 2500, 'per-line calls get the larger token budget');
+  const userMsg = capturedReq.messages[0].content;
+  ok(/NONE\. No comparable jobs exist for this line\./.test(userMsg), 'the custom line\'s prompt states no comparables');
+  ok(/Handrails are not included/.test(userMsg), 'the custom line reasons from the typed scope');
+});
+
+await section('AI per-line: a model that omits a line is a hard error, never a partial render', async () => {
+  const db = { estimates: [], settings: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  const reply = perLineModelReply();
+  reply.lines = reply.lines.slice(0, 2); // drop the custom line
+  global.fetch = async () => modelResponse(reply);
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(perLineBody()));
+  ok(res.statusCode === 500 && /omitted line/.test(JSON.parse(res.body).detail || ''), 'missing line -> 500 naming the line');
+});
+
+await section('AI per-line: settings gate estimate_ai_enabled=false -> clean disabled, zero model calls', async () => {
+  const db = { estimates: [], settings: [{ key: 'estimate_ai_enabled', value: 'false' }], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  let modelCalls = 0;
+  global.fetch = async () => { modelCalls++; return modelResponse(perLineModelReply()); };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(perLineBody()));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.success === true && body.disabled === true, 'disabled is a clean success, not an error');
+  ok(modelCalls === 0, 'no model call when the read is turned off');
+});
+
+await section('AI per-line: comps_min_sample setting moves the thin/backed boundary', async () => {
+  const db = { estimates: [], settings: [{ key: 'comps_min_sample', value: '5' }], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  global.fetch = async () => modelResponse(perLineModelReply());
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(perLineBody()));
+  const rec = JSON.parse(res.body).recommendation;
+  ok(rec.lines[0].confidence === 'thin_sample', 'with min 5, a 4-comp line reads thin_sample (same knob as the ladder)');
+});
+
+await section('AI per-line: inputs_key row cache still short-circuits a reopen', async () => {
+  const cachedAi = { recommended_low: 8000, recommended_high: 9000, why: 'cached', lines: [], inputs_key: 'pl-key-1' };
+  const db = {
+    estimates: [{ id: 'est-pl', pricing_snapshot: { inputs_key: 'pl-key-1', ai: cachedAi } }],
+    settings: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [],
+  };
+  let modelCalls = 0;
+  global.fetch = async () => { modelCalls++; return modelResponse(perLineModelReply()); };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent({ ...perLineBody(), estimate_id: 'est-pl' }));
+  const body = JSON.parse(res.body);
+  ok(body.cached === true && body.recommendation.why === 'cached', 'matching inputs_key serves the stored read');
+  ok(modelCalls === 0, 'reopening never re-bills a model call');
+});
+
+await section('AI legacy single-recommendation body still works (deploy-skew safety)', async () => {
+  const db = { estimates: [], settings: [], leads: [], lead_events: [], pec_call_log: [], pec_sms_log: [] };
+  let capturedReq = null;
+  global.fetch = async (url, opts) => { capturedReq = JSON.parse(opts.body); return modelResponse({ recommended_low: 4800, recommended_high: 5200, why: 'legacy', intent_read: null }); };
+  const mod = loadFn('pec-estimate-ai.cjs', makeMockSb(db));
+  const res = await mod.handler(bearerEvent(aiBody(null)));
+  const body = JSON.parse(res.body);
+  ok(res.statusCode === 200 && body.recommendation.recommended_low === 4800 && !body.recommendation.lines, 'legacy body -> legacy single recommendation');
+  ok(capturedReq.max_tokens === 1000, 'legacy calls keep the small token budget');
+});
+
+// ===========================================================================
 // pec-public-estimate.cjs: optional line item EXCLUDED until the customer ticks
 // it, and the signed selection freezes onto the ROWS (not a jsonb replace).
 // ===========================================================================

@@ -3,8 +3,19 @@
 // sqft are both present.
 //
 // POST /.netlify/functions/pec-estimate-ai
-// Body: { estimate_id (nullable), inputs_key, system_type_name, sqft, mvb,
-//         calc_price, target_gp_pct,
+// Body (per-line, prompt 70): { estimate_id (nullable), lead_id, inputs_key,
+//         sqft (total), calc_price (total),
+//         lines: [{ line_key, kind: 'calc'|'custom', label, system_type_id,
+//                   system_type_name, sqft, mvb, calc_price, target_gp_pct,
+//                   scope_text, comps|null }] }
+//   One model call returns a recommendation PER LINE plus a short job-level
+//   roll-up whose range is the SUM of the line ranges (server-derived). Each
+//   line carries a SERVER-computed confidence flag (comps_backed /
+//   thin_sample / no_comps, from its comps sample vs comps_min_sample), never
+//   model-claimed. Custom lines have no comps by definition and their why
+//   must state it (deterministically enforced in ai-lines.cjs).
+// Body (legacy, kept for not-yet-refreshed PWA caches): { estimate_id,
+//         inputs_key, system_type_name, sqft, mvb, calc_price, target_gp_pct,
 //         comps: { rule, rule_label, sample_size, median_ppsf, rows[] } }
 //
 // The COMPS come from the client on purpose: they are computed by the same
@@ -39,6 +50,15 @@
 // Env: ANTHROPIC_API_KEY (shared), optional PEC_ESTIMATE_AI_MODEL.
 
 const { sb, badSecret, requireStaff } = require('./_pec-supabase.cjs');
+// Per-line read (prompt 70): prompt building, response validation, and the
+// SERVER-computed confidence flag live in the shared, test-covered module.
+const {
+  MIN_COMPS_SAMPLE,
+  LINES_SYSTEM_PROMPT,
+  buildLinesUserPrompt,
+  parseLinesRecommendation,
+  finalizeLinesRecommendation,
+} = require('../../production/ai-lines.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -222,15 +242,39 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body || '{}'); }
   catch { return jc(400, { success: false, error: 'Invalid JSON' }); }
 
+  // Per-line mode (prompt 70): body.lines = one entry per estimate line (see
+  // production/ai-lines.cjs for the shape). The legacy single-recommendation
+  // body (no lines) keeps working for any not-yet-refreshed PWA cache.
+  const perLine = Array.isArray(body.lines) && body.lines.length > 0;
   const sqft = Number(body.sqft);
   const calcPrice = Number(body.calc_price);
-  if (!body.system_type_name || !(sqft > 0) || !(calcPrice > 0)) {
+  if (perLine) {
+    for (const l of body.lines) {
+      if (!l || typeof l.line_key !== 'string' || !l.line_key || !(Number(l.calc_price) > 0)) {
+        return jc(400, { success: false, error: 'every line needs a line_key and a positive calc_price' });
+      }
+    }
+  } else if (!body.system_type_name || !(sqft > 0) || !(calcPrice > 0)) {
     return jc(400, { success: false, error: 'system_type_name, sqft and calc_price are required' });
   }
   const inputsKey = String(body.inputs_key || '');
   const estimateId = body.estimate_id || null;
 
   try {
+    // Settings gate (rule 12): estimate_ai_enabled kills the read cleanly
+    // (success + disabled, so the client shows a quiet note, not an error);
+    // comps_min_sample is the SAME knob the comps ladder uses, so the
+    // confidence flag and the panel can never disagree about what "thin" is.
+    // Missing rows fall back to the identical defaults the client uses.
+    let aiEnabled = true;
+    let minSample = MIN_COMPS_SAMPLE;
+    try {
+      const set = await sb('GET', '/settings?key=in.(estimate_ai_enabled,comps_min_sample)&select=key,value');
+      const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+      aiEnabled = String(cfg.estimate_ai_enabled || 'true') !== 'false';
+      if (Number(cfg.comps_min_sample) > 0) minSample = Number(cfg.comps_min_sample);
+    } catch (_) { /* defaults stand */ }
+    if (!aiEnabled) return jc(200, { success: true, disabled: true });
     // Row cache: reopening a saved estimate with unchanged inputs never
     // re-bills a model call.
     let existingSnapshot = null;
@@ -268,9 +312,10 @@ exports.handler = async (event) => {
         },
         body: JSON.stringify({
           model: MODEL,
-          max_tokens: 1000,
-          system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: buildUserPrompt(body, history) }],
+          // Per-line responses carry one why per line; size accordingly.
+          max_tokens: perLine ? 2500 : 1000,
+          system: perLine ? LINES_SYSTEM_PROMPT : SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: perLine ? buildLinesUserPrompt(body, history) : buildUserPrompt(body, history) }],
         }),
       });
       if (!res.ok) {
@@ -282,7 +327,14 @@ exports.handler = async (event) => {
       clearTimeout(timer);
     }
 
-    const recommendation = parseRecommendation(textFromMessage(out));
+    // Per-line: validate every sent line came back, stamp the SERVER-computed
+    // confidence per line, and derive the roll-up range as the sum of the
+    // line ranges (finalizeLinesRecommendation). The top-level keys keep the
+    // legacy shape (recommended_low/high, why) so the dashboard's snapshot
+    // panel renders either vintage.
+    const recommendation = perLine
+      ? finalizeLinesRecommendation(parseLinesRecommendation(textFromMessage(out), body.lines), body.lines, minSample)
+      : parseRecommendation(textFromMessage(out));
     // history_available is a SERVER fact, never a model claim, and with no
     // history the intent read is forced null so silence can never become
     // invented intent no matter what the model returned.

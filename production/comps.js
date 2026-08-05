@@ -117,16 +117,22 @@ const WINDOW_DAYS = 365;
 const SQFT_BAND = 0.25; // plus or minus 25%
 const MIN_SAMPLE = 3;
 
-// The widen ladder, in the order Dylan locked: exact rule first, then drop the
-// size filter, then drop the system filter, then everything completed in the
-// window. First level with >= MIN_SAMPLE wins; if none reaches it, the level
-// with the most rows wins (earlier level on ties). The result always names the
-// rule that produced it, so a thin or widened set is never silently presented
-// as an exact match.
-export function buildComps({ candidates, systemTypeId, sqft, now }) {
+// The widen ladder, HARD-FILTERED on system type (prompt 70): exact rule
+// first, then drop the size filter, and STOP. The old ladder kept widening
+// (any system at similar size, then any completed job), which is the actual
+// reason an AI suggestion read as square-foot-only: with ~35 completed jobs,
+// most estimates fell past the same-system rung and the median $/sqft blended
+// across systems. A quartz price built from polyaspartic comps is worse than
+// no comp at all, so zero same-system jobs now honestly returns ZERO comps
+// ('none') instead of a cross-system set. First level with >= minSample wins;
+// if neither reaches it, the level with more rows wins (exact on ties). The
+// result always names the rule that produced it. minSample is the
+// comps_min_sample setting (default 3), shared with the AI confidence flag.
+export function buildComps({ candidates, systemTypeId, sqft, now, minSample = MIN_SAMPLE }) {
   const nowMs = now instanceof Date ? now.getTime() : Number(now);
   const cutoff = nowMs - WINDOW_DAYS * DAY_MS;
   const target = Number(sqft) > 0 ? Number(sqft) : null;
+  const minN = Number(minSample) > 0 ? Number(minSample) : MIN_SAMPLE;
 
   const inWindow = (candidates || []).filter((c) => {
     if (!c.completed_date) return false;
@@ -142,13 +148,11 @@ export function buildComps({ candidates, systemTypeId, sqft, now }) {
   const levels = [
     { rule: 'exact',        filter: (c) => sameSystem(c) && similarSize(c) },
     { rule: 'same_system',  filter: sameSystem },
-    { rule: 'similar_size', filter: similarSize },
-    { rule: 'any',          filter: () => true },
   ];
 
   const sets = levels.map((l) => ({ rule: l.rule, rows: inWindow.filter(l.filter) }));
   const exactCount = sets[0].rows.length;
-  let chosen = sets.find((s) => s.rows.length >= MIN_SAMPLE);
+  let chosen = sets.find((s) => s.rows.length >= minN);
   if (!chosen) {
     chosen = sets.reduce((best, s) => (s.rows.length > best.rows.length ? s : best), sets[0]);
   }
@@ -188,7 +192,9 @@ export function compsGpCaveat(comps) {
 
 // Honest, human-readable statement of which rule produced the set. This string
 // is shown to the rep AND fed to the AI, so the two can never disagree about
-// how wide the net was.
+// how wide the net was. The 'similar_size' and 'any' cases are UNREACHABLE
+// from buildComps since the prompt-70 hard system filter, but stay renderable
+// because pre-70 pricing_snapshot rows stored those rule strings.
 export function compsRuleLabel(comps, systemName) {
   const n = comps.sample_size;
   const sys = systemName || 'this system';
@@ -207,6 +213,6 @@ export function compsRuleLabel(comps, systemName) {
     case 'any':
       return `widened: any completed job, last 12 months${exactNote}`;
     default:
-      return 'no completed jobs in the last 12 months to compare against';
+      return `no completed ${sys} jobs in the last 12 months to compare against`;
   }
 }
