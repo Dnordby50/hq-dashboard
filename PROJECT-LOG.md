@@ -2,6 +2,29 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-05 09:40] Cowork: prompt 72 scoped (optional line items on any line). The flag already exists; only the estimator's hardcoded false was stopping it.
+
+By: Cowork
+
+Changed: No code, no schema. Wrote claude-code-prompt-72-optional-line-items.md after 12 scoping questions with Dylan and a read of the estimator, the public estimate function, and SCHEMA.md.
+
+Why: Dylan's ask was "need to be able to make all line items optional when building an estimate."
+
+**The finding that shrank the build.** Optional lines are not missing, they are half-wired. `estimate_line_items.is_optional` and `.selected_by_customer` have existed since 2026-07-13, `includedTotal` / `freezeLineItems` / `applySelection` in pec-public-estimate.cjs already do the whole selection-and-freeze dance, and the public page already renders tickable cards that re-total live. The only thing blocking area and custom lines is three literal `isOptional: false` values in EstimatorScreen.tsx (:1759 whole-estimate custom, :1782 custom line, :1821 area line); the add-on loop right below them reads a real flag. So Part B is mostly replacing hardcodes with a checkbox, and the interesting work is downstream.
+
+**The real trap, and Dylan's call on it.** Since prompt 69 the per-line solve merges ONE kit-merged material plan across all areas (two bays each needing 0.44 of a basecoat kit buy one kit between them). A customer dropping a line keeps that shared-kit discount in the remaining lines' prices while the job now has to buy the full kit alone, so GP silently lands under what the estimate showed. Dylan's decision: **do not touch pricing, fix the material estimate.** The customer's total stays the plain sum of ticked lines and the rep's prices are honored exactly; at accept, the job is built from the SELECTED areas only, so pec_prod_areas (the recipe side that drives the material plan and the costing rollup) is computed on what was actually sold. The rep-facing defense is a required-only GP readout plus an amber warning when that number falls under the line-pricing floor, warn not block. Worth flagging for the next reader: "re-cost at accept" here means the material plan, NOT the price.
+
+**Dylan's other locked decisions:** any line can be optional, but an estimate cannot be SENT with zero required lines (that rep-side gate is what makes the customer floor automatic, since required lines are not tickable); rep decides per line, default required; optional AREA and CUSTOM lines start TICKED (opt-out) while add-ons keep today's unticked opt-in behavior; two stored numbers, `estimates.price` = required only for forecasting and a new `price_all_options` = the ceiling, pipeline reads "$8,200 (up to $12,400)"; selected lines only flow to the job with declined lines kept on the estimate as the record; `estimates.scope_of_work` is never rewritten after signature, the JOB side strips declined scope; declined lines are logged with no automation; and a declined line gets a one-click "Add to job" that opens the existing change-order modal in AREA mode at the originally quoted price.
+
+**Two constraints written into the prompt so the build does not trip on them.** (1) The estimator reloads areas by position and never selects area ids (estimateLoad.ts:130), so the rep's optional flag has to live on `estimate_areas.is_optional` and be mirrored onto the line item, not inferred by joining line items back to areas. (2) `production/calculator.js` is ESM and no .cjs function requires it today, so the accept path must NOT grow a third copy of the calculator to re-cost; the prompt instructs Claude Code to first check whether anything actually reads `estimates.gp_*` after acceptance, and to do any recompute in the browser layer if so.
+
+Files touched: claude-code-prompt-72-optional-line-items.md (new), PROJECT-LOG.md (this entry).
+Next steps: Dylan runs prompt 72 in Claude Code. Prompt 71 (SalesAsk surfaces + modal close) is still queued ahead of it and its Part 0 migration is still unapplied.
+Handoff to Cowork: None yet. If prompt 72 ships, the live verification in its own section requires accepting a REAL estimate, which fires office notifications and may create a BusyBusy project; check `busybusy_autocreate_enabled` first and archive any test project with the native `archive_project` action, not the broken `busybusy_archive_project_by_number` code action.
+Handoff to Dylan: None beyond running the prompt.
+
+---
+
 ## [2026-08-05 07:20] Cowork: prompt 71 scoped (SalesAsk surfaces + global modal close). Found the SalesAsk migration was NEVER applied to prod.
 By: Cowork
 Changed: No code, no schema. Wrote claude-code-prompt-71-salesask-surfaces-modal-close.md after 12 scoping questions with Dylan and four read-only live queries against prod (zdfpzmmrgotynrwkeakd) via the Supabase MCP.
