@@ -8909,6 +8909,8 @@ async function renderCustomerDetail(id) {
       </div>
     </div>
 
+    <div id="custDeclinedHost"></div>
+
     <div class="pec-card">
       <h3>Active jobs <span style="color:var(--muted);font-size:.7rem;font-weight:400">(${activeJobs.length})</span></h3>
       <div style="display:flex;flex-direction:column;gap:6px">${jobRowsHtml(activeJobs)}</div>
@@ -8991,6 +8993,35 @@ async function renderCustomerDetail(id) {
   mountCustomerSmsThread(root.querySelector('#pecCustSmsCard'), c);
   mountCustomerCalls(root.querySelector('#pecCustCallsCard'), c);
   mountCustomerSalesAsk(root.querySelector('#pecCustSalesAskCard'), c);
+  // Declined options on this customer's accepted estimates (prompt 72 F4):
+  // logged and shown, nothing fires (decision 11). Degrades to nothing.
+  (async () => {
+    const el = root.querySelector('#custDeclinedHost');
+    if (!el) return;
+    try {
+      const jobIds = [...activeJobs, ...completedJobs].map(j => j.id).filter(Boolean);
+      if (!jobIds.length) return;
+      const r = await supabase.from('estimates')
+        .select('estimate_number,estimate_line_items(label,total,is_optional,selected_by_customer)')
+        .in('job_id', jobIds).eq('status', 'accepted').is('deleted_at', null);
+      if (r.error) return;
+      const lines = [];
+      for (const est of (r.data || [])) {
+        const no = est.estimate_number != null ? 'EST-' + est.estimate_number : 'an estimate';
+        for (const li of (est.estimate_line_items || [])) {
+          if (li && li.is_optional === true && li.selected_by_customer !== true) {
+            lines.push(`Declined on ${esc(no)}: ${esc(li.label || 'Line')}, ${fmtMoney(li.total)}`);
+          }
+        }
+      }
+      if (!lines.length) return;
+      el.innerHTML = `<div class="pec-card">
+        <h3>Declined options</h3>
+        <div style="font-size:.82rem;line-height:1.7">${lines.map(l => `<div>${l}</div>`).join('')}</div>
+        <div style="color:var(--muted);font-size:.7rem;margin-top:6px">Recorded from what the customer left unticked at signature. Add any of them back from the job page's Declined options card.</div>
+      </div>`;
+    } catch (_) { /* card simply hides */ }
+  })();
   // Email history for this customer (prompt 36; async, read-only).
   mountRecordEmailLog(root.querySelector('#pecCustEmailsCard'), { customerId: c.id });
 }
@@ -10497,7 +10528,16 @@ function pecDownloadEstimatePdf(job, areas, total, sysNameFor) {
 // Both modes mint a pec_change_order_signatures row (token -> /co/<token>,
 // the native approval page). Billing hits at save (Dylan: signature is
 // documentation, not a gate).
-async function openChangeOrderModal(jobId, { onSaved } = {}) {
+// prefill (prompt 72 F3, declined-line add-back): { title, systemTypeId,
+// sqft, price, description, quotedNote, flakeProductId, basecoatProductId,
+// topcoatProductId, topcoatCureSpeed }. Opens AREA mode prefilled at the
+// ORIGINALLY quoted price (priceTouched, so the auto-pricer never overwrites
+// it); the material cost still recomputes at CURRENT catalog cost through the
+// normal change-order path, which is where "honor the price, re-cost the
+// materials" lands for an add-back. A declined CUSTOM line has no system, so
+// it prefills SIMPLE mode (title + amount + detail) instead: area mode
+// requires a recipe a custom line never had.
+async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
   openModal(`
     <h3 style="margin-top:0">Add change order</h3>
     <div class="pec-empty" data-co-loading>Loading pricing data…</div>
@@ -10660,6 +10700,30 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
       priceEl.addEventListener('input', () => { priceTouched = true; hintEl.textContent = 'Manual price.'; });
     }
 
+    // Declined-line add-back prefill (prompt 72 F3). Applied AFTER the
+    // listeners are wired so nothing re-fires recompute over the quoted
+    // price; priceTouched locks it, and the quoted-on note replaces the
+    // auto-price hint. The rep can edit everything before saving.
+    if (prefill) {
+      if (prefill.systemTypeId && areaModeAvailable) {
+        setMode('area');
+        titleEl.value = prefill.title || '';
+        sysEl.value = prefill.systemTypeId;
+        sqftEl.value = prefill.sqft != null && Number(prefill.sqft) > 0 ? Number(prefill.sqft) : '';
+        if (Number(prefill.price) > 0) { priceEl.value = Number(prefill.price); priceTouched = true; }
+        descEl.value = prefill.description || '';
+        hintEl.textContent = prefill.quotedNote || '';
+      } else {
+        setMode('simple');
+        const st = body.querySelector('[data-co-s-title]');
+        const sd = body.querySelector('[data-co-s-desc]');
+        const sa = body.querySelector('[data-co-s-amt]');
+        if (st) st.value = prefill.title || '';
+        if (sd) sd.value = prefill.description || '';
+        if (sa && Number(prefill.price) > 0) sa.value = Number(prefill.price);
+      }
+    }
+
     // Additional-coat pane (prompt 44): picking an area fills its sqft; the
     // price prefills from the SAME estimator pricing engine, priced as the
     // coat's system at that sqft, and stays freely editable INCLUDING $0
@@ -10792,8 +10856,16 @@ async function openChangeOrderModal(jobId, { onSaved } = {}) {
       try {
         // 1. The scope row. order_index 500+ keeps CO areas out of the editor
         // range (0..n) so the replace RPC's spared rows can never collide.
+        // Add-back prefill (prompt 72): the declined area's product picks and
+        // cure speed ride onto the CO row, but only while the system still
+        // matches the quote (a changed system voids the old picks).
+        const carry = prefill && prefill.systemTypeId === sid ? {
+          ...(prefill.flakeProductId ? { flake_product_id: prefill.flakeProductId } : {}),
+          ...(prefill.basecoatProductId ? { basecoat_product_id: prefill.basecoatProductId } : {}),
+          ...(prefill.topcoatCureSpeed ? { topcoat_cure_speed: prefill.topcoatCureSpeed } : {}),
+        } : {};
         const ins = await withFreshWrite(() => supabase.from('job_areas')
-          .insert({ job_id: jobId, name: title, sqft, system_type_id: sid, price: invRound2(price), description: description || null, order_index: 500 + coCount, is_change_order: true })
+          .insert({ job_id: jobId, name: title, sqft, system_type_id: sid, price: invRound2(price), description: description || null, order_index: 500 + coCount, is_change_order: true, ...carry })
           .select().single(), { label: 'co-area-insert' });
         if (ins.error) throw ins.error;
         // 2. The billing moment: same line + price write as simple mode. If it
@@ -10900,6 +10972,65 @@ async function pushChangeOrderMaterialsToProd(job, coArea, inputs) {
   } catch (err) {
     console.warn('[pec] CO materials push:', err);
     showToast('Change order saved, but costing materials could not be added: ' + (err?.message || err), { ttl: 6000 });
+  }
+}
+
+// "Declined options" card (prompt 72 F2/F3): on a job created from an
+// estimate with declined lines, list what was offered and refused (label,
+// scope, quoted price, date quoted) with a one-click Add to job that opens
+// the change-order modal prefilled from the declined estimate area at the
+// ORIGINALLY quoted price (decision 12). Logged, nothing fires (decision 11).
+// Degrades to nothing when the job has no estimate or nothing was declined.
+async function mountDeclinedOptionsCard(el, { jobId, onChanged }) {
+  if (!el) return;
+  try {
+    const r = await supabase.from('estimates')
+      .select('id,estimate_number,sent_at,accepted_at,estimate_line_items(id,label,description,total,is_optional,selected_by_customer,estimate_area_id),estimate_areas(id,name,sqft,system_type_id,is_custom,custom_label,flake_product_id,basecoat_product_id,topcoat_product_id,topcoat_cure_speed)')
+      .eq('job_id', jobId).is('deleted_at', null).limit(1);
+    if (r.error || !r.data || !r.data.length) { el.innerHTML = ''; return; }
+    const est = r.data[0];
+    const declined = (est.estimate_line_items || []).filter(li => li && li.is_optional === true && li.selected_by_customer !== true);
+    if (!declined.length) { el.innerHTML = ''; return; }
+    const areaById = Object.fromEntries((est.estimate_areas || []).map(a => [a.id, a]));
+    const quotedDate = String(est.sent_at || est.accepted_at || '').slice(0, 10);
+    const estNo = est.estimate_number != null ? 'EST-' + est.estimate_number : 'the estimate';
+    el.innerHTML = `<div class="pec-card">
+      <h3>Declined options <span style="color:var(--muted);font-size:.7rem;font-weight:400">(${declined.length})</span></h3>
+      <div style="color:var(--muted);font-size:.74rem;margin-bottom:8px">Offered on ${esc(estNo)} and not selected at signature. Add to job opens a change order prefilled at the originally quoted price; materials re-cost at current catalog cost.</div>
+      ${declined.map(li => `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:8px 0;border-top:1px solid var(--rd-line,var(--border))">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">${esc(li.label || 'Line')}</div>
+            ${li.description ? `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View quoted scope</summary><div style="color:var(--muted);font-size:.74rem;white-space:pre-wrap;margin-top:4px;max-height:200px;overflow-y:auto">${esc(li.description)}</div></details>` : ''}
+            <div style="color:var(--muted);font-size:.72rem;margin-top:2px">Quoted${quotedDate ? ' ' + esc(quotedDate) : ''} at ${fmtMoney(li.total)}</div>
+          </div>
+          <button class="pec-btn sm" data-declined-add="${esc(li.id)}">Add to job</button>
+        </div>`).join('')}
+    </div>`;
+    el.querySelectorAll('[data-declined-add]').forEach(btn => btn.addEventListener('click', () => {
+      const li = declined.find(x => String(x.id) === btn.dataset.declinedAdd);
+      if (!li) return;
+      const area = li.estimate_area_id ? areaById[li.estimate_area_id] : null;
+      const quotedNote = `Quoted${quotedDate ? ' ' + quotedDate : ''} at ${fmtMoney(li.total)}. Edit freely; materials re-cost at current catalog cost.`;
+      openChangeOrderModal(jobId, {
+        onSaved: onChanged,
+        prefill: {
+          title: area ? (area.is_custom ? (area.custom_label || area.name) : area.name) : (li.label || ''),
+          systemTypeId: area && !area.is_custom ? area.system_type_id : null,
+          sqft: area && area.sqft != null ? Number(area.sqft) : null,
+          price: Number(li.total) || null,
+          description: li.description || '',
+          quotedNote,
+          flakeProductId: area ? area.flake_product_id : null,
+          basecoatProductId: area ? area.basecoat_product_id : null,
+          topcoatProductId: area ? area.topcoat_product_id : null,
+          topcoatCureSpeed: area ? area.topcoat_cure_speed : null,
+        },
+      });
+    }));
+  } catch (err) {
+    console.warn('[pec] declined options card:', err);
+    el.innerHTML = '';
   }
 }
 
@@ -16093,11 +16224,13 @@ async function renderJobDetailInner(id) {
       // recalcEstimateTotal like the price-typing path does).
       recalcEstimateTotal();
       mountChangeOrderCard(host.querySelector('[data-co-card]'), { jobId: job.id, customerId: job.customer_id, lineItems: job.line_items, onChanged: () => renderJobDetail(job.id) });
+      mountDeclinedOptionsCard(host.querySelector('[data-declined-card]'), { jobId: job.id, onChanged: () => renderJobDetail(job.id) });
     };
 
     // One shared paint for both modes: Line Items card, then the change-order
-    // boxes mount slot, then Totals. Finalized just skips the editing wiring.
-    host.innerHTML = lineItemsCard + '<div data-co-card></div>' + totalsCard;
+    // boxes mount slot, then the declined-options slot (prompt 72), then
+    // Totals. Finalized just skips the editing wiring.
+    host.innerHTML = lineItemsCard + '<div data-co-card></div>' + '<div data-declined-card></div>' + totalsCard;
 
     wireEstPdfBtn();
 
