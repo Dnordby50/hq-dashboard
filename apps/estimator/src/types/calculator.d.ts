@@ -235,6 +235,25 @@ declare module '*/production/ai-lines.cjs' {
   }>): string;
 }
 
+// Optional-lines money rules (repo-root production/optional-lines.cjs,
+// prompt 72), shared with pec-public-estimate.cjs and the fixture tests.
+declare module '*/production/optional-lines.cjs' {
+  export const SEND_GATE_MESSAGE: string;
+  export function isOptionalLine(li: unknown): boolean;
+  export function isDeclinedLine(li: unknown): boolean;
+  export function splitLineTotals(items: Array<{ total: number; is_optional?: boolean; selected_by_customer?: boolean }>): {
+    requiredOnly: number;
+    allIn: number;
+    opening: number;
+  };
+  export function sendGateError(items: unknown[]): string | null;
+  export function acceptSelectionInvalid(items: unknown[]): boolean;
+  export function declinedAreaIdSet(items: unknown[]): Set<string>;
+  export function filterAreasForJob<A>(areas: A[], declinedIds: Set<string> | string[]): A[];
+  export function declinedNoteLine(declinedLines: unknown[]): string | null;
+  export function selectedScopeDoc(includedLines: unknown[]): string;
+}
+
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared
 // with pec-estimate-scope.cjs so answer keys match across client and server.
 declare module '*/production/scope.cjs' {

@@ -5,7 +5,6 @@ import {
   applyLineSellPrice,
   computePerLinePricing,
   customLinePricing,
-  lineItemsGp,
   lineItemsTotal,
   roundEstimatePrice,
   type Area,
@@ -37,6 +36,10 @@ import { compsForAi, fetchAiRecommendation, type AiLineInput, type AiRecommendat
 // Per-line AI inputs key (prompt 70): the same CJS module pec-estimate-ai.cjs
 // requires, so client and server can never disagree about what re-keys a read.
 import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
+// Optional-lines money rules (prompt 72): the same CJS module
+// pec-public-estimate.cjs uses, so the rep's totals and the customer's page
+// can never disagree about what required-only / all-in / opening mean.
+import { splitLineTotals } from '../../../../../production/optional-lines.cjs';
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
@@ -65,8 +68,14 @@ type AreaForm = {
   customScope: string;
   customMaterialCost: string;
   customLaborHours: string;
+  // Optional lines (prompt 72): the rep decides per line, default required.
+  // preselected = whether an optional line starts TICKED for the customer
+  // (opt-out; ignored while optional is false). An area's MVB rides its area:
+  // dropping the line drops its barrier, so MVB gets no separate control.
+  optional: boolean;
+  preselected: boolean;
 };
-const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '' };
+const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
 // the per-area MVB checkbox is redundant there and is hidden.
 const MVB_ONLY_SYSTEM_NAME = 'MVB Only';
@@ -341,6 +350,8 @@ export default function EstimatorScreen({
             customScope: a.customScope ?? '',
             customMaterialCost: a.customMaterialCost ?? '',
             customLaborHours: a.customLaborHours ?? '',
+            optional: a.isOptional === true,
+            preselected: a.preselected !== false,
           }))
         : null,
       makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields }),
@@ -578,10 +589,14 @@ export default function EstimatorScreen({
     const sections: string[] = [];
     const calcCount = lineForms.filter(({ a }) => !a.isCustom).length;
     lineForms.forEach(({ a }, i) => {
+      // Optional lines carry the SAME "(optional)" head convention the
+      // add-on sections already use (prompt 72 Part G): one phrasing, so the
+      // signed document says which parts were optional.
+      const optTag = a.optional ? ' (optional)' : '';
       if (a.isCustom) {
         // A custom line's typed scope is used VERBATIM (prompt 69, Part E):
         // the scope writer never rewrites it, and neither does this preview.
-        const label = a.name.trim() || customLabelDefault;
+        const label = (a.name.trim() || customLabelDefault) + optTag;
         const body = a.customScope.trim();
         sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
         return;
@@ -590,7 +605,7 @@ export default function EstimatorScreen({
       if (!sys) return;
       const isMvbOnly = sys.name === MVB_ONLY_SYSTEM_NAME;
       const name = a.name || `Area ${i + 1}`;
-      const label = calcCount > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`;
+      const label = (calcCount > 1 ? `${name}: ${sys.name}` : isMvbOnly ? sys.name : `${sys.name} floor coating system`) + optTag;
       const tpl = (a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template;
       const body = tpl ? scopeApplyAnswers(tpl, scopeAnswers, sys.name) : `${Math.round(Number(a.sqft) || 0)} sqft`;
       sections.push(body ? `## ${label}\n\n${body}` : `## ${label}`);
@@ -885,23 +900,80 @@ export default function EstimatorScreen({
   // The system-portion sell price: the typed number in custom mode, else the
   // engine/override number. Add-on lines price on top of either.
   const sellPrice = isCustom ? customPrice : finalSell;
-  const totalPrice = sellPrice != null ? r2(sellPrice + addonsBaseTotal) : null;
-  const totalAllOptions = sellPrice != null ? r2(sellPrice + addonsAllTotal) : null;
+
+  // ---- Optional-lines money (prompt 72) ------------------------------------
+  // ONE shaped list (area/custom lines at their FINAL amounts with the rep's
+  // optional/preselected flags, then add-ons which stay opt-in/unselected)
+  // feeds three totals with three DIFFERENT meanings:
+  //   required-only = the guaranteed floor (estimates.price while open),
+  //   all-in        = every line at full value (estimates.price_all_options),
+  //   opening       = required + pre-selected optional = the HEADLINE number,
+  //                   because it is exactly what the customer sees when the
+  //                   public page opens (and what the send email quotes).
+  // Pre-72 estimates (nothing optional): opening equals today's total and
+  // every GP number lands where it always has.
+  const shapedLines = useMemo(() => {
+    const commFrac = config.standardCommissionPct / 100;
+    const rows = lineRows.map((r, k) => {
+      const a = areas[r.formIdx];
+      const m = lineMoney ? lineMoney[k] : null;
+      return {
+        total: finalLineAmounts ? finalLineAmounts[k] : (r.current ?? 0),
+        is_optional: a.optional === true,
+        selected_by_customer: a.optional !== true || a.preselected !== false,
+        gp: m && m.gpDollars != null ? Number(m.gpDollars) : 0,
+        laborDollars: m && m.laborDollars != null ? Number(m.laborDollars) : 0,
+        commissionDollars: m && m.commissionDollars != null ? Number(m.commissionDollars) : 0,
+        budgetedHours: m && m.budgetedHours != null ? Number(m.budgetedHours) : 0,
+      };
+    });
+    const addons = addonMoneyItems.map((li) => ({
+      total: li.total,
+      is_optional: li.is_optional,
+      selected_by_customer: li.selected_by_customer === true,
+      gp: li.total - li.qty * li.unit_cost - commFrac * li.total,
+      laborDollars: 0,
+      commissionDollars: commFrac * li.total,
+      budgetedHours: 0,
+    }));
+    return [...rows, ...addons];
+  }, [lineRows, areas, lineMoney, finalLineAmounts, addonMoneyItems, config.standardCommissionPct]);
+  const lineTotalsSplit = useMemo(() => splitLineTotals(shapedLines), [shapedLines]);
+  const hasOptionalLines = useMemo(() => shapedLines.some((l) => l.is_optional), [shapedLines]);
+  const moneyOver = useCallback((pred: (l: (typeof shapedLines)[number]) => boolean) => {
+    const set = shapedLines.filter(pred);
+    const gp = r2(set.reduce((s, l) => s + l.gp, 0));
+    const labor = r2(set.reduce((s, l) => s + l.laborDollars, 0));
+    const comm = r2(set.reduce((s, l) => s + l.commissionDollars, 0));
+    const hours = r2(set.reduce((s, l) => s + l.budgetedHours, 0));
+    return { gp, labor, comm, hours: hours > 0 ? hours : null };
+  }, [shapedLines]);
+  const openingMoney = useMemo(() => moneyOver((l) => !l.is_optional || l.selected_by_customer), [moneyOver]);
+  const requiredMoney = useMemo(() => moneyOver((l) => !l.is_optional), [moneyOver]);
+  const moneyReady = !isCustom && hasPrice && linesReady && adjusted != null;
+
+  const totalPrice = isCustom
+    ? (sellPrice != null ? r2(sellPrice + addonsBaseTotal) : null)
+    : (moneyReady ? lineTotalsSplit.opening : null);
+  const totalAllOptions = isCustom
+    ? (sellPrice != null ? r2(sellPrice + addonsAllTotal) : null)
+    : (moneyReady ? lineTotalsSplit.allIn : null);
+  const requiredOnlyTotal = moneyReady ? lineTotalsSplit.requiredOnly : null;
+  const requiredGpPct = requiredOnlyTotal != null && requiredOnlyTotal > 0 ? requiredMoney.gp / requiredOnlyTotal : null;
+  // Decision 8: warn (never block) when the required-only GP lands under the
+  // optional-lines threshold. Only meaningful once something IS optional.
+  const optionalGpWarn = hasOptionalLines && requiredGpPct != null &&
+    requiredGpPct * 100 < (Number(config.optionalLinesGpWarnPct ?? config.linePricingGpFloorPct ?? 40) - 0.05);
+
   // Custom mode: commission is well-defined (standard pct of the total), but
   // GP is NOT (there is no cost basis for the custom work), so GP shows as
   // not-applicable instead of a made-up number, and never blocks the save.
   const customCommission = isCustom && totalPrice != null ? r2((config.standardCommissionPct / 100) * totalPrice) : null;
-  const addonGp = useMemo(
-    () => lineItemsGp(addonMoneyItems, config.standardCommissionPct),
-    [addonMoneyItems, config.standardCommissionPct],
-  );
-  const combinedGpDollars = adjusted && adjusted.gpDollars != null ? r2(adjusted.gpDollars + addonGp) : null;
+  const combinedGpDollars = moneyReady ? openingMoney.gp : null;
   const combinedGpPct = combinedGpDollars != null && totalPrice != null && totalPrice > 0 ? combinedGpDollars / totalPrice : null;
-  const combinedCommission = adjusted && adjusted.commissionDollars != null
-    ? r2(adjusted.commissionDollars + (config.standardCommissionPct / 100) * addonsBaseTotal)
-    : null;
-  const combinedGpPerHour = combinedGpDollars != null && adjusted?.budgetedHours != null && adjusted.budgetedHours > 0
-    ? r2(combinedGpDollars / adjusted.budgetedHours)
+  const combinedCommission = moneyReady ? openingMoney.comm : null;
+  const combinedGpPerHour = combinedGpDollars != null && openingMoney.hours != null && openingMoney.hours > 0
+    ? r2(combinedGpDollars / openingMoney.hours)
     : null;
 
   // GP threshold: the sqft-weighted target across the areas' systems (the
@@ -1680,6 +1752,8 @@ export default function EstimatorScreen({
             // Decision 5/1: a custom line's typed price lives in
             // price_override (calc_price stays null: nothing was calculated).
             priceOverride: row.current,
+            isOptional: a.optional === true,
+            preselected: a.preselected !== false,
           };
         }
         const d = deriveProducts(a.slotValues, a.systemTypeId);
@@ -1721,6 +1795,8 @@ export default function EstimatorScreen({
           // (null = sell at calc_price). The job discount stays estimate-level.
           calcPrice: row.calcPrice,
           priceOverride: row.override,
+          isOptional: a.optional === true,
+          preselected: a.preselected !== false,
         };
       });
 
@@ -1767,6 +1843,12 @@ export default function EstimatorScreen({
           const amt = finalLineAmounts ? finalLineAmounts[k] : (row.current ?? 0);
           const money = lineMoney ? lineMoney[k] : null;
           const unitCost = money && money.gpDollars != null ? r2(amt - money.gpDollars) : 0;
+          // Optional lines (prompt 72): the rep's per-line flag, mirrored
+          // from the area row. A required line stays selected (it is part of
+          // the job); an optional line's opening tick is the rep's
+          // preselected choice (opt-out for area/custom lines, decision 3).
+          const lineOptional = a.optional === true;
+          const lineSelected = !lineOptional || a.preselected !== false;
           if (row.kind === 'custom') {
             lineItems.push({
               addonId: null,
@@ -1779,8 +1861,8 @@ export default function EstimatorScreen({
               unitPrice: amt,
               unitCost,
               total: amt,
-              isOptional: false,
-              selectedByCustomer: true,
+              isOptional: lineOptional,
+              selectedByCustomer: lineSelected,
               sortOrder: k,
             });
             return;
@@ -1799,8 +1881,8 @@ export default function EstimatorScreen({
             unitPrice: amt,
             unitCost,
             total: amt,
-            isOptional: false,
-            selectedByCustomer: true,
+            isOptional: lineOptional,
+            selectedByCustomer: lineSelected,
             sortOrder: k,
           });
         });
@@ -1827,6 +1909,13 @@ export default function EstimatorScreen({
       // Custom totals: the typed price sells; commission is standard pct of
       // the total; GP has no cost basis, so it stays honestly null (shown as
       // not-applicable, never a blocker).
+      // Decision 7: while the estimate is OPEN, estimates.price stores the
+      // REQUIRED-only floor (what pipeline and forecasting count) and every
+      // stored money bucket follows that same set so the numbers qualify the
+      // number they sit next to. price_all_options stores the ceiling. On an
+      // estimate with nothing optional the two are equal and every value
+      // lands exactly where it always has. Accept later overwrites price
+      // with the signed total (existing behavior, unchanged).
       const totals: EstimateTotals = isCustom
         ? {
             price: totalPrice,
@@ -1838,14 +1927,15 @@ export default function EstimatorScreen({
             budgetedHours: null,
           }
         : {
-            price: totalPrice,
-            gpDollars: combinedGpDollars,
-            gpPct: combinedGpPct,
-            gpPerHour: combinedGpPerHour,
-            laborBudget: adjusted ? adjusted.laborDollars : null,
-            commissionDollars: combinedCommission,
-            budgetedHours: adjusted ? adjusted.budgetedHours : null,
+            price: requiredOnlyTotal,
+            gpDollars: requiredMoney.gp,
+            gpPct: requiredGpPct,
+            gpPerHour: requiredMoney.hours != null && requiredMoney.hours > 0 ? r2(requiredMoney.gp / requiredMoney.hours) : null,
+            laborBudget: requiredMoney.labor,
+            commissionDollars: requiredMoney.comm,
+            budgetedHours: requiredMoney.hours,
           };
+      const priceAllOptions = isCustom ? totalPrice : totalAllOptions;
 
       const pricingSnapshot: Record<string, unknown> | null = isCustom ? null : {
         inputs_key: inputsKey,
@@ -1913,6 +2003,9 @@ export default function EstimatorScreen({
         // past the threshold; a recorded one is kept regardless. Both null in
         // custom mode: the typed price is not an override of anything.
         calcPrice: isCustom ? null : calcTotal,
+        // Decision 7: the ceiling (every line at full value). Equal to
+        // totals.price on an estimate with nothing optional.
+        priceAllOptions,
         priceOverride: !isCustom && (priceMoved || shortfall >= 0.5) && overrideReason.trim()
           ? { reason: overrideReason.trim(), by: createdBy }
           : null,
@@ -1983,7 +2076,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -2349,6 +2442,34 @@ export default function EstimatorScreen({
               const lm = row && lineMoney ? lineMoney[rowIdx] : null;
               const finalAmt = row && finalLineAmounts ? finalLineAmounts[rowIdx] : null;
               const lineRed = lm?.gpPct != null && lm.gpPct * 100 < lineFloorPct - 0.05;
+              // Optional-line controls (prompt 72): same control and wording
+              // as the add-on checkbox so the rep learns one concept. The
+              // enabled setting is a CREATE gate: an already-optional line
+              // keeps its controls so it can still be managed. Ticking
+              // Optional seeds the preselect from Settings. An area's MVB
+              // rides its area (dropping the line drops its barrier), so MVB
+              // gets no separate control.
+              const optionalControls = (config.optionalLinesEnabled !== false || a.optional) && (
+                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 4 }}>
+                  <label className="check addon-opt">
+                    <input
+                      type="checkbox"
+                      checked={a.optional}
+                      onChange={(e) => setArea(i, {
+                        optional: e.target.checked,
+                        preselected: e.target.checked ? (config.optionalLinesPreselectDefault !== false) : a.preselected,
+                      })}
+                    />
+                    <span>Optional (customer picks)</span>
+                  </label>
+                  {a.optional && (
+                    <label className="check addon-opt">
+                      <input type="checkbox" checked={a.preselected} onChange={(e) => setArea(i, { preselected: e.target.checked })} />
+                      <span>Starts selected for the customer</span>
+                    </label>
+                  )}
+                </div>
+              );
               const moneyStrip = row && row.current != null && (
                 <div className="line-money" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline', fontSize: '.8rem', marginTop: 6 }}>
                   {row.kind === 'calc' && (
@@ -2408,6 +2529,7 @@ export default function EstimatorScreen({
                     {Number(a.priceInput) > 0 && !(Number(a.customMaterialCost) > 0) && !(Number(a.customLaborHours) > 0) && (
                       <p className="warn addon-warn">No material cost or hours on this line: it books as pure margin and inflates GP until they are typed.</p>
                     )}
+                    {optionalControls}
                     {moneyStrip}
                     <label className="field" style={{ marginTop: 6 }}><span>Internal notes (never shown to the customer)</span>
                       <input value={a.notes} onChange={(e) => setArea(i, { notes: e.target.value })} placeholder="Context for this line…" />
@@ -2456,6 +2578,7 @@ export default function EstimatorScreen({
                       </label>
                     </div>
                   )}
+                  {optionalControls}
                   {moneyStrip}
                   {Number(a.sqft) > 0 && (
                     <label className="field" style={{ marginTop: 6 }}><span>Internal notes (fed to the scope writer, never shown to the customer)</span>
@@ -2755,8 +2878,21 @@ export default function EstimatorScreen({
             {hasPrice && pricing && adjusted && (
               <>
                 <div className="price">{money(totalPrice)}</div>
-                {hasOptionalAddons && totalAllOptions != null && totalAllOptions !== totalPrice && (
-                  <p className="hint">with every optional item: {money(totalAllOptions)}</p>
+                {/* Optional-lines totals (prompt 72, decision 6). The
+                    headline above is the customer's OPENING total (required +
+                    pre-selected). All-in replaces the old "with every
+                    optional item" hint; required-only is the floor with its
+                    own GP so a rep never has to do that math in the truck. */}
+                {(hasOptionalLines || hasOptionalAddons) && totalAllOptions != null && requiredOnlyTotal != null && (
+                  <div className="hint" style={{ display: 'grid', gap: 2 }}>
+                    <span><strong>All-in</strong> {money(totalAllOptions)} (every line at full value)</span>
+                    <span><strong>Required only</strong> {money(requiredOnlyTotal)}{requiredGpPct != null ? ` · GP ${pct(requiredGpPct)}` : ''}</span>
+                  </div>
+                )}
+                {optionalGpWarn && requiredGpPct != null && (
+                  <p className="warn gp-warn">
+                    If they take only the required lines, this job runs at {(requiredGpPct * 100).toFixed(1)}% GP, below your {Number(config.optionalLinesGpWarnPct ?? 40).toFixed(0)}% floor. Consider pricing the required lines to stand on their own.
+                  </p>
                 )}
                 {(discounted || anyLineEdited || addonsBaseTotal > 0) && (
                   <p className="hint">

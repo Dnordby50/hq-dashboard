@@ -49,6 +49,11 @@ export type PricingConfig = {
   // by the comps ladder and the AI confidence flag.
   estimateAiEnabled: boolean;  // estimate_ai_enabled: master switch for the AI price read
   compsMinSample: number;      // comps_min_sample: below it the ladder widens and a line reads thin_sample
+  // Optional lines (prompt 72). Defaults MUST match the migration seeds:
+  // true / true / the line-pricing floor (40).
+  optionalLinesEnabled: boolean;         // optional_lines_enabled: CREATE gate for new optional lines
+  optionalLinesPreselectDefault: boolean; // optional_lines_preselect_default: a newly optional line starts ticked
+  optionalLinesGpWarnPct: number;        // optional_lines_gp_warn_pct: required-only GP% amber threshold
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
   customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
@@ -119,6 +124,9 @@ export async function loadCatalog(): Promise<Catalog> {
         'line_pricing_reason_threshold_dollars',
         'estimate_ai_enabled',
         'comps_min_sample',
+        'optional_lines_enabled',
+        'optional_lines_preselect_default',
+        'optional_lines_gp_warn_pct',
         'estimator_customer_search_enabled',
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
@@ -162,6 +170,9 @@ export async function loadCatalog(): Promise<Catalog> {
     linePricingReasonThresholdDollars: num('line_pricing_reason_threshold_dollars', 100),
     estimateAiEnabled: String(settings['estimate_ai_enabled'] ?? 'true').toLowerCase() !== 'false',
     compsMinSample: Math.max(1, num('comps_min_sample', 3)) || 3,
+    optionalLinesEnabled: String(settings['optional_lines_enabled'] ?? 'true').toLowerCase() !== 'false',
+    optionalLinesPreselectDefault: String(settings['optional_lines_preselect_default'] ?? 'true').toLowerCase() !== 'false',
+    optionalLinesGpWarnPct: num('optional_lines_gp_warn_pct', num('line_pricing_gp_floor_pct', 40)),
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&

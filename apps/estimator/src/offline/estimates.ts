@@ -41,6 +41,12 @@ export type AreaInput = {
   notes: string | null;
   calcPrice: number | null;
   priceOverride: number | null;
+  // Optional lines (prompt 72). is_optional on the AREA row is the source of
+  // truth (the estimator reloads areas by position, never by id) and is
+  // mirrored onto the line item by the caller; preselected = an optional
+  // line starts TICKED for the customer (ignored while not optional).
+  isOptional: boolean;
+  preselected: boolean;
 };
 
 // The one line item a CUSTOM estimate always carries (build 24): it holds the
@@ -136,6 +142,10 @@ export type SaveEstimateArgs = {
   // The engine's computed price (calc_price) and the manual-override provenance
   // (build 17). calcPrice keeps the math; totals.price is what actually sells.
   calcPrice: number | null;
+  // Optional lines (prompt 72, decision 7): every line at full value, the
+  // ceiling. totals.price carries the required-only floor while the estimate
+  // is open; accept later overwrites price with the signed total.
+  priceAllOptions?: number | null;
   priceOverride: { reason: string; by: string | null } | null;
   createdBy: string | null;
   // Set when the estimator was opened from a lead (/estimator/?lead_id=<uuid>).
@@ -227,6 +237,7 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     price_overridden_by: args.priceOverride ? args.priceOverride.by : null,
     price_overridden_at: args.priceOverride ? now : null,
     price: t.price,
+    price_all_options: args.priceAllOptions ?? null,
     gp_dollars: t.gpDollars,
     gp_pct: t.gpPct,
     gp_per_hour: t.gpPerHour,
@@ -295,6 +306,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       notes: a.notes ?? null,
       calc_price: a.calcPrice ?? null,
       price_override: a.priceOverride ?? null,
+      is_optional: a.isOptional === true,
+      preselected: a.preselected !== false,
     };
     await enqueue({ table: 'estimate_areas', id: areaId, row: areaRow, client_updated_at: now });
 

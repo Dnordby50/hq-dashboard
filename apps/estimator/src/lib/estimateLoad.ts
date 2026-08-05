@@ -67,6 +67,11 @@ export type LoadedEstimate = {
     customLaborHours: string;
     notes: string;
     priceOverride: string;
+    // Optional lines (prompt 72): hydrated from the AREA columns, never
+    // joined back from line items (that select has no area ids; the join
+    // would be by position, the fragility these columns exist to avoid).
+    isOptional: boolean;
+    preselected: boolean;
   }>;
   addonLines: LoadedAddonLine[];
   // Custom estimate mode (build 24). customScope/customPrice are the
@@ -128,7 +133,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       .maybeSingle(),
     supabase
       .from('estimate_areas')
-      .select('name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override')
+      .select('name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override,is_optional,preselected')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
     supabase
@@ -146,6 +151,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       answers: Record<string, string> | null; is_custom: boolean | null; custom_label: string | null;
       custom_scope: string | null; custom_material_cost: number | null; custom_labor_hours: number | null;
       notes: string | null; price_override: number | null;
+      is_optional: boolean | null; preselected: boolean | null;
     };
     const isCustomLine = row.is_custom === true;
     return {
@@ -161,6 +167,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       customLaborHours: row.custom_labor_hours != null ? String(row.custom_labor_hours) : '',
       notes: row.notes != null ? String(row.notes) : '',
       priceOverride: row.price_override != null ? String(row.price_override) : '',
+      isOptional: row.is_optional === true,
+      preselected: row.preselected !== false,
     };
   });
   // Only add-on / one-off lines round-trip into the form; area/system lines
