@@ -263,6 +263,32 @@ async function getRoutemizeTypeMap(db) {
   }
 }
 
+// questionId -> route map (prompt 73 Part A), tunable from Settings >
+// Appointments (rule 12: a new Routemize question is a settings edit, never a
+// deploy). Value is JSON text like {"<questionId>":"internal"}; routes are
+// 'customer' (customer-facing note), 'internal' (rep-only notes), 'drop'.
+// Anything unmapped (or a missing/broken setting) routes 'customer',
+// preserving pre-73 behavior rather than silently discarding something a
+// customer wrote.
+const ROUTEMIZE_ANSWER_ROUTING_KEY = 'routemize_answer_routing';
+const ANSWER_ROUTES = ['customer', 'internal', 'drop'];
+async function getRoutemizeAnswerRouting(db) {
+  try {
+    const rows = await db('GET', `/settings?key=eq.${ROUTEMIZE_ANSWER_ROUTING_KEY}&select=value&limit=1`);
+    const raw = Array.isArray(rows) && rows[0] ? rows[0].value : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    const out = {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed)) {
+        if (ANSWER_ROUTES.includes(v)) out[String(k).trim().toLowerCase()] = v;
+      }
+    }
+    return out;
+  } catch (_) {
+    return {}; // bad JSON / missing setting or table: everything routes customer
+  }
+}
+
 // Routemize sends a question UUID where question text belongs (observed live
 // 2026-08-03), and customer_notes ends up in every customer-facing
 // confirmation/reminder on both channels, so an ID-shaped question key must
@@ -278,20 +304,30 @@ function isIdLikeQuestionKey(q) {
   return !/\s/.test(s) && s.length >= 16 && /^[0-9a-z_-]+$/i.test(s) && /\d/.test(s);
 }
 
-// customerAnswers -> note lines. When the question key is an ID, the line is
-// just the answer (no prefix, no placeholder); a real question keeps
-// "Question: answer"; a missing question keeps the bare answer; an empty
-// answer drops the line entirely.
-function mapCustomerAnswers(list) {
-  return (Array.isArray(list) ? list : [])
-    .map(a => {
-      if (!a || typeof a !== 'object') return null;
-      const q = cleanStr(a.question);
-      const ans = cleanStr(a.answer);
-      if (!ans) return null;
-      return (q && !isIdLikeQuestionKey(q)) ? `${q}: ${ans}` : ans;
-    })
-    .filter(Boolean);
+// customerAnswers -> TWO streams (prompt 73 Part A): customer-facing note
+// lines and internal (rep-only) lines. Routing matches questionId first,
+// falling back to the question field when questionId is absent (identical on
+// every envelope observed, but never assumed). Per stream:
+//   customer: when the question key is an ID, the line is just the answer (no
+//     prefix, no placeholder); a real question keeps "Question: answer"; a
+//     missing question keeps the bare answer; an empty answer drops the line.
+//   internal: "Service requested: <answer>" (the picker value still reaches
+//     the rep; it just stops riding customer-facing reminders).
+//   drop: discarded.
+function mapCustomerAnswers(list, routing = {}) {
+  const out = { customer: [], internal: [] };
+  for (const a of (Array.isArray(list) ? list : [])) {
+    if (!a || typeof a !== 'object') continue;
+    const q = cleanStr(a.question);
+    const qid = cleanStr(a.questionId);
+    const ans = cleanStr(a.answer);
+    if (!ans) continue;
+    const route = (qid && routing[qid.toLowerCase()]) || (q && routing[q.toLowerCase()]) || 'customer';
+    if (route === 'drop') continue;
+    if (route === 'internal') { out.internal.push(`Service requested: ${ans}`); continue; }
+    out.customer.push((q && !isIdLikeQuestionKey(q)) ? `${q}: ${ans}` : ans);
+  }
+  return out;
 }
 
 // Envelope -> hand-rolled contract. Returns { recognized: false } for any
@@ -355,9 +391,11 @@ async function mapRoutemizeEnvelope(db, env) {
   // shows on the TopCoat calendar and syncs out to Google Calendar.
   const title = [customerName, serviceName || TYPE_LABELS[apptType]].filter(Boolean).join(', ') || null;
 
-  // customerAnswers -> customer-facing Job notes (decision 4: the customer
-  // wrote them). Q&A pairs, one per line; the send path scrubs em dashes.
-  const answers = mapCustomerAnswers(data.customerAnswers);
+  // customerAnswers routed by questionId (prompt 73 Part A): 'customer'
+  // answers become the customer-facing Job notes (decision 4: the customer
+  // wrote them; the send path scrubs em dashes), 'internal' answers ride the
+  // rep-only notes below, 'drop' vanishes. Unmapped routes 'customer'.
+  const answers = mapCustomerAnswers(data.customerAnswers, await getRoutemizeAnswerRouting(db));
 
   const addr = [cleanStr(address.addressLine1), cleanStr(address.addressLine2)].filter(Boolean).join(', ');
 
@@ -383,8 +421,12 @@ async function mapRoutemizeEnvelope(db, env) {
     assigned_member_name: cleanStr(assigned.firstName)
       ? `${cleanStr(assigned.firstName)}${cleanStr(assigned.lastName) ? ' ' + cleanStr(assigned.lastName) : ''}`
       : null,
-    notes: cleanStr(findNestedKey(data, 'AppointmentNotes')),
-    customer_notes: answers.length ? answers.join('\n') : null,
+    // Internal answers (the service picker) append after AppointmentNotes so
+    // the rep still sees them; they just never reach a customer message.
+    notes: [cleanStr(findNestedKey(data, 'AppointmentNotes')), ...answers.internal].filter(Boolean).join('\n') || null,
+    // Null, never '' when nothing routes to the customer: _pec-appt.cjs trims
+    // and skips falsy, but the column is nullable and null is the honest value.
+    customer_notes: answers.customer.length ? answers.customer.join('\n') : null,
   };
 
   const rz = {
