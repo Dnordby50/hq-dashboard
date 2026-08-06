@@ -83,6 +83,7 @@
 //     so the Sync Health view can answer "did the Zap fire?".
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
+const { enrollLead } = require('./_pec-drip.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
 const { sameHumanOr } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
@@ -570,8 +571,39 @@ async function processApptIntake(deps, body) {
       // Walk an estimate_scheduled lead back to contacted (unless another
       // scheduled on-site estimate remains). Best-effort; never throws.
       await apptCancelLeadEffects(db, appt);
-      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${appt.id} canceled`, payload: rawPayload });
-      return { status: 200, body: { success: true, canceled: true, appointment_id: appt.id } };
+      // Prompt 73 Part F2: a canceled/no-showed booking is the ONE case a
+      // previously-booked lead belongs in nurture (decision 2's other half).
+      // A normal enrollment starting at step 1, never the day-0 instant
+      // touch: a cancellation is not a fresh inquiry, and a "thanks for
+      // reaching out" auto-reply here would read as broken. Guards: skip on a
+      // remaining live appointment (a reschedule is not a fall-through), and
+      // only nurture-able stages (new/contacted, which is where
+      // apptCancelLeadEffects just put a fallen-through lead); enrollSubject
+      // itself refuses archived leads and the runner's kill-switches re-check
+      // opt-out at send time. Best-effort like every side effect here.
+      let reEnrolled = false;
+      if (appt.lead_id) {
+        try {
+          const others = await db('GET',
+            `/pec_appointments?lead_id=eq.${encodeURIComponent(appt.lead_id)}&status=eq.scheduled&id=neq.${encodeURIComponent(appt.id)}&select=id&limit=1`);
+          if (!Array.isArray(others) || !others.length) {
+            const lrows = await db('GET', `/leads?id=eq.${encodeURIComponent(appt.lead_id)}&select=stage,opted_out,archived_at,deleted_at&limit=1`);
+            const lead = Array.isArray(lrows) ? lrows[0] : null;
+            if (lead && !lead.deleted_at && !lead.archived_at && !lead.opted_out
+              && ['new', 'contacted'].includes(lead.stage)) {
+              const enr = await enrollLead(db, appt.lead_id, new Date(), { minStepIndex: 1 });
+              reEnrolled = !!enr.enrolled;
+              if (!enr.enrolled && enr.reason && enr.reason !== 'already_active') {
+                console.warn('pec-appt-intake: cancel re-enroll skipped:', enr.reason);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('pec-appt-intake: cancel re-enroll failed (non-fatal):', e && e.message);
+        }
+      }
+      await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${appt.id} canceled${reEnrolled ? '; lead re-enrolled in nurture (from step 1)' : ''}`, payload: rawPayload });
+      return { status: 200, body: { success: true, canceled: true, appointment_id: appt.id, lead_re_enrolled: reEnrolled } };
     }
 
     // ---- created / updated -------------------------------------------------

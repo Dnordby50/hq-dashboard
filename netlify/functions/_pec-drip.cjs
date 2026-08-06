@@ -172,6 +172,63 @@ function scrubCopy(text) {
     .trim();
   return s || null;
 }
+// scrubCopy strips every model URL on purpose; the configured booking link
+// (prompt 73) is the ONE exception. Swap it for an opaque token, scrub, swap
+// back, so the exact configured URL survives and everything else still dies.
+function scrubCopyKeepUrl(text, keepUrl) {
+  if (text == null) return null;
+  if (!keepUrl || !String(text).includes(keepUrl)) return scrubCopy(text);
+  const TOKEN = 'XQKEEPURLQX';
+  const scrubbed = scrubCopy(String(text).split(keepUrl).join(TOKEN));
+  return scrubbed ? scrubbed.split(TOKEN).join(keepUrl) : scrubbed;
+}
+
+// ---------------------------------------------------------------------------
+// Fixed-template rendering (prompt 73). A step with fixed_template set sends
+// that text verbatim after token substitution, with ZERO model calls: the
+// day-0 instant touch is instant by construction and Dylan read the exact
+// words once, so no AI belongs anywhere near it.
+// Tokens: {first_name} (falls back to 'there'), {booking_link}. The
+// {{#booking_link}}...{{/booking_link}} block survives only when a booking
+// URL is configured: dropping the whole sentence at the template level is a
+// hard requirement, so an empty setting can never ship "...right here:" with
+// a dangling colon.
+// ---------------------------------------------------------------------------
+function renderFixedTemplate(tpl, ctx = {}) {
+  if (tpl == null) return null;
+  const link = String(ctx.booking_link || '').trim();
+  const s = String(tpl)
+    .replace(/\{\{#booking_link\}\}([\s\S]*?)\{\{\/booking_link\}\}/g, link ? '$1' : '')
+    .replace(/\{booking_link\}/g, link)
+    .replace(/\{first_name\}/g, String(ctx.first_name || '').trim() || 'there')
+    .replace(/\s*[—–]\s*/g, ', ')      // standing rule 6, enforced in code
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+  return s || null;
+}
+
+// The booking link lives in ONE settings row (routemize_booking_url, rule 12:
+// editable in Settings > Drips, never a deploy). Empty / missing / unreadable
+// all read as "no link", which the template conditional and the render prompt
+// both degrade around.
+async function getBookingUrl(sb) {
+  try {
+    const rows = await sb('GET', `/settings?key=eq.routemize_booking_url&select=value&limit=1`);
+    const v = Array.isArray(rows) && rows[0] ? String(rows[0].value || '').trim() : '';
+    return v || null;
+  } catch (_) { return null; }
+}
+
+// A model hallucinating a booking URL sends a customer to a 404 with our name
+// on it: any routemize.com URL in rendered lead copy must be character-
+// identical to the configured one (trailing sentence punctuation tolerated),
+// and NO routemize.com URL may appear when none is configured.
+function bookingUrlViolation(text, configuredUrl) {
+  if (!text) return false;
+  const found = String(text).match(/https?:\/\/[^\s"'<>)\]]*routemize\.com[^\s"'<>)\]]*/gi) || [];
+  return found.some(u => u.replace(/[.,;:!?]+$/, '') !== (configuredUrl || ' none'));
+}
+
 // max is overridable so callers can reserve room for a code-appended tail
 // (estimate/pay link + STOP line); the tail itself must never be truncated.
 function capSms(text, max = MAX_SMS_LEN) {
@@ -196,7 +253,7 @@ function capSms(text, max = MAX_SMS_LEN) {
 const RENDER_SYSTEM_PROMPT = `You write short outreach messages from Prescott Epoxy Company (PEC), an epoxy floor coating company in Prescott, Arizona, to a sales lead who asked about a floor and has not booked yet. You get the lead's record and one instruction for this touch. Hard rules:
 - Use ONLY facts present in the lead record. NEVER invent or imply prices, discounts, dates, appointment times, crew availability, warranties, named customers, reviews, or statistics.
 - Do not use em dashes or en dashes anywhere.
-- Do not include links, phone numbers, or email addresses in the message text.
+- Do not include links, phone numbers, or email addresses in the message text, with ONE exception: when a BOOKING LINK is provided below the instruction, include it exactly as given, once, near the end of the message. Never modify it, never shorten it, never invent a URL, and never mention booking online if no link is provided.
 - Write like a friendly local business owner: brief, plain, warm, zero corporate filler, no emoji.
 - Use the lead's first name when one is available; otherwise no name.
 - sms: 1 to 3 sentences, under 300 characters, identify Prescott Epoxy by name.
@@ -327,12 +384,19 @@ function buildRenderPrompt(ctx, step, campaign, needs) {
     };
     touchLine = `THIS TOUCH: step ${step.step_index + 1} of ${campaign.max_touches} in the "${campaign.name}" sequence, day ${step.day_offset} after they reached out.`;
   }
+  // Prompt 73: lead-nurture touches may carry the configured Routemize
+  // booking link (rule in the lead system prompt; bookingUrlViolation +
+  // scrubCopyKeepUrl enforce exactness downstream). Lead campaigns only:
+  // estimate/invoice/review keep their code-appended tails.
+  const bookingLine = (kind === 'lead' && ctx.bookingUrl)
+    ? `BOOKING LINK (include exactly as given, once, near the end): ${ctx.bookingUrl}` : '';
   return [
     recordLabel,
     JSON.stringify(record),
     '',
     touchLine,
     `INSTRUCTION FOR THIS TOUCH: ${step.ai_guidance}`,
+    bookingLine,
     step.email_subject ? `SUGGESTED EMAIL SUBJECT: ${step.email_subject}` : '',
     `CHANNELS REQUESTED: ${[needs.sms ? 'sms' : '', needs.email ? 'email' : ''].filter(Boolean).join(', ')}`,
     `CURRENT TIME: ${new Date().toISOString()}`,
@@ -370,10 +434,30 @@ async function renderCopyReal(ctx, step, campaign, needs) {
   const raw = textFromMessage(await res.json())
     .replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const obj = JSON.parse(raw);
+  // Prompt 73: on the lead campaign, any routemize.com URL the model wrote
+  // must be character-identical to the configured booking link (and none may
+  // appear when no link is configured). A violation is a FAILED render, never
+  // a rewrite: under the gate the step re-renders next tick, live it records
+  // failed, and a wrong URL never ships either way.
+  const kind = campaign.kind || 'lead';
+  const bookingUrl = kind === 'lead' ? (ctx.bookingUrl || null) : null;
+  if (kind === 'lead') {
+    for (const f of ['sms', 'email_subject', 'email_body']) {
+      if (bookingUrlViolation(obj[f], bookingUrl)) {
+        throw new Error(`booking_url_mismatch: rendered ${f} carries a routemize.com URL that is not the configured booking link`);
+      }
+    }
+  }
+  const sms = capSms(scrubCopyKeepUrl(obj.sms, bookingUrl));
+  // A capped SMS must never ship half a URL: a truncated booking link is the
+  // same 404 the validation above exists to prevent.
+  if (bookingUrl && obj.sms && String(obj.sms).includes(bookingUrl) && (!sms || !sms.includes(bookingUrl))) {
+    throw new Error('booking_url_truncated: SMS cap cut the booking link');
+  }
   return {
-    sms: capSms(scrubCopy(obj.sms)),
-    email_subject: scrubCopy(obj.email_subject),
-    email_body: scrubCopy(obj.email_body),
+    sms,
+    email_subject: scrubCopy(obj.email_subject), // subjects never carry links
+    email_body: scrubCopyKeepUrl(obj.email_body, bookingUrl),
   };
 }
 
@@ -466,7 +550,13 @@ function dripEmailHtml(bodyText) {
 // Shared by all three kinds: find the active campaign of `kind`, insert an
 // active enrollment at its first step. The Phase 3 unique index makes a
 // duplicate a clean 409 ('already_active').
-async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now) {
+// opts.minStepIndex (prompt 73): start the enrollment at the first active
+// step at or past that index instead of the campaign's very first step. The
+// cancel/no-show re-engagement and the backlog enrollment both start at step
+// 1 on purpose: the day-0 instant touch is a fresh-inquiry auto-reply, and
+// "thanks for reaching out" to someone who inquired weeks ago (or whose
+// appointment just fell through) reads as broken.
+async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now, opts = {}) {
   try {
     // Prompt 62 Part D: an archived lead never (re-)enrolls in any drip.
     // Mirrors the client guard in index.html enrollSubjectInDrip.
@@ -478,7 +568,8 @@ async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now) {
     const camps = await sb('GET', `/pec_drip_campaigns?kind=eq.${kind}&status=eq.active&select=id&order=created_at.asc&limit=1`);
     const camp = Array.isArray(camps) ? camps[0] : null;
     if (!camp) return { enrolled: false, reason: 'no_active_campaign' };
-    const steps = await sb('GET', `/pec_drip_steps?campaign_id=eq.${encodeURIComponent(camp.id)}&active=eq.true&select=step_index,day_offset&order=step_index.asc&limit=1`);
+    const minIdx = Number(opts.minStepIndex) || 0;
+    const steps = await sb('GET', `/pec_drip_steps?campaign_id=eq.${encodeURIComponent(camp.id)}&active=eq.true&step_index=gte.${minIdx}&select=step_index,day_offset&order=step_index.asc&limit=1`);
     const step0 = Array.isArray(steps) ? steps[0] : null;
     if (!step0) return { enrolled: false, reason: 'no_steps' };
     const row = {
@@ -510,8 +601,179 @@ async function enrollSubject(sb, kind, subjectType, subjectId, leadId, now) {
   }
 }
 
-async function enrollLead(sb, leadId, now = new Date()) {
-  return enrollSubject(sb, 'lead', 'lead', leadId, leadId, now);
+async function enrollLead(sb, leadId, now = new Date(), opts = {}) {
+  return enrollSubject(sb, 'lead', 'lead', leadId, leadId, now, opts);
+}
+
+// ---------------------------------------------------------------------------
+// THE INSTANT TOUCH (prompt 73 Part D). Fires INLINE in pec-lead-intake.cjs
+// immediately after enrollLead, in the same request; never on the runner tick
+// (the runner's auto_send branch is only the crash safety net). Same contract
+// as enrollLead: NEVER throws, returns a result object, and a failure can
+// never fail the intake response back to Zapier.
+//
+// What it bypasses, and ONLY these two: the approval gate
+// (drip_approval_required) and quiet hours. Everything else applies in full:
+// kill switch, master switch, per-channel consent, opt-out, archived.
+//
+// Concurrency: CLAIM-FIRST, the engine's own model. Step 0 has day_offset 0,
+// so the enrollment is due IMMEDIATELY and a runner tick could race this
+// call; the conditional next_step_index 0 -> 1 advance is the atomic claim,
+// so whoever wins it owns the send and a double-text is impossible (the
+// prompt sketched send-then-advance; claim-first is strictly stronger and is
+// the tradeoff the whole engine already made: never-double-text beats
+// never-lose-a-touch). The step-0 ledger check doubles as the Zapier-retry
+// guard and makes the skip reason explicit.
+// ---------------------------------------------------------------------------
+async function sendInstantTouch(sb, leadId, opts = {}) {
+  const now = opts.now || (() => new Date());
+  const senders = {
+    sendSms: (opts.senders && opts.senders.sendSms) || sendQuoSmsReal,
+    sendEmail: (opts.senders && opts.senders.sendEmail) || sendResendEmailReal,
+  };
+  const out = { attempted: false, sent: [], skipped: [], failed: [], reason: null };
+  const done = (reason) => {
+    out.reason = reason;
+    if (reason) console.log(`sendInstantTouch: lead ${leadId} -> ${reason}`);
+    return out;
+  };
+  try {
+    // Preconditions, in order, each with its own logged reason.
+    const rows = await sb('GET', '/settings?key=in.(drip_instant_touch_enabled,drip_sending_enabled,drip_kill_switch,routemize_booking_url)&select=key,value');
+    const map = Object.fromEntries((Array.isArray(rows) ? rows : []).map(r => [r.key, r.value]));
+    if (map.drip_instant_touch_enabled !== 'true') return done('instant_touch_disabled');
+    if (map.drip_sending_enabled !== 'true') return done('master_off');       // the global masters
+    if (map.drip_kill_switch === 'true') return done('kill_switch');          // still outrank everything
+
+    const id = encodeURIComponent(leadId);
+    const enrs = await sb('GET', `/pec_drip_enrollments?lead_id=eq.${id}&status=eq.active&select=*`);
+    const enrList = Array.isArray(enrs) ? enrs : [];
+    if (!enrList.length) return done('not_enrolled');
+    // Of the active enrollments, the one on a lead-kind campaign.
+    let enr = null, campaign = null;
+    for (const e of enrList) {
+      const camps = await sb('GET', `/pec_drip_campaigns?id=eq.${encodeURIComponent(e.campaign_id)}&select=*&limit=1`);
+      const c = Array.isArray(camps) && camps[0];
+      if (c && c.kind === 'lead') { enr = e; campaign = c; break; }
+    }
+    if (!enr) return done('not_enrolled');
+    if (campaign.mode !== 'live') return done('campaign_not_live');   // dry_run: the runner writes the review copy
+
+    const steps = await sb('GET', `/pec_drip_steps?campaign_id=eq.${encodeURIComponent(enr.campaign_id)}&active=eq.true&select=*&order=step_index.asc`);
+    const stepList = Array.isArray(steps) ? steps : [];
+    const step0 = stepList.find(s => s.step_index === 0);
+    if (!step0 || step0.auto_send !== true || !step0.fixed_template) return done('no_auto_step0');
+
+    const rcpt = await resolveRecipient(sb, 'lead', leadId);
+    if (!rcpt.ok) return done(rcpt.reason || 'lead_missing');
+    if (rcpt.lead.archived_at) return done('archived');
+    if (rcpt.optedOut) return done('opted_out');
+
+    // Idempotency: a Zapier retry must not double-send. ANY step-0 row for
+    // this enrollment (sent, failed, skipped) means the touch already ran.
+    const prior = await sb('GET', `/pec_drip_sends?enrollment_id=eq.${encodeURIComponent(enr.id)}&step_index=eq.0&select=id&limit=1`);
+    if (Array.isArray(prior) && prior.length) return done('already_recorded');
+
+    const wantSms = step0.channel === 'sms' || step0.channel === 'both';
+    const wantEmail = step0.channel === 'email' || step0.channel === 'both';
+    const canSms = wantSms && rcpt.smsAllowed;      // SMS only with positive consent
+    const canEmail = wantEmail && rcpt.emailAllowed; // email whenever an address exists
+
+    // CLAIM: advance 0 -> next step before sending (see the header block).
+    const nextStep = stepList.find(s => s.step_index > 0);
+    const nowIso = now().toISOString();
+    const willComplete = !nextStep || 1 >= campaign.max_touches;
+    const claimPatch = willComplete
+      ? { status: 'completed', stop_reason: 'sequence_complete', stopped_at: nowIso, next_step_index: 1, next_send_at: null }
+      : { next_step_index: nextStep.step_index, next_send_at: addDays(enr.enrolled_at, nextStep.day_offset).toISOString() };
+    const claimed = await sb('PATCH',
+      `/pec_drip_enrollments?id=eq.${encodeURIComponent(enr.id)}&status=eq.active&next_step_index=eq.0`,
+      claimPatch, true);
+    if (!Array.isArray(claimed) || !claimed.length) return done('claim_lost'); // a runner tick owns step 0
+    out.attempted = true;
+
+    const ledgerBase = {
+      enrollment_id: enr.id, campaign_id: campaign.id,
+      subject_type: 'lead', subject_id: leadId, lead_id: leadId,
+      step_index: 0, scheduled_for: enr.next_send_at,
+    };
+    const writeLedger = (row) => sb('POST', '/pec_drip_sends', { ...ledgerBase, ...row })
+      .catch(e => console.error('sendInstantTouch: ledger write failed', e && e.message));
+
+    // Wanted-but-unsendable legs are recorded so the ledger explains gaps
+    // (with 14 of 15 leads at sms_consent=false, the SMS leg's skipped row
+    // with reason no_sms_consent is the EXPECTED shape, not a failure).
+    if (wantSms && !canSms) { await writeLedger({ channel: 'sms', status: 'skipped', error_message: rcpt.smsSkipReason || 'sms_not_allowed' }); out.skipped.push('sms'); }
+    if (wantEmail && !canEmail) { await writeLedger({ channel: 'email', status: 'skipped', error_message: rcpt.emailSkipReason || 'email_not_allowed' }); out.skipped.push('email'); }
+    if (!canSms && !canEmail) return done('no_sendable_channel'); // claimed: step consumed, taper continues at step 1
+
+    const bookingUrl = String(map.routemize_booking_url || '').trim() || null;
+    const body = renderFixedTemplate(step0.fixed_template, { first_name: rcpt.first_name, booking_link: bookingUrl });
+    if (!body) {
+      if (canSms) { await writeLedger({ channel: 'sms', status: 'failed', error_message: 'fixed_template_rendered_empty' }); out.failed.push('sms'); }
+      if (canEmail) { await writeLedger({ channel: 'email', status: 'failed', error_message: 'fixed_template_rendered_empty' }); out.failed.push('email'); }
+      return done('template_empty');
+    }
+
+    const smsSenderCache = {}, emailSenderCache = {};
+    let anySent = false;
+    if (canSms) {
+      let smsBody = capSms(scrubCopyKeepUrl(body, bookingUrl), MAX_SMS_LEN - STOP_LINE.length);
+      if (!/\bSTOP\b/.test(smsBody)) smsBody += STOP_LINE; // always the first drip SMS on a fresh enrollment
+      const sender = await getSmsSender(sb, smsSenderCache);
+      if (!sender || !sender.from_number) {
+        await writeLedger({ channel: 'sms', status: 'failed', body: smsBody, error_message: 'no active SMS sender for brand' });
+        out.failed.push('sms');
+      } else {
+        let res;
+        try { res = await senders.sendSms({ from: sender.from_number, to: rcpt.smsTo, content: smsBody }); }
+        catch (err) { res = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+        await sb('POST', '/pec_sms_log', {
+          direction: 'out', brand: DRIP_BRAND, from_number: sender.from_number, to_number: rcpt.smsTo,
+          customer_id: rcpt.customer_id, body: smsBody, kind: 'drip',
+          status: res.ok ? 'sent' : 'failed', quo_message_id: res.id, error_message: res.error,
+        }).catch(e => console.error('sendInstantTouch: sms log failed', e && e.message));
+        await writeLedger({ channel: 'sms', status: res.ok ? 'sent' : 'failed', body: smsBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
+        if (res.ok) { anySent = true; out.sent.push('sms'); } else out.failed.push('sms');
+      }
+    }
+    if (canEmail) {
+      const emailBody = scrubCopyKeepUrl(body, bookingUrl);
+      const emailSubject = step0.fixed_subject || step0.email_subject || 'From Prescott Epoxy';
+      const sender = await getEmailSender(sb, emailSenderCache);
+      if (!sender || !sender.from_email) {
+        await writeLedger({ channel: 'email', status: 'failed', subject: emailSubject, body: emailBody, error_message: 'no email sender for brand' });
+        out.failed.push('email');
+      } else {
+        let res;
+        try {
+          res = await senders.sendEmail({
+            from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
+            subject: emailSubject, html: dripEmailHtml(emailBody), reply_to: sender.reply_to || undefined,
+          });
+        } catch (err) { res = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
+        await sb('POST', '/pec_email_log', {
+          customer_id: rcpt.customer_id, brand: DRIP_BRAND, template_key: 'drip',
+          to_email: rcpt.email, from_email: sender.from_email, subject: emailSubject,
+          status: res.ok ? 'sent' : 'failed', resend_id: res.id, error_message: res.error,
+        }).catch(e => console.error('sendInstantTouch: email log failed', e && e.message));
+        await writeLedger({ channel: 'email', status: res.ok ? 'sent' : 'failed', subject: emailSubject, body: emailBody, provider_id: res.id, sent_at: res.ok ? now().toISOString() : null, error_message: res.error });
+        if (res.ok) { anySent = true; out.sent.push('email'); } else out.failed.push('email');
+      }
+    }
+
+    // First-touch stamp, same write-once rule as the runner.
+    if (anySent && rcpt.lead && !rcpt.lead.contacted_at) {
+      await sb('PATCH', `/leads?id=eq.${id}&contacted_at=is.null`, { contacted_at: now().toISOString() })
+        .catch(e => console.error('sendInstantTouch: contacted_at stamp failed', e && e.message));
+    }
+    return done(anySent ? null : 'nothing_sent');
+  } catch (err) {
+    out.reason = 'error';
+    out.error = String(err && err.message || err);
+    console.warn('sendInstantTouch failed (non-fatal):', out.error);
+    return out;
+  }
 }
 
 // Estimate follow-up enrollment, fired when an estimate transitions to
@@ -871,6 +1133,7 @@ async function runDrips(deps) {
 
   const campCache = {}, stepsCache = {}, smsSenderCache = {}, emailSenderCache = {};
   let reviewEnabled;   // lazy per-run read of review_drip_enabled
+  let bookingUrl;      // lazy per-run read of routemize_booking_url (prompt 73, lead campaigns)
   const getCampaign = async (id) => campCache[id] ||
     (campCache[id] = (await sb('GET', `/pec_drip_campaigns?id=eq.${encodeURIComponent(id)}&select=*&limit=1`))[0] || null);
   const getSteps = async (id) => stepsCache[id] ||
@@ -907,6 +1170,14 @@ async function runDrips(deps) {
         continue;
       }
 
+      // Prompt 73: lead-nurture copy (fixed AND AI) may carry the configured
+      // booking link; renderCopyReal validates it and scrubCopyKeepUrl lets
+      // exactly that one URL through the scrubber. One settings read per run.
+      if ((campaign.kind || 'lead') === 'lead') {
+        if (bookingUrl === undefined) bookingUrl = await getBookingUrl(sb);
+        rcpt.bookingUrl = bookingUrl;
+      }
+
       const steps = await getSteps(enr.campaign_id);
       const step = steps.find(s => s.step_index >= enr.next_step_index);
       if (!step) { await endEnrollment(sb, enr, 'completed', 'no_more_steps', nowIso); summary.completed++; continue; }
@@ -927,13 +1198,19 @@ async function runDrips(deps) {
       // until a human approves or skips it in the Drip Approvals view; this
       // is enforced regardless of the gate setting so flipping the gate off
       // can never auto-send (or double-write) an item a human was reviewing.
+      // Prompt 73: auto_send is PER-STEP (the day-0 instant touch, fixed
+      // template only) and bypasses the gate; here the runner is only the
+      // crash safety net for it (the intake-inline sendInstantTouch is the
+      // real path). The pending-hold check above the bypass stays: a step a
+      // human is mid-review on can never be auto-sent by flipping anything.
+      const autoStep = step.auto_send === true && step.fixed_template != null;
       const gateHold = campaign.mode === 'live' && (canSms || canEmail);
       if (gateHold) {
         const held = await sb('GET',
           `/pec_drip_sends?enrollment_id=eq.${encodeURIComponent(enr.id)}&step_index=eq.${enr.next_step_index}&status=eq.pending&select=id&limit=1`);
         if (Array.isArray(held) && held.length) { summary.pending_held++; continue; }
       }
-      const gatePending = gateHold && cfg.approvalRequired;
+      const gatePending = gateHold && cfg.approvalRequired && !autoStep;
 
       // 5. Quiet hours: any live SMS leg due outside the allowed window
       // (settings-driven; default 8am-8pm Phoenix Mon-Sat) defers the WHOLE
@@ -942,7 +1219,10 @@ async function runDrips(deps) {
       // does the approval gate: the pending draft is written any time (Anne
       // reviews on her schedule) and quiet hours are enforced at APPROVE
       // time instead.
-      if (canSms && campaign.mode === 'live' && !gatePending) {
+      // An auto_send step also skips the quiet-hours defer (decision 7: the
+      // instant touch is an immediate reply to a message the person just
+      // sent); steps without auto_send keep deferring exactly as before.
+      if (canSms && campaign.mode === 'live' && !gatePending && !autoStep) {
         const q = quietHours(now(), cfg.quiet);
         if (!q.inWindow) {
           await sb('PATCH',
@@ -999,10 +1279,18 @@ async function runDrips(deps) {
         if (!canSms && !canEmail) continue;   // nothing sendable this step; schedule already advanced
       }
 
-      // 7. Render the copy (one model call per touch).
+      // 7. Render the copy: one model call per touch, EXCEPT fixed-template
+      // steps (prompt 73: the day-0 instant touch), which render by token
+      // substitution with zero model calls.
       let copy;
       try {
-        copy = await renderCopy(rcpt, step, campaign, { sms: canSms, email: canEmail });
+        copy = step.fixed_template != null
+          ? {
+              sms: renderFixedTemplate(step.fixed_template, { first_name: rcpt.first_name, booking_link: rcpt.bookingUrl }),
+              email_subject: step.fixed_subject || step.email_subject || null,
+              email_body: renderFixedTemplate(step.fixed_template, { first_name: rcpt.first_name, booking_link: rcpt.bookingUrl }),
+            }
+          : await renderCopy(rcpt, step, campaign, { sms: canSms, email: canEmail });
       } catch (err) {
         if (gatePending) {
           // Nothing was claimed and nothing was written, so the step is NOT
@@ -1036,14 +1324,14 @@ async function runDrips(deps) {
       // and AFTER the cap (with the cap shortened so the tail and STOP line
       // can never be truncated off). Data-owned facts, not model-owned.
       const tail = kindTail(campaign.kind, rcpt);
-      let smsBody = canSms ? scrubCopy(copy.sms) : null;
+      let smsBody = canSms ? scrubCopyKeepUrl(copy.sms, rcpt.bookingUrl) : null;
       if (smsBody) {
         smsBody = tail
           ? capSms(smsBody, MAX_SMS_LEN - tail.sms.length - STOP_LINE.length) + tail.sms
           : capSms(smsBody);
       }
       const emailSubject = canEmail ? (scrubCopy(copy.email_subject) || step.email_subject || 'From Prescott Epoxy') : null;
-      let emailBody = canEmail ? scrubCopy(copy.email_body) : null;
+      let emailBody = canEmail ? scrubCopyKeepUrl(copy.email_body, rcpt.bookingUrl) : null;
       if (emailBody && tail) emailBody = emailBody + '\n\n' + tail.text;
 
       // First DRIP SMS for this enrollment carries the STOP line (appended
@@ -1611,6 +1899,10 @@ module.exports = {
   // Prompt 42: approval gate + settings-driven quiet hours.
   resolvePendingStep, flushApprovedDrips, getDripConfig, parseQuietSettings,
   scrubEditedCopy, DEFAULT_QUIET,
+  // Prompt 73: the day-0 instant touch, fixed-template rendering, and the
+  // booking-link plumbing.
+  sendInstantTouch, renderFixedTemplate, bookingUrlViolation, scrubCopyKeepUrl,
+  getBookingUrl,
   // Prompt 37: the appointment confirmation/reminder core (_pec-appt.cjs)
   // sends through the same provider + brand-sender helpers as the drips so
   // there is exactly one Quo/Resend code path per provider.

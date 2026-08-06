@@ -35,7 +35,7 @@
 // map it in Zapier). TCPA is not a place to guess.
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
-const { enrollLead } = require('./_pec-drip.cjs');
+const { enrollLead, sendInstantTouch, SITE_URL } = require('./_pec-drip.cjs');
 // Same-human matching lives in _pec-lead-match.cjs (prompt 56) so this
 // intake and the Routemize appointment intake share ONE dedupe rule.
 const { normPhone, findRecentLiveLead } = require('./_pec-lead-match.cjs');
@@ -46,6 +46,65 @@ const ENDPOINT = 'lead-intake';
 function cleanStr(s) {
   const out = String(s == null ? '' : s).trim();
   return out || null;
+}
+
+// TCPA: consent is never guessed, but Zapier checkbox mappings rarely deliver
+// a JSON true; they send the strings below. This is the EXACT allowlist
+// (prompt 73 Part E3): anything else, including an arbitrary non-empty
+// string, reads as NO consent.
+const CONSENT_TRUE = new Set(['true', 'yes', 'on', '1', 'checked', 'agree', 'agreed', 'y']);
+function parseSmsConsent(v) {
+  if (v === true || v === 1) return true;
+  if (typeof v === 'string') return CONSENT_TRUE.has(v.trim().toLowerCase());
+  return false;
+}
+
+// Prompt 73 Part E1: Slack alert for every new online lead. New channel via
+// SLACK_LEADS_WEBHOOK, falling back to SLACK_OFFICE_WEBHOOK, clean logged
+// no-op when neither is set (the pec-notify-costing-sendback pattern).
+// Fire-and-forget contract: nothing here can fail the intake response.
+async function notifyLeadSlack(lead, projectNotes, instant) {
+  const hook = process.env.SLACK_LEADS_WEBHOOK || process.env.SLACK_OFFICE_WEBHOOK;
+  if (!hook) {
+    console.log('pec-lead-intake: no Slack webhook set (SLACK_LEADS_WEBHOOK / SLACK_OFFICE_WEBHOOK); lead alert skipped');
+    return;
+  }
+  const instantLine = instant && Array.isArray(instant.sent) && instant.sent.length
+    ? `Instant reply sent (${instant.sent.join(' + ')})${instant.skipped && instant.skipped.length ? `; skipped ${instant.skipped.join(', ')}` : ''}`
+    : `Instant reply NOT sent (${(instant && instant.reason) || 'unknown'})`;
+  const lines = [
+    `:large_green_circle: *New lead: ${lead.full_name || 'Unknown'}*`,
+    `Source: ${lead.source || 'unknown'}`,
+    lead.phone ? `Phone: <tel:+1${lead.phone}|${lead.phone}>` : null,
+    lead.email ? `Email: ${lead.email}` : null,
+    projectNotes ? `Project: ${projectNotes}` : null,
+    instantLine,
+    `<${SITE_URL}/#leads|Open TopCoat leads>`,
+  ].filter(Boolean);
+  try {
+    const res = await fetch(hook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: lines.join('\n') }),
+    });
+    if (!res.ok) console.warn(`pec-lead-intake: Slack lead alert failed (${res.status})`);
+  } catch (err) {
+    console.warn('pec-lead-intake: Slack lead alert failed:', err && err.message);
+  }
+}
+
+// Prompt 73 Part E2: staff bell row. Web-form leads arrive unassigned, so the
+// bell is the office-wide alert (the same global pec_notifications feed the
+// booking bell uses); when rep assignment at intake exists someday, target it
+// here. Best-effort like everything after the insert.
+async function notifyLeadBell(db, lead, instant) {
+  await db('POST', '/pec_notifications', {
+    type: 'lead_created',
+    body: `New ${lead.source || 'online'} lead: ${lead.full_name || 'Unknown'}`
+      + (instant && instant.sent && instant.sent.length ? ` (instant ${instant.sent.join(' + ')} reply sent)` : ''),
+    target_view: 'leads',
+    target_id: lead.id,
+  }).catch(e => console.warn('pec-lead-intake: lead bell failed (non-fatal):', e && e.message));
 }
 
 // Kick off the per-lead AI analysis for a freshly inserted lead (Dylan's
@@ -165,9 +224,12 @@ exports.handler = async (event) => {
       campaign: cleanStr(body.campaign) || cleanStr(body.utm_campaign),
       ad_meta: Object.keys(adMeta).length ? adMeta : null,
       notes,
-      sms_consent: body.sms_consent === true,
-      sms_consent_source: body.sms_consent === true ? `${source} form` : null,
-      sms_consent_at: body.sms_consent === true ? new Date().toISOString() : null,
+      // Prompt 73 Part E3: accept the checkbox spellings Zapier actually
+      // sends (exact allowlist in parseSmsConsent), never an arbitrary
+      // truthy value. Still explicit-only: absent stays false.
+      sms_consent: parseSmsConsent(body.sms_consent),
+      sms_consent_source: parseSmsConsent(body.sms_consent) ? `${source} form` : null,
+      sms_consent_at: parseSmsConsent(body.sms_consent) ? new Date().toISOString() : null,
     }, true);
     const lead = created[0];
 
@@ -175,7 +237,13 @@ exports.handler = async (event) => {
       lead_id: lead.id,
       event_type: 'created',
       to_stage: 'new',
-      payload: { source, raw: body },
+      // sms_consent_disclosure: the exact text the customer agreed to, when
+      // the form passes it (prompt 73 E3: makes the consent record
+      // defensible). Also inside raw, but surfaced here for queryability.
+      payload: {
+        source, raw: body,
+        ...(cleanStr(body.sms_consent_disclosure) ? { sms_consent_disclosure: cleanStr(body.sms_consent_disclosure) } : {}),
+      },
     });
 
     // NEW leads only: both dedupe paths return above, so a Zapier retry or a
@@ -193,11 +261,26 @@ exports.handler = async (event) => {
       console.warn('pec-lead-intake: drip enroll failed (non-fatal):', enrolled.error);
     }
 
-    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source})`, payload: body });
-    return json(200, { success: true, deduped: false, lead_id: lead.id });
+    // Prompt 73 Part D: the day-0 instant touch, INLINE in this request (the
+    // 15-minute runner would make it a 15-minute-latency feature). Same
+    // best-effort contract as enrollLead: never throws, never fails the 200.
+    let instant = { sent: [], skipped: [], reason: 'not_enrolled' };
+    if (enrolled.enrolled) instant = await sendInstantTouch(sb, lead.id);
+    else if (enrolled.reason) instant.reason = `not_enrolled_${enrolled.reason}`;
+
+    // Prompt 73 Part E: office alerts, both best-effort.
+    await notifyLeadSlack(lead, notes, instant);
+    await notifyLeadBell(sb, lead, instant);
+
+    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source})${instant.sent.length ? `; instant touch sent (${instant.sent.join('+')})` : `; instant touch: ${instant.reason || 'none'}`}`, payload: body });
+    return json(200, { success: true, deduped: false, lead_id: lead.id, instant_touch: { sent: instant.sent, skipped: instant.skipped, reason: instant.reason } });
   } catch (err) {
     console.error('pec-lead-intake failed:', err);
     await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'error', status_code: 500, message: err && err.message, payload: body });
     return json(500, { success: false, error: 'Internal error ingesting lead' });
   }
 };
+
+// Exported for production/instant-touch.test.cjs (the consent allowlist is
+// spec, so it gets pinned by tests).
+exports.parseSmsConsent = parseSmsConsent;
