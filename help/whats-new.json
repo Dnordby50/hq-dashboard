@@ -1,5 +1,16 @@
 [
   {
+    "id": "instant-lead-reply-drips",
+    "date": "2026-08-06",
+    "title": "New leads get an instant reply, and booking answers land in the right place",
+    "summary": "When a new lead comes in from the website, TopCoat now sends one fixed thank-you message right away (email always, text only when they gave consent), posts an alert to Slack, and rings the notification bell. The rest of the follow-up drip still waits for your approval like before. Appointment reminders also stop tacking the service picker answer onto the note the customer sees; it goes to the internal note for the rep instead. A new booking link setting drops your Routemize scheduling link into drip messages.",
+    "howto": [
+      "Settings > Drips has the Instant reply switch, the Routemize booking link box, and a readout of how many recent leads arrived with texting consent.",
+      "Settings > Appointments > Routemize booking questions controls where each booking form answer goes (customer note, internal note, or dropped).",
+      "Drip Approvals works exactly as before for every step after the instant reply."
+    ]
+  },
+  {
     "id": "optional-lines-any-line",
     "date": "2026-08-05",
     "title": "Make any estimate line optional, and keep a record of what the customer passed on",

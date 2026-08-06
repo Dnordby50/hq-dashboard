@@ -418,7 +418,7 @@
     {
       "name": "Lead drip engine",
       "area": "dashboard",
-      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip, Invoice payment reminders, and Review request drip entries for the other kinds; the review kind (prompt 60) is the fourth, and the only one that shipped mode='live' behind the approval gate instead of dry_run, with its own enroll-time gate guard, its own master switch (review_drip_enabled), and per-kind stop conditions (reviewed / touchup_opened / job_closed / bad_review). Prompt 42 (go-live prep) added a GLOBAL approval gate: while the settings key drip_approval_required is 'true', a due step on a LIVE campaign renders its real copy into a 'pending' pec_drip_sends row (one per sendable leg, held once per step by a partial unique index) and the enrollment does NOT advance until a human approves, edits, or skips it in the Drip Approvals view; approving re-runs consent + kill-switches + quiet hours at that moment (a reply/STOP/payment/lost between render and approve voids the item with the reason shown), sends through the same providers, and advances with the same claim. SMS approved outside the window sits as 'queued' and is flushed by the runner at the window open with a final consent re-check. Quiet hours are settings-driven (drip_quiet_start/end/days, default 08:00-20:00 Phoenix Mon-Sat) and editable in Settings > Drips along with the master switch and the gate.",
+      "description": "Automatic AI-tailored follow-up drips for leads: new leads auto-enroll (intake webhook and manual add) in a seeded 30-day 8-step taper (days 1,2,4,7,11,16,22,30, SMS/email/both per step). A scheduled runner (every 15 min) re-checks four kill-switches at send time (lead replied via inbound text/call, stage advanced past contacted or lost, opted out, max touches), defers SMS outside 8am-8pm Phoenix, renders each message per lead with Claude (no invented facts, no em dashes, no links; scrubber enforces), and sends through the same Quo/Resend request shapes as the manual senders, mirroring rows into pec_sms_log (kind drip) / pec_email_log (template_key drip). Safety: global master switch (settings key drip_sending_enabled, ships OFF), per-campaign dry_run mode (default; writes review copy, never sends), claim-first concurrency (no double-send possible), first SMS carries Reply STOP to opt out, Quo STOP flips leads.opted_out and stops the enrollment. Admin Drips view (master switch, mode/pause toggles, steps, recent activity); lead detail shows a Drip card with Stop/Enroll and the messages in the timeline. Phase 3 generalized the engine to SUBJECTS: enrollments carry subject_type (lead or job) plus subject_id, one active enrollment per subject per campaign (a lead can hold a lead-nurture drip and an estimate drip at once, never two of the same), a recipient resolver maps a subject to its contact + consent model (lead = positive sms_consent; job = the customer's opt-out-only sms_opt_out), and kill-switches run a universal core plus a per-kind adapter. See the Estimate follow-up drip, Invoice payment reminders, and Review request drip entries for the other kinds; the review kind (prompt 60) is the fourth, and the only one that shipped mode='live' behind the approval gate instead of dry_run, with its own enroll-time gate guard, its own master switch (review_drip_enabled), and per-kind stop conditions (reviewed / touchup_opened / job_closed / bad_review). Prompt 42 (go-live prep) added a GLOBAL approval gate: while the settings key drip_approval_required is 'true', a due step on a LIVE campaign renders its real copy into a 'pending' pec_drip_sends row (one per sendable leg, held once per step by a partial unique index) and the enrollment does NOT advance until a human approves, edits, or skips it in the Drip Approvals view; approving re-runs consent + kill-switches + quiet hours at that moment (a reply/STOP/payment/lost between render and approve voids the item with the reason shown), sends through the same providers, and advances with the same claim. SMS approved outside the window sits as 'queued' and is flushed by the runner at the window open with a final consent re-check. Quiet hours are settings-driven (drip_quiet_start/end/days, default 08:00-20:00 Phoenix Mon-Sat) and editable in Settings > Drips along with the master switch and the gate. Prompt 73 (2026-08-06): the taper became 9 steps with a NEW day-0 instant touch. A lead arriving through the pec-lead-intake webhook (any online lead) gets ONE fixed-template thank-you message inline in the same request (sendInstantTouch in _pec-drip.cjs): email always, SMS only with positive consent (a skipped ledger row records no_sms_consent so gaps are explained). It is the only step with auto_send=true and a fixed_template, so it bypasses ONLY the approval gate and quiet hours; the kill switch, master switch, consent, opt-out, and archived checks all still apply, and steps 1-8 keep the full gate. Concurrency is claim-first (the conditional next_step_index 0->1 advance), so a Zapier retry or a racing runner tick can never double-send; the runner's own auto_send branch is the crash safety net. A {booking_link} token (settings key routemize_booking_url, Settings > Drips) renders into the day-0 template via a {{#booking_link}} conditional block (empty URL drops the whole sentence) and is offered to the AI steps 1-8 through the render prompt; renderCopyReal rejects any rendered routemize.com URL that is not character-identical to the configured one, and scrubCopyKeepUrl lets exactly that one URL through the scrubber. Cancel/no-show re-engagement: a Routemize cancellation with no other live appointment re-enrolls a new/contacted lead starting at STEP 1 (never the day-0 auto-reply). scripts/enroll-lead-backlog.cjs (gated, --dry-run first) enrolls the pre-73 backlog at step 1 with the same exclusions. Master switch for the whole day-0 behavior: drip_instant_touch_enabled (Settings > Drips).",
       "code": {
         "indexHtml": [
           "renderDrips",
@@ -430,11 +430,12 @@
           "renderSettingsDrips"
         ],
         "netlifyFunctions": [
-          "pec-drip-runner.cjs",
           "_pec-drip.cjs",
+          "pec-appt-intake.cjs",
+          "pec-drip-approve.cjs",
+          "pec-drip-runner.cjs",
           "pec-lead-intake.cjs",
-          "pec-webhook-quo.cjs",
-          "pec-drip-approve.cjs"
+          "pec-webhook-quo.cjs"
         ],
         "other": [
           "supabase/migrations/2026-07-19_drip_engine.sql",
@@ -443,16 +444,20 @@
           "production/drip-phase3.test.cjs",
           "production/_drip-test-kit.cjs",
           "supabase/migrations/2026-07-21_drip_approval_gate.sql",
-          "production/drip-approval.test.cjs"
+          "production/drip-approval.test.cjs",
+          "supabase/migrations/2026-08-12_prompt73_instant_touch_drips.sql",
+          "production/instant-touch.test.cjs",
+          "scripts/enroll-lead-backlog.cjs"
         ]
       },
       "tables": [
+        "leads",
         "pec_drip_campaigns",
-        "pec_drip_steps",
         "pec_drip_enrollments",
         "pec_drip_sends",
-        "settings",
-        "leads"
+        "pec_drip_steps",
+        "pec_notifications",
+        "settings"
       ],
       "since": "2026-07"
     },
@@ -571,7 +576,7 @@
     {
       "name": "Drip approval gate and settings controls",
       "area": "dashboard",
-      "description": "The supervised-launch layer over the drip engine (prompt 42). Drip Approvals (admin nav) lists every held drip message across leads and jobs, newest first: recipient with masked phone/email, campaign + step, and the editable body (plus subject for email). Per item: Approve & Send (re-checks consent, opt-out, replies, stage/paid/lost, and quiet hours at that exact moment, then sends via the normal providers, logs 'sent', and advances the enrollment exactly like an auto-send), Skip this step (advances without sending), Stop drip (ends the enrollment). Settings > Drips holds the knobs, all settings-table rows per standing rule 12: the master sending switch (same drip_sending_enabled row as the Drips view, so the two mirror each other), the approval gate (drip_approval_required; ON for the launch week, Dylan flips it off for full-auto), and the SMS send window (drip_quiet_start/drip_quiet_end/drip_quiet_days, Arizona time; texts due outside it wait for the next open, emails send any time, and the window also governs blasts). The gate intercepts LIVE campaigns only (dry-run already sends nothing); a leftover pending item keeps its step held even after the gate is switched off, so flipping the gate can never auto-send something a human was reviewing. The Approvals page also hosts the Invoice installments queue (prompt 45; see Deposits and payment schedules).",
+      "description": "The supervised-launch layer over the drip engine (prompt 42). Drip Approvals (admin nav) lists every held drip message across leads and jobs, newest first: recipient with masked phone/email, campaign + step, and the editable body (plus subject for email). Per item: Approve & Send (re-checks consent, opt-out, replies, stage/paid/lost, and quiet hours at that exact moment, then sends via the normal providers, logs 'sent', and advances the enrollment exactly like an auto-send), Skip this step (advances without sending), Stop drip (ends the enrollment). Settings > Drips holds the knobs, all settings-table rows per standing rule 12: the master sending switch (same drip_sending_enabled row as the Drips view, so the two mirror each other), the approval gate (drip_approval_required; ON for the launch week, Dylan flips it off for full-auto), and the SMS send window (drip_quiet_start/drip_quiet_end/drip_quiet_days, Arizona time; texts due outside it wait for the next open, emails send any time, and the window also governs blasts). The gate intercepts LIVE campaigns only (dry-run already sends nothing); a leftover pending item keeps its step held even after the gate is switched off, so flipping the gate can never auto-send something a human was reviewing. The Approvals page also hosts the Invoice installments queue (prompt 45; see Deposits and payment schedules). Prompt 73: the gate gained ONE per-step exception, auto_send (today only the lead campaign's day-0 fixed-template instant touch). auto_send lives on the step row, never in settings, so no toggle can ever auto-send the AI-written steps; the pending-hold branch (a step a human is mid-review on) still outranks it.",
       "code": {
         "indexHtml": [
           "renderDripApprovals",
@@ -1816,7 +1821,7 @@
     {
       "name": "Routemize appointment intake",
       "area": "integrations",
-      "description": "The webhook path that makes Routemize (prescottepoxycompany.routemize.com) the booking front end and TopCoat's appointment calendar the system of record. Routemize's NATIVE Custom Webhook ('TopCoat appointment intake') posts all five appointment events (Created / Updated / StatusChanged / Cancelled / Deleted) directly to pec-appt-intake with the shared x-webhook-secret header; there is NO Zapier in the chain (prompt 56 replaced the prompt-43 Zapier design). The endpoint auto-detects the body shape: a Routemize envelope ({eventType, data}) is mapped by mapRoutemizeEnvelope onto the original hand-rolled contract, which still works for manual curls. eventType casing is normalized aggressively (PascalCase, dotted lowercase); unrecognized events return 200 no-op, never 4xx, because Routemize retries non-2xx and tracks webhook health. Mapping: relatedEntityId -> routemize_appt_id (upsert key), startTime/endTime carry explicit Z (trusted as-is, no Phoenix branch), contactName/contact.* -> customer fields, address.* -> location_*, customerAnswers -> customer-facing Q&A in customer_notes, nested AppointmentNotes -> internal notes, appointmentTitle ignored in favor of our own '<name>, <service>' title. appt_type comes from the routemize_service_type_map settings key (serviceName then eventTypeId, lowercased; unmapped defaults to on_site_estimate), editable in Settings > Appointments > Routemize booking intake (rule 12). Rep mapping tries assignedUsers[0].userName then .email against pec_sales_team_members.google_email, then first+last name, case-insensitive. Lead behavior (native path only, REVERSES prompt 43 decision 3): an unmatched booker gets a lead CREATED (brand PEC, stage new, sms_consent false, source = Routemize's own leadSourceText/leadSource slug else 'routemize', source_ref + routemize_contact_id = contact.contactId), then apptBookingLeadEffects advances it like an in-app booking; the created lead is deliberately NOT nurture-enrolled (the effects would pause it instantly). Matching uses the shared same-human rule in _pec-lead-match.cjs (also used by pec-lead-intake, windowless here), so the two intakes cannot drift; a matched existing lead gets its source filled only if blank (never overwritten), contact.contactId stored fill-if-blank (column absence tolerated pre-migration), and a 'note' lead_event recording the booking; a matched customer stores the contactId and suppresses lead creation. AppointmentStatusChanged is read defensively (shape unverified): a cancel-ish status cancels, anything else (including no readable status) is treated as an update with the ambiguity noted in internal notes, never a cancellation. A Routemize cancel/delete marks the row canceled, never hard-deletes, so the existing Google push removes the calendar event on its next kick. google_* columns are never touched. Every attempt logs the RAW envelope to pec_webhook_ingest_log (endpoint 'appt-intake') for the Sync Health view. Prompt 65 (Part A): Routemize sends question UUIDs in customerAnswers[].question, and customer_notes rides on every customer confirmation/reminder (both channels), so ID-shaped question keys (UUID, or a 16+ char space-free opaque token containing a digit) are stripped at intake by mapCustomerAnswers/isIdLikeQuestionKey (exported, unit-tested in production/appt-notes.test.cjs); the line keeps just the answer, real question text keeps the 'Question: answer' shape.",
+      "description": "The webhook path that makes Routemize (prescottepoxycompany.routemize.com) the booking front end and TopCoat's appointment calendar the system of record. Routemize's NATIVE Custom Webhook ('TopCoat appointment intake') posts all five appointment events (Created / Updated / StatusChanged / Cancelled / Deleted) directly to pec-appt-intake with the shared x-webhook-secret header; there is NO Zapier in the chain (prompt 56 replaced the prompt-43 Zapier design). The endpoint auto-detects the body shape: a Routemize envelope ({eventType, data}) is mapped by mapRoutemizeEnvelope onto the original hand-rolled contract, which still works for manual curls. eventType casing is normalized aggressively (PascalCase, dotted lowercase); unrecognized events return 200 no-op, never 4xx, because Routemize retries non-2xx and tracks webhook health. Mapping: relatedEntityId -> routemize_appt_id (upsert key), startTime/endTime carry explicit Z (trusted as-is, no Phoenix branch), contactName/contact.* -> customer fields, address.* -> location_*, customerAnswers -> customer-facing Q&A in customer_notes, nested AppointmentNotes -> internal notes, appointmentTitle ignored in favor of our own '<name>, <service>' title. appt_type comes from the routemize_service_type_map settings key (serviceName then eventTypeId, lowercased; unmapped defaults to on_site_estimate), editable in Settings > Appointments > Routemize booking intake (rule 12). Rep mapping tries assignedUsers[0].userName then .email against pec_sales_team_members.google_email, then first+last name, case-insensitive. Lead behavior (native path only, REVERSES prompt 43 decision 3): an unmatched booker gets a lead CREATED (brand PEC, stage new, sms_consent false, source = Routemize's own leadSourceText/leadSource slug else 'routemize', source_ref + routemize_contact_id = contact.contactId), then apptBookingLeadEffects advances it like an in-app booking; the created lead is deliberately NOT nurture-enrolled (the effects would pause it instantly). Matching uses the shared same-human rule in _pec-lead-match.cjs (also used by pec-lead-intake, windowless here), so the two intakes cannot drift; a matched existing lead gets its source filled only if blank (never overwritten), contact.contactId stored fill-if-blank (column absence tolerated pre-migration), and a 'note' lead_event recording the booking; a matched customer stores the contactId and suppresses lead creation. AppointmentStatusChanged is read defensively (shape unverified): a cancel-ish status cancels, anything else (including no readable status) is treated as an update with the ambiguity noted in internal notes, never a cancellation. A Routemize cancel/delete marks the row canceled, never hard-deletes, so the existing Google push removes the calendar event on its next kick. google_* columns are never touched. Every attempt logs the RAW envelope to pec_webhook_ingest_log (endpoint 'appt-intake') for the Sync Health view. Prompt 65 (Part A): Routemize sends question UUIDs in customerAnswers[].question, and customer_notes rides on every customer confirmation/reminder (both channels), so ID-shaped question keys (UUID, or a 16+ char space-free opaque token containing a digit) are stripped at intake by mapCustomerAnswers/isIdLikeQuestionKey (exported, unit-tested in production/appt-notes.test.cjs); the line keeps just the answer, real question text keeps the 'Question: answer' shape. Prompt 73 Part A: customerAnswers are now ROUTED by questionId via the routemize_answer_routing settings JSON (Settings > Appointments > Routemize booking questions): 'customer' answers build customer_notes (UUID-shaped question keys still stripped), 'internal' answers land on the rep-only notes as 'Service requested: <answer>', 'drop' discards, and an unmapped questionId defaults to customer. Live seed routes the free-text project description to customer and the service picker to internal, so reminders stop ending with a dangling picker value. Cancellations also re-enroll an eligible lead into nurture from step 1 (see Lead drip engine).",
       "code": {
         "indexHtml": [
           "renderSettingsAppointments"
@@ -1831,7 +1836,8 @@
         "other": [
           "production/appt-intake.test.cjs",
           "supabase/migrations/2026-07-21_appointment_routemize_source.sql",
-          "supabase/migrations/2026-08-01_routemize_contact_id.sql"
+          "supabase/migrations/2026-08-01_routemize_contact_id.sql",
+          "production/appt-notes.test.cjs"
         ]
       },
       "tables": [
@@ -2132,6 +2138,35 @@
         "estimates"
       ],
       "spec": "claude-code-prompt-64-presentation-view.md",
+      "since": "2026-08"
+    },
+    {
+      "name": "Instant lead touch and new-lead alerts",
+      "area": "dashboard",
+      "description": "Prompt 73: the moment an online lead lands (pec-lead-intake webhook), three things happen inline in the same request. (1) The day-0 instant touch: one FIXED thank-you message (no AI), email always, SMS only with consent, bypassing only the approval gate and quiet hours; wording lives on pec_drip_steps step 0 (fixed_template/fixed_subject), tokens {first_name} and {booking_link}. (2) A Slack alert to the leads channel (env SLACK_LEADS_WEBHOOK, falling back to SLACK_OFFICE_WEBHOOK, logged no-op when neither is set) with name, source, tel: phone link, email, project description, instant-touch outcome, and a TopCoat link. (3) A staff bell row (pec_notifications type lead_created, target_view leads) that opens the lead's detail pane. Consent capture: parseSmsConsent accepts the exact Zapier checkbox spellings (true/1/'true'/'yes'/'on'/'1'/'checked'/'agree'/'agreed'/'y'), never arbitrary truthiness; the disclosure text is stored on the created lead_event when the form sends sms_consent_disclosure. Settings > Drips shows the instant-reply toggle (drip_instant_touch_enabled), the Routemize booking link (routemize_booking_url), and a 30-day consent readout so the web-form gap stays visible. ROOT CAUSE NOTE: sms_consent is false on nearly every lead because the WEB FORM does not capture consent; until the form ships a TCPA checkbox mapped into sms_consent, the instant touch and all drips are email-only in practice.",
+      "code": {
+        "indexHtml": [
+          "renderSettingsDrips",
+          "notifTarget"
+        ],
+        "netlifyFunctions": [
+          "pec-lead-intake.cjs",
+          "_pec-drip.cjs"
+        ],
+        "other": [
+          "production/instant-touch.test.cjs",
+          "supabase/migrations/2026-08-12_prompt73_instant_touch_drips.sql"
+        ]
+      },
+      "tables": [
+        "leads",
+        "lead_events",
+        "pec_drip_steps",
+        "pec_drip_enrollments",
+        "pec_drip_sends",
+        "pec_notifications",
+        "settings"
+      ],
       "since": "2026-08"
     }
   ]

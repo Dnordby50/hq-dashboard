@@ -6402,6 +6402,8 @@ function notifTarget(n) {
     // Booked-appointment bell rows (prompt 37): land on the calendar with
     // that appointment's edit modal opened (openAppointmentId).
     if (n.target_view === 'appointments') return { view: 'appointments', id: n.target_id };
+    // New-lead bell rows (prompt 73 E2): open the lead's detail pane.
+    if (n.target_view === 'leads') return { view: 'leads', id: n.target_id };
     // estimate_viewed bell rows (prompt 44): open that estimate's card.
     if (n.target_view === 'estimates') return { view: 'estimates', id: n.target_id };
     return null;
@@ -6445,6 +6447,7 @@ function renderBellPanel(rows) {
       if (navView === 'costing') state.openUnifiedJobId = navId;
       else if (navView === 'invoicing') state.openInvoiceJobId = navId;
       else if (navView === 'appointments') state.openAppointmentId = navId;
+      else if (navView === 'leads') state.openLeadId = navId;
       else if (navView === 'estimates') state.openEstimateId = navId;
       else if (navView === 'schema-drift') { /* whole-view destination, no open-id */ }
       else if (navView === 'ops') { /* whole-view destination; the queue lists the item */ }
@@ -18673,12 +18676,22 @@ function wireSettingsTabs(root) {
 // window (start/end/days) the engine reads on every tick.
 async function renderSettingsDrips() {
   const root = $('pecViewRoot');
-  const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days', 'lost_reason_ai_backfill_enabled']),
-    { label: 'settings-drips' });
+  // Consent readout window (prompt 73 E3): how many of the last 30 days'
+  // leads arrived with texting consent, so the web-form gap is visible
+  // instead of invisible.
+  const consentSince = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const [setRes, consentRes] = await withFreshSession(() => Promise.all([
+    supabase.from('settings').select('key,value')
+      .in('key', ['drip_sending_enabled', 'drip_approval_required', 'drip_quiet_start', 'drip_quiet_end', 'drip_quiet_days', 'lost_reason_ai_backfill_enabled', 'drip_instant_touch_enabled', 'routemize_booking_url']),
+    supabase.from('leads').select('id,sms_consent').is('deleted_at', null).gte('created_at', consentSince),
+  ]), { label: 'settings-drips' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+  const consentRows = (consentRes && consentRes.data) || [];
+  const consentYes = consentRows.filter(r => r.sms_consent).length;
   const masterOn = map.drip_sending_enabled === 'true';
   const gateOn = map.drip_approval_required === 'true';
+  const instantOn = map.drip_instant_touch_enabled === 'true';
+  const bookingUrl = map.routemize_booking_url || '';
   // Missing row = ON (the nightly function defaults the same way).
   const lostAiOn = map.lost_reason_ai_backfill_enabled !== 'false';
   const qStart = map.drip_quiet_start || '08:00';
@@ -18714,6 +18727,31 @@ async function renderSettingsDrips() {
       </div>
     </div>
     <div class="pec-card">
+      <h3 style="margin-top:0">Instant lead reply (day 0)</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">
+        A new online lead gets one fixed thank-you message the moment it arrives (email always,
+        text only when they gave consent). It skips the approval queue and the send window because
+        it answers a message the person just sent; every later drip step keeps the normal rules.
+        The master switch and kill switch above still stop it. The exact wording lives on step 0
+        of the lead campaign.
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="font-weight:700">Instant reply: ${instantOn ? 'ON' : 'OFF'}</div>
+        <button type="button" class="pec-btn sm ${instantOn ? '' : 'primary'}" id="setInstantTouch">${instantOn ? 'Turn it OFF' : 'Turn it ON'}</button>
+      </div>
+      <div class="pec-field" style="max-width:520px;margin-bottom:6px"><label>Routemize booking link</label>
+        <input type="url" id="setBookingUrl" value="${esc(bookingUrl)}" placeholder="https://prescottepoxycompany.routemize.com/...">
+      </div>
+      <div style="font-size:.7rem;color:var(--muted)">
+        Fills the booking link in the instant reply and every lead-nurture step (estimate, invoice,
+        and review campaigns never use it). Leave it blank and messages simply skip the booking
+        sentence, no broken links.
+      </div>
+      <div style="font-size:.78rem;margin-top:10px" id="setConsentReadout">
+        Texting consent, last 30 days: <strong>${consentYes}</strong> of <strong>${consentRows.length}</strong> new leads arrived with consent.${consentRows.length && !consentYes ? ' The web form is not capturing the consent checkbox yet, so the instant reply and drips are email-only in practice.' : ''}
+      </div>
+    </div>
+    <div class="pec-card">
       <h3 style="margin-top:0">Send window (quiet hours)</h3>
       <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">Texts only go out inside this window (Arizona time). A text due outside it waits for the next open, it is never skipped. Emails send any time. Applies to drips and blasts.</div>
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
@@ -18738,6 +18776,18 @@ async function renderSettingsDrips() {
       </div>
     </div>`;
   wireSettingsTabs(root);
+
+  $('setInstantTouch').addEventListener('click', async () => {
+    const btn = $('setInstantTouch'); btn.disabled = true;
+    try { await saveSetting('drip_instant_touch_enabled', instantOn ? 'false' : 'true'); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setBookingUrl').addEventListener('change', async (e) => {
+    const v = e.target.value.trim();
+    if (v && !/^https?:\/\//i.test(v)) { showToast('The booking link must start with https://', { ttl: 5000 }); return; }
+    try { await saveSetting('routemize_booking_url', v); showToast(v ? 'Booking link saved' : 'Booking link cleared', { ttl: 2500 }); }
+    catch (err) { showToast('Could not save the booking link: ' + (err.message || err), { ttl: 5000 }); }
+  });
 
   $('setLostAi').addEventListener('click', async () => {
     const btn = $('setLostAi'); btn.disabled = true;
@@ -19247,12 +19297,13 @@ function openPresentationSectionModal(existing, brandKey, allSections) {
 // the rules table.
 async function renderSettingsAppointments() {
   const root = $('pecViewRoot');
-  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes] = await withFreshSession(() => Promise.all([
+  const [rosterRes, rulesRes, saSetRes, peopleRes, rzSetRes, raSetRes] = await withFreshSession(() => Promise.all([
     supabase.from('pec_sales_team_members').select('*').order('name'),
     supabase.from('pec_appointment_reminder_rules').select('*').order('on_book', { ascending: false }).order('offset_minutes'),
     supabase.from('settings').select('key,value').like('key', 'salesask_%'),
     supabase.from('people').select('sales_team_member_id,email').not('sales_team_member_id', 'is', null),
     supabase.from('settings').select('value').eq('key', 'routemize_service_type_map').maybeSingle(),
+    supabase.from('settings').select('value').eq('key', 'routemize_answer_routing').maybeSingle(),
   ]), { label: 'settings-appointments' });
   const members = (rosterRes.data || []);
   const rules = (rulesRes.error ? [] : rulesRes.data || []);
@@ -19272,6 +19323,16 @@ async function renderSettingsAppointments() {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) rzMap = parsed;
   } catch (_) { /* bad JSON renders empty; the next save rewrites it clean */ }
   const RZ_APPT_TYPES = ['on_site_estimate', 'project_walkthrough', 'site_visit', 'other'];
+  // Routemize questionId -> answer route (prompt 73 Part A, rule 12): one
+  // settings row of JSON; pec-appt-intake reads it on every native delivery,
+  // so a new Routemize question is an edit here, never a deploy. An unlisted
+  // question routes to the customer note (the server default).
+  let raMap = {};
+  try {
+    const parsed = JSON.parse((raSetRes && raSetRes.data && raSetRes.data.value) || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) raMap = parsed;
+  } catch (_) { /* bad JSON renders empty; the next save rewrites it clean */ }
+  const RA_ROUTES = [['customer', 'Customer note'], ['internal', 'Internal note (reps only)'], ['drop', 'Dropped']];
 
   const whenLabel = (r) => {
     if (r.on_book) return 'On booking';
@@ -19354,6 +19415,29 @@ async function renderSettingsAppointments() {
       </div>
       <button class="pec-btn ghost sm" id="rzMapAdd" style="margin-top:4px">+ Add mapping</button>
       <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="rzStatus"></div>
+    </div>
+
+    <div class="pec-card">
+      <h3 style="margin:0 0 8px">Routemize booking questions</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        Each booking-form question routes its answer somewhere: the customer note (rides the
+        confirmations and reminders the customer reads), the internal note (reps only), or nowhere.
+        A question not listed here goes to the customer note. The question ID is the long code
+        Routemize sends with each answer (Sync Health shows the raw webhook if you need one).
+        Adding a new Routemize question is a row here, not a code change.
+      </div>
+      <div id="raMapRows">
+        ${Object.entries(raMap).map(([k, v]) => `
+        <div style="display:flex;gap:8px;align-items:center;padding:5px 0" data-ra-row>
+          <input data-ra-key value="${esc(k)}" placeholder="Routemize question ID" style="max-width:300px;font-size:.8rem">
+          <select data-ra-route style="max-width:200px;font-size:.8rem">
+            ${RA_ROUTES.map(([rk, lbl]) => `<option value="${rk}"${v === rk ? ' selected' : ''}>${esc(lbl)}</option>`).join('')}
+          </select>
+          <button class="pec-btn ghost sm danger" data-ra-del>Remove</button>
+        </div>`).join('') || ''}
+      </div>
+      <button class="pec-btn ghost sm" id="raMapAdd" style="margin-top:4px">+ Add question</button>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="raStatus"></div>
     </div>
 
     <div class="pec-card">
@@ -19489,6 +19573,42 @@ async function renderSettingsAppointments() {
     holder.appendChild(div);
     rzWireRow(div);
     div.querySelector('[data-rz-key]').focus();
+  });
+
+  // Answer-routing wiring (prompt 73 Part A): same rows-are-the-editor /
+  // one-JSON-settings-row pattern as the service map above.
+  const raStatus = (msg) => { const el = root.querySelector('#raStatus'); if (el) el.textContent = msg; };
+  const raSave = async () => {
+    const m = {};
+    root.querySelectorAll('[data-ra-row]').forEach(row => {
+      const k = row.querySelector('[data-ra-key]').value.trim().toLowerCase();
+      const v = row.querySelector('[data-ra-route]').value;
+      if (k && RA_ROUTES.some(([rk]) => rk === v)) m[k] = v;
+    });
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'routemize_answer_routing', value: JSON.stringify(m) }, { onConflict: 'key' }), { label: 'settings-routemize-routing-save' });
+    if (w.error) { raStatus('Save failed: ' + w.error.message); return; }
+    raStatus('Saved.'); setTimeout(() => raStatus(''), 2000);
+  };
+  const raWireRow = (row) => {
+    row.querySelector('[data-ra-key]').addEventListener('change', raSave);
+    row.querySelector('[data-ra-route]').addEventListener('change', raSave);
+    row.querySelector('[data-ra-del]').addEventListener('click', () => { row.remove(); raSave(); });
+  };
+  root.querySelectorAll('[data-ra-row]').forEach(raWireRow);
+  root.querySelector('#raMapAdd')?.addEventListener('click', () => {
+    const holder = root.querySelector('#raMapRows');
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;gap:8px;align-items:center;padding:5px 0';
+    div.setAttribute('data-ra-row', '');
+    div.innerHTML = `
+      <input data-ra-key value="" placeholder="Routemize question ID" style="max-width:300px;font-size:.8rem">
+      <select data-ra-route style="max-width:200px;font-size:.8rem">
+        ${RA_ROUTES.map(([rk, lbl]) => `<option value="${rk}">${esc(lbl)}</option>`).join('')}
+      </select>
+      <button class="pec-btn ghost sm danger" data-ra-del>Remove</button>`;
+    holder.appendChild(div);
+    raWireRow(div);
+    div.querySelector('[data-ra-key]').focus();
   });
 
   const openRuleModal = (rule) => openApptRuleModal(rule, () => renderSettingsAppointments());
