@@ -2060,6 +2060,350 @@
           "name": "public.leads.estimate_scheduled_at"
         }
       ]
+    },
+    {
+      "file": "2026-08-04_review_drip.sql",
+      "date": "2026-08-04",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_review_requests"
+        },
+        {
+          "kind": "table",
+          "name": "public.pec_review_bonuses"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.source"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.platform"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.external_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.reviewer_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.review_text"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.review_url"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.posted_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.match_status"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.matched_by"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.matched_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.crew_lead"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.crew_id"
+        },
+        {
+          "kind": "column",
+          "name": "public.reviews.review_request_id"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_review_req_one_open"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_review_req_status_asked"
+        },
+        {
+          "kind": "setting",
+          "name": "review_drip_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "review_ask_default_on"
+        },
+        {
+          "kind": "setting",
+          "name": "review_bonus_amount"
+        },
+        {
+          "kind": "setting",
+          "name": "review_bonus_min_stars"
+        },
+        {
+          "kind": "setting",
+          "name": "review_match_window_days"
+        },
+        {
+          "kind": "setting",
+          "name": "review_stop_on_touchup"
+        },
+        {
+          "kind": "setting",
+          "name": "review_alert_max_stars"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-05_lead_source_unification.sql",
+      "date": "2026-08-05",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_lead_sources.aliases"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-06_prompt62_lead_customer_estimate.sql",
+      "date": "2026-08-06",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.leads.business_name"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.archived_at"
+        },
+        {
+          "kind": "column",
+          "name": "public.leads.lost_notes"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.customer_id"
+        },
+        {
+          "kind": "index",
+          "name": "estimates_customer_id_idx"
+        },
+        {
+          "kind": "index",
+          "name": "leads_archived_at_idx"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-06_prompt62_lost_reason_setting.sql",
+      "date": "2026-08-06",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "lost_reason_ai_backfill_enabled"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-07_prompt64_presentation.sql",
+      "date": "2026-08-07",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.pec_presentation_sections"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_presentation_brand_order"
+        },
+        {
+          "kind": "setting",
+          "name": "presentation_reviews_count"
+        },
+        {
+          "kind": "setting",
+          "name": "presentation_reviews_min_rating"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-08_prompt68_busybusy_autocreate.sql",
+      "date": "2026-08-08",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "busybusy_autocreate_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_autocreate_radius_m"
+        },
+        {
+          "kind": "setting",
+          "name": "busybusy_autocreate_reminders"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-09_prompt69_per_line_pricing.sql",
+      "date": "2026-08-09",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.is_custom"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.custom_label"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.custom_scope"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.custom_material_cost"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.custom_labor_hours"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.notes"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.calc_price"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.price_override"
+        },
+        {
+          "kind": "setting",
+          "name": "line_pricing_gp_floor_pct"
+        },
+        {
+          "kind": "setting",
+          "name": "line_pricing_block_below_floor"
+        },
+        {
+          "kind": "setting",
+          "name": "line_pricing_custom_label_default"
+        },
+        {
+          "kind": "setting",
+          "name": "line_pricing_reason_threshold_pct"
+        },
+        {
+          "kind": "setting",
+          "name": "line_pricing_reason_threshold_dollars"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-10_prompt70_pricing_intelligence.sql",
+      "date": "2026-08-10",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_ai_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "comps_min_sample"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-11_prompt72_optional_lines.sql",
+      "date": "2026-08-11",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.is_optional"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimate_areas.preselected"
+        },
+        {
+          "kind": "column",
+          "name": "public.estimates.price_all_options"
+        },
+        {
+          "kind": "setting",
+          "name": "optional_lines_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "optional_lines_preselect_default"
+        },
+        {
+          "kind": "setting",
+          "name": "optional_lines_gp_warn_pct"
+        }
+      ]
+    },
+    {
+      "file": "2026-08-12_prompt73_instant_touch_drips.sql",
+      "date": "2026-08-12",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_drip_steps.fixed_template"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_steps.fixed_subject"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_drip_steps.auto_send"
+        },
+        {
+          "kind": "setting",
+          "name": "routemize_booking_url"
+        },
+        {
+          "kind": "setting",
+          "name": "drip_instant_touch_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "routemize_answer_routing"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -2101,6 +2445,7 @@
     "pec_ops_items",
     "pec_payments",
     "pec_portal_views",
+    "pec_presentation_sections",
     "pec_prod_addons",
     "pec_prod_area_tints",
     "pec_prod_areas",
@@ -2127,6 +2472,8 @@
     "pec_prod_recipe_slots",
     "pec_prod_system_types",
     "pec_prod_tasks",
+    "pec_review_bonuses",
+    "pec_review_requests",
     "pec_sales_member_google_tokens",
     "pec_sales_team_members",
     "pec_salesask_recordings",

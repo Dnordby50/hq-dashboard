@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-06 (Claude Code) after applying the prompt-73 migration (2026-08-12_prompt73_instant_touch_drips.sql) live via MCP: pec_drip_steps gained fixed_template / fixed_subject / auto_send and ai_guidance went NULLABLE; the lead campaign was renumbered to 9 steps (new day-0 instant-touch step at index 0, existing 8 shifted to 1..8, max_touches 9; zero active enrollments at renumber time, so nothing was bumped); settings gained routemize_booking_url (seeded EMPTY, Dylan supplies the real URL), drip_instant_touch_enabled ('true'), and routemize_answer_routing (the questionId route map). Only those sections changed.
 Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-51 migration: pec_prod_jobs (ten touchup_* columns + idx_pec_prod_jobs_touchup_queue) and the settings key list. Only those changed; every other section is unchanged from the refreshes below.
 Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrations: pec_prod_job_costing (office_notes/_by/_at), pec_prod_job_bonuses (review_status/reviewed_by/reviewed_at/review_note), pec_bonus_payouts (reversed_at/reversed_by/reversal_reason). Only those three tables changed; every other section is unchanged from the 2026-07-21 dump.
 
@@ -762,7 +763,7 @@ RLS: enabled · rows: 3
 | updated_at | timestamptz | no | now() |
 
 PK: id
-Note: kind CHECK in ('lead','estimate','invoice','review') (extended 2026-07-31, prompt 60); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded campaigns: lead (8-step taper, days 1,2,4,7,11,16,22,30), estimate (4 steps, days 1,3,7,14), invoice (4 steps, days 0,3,7,14), review (4 steps, days 1,3,7,14, channels sms/sms/email/sms). Lead/estimate/invoice shipped dry_run; **review shipped mode 'live'** (decision 15: the drip_approval_required gate is its safety, plus an enroll-time guard in _pec-drip.cjs). RLS staff-only.
+Note: kind CHECK in ('lead','estimate','invoice','review') (extended 2026-07-31, prompt 60); status CHECK in ('active','paused'); mode CHECK in ('dry_run','live'). Seeded campaigns: lead (9-step taper since prompt 73: day-0 instant touch + days 1,2,4,7,11,16,22,30, max_touches 9), estimate (4 steps, days 1,3,7,14), invoice (4 steps, days 0,3,7,14), review (4 steps, days 1,3,7,14, channels sms/sms/email/sms). Lead/estimate/invoice shipped dry_run; **review shipped mode 'live'** (decision 15: the drip_approval_required gate is its safety, plus an enroll-time guard in _pec-drip.cjs). RLS staff-only.
 
 ### pec_drip_enrollments
 RLS: enabled · rows: 0
@@ -814,7 +815,7 @@ FK: enrollment_id → pec_drip_enrollments.id; lead_id → leads.id; campaign_id
 Note: the send ledger for BOTH drips and blasts, and the 4th source for the Phase 1 times-contacted count (status='sent' only). channel CHECK in ('sms','email'); status CHECK pec_drip_sends_status_check in ('queued','sending','sent','failed','skipped','dry_run'); subject_type CHECK in ('lead','job','customer'). CHECK chk_pec_drip_sends_origin: enrollment_id IS NOT NULL OR blast_id IS NOT NULL (every row belongs to a drip enrollment or a blast). Drip rows keep enrollment_id/campaign_id/lead_id; blast rows have those null, blast_id set, step_index 0. Indexes: idx_pec_drip_sends_lead (lead_id, status), idx_pec_drip_sends_enrollment, idx_pec_drip_sends_blast (blast_id, status) WHERE blast_id IS NOT NULL, idx_pec_drip_sends_subject (subject_type, subject_id). RLS staff-only.
 
 ### pec_drip_steps
-RLS: enabled · rows: 16
+RLS: enabled · rows: 21
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -823,13 +824,16 @@ RLS: enabled · rows: 16
 | step_index | integer | no |  |
 | day_offset | integer | no |  |
 | channel | text | no |  |
-| ai_guidance | text | no |  |
+| ai_guidance | text | yes |  |
 | email_subject | text | yes |  |
 | active | boolean | no | true |
+| fixed_template | text | yes |  |
+| fixed_subject | text | yes |  |
+| auto_send | boolean | no | false |
 
 PK: id
 FK: campaign_id → pec_drip_campaigns.id
-Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. 16 rows across the 3 campaigns. RLS staff-only.
+Note: UNIQUE (campaign_id, step_index). channel CHECK in ('sms','email','both'). ai_guidance is the per-step instruction to the model (not customer copy); the runner appends real links/amounts from data. Prompt 73 (2026-08-06): ai_guidance became NULLABLE and fixed_template / fixed_subject / auto_send were added. fixed_template set = the step sends that text verbatim after token substitution ({first_name}, {booking_link}, {{#booking_link}}...{{/booking_link}} conditional) with ZERO model calls; auto_send=true = the step bypasses the approval gate and quiet hours (PER-STEP by design, never a global flag). Today exactly one step has them: the lead campaign's day-0 instant touch. RLS staff-only.
 
 ### pec_estimate_views
 RLS: enabled · rows: 0
