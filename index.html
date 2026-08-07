@@ -1058,6 +1058,11 @@ body { padding: 18px; min-height: 100vh; }
 .rd-search-price { margin-left: auto; color: var(--rd-muted); font-size: 13px; }
 .rd-search-row-sub { display: block; color: var(--rd-muted); font-size: 12px; margin-top: 2px; }
 .rd-search-empty { padding: 14px 12px; color: var(--rd-muted); font-size: 13px; }
+/* Prompt 75 A4: record rows, cards, and nav items are real anchors now (so
+   ctrl/cmd/middle-click opens a new tab). These rules keep them looking
+   exactly like the text/buttons they replaced. */
+a.pec-link, a.rd-search-row, a.pec-cust-name, a.rd-crm-item { color: inherit; text-decoration: none; }
+a.pec-link:hover { text-decoration: none; }
 .rd-icon-btn {
   width: 38px; height: 38px; border-radius: 50%;
   background: var(--rd-softer); border: 1px solid var(--rd-line);
@@ -5454,15 +5459,29 @@ if (document.readyState === 'loading') {
           fly.appendChild(d);
           sectionShown = section;
         }
-        const item = document.createElement('button');
-        item.type = 'button';
+        // Prompt 75 A4: flyout items are real anchors (?v=<view>) so
+        // ctrl/cmd/middle-click opens the view in a new tab. This classic
+        // script cannot see the CRM module's pecNavUrl, so the href is built
+        // inline with the SAME param list (keep the two in sync). The hidden
+        // #pecSubnav source buttons stay <button>s on purpose: they are
+        // display:none source-of-truth markup that renderAuthUI / railSync /
+        // the delegated handler all select as button[data-pec-view].
+        const item = document.createElement('a');
+        try {
+          const hq = new URLSearchParams(location.search);
+          ['v', 'view', 'appt', 'job', 'estimate', 'lead', 'customer', 'invoice'].forEach(k => hq.delete(k));
+          hq.set('v', view);
+          item.href = location.pathname + '?' + hq.toString();
+        } catch (_) { item.href = '?v=' + encodeURIComponent(view); }
         item.className = 'rd-crm-item';
         item.setAttribute('role', 'menuitem');
         item.dataset.pecView = view;
         if (src.classList.contains('pec-role-admin')) item.classList.add('pec-role-admin');
         item.textContent = RAIL_RELABEL[view] || src.textContent.trim();
         item.style.display = src.style.display; // mirror initial visibility
-        item.addEventListener('click', () => {
+        item.addEventListener('click', (e) => {
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // browser opens the tab
+          e.preventDefault();
           const crmTabContent = document.getElementById('tab-prescott-crm');
           if (crmTabContent && !crmTabContent.classList.contains('active') && topCoatBtn) topCoatBtn.click();
           src.click(); // forwards to #pecSubnav's delegated handler -> switchView
@@ -7224,6 +7243,20 @@ function renderAuthUI() {
       if (apptId) { state.view = 'appointments'; state.openAppointmentId = apptId; }
     } catch (_) { /* malformed query string; boot normally */ }
   }
+  // Prompt 75 A2: general record/view deep links (?v=..., pecNavUrl scheme).
+  // Same consume-once pattern as ?appt above, so a later re-render never
+  // re-opens a record the user has navigated away from. ?appt wins when both
+  // are present (external Google Calendar contract). Runs here, after
+  // state.adminUser exists, because the permission gate needs can()/isAdmin().
+  if (!window._pecNavDeepLinkDone) {
+    window._pecNavDeepLinkDone = true;
+    try {
+      if (!new URLSearchParams(location.search).get('appt')) {
+        const p = pecReadNavUrl(location.search);
+        if (p) state.view = pecApplyNavParams(p);
+      }
+    } catch (_) { /* malformed query string; boot normally */ }
+  }
   console.log('[crm] auth: dispatching initial switchView ->', state.view);
   switchView(state.view);
   // Load the notification bell (best-effort; hidden if the table isn't live yet).
@@ -7973,10 +8006,93 @@ function pecNavTuple() {
     openInvoiceJobId: state.openInvoiceJobId || null,
     openCustomerId: state.openCustomerId || null,
     openUnifiedJobId: state.openUnifiedJobId || null,
+    // Prompt 75 Part A: leads + estimates joined the tuple so Back/Forward and
+    // the shareable URL cover their detail panes too.
+    openLeadId: state.openLeadId || null,
+    openEstimateId: state.openEstimateId || null,
   };
 }
 function pecNavKey(t) {
-  return [t.view, t.openJobId, t.openInvoiceJobId, t.openCustomerId, t.openUnifiedJobId].join('|');
+  return [t.view, t.openJobId, t.openInvoiceJobId, t.openCustomerId, t.openUnifiedJobId, t.openLeadId, t.openEstimateId].join('|');
+}
+// ---- Prompt 75 Part A: shareable URLs ----------------------------------------
+// The address bar mirrors the nav tuple as /?v=<view>&<record>=<id>, so any
+// screen can be pasted into Slack and land a teammate on the same record.
+// Param names are effectively permanent once shared: v, job, estimate, lead,
+// customer, invoice. `v` on purpose, NOT `view`: ?view=prescott is a live
+// legacy link that clicks the outer CRM tab and must keep working unchanged.
+// pecNavUrl strips its OWN params (plus the consumed one-shot ?view/?appt)
+// and preserves everything else on the URL (?staff=1, future params).
+const PEC_NAV_URL_PARAMS = ['v', 'view', 'appt', 'job', 'estimate', 'lead', 'customer', 'invoice'];
+function pecNavUrl(t) {
+  try {
+    const q = new URLSearchParams(location.search);
+    PEC_NAV_URL_PARAMS.forEach(k => q.delete(k));
+    q.set('v', t.view || 'dashboard');
+    // The Job Costing detail keys on openUnifiedJobId but shares the `job`
+    // param (the view disambiguates on read).
+    if (t.view === 'costing' && t.openUnifiedJobId) q.set('job', t.openUnifiedJobId);
+    else if (t.openJobId) q.set('job', t.openJobId);
+    if (t.openEstimateId) q.set('estimate', t.openEstimateId);
+    if (t.openLeadId) q.set('lead', t.openLeadId);
+    if (t.openCustomerId) q.set('customer', t.openCustomerId);
+    if (t.openInvoiceJobId) q.set('invoice', t.openInvoiceJobId);
+    return location.pathname + '?' + q.toString();
+  } catch (_) { return location.href; }
+}
+// href builder for record anchors: pecHref('jobs', { openJobId: id }).
+function pecHref(view, ids = {}) { return pecNavUrl({ view, ...ids }); }
+// Parse a ?v= deep link (pasted URL, history entry with no state). Returns
+// null when the URL carries no v param.
+function pecReadNavUrl(search) {
+  try {
+    const q = new URLSearchParams(search == null ? location.search : search);
+    const v = q.get('v');
+    if (!v) return null;
+    return {
+      view: v,
+      job: q.get('job') || null, estimate: q.get('estimate') || null,
+      lead: q.get('lead') || null, customer: q.get('customer') || null,
+      invoice: q.get('invoice') || null,
+    };
+  } catch (_) { return null; }
+}
+// Apply a parsed deep link to state and return the view to render. An unknown
+// view falls back to the dashboard; a permission-gated view lands on the
+// dashboard WITH a toast (mirrors notifTarget's gating), never a blank panel.
+function pecApplyNavParams(p) {
+  const KNOWN = new Set(['dashboard', 'customers', 'jobs', 'messages', 'email-log', 'appointments', 'invoicing', 'commission', 'metrics', 'docs', 'schedule', 'nextday', 'pipeline', 'leads', 'drips', 'drip-approvals', 'estimates', 'costing', 'completed-costing', 'crew-bonus', 'dripjobs-sync-health', 'schema-drift', 'todos', 'ops', 'settings', 'ordering', 'catalog']);
+  const v = KNOWN.has(p.view) ? p.view : 'dashboard';
+  const ADMIN_ONLY = new Set(['ops', 'drips', 'drip-approvals', 'crew-bonus', 'settings', 'dripjobs-sync-health', 'schema-drift']);
+  const gated =
+    ((v === 'costing' || v === 'completed-costing') && !can('can_view_job_costing')) ||
+    (v === 'catalog' && !can('can_edit_catalog')) ||
+    (v === 'commission' && !can('can_view_commission')) ||
+    (ADMIN_ONLY.has(v) && !isAdmin());
+  if (gated) {
+    try { showToast('That link goes to a view your account cannot open. Landing on the dashboard instead.', { ttl: 6000 }); } catch (_) {}
+    return 'dashboard';
+  }
+  if (v === 'costing' && p.job) state.openUnifiedJobId = p.job;
+  else if (v === 'jobs' && p.job) state.openJobId = p.job;
+  if (v === 'estimates' && p.estimate) state.openEstimateId = p.estimate;
+  if (v === 'leads' && p.lead) state.openLeadId = p.lead;
+  if (v === 'customers' && p.customer) state.openCustomerId = p.customer;
+  if (v === 'invoicing' && p.invoice) state.openInvoiceJobId = p.invoice;
+  return v;
+}
+// Shared guard for click handlers on rows/cards that now contain a real <a>
+// (prompt 75 A4). A MODIFIED click (ctrl/cmd/shift/alt, non-left button) on
+// the anchor falls through to the browser so "open in new tab" works; a plain
+// left click prevents the anchor default and the caller runs today's in-app
+// navigation (no reload, no flash). Clicks not on an anchor pass through
+// untouched. Returns true when the caller should navigate in-app.
+function pecLinkClickGuard(e) {
+  if (e.defaultPrevented) return false;
+  const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  if (a && (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) return false;
+  if (a) e.preventDefault();
+  return true;
 }
 // Record the current (view + open-ids) tuple in browser history. First call is a
 // replaceState (establishes a base CRM entry over the loader page); later calls
@@ -7988,10 +8104,13 @@ function pecSyncHistory() {
   const t = pecNavTuple();
   const key = pecNavKey(t);
   try {
-    if (pecLastNavKey === null) { pecLastNavKey = key; history.replaceState(t, '', location.href); return; }
+    // The URL is built from the tuple (prompt 75 A3) so the address bar is a
+    // shareable deep link for whatever is on screen. Same dedup key as before,
+    // so a filter change or re-render still never stacks an entry.
+    if (pecLastNavKey === null) { pecLastNavKey = key; history.replaceState(t, '', pecNavUrl(t)); return; }
     if (key === pecLastNavKey) return;
     pecLastNavKey = key;
-    history.pushState(t, '', location.href);
+    history.pushState(t, '', pecNavUrl(t));
   } catch (_) { /* history API unavailable; navigation still works, just no back-stack */ }
 }
 // Back/Forward: restore the saved tuple and route to it WITHOUT pushing again.
@@ -8001,13 +8120,28 @@ window.addEventListener('popstate', (e) => {
   if (document.body.classList.contains('pec-portal-mode')) return; // portal uses hashchange
   pecIsPopstate = true;
   try {
-    const s = (e.state && e.state.view) ? e.state
-      : { view: state.view || 'dashboard', openJobId: null, openInvoiceJobId: null, openCustomerId: null, openUnifiedJobId: null };
+    let s = (e.state && e.state.view) ? e.state : null;
+    if (!s) {
+      // An entry with no state (arrived via a pasted URL, or the pre-CRM base
+      // entry): rebuild the tuple from the URL with the same reader the boot
+      // deep link uses (prompt 75 A3), so Back/Forward still works after
+      // landing from a shared link.
+      const p = pecReadNavUrl(location.search);
+      if (p) {
+        state.openJobId = state.openInvoiceJobId = state.openCustomerId = state.openUnifiedJobId = state.openLeadId = state.openEstimateId = null;
+        const v = pecApplyNavParams(p);
+        s = { view: v, openJobId: state.openJobId, openInvoiceJobId: state.openInvoiceJobId, openCustomerId: state.openCustomerId, openUnifiedJobId: state.openUnifiedJobId, openLeadId: state.openLeadId, openEstimateId: state.openEstimateId };
+      } else {
+        s = { view: state.view || 'dashboard', openJobId: null, openInvoiceJobId: null, openCustomerId: null, openUnifiedJobId: null, openLeadId: null, openEstimateId: null };
+      }
+    }
     state.openJobId = s.openJobId || null;
     state.openInvoiceJobId = s.openInvoiceJobId || null;
     state.openCustomerId = s.openCustomerId || null;
     state.openUnifiedJobId = s.openUnifiedJobId || null;
-    pecLastNavKey = pecNavKey({ view: s.view, openJobId: s.openJobId || null, openInvoiceJobId: s.openInvoiceJobId || null, openCustomerId: s.openCustomerId || null, openUnifiedJobId: s.openUnifiedJobId || null });
+    state.openLeadId = s.openLeadId || null;
+    state.openEstimateId = s.openEstimateId || null;
+    pecLastNavKey = pecNavKey({ view: s.view, openJobId: s.openJobId || null, openInvoiceJobId: s.openInvoiceJobId || null, openCustomerId: s.openCustomerId || null, openUnifiedJobId: s.openUnifiedJobId || null, openLeadId: s.openLeadId || null, openEstimateId: s.openEstimateId || null });
     switchView(s.view || 'dashboard');
   } catch (err) {
     console.error('[crm] popstate restore failed:', err);
@@ -8713,7 +8847,7 @@ async function renderCustomers() {
           <tr data-cust-id="${c.id}">
             <td style="display:flex;align-items:center;gap:6px">
               <button data-expand-cust="${c.id}" aria-label="Toggle jobs preview" style="background:none;border:none;cursor:pointer;color:var(--muted);padding:0 4px;font-size:.85rem"><span class="pec-cust-chevron" data-chevron-for="${c.id}">▶</span></button>
-              <button class="pec-cust-name" data-open-cust="${c.id}">${esc(c.name)}</button>
+              <a class="pec-cust-name" href="${esc(pecHref('customers', { openCustomerId: c.id }))}" data-open-cust="${c.id}">${esc(c.name)}</a>
             </td>
             <td>${esc(c.email || '—')}</td>
             <td>${esc(c.phone || '—')}</td>
@@ -8739,7 +8873,8 @@ async function renderCustomers() {
     b.addEventListener('click', () => openCustomerForm(state.customers.find(c => c.id === b.dataset.editCust)));
   });
   root.querySelectorAll('[data-open-cust]').forEach(b => {
-    b.addEventListener('click', () => {
+    b.addEventListener('click', (e) => {
+      if (!pecLinkClickGuard(e)) return; // modified click -> browser opens a tab
       state.openCustomerId = b.dataset.openCust;
       switchView('customers');
     });
@@ -9486,7 +9621,7 @@ async function renderJobs() {
         <thead><tr><th>Customer</th><th>Type</th><th>Address</th><th>Status</th><th>Price</th><th id="pecJobsPpsfSort" style="text-align:right;cursor:pointer;white-space:nowrap" title="Click to sort by price per square foot (this page)">$/sqft ${state.jobsSort === 'ppsf_desc' ? '▼' : state.jobsSort === 'ppsf_asc' ? '▲' : '↕'}</th><th>Created</th></tr></thead>
         <tbody>${jobs.map(j => { const ppsf = jobPpsf(j); return `
           <tr data-job-id="${j.id}">
-            <td>${esc(j.customers?.name || '—')}</td>
+            <td><a class="pec-link" style="display:block" href="${esc(pecHref('jobs', { openJobId: j.id }))}">${esc(j.customers?.name || '—')}</a></td>
             <td>${systemBadgeHtml(j.job_areas, sysById)}</td>
             <td>${esc(j.address || '—')}</td>
             <td><span class="pec-badge ${j.status || ''}">${esc((j.status || '').replace('_',' ')) || '—'}</span></td>
@@ -9529,7 +9664,10 @@ async function renderJobs() {
     renderJobs();
   });
   root.querySelectorAll('tr[data-job-id]').forEach(tr =>
-    tr.addEventListener('click', () => { state.openJobId = tr.dataset.jobId; renderJobDetail(tr.dataset.jobId); })
+    // renderJobs (not renderJobDetail directly) so pecSyncHistory captures the
+    // detail nav; pecLinkClickGuard lets a modified click on the customer-name
+    // anchor open a new tab instead (prompt 75 A4).
+    tr.addEventListener('click', (e) => { if (!pecLinkClickGuard(e)) return; state.openJobId = tr.dataset.jobId; renderJobs(); })
   );
   // Restore an archived job: clear jobs.archived_at (idempotent full-value
   // update), then best-effort un-archive the linked pec_prod_jobs row so it
@@ -9678,15 +9816,18 @@ function renderGlobalSearchResults(res, q) {
   }
   const header = t => `<div style="padding:8px 12px 4px;font-size:.62rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--rd-muted,#6b7280)">${t}</div>`;
   const more = (n, act) => n > 0 ? `<button class="rd-search-row" data-gs-more="${act}" style="font-size:.75rem;color:var(--rd-accent,#D8531C)">+${n} more</button>` : '';
+  // Result rows are real anchors (prompt 75 A4): ctrl/cmd/middle-click opens
+  // the record in a new tab; a plain click keeps today's in-app navigation
+  // (the pecLinkClickGuard in each handler below).
   const jobRow = r => `
-    <button class="rd-search-row" data-gs-job="${esc(r.job_id)}">
+    <a class="rd-search-row" href="${esc(pecHref('jobs', { openJobId: r.job_id }))}" data-gs-job="${esc(r.job_id)}">
       <span class="rd-search-row-top">
         <span class="rd-search-name">${esc(r.customer_name || '—')}</span>
         <span class="pec-badge ${esc(r.status || '')}">${esc((r.status || '').replace('_',' ')) || '—'}</span>
         <span class="rd-search-price">${fmtMoney(r.price)}</span>
       </span>
       <span class="rd-search-row-sub">${esc(r.address || 'No address')}${r.phone ? ' · ' + esc(r.phone) : ''} · ${fmtDate(r.created_at)}</span>
-    </button>`;
+    </a>`;
   const jobsShown = dd.dataset.gsJobsExpanded === q ? jobs : jobs.slice(0, 5);
   const html = [
     jobs.length ? header('Jobs') + jobsShown.map(jobRow).join('')
@@ -9694,30 +9835,30 @@ function renderGlobalSearchResults(res, q) {
       // the jobs search), so +N more expands the group here instead.
       + (jobs.length > jobsShown.length ? more(jobs.length - jobsShown.length, 'jobs') : '') : '',
     estimates.rows.length ? header('Estimates') + estimates.rows.map(r => `
-      <button class="rd-search-row" data-gs-est="${esc(r.id)}">
+      <a class="rd-search-row" href="${esc(pecHref('estimates', { openEstimateId: r.id }))}" data-gs-est="${esc(r.id)}">
         <span class="rd-search-row-top">
           <span class="rd-search-name">${r.estimate_number != null ? 'EST-' + esc(r.estimate_number) : '(unnumbered)'} · ${esc(r.customer_name || '(no name)')}</span>
           ${estStatusChip(r.status)}
           <span class="rd-search-price">${fmtMoney(r.price)}</span>
         </span>
         <span class="rd-search-row-sub">${esc(r.customer_address || 'No address')}</span>
-      </button>`).join('') + more(estimates.count - estimates.rows.length, 'estimates') : '',
+      </a>`).join('') + more(estimates.count - estimates.rows.length, 'estimates') : '',
     leads.rows.length ? header('Leads') + leads.rows.map(r => `
-      <button class="rd-search-row" data-gs-lead="${esc(r.id)}">
+      <a class="rd-search-row" href="${esc(pecHref('leads', { openLeadId: r.id }))}" data-gs-lead="${esc(r.id)}">
         <span class="rd-search-row-top">
           <span class="rd-search-name">${esc(r.full_name || '(no name)')}</span>
           <span class="pec-badge" style="--pec-badge-bg:#475569">${esc(titleCaseValue(r.stage))}</span>
           ${r.archived_at ? '<span class="pec-badge" style="--pec-badge-bg:#64748b">Archived</span>' : ''}
         </span>
         <span class="rd-search-row-sub">${esc([r.phone ? qoFmtPhone(r.phone) : null, r.email].filter(Boolean).join(' · ') || '')}</span>
-      </button>`).join('') + more(leads.count - leads.rows.length, 'leads') : '',
+      </a>`).join('') + more(leads.count - leads.rows.length, 'leads') : '',
     customers.rows.length ? header('Customers') + customers.rows.map(r => `
-      <button class="rd-search-row" data-gs-cust="${esc(r.id)}">
+      <a class="rd-search-row" href="${esc(pecHref('customers', { openCustomerId: r.id }))}" data-gs-cust="${esc(r.id)}">
         <span class="rd-search-row-top">
           <span class="rd-search-name">${esc(r.company_name || [r.first_name, r.last_name].filter(Boolean).join(' ') || r.name || '(no name)')}</span>
         </span>
         <span class="rd-search-row-sub">${esc([r.phone, r.email].filter(Boolean).join(' · ') || '')}</span>
-      </button>`).join('') + more(customers.count - customers.rows.length, 'customers') : '',
+      </a>`).join('') + more(customers.count - customers.rows.length, 'customers') : '',
   ].join('');
   dd.innerHTML = html;
   dd.style.display = 'block';
@@ -9725,18 +9866,18 @@ function renderGlobalSearchResults(res, q) {
   dd.style.overflowY = 'auto';
 
   const go = (fn) => { hideJobSearchResults(); const input = document.getElementById('rdSearch'); if (input) input.value = ''; fn(); };
-  dd.querySelectorAll('[data-gs-job]').forEach(b => b.addEventListener('click', () => go(() => {
+  dd.querySelectorAll('[data-gs-job]').forEach(b => b.addEventListener('click', (e) => { if (!pecLinkClickGuard(e)) return; go(() => {
     state.openJobId = b.dataset.gsJob; state.view = 'jobs'; switchView('jobs');
-  })));
-  dd.querySelectorAll('[data-gs-est]').forEach(b => b.addEventListener('click', () => go(() => {
+  }); }));
+  dd.querySelectorAll('[data-gs-est]').forEach(b => b.addEventListener('click', (e) => { if (!pecLinkClickGuard(e)) return; go(() => {
     state.openEstimateId = b.dataset.gsEst; switchView('estimates');
-  })));
-  dd.querySelectorAll('[data-gs-lead]').forEach(b => b.addEventListener('click', () => go(() => {
+  }); }));
+  dd.querySelectorAll('[data-gs-lead]').forEach(b => b.addEventListener('click', (e) => { if (!pecLinkClickGuard(e)) return; go(() => {
     state.openLeadId = b.dataset.gsLead; switchView('leads');
-  })));
-  dd.querySelectorAll('[data-gs-cust]').forEach(b => b.addEventListener('click', () => go(() => {
+  }); }));
+  dd.querySelectorAll('[data-gs-cust]').forEach(b => b.addEventListener('click', (e) => { if (!pecLinkClickGuard(e)) return; go(() => {
     state.openCustomerId = b.dataset.gsCust; switchView('customers');
-  })));
+  }); }));
   // "+N more" hands the query to that type's FULL list view, filtered (the
   // in-list boxes those views already have). Jobs expand in place instead.
   dd.querySelectorAll('[data-gs-more]').forEach(b => b.addEventListener('click', () => {
@@ -26660,7 +26801,11 @@ function leadCardHtml(lead) {
   return `<div class="pipeline-card lead-card" draggable="true" data-lead-id="${esc(lead.id)}"
       style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:grab;box-shadow:0 1px 2px rgba(15,20,32,.04)">
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
-      <strong style="font-size:.9rem;line-height:1.2">${esc(lead.full_name || '(no name)')}</strong>
+      ${/* Anchor on the NAME, not the card: the card is draggable, and a
+          wrapping anchor would hijack the kanban drag with the browser's
+          native link drag. draggable="false" on the anchor keeps a grab that
+          starts on the name dragging the CARD. (prompt 75 A4) */''}
+      <strong style="font-size:.9rem;line-height:1.2"><a class="pec-link" draggable="false" href="${esc(pecHref('leads', { openLeadId: lead.id }))}">${esc(lead.full_name || '(no name)')}</a></strong>
       ${flags.length ? `<span title="${esc('AI risk: ' + flags.join('; '))}" style="width:9px;height:9px;border-radius:50%;background:var(--rd-danger,#ef4444);flex-shrink:0;margin-top:4px"></span>` : ''}
     </div>
     ${lead.business_name && (lead.first_name || lead.last_name) ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">Contact: ${esc([lead.first_name, lead.last_name].filter(Boolean).join(' '))}</div>` : ''}
@@ -26696,7 +26841,7 @@ function estimateCardHtml(est) {
       title="This card follows the estimate's own status (send, present, accept). Open the estimate to move it."
       style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #64748b;color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,20,32,.04)">
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
-      <strong style="font-size:.9rem;line-height:1.2">${esc(est.customer_name || '(no name)')}</strong>
+      <strong style="font-size:.9rem;line-height:1.2"><a class="pec-link" draggable="false" href="${esc(pecHref('estimates', { openEstimateId: est.id }))}">${esc(est.customer_name || '(no name)')}</a></strong>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:#334155">Estimate</span>
@@ -27138,6 +27283,7 @@ function openNewLeadModal(prefill) {
 }
 
 async function renderLeads() {
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   // Detail pane: a card click sets openLeadId; Back clears it. Same
   // list/detail pattern as the invoicing view's openInvoiceJobId.
   if (state.openLeadId) return renderLeadDetail(state.openLeadId);
@@ -27328,7 +27474,8 @@ async function renderLeads() {
   root.querySelectorAll('.lead-card').forEach(card => {
     card.addEventListener('dragstart', e => { draggedId = card.dataset.leadId; e.dataTransfer.effectAllowed = 'move'; });
     card.addEventListener('dragend', () => { draggedId = null; dragEndedAt = Date.now(); });
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (e) => {
+      if (!pecLinkClickGuard(e)) return; // modified click on the name anchor -> new tab
       if (Date.now() - dragEndedAt < 300) return;
       state.openLeadId = card.dataset.leadId;
       renderLeads();
@@ -27351,7 +27498,8 @@ async function renderLeads() {
   });
 
   // Estimate cards open their estimate; they never drag (prompt 62 Part F).
-  root.querySelectorAll('[data-est-card]').forEach(card => card.addEventListener('click', () => {
+  root.querySelectorAll('[data-est-card]').forEach(card => card.addEventListener('click', (e) => {
+    if (!pecLinkClickGuard(e)) return; // modified click on the name anchor -> new tab
     state.openEstimateId = card.dataset.estCard;
     switchView('estimates');
   }));
@@ -27902,6 +28050,7 @@ function estimateSqft(est) {
 }
 
 async function renderEstimates() {
+  pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openEstimateId) return renderEstimateDetail(state.openEstimateId);
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimates…</div>';
@@ -27932,8 +28081,8 @@ async function renderEstimates() {
       const sys = est.pec_prod_system_types && est.pec_prod_system_types.name ? est.pec_prod_system_types.name : '';
       const overridden = est.calc_price != null && est.price != null && Math.abs(Number(est.calc_price) - Number(est.price)) >= 0.5;
       return `<tr data-est-id="${esc(est.id)}" style="cursor:pointer">
-        <td style="white-space:nowrap"><strong>${esc(estNumberLabel(est))}</strong>${overridden ? ' <span title="Price manually overridden" style="color:#b45309;font-size:.7rem">◆ override</span>' : ''}</td>
-        <td>${esc(est.customer_name || '(no name)')}</td>
+        <td style="white-space:nowrap"><a class="pec-link" href="${esc(pecHref('estimates', { openEstimateId: est.id }))}"><strong>${esc(estNumberLabel(est))}</strong></a>${overridden ? ' <span title="Price manually overridden" style="color:#b45309;font-size:.7rem">◆ override</span>' : ''}</td>
+        <td><a class="pec-link" style="display:block" href="${esc(pecHref('estimates', { openEstimateId: est.id }))}">${esc(est.customer_name || '(no name)')}</a></td>
         <td>${esc(sys)}${anyMvb ? ' <span style="color:var(--muted);font-size:.7rem">+MVB</span>' : ''}</td>
         <td style="text-align:right">${sqft > 0 ? Math.round(sqft).toLocaleString() : '--'}</td>
         <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5 ? `<div style="color:var(--muted);font-size:.68rem;font-weight:400">up to ${fmtMoney(est.price_all_options)}</div>` : ''}</td>
@@ -27961,9 +28110,10 @@ async function renderEstimates() {
         renderEstimates();
       } catch (err) { showToast('Restore failed: ' + esc(err.message || err), { ttl: 5000 }); }
     }));
-    tableHost.querySelectorAll('tr[data-est-id]').forEach(tr => tr.addEventListener('click', () => {
+    tableHost.querySelectorAll('tr[data-est-id]').forEach(tr => tr.addEventListener('click', (e) => {
+      if (!pecLinkClickGuard(e)) return; // modified click on the anchor -> new tab
       state.openEstimateId = tr.dataset.estId;
-      renderEstimateDetail(tr.dataset.estId);
+      renderEstimates(); // via the list fn so pecSyncHistory captures the detail nav
     }));
   };
 
@@ -31924,10 +32074,19 @@ function openJobQuickLook(jobId) {
     : '<span style="color:var(--muted)">No system yet</span>';
   const rescheduleHtml = `<span style="display:inline-block;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;background:color-mix(in srgb, #f59e0b 16%, transparent);color:#b45309;border:1px solid color-mix(in srgb, #f59e0b 45%, transparent);border-radius:999px;padding:2px 8px">Reschedule · ${owed} day${owed === 1 ? '' : 's'} owed</span>${job.rescheduled_from ? `<div style="font-size:.72rem;color:var(--muted);margin-top:4px">was scheduled for ${esc(fmtDate(job.rescheduled_from))}</div>` : ''}`;
 
+  // Prompt 75 Part B: when this prod job resolves to a CRM job (the map is
+  // built by the same fetch as crmPhoneByProdJob above, never a fresh query),
+  // the customer name links to the job detail. Manual "+ Add Job" entries
+  // with no CRM match render as plain text, exactly as before; a read-only
+  // popup never creates a record.
+  const qlCrmJobId = (state.crmIdByProdJob || {})[jobId] || null;
+  const qlNameHtml = qlCrmJobId
+    ? `<a class="pec-link" href="${esc(pecHref('jobs', { openJobId: qlCrmJobId }))}" data-ql-open-job="${esc(qlCrmJobId)}" title="Open the job detail" style="color:var(--rd-accent,var(--accent))">${esc(job.customer_name || 'Job')}</a>`
+    : esc(job.customer_name || 'Job');
   const html = `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
       <div>
-        <h3 style="margin:0;font-size:1.1rem">${esc(job.customer_name || 'Job')}${job.is_callback ? ' <span style="font-size:.6rem;font-weight:700;background:#0ea5e9;color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">TOUCHUP</span>' : ''}</h3>
+        <h3 style="margin:0;font-size:1.1rem">${qlNameHtml}${job.is_callback ? ' <span style="font-size:.6rem;font-weight:700;background:#0ea5e9;color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">TOUCHUP</span>' : ''}</h3>
         <div style="font-size:.8rem;color:var(--muted);margin-top:2px">${esc(job.address || 'No address')}</div>
       </div>
       <button type="button" class="pec-btn ghost sm" onclick="window.pecCloseModal()" aria-label="Close">✕</button>
@@ -31970,6 +32129,16 @@ function openJobQuickLook(jobId) {
     // the path from look to schedule survives without being one stray input away.
     const sb = modal.querySelector('[data-pcard-schedule]');
     if (sb) sb.addEventListener('click', () => { closeModal(); openScheduleModal(jobId); });
+    // Prompt 75 Part B: plain click closes the popup (closeModal, the
+    // #pecModalRoot helper this modal already uses) and routes to the job
+    // detail in-app; a modified click opens a new tab and leaves the popup up.
+    const nameLink = modal.querySelector('[data-ql-open-job]');
+    if (nameLink) nameLink.addEventListener('click', (e) => {
+      if (!pecLinkClickGuard(e)) return;
+      closeModal();
+      state.openJobId = nameLink.dataset.qlOpenJob;
+      switchView('jobs');
+    });
   } });
 }
 
@@ -37441,14 +37610,22 @@ if (portalToken) {
   // Run auth once, at module load, for the WHOLE app (not gated on the CRM tab).
   await initAuth();
   renderGlobalAuthGate();
-  // Also honor ?view=prescott — click the sidebar button once the shell is up
-  if (new URLSearchParams(location.search).get('view') === 'prescott') {
-    const tryClick = () => {
-      const btn = document.querySelector('#rdSidebarNav .tab-btn[data-tab="prescott-crm"]') ||
-                  document.querySelector('.tab-nav .tab-btn[data-tab="prescott-crm"]');
-      if (btn) btn.click(); else setTimeout(tryClick, 120);
+  // Also honor ?view=prescott — click the sidebar button once the shell is up.
+  // Prompt 75 A2: the ?v= deep links share the same helper, because a deep
+  // link that only sets state.view while the CRM tab-content is hidden renders
+  // behind an invisible panel and reads as a blank page. One retry-click
+  // pattern for both, never two.
+  {
+    const openCrmShellTab = () => {
+      const tryClick = () => {
+        const btn = document.querySelector('#rdSidebarNav .tab-btn[data-tab="prescott-crm"]') ||
+                    document.querySelector('.tab-nav .tab-btn[data-tab="prescott-crm"]');
+        if (btn) btn.click(); else setTimeout(tryClick, 120);
+      };
+      setTimeout(tryClick, 400);
     };
-    setTimeout(tryClick, 400);
+    const bootQ = new URLSearchParams(location.search);
+    if (bootQ.get('view') === 'prescott' || bootQ.get('v')) openCrmShellTab();
   }
 }
 </script>
