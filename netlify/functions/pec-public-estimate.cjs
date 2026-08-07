@@ -33,7 +33,16 @@
 // status), so exactly one request wins the transition.
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
-const { prepareDepositInstallment } = require('./_pec-installments.cjs');
+const { prepareDepositInstallment, resolveCurrentAsk } = require('./_pec-installments.cjs');
+// Estimate-side payment schedule (prompt 74): the same math module the
+// estimator's schedule card runs, so the customer render, the accept-time
+// freeze, and the rep's card can never disagree about a dollar.
+const {
+  computeScheduleCents,
+  freezeSchedule,
+  scheduleValidationError,
+  triggerLabel,
+} = require('../../production/estimate-installments.cjs');
 const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
 const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
 // Optional-lines rules (prompt 72): the same module the estimator bundles,
@@ -78,6 +87,9 @@ const BRAND_DEFAULTS = {
   logo_url: null, primary_color: '#14181C', accent_color: '#D8531C',
   business_name: 'Prescott Epoxy Company', address_line: '', phone: '',
   license_number: '', website: '',
+  // Estimate terms and conditions (prompt 74): per-brand, edited in Settings.
+  // Empty = the terms card does not render at all (FTP until Dylan writes it).
+  estimate_terms_text: '',
 };
 const LOGO_URL = '/assets/pec-logo.png';
 
@@ -212,10 +224,36 @@ function scopeRowsHtml(est, sysName, totalSqft) {
   return rows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${v}</td></tr>`).join('');
 }
 
+// The sqft subtitle under a line's label (prompt 74 A2): derived from the
+// line's AREA row (no new column; description is scope-only now). Customer-
+// facing form is "970 sq ft" with the space, plus the MVB note when that area
+// carries a barrier (the MVB-only system hides its per-area checkbox, so its
+// mvb flag stays false and no redundant note prints). Lines with no area
+// (add-ons, the whole-estimate custom line) get no subtitle.
+function liSubtitleHtml(li, areaById) {
+  const area = li && li.estimate_area_id && areaById ? areaById.get(li.estimate_area_id) : null;
+  if (!area) return '';
+  const parts = [];
+  const sqft = Number(area.sqft);
+  if (Number.isFinite(sqft) && sqft > 0) parts.push(`${Math.round(sqft).toLocaleString('en-US')} sq ft`);
+  if (area.mvb === true) parts.push('includes moisture vapor barrier (MVB)');
+  if (!parts.length) return '';
+  return `<div class="subtl">${esc(parts.join(', '))}</div>`;
+}
+
 // The per-line description is the AI-assembled scope of work (markdown),
 // rendered through mdToSafeHtml (escape-then-format) so it reads like the
 // DripJobs proposal under each line and can never inject markup.
-const liDescHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li.description)}</div>` : '';
+// Prompt 74 A3: EXPANDED by default inside a native <details open> with a
+// CSS-only collapse control (no JS: the scope must be readable with scripts
+// disabled and must never depend on the optional-lines script). A line with
+// no description renders NO details element at all, so there is never an
+// empty caret. Long scopes are never capped; the customer asked for all of it.
+const liDescHtml = (li) => li.description ? `
+          <details class="scopefold" open>
+            <summary><span class="fold-open">&#9662; Tap to collapse</span><span class="fold-closed">&#9656; Tap to expand</span></summary>
+            <div class="desc">${mdToSafeHtml(li.description)}</div>
+          </details>` : '';
 
 // "Your project" (prompt 72 D1): required lines PLUS pre-selected optional
 // lines. A required line has NO control at all (not a disabled checkbox; a
@@ -223,7 +261,7 @@ const liDescHtml = (li) => li.description ? `<div class="desc">${mdToSafeHtml(li
 // part of the job the customer reads, with a ticked .opt-toggle and a small
 // Optional tag; unticking removes it from the total live through the same
 // script the add-on cards use.
-function lineItemRowsHtml(items, readOnly) {
+function lineItemRowsHtml(items, readOnly, areaById) {
   const list = Array.isArray(items) ? items : [];
   const shown = list.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer === true));
   const row = (li) => {
@@ -235,7 +273,7 @@ function lineItemRowsHtml(items, readOnly) {
       ? ' <span style="font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#D8531C;border:1px solid #D8531C;border-radius:999px;padding:1px 7px;vertical-align:2px">Optional</span>'
       : '';
     return `<tr>
-      <td><div style="display:flex;gap:10px;align-items:flex-start">${control}<div style="flex:1;min-width:0"><span style="font-weight:600">${esc(li.label || '')}</span>${tag}${liDescHtml(li)}</div></div></td>
+      <td><div style="display:flex;gap:10px;align-items:flex-start">${control}<div style="flex:1;min-width:0"><span style="font-weight:700">${esc(li.label || '')}</span>${tag}${liSubtitleHtml(li, areaById)}${liDescHtml(li)}</div></div></td>
       <td>${usd(li.total)}</td>
     </tr>`;
   };
@@ -247,13 +285,13 @@ function lineItemRowsHtml(items, readOnly) {
 // (add-ons keep their opt-in behavior, plus any area line the rep set to
 // start unselected). Same .opt-toggle inputs and data attributes as always,
 // so the tick-to-update script and the signature freeze are untouched.
-function optionalCardsHtml(items, readOnly) {
+function optionalCardsHtml(items, readOnly, areaById) {
   const optional = (Array.isArray(items) ? items : []).filter(li => isOptionalLine(li) && li.selected_by_customer !== true);
   if (!optional.length) return '';
   const card = (li) => `
       <label class="optcard" style="cursor:${readOnly ? 'default' : 'pointer'}">
         <input type="checkbox" class="opt-toggle" data-li-id="${esc(li.id)}" data-li-total="${Number(li.total) || 0}" ${li.selected_by_customer ? 'checked' : ''} ${readOnly ? 'disabled' : ''} style="margin-top:3px;width:19px;height:19px;flex:0 0 auto;accent-color:#D8531C">
-        <span style="flex:1;min-width:0"><span style="font-weight:700">${esc(li.label || '')}</span>${liDescHtml(li)}</span>
+        <span style="flex:1;min-width:0"><span style="font-weight:700">${esc(li.label || '')}</span>${liSubtitleHtml(li, areaById)}${liDescHtml(li)}</span>
         <span style="font-weight:800;white-space:nowrap;font-variant-numeric:tabular-nums">${usd(li.total)}</span>
       </label>`;
   return `
@@ -266,11 +304,20 @@ function optionalCardsHtml(items, readOnly) {
 
 // Status banner + whether the action buttons render. accepted / rejected /
 // lost are terminal: a signed document must not be re-signable.
-function stateForStatus(est) {
+function stateForStatus(est, payCta) {
   if (est.status === 'accepted') {
+    // Prompt 74 Part E: right after signing, offer the deposit payment. The
+    // link is the EXISTING pay page (/pay/<job token>); the amount there is
+    // resolved server-side by resolveCurrentAsk at click time, card and ACH,
+    // no surcharge, exactly like every other payment. A plain link, never an
+    // auto-redirect, and skipping is fine (the deposit stays planned and
+    // staff send it normally). Absent when the accept created no deposit row.
+    const payHtml = payCta
+      ? `<div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><a class="btn accent noprint" href="${esc(payCta.url)}">Pay your ${usd(payCta.amount)} deposit now</a><span style="font-size:13px;color:#14532d">Card or bank transfer (ACH), no card fees. Prefer to wait? We will send your invoice.</span></div>`
+      : '';
     return {
       live: false,
-      banner: `<div class="banner ok"><strong>Accepted and signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}</strong>${est.signed_at ? ' on ' + esc(fmtStamp(est.signed_at)) : ''}. We will be in touch to schedule your project. You can print or save this page for your records.</div>`,
+      banner: `<div class="banner ok"><strong>Accepted and signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}</strong>${est.signed_at ? ' on ' + esc(fmtStamp(est.signed_at)) : ''}. We will be in touch to schedule your project. You can print or save this page for your records.${payHtml}</div>`,
     };
   }
   if (est.status === 'rejected') {
@@ -322,8 +369,10 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   const logoUrl = b.logo_url || LOGO_URL;
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
-  const state = stateForStatus(est);
+  const state = stateForStatus(est, opts && opts.acceptedPay);
   const who = customerDisplay(est);
+  // Area lookup for the per-line sqft subtitles (prompt 74 A2).
+  const areaById = new Map((Array.isArray(opts && opts.areas) ? opts.areas : []).map(a => [a.id, a]));
   // PREVIEW MODE (15c): staff sees the EXACT customer page from this same
   // renderer, but nothing is live. interactive gates the client script + the
   // enabled controls, so a preview carries NO public token and NO working
@@ -332,6 +381,70 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   const interactive = state.live && !preview;
   const items = Array.isArray(est.line_items) ? est.line_items : [];
   const total = (interactive || preview) ? includedTotal(items) : Number(est.price || includedTotal(items));
+
+  // Payment schedule (prompt 74 C4). On a LIVE or preview page the rows come
+  // from estimate_installments and resolve against the current selection's
+  // total (percent rows recompute as options are ticked, via the same
+  // .opt-toggle script that already updates the totals). On an ACCEPTED page
+  // the FROZEN record in the signature renders verbatim: that is what the
+  // customer agreed to, and it never recomputes again. A schedule that fails
+  // validation is not rendered (the send gate blocks that state; this guards
+  // a legacy row) and is logged.
+  const instRows = Array.isArray(opts && opts.installments) ? opts.installments : [];
+  const frozenSchedule = est.status === 'accepted' && est.signature && Array.isArray(est.signature.schedule) && est.signature.schedule.length
+    ? est.signature.schedule : null;
+  let scheduleView = null;
+  if (frozenSchedule) {
+    scheduleView = frozenSchedule.map((r) => ({
+      label: r.label || (r.is_deposit ? 'Deposit' : 'Installment'),
+      due: triggerLabel(r.trigger_kind, r.due_date),
+      cents: Math.round((Number(r.computed_amount) || 0) * 100),
+      kind: r.amount_kind === 'fixed' ? 'fixed' : 'percent',
+      value: Number(r.amount_value) || 0,
+      frozen: true,
+    }));
+  } else if (instRows.length && (interactive || preview)) {
+    const totalCents = Math.round(total * 100);
+    const invalid = scheduleValidationError(instRows, totalCents);
+    if (invalid) {
+      console.warn('public-estimate: schedule skipped (does not resolve to the total):', invalid.message);
+    } else {
+      const cents = computeScheduleCents(instRows, totalCents);
+      scheduleView = instRows.map((r, i) => ({
+        label: r.label || (r.is_deposit ? 'Deposit' : 'Installment'),
+        due: triggerLabel(r.trigger_kind, r.due_date),
+        cents: cents[i] || 0,
+        kind: r.amount_kind === 'fixed' ? 'fixed' : 'percent',
+        value: Number(r.amount_value) || 0,
+        frozen: false,
+      }));
+    }
+  }
+  const lastSched = scheduleView && scheduleView.length ? scheduleView[scheduleView.length - 1] : null;
+  const schedAttrs = (r) => r.frozen ? '' : ` data-sched-kind="${esc(r.kind)}" data-sched-value="${Number(r.value) || 0}" data-sched-orig="${r.cents}"`;
+  const scheduleBlock = !scheduleView ? '' : `
+        <div style="margin-top:26px">
+          <div class="eyebrow">Payment schedule</div>
+          <table class="sched">
+            ${scheduleView.map((r, i) => `<tr${i === scheduleView.length - 1 ? ' class="last"' : ''}>
+              <td><div style="font-weight:${i === scheduleView.length - 1 ? '800' : '600'}">${esc(r.label)}</div><div class="subtl">${esc(r.due)}</div></td>
+              <td class="amt"${schedAttrs(r)}>${usd(r.cents / 100)}</td>
+            </tr>`).join('')}
+          </table>
+          ${frozenSchedule
+            ? `<div style="color:#6b7280;font-size:12.5px;margin-top:6px">This is the schedule you agreed to at signing.</div>`
+            : `<div style="color:#6b7280;font-size:12.5px;margin-top:6px">Amounts update with the options you choose above.</div>`}
+        </div>`;
+
+  // Terms and conditions (prompt 74 D2): per-brand text in a fixed-height
+  // scrollable box ABOVE the signature, expanded fully in print. No card at
+  // all when the brand has no terms text yet.
+  const termsBlock = b.estimate_terms_text && String(b.estimate_terms_text).trim() ? `
+    <div class="card pad" style="margin-top:18px">
+      <div class="eyebrow">Terms and Conditions</div>
+      <div class="termsbox">${mdToSafeHtml(b.estimate_terms_text)}</div>
+    </div>` : '';
+
   const invNoTxt = estimateNo(est);
   const pillMeta = est.status === 'accepted' ? ['#16a34a', 'Accepted']
     : est.status === 'rejected' ? ['#64748b', 'Declined']
@@ -420,6 +533,21 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   table.li td { padding:14px 12px; border-bottom:1px solid #eef0f3; vertical-align:top; line-height:1.5; }
   table.li th:last-child, table.li td:last-child { text-align:right; width:130px; white-space:nowrap; }
   .desc { color:#6b7280; font-size:13px; margin-top:4px; line-height:1.5; white-space:pre-wrap; font-weight:400; }
+  .subtl { color:#6b7280; font-size:12.5px; margin-top:2px; font-weight:400; }
+  details.scopefold { margin-top:6px; }
+  details.scopefold summary { list-style:none; cursor:pointer; font-size:10.5px; font-weight:800; letter-spacing:1px; text-transform:uppercase; color:${accent}; -webkit-user-select:none; user-select:none; }
+  details.scopefold summary::-webkit-details-marker { display:none; }
+  details.scopefold .fold-closed { display:none; }
+  details.scopefold:not([open]) .fold-closed { display:inline; }
+  details.scopefold:not([open]) .fold-open { display:none; }
+  table.sched { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; margin-top:8px; }
+  table.sched td { padding:10px 0; border-bottom:1px solid #eef0f3; vertical-align:top; }
+  table.sched td.amt { text-align:right; width:130px; white-space:nowrap; font-weight:600; }
+  table.sched tr.last td { border-bottom:none; }
+  table.sched tr.last td.amt { font-weight:800; color:${accent}; }
+  .balline { text-align:right; margin-top:8px; font-size:14.5px; color:#374151; font-variant-numeric:tabular-nums; }
+  .balline strong { color:${accent}; font-weight:800; }
+  .termsbox { max-height:260px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; font-size:13.5px; color:#374151; line-height:1.65; }
   .optcard { display:flex; gap:12px; align-items:flex-start; border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; transition:border-color .15s, box-shadow .15s; }
   .optcard:has(.opt-toggle:checked) { border-color:${accent}; box-shadow:0 0 0 1px ${accent}; }
   table.scope { width:100%; border-collapse:collapse; font-size:14.5px; }
@@ -453,6 +581,13 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
     body { background:#fff; }
     .card, .footerband { box-shadow:none; border:1px solid #e5e7eb; }
     * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    /* A printed or saved-PDF estimate always carries the FULL scope with no
+       caret furniture, even if the customer collapsed a line on screen. */
+    details.scopefold { display:block; }
+    details.scopefold > *:not(summary) { display:block !important; }
+    details.scopefold summary { display:none; }
+    /* And the full terms, never scrolled off. */
+    .termsbox { max-height:none; overflow:visible; }
   }
   @media (max-width:560px) {
     .pad { padding:22px; }
@@ -490,22 +625,29 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
         </div>
         <div class="eyebrow">Scope of work</div>
         <table class="scope">${scopeRowsHtml(est, sysName, totalSqft)}</table>
-        ${est.scope_of_work && !items.some(li => li && li.description)
-          ? `<div style="font-size:14px;color:#374151;line-height:1.7;margin-top:14px">${mdToSafeHtml(est.scope_of_work)}</div>`
-          : ''}
+        ${/* Prompt 74 A4: the whole-document scope render is GONE. The scope
+             lives under each line now (decision 3); estimates.scope_of_work
+             stays the internal record feeding the job, the crew scope, and
+             the declined-line filter, and is never rendered here again. */''}
         <div class="eyebrow" style="margin-top:26px">Your project</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items, !interactive)}</tbody>
+          <tbody>${lineItemRowsHtml(items, !interactive, areaById)}</tbody>
         </table>
-        ${optionalCardsHtml(items, !interactive)}
+        ${optionalCardsHtml(items, !interactive, areaById)}
+        ${/* "Your investment" (prompt 74 F6). No tax row: estimates carries no
+             tax concept, so none is invented and none is hardcoded at $0. */''}
+        <div class="eyebrow" style="margin-top:26px">Your investment</div>
         <table class="tot">
-          <tr class="total"><td>Total</td><td id="grandTotal">${usd(total)}</td></tr>
+          <tr><td>Subtotal</td><td id="subTotal">${usd(total)}</td></tr>
+          <tr class="total"><td>Project total</td><td id="grandTotal">${usd(total)}</td></tr>
         </table>
+        ${lastSched ? `<div class="balline">${esc(lastSched.label)} (${esc(lastSched.due.toLowerCase())}): <strong id="balCompletion">${usd(lastSched.cents / 100)}</strong></div>` : ''}
+        ${scheduleBlock}
       </div>
     </div>
 
-    ${financingBlock}${signedBlock}
+    ${financingBlock}${termsBlock}${signedBlock}
     ${actions}
     ${literatureBlockHtml(opts && opts.literature, b.accent_color)}
 
@@ -532,11 +674,41 @@ ${!interactive ? '' : `<script>
   function selectedIds(){
     return toggles.filter(function(cb){return cb.checked;}).map(function(cb){return cb.getAttribute('data-li-id');});
   }
+  // Payment-schedule live recompute (prompt 74 C4): a CLIENT MIRROR of
+  // computeScheduleCents in production/estimate-installments.cjs; keep the
+  // two in lockstep (the pecInstallmentAsk convention). Percent rows scale
+  // with the new total, fixed rows hold, the LAST row absorbs the remainder,
+  // and a fixed row bigger than the shrunken total re-allocates the whole
+  // schedule as proportions of the original. Never a negative installment;
+  // the rows always sum to the displayed total exactly, in cents.
+  var schedCells=Array.prototype.slice.call(document.querySelectorAll('td.amt[data-sched-kind]'));
+  function schedRecalc(totalCents){
+    var rows=schedCells.map(function(c){return {kind:c.getAttribute('data-sched-kind'),value:Number(c.getAttribute('data-sched-value'))||0,orig:Number(c.getAttribute('data-sched-orig'))||0};});
+    if(!rows.length) return [];
+    var out=rows.map(function(r){return Math.round(r.kind==='percent'?totalCents*r.value/100:Math.round(r.value*100));});
+    var others=0; for(var i=0;i<out.length-1;i++) others+=out[i];
+    var last=totalCents-others;
+    if(last>=0){ out[out.length-1]=last; return out; }
+    var wsum=0; var weights=rows.map(function(r){var w=Math.max(0,r.orig); wsum+=w; return w;});
+    if(!wsum){ out=rows.map(function(){return 0;}); out[out.length-1]=totalCents; return out; }
+    out=weights.map(function(w){return Math.floor(totalCents*w/wsum);});
+    var sum=0; out.forEach(function(c){sum+=c;});
+    out[out.length-1]+=totalCents-sum;
+    return out;
+  }
   function refresh(){
-    var t=money(currentTotal());
+    var total=currentTotal();
+    var t=money(total);
     document.getElementById('heroTotal').textContent=t;
     document.getElementById('grandTotal').textContent=t;
+    var st=document.getElementById('subTotal'); if(st) st.textContent=t;
     var at=document.getElementById('acceptTotal'); if(at) at.textContent=t;
+    if(schedCells.length){
+      var cents=schedRecalc(Math.round(total*100));
+      schedCells.forEach(function(c,i){ c.textContent=money((cents[i]||0)/100); });
+      var bal=document.getElementById('balCompletion');
+      if(bal && cents.length) bal.textContent=money((cents[cents.length-1]||0)/100);
+    }
   }
   toggles.forEach(function(cb){ cb.addEventListener('change', refresh); });
   refresh();
@@ -629,6 +801,40 @@ async function loadLineItems(estimateId) {
     const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,estimate_area_id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
+}
+
+// The estimate's payment schedule rows (prompt 74). Tolerant of a database
+// the migration has not reached: an error just means no schedule block.
+async function loadInstallments(estimateId) {
+  try {
+    const rows = await sb('GET', `/estimate_installments?estimate_id=eq.${encodeURIComponent(estimateId)}&select=seq,label,amount_kind,amount_value,trigger_kind,due_date,is_deposit&order=seq.asc`);
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) { return []; }
+}
+
+// Part E: the deposit CTA on the accepted page. Non-null only when the accept
+// created a deposit installment that is still the CURRENT ask (resolved by
+// the same resolveCurrentAsk the pay page and Stripe checkout use, so the
+// button disappears by itself once the deposit is paid or waived).
+async function loadAcceptedPay(est) {
+  try {
+    if (est.status !== 'accepted' || !est.job_id) return null;
+    const jr = await sb('GET', `/jobs?id=eq.${encodeURIComponent(est.job_id)}&select=id,price,status,public_token,deposit_amount,deposit_collected,deposit_waived,voided_at,archived_at&limit=1`);
+    const job = Array.isArray(jr) && jr[0] ? jr[0] : null;
+    if (!job || !job.public_token || job.voided_at || job.archived_at) return null;
+    const [inst, pays] = await Promise.all([
+      sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(job.id)}&select=*`),
+      sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(job.id)}&select=amount`),
+    ]);
+    const installments = Array.isArray(inst) ? inst : [];
+    if (!installments.some(i => i && i.is_deposit)) return null; // no deposit row = no button
+    const ask = resolveCurrentAsk({ job, installments, payments: Array.isArray(pays) ? pays : [] });
+    if (!ask || ask.mode !== 'installment' || !ask.isDeposit || !(ask.amount > 0)) return null;
+    return { url: `/pay/${job.public_token}`, amount: ask.amount };
+  } catch (err) {
+    console.warn('public-estimate: deposit CTA skipped:', err.message);
+    return null;
+  }
 }
 
 // Load an estimate BY ID for the staff preview (no token, no sent_at gate: the
@@ -1102,16 +1308,62 @@ async function ensureJobCreated(est) {
     pec_prod_job_id: prodJobId,
   });
 
-  // -- Required deposit (prompt 45, locked decision 3): PREPARE a deposit
-  // installment at the resolved default (per-job manual jobs.deposit_amount,
-  // else the system type's deposit_pct, else settings default_deposit_pct).
-  // Staff SEND it manually from the invoice; nothing auto-sends here.
-  // Idempotent inside (existence-checked + unique index), best-effort by
-  // design: an acceptance must never fail because the deposit prep hiccuped.
-  try {
-    await prepareDepositInstallment(sb, jobId, { systemTypeId: est.system_type_id || null });
-  } catch (err) {
-    console.error('public-estimate: deposit prepare failed (acceptance unaffected):', String(err && err.message || err));
+  // -- Payment schedule / deposit (prompt 74 C5 replaces prompt 45 here).
+  // When the signature carries a FROZEN schedule, that schedule becomes the
+  // job's real installments, REPLACING the old auto-prepared 50% deposit
+  // (replace, never stack: prepareDepositInstallment is skipped entirely).
+  // IDEMPOTENCY: if the job already has ANY pec_invoice_installments rows,
+  // nothing is written -- the deposit unique index only covers the deposit
+  // row, so this existence check is what stops a double-fired accept from
+  // duplicating the non-deposit installments. NO blind retry (CLAUDE.md):
+  // the bulk POST is one atomic statement behind an existence check, a
+  // failure is logged, and the customer's retry/refresh re-runs this whole
+  // function and heals it. Rows land 'planned'; staff send them through the
+  // existing kit. A signature never triggers an outbound invoice by itself.
+  const frozenSchedule = est.signature && Array.isArray(est.signature.schedule) ? est.signature.schedule : [];
+  if (frozenSchedule.length) {
+    try {
+      const existingInst = await sb('GET', `/pec_invoice_installments?job_id=eq.${jobId}&select=id&limit=1`);
+      if (!existingInst.length) {
+        await sb('POST', '/pec_invoice_installments', frozenSchedule.map((r, i) => ({
+          job_id: jobId,
+          seq: r.seq != null ? Number(r.seq) : i,
+          label: r.label || (r.is_deposit ? 'Deposit' : 'Installment'),
+          amount_kind: r.amount_kind === 'fixed' ? 'fixed' : 'percent',
+          amount_value: Number(r.amount_value) || 0,
+          computed_amount: Number(r.computed_amount) || 0,
+          trigger_kind: r.trigger_kind || 'manual',
+          due_date: r.due_date || null,
+          status: 'planned',
+          is_deposit: r.is_deposit === true,
+          standalone: false,
+        })));
+        // Keep the legacy deposit fields coherent, same as
+        // prepareDepositInstallment: the pay page's no-schedule deposit
+        // button and the Stripe webhook's deposit auto-flip read
+        // jobs.deposit_amount. Fill only when null; never clobber a manual value.
+        const dep = frozenSchedule.find(r => r && r.is_deposit === true);
+        if (dep && Number(dep.computed_amount) > 0) {
+          await sb('PATCH', `/jobs?id=eq.${encodeURIComponent(jobId)}&deposit_amount=is.null`, { deposit_amount: Number(dep.computed_amount) })
+            .catch(err => console.warn('public-estimate: deposit_amount mirror failed:', String(err && err.message || err)));
+        }
+      }
+    } catch (err) {
+      console.error('public-estimate: schedule copy failed (acceptance unaffected, heals on retry):', String(err && err.message || err));
+    }
+  } else {
+    // No schedule on the estimate: the prompt-45 behavior stays EXACTLY as
+    // today. PREPARE a deposit installment at the resolved default (per-job
+    // manual jobs.deposit_amount, else the system type's deposit_pct, else
+    // settings default_deposit_pct). Staff SEND it manually from the invoice;
+    // nothing auto-sends here. Idempotent inside (existence-checked + unique
+    // index), best-effort by design: an acceptance must never fail because
+    // the deposit prep hiccuped.
+    try {
+      await prepareDepositInstallment(sb, jobId, { systemTypeId: est.system_type_id || null });
+    } catch (err) {
+      console.error('public-estimate: deposit prepare failed (acceptance unaffected):', String(err && err.message || err));
+    }
   }
 
   // -- Lead to accepted (first-touch accepted_at + one deterministic event).
@@ -1167,6 +1419,16 @@ async function handleAccept(est, body, event) {
   const ip = (event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || null;
   const ua = String(event.headers['user-agent'] || '').slice(0, 300) || null;
 
+  // Prompt 74 C5: resolve the payment schedule at the SIGNED total and freeze
+  // it into the signature jsonb. freezeSchedule allocates in cents with the
+  // last row absorbing the remainder, so the frozen dollars sum to the signed
+  // total exactly; ensureJobCreated copies this record to the job's
+  // pec_invoice_installments. Loaded BEFORE the CAS so the winner writes it
+  // atomically with the signature. No schedule rows = no key, and the legacy
+  // auto-deposit flow stays exactly as today.
+  const schedRows = await loadInstallments(est.id);
+  const frozenSched = schedRows.length ? freezeSchedule(schedRows, Math.round(total * 100)) : null;
+
   // Compare-and-swap: only a row still in an open status flips to accepted,
   // so exactly ONE request wins the signature. The signed total becomes the
   // estimate's price (it is what the job and the win metrics read); the frozen
@@ -1180,7 +1442,11 @@ async function handleAccept(est, body, event) {
       signed_name: name,
       signed_at: nowIso,
       signed_ip: ip,
-      signature: { typed_name: name, signed_at: nowIso, ip, user_agent: ua, selected_optional_ids: selectedIds, total, via: 'public_estimate_page' },
+      signature: {
+        typed_name: name, signed_at: nowIso, ip, user_agent: ua,
+        selected_optional_ids: selectedIds, total, via: 'public_estimate_page',
+        ...(frozenSched ? { schedule: frozenSched } : {}),
+      },
       price: total,
     }, true);
 
@@ -1338,15 +1604,16 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, sysName, areas, financing, literature] = await Promise.all([
+      const [brand, sysName, areas, financing, literature, installments] = await Promise.all([
         loadBrand(est.brand),
         loadSystemName(est.system_type_id),
         loadAreas(est.id),
         loadFinancingSettings(sb),
         loadLiterature(est.brand),
+        loadInstallments(est.id),
       ]);
       const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing, literature });
+      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing, literature, areas, installments });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -1359,12 +1626,14 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, sysName, areas, financing, literature] = await Promise.all([
+    const [brand, sysName, areas, financing, literature, installments, acceptedPay] = await Promise.all([
       loadBrand(est.brand),
       loadSystemName(est.system_type_id),
       loadAreas(est.id),
       loadFinancingSettings(sb),
       loadLiterature(est.brand),
+      loadInstallments(est.id),
+      loadAcceptedPay(est),
     ]);
     const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     // Await (not fire-and-forget): the lambda may freeze the instant the
@@ -1375,7 +1644,7 @@ exports.handler = async (event) => {
     // skipping this log; render, buttons, and the action path are identical.
     // A customer who hand-added the param would only skip a convenience log.
     if (String(qs.present || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, sysName, totalSqft, { financing, literature });
+    return estimatePage(est, brand, sysName, totalSqft, { financing, literature, areas, installments, acceptedPay });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();
@@ -1388,4 +1657,5 @@ exports._internals = {
   deterministicUuid, includedTotal, freezeLineItems, ensureJobCreated,
   loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
   mdToSafeHtml, applySelection, loadLiterature, literatureBlockHtml, presentationBrandKey,
+  loadInstallments, loadAcceptedPay, liSubtitleHtml,
 };
