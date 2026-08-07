@@ -77,7 +77,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order. Prompt 72: the page renders 'Your project' (required lines, no checkbox, plus pre-selected optional lines with a ticked toggle) and 'Options to add'; accept guards against a zero-selection POST; on a partial accept the job is built from the selected areas only and declined lines stay on the estimate as the record. See 'Optional line items on any line'.",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order. Prompt 72: the page renders 'Your project' (required lines, no checkbox, plus pre-selected optional lines with a ticked toggle) and 'Options to add'; accept guards against a zero-selection POST; on a partial accept the job is built from the selected areas only and declined lines stay on the estimate as the record. See 'Optional line items on any line'. Prompt 74: the page renders DripJobs-proposal style. Every line shows its label, a sq ft subtitle derived from its area (plus the MVB note), and its FULL scope of work expanded under the line inside a zero-JS details/summary collapse (print always expands); the whole-document scope render is gone (estimates.scope_of_work is internal-only now). The reading order is header, prepared-for, scope summary table, Your project, Options to add, Your investment (subtotal + project total + emphasized balance line), payment schedule, financing, terms and conditions (per-brand pec_brand_identity.estimate_terms_text in a scrollable box above the signature; no card when empty), then signature/actions and literature. A hard send gate on every channel (email, text, Present's Open for signing) blocks while scope_stale is true, any scope-bearing line has an empty description or the old sqft clobber fingerprint, or the payment schedule does not resolve to the estimate total; the block names the offending lines. After signing, the accepted banner offers 'Pay your deposit now' linking the existing pay page (resolveCurrentAsk amount, card + ACH, no surcharge, never auto-redirect; absent when no deposit row exists).",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -87,7 +87,9 @@
         ]
       },
       "tables": [
-        "estimates"
+        "estimates",
+        "estimate_installments",
+        "pec_brand_identity"
       ],
       "spec": "docs/archive/prompts/claude-code-prompt-16-customer-estimate.md",
       "since": "2026-07"
@@ -137,7 +139,7 @@
     {
       "name": "Auto-written scope of work",
       "area": "estimator",
-      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved. Prompt 69: each area's internal notes ride that line's generation context as substitution facts (never quoted into customer text, never new scope), and a custom line's typed scope is used VERBATIM (the writer skips it; only the explicit Polish button touches custom text).",
+      "description": "Estimates assemble a polished, customer-facing scope of work from the company's real templates, filling in square footage, areas, and inclusions from the estimate itself while never altering exclusions or cure-time language. The estimator prompts reps to fill any template blanks on site, warns before a blank reaches the customer, and the AI writes the final version once, then only rewrites on an explicit Regenerate so hand edits are preserved. Prompt 69: each area's internal notes ride that line's generation context as substitution facts (never quoted into customer text, never new scope), and a custom line's typed scope is used VERBATIM (the writer skips it; only the explicit Polish button touches custom text). Prompt 74: the per-line descriptions the writer assembles are now the CUSTOMER-FACING scope under each line, and the estimator's save never authors them (the old save wrote '970 sqft' over every calculator line's description on each re-save, erasing generated scope on sent estimates; descriptions now round-trip through lineDescription and a new line starts null until generation fills it). The send gate hard-blocks an estimate whose scope is stale or missing per line.",
       "code": {
         "netlifyFunctions": [
           "pec-estimate-scope.cjs"
@@ -1012,7 +1014,7 @@
     {
       "name": "Deposits and payment schedules",
       "area": "dashboard",
-      "description": "Partial invoicing on the one-invoice-per-job model (prompt 45). Accepting an estimate prepares an unsent deposit installment at the resolved default (per-job deposit amount, else the system type's deposit_pct, else the settings default_deposit_pct); staff send it manually. Each invoice can carry a schedule of installments, entered as dollars or a percent of the total (both stored, dollars snapshotted), due on job milestones (acceptance / job start / completion; manual and date exist in schema). Exactly one installment is ever the current ask; the shared resolver in _pec-installments.cjs is the single definition used by the pay page, Stripe, the reminder drip, and the staff UI (client mirror pecInstallmentAsk). Milestone-fired installments queue into an approval hold on the drip runner tick (auto-send via Quo/Resend when the gate is off and the master switch is on); approving sends through the normal invoice send kit with a paid/voided/out-of-turn re-check. The pay page shows the current amount due plus the whole plan, kind=installment charges exactly the server-computed current ask, the webhook settles covered installments, and reminders reference the current ask. A job with no installments behaves exactly as before.",
+      "description": "Partial invoicing on the one-invoice-per-job model (prompt 45). Accepting an estimate prepares an unsent deposit installment at the resolved default (per-job deposit amount, else the system type's deposit_pct, else the settings default_deposit_pct); staff send it manually. Each invoice can carry a schedule of installments, entered as dollars or a percent of the total (both stored, dollars snapshotted), due on job milestones (acceptance / job start / completion; manual and date exist in schema). Exactly one installment is ever the current ask; the shared resolver in _pec-installments.cjs is the single definition used by the pay page, Stripe, the reminder drip, and the staff UI (client mirror pecInstallmentAsk). Milestone-fired installments queue into an approval hold on the drip runner tick (auto-send via Quo/Resend when the gate is off and the master switch is on); approving sends through the normal invoice send kit with a paid/voided/out-of-turn re-check. The pay page shows the current amount due plus the whole plan, kind=installment charges exactly the server-computed current ask, the webhook settles covered installments, and reminders reference the current ask. A job with no installments behaves exactly as before. Prompt 74: the schedule can now be created ON THE ESTIMATE before the customer signs (estimate_installments, mirroring this table minus computed_amount; dollars compute at render and freeze at signature). The estimator's Payment schedule card seeds a deposit + balance pair from the shared resolveDepositPct (system deposit_pct, else default_deposit_pct, else 50), validates that rows resolve to the total exactly, and the customer page recomputes percent rows live as options are ticked (cents allocation, last row absorbs, decline clamp). On accept the frozen signature schedule is copied here as planned rows, REPLACING the auto-prepared deposit (skip-if-any-rows idempotency; jobs.deposit_amount mirrored). estimate_schedule_enabled turns the estimate-side card off company-wide.",
       "code": {
         "indexHtml": [
           "pecInstallmentAsk",
@@ -1037,7 +1039,8 @@
         ],
         "other": [
           "supabase/migrations/2026-07-22_invoice_installments.sql",
-          "production/installments.test.cjs"
+          "production/installments.test.cjs",
+          "production/estimate-installments.cjs"
         ]
       },
       "tables": [
@@ -1045,7 +1048,8 @@
         "jobs",
         "pec_payments",
         "settings",
-        "pec_prod_system_types"
+        "pec_prod_system_types",
+        "estimate_installments"
       ],
       "spec": "claude-code-prompt-45-partial-invoicing-schedule.md",
       "since": "2026-07"

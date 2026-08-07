@@ -2404,6 +2404,34 @@
           "name": "routemize_answer_routing"
         }
       ]
+    },
+    {
+      "file": "2026-08-13_prompt74_estimate_schedule_terms.sql",
+      "date": "2026-08-13",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "table",
+          "name": "public.estimate_installments"
+        },
+        {
+          "kind": "index",
+          "name": "idx_estimate_installments_estimate"
+        },
+        {
+          "kind": "index",
+          "name": "uq_estimate_installments_deposit"
+        },
+        {
+          "kind": "column",
+          "name": "public.pec_brand_identity.estimate_terms_text"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_schedule_enabled"
+        }
+      ]
     }
   ],
   "knownTables": [
@@ -2413,6 +2441,7 @@
     "customers",
     "estimate_area_materials",
     "estimate_areas",
+    "estimate_installments",
     "estimate_line_items",
     "estimates",
     "job_area_materials",

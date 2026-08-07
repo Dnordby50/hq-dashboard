@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-06 (Claude Code) after applying the prompt-74 migration (2026-08-13_prompt74_estimate_schedule_terms.sql) live via MCP: new `estimate_installments` table (the estimate-side payment schedule, mirroring pec_invoice_installments minus computed_amount), `pec_brand_identity.estimate_terms_text`, and the `estimate_schedule_enabled` settings key. Only those sections changed.
 Refreshed 2026-08-06 (Claude Code) after applying the prompt-73 migration (2026-08-12_prompt73_instant_touch_drips.sql) live via MCP: pec_drip_steps gained fixed_template / fixed_subject / auto_send and ai_guidance went NULLABLE; the lead campaign was renumbered to 9 steps (new day-0 instant-touch step at index 0, existing 8 shifted to 1..8, max_touches 9; zero active enrollments at renumber time, so nothing was bumped); settings gained routemize_booking_url (seeded EMPTY, Dylan supplies the real URL), drip_instant_touch_enabled ('true'), and routemize_answer_routing (the questionId route map). Only those sections changed.
 Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-51 migration: pec_prod_jobs (ten touchup_* columns + idx_pec_prod_jobs_touchup_queue) and the settings key list. Only those changed; every other section is unchanged from the refreshes below.
 Refreshed 2026-07-26 (Cowork) against the live schema after the prompt-50 migrations: pec_prod_job_costing (office_notes/_by/_at), pec_prod_job_bonuses (review_status/reviewed_by/reviewed_at/review_note), pec_bonus_payouts (reversed_at/reversed_by/reversal_reason). Only those three tables changed; every other section is unchanged from the 2026-07-21 dump.
@@ -212,6 +213,30 @@ FK: basecoat_product_id → pec_prod_products.id; estimate_id → estimates.id; 
 Optional lines (prompt 72, 2026-08-05): `is_optional` on the AREA row is the source of truth for whether an area/custom line is optional (the estimator reloads areas by position, never by id) and is MIRRORED onto the matching estimate_line_items row at save; every downstream read keeps using estimate_line_items.is_optional/selected_by_customer. `preselected` = whether an optional line starts TICKED for the customer (opt-out; add-ons stay opt-in and ignore these columns). Ignored while is_optional is false.
 
 Per-line pricing / custom lines (prompt 69, 2026-08-04): an estimate_areas row is the ONE line unit. Calculator area: `calc_price` = that line's own solved cost-plus price, `price_override` = rep-typed per-line price (null = use calc_price). Custom line: `is_custom=true`, typed `custom_label`/`custom_scope`/`custom_material_cost`/`custom_labor_hours`, typed price in `price_override`, `calc_price` null, no catalog products. `notes` is INTERNAL per-line context fed to scope generation, never rendered customer-facing. All nullable/defaulted, no backfill: pre-69 rows have them null/false and render unchanged.
+
+### estimate_installments
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| estimate_id | uuid | no |  |
+| seq | integer | no | 0 |
+| label | text | no | ''::text |
+| amount_kind | text | no | 'percent' |
+| amount_value | numeric | no |  |
+| trigger_kind | text | no | 'manual' |
+| due_date | date | yes |  |
+| is_deposit | boolean | no | false |
+| note | text | yes |  |
+| created_at | timestamptz | no | now() |
+| created_by | uuid | yes |  |
+
+PK: id
+FK: estimate_id → estimates.id ON DELETE CASCADE
+CHECK: amount_kind in ('fixed','percent'); trigger_kind in ('on_acceptance','on_start','on_completion','manual','date'); amount_value >= 0
+Indexes: idx_estimate_installments_estimate (estimate_id, seq); uq_estimate_installments_deposit UNIQUE (estimate_id) WHERE is_deposit — at most ONE deposit row per estimate, mirroring the job-side constraint.
+Live since 2026-08-13_prompt74_estimate_schedule_terms.sql (prompt 74): the estimate-side payment schedule, created and approved BEFORE the customer signs. Deliberately mirrors pec_invoice_installments field-for-field MINUS computed_amount and the send-lifecycle columns: dollars are computed at render (percent rows recompute live as the customer ticks optional lines) and frozen into estimates.signature at acceptance, then copied to pec_invoice_installments as the job's planned installments (replacing the legacy auto-prepared deposit). Math lives in production/estimate-installments.cjs (fixture-tested); zero rows = the estimate behaves exactly as before prompt 74.
 
 ### estimate_line_items
 RLS: enabled · rows: 10
@@ -631,8 +656,11 @@ RLS: enabled · rows: 1
 | offline_payment_details_text | text | yes |  |
 | invoice_footer_text | text | yes |  |
 | invoice_terms_text | text | yes |  |
+| estimate_terms_text | text | yes |  |
 
 PK: brand
+
+`estimate_terms_text` (prompt 74, 2026-08-13 migration): the estimate's terms and conditions, per brand, edited in Settings > Brand next to the invoice terms and rendered in a fixed-height scrollable card above the signature on the public estimate. NULL/empty = no terms card renders at all (FTP stays empty until Dylan writes it; note FTP also has no pec_brand_identity row yet, so its estimates fall back to the prescott-epoxy row). Customer-facing: no em dashes.
 
 ### pec_call_log
 RLS: enabled · rows: 474

@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-per-line-scope-schedule-terms",
+    "date": "2026-08-06",
+    "title": "Customer estimates now show the full scope under every line, a payment schedule, and terms",
+    "summary": "The estimate a customer opens now reads like a full proposal. Every line item shows its complete scope of work right under the line (tap to collapse), with the square footage as a small subtitle. You can set up a payment schedule on the estimate (deposit plus progress payments) that the customer sees and agrees to when signing; percent rows re-balance live as they tick options, and the signed schedule becomes the job's real installments. Your terms and conditions render above the signature, and right after signing the customer can pay their deposit online. Sending is now blocked until every line has real scope and the schedule matches the total, so a half-written estimate can never go out.",
+    "howto": [
+      "In the estimator, use the new Payment schedule card to set the deposit and progress payments; it starts from your default deposit percent.",
+      "Write your estimate terms in Settings > Brand under Terms and conditions (estimate); the card only shows once text exists.",
+      "If sending is blocked, the message names the exact lines missing scope; Regenerate the scope (or fix the schedule) and send again."
+    ]
+  },
+  {
     "id": "instant-lead-reply-drips",
     "date": "2026-08-06",
     "title": "New leads get an instant reply, and booking answers land in the right place",
