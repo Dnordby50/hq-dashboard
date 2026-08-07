@@ -22,6 +22,18 @@ export type LoadedAddonLine = {
   selectedByCustomer: boolean;
 };
 
+// One estimate_installments row round-tripped into the schedule card
+// (prompt 74). Ready-to-edit shape; empty array = no schedule.
+export type LoadedInstallment = {
+  seq: number;
+  label: string;
+  amountKind: 'fixed' | 'percent';
+  amountValue: number;
+  triggerKind: string;
+  dueDate: string | null;
+  isDeposit: boolean;
+};
+
 export type LoadedEstimate = {
   id: string;
   estimateNumber: number | null;
@@ -72,8 +84,16 @@ export type LoadedEstimate = {
     // would be by position, the fragility these columns exist to avoid).
     isOptional: boolean;
     preselected: boolean;
+    // Prompt 74: this area's line-item DESCRIPTION (the AI-assembled scope),
+    // round-tripped so a re-save PRESERVES it instead of authoring a new one
+    // (the "970 sqft" clobber). Joined by the area id the line carries; empty
+    // when the line has no scope yet.
+    lineDescription: string;
   }>;
   addonLines: LoadedAddonLine[];
+  // Prompt 74: the estimate's payment schedule rows, round-tripped into the
+  // schedule card. Empty before the migration or when no schedule exists.
+  installments: LoadedInstallment[];
   // Custom estimate mode (build 24). customScope/customPrice are the
   // ready-to-edit form values (customPrice as an input string, same shape as
   // areas.sqft); both empty on a standard estimate.
@@ -133,7 +153,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       .maybeSingle(),
     supabase
       .from('estimate_areas')
-      .select('name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override,is_optional,preselected')
+      .select('id,name,sqft,system_type_id,mvb,answers,sort_order,is_custom,custom_label,custom_scope,custom_material_cost,custom_labor_hours,notes,calc_price,price_override,is_optional,preselected')
       .eq('estimate_id', id)
       .order('sort_order', { ascending: true }),
     supabase
@@ -145,9 +165,20 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
   if (estRes.error) throw estRes.error;
   if (!estRes.data) return null;
   const e = estRes.data as Record<string, unknown>;
+  // Prompt 74: each area line's saved DESCRIPTION (the assembled scope),
+  // keyed by the area id its line item carries, so the save can write it back
+  // verbatim instead of authoring a new one. First line per area wins (an
+  // area has at most one system line).
+  const descByAreaId = new Map<string, string>();
+  for (const li of (((linesRes.error ? [] : linesRes.data) ?? []) as Array<Record<string, unknown>>)) {
+    const areaId = li.estimate_area_id;
+    if (typeof areaId === 'string' && li.description != null && !descByAreaId.has(areaId)) {
+      descByAreaId.set(areaId, String(li.description));
+    }
+  }
   const areas = ((areasRes.error ? [] : areasRes.data) ?? []).map((a) => {
     const row = a as {
-      name: string | null; sqft: number | null; system_type_id: string | null; mvb: boolean | null;
+      id: string; name: string | null; sqft: number | null; system_type_id: string | null; mvb: boolean | null;
       answers: Record<string, string> | null; is_custom: boolean | null; custom_label: string | null;
       custom_scope: string | null; custom_material_cost: number | null; custom_labor_hours: number | null;
       notes: string | null; price_override: number | null;
@@ -169,8 +200,35 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
       priceOverride: row.price_override != null ? String(row.price_override) : '',
       isOptional: row.is_optional === true,
       preselected: row.preselected !== false,
+      // Custom lines keep their scope in custom_scope; the round-tripped line
+      // description is only meaningful for CALCULATOR lines.
+      lineDescription: !isCustomLine && descByAreaId.has(row.id) ? (descByAreaId.get(row.id) as string) : '',
     };
   });
+  // Payment schedule rows (prompt 74). Loaded separately and tolerantly: a
+  // database the estimate_installments migration has not reached yet must not
+  // 400 the whole edit load (the forward-compat pattern above).
+  let installments: LoadedInstallment[] = [];
+  try {
+    const instRes = await supabase
+      .from('estimate_installments')
+      .select('seq,label,amount_kind,amount_value,trigger_kind,due_date,is_deposit')
+      .eq('estimate_id', id)
+      .order('seq', { ascending: true });
+    if (!instRes.error) {
+      installments = ((instRes.data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+        seq: Number(r.seq) || 0,
+        label: String(r.label ?? ''),
+        amountKind: r.amount_kind === 'fixed' ? 'fixed' : 'percent',
+        amountValue: Number(r.amount_value) || 0,
+        triggerKind: String(r.trigger_kind ?? 'manual'),
+        dueDate: (r.due_date as string | null) ?? null,
+        isDeposit: r.is_deposit === true,
+      }));
+    }
+  } catch {
+    /* pre-migration */
+  }
   // Only add-on / one-off lines round-trip into the form; area/system lines
   // (estimate_area_id set, or no addon_id and not optional with an area) are
   // regenerated from the areas at save time. The discriminator: a line bound
@@ -216,6 +274,7 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     // has none. A placeholder here would skip that default seeding.
     areas,
     addonLines,
+    installments,
     isCustom,
     customScope: e.custom_scope != null ? String(e.custom_scope) : '',
     customPrice: e.custom_price != null ? String(e.custom_price) : '',
@@ -235,4 +294,9 @@ export async function deleteEstimateChildren(estimateId: string): Promise<void> 
   if (items.error) throw items.error;
   const areas = await supabase.from('estimate_areas').delete().eq('estimate_id', estimateId);
   if (areas.error) throw areas.error;
+  // Payment schedule rows (prompt 74) rewrite like the other children. A
+  // missing-table error (pre-migration database) is tolerated: there is
+  // nothing to delete and the save enqueues no installment rows either.
+  const inst = await supabase.from('estimate_installments').delete().eq('estimate_id', estimateId);
+  if (inst.error && !/does not exist|schema cache/i.test(inst.error.message || '')) throw inst.error;
 }

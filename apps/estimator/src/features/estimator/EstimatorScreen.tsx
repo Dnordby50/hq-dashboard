@@ -40,6 +40,10 @@ import { linesInputsKey } from '../../../../../production/ai-lines.cjs';
 // pec-public-estimate.cjs uses, so the rep's totals and the customer's page
 // can never disagree about what required-only / all-in / opening mean.
 import { optionalControlsVisible, splitLineTotals } from '../../../../../production/optional-lines.cjs';
+// Payment-schedule math (prompt 74): the SAME module pec-public-estimate.cjs
+// resolves and freezes with, so the card's dollars and the customer page can
+// never disagree.
+import { computeScheduleCents, defaultScheduleRows, resolveDepositPct, scheduleValidationError } from '../../../../../production/estimate-installments.cjs';
 import { supabase } from '../../lib/supabase';
 import { ensureLeadForCustomer, searchCustomersAndLeads, type CustomerMatch } from '../../lib/customerSearch';
 import { uuid } from '../../offline/uuid';
@@ -74,8 +78,14 @@ type AreaForm = {
   // dropping the line drops its barrier, so MVB gets no separate control.
   optional: boolean;
   preselected: boolean;
+  // Prompt 74: the line's saved scope DESCRIPTION, round-tripped so a re-save
+  // PRESERVES it (a save must never author a calculator line's description;
+  // the "970 sqft" clobber erased real scope on sent estimates). Hydrated on
+  // edit-load and refreshed after a successful scope generation; empty on a
+  // brand-new line (the save writes null and the scope writer fills it).
+  lineDescription: string;
 };
-const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true };
+const emptyLineFields = { notes: '', priceInput: '', isCustom: false, customScope: '', customMaterialCost: '', customLaborHours: '', optional: false, preselected: true, lineDescription: '' };
 // MVB Only is a system type (build 17): an area on it is an MVB-only job, so
 // the per-area MVB checkbox is redundant there and is hidden.
 const MVB_ONLY_SYSTEM_NAME = 'MVB Only';
@@ -103,6 +113,25 @@ type AddonForm = {
   unitCost: string;
   optional: boolean;
 };
+
+// One payment-schedule row in form state (prompt 74). valueInput is the
+// ready-to-edit string (the areas.sqft pattern); kind picks percent vs
+// dollars; trigger is the milestone the customer reads on the estimate.
+type ScheduleRowForm = {
+  key: string;
+  label: string;
+  kind: 'percent' | 'fixed';
+  valueInput: string;
+  trigger: string; // on_acceptance | on_start | on_completion | date
+  dueDate: string;
+  isDeposit: boolean;
+};
+const SCHEDULE_TRIGGERS: Array<[string, string]> = [
+  ['on_acceptance', 'At signing'],
+  ['on_start', 'At job start'],
+  ['on_completion', 'At completion'],
+  ['date', 'On a date'],
+];
 
 const SWATCH_TYPES = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
 // Same catalog row the dashboard's New Job flow resolves: the one MVB product
@@ -352,6 +381,7 @@ export default function EstimatorScreen({
             customLaborHours: a.customLaborHours ?? '',
             optional: a.isOptional === true,
             preselected: a.preselected !== false,
+            lineDescription: a.lineDescription ?? '',
           }))
         : null,
       makeDefaultArea: () => ({ name: 'Main', sqft: '', systemTypeId: fallbackSystemId, mvb: false, slotValues: fallbackSystemId ? defaultSlotValues(fallbackSystemId) : {}, ...emptyLineFields }),
@@ -405,6 +435,12 @@ export default function EstimatorScreen({
   // Estimate saved OFFLINE with the auto-first generation still owed: the id
   // waits here until the outbox drains, then the generation fires by itself.
   const pendingAutoGenRef = useRef<string | null>(null);
+  // Prompt 74: the last save's sort_order -> areas[] form index map, so a
+  // successful scope generation can write the freshly assembled per-line
+  // descriptions back into form state (lineDescription) and the NEXT save
+  // preserves them instead of nulling them. Set by performSave (standard
+  // mode), read by generateScope after the server writes the descriptions.
+  const lastSaveFormIdxBySortRef = useRef<number[]>([]);
   // ---- Custom estimate mode (build 24): the WHOLE estimate goes custom -----
   // One-off jobs the shop does not do often: Dylan types the scope and the
   // price himself; areas and the material engine are off. The toggle is
@@ -433,6 +469,22 @@ export default function EstimatorScreen({
   const [preGenCrewNotes, setPreGenCrewNotes] = useState<string | null>(null);
   const [crewNotesBusy, setCrewNotesBusy] = useState(false);
   const [crewNotesError, setCrewNotesError] = useState('');
+  // ---- Payment schedule (prompt 74): deposit + progress payments, created
+  // and approved on the ESTIMATE before the customer ever sees it (locked
+  // decision 5). Round-trips through estimate_installments; zero rows = no
+  // schedule block anywhere and the legacy auto-deposit flow on accept.
+  const [scheduleRows, setScheduleRows] = useState<ScheduleRowForm[]>(() =>
+    (editing?.installments ?? []).map((r) => ({
+      key: uuid(),
+      label: r.label,
+      kind: r.amountKind,
+      valueInput: String(r.amountValue),
+      trigger: r.triggerKind,
+      dueDate: r.dueDate ?? '',
+      isDeposit: r.isDeposit,
+    })),
+  );
+  const [scheduleOpen, setScheduleOpen] = useState<boolean>(() => (editing?.installments ?? []).length > 0);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
@@ -661,6 +713,37 @@ export default function EstimatorScreen({
       setPanelEdited(false);
       setDbScopeEdited(false); // a successful write clears scope_edited_at server-side
       setScopeStale(false);
+      // Prompt 74: pull the freshly written per-line descriptions back into
+      // form state so the NEXT save preserves them (the save never authors a
+      // description now; without this refresh, a save-after-generate in the
+      // same session would null them and the send gate would block).
+      // Best-effort: a miss here is healed by reopening the estimate, which
+      // round-trips descriptions through estimateLoad.
+      try {
+        const [aRes, lRes] = await Promise.all([
+          supabase.from('estimate_areas').select('id,sort_order,is_custom').eq('estimate_id', estimateId),
+          supabase.from('estimate_line_items').select('estimate_area_id,description').eq('estimate_id', estimateId),
+        ]);
+        if (!aRes.error && !lRes.error) {
+          const descByAreaId = new Map<string, string>();
+          for (const li of (lRes.data ?? []) as Array<{ estimate_area_id: string | null; description: string | null }>) {
+            if (li.estimate_area_id && li.description != null && !descByAreaId.has(li.estimate_area_id)) {
+              descByAreaId.set(li.estimate_area_id, String(li.description));
+            }
+          }
+          const sortToFormIdx = lastSaveFormIdxBySortRef.current;
+          const patches = new Map<number, string>();
+          for (const ar of (aRes.data ?? []) as Array<{ id: string; sort_order: number | null; is_custom: boolean | null }>) {
+            if (ar.is_custom === true) continue;
+            const formIdx = sortToFormIdx[Number(ar.sort_order) || 0];
+            const desc = descByAreaId.get(ar.id);
+            if (formIdx != null && desc != null) patches.set(formIdx, desc);
+          }
+          if (patches.size) {
+            setAreas((prev) => prev.map((a, i) => (patches.has(i) ? { ...a, lineDescription: patches.get(i) as string } : a)));
+          }
+        }
+      } catch { /* best-effort, see above */ }
       return true;
     } catch (e) {
       // Surfaced in the panel, never blocking: the estimate page's Generate
@@ -984,6 +1067,68 @@ export default function EstimatorScreen({
     : (dominantSystem?.target_gp_pct != null ? Number(dominantSystem.target_gp_pct) : config.targetGpPct);
   const gpBelowTarget =
     combinedGpPct != null && combinedGpPct * 100 < targetGpPctResolved - 0.05;
+
+  // ---- Payment schedule derived values (prompt 74) --------------------------
+  // Validated against the customer's OPENING total (totalPrice: required +
+  // pre-selected), the number the page shows when the link opens. Percent
+  // rows recompute live on the customer page as options are ticked, so a
+  // percent-complete schedule stays exact for every selection.
+  const scheduleEnabled = config.estimateScheduleEnabled !== false;
+  const scheduleShared = useMemo(() => scheduleRows.map((r, i) => ({
+    seq: i,
+    label: r.label.trim() || (r.isDeposit ? 'Deposit' : 'Installment'),
+    amount_kind: r.kind,
+    amount_value: Number(r.valueInput) || 0,
+    trigger_kind: r.trigger,
+    due_date: r.trigger === 'date' && r.dueDate ? r.dueDate : null,
+    is_deposit: r.isDeposit,
+  })), [scheduleRows]);
+  const scheduleTotalCents = totalPrice != null ? Math.round(totalPrice * 100) : null;
+  const scheduleError = useMemo(
+    () => (scheduleRows.length && scheduleTotalCents != null ? scheduleValidationError(scheduleShared, scheduleTotalCents) : null),
+    [scheduleRows.length, scheduleShared, scheduleTotalCents],
+  );
+  const scheduleCents: number[] | null = useMemo(
+    () => (scheduleRows.length && scheduleTotalCents != null && !scheduleError ? computeScheduleCents(scheduleShared, scheduleTotalCents) : null),
+    [scheduleRows.length, scheduleShared, scheduleTotalCents, scheduleError],
+  );
+  // Seed on FIRST OPEN of the editor, never on estimate create (a draft with
+  // no schedule keeps behaving exactly as today). Deposit percent resolution
+  // is the shared resolveDepositPct: dominant system's deposit_pct, else the
+  // company default_deposit_pct, else 50 (same rule prepareDepositInstallment
+  // applies on the job side).
+  const seedSchedule = useCallback(() => {
+    const pctResolved = resolveDepositPct(dominantSystem?.deposit_pct, config.defaultDepositPct);
+    setScheduleRows(defaultScheduleRows(pctResolved).map((r: { label: string; amount_kind: 'fixed' | 'percent'; amount_value: number; trigger_kind: string; is_deposit: boolean }) => ({
+      key: uuid(),
+      label: r.label,
+      kind: r.amount_kind,
+      valueInput: String(r.amount_value),
+      trigger: r.trigger_kind,
+      dueDate: '',
+      isDeposit: r.is_deposit,
+    })));
+    setSaveState('idle');
+  }, [dominantSystem, config.defaultDepositPct]);
+  const openScheduleEditor = useCallback(() => {
+    setScheduleOpen(true);
+    if (!scheduleRows.length) seedSchedule();
+  }, [scheduleRows.length, seedSchedule]);
+  const setScheduleRow = (key: string, patch: Partial<ScheduleRowForm>) => {
+    setScheduleRows((prev) => prev.map((r) => {
+      if (r.key !== key) return patch.isDeposit === true ? { ...r, isDeposit: false } : r; // one deposit max
+      return { ...r, ...patch };
+    }));
+    setSaveState('idle');
+  };
+  const addScheduleRow = () => {
+    setScheduleRows((prev) => [...prev, { key: uuid(), label: '', kind: 'percent', valueInput: '', trigger: 'on_completion', dueDate: '', isDeposit: false }]);
+    setSaveState('idle');
+  };
+  const removeScheduleRow = (key: string) => {
+    setScheduleRows((prev) => prev.filter((r) => r.key !== key));
+    setSaveState('idle');
+  };
 
   // ---- Pricing-logic panel values (INTERNAL only, never on the public page) --
   const pricePerSqft = totalPrice != null && totalSqft > 0 ? totalPrice / totalSqft : null;
@@ -1800,6 +1945,11 @@ export default function EstimatorScreen({
         };
       });
 
+      // Prompt 74: areaInputs[i] is saved with sort_order=i, so this map lets
+      // generateScope route each area's written description back to its form
+      // row afterwards.
+      lastSaveFormIdxBySortRef.current = isCustom ? [] : lineRows.map((row) => row.formIdx);
+
       const intakePayload: Record<string, unknown> = {
         gate_code: intake.gate_code || null,
         coat_past_garage: intake.coat_past_garage,
@@ -1874,9 +2024,14 @@ export default function EstimatorScreen({
             addonId: null,
             areaIndex: k,
             label: calcCount > 1 || lineRows.length > 1 ? `${a.name || 'Area'}: ${sysName}` : (isMvbOnly ? sysName : `${sysName} floor coating system`),
-            description:
-              `${Math.round(Number(a.sqft) || 0)} sqft` +
-              (a.mvb && !isMvbOnly ? ', includes moisture vapor barrier (MVB)' : ''),
+            // Prompt 74 (the clobber fix): a save NEVER authors a calculator
+            // line's description. The description is the line's SCOPE, written
+            // only by pec-estimate-scope; the save round-trips whatever the
+            // load (or the last generation) put in lineDescription, and a new
+            // line starts null. The sqft moved to the customer page's
+            // area-derived subtitle. The old `${sqft} sqft` string here erased
+            // real scope on every re-save (EST-102066, EST-102064).
+            description: a.lineDescription.trim() ? a.lineDescription : null,
             qty: 1,
             unitPrice: amt,
             unitCost,
@@ -1992,6 +2147,18 @@ export default function EstimatorScreen({
         flakeColor: isCustom ? null : editing?.flakeColor ?? flakeColorFromPicks,
         scopeAnswers,
         lineItems,
+        // Payment schedule (prompt 74): the card's rows, rewritten like every
+        // other child. Kind + entered value only; dollars are computed at
+        // render and frozen at signature, never stored here.
+        installments: scheduleShared.map((r) => ({
+          seq: r.seq,
+          label: r.label,
+          amountKind: r.amount_kind,
+          amountValue: r.amount_value,
+          triggerKind: r.trigger_kind,
+          dueDate: r.due_date,
+          isDeposit: r.is_deposit,
+        })),
         pricingSnapshot,
         areas: areaInputs,
         pricing,
@@ -2076,7 +2243,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only proposal writer after the first
@@ -2975,6 +3142,82 @@ export default function EstimatorScreen({
               </>
             )}
           </section>
+
+          {/* Payment schedule (prompt 74): created and approved HERE, before
+              the customer ever sees the estimate (locked decision 5). Zero
+              rows = no schedule block on the page and the legacy auto-deposit
+              on accept. Percent rows recompute live on the customer page as
+              options are ticked; the send gate blocks a schedule that does
+              not resolve to the estimate total. Hidden company-wide by the
+              estimate_schedule_enabled setting (rule 12). */}
+          {scheduleEnabled && (
+            <section className="card">
+              <div className="areas-head">
+                <span>Payment schedule</span>
+                {scheduleRows.length > 0 && (
+                  <button type="button" className="link" onClick={() => { setScheduleRows([]); setSaveState('idle'); }}>Remove schedule</button>
+                )}
+              </div>
+              {!scheduleOpen && scheduleRows.length === 0 ? (
+                <>
+                  <p className="hint">The customer sees and agrees to the deposit and progress payments when signing. On accept, the signed schedule becomes the job's real installments.</p>
+                  <button type="button" className="link" onClick={openScheduleEditor}>Set up payment schedule</button>
+                </>
+              ) : scheduleRows.length === 0 ? (
+                <>
+                  <p className="hint">No schedule: after signing, the job gets the standard deposit ask, same as today.</p>
+                  <button type="button" className="link" onClick={seedSchedule}>Add the default schedule</button>
+                </>
+              ) : (
+                <>
+                  {scheduleRows.map((r, i) => (
+                    <div key={r.key} style={{ borderTop: i === 0 ? 'none' : '1px solid rgba(128,128,128,.25)', paddingTop: i === 0 ? 0 : 8, marginTop: i === 0 ? 0 : 8, display: 'grid', gap: 6 }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                        <label className="field" style={{ flex: '1 1 140px' }}><span>Label</span>
+                          <input value={r.label} placeholder={r.isDeposit ? 'Deposit' : 'Installment'} onChange={(e) => setScheduleRow(r.key, { label: e.target.value })} />
+                        </label>
+                        <label className="field" style={{ flex: '0 0 92px' }}><span>Amount</span>
+                          <input inputMode="decimal" value={r.valueInput} placeholder="0" onChange={(e) => setScheduleRow(r.key, { valueInput: e.target.value.replace(/[^0-9.]/g, '') })} />
+                        </label>
+                        <label className="field" style={{ flex: '0 0 64px' }}><span>&nbsp;</span>
+                          <select value={r.kind} onChange={(e) => setScheduleRow(r.key, { kind: e.target.value === 'fixed' ? 'fixed' : 'percent' })}>
+                            <option value="percent">%</option>
+                            <option value="fixed">$</option>
+                          </select>
+                        </label>
+                        <label className="field" style={{ flex: '1 1 130px' }}><span>Due</span>
+                          <select value={r.trigger} onChange={(e) => setScheduleRow(r.key, { trigger: e.target.value })}>
+                            {SCHEDULE_TRIGGERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                          </select>
+                        </label>
+                        {r.trigger === 'date' && (
+                          <label className="field" style={{ flex: '0 0 140px' }}><span>Date</span>
+                            <input type="date" value={r.dueDate} onChange={(e) => setScheduleRow(r.key, { dueDate: e.target.value })} />
+                          </label>
+                        )}
+                        <button type="button" className="link" style={{ marginBottom: 6 }} onClick={() => removeScheduleRow(r.key)} title="Remove this row">✕</button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <label className="check" style={{ margin: 0 }}>
+                          <input type="checkbox" checked={r.isDeposit} onChange={(e) => setScheduleRow(r.key, { isDeposit: e.target.checked })} />
+                          <span>This is the deposit</span>
+                        </label>
+                        {scheduleCents && scheduleCents[i] != null && (
+                          <span className="muted" style={{ fontSize: '.82rem' }}>= {money2(scheduleCents[i] / 100)}{totalPrice != null ? ' of ' + money2(totalPrice) : ''}</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 10, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button type="button" className="link" onClick={addScheduleRow}>+ Add installment</button>
+                  </div>
+                  {totalPrice == null && <p className="hint">Dollar amounts appear once the job is priced.</p>}
+                  {scheduleError && <p className="warn">{scheduleError.message} Sending is blocked until the schedule resolves to the total exactly.</p>}
+                  {!scheduleError && scheduleCents && <p className="hint">Schedule matches the estimate total to the cent. Percent rows re-balance automatically if the customer changes optional items.</p>}
+                </>
+              )}
+            </section>
+          )}
 
           {/* Comps and the AI price read key off system + sqft, which a custom
               estimate does not have; hidden rather than pretending. */}

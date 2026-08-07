@@ -10,7 +10,7 @@ import { idbDelete, idbGetAll, idbPut } from './idb';
 // in a foreign key.
 export type OutboxOp = {
   opId: string;
-  table: 'leads' | 'estimates' | 'estimate_areas' | 'estimate_area_materials' | 'estimate_line_items';
+  table: 'leads' | 'estimates' | 'estimate_areas' | 'estimate_area_materials' | 'estimate_line_items' | 'estimate_installments';
   id: string;
   row: Record<string, unknown>;
   client_updated_at: string;

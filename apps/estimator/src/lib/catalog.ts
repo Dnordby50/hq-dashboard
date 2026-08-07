@@ -54,6 +54,10 @@ export type PricingConfig = {
   optionalLinesEnabled: boolean;         // optional_lines_enabled: CREATE gate for new optional lines
   optionalLinesPreselectDefault: boolean; // optional_lines_preselect_default: a newly optional line starts ticked
   optionalLinesGpWarnPct: number;        // optional_lines_gp_warn_pct: required-only GP% amber threshold
+  // Payment schedule (prompt 74). Defaults MUST match the migration seeds:
+  // true / 50 (the code's long-standing deposit fallback).
+  estimateScheduleEnabled: boolean; // estimate_schedule_enabled: the schedule card on/off company-wide
+  defaultDepositPct: number;        // default_deposit_pct: last stop in the deposit-percent precedence
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
   customerSearchEnabled: boolean; // estimator_customer_search_enabled: the dedup search on the customer card (prompt 44)
@@ -77,7 +81,7 @@ export async function loadCatalog(): Promise<Catalog> {
   const [systemsRes, productsRes, slotsRes, salesRes, addonsRes, settingsRes] = await Promise.all([
     supabase
       .from('pec_prod_system_types')
-      .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order,scope_template,scope_template_mvb')
+      .select('id,name,labor_budget_pct,target_gp_pct,active,sort_order,scope_template,scope_template_mvb,deposit_pct')
       .eq('active', true)
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true }),
@@ -128,6 +132,8 @@ export async function loadCatalog(): Promise<Catalog> {
         'optional_lines_preselect_default',
         'optional_lines_gp_warn_pct',
         'estimator_customer_search_enabled',
+        'estimate_schedule_enabled',
+        'default_deposit_pct',
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
       ]),
@@ -173,6 +179,8 @@ export async function loadCatalog(): Promise<Catalog> {
     optionalLinesEnabled: String(settings['optional_lines_enabled'] ?? 'true').toLowerCase() !== 'false',
     optionalLinesPreselectDefault: String(settings['optional_lines_preselect_default'] ?? 'true').toLowerCase() !== 'false',
     optionalLinesGpWarnPct: num('optional_lines_gp_warn_pct', num('line_pricing_gp_floor_pct', 40)),
+    estimateScheduleEnabled: String(settings['estimate_schedule_enabled'] ?? 'true').toLowerCase() !== 'false',
+    defaultDepositPct: num('default_deposit_pct', 50),
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
       settings['estimator_default_commission_pct'] != null &&

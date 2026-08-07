@@ -77,6 +77,20 @@ export type LineItemInput = {
   sortOrder: number;
 };
 
+// One payment-schedule row (prompt 74), written to public.estimate_installments.
+// NO computed dollars here on purpose: dollars are computed at render and
+// frozen at signature, so a stored amount can never go stale against the
+// estimate total.
+export type InstallmentInput = {
+  seq: number;
+  label: string;
+  amountKind: 'fixed' | 'percent';
+  amountValue: number;
+  triggerKind: string; // on_acceptance | on_start | on_completion | manual | date
+  dueDate: string | null;
+  isDeposit: boolean;
+};
+
 // The money written onto the estimate row, computed by the screen so what is
 // stored is exactly what was displayed: system sell price (engine price or the
 // rep's override) PLUS non-optional add-on lines, with GP net of add-on costs
@@ -116,6 +130,9 @@ export type SaveEstimateArgs = {
   // (15c). The scope writer substitutes these before the model call.
   scopeAnswers: Record<string, string>;
   lineItems: LineItemInput[];
+  // Payment schedule rows (prompt 74). Empty array = no schedule (the page
+  // renders exactly as before and the send gate's schedule rule is inert).
+  installments?: InstallmentInput[];
   pricingSnapshot: Record<string, unknown> | null; // comps + AI read that priced it
   areas: AreaInput[];
   // Null on a custom estimate (build 24): no engine ran, so there is no
@@ -328,6 +345,24 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
       };
       await enqueue({ table: 'estimate_area_materials', id: matId, row: matRow, client_updated_at: now });
     }
+  }
+
+  // Payment schedule rows (prompt 74): FK only the estimate, so they can ride
+  // right after the parent. Client-minted ids keep the sync idempotent.
+  for (const inst of (args.installments ?? [])) {
+    const instId = uuid();
+    const instRow = {
+      id: instId,
+      estimate_id: estimateId,
+      seq: inst.seq,
+      label: inst.label,
+      amount_kind: inst.amountKind,
+      amount_value: inst.amountValue,
+      trigger_kind: inst.triggerKind,
+      due_date: inst.dueDate,
+      is_deposit: inst.isDeposit,
+    };
+    await enqueue({ table: 'estimate_installments', id: instId, row: instRow, client_updated_at: now });
   }
 
   // Line items LAST (they FK both the estimate and, for system lines, an area).

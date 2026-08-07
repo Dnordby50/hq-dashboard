@@ -49,6 +49,9 @@ export type SystemType = {
   active?: boolean;
   scope_template?: string | null;
   scope_template_mvb?: string | null;
+  // Per-system deposit percent (prompt 74): seeds the payment-schedule card's
+  // default deposit row, same precedence prepareDepositInstallment uses.
+  deposit_pct?: number | null;
 };
 
 export type RecipeSlot = {

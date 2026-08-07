@@ -255,6 +255,28 @@ declare module '*/production/optional-lines.cjs' {
   export function optionalControlsVisible(enabled: boolean | undefined, isOptional: boolean | undefined): boolean;
 }
 
+// Estimate-side payment schedule math (repo-root
+// production/estimate-installments.cjs, prompt 74), shared with
+// pec-public-estimate.cjs and the fixture tests. All money in cents.
+declare module '*/production/estimate-installments.cjs' {
+  export interface ScheduleRowShared {
+    seq: number;
+    label: string;
+    amount_kind: 'fixed' | 'percent';
+    amount_value: number;
+    trigger_kind: string;
+    due_date: string | null;
+    is_deposit: boolean;
+  }
+  export function resolveDepositPct(systemDepositPct: unknown, settingDepositPct: unknown): number;
+  export function defaultScheduleRows(depositPct: number): ScheduleRowShared[];
+  export function scheduleValidationError(rows: ScheduleRowShared[], totalCents: number): { message: string; diffCents: number } | null;
+  export function computeScheduleCents(rows: ScheduleRowShared[], totalCents: number, originalTotalCents?: number): number[];
+  export function freezeSchedule(rows: ScheduleRowShared[], totalCents: number): Array<ScheduleRowShared & { computed_amount: number }>;
+  export function scheduleSumsToTotal(cents: number[], totalCents: number): boolean;
+  export function triggerLabel(triggerKind: string, dueDate?: string | null): string;
+}
+
 // Canonical BLANK-placeholder logic (repo-root production/scope.cjs), shared
 // with pec-estimate-scope.cjs so answer keys match across client and server.
 declare module '*/production/scope.cjs' {
