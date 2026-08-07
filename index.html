@@ -19749,12 +19749,13 @@ function openApptRuleModal(rule, onDone) {
 async function renderSettingsInvoicing() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required']),
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled']),
     { label: 'settings-invoicing' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
   const schedOn = map.payment_schedules_enabled !== 'false';
   const gateOn = map.installment_approval_required !== 'false';
+  const estSchedOn = map.estimate_schedule_enabled !== 'false';
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-invoicing-save' });
@@ -19770,6 +19771,17 @@ async function renderSettingsInvoicing() {
         <input type="number" id="setDepPct" min="0" max="100" step="0.5" value="${esc(depPct)}" style="width:110px;text-align:right"> <strong>%</strong>
         <button type="button" class="pec-btn primary sm" id="setDepPctSave">Save</button>
         <span id="setDepPctErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Payment schedule on estimates: ${estSchedOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${estSchedOn
+            ? 'The estimator shows a Payment schedule card (deposit + progress payments the customer agrees to at signing; the signed schedule becomes the job&#39;s installments). Turn this off to hide the card company-wide; estimates keep the standard deposit flow.'
+            : 'The estimator hides the Payment schedule card; accepted estimates get the standard auto-prepared deposit, exactly as before. Existing signed schedules are untouched.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${estSchedOn ? '' : 'primary'}" id="setEstSchedOn">${estSchedOn ? 'Turn estimate schedules OFF' : 'Turn estimate schedules ON'}</button>
       </div>
     </div>
     <div class="pec-card">
@@ -19809,6 +19821,12 @@ async function renderSettingsInvoicing() {
     const to = schedOn ? 'false' : 'true';
     const btn = $('setSchedOn'); btn.disabled = true;
     try { await saveSetting('payment_schedules_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setEstSchedOn').addEventListener('click', async () => {
+    const to = estSchedOn ? 'false' : 'true';
+    const btn = $('setEstSchedOn'); btn.disabled = true;
+    try { await saveSetting('estimate_schedule_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     renderSettings();
   });
   $('setInstGate').addEventListener('click', async () => {
@@ -23112,6 +23130,8 @@ async function renderSettingsBrand() {
         <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Shown when a customer opens "Pay by check, cash, or Zelle" on the invoice.</div></div>
       <div class="pec-field"><label>Thank-you / footer note (bottom of the invoice)</label><textarea id="biInvoiceFooter" rows="3">${esc(paymentInstructionsToText(b.invoice_footer_text))}</textarea></div>
       <div class="pec-field"><label>Terms / fine print (bottom of the invoice)</label><textarea id="biInvoiceTerms" rows="3">${esc(paymentInstructionsToText(b.invoice_terms_text))}</textarea></div>
+      <div class="pec-field"><label>Terms and conditions (estimate)</label><textarea id="biEstimateTerms" rows="8">${esc(paymentInstructionsToText(b.estimate_terms_text))}</textarea>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px">Shown in a scrollable box above the signature on the customer estimate. Plain text; blank line = new paragraph. Leave empty to show no terms card. No em dashes (customer-facing).</div></div>
       <button class="pec-btn primary sm" id="biSave">Save brand identity</button>
       <span id="biMsg" style="margin-left:10px;font-size:.8rem"></span>
     </div>
@@ -23149,6 +23169,7 @@ async function renderSettingsBrand() {
       offline_payment_details_text: $('biOfflinePay').value.trim() || null,
       invoice_footer_text: $('biInvoiceFooter').value.trim() || null,
       invoice_terms_text: $('biInvoiceTerms').value.trim() || null,
+      estimate_terms_text: $('biEstimateTerms').value.trim() || null,
       updated_at: new Date().toISOString(),
     };
     btn.disabled = true; btn.textContent = 'Saving…';
@@ -23158,8 +23179,8 @@ async function renderSettingsBrand() {
       // exist yet, save the rest so the other brand fields still persist, and
       // tell the user the invoice text needs the migration applied.
       let invoiceTextDeferred = false;
-      if (upd.error && /invoice_intro_text|offline_payment_details_text|invoice_footer_text|invoice_terms_text|column .* does not exist/i.test(upd.error.message || '')) {
-        const { invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text, ...base } = patch;
+      if (upd.error && /invoice_intro_text|offline_payment_details_text|invoice_footer_text|invoice_terms_text|estimate_terms_text|column .* does not exist/i.test(upd.error.message || '')) {
+        const { invoice_intro_text, offline_payment_details_text, invoice_footer_text, invoice_terms_text, estimate_terms_text, ...base } = patch;
         upd = await withFreshWriteRetry(() => supabase.from('pec_brand_identity').update(base).eq('brand', 'prescott-epoxy'), { label: 'brand-identity-base' });
         invoiceTextDeferred = !upd.error;
       }
@@ -28339,7 +28360,7 @@ async function renderEstimateDetail(estimateId) {
   let res;
   try {
     res = await withFreshSession(() => supabase.from('estimates')
-      .select('*,estimate_areas(name,sqft,sort_order,system_type_id,mvb),estimate_line_items(*),pec_prod_system_types(name),leads(full_name),customers(name)')
+      .select('*,estimate_areas(id,name,sqft,sort_order,system_type_id,mvb,is_custom),estimate_line_items(*),pec_prod_system_types(name),leads(full_name),customers(name)')
       .eq('id', estimateId).maybeSingle(), { label: 'renderEstimateDetail' });
       // NOTE: deleted_at is NOT filtered here on purpose: viewing an archived
       // estimate's detail (to restore it, or read it) must work.
@@ -29098,6 +29119,68 @@ function estimateOptionalGateOk(est) {
   return true;
 }
 
+// Prompt 74 send gate (HARD block, locked decision 4): the customer page now
+// renders each line's description as its scope of work, so an estimate must
+// not go out while (1) scope_stale is true, (2) any scope-bearing line has an
+// empty description, (3) any description still carries the clobber
+// fingerprint ("970 sqft", the bug prompt 74 fixed), or (4) the payment
+// schedule does not resolve to the estimate total. CLIENT MIRROR of
+// production/optional-lines.cjs scopeSendBlockers and
+// production/estimate-installments.cjs scheduleValidationError; keep in
+// lockstep. Messages NAME the offending lines: the rep is in a driveway.
+// Custom lines (typed scope, the rep's call) and MVB-only lines (no template
+// describes a barrier-only job) are exempt from rule 2; add-on/one-off lines
+// are checked only for the fingerprint (Drive Time legitimately has none).
+const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
+async function estimateSendGateOk(est) {
+  const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  const blockers = [];
+  if (est.scope_stale === true) {
+    blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope, then send.');
+  }
+  const customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
+  for (const li of items) {
+    if (!li) continue;
+    const label = li.label || 'Line';
+    const desc = String(li.description == null ? '' : li.description).trim();
+    if (!li.estimate_area_id) {
+      if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+      continue;
+    }
+    if (customAreaIds.has(li.estimate_area_id)) continue;
+    if (/(^|: )MVB Only$/.test(String(label).trim())) continue;
+    if (!desc) blockers.push(`"${label}" has no scope of work yet. Generate the scope, then send.`);
+    else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+  }
+  // Rule 4: a schedule (when one exists) must resolve to the OPENING total
+  // exactly; sub-cent percent rounding is fine (the render's last-row
+  // absorption owns it). Tolerant of a pre-migration database.
+  try {
+    const { data: inst, error } = await supabase.from('estimate_installments')
+      .select('seq,label,amount_kind,amount_value,is_deposit')
+      .eq('estimate_id', est.id).order('seq', { ascending: true });
+    if (!error && Array.isArray(inst) && inst.length) {
+      if (inst.filter(r => r.is_deposit === true).length > 1) {
+        blockers.push('The payment schedule has two deposit rows; only one is allowed.');
+      }
+      const totalCents = Math.round((estimateOpeningTotal(est) ?? 0) * 100);
+      const exact = (r) => r.amount_kind === 'percent' ? totalCents * (Number(r.amount_value) || 0) / 100 : Math.round((Number(r.amount_value) || 0) * 100);
+      const diff = inst.reduce((s, r) => s + exact(r), 0) - totalCents;
+      if (Math.abs(diff) >= 0.5) {
+        const usdAbs = '$' + (Math.abs(diff) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        blockers.push(diff > 0
+          ? `The payment schedule adds up to ${usdAbs} MORE than the estimate total. Fix it in the estimator's Payment schedule card.`
+          : `The payment schedule is ${usdAbs} short of the estimate total. Fix it in the estimator's Payment schedule card.`);
+      }
+    }
+  } catch (_) { /* pre-migration: no schedule to gate */ }
+  if (blockers.length) {
+    alert('This estimate cannot be sent yet:\n\n- ' + blockers.join('\n- ') + '\n\nFix the items above and send again.');
+    return false;
+  }
+  return true;
+}
+
 // The customer's OPENING total: required lines plus currently selected
 // optional lines, the exact number the public page shows when the link
 // opens. Computed live from the rows (never stored; prompt 72 Part C), and
@@ -29284,9 +29367,10 @@ async function openPresentMode(est) {
   async function openForSigning() {
     if (!(await ensureEstimateToken(est))) return;
     if (!est.sent_at) {
-      // Same send gate as email/text (prompt 72): opening for signature IS
-      // sending.
+      // Same send gates as email/text (prompts 72 + 74): opening for
+      // signature IS sending.
       if (!estimateOptionalGateOk(est)) return;
+      if (!(await estimateSendGateOk(est))) return;
       if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
       try { await markEstimateSent(est); sentFlipped = true; }
       catch (err) { showToast('Could not mark the estimate as sent: ' + esc(err.message || String(err)), { ttl: 8000 }); return; }
@@ -29389,6 +29473,7 @@ async function sendEstimateText(est, opts = {}) {
   if (!est.customer_phone) { showToast('No phone on file for this customer.', { ttl: 4000 }); return false; }
   if (!(await ensureEstimateToken(est))) return false;
   if (!opts.skipGate && !estimateOptionalGateOk(est)) return false;
+  if (!opts.skipGate && !(await estimateSendGateOk(est))) return false;
   if (!opts.skipGate && !estimateBlankScopeOk(est)) return false;
   if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
   try {
@@ -29465,9 +29550,11 @@ async function openEstimateSendModal(est, opts = {}) {
       const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
-      // Optional-lines send gate (prompt 72 decision 1), then the
-      // blank-scope gate (shared with the text channel, prompt 38).
+      // Optional-lines send gate (prompt 72 decision 1), the per-line scope +
+      // schedule gate (prompt 74, hard block), then the blank-scope confirm
+      // (shared with the text channel, prompt 38).
       if (!estimateOptionalGateOk(est)) return;
+      if (!(await estimateSendGateOk(est))) return;
       if (!estimateBlankScopeOk(est)) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {
