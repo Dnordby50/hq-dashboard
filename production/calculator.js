@@ -81,6 +81,113 @@ export function cureSpeedSpec(product) {
   return null;
 }
 
+// Prompt 75 C2: blank cure speeds inherit the job's dominant cure speed at
+// PLAN-INPUT time, so same-product lines merge on the pull's
+// `${product_id}|${cure_speed}` SKU key instead of splitting into a phantom
+// no-cure line (the Bryan Smith duplicate-topcoat bug). Per cure field
+// (basecoat_cure_speed / topcoat_cure_speed): dominant = the most common
+// non-null value across the job's areas, ties broken by the value carried on
+// the lowest-order_index area (array position when order_index is absent).
+// An area with an EXPLICIT cure keeps it, so two genuinely different cure
+// speeds still make two lines; a job with no cure anywhere stays all-null.
+// Deliberately NOT a SKU-key change: that key is load-bearing in
+// aggregateMaterialPull, mergeRecalcLines, and the pull, and changing it
+// would silently re-pair saved lines on the next Recalculate. Pure: returns
+// new area objects, never mutates input.
+export function inheritCureSpeeds(areas) {
+  const FIELDS = ['basecoat_cure_speed', 'topcoat_cure_speed'];
+  const list = Array.isArray(areas) ? areas : [];
+  const dominant = {};
+  for (const f of FIELDS) {
+    const counts = new Map(); // value -> { n, firstOrder }
+    list.forEach((a, i) => {
+      const v = a && a[f];
+      if (!v) return;
+      const ordNum = Number(a.order_index);
+      const ord = Number.isFinite(ordNum) ? ordNum : i;
+      const c = counts.get(v) || { n: 0, firstOrder: Infinity };
+      c.n += 1;
+      if (ord < c.firstOrder) c.firstOrder = ord;
+      counts.set(v, c);
+    });
+    let best = null;
+    for (const [v, c] of counts) {
+      if (!best || c.n > best.c.n || (c.n === best.c.n && c.firstOrder < best.c.firstOrder)) best = { v, c };
+    }
+    dominant[f] = best ? best.v : null;
+  }
+  if (!dominant.basecoat_cure_speed && !dominant.topcoat_cure_speed) return list.slice();
+  return list.map(a => {
+    const out = { ...a };
+    for (const f of FIELDS) if (!out[f] && dominant[f]) out[f] = dominant[f];
+    return out;
+  });
+}
+
+// Canonical picks-to-plan mapping for CRM job card areas (job_areas rows,
+// each with an embedded `materials` array of job_area_materials rows). The
+// job card is the SOURCE OF TRUTH for what a bridged job needs, so Ordering
+// and the Job Costing derived fallback both build calculator input through
+// this one function (index.html carries a byte-identical mirror). It
+// replicates the Work Order / Budget mapping (firstSlotPick over the
+// system's slots, first non-null pick wins) PLUS a Topcoat pick. Customs
+// (is_custom rows) and second-and-later picks of a multi-product slot are
+// intentionally ignored, exactly like the Work Order.
+// Prompt 75 C1: change-order areas (is_change_order) NEVER auto-generate
+// material lines. A striping change order carrying the flake system id used
+// to emit a full slot-default material set (phantom no-cure topcoat +
+// per-job-pick flake); if a change order truly needs material, someone adds
+// the line by hand on the order sheet.
+export function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
+  const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+  return (crmAreas || []).slice()
+    .filter(a => a.is_change_order !== true)
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+    .map(a => {
+      const mine = a.materials || [];
+      // picks: recipe_slot_id -> productIds[] ordered by pick_index (compacted)
+      const picks = {};
+      for (const m of mine) {
+        if (m.is_custom || !m.recipe_slot_id || !m.product_id) continue;
+        (picks[m.recipe_slot_id] ||= [])[m.pick_index || 0] = m.product_id;
+      }
+      for (const k in picks) picks[k] = picks[k].filter(Boolean);
+      let firstSlotPick = (pred) => {
+        for (const slot of (recipeSlotsBySystemType[a.system_type_id] || [])) {
+          if (!pred(slot.material_type)) continue;
+          const pid = (picks[slot.id] || [])[0];
+          if (pid) return pid;
+        }
+        return null;
+      };
+      // Legacy mirror fallback (mirrors buildArea in the CRM module): a job
+      // with areas but ZERO materials rows predates the picks backfill; its
+      // selections live on the job_areas flake/basecoat columns directly.
+      if (!mine.length && (a.flake_product_id || a.basecoat_product_id)) {
+        firstSlotPick = (pred) => {
+          if (pred('Flake')) return a.flake_product_id || null;       // swatch predicate
+          if (pred('Basecoat')) return a.basecoat_product_id || null;
+          return null;
+        };
+      }
+      const sqftNum = Number(a.sqft);
+      return {
+        id: a.id, name: a.name,
+        sqft: Number.isFinite(sqftNum) && sqftNum >= 0 ? sqftNum : 0,
+        system_type_id: a.system_type_id,
+        flake_product_id: firstSlotPick(t => SWATCH.has(t)),
+        basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
+        topcoat_product_id: firstSlotPick(t => t === 'Topcoat'),
+        topcoat_cure_speed: a.topcoat_cure_speed || null,
+        // Prompt 75: flake_color_id rides along for the ordering-side
+        // "flake color not chosen" rule; order_index for cure-inheritance
+        // tie-breaking. Both are ignored by computeMaterialPlan.
+        flake_color_id: a.flake_color_id || null,
+        order_index: a.order_index ?? 0,
+      };
+    });
+}
+
 /**
  * @param {Object} input
  * @param {Array<Area>} input.areas

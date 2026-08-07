@@ -37995,9 +37995,16 @@ window.flakeProductSaveError = flakeProductSaveError;
 // multi-product slot are intentionally ignored, exactly like the Work Order.
 // Exposed on window for the CRM module (same bridge pattern as
 // computeMaterialPlan above).
+// Prompt 75 C1: change-order areas (is_change_order) NEVER auto-generate
+// material lines. A striping change order carrying the flake system id used
+// to emit a full slot-default material set (phantom no-cure topcoat +
+// per-job-pick flake, the Bryan Smith duplicate-lines bug); if a change
+// order truly needs material, someone adds the line by hand on the order
+// sheet. Mirror of production/calculator.js crmPlanAreas; keep byte-identical.
 function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
   const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
   return (crmAreas || []).slice()
+    .filter(a => a.is_change_order !== true)
     .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
     .map(a => {
       const mine = a.materials || [];
@@ -38035,10 +38042,56 @@ function crmPlanAreas(crmAreas, recipeSlotsBySystemType) {
         basecoat_product_id: firstSlotPick(t => t === 'Basecoat'),
         topcoat_product_id: firstSlotPick(t => t === 'Topcoat'),
         topcoat_cure_speed: a.topcoat_cure_speed || null,
+        // Prompt 75: flake_color_id rides along for the ordering-side
+        // "flake color not chosen" rule; order_index for cure-inheritance
+        // tie-breaking. Both are ignored by computeMaterialPlan.
+        flake_color_id: a.flake_color_id || null,
+        order_index: a.order_index ?? 0,
       };
     });
 }
 window.crmPlanAreas = crmPlanAreas;
+// Prompt 75 C2: blank cure speeds inherit the job's dominant cure speed at
+// PLAN-INPUT time, so same-product lines merge on the pull's
+// `${product_id}|${cure_speed}` SKU key instead of splitting into a phantom
+// no-cure line. Per cure field (basecoat_cure_speed / topcoat_cure_speed):
+// dominant = the most common non-null value across the job's areas, ties
+// broken by the value carried on the lowest-order_index area (array position
+// when order_index is absent). An area with an EXPLICIT cure keeps it, so
+// two genuinely different cure speeds still make two lines; a job with no
+// cure anywhere stays all-null. Deliberately NOT a SKU-key change: that key
+// is load-bearing in aggregateMaterialPull, mergeRecalcLines, and the pull.
+// Mirror of production/calculator.js inheritCureSpeeds; keep byte-identical.
+function inheritCureSpeeds(areas) {
+  const FIELDS = ['basecoat_cure_speed', 'topcoat_cure_speed'];
+  const list = Array.isArray(areas) ? areas : [];
+  const dominant = {};
+  for (const f of FIELDS) {
+    const counts = new Map(); // value -> { n, firstOrder }
+    list.forEach((a, i) => {
+      const v = a && a[f];
+      if (!v) return;
+      const ordNum = Number(a.order_index);
+      const ord = Number.isFinite(ordNum) ? ordNum : i;
+      const c = counts.get(v) || { n: 0, firstOrder: Infinity };
+      c.n += 1;
+      if (ord < c.firstOrder) c.firstOrder = ord;
+      counts.set(v, c);
+    });
+    let best = null;
+    for (const [v, c] of counts) {
+      if (!best || c.n > best.c.n || (c.n === best.c.n && c.firstOrder < best.c.firstOrder)) best = { v, c };
+    }
+    dominant[f] = best ? best.v : null;
+  }
+  if (!dominant.basecoat_cure_speed && !dominant.topcoat_cure_speed) return list.slice();
+  return list.map(a => {
+    const out = { ...a };
+    for (const f of FIELDS) if (!out[f] && dominant[f]) out[f] = dominant[f];
+    return out;
+  });
+}
+window.inheritCureSpeeds = inheritCureSpeeds;
 function _planForArea(area, ctx) {
   const { productsById, recipeSlotsBySystemType, defaultBasecoatByFlake, mvbProductId } = ctx;
   const sqft = Number(area.sqft);
@@ -38378,6 +38431,7 @@ function _mergeAcrossAreas(areaPlans) {
     // Jobs or CRM picks changed; in-memory calculated lines may be stale.
     // This clear must stay LAST so it postdates every fetch above.
     state._calcCache = new Map();
+    state._jobsLoadedAt = Date.now(); // staleness stamp for the visibility refresh (prompt 75 C4)
   }
 
   // -------------------- Render dispatcher --------------------
@@ -38474,6 +38528,11 @@ function _mergeAcrossAreas(areaPlans) {
       const colorsChip = !colorsKnown ? '' : (colorsOk
         ? '<span class="pec-badge delivered">colors confirmed</span>'
         : '<span class="pec-badge" style="background:rgba(245,158,11,.14);color:#b45309;border-color:rgba(245,158,11,.4)">colors NOT confirmed</span>');
+      // Prompt 75 C3: warn when a swatch area has no blend picked. Computed
+      // even for saved-lines jobs (memoized in _calcCache, so one calc per
+      // job per load) because the gap lives on the AREAS, not the lines.
+      const flakeWarn = !!(((computeLinesFor(j) || {}).flakeNotChosen || []).length);
+      const flakeChip = flakeWarn ? ' <span class="pec-badge" style="background:rgba(245,158,11,.14);color:#b45309;border-color:rgba(245,158,11,.4)" title="A swatch area has no blend picked; the flake line cannot be generated or ordered until one is chosen on the job card">flake color not chosen</span>' : '';
       return `
         <tr class="nohover"${gated ? ' style="opacity:.6"' : ''}>
           <td><input type="checkbox" data-select-job="${esc(j.id)}" ${state.orderSelected.has(j.id) ? 'checked' : ''} ${gated && !state.orderSelected.has(j.id) ? 'disabled title="Colors not confirmed on the CRM job card"' : ''}></td>
@@ -38482,7 +38541,7 @@ function _mergeAcrossAreas(areaPlans) {
           <td>${esc(crewNameFor(j))}</td>
           <td>${esc(sysSummary(j))}</td>
           <td>${sumSqft(j).toLocaleString()}</td>
-          <td>${colorsChip}</td>
+          <td>${colorsChip}${flakeChip}</td>
           <td>${matChip}</td>
         </tr>`;
     }).join('');
@@ -38494,6 +38553,7 @@ function _mergeAcrossAreas(areaPlans) {
     const totalCost = rows.reduce((s, row) => s + rowCost(row), 0);
     const groupedBySupplier = rows.reduce((acc, row) => { (acc[row.supplier] ||= []).push(row); return acc; }, {});
     const breakdownHtml = (row) => row.jobs.map(jb => {
+      if (jb.flake_not_chosen) return `<div style="margin:2px 0">${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span> · <em style="color:#b45309" title="This row cannot be ordered until a flake color is picked">pick a flake color on the job card to order</em></div>`;
       if (!jb.saved) return `<div style="margin:2px 0">${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span> · <strong>${esc(jb.qty)}</strong> <em style="color:var(--muted)">(calculated; save lines to edit)</em></div>`;
       return `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:2px 0">
         <span>${esc(jb.customer)} <span style="color:var(--muted)">#${esc(jb.proposal)}</span></span>
@@ -38518,10 +38578,10 @@ function _mergeAcrossAreas(areaPlans) {
               ${supRows.map(row => `
                 <tr class="nohover">
                   <td>${esc(row.material_type)}</td>
-                  <td>${esc(row.product_name)}</td>
+                  <td>${row.flake_not_chosen ? '<span style="color:#b45309">Flake color not chosen</span>' : esc(row.product_name)}</td>
                   <td>${esc(row.color || '')}</td>
                   <td>${esc(row.cure_speed || '')}</td>
-                  <td><strong>${esc(row.total_qty)}</strong></td>
+                  <td>${row.flake_not_chosen ? '<span style="color:var(--muted)">—</span>' : `<strong>${esc(row.total_qty)}</strong>`}</td>
                   <td style="text-align:right">${row.unit_cost == null ? '—' : money2(row.unit_cost)}</td>
                   <td style="text-align:right">${row.unit_cost == null ? '—' : money(rowCost(row))}</td>
                   <td style="font-size:.72rem">${breakdownHtml(row)}</td>
@@ -38551,7 +38611,15 @@ function _mergeAcrossAreas(areaPlans) {
           : `<table class="pec-table" style="margin-top:8px">
               <thead><tr><th>Qty</th><th>Product</th><th>Color</th><th>Cure</th><th>Ordered</th><th>Delivered</th></tr></thead>
               <tbody>
-                ${c.lines.map(l => `
+                ${c.lines.map(l => l.flake_not_chosen
+                  ? `<tr class="nohover">
+                    <td><span style="color:var(--muted)">—</span></td>
+                    <td><span style="color:#b45309">Flake color not chosen</span></td>
+                    <td></td>
+                    <td></td>
+                    <td colspan="2" style="color:var(--muted);font-size:.68rem" title="This row cannot be ordered until a flake color is picked on the job card">pick a flake color first</td>
+                  </tr>`
+                  : `
                   <tr class="nohover"${l.delivered ? ' style="opacity:.5"' : ''}>
                     <td><strong>${esc(l.qty)}</strong></td>
                     <td>${esc(l.product_name)}</td>
@@ -38590,6 +38658,7 @@ function _mergeAcrossAreas(areaPlans) {
         <label style="font-size:.7rem;color:var(--muted)">To <input id="prodOrderEnd" type="date" value="${esc(state.orderCustom.end || '')}" style="margin-left:6px"></label>` : ''}
         <button class="pec-btn primary" id="prodNewJobBtn">+ New Job</button>
         <button class="pec-btn" id="prodPullMaterialBtn">Pull Material</button>
+        <button class="pec-btn" id="prodOrderRefresh" title="Reload jobs, CRM job card picks, and colors-confirmed flags. Use this after editing a job card in another tab; this page otherwise only reloads when you re-enter it.">&#8635; Refresh</button>
         <span style="margin-left:auto;color:var(--muted);font-size:.75rem">${shownJobs.length} of ${openJobs.length} open job${openJobs.length===1?'':'s'} shown</span>
       </div>
 
@@ -38684,6 +38753,18 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodJobStatus').addEventListener('change', (e) => { state.jobFilter.status = e.target.value; render(); });
     $('prodNewJobBtn').addEventListener('click', () => { console.log('[prod] prodNewJobBtn click'); state.newJob = blankNewJob(); setProdView('new-job'); });
     $('prodPullMaterialBtn').addEventListener('click', () => openMaterialPull());
+    // Prompt 75 C4: this page loads on ENTRY only (B-022), so a job card
+    // edited in another tab (areas, colors confirmed) leaves it stale until
+    // re-entry — the "order sheet had no lines until a full reload" report.
+    // One explicit refresh, guarded against double-clicks; loadJobs clears
+    // _calcCache last, by design.
+    $('prodOrderRefresh').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      btn.disabled = true; btn.textContent = 'Refreshing…';
+      try { await loadJobs(); } catch (err) { console.warn('[prod] order refresh:', err); }
+      render(); // re-render replaces the button, so no un-disable needed
+    });
     r.querySelectorAll('tr[data-job-id]').forEach((tr) => {
       tr.addEventListener('click', () => openJobDetail(tr.dataset.jobId));
     });
@@ -38763,12 +38844,21 @@ function _mergeAcrossAreas(areaPlans) {
   // id). Returns { areas, fromCrm } or { empty: true }.
   function calcAreasInputFor(job, slotsBySystem) {
     const crmAreas = state.crmAreasByProdJob[job.id];
-    if (crmAreas && crmAreas.length) return { areas: crmPlanAreas(crmAreas, slotsBySystem), fromCrm: true };
+    if (crmAreas && crmAreas.length) {
+      // crmPlanAreas drops change-order areas (prompt 75 C1); blank cure
+      // speeds then inherit the job's dominant one (C2) so same-product
+      // lines merge instead of splitting on the SKU key.
+      const areas = inheritCureSpeeds(crmPlanAreas(crmAreas, slotsBySystem));
+      if (!areas.length) return { empty: true, emptyReason: 'every area is a change order; change orders never auto-generate material, add lines by hand if one needs any' };
+      return { areas, fromCrm: true };
+    }
     if ((job.areas || []).length) {
       const colorBc = colorBasecoatDefaults();
+      // pec_prod_areas has NO change-order flag (verified against the live
+      // schema, prompt 75), so C1 only applies on the CRM job card path.
       return {
         fromCrm: false,
-        areas: job.areas.map(a => ({
+        areas: inheritCureSpeeds(job.areas.map(a => ({
           id: a.id, name: a.name, sqft: Number(a.sqft),
           system_type_id: a.system_type_id, flake_product_id: a.flake_product_id || null,
           // Prompt 57 Part G ladder: explicit > the picked color's pairing >
@@ -38777,13 +38867,63 @@ function _mergeAcrossAreas(areaPlans) {
           topcoat_product_id: a.topcoat_product_id || null,
           basecoat_cure_speed: a.basecoat_cure_speed || null,
           topcoat_cure_speed: a.topcoat_cure_speed || null,
+          // For the "flake color not chosen" rule (prompt 75 C3): a
+          // special_order_color or a picked blend counts as chosen.
+          flake_color_id: a.flake_color_id || null,
+          special_order_color: a.special_order_color || null,
+          order_index: a.order_index ?? 0,
           tints: (a.tints || []).map(t => ({
             product_id: t.product_id, attach_to: t.attach_to, packs: Number(t.packs) || 1,
           })),
-        })),
+        }))),
       };
     }
     return { empty: true };
+  }
+
+  // Prompt 75 C3, ordering-side only (the estimator and the pure calculator
+  // are untouched; the 'Per-job pick' catalog color value is real data read
+  // by six code sites and stays exactly as-is). A swatch line whose blend was
+  // never picked becomes a zero-qty "Flake color not chosen" sentinel:
+  // visible on the order surfaces, never orderable, never persisted (callers
+  // filter flake_not_chosen before any insert). Two ways a line qualifies:
+  // its product resolves to the catalog color 'Per-job pick' (condensed
+  // standard flake with no blend picked), or a CRM area has no swatch pick at
+  // all (customs never reach crmPlanAreas, so a CRM placeholder always means
+  // "nobody picked"). Lines where ANY contributing area picked a color
+  // (flake_color_id or special_order_color) stay real: the save path stamps
+  // that blend's name over 'Per-job pick'.
+  function applyFlakeNotChosen(lines, srcAreas, fromCrm) {
+    const SWATCH = new Set(['Flake', 'Quartz', 'Metallic Pigment']);
+    const areaById = new Map((srcAreas || []).map(a => [a.id, a]));
+    const flagged = [];
+    const out = [];
+    for (const l of (lines || [])) {
+      if (!SWATCH.has(l.material_type)) { out.push(l); continue; }
+      const contributing = (l.area_ids || []).map(id => areaById.get(id)).filter(Boolean);
+      const anyColorPicked = contributing.some(a => a.flake_color_id || a.special_order_color);
+      const perJobPick = l.product_id != null && l.color === 'Per-job pick';
+      const crmNoPick = fromCrm && l.product_id == null;
+      if ((perJobPick || crmNoPick) && !anyColorPicked) {
+        for (const a of contributing) flagged.push(a.name || 'area');
+        continue; // replaced by the one sentinel below
+      }
+      out.push(l);
+    }
+    if (flagged.length) {
+      out.push({
+        flake_not_chosen: true,
+        material_type: 'Flake', product_id: null,
+        product_name: 'Flake color not chosen',
+        supplier: null, color: null, spread_rate: 0, kit_size: 1,
+        qty_needed: 0, backstock_qty: 0, order_qty: 0,
+        use_backstock: false, ordered: false, delivered: false,
+        unit_cost_snapshot: null, line_cost: 0, cure_speed: null,
+        area_ids: [], sqft_total: 0, order_index: out.length,
+        area_names: flagged,
+      });
+    }
+    return { lines: out, flakeNotChosen: flagged };
   }
 
   // Memoizing line generator for jobs with NO saved material lines. Builds
@@ -38805,8 +38945,11 @@ function _mergeAcrossAreas(areaPlans) {
       try {
         ctx = ctx || { productsById: indexById(state.products), recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake() };
         const src = calcAreasInputFor(job, ctx.recipeSlotsBySystemType);
-        if (src.empty) res = { empty: true };
-        else res = { lines: computeMaterialPlan({ areas: src.areas, ...ctx }).lines, fromCrm: src.fromCrm };
+        if (src.empty) res = { empty: true, emptyReason: src.emptyReason || null };
+        else {
+          const post = applyFlakeNotChosen(computeMaterialPlan({ areas: src.areas, ...ctx }).lines, src.areas, src.fromCrm);
+          res = { lines: post.lines, fromCrm: src.fromCrm, flakeNotChosen: post.flakeNotChosen };
+        }
       } catch (err) { res = { error: err && err.message ? err.message : String(err) }; }
       cache.set(job.id, res);
       return res;
@@ -38852,7 +38995,7 @@ function _mergeAcrossAreas(areaPlans) {
       return { kind: 'skipped', reason: 'colors not confirmed yet on the CRM job card' };
     }
     const res = computeLinesFor(job);
-    if (res.empty) return { kind: 'skipped', reason: 'no areas' };
+    if (res.empty) return { kind: 'skipped', reason: res.emptyReason || 'no areas' };
     if (res.error) return { kind: 'skipped', reason: res.error };
     if (!res.lines.length) {
       return { kind: 'skipped', reason: res.fromCrm
@@ -38887,6 +39030,26 @@ function _mergeAcrossAreas(areaPlans) {
       const calculated = resolved.kind === 'calculated';
       const lines = resolved.lines;
       for (const l of lines) {
+        // "Flake color not chosen" sentinel (prompt 75 C3): passes through
+        // as its own zero-qty, zero-cost row so the sheet shows WHY there is
+        // no flake line; the qty math below would otherwise drop it. jobs
+        // entries carry saved:false so the breakdown renders no checkbox.
+        if (l.flake_not_chosen) {
+          const key = 'flake_not_chosen';
+          if (!out.has(key)) out.set(key, {
+            flake_not_chosen: true, product_id: null,
+            product_name: 'Flake color not chosen', material_type: 'Flake',
+            supplier: 'Unassigned', color: null, cure_speed: null,
+            kit_size: 1, spread_rate: 0, unit_cost: null, total_qty: 0, jobs: [],
+          });
+          out.get(key).jobs.push({
+            job_id: job.id, proposal: job.proposal_number, customer: job.customer_name,
+            address: job.address, install_date: displayDate, qty: 0, calculated,
+            flake_not_chosen: true, line_id: null, saved: false,
+            order_qty: 0, qty_needed: 0, order_qty_manual: false, ordered: false, manual_added: false,
+          });
+          continue;
+        }
         if (l.delivered) continue;
         const have = l.use_backstock ? Number(l.backstock_qty || 0) : 0;
         const need = Math.max(0, Number(l.order_qty || l.qty_needed || 0) - have);
@@ -38965,6 +39128,7 @@ function _mergeAcrossAreas(areaPlans) {
           color: l.color || null, cure_speed: l.cure_speed || null,
           qty: Number(l.order_qty || l.qty_needed || 0),
           ordered: !!l.ordered, delivered: !!l.delivered,
+          flake_not_chosen: !!l.flake_not_chosen, // prompt 75 C3 sentinel
         }));
       cards.push({
         job_id: job.id, customer: job.customer_name, proposal: job.proposal_number,
@@ -39071,13 +39235,16 @@ function _mergeAcrossAreas(areaPlans) {
     const job = state.jobs.find(j => j.id === jobId); if (!job) return;
     if ((job.lines || []).length) { await loadJobs(); render(); return; } // raced: saved elsewhere
     const res = makePullCalcLines()(job);
-    if (res.error || !(res.lines || []).length) { render(); return; } // button should not exist; resync UI
+    // The "Flake color not chosen" sentinel (prompt 75 C3) is display-only:
+    // never persisted, so it can never become a checkable saved line.
+    const persistable = (res.lines || []).filter(l => !l.flake_not_chosen);
+    if (res.error || !persistable.length) { render(); return; } // button should not exist; resync UI
     state._savingLines.add(jobId);
     const btn = document.querySelector(`button[data-save-job="${jobId}"]`);
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
       await supabase.from('pec_prod_material_lines').delete().eq('job_id', jobId);
-      const ins = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(jobId, res.lines));
+      const ins = await supabase.from('pec_prod_material_lines').insert(lineInsertPayload(jobId, persistable));
       if (ins.error) throw ins.error;
       window.pecCostingStale = true; // unified Job Costing page re-loads lines
       await loadJobs();
@@ -39328,14 +39495,16 @@ function _mergeAcrossAreas(areaPlans) {
                   ${supRows.map(row => `
                     <tr class="nohover">
                       <td>${esc(row.material_type)}</td>
-                      <td>${esc(row.product_name)}</td>
+                      <td>${row.flake_not_chosen ? '<span style="color:#b45309">Flake color not chosen</span>' : esc(row.product_name)}</td>
                       <td>${esc(row.color || '')}</td>
                       <td>${esc(row.cure_speed || '')}</td>
-                      <td><strong>${esc(row.total_qty)}</strong></td>
+                      <td>${row.flake_not_chosen ? '—' : `<strong>${esc(row.total_qty)}</strong>`}</td>
                       <td style="text-align:right">${row.unit_cost == null ? '—' : money2(row.unit_cost)}</td>
                       <td style="text-align:right">${row.unit_cost == null ? '—' : money(lineCost(row))}</td>
                       <td style="font-size:.7rem;color:var(--muted)">
-                        ${row.jobs.map(j => `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}${j.calculated ? ' <em>(calculated, not saved)</em>' : ''}`).join('<br>')}
+                        ${row.jobs.map(j => row.flake_not_chosen
+                          ? `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , <em>pick a flake color on the job card</em>`
+                          : `${esc(j.install_date)} · ${esc(j.customer)} (#${esc(j.proposal)}) , ${esc(j.qty)}${j.calculated ? ' <em>(calculated, not saved)</em>' : ''}`).join('<br>')}
                       </td>
                     </tr>
                   `).join('')}
@@ -40099,7 +40268,12 @@ function _mergeAcrossAreas(areaPlans) {
         recipeSlotsBySystemType: recipeSlotsBySystemType(), defaultBasecoatByFlake: defaultBasecoatByFlake(),
       });
     } catch (err) { return $('prodDetailError').textContent = err.message; }
-    const merged = await mergeRecalcLines(j.id, plan.lines, j.lines || []);
+    // Same ordering-side post-processing as makePullCalcLines (prompt 75 C3),
+    // so Recalculate and the Ordering page can never disagree. The sentinel
+    // is filtered before the merge: a stale per-job-pick flake row (unordered,
+    // undelivered) gets deleted, and nothing unorderable is ever persisted.
+    const post = applyFlakeNotChosen(plan.lines, areasInput, !!src.fromCrm);
+    const merged = await mergeRecalcLines(j.id, post.lines.filter(l => !l.flake_not_chosen), j.lines || []);
     if (merged.error) return $('prodDetailError').textContent = merged.error.message;
     window.pecCostingStale = true; // unified Job Costing page re-loads lines
     await loadJobs();
@@ -40110,9 +40284,12 @@ function _mergeAcrossAreas(areaPlans) {
     // every sqft-driven line, so without this note the recalc looks like it
     // silently deleted everything.
     const totalSqft = areasInput.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-    $('prodDetailOk').textContent = totalSqft > 0
+    const flakeNote = post.flakeNotChosen.length ? ` Note: no flake line was generated for ${post.flakeNotChosen.map(n => `"${n}"`).join(', ')}; pick a flake color and recalculate.` : '';
+    $('prodDetailOk').textContent = (src.empty && src.emptyReason
+      ? `Recalculated to zero lines: ${src.emptyReason}.`
+      : totalSqft > 0
       ? (src.fromCrm ? 'Recalculated from the CRM job card picks.' : 'Recalculated from catalog.')
-      : 'Recalculated. Warning: total job sqft is 0, so all sqft-based quantities computed to zero lines. Enter the real sqft on the areas and recalculate again.';
+      : 'Recalculated. Warning: total job sqft is 0, so all sqft-based quantities computed to zero lines. Enter the real sqft on the areas and recalculate again.') + flakeNote;
   }
 
   async function completeActiveJob() {
@@ -41149,6 +41326,25 @@ function _mergeAcrossAreas(areaPlans) {
         + '</div>';
     }
   };
+
+  // Prompt 75 C4: refresh Ordering when the tab comes back after sitting in
+  // the background, so "edit the job card in another tab, come back, the
+  // order sheet is stale" heals itself. Deliberately conservative: only when
+  // the Ordering view is actually on screen, and only when the last load is
+  // 5+ minutes old (the load runs two embedded multi-level queries, so a
+  // quick alt-tab must not re-fire it). The Refresh button covers the
+  // impatient case. Same visibilitychange pattern as the CRM idle probe.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden || !booted || state.view !== 'jobs') return;
+    const r = root();
+    if (!r || r.style.display === 'none') return;
+    if (Date.now() - (state._jobsLoadedAt || 0) < 5 * 60 * 1000) return;
+    if (state._orderVisRefreshing) return;
+    state._orderVisRefreshing = true;
+    try { await loadJobs(); render(); }
+    catch (err) { console.warn('[prod] visibility refresh:', err); }
+    finally { state._orderVisRefreshing = false; }
+  });
 
   // Catch import-level / module-load errors and surface them in any visible
   // prodViewRoot so the panel is never silently blank.

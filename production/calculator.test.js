@@ -3,7 +3,7 @@
 //
 // Covers every edge case called out in the spec plus a multi-area sanity check.
 
-import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally, flakeBasecoatDefaults, flakeProductSaveError } from './calculator.js';
+import { computeMaterialPlan, computeJobEstimate, computeEstimatePricing, applySellPrice, roundEstimatePrice, CALC_VERSION, jobNameAddrKey, resolveCrmForProdJob, CalculatorError, lineItemsTotal, lineItemsGp, allocateProportionally, flakeBasecoatDefaults, flakeProductSaveError, inheritCureSpeeds, crmPlanAreas } from './calculator.js';
 import { actualGpPct, costingComplete, joinCompsSources, buildComps, compsGpCaveat } from './comps.js';
 
 let passed = 0;
@@ -1078,6 +1078,65 @@ assertThrows(() => {
   assertEq(flakeProductSaveError({ name: 'Special Order Flake', material_type: 'Flake', default_basecoat_product_id: null }), null, 'Special Order Flake is exempt');
   assertEq(flakeProductSaveError({ name: 'Standard Flake', material_type: 'Flake', color: 'Per-job pick', default_basecoat_product_id: null }), null, 'per-job-pick flakes are exempt (the COLOR carries the pairing, prompt 57)');
   assertEq(flakeProductSaveError({ name: 'Simiron 1100 SL - Black', material_type: 'Basecoat', default_basecoat_product_id: null }), null, 'non-flake products never trip the gate');
+}
+
+// --- Prompt 75 C2: blank cure speeds inherit the job's dominant one ----------
+// inheritCureSpeeds runs on the PLAN INPUT (never the SKU key, which is
+// load-bearing in the pull aggregate and the Recalculate merge). Mirrored as
+// window.inheritCureSpeeds in index.html.
+{
+  const areas = [
+    { id: 'a1', order_index: 0, topcoat_cure_speed: 'Slow', basecoat_cure_speed: null },
+    { id: 'a2', order_index: 1, topcoat_cure_speed: 'Slow', basecoat_cure_speed: null },
+    { id: 'a3', order_index: 2, topcoat_cure_speed: null, basecoat_cure_speed: null },
+  ];
+  const out = inheritCureSpeeds(areas);
+  assertEq(out.map(a => a.topcoat_cure_speed), ['Slow', 'Slow', 'Slow'], 'a blank topcoat cure inherits the dominant one (the Bryan Smith shape)');
+  assertEq(out.map(a => a.basecoat_cure_speed), [null, null, null], 'no non-null basecoat cure anywhere -> stays all-null');
+  assertEq(areas[2].topcoat_cure_speed, null, 'input areas are never mutated');
+
+  const mixed = inheritCureSpeeds([
+    { id: 'a1', order_index: 0, topcoat_cure_speed: 'Fast' },
+    { id: 'a2', order_index: 1, topcoat_cure_speed: 'Slow' },
+    { id: 'a3', order_index: 2, topcoat_cure_speed: null },
+  ]);
+  assertEq(mixed.map(a => a.topcoat_cure_speed), ['Fast', 'Slow', 'Fast'], 'explicit cures are kept (two real speeds stay two lines); ties break to the lowest order_index value');
+
+  const majority = inheritCureSpeeds([
+    { id: 'a1', order_index: 0, topcoat_cure_speed: 'Fast' },
+    { id: 'a2', order_index: 1, topcoat_cure_speed: 'Slow' },
+    { id: 'a3', order_index: 2, topcoat_cure_speed: 'Slow' },
+    { id: 'a4', order_index: 3, topcoat_cure_speed: null },
+  ]);
+  assertEq(majority[3].topcoat_cure_speed, 'Slow', 'the MOST COMMON cure wins, not the first one');
+  assertEq(inheritCureSpeeds(null), [], 'tolerates null input');
+}
+
+// --- Prompt 75 C1: change-order areas never auto-generate material -----------
+// crmPlanAreas (canonical here, mirrored in index.html) drops is_change_order
+// rows before mapping, so a striping change order carrying the flake system id
+// can no longer emit a phantom slot-default material set.
+{
+  const slots = { flakeSys: [
+    { id: 's-base', order_index: 0, material_type: 'Basecoat', default_product_id: null, required: true },
+    { id: 's-flake', order_index: 1, material_type: 'Flake', default_product_id: null, required: true },
+    { id: 's-top', order_index: 2, material_type: 'Topcoat', default_product_id: 'topcoat', required: true },
+  ] };
+  const mk = (over) => ({
+    id: 'a', name: 'Area', sqft: 100, system_type_id: 'flakeSys', order_index: 0,
+    is_change_order: false, topcoat_cure_speed: null, flake_color_id: null,
+    materials: [], flake_product_id: null, basecoat_product_id: null, ...over,
+  });
+  const areas = crmPlanAreas([
+    mk({ id: 'a1', name: 'Garage', order_index: 0, flake_product_id: 'flake', basecoat_product_id: 'basecoat', topcoat_cure_speed: 'Slow' }),
+    mk({ id: 'a2', name: 'Add Striping', order_index: 1, is_change_order: true }),
+  ], slots);
+  assertEq(areas.length, 1, 'a change-order area contributes zero plan areas');
+  assertEq(areas[0].id, 'a1', 'the real area survives');
+  assertEq(areas[0].flake_color_id, null, 'flake_color_id rides along for the ordering-side not-chosen rule');
+  assertEq(crmPlanAreas([mk({ id: 'a1', is_change_order: true })], slots), [], 'a job whose ONLY area is a change order maps to no areas at all');
+  const legacy = crmPlanAreas([mk({ id: 'a1', flake_product_id: 'flake', basecoat_product_id: 'basecoat' })], slots)[0];
+  assertEq(legacy.flake_product_id, 'flake', 'legacy no-materials fallback still reads the job_areas columns');
 }
 
 // --- CALC_VERSION is exported (mirror-drift guard) ---------------------------
