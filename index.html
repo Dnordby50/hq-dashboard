@@ -18995,7 +18995,7 @@ async function renderSettingsDrips() {
 async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
+    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimate_view_slack_enabled', 'estimate_hot_min_views', 'estimate_hot_window_hours', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct']),
@@ -19003,6 +19003,11 @@ async function renderSettingsEstimates() {
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
   const firstPerDayOn = (map.estimate_view_notify_first_per_day || 'false') === 'true';
+  // Prompt 75: Slack + the hot rule. Defaults MUST match the migration seeds
+  // (true / 3 / 48) and the pecEstimateIsHot fallbacks.
+  const viewSlackOn = (map.estimate_view_slack_enabled || 'true') !== 'false';
+  const hotMinViews = Number(map.estimate_hot_min_views) > 0 ? Number(map.estimate_hot_min_views) : 3;
+  const hotWindowHours = Number(map.estimate_hot_window_hours) > 0 ? Number(map.estimate_hot_window_hours) : 48;
   const dedupOn = (map.estimator_customer_search_enabled || 'true') !== 'false';
   const stuckEscOn = (map.sync_stuck_escalation_enabled || 'true') !== 'false';
   const stuckThreshold = Math.max(1, Number(map.sync_stuck_threshold_attempts) || 2);
@@ -19043,9 +19048,28 @@ async function renderSettingsEstimates() {
   root.innerHTML = `
     ${settingsTabBar('estimates')}
     ${toggleCard('View notifications', viewNotifsOn,
-      'When a customer opens their estimate link, everyone gets a bell notification. Every open is always logged on the estimate card either way; this only controls the bell.', 'setEstViewNotifs')}
+      'When a customer opens their estimate link, everyone gets a bell notification and the salesperson on the estimate gets a personal one. Every open is always logged on the estimate card either way; this only controls the bell.', 'setEstViewNotifs')}
     ${toggleCard('Only notify on the first view each day', firstPerDayOn,
-      'On: at most one bell per estimate per day, even if the customer opens it ten times. Off: a bell for every open.', 'setEstViewDaily')}
+      'On: at most one bell per estimate per day, even if the customer opens it ten times. Off: a bell for every open. This throttles the BELL only; the Slack alert below always fires on every open while it is on.', 'setEstViewDaily')}
+    ${toggleCard('Slack alert on every view', viewSlackOn,
+      'Posts to #epoxysales every single time a customer opens their estimate, with the price, the salesperson, which open it is, and how long since it was sent. Not throttled by the first-view-per-day switch above; this is its own channel.', 'setEstViewSlack')}
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Hot estimate rule: ${hotMinViews}+ views within ${hotWindowHours}h</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">An estimate is "hot" when the customer opened it at least this many times AND the last open was inside the window. Hot shows a flame on the pipeline card and a Hot chip on the estimate detail; going quiet past the window cools it off automatically.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:.72rem;color:var(--muted)">Min views
+            <input type="number" id="setHotMinViews" min="1" max="50" value="${hotMinViews}" style="width:64px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <label style="font-size:.72rem;color:var(--muted)">Window (hours)
+            <input type="number" id="setHotWindow" min="1" max="720" value="${hotWindowHours}" style="width:70px;margin-left:4px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+          </label>
+          <button type="button" class="pec-btn ghost sm" id="setHotSave">Save</button>
+        </div>
+      </div>
+    </div>
     ${toggleCard('Duplicate-customer search in the estimator', dedupOn,
       'Shows a search box on the estimator customer form that finds existing customers and leads (by name, phone, email, or address) so reps link to them instead of creating duplicates.', 'setEstDedup')}
     ${toggleCard('Stuck-save escalation', stuckEscOn,
@@ -19122,6 +19146,20 @@ async function renderSettingsEstimates() {
   });
   wire('setEstViewNotifs', 'estimate_view_notifications_enabled', viewNotifsOn);
   wire('setEstViewDaily', 'estimate_view_notify_first_per_day', firstPerDayOn);
+  wire('setEstViewSlack', 'estimate_view_slack_enabled', viewSlackOn);
+  $('setHotSave').addEventListener('click', async () => {
+    const btn = $('setHotSave'); btn.disabled = true;
+    const mv = Math.floor(Number($('setHotMinViews').value));
+    const wh = Math.floor(Number($('setHotWindow').value));
+    if (!Number.isFinite(mv) || mv < 1 || mv > 50) { showToast('Min views must be between 1 and 50.', { ttl: 4000 }); btn.disabled = false; return; }
+    if (!Number.isFinite(wh) || wh < 1 || wh > 720) { showToast('The window must be between 1 and 720 hours.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('estimate_hot_min_views', mv);
+      await saveSetting('estimate_hot_window_hours', wh);
+      invalidateRefCache('estimateHotCfg'); // both surfaces re-read on next render
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
   wire('setEstDedup', 'estimator_customer_search_enabled', dedupOn);
   wire('setSyncEsc', 'sync_stuck_escalation_enabled', stuckEscOn);
   $('setSyncThresholdSave').addEventListener('click', async () => {
@@ -26771,6 +26809,34 @@ async function loadLeadsData() {
   // nothing ever gets two cards.
   const boardEstimates = allEstimates.filter(e => !e.lead_id);
   const leadsWithDraft = new Set(allEstimates.filter(e => e.lead_id && e.status === 'draft' && !e.sent_at).map(e => e.lead_id));
+  // Prompt 75 F3: view counts for the corner chip, in ONE aggregate round
+  // trip over the estimate ids already on the board (never per-card). Two
+  // audiences: no-lead estimate cards, and lead cards that carry a SENT
+  // estimate (same lead_id join the Draft chip uses; latest sent estimate
+  // per lead, allEstimates is already newest-first). Best-effort: on error
+  // the board renders with no chips, never an error.
+  const sentEstByLead = {};
+  for (const e of allEstimates) {
+    if (e.lead_id && e.sent_at && !sentEstByLead[e.lead_id]) sentEstByLead[e.lead_id] = e.id;
+  }
+  const chipEstIds = [...new Set([...boardEstimates.filter(e => e.sent_at).map(e => e.id), ...Object.values(sentEstByLead)])];
+  const estViews = { byEst: {}, hotCfg: { minViews: 3, windowHours: 48 } };
+  if (chipEstIds.length) {
+    try {
+      const [vr, hotCfg] = await Promise.all([
+        supabase.from('pec_estimate_views').select('estimate_id,viewed_at').in('estimate_id', chipEstIds),
+        pecEstimateHotSettings(),
+      ]);
+      estViews.hotCfg = hotCfg || estViews.hotCfg;
+      if (!vr.error) {
+        for (const r of vr.data || []) {
+          const cur = (estViews.byEst[r.estimate_id] ||= { count: 0, last: null });
+          cur.count += 1;
+          if (!cur.last || r.viewed_at > cur.last) cur.last = r.viewed_at;
+        }
+      }
+    } catch (err) { console.warn('[leads] estimate views skipped:', err.message || err); }
+  }
   // Source options: schema tokens + anything already in the data + the active
   // ONE vocabulary (prompt 61 Part D): the managed pec_lead_sources names
   // drive the pickers, and values already present in the data ride along so
@@ -26778,7 +26844,7 @@ async function loadLeadsData() {
   const sources = [];
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft, sentEstByLead, estViews };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -26794,6 +26860,55 @@ function leadContactChipHtml(lead, stats) {
   }
   const urgent = lead.stage === 'new' && (leadElapsed(lead.created_at) || {}).red;
   return `<span style="font-weight:700;${urgent ? 'color:var(--rd-danger,#ef4444)' : ''}">Not contacted</span>`;
+}
+
+// Prompt 75 F1: the ONE "hot estimate" rule, shared by the estimate detail
+// block and the pipeline corner badge. hot = viewCount >= minViews AND the
+// last view within windowHours. Count AND recency on purpose: at PEC's send
+// volume a bare "3+ views" rule would flag every estimate anyone opened;
+// going quiet past the window cools it off automatically. Mirror of
+// production/estimate-views.cjs estimateIsHot; keep byte-identical.
+function pecEstimateIsHot({ viewCount, lastViewedAt, minViews = 3, windowHours = 48, now = Date.now() } = {}) {
+  const min = Number(minViews) > 0 ? Number(minViews) : 3;
+  const win = Number(windowHours) > 0 ? Number(windowHours) : 48;
+  const n = Number(viewCount) || 0;
+  if (n < min) return false;
+  const last = typeof lastViewedAt === 'number' ? lastViewedAt : Date.parse(lastViewedAt || '');
+  if (!Number.isFinite(last)) return false;
+  return (now - last) <= win * 3600 * 1000;
+}
+// The two thresholds, from Settings > Estimates (defaults 3 / 48). Cached for
+// a minute so the board and the detail page share one settings read; changing
+// a value in Settings changes both surfaces with no deploy.
+async function pecEstimateHotSettings() {
+  return cachedRef('estimateHotCfg', async () => {
+    try {
+      const r = await supabase.from('settings').select('key,value').in('key', ['estimate_hot_min_views', 'estimate_hot_window_hours']);
+      const map = Object.fromEntries(((r && r.data) || []).map(s => [s.key, s.value]));
+      return {
+        minViews: Number(map.estimate_hot_min_views) > 0 ? Number(map.estimate_hot_min_views) : 3,
+        windowHours: Number(map.estimate_hot_window_hours) > 0 ? Number(map.estimate_hot_window_hours) : 48,
+      };
+    } catch (_) { return { minViews: 3, windowHours: 48 }; }
+  }, { ttlMs: 60000 });
+}
+// Prompt 75 F2: the corner chip. An eye + view count; a flame when the hot
+// rule is met. Deliberately DISTINCT from leadScoreBadge (the AI Hot/Warm/
+// Cold quality read, untouched): that one says how good the lead looks, this
+// one says the customer is reading the proposal right now. No chip at zero
+// views or for a never-sent estimate: an empty eye is noise.
+function estimateViewChipHtml(estId) {
+  const d = state.leadsData && state.leadsData.estViews;
+  const v = d && d.byEst && d.byEst[estId];
+  if (!v || !v.count) return '';
+  const cfg = (d && d.hotCfg) || { minViews: 3, windowHours: 48 };
+  const hot = pecEstimateIsHot({ viewCount: v.count, lastViewedAt: v.last, minViews: cfg.minViews, windowHours: cfg.windowHours });
+  const label = `Viewed ${v.count} time${v.count === 1 ? '' : 's'}, last ${fmtRelativeTime(v.last)}`;
+  const eye = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const flame = '<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" style="vertical-align:-1px"><path d="M12 2s5 4.5 5 9a5 5 0 0 1-10 0c0-1.8.8-3.6 1.8-5C9.4 7.6 10 9 11 9c0-3 1-5.5 1-7z"/></svg>';
+  return `<span class="pec-age" title="${esc(label + (hot ? `. Hot: ${cfg.minViews} or more views with the last inside ${cfg.windowHours} hours (tune in Settings > Estimates)` : ''))}" style="flex-shrink:0;display:inline-flex;align-items:center;gap:3px;${hot
+    ? 'background:color-mix(in srgb,#ef4444 16%,transparent);color:#dc2626;font-weight:700'
+    : 'background:color-mix(in srgb,#0ea5e9 12%,transparent);color:#0369a1'}">${hot ? flame : eye} ${v.count}</span>`;
 }
 
 function leadCardHtml(lead) {
@@ -26818,7 +26933,10 @@ function leadCardHtml(lead) {
           native link drag. draggable="false" on the anchor keeps a grab that
           starts on the name dragging the CARD. (prompt 75 A4) */''}
       <strong style="font-size:.9rem;line-height:1.2"><a class="pec-link" draggable="false" href="${esc(pecHref('leads', { openLeadId: lead.id }))}">${esc(lead.full_name || '(no name)')}</a></strong>
-      ${flags.length ? `<span title="${esc('AI risk: ' + flags.join('; '))}" style="width:9px;height:9px;border-radius:50%;background:var(--rd-danger,#ef4444);flex-shrink:0;margin-top:4px"></span>` : ''}
+      <span style="display:inline-flex;gap:5px;align-items:center;flex-shrink:0">
+        ${state.leadsData && state.leadsData.sentEstByLead && state.leadsData.sentEstByLead[lead.id] ? estimateViewChipHtml(state.leadsData.sentEstByLead[lead.id]) : ''}
+        ${flags.length ? `<span title="${esc('AI risk: ' + flags.join('; '))}" style="width:9px;height:9px;border-radius:50%;background:var(--rd-danger,#ef4444);flex-shrink:0;margin-top:4px"></span>` : ''}
+      </span>
     </div>
     ${lead.business_name && (lead.first_name || lead.last_name) ? `<div style="font-size:.72rem;color:var(--rd-muted,#6b7280)">Contact: ${esc([lead.first_name, lead.last_name].filter(Boolean).join(' '))}</div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
@@ -26854,6 +26972,7 @@ function estimateCardHtml(est) {
       style="background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-left:3px solid #64748b;color:var(--rd-ink,#0f1420);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 2px rgba(15,20,32,.04)">
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
       <strong style="font-size:.9rem;line-height:1.2"><a class="pec-link" draggable="false" href="${esc(pecHref('estimates', { openEstimateId: est.id }))}">${esc(est.customer_name || '(no name)')}</a></strong>
+      ${estimateViewChipHtml(est.id)}
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:#334155">Estimate</span>
@@ -28622,16 +28741,30 @@ async function renderEstimateDetail(estimateId) {
   if (est.change_request_note) trail.push([est.updated_at, `Change requested: ${esc(est.change_request_note)}`]);
   trail.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
 
-  // Customer views of the public page (prompt 44): count + latest from
-  // pec_estimate_views (written server-side by pec-public-estimate.cjs).
-  // Best-effort: pre-migration (no table) just hides the line.
+  // Customer views of the public page (prompt 44, made louder in prompt 75
+  // Part E): exact count + the latest 10 opens from pec_estimate_views
+  // (written server-side by pec-public-estimate.cjs), plus the first open
+  // (one extra tiny query only when there are more than 10). Best-effort:
+  // any query error just hides the block rather than breaking the page.
   let viewsInfo = null;
+  let hotCfg = { minViews: 3, windowHours: 48 };
   try {
     const vr = await supabase.from('pec_estimate_views')
       .select('viewed_at', { count: 'exact' })
       .eq('estimate_id', estimateId)
-      .order('viewed_at', { ascending: false }).limit(1);
-    if (!vr.error) viewsInfo = { count: vr.count || 0, last: vr.data && vr.data[0] ? vr.data[0].viewed_at : null };
+      .order('viewed_at', { ascending: false }).limit(10);
+    if (!vr.error) {
+      const opens = (vr.data || []).map(r => r.viewed_at);
+      let first = opens.length ? opens[opens.length - 1] : null;
+      if ((vr.count || 0) > opens.length) {
+        const fr = await supabase.from('pec_estimate_views')
+          .select('viewed_at').eq('estimate_id', estimateId)
+          .order('viewed_at', { ascending: true }).limit(1);
+        if (!fr.error && fr.data && fr.data[0]) first = fr.data[0].viewed_at;
+      }
+      viewsInfo = { count: vr.count || 0, opens, first, last: opens[0] || null };
+    }
+    hotCfg = await pecEstimateHotSettings();
   } catch (_) {}
 
   chromeEl.innerHTML = `
@@ -28800,9 +28933,27 @@ async function renderEstimateDetail(estimateId) {
             ${est.status === 'change_requested' && est.change_request_note ? `<div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Changes requested:</strong> <span style="white-space:pre-wrap">${esc(est.change_request_note)}</span><div style="color:var(--muted);font-size:.72rem;margin-top:4px">Edit the estimate, then re-send. Same number, same link, new sent date.</div></div>` : ''}
             ${est.status === 'rejected' ? `<div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:8px"><strong>Declined</strong>${est.rejected_at ? ' ' + esc(fmtRelativeTime(est.rejected_at)) : ''}${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}</div>` : ''}
             ${est.public_token ? `<div style="color:var(--muted);font-size:.7rem;margin-top:8px;word-break:break-all">${esc(location.origin + '/e/' + est.public_token)}</div>` : ''}
-            ${viewsInfo ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:8px;font-size:.78rem;${viewsInfo.count ? '' : 'color:var(--muted)'}">${viewsInfo.count
-              ? `<strong>Viewed ${viewsInfo.count} time${viewsInfo.count === 1 ? '' : 's'}</strong>, last on ${esc(new Date(viewsInfo.last).toLocaleDateString())} at ${esc(new Date(viewsInfo.last).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}`
-              : 'Not viewed yet.'}</div>` : ''}
+            ${viewsInfo ? (() => {
+              // Prompt 75 Part E: the louder view block. A sent estimate with
+              // zero views says "Not opened yet" explicitly; a draft never
+              // reaches here (this whole branch requires est.sent_at).
+              if (!viewsInfo.count) return '<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:8px;font-size:.78rem;color:var(--muted)">Not opened yet.</div>';
+              const isHot = pecEstimateIsHot({ viewCount: viewsInfo.count, lastViewedAt: viewsInfo.last, minViews: hotCfg.minViews, windowHours: hotCfg.windowHours });
+              const dt = (t) => `${new Date(t).toLocaleDateString()} at ${new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+              return `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:8px;font-size:.78rem">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <strong style="font-size:.92rem">Viewed ${viewsInfo.count} time${viewsInfo.count === 1 ? '' : 's'}</strong>
+                  ${isHot ? `<span class="pec-badge" style="background:color-mix(in srgb,#ef4444 16%,transparent);color:#dc2626;border-color:color-mix(in srgb,#ef4444 40%,transparent);font-weight:700" title="Hot: the customer opened this ${hotCfg.minViews} or more times with the last open inside ${hotCfg.windowHours} hours. Both thresholds are tunable in Settings > Estimates.">&#128293; Hot</span>` : ''}
+                </div>
+                <div style="color:var(--muted);margin-top:3px">
+                  ${viewsInfo.first ? `First opened ${esc(fmtRelativeTime(viewsInfo.first))}` : ''}${viewsInfo.first && viewsInfo.last ? ' · ' : ''}${viewsInfo.last ? `last opened ${esc(fmtRelativeTime(viewsInfo.last))}` : ''}
+                </div>
+                <div style="margin-top:6px">
+                  ${viewsInfo.opens.map(t => `<div style="font-size:.72rem;color:var(--muted);padding:1px 0">${esc(dt(t))}</div>`).join('')}
+                  ${viewsInfo.count > viewsInfo.opens.length ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px">Showing the latest ${viewsInfo.opens.length} of ${viewsInfo.count} opens.</div>` : ''}
+                </div>
+              </div>`;
+            })() : ''}
           `}
         </div>
         <div class="pec-card">
