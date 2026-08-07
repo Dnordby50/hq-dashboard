@@ -29453,16 +29453,33 @@ function estimateOptionalGateOk(est) {
 // are checked only for the fingerprint (Drive Time legitimately has none).
 const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 async function estimateSendGateOk(est) {
-  const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  // FRESH READ (prompt 76): the fix flow happens INSIDE the inline estimator
+  // now (tap the blocker, type or Generate in the sheet), which writes
+  // descriptions and scope_stale server-side without re-rendering this page.
+  // Gating on the caller's in-memory snapshot would keep blocking a rep who
+  // just cleared the block, so the gate re-reads the rows it judges.
+  // Best-effort: a failed read falls back to the snapshot.
+  let items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  let scopeStale = est.scope_stale === true;
+  let customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
+  try {
+    const [liRes, aRes, eRes] = await Promise.all([
+      supabase.from('estimate_line_items').select('label,description,sort_order,estimate_area_id,total,is_optional,selected_by_customer').eq('estimate_id', est.id).order('sort_order', { ascending: true }),
+      supabase.from('estimate_areas').select('id,is_custom').eq('estimate_id', est.id),
+      supabase.from('estimates').select('scope_stale').eq('id', est.id).maybeSingle(),
+    ]);
+    if (!liRes.error && Array.isArray(liRes.data)) items = liRes.data;
+    if (!aRes.error && Array.isArray(aRes.data)) customAreaIds = new Set(aRes.data.filter(a => a && a.is_custom === true && a.id).map(a => a.id));
+    if (!eRes.error && eRes.data) scopeStale = eRes.data.scope_stale === true;
+  } catch (_) { /* snapshot fallback */ }
   // Prompt 76 Part F: blockers are structured now. A line-bound blocker
   // carries its sort_order so the modal can LINK it: one tap opens that
   // line's editor sheet with the description focused (under 20 seconds to
   // clear). Estimate-level blockers (stale scope, schedule) stay plain rows.
   const blockers = [];
-  if (est.scope_stale === true) {
+  if (scopeStale) {
     blockers.push({ msg: 'The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope (Line items card), then send.' });
   }
-  const customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
   for (const li of items) {
     if (!li) continue;
     const label = li.label || 'Line';
@@ -29488,7 +29505,7 @@ async function estimateSendGateOk(est) {
       if (inst.filter(r => r.is_deposit === true).length > 1) {
         blockers.push({ msg: 'The payment schedule has two deposit rows; only one is allowed.' });
       }
-      const totalCents = Math.round((estimateOpeningTotal(est) ?? 0) * 100);
+      const totalCents = Math.round((estimateOpeningTotal({ ...est, estimate_line_items: items }) ?? 0) * 100);
       const exact = (r) => r.amount_kind === 'percent' ? totalCents * (Number(r.amount_value) || 0) / 100 : Math.round((Number(r.amount_value) || 0) * 100);
       const diff = inst.reduce((s, r) => s + exact(r), 0) - totalCents;
       if (Math.abs(diff) >= 0.5) {
