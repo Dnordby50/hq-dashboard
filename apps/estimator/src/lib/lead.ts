@@ -40,6 +40,16 @@ export function embedFromUrl(search: string = window.location.search): boolean {
   return new URLSearchParams(search).get('embed') === '1';
 }
 
+// Prompt 76 Part F: a send-gate blocker deep link adds ?focus_line=<sort_order>
+// so the estimator opens that line's editor sheet with the description
+// focused. Only a small non-negative integer is honored; anything else reads
+// as "no focus" (a junk value must never break the open).
+export function focusLineFromUrl(search: string = window.location.search): number | null {
+  const raw = new URLSearchParams(search).get('focus_line');
+  if (raw == null || !/^\d{1,3}$/.test(raw.trim())) return null;
+  return Number(raw.trim());
+}
+
 // Edit-in-place: the estimate page's Edit button reopens the estimator as
 // ?estimate_id=<uuid>. Same uuid discipline as lead_id.
 export function estimateIdFromUrl(search: string = window.location.search): string | null {

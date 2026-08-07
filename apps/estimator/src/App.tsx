@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { getCachedCatalog, loadCatalog, type Catalog } from './lib/catalog';
 import { drainOutbox } from './offline/sync';
-import { embedFromUrl, estimateIdFromUrl, leadIdFromUrl, loadLeadLink, type LeadLink } from './lib/lead';
+import { embedFromUrl, estimateIdFromUrl, focusLineFromUrl, leadIdFromUrl, loadLeadLink, type LeadLink } from './lib/lead';
 import { loadEstimateForEdit, type LoadedEstimate } from './lib/estimateLoad';
 import EstimatorScreen from './features/estimator/EstimatorScreen';
 
@@ -145,6 +145,7 @@ export default function App() {
       leadLink={state.leadLink}
       embed={embed}
       editing={state.editing}
+      focusLine={focusLineFromUrl()}
     />
   );
 }

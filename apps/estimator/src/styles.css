@@ -427,6 +427,124 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 /* The embed Close control reuses the .back link look on a real button. */
 .back.as-btn { background: none; border: none; cursor: pointer; font-family: inherit; }
 
+/* ---- Line items table + bottom-sheet editor (prompt 76 Part C) ------------
+   The per-area stacked cards collapsed into compact tappable rows; everything
+   editable moved into the sheet. Rows are real buttons: the whole row is the
+   tap target (phone in the driveway). */
+.line-table { display: flex; flex-direction: column; }
+.line-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 0.8rem;
+  width: 100%;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--line);
+  padding: 0.65rem 0.2rem;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  align-items: center;
+  min-height: 44px; /* large tap target */
+}
+.line-row:first-child { border-top: none; }
+.line-row:hover { background: var(--rd-soft); }
+.line-row-main { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; flex-wrap: wrap; }
+.line-row-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.line-row-sys { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+.line-row-price { font-weight: 700; text-align: right; white-space: nowrap; }
+.line-row-sub { grid-column: 1 / -1; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; font-size: 0.72rem; color: var(--muted); }
+.line-chip {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  white-space: nowrap;
+}
+.line-chip.optional { background: rgba(37, 99, 235, 0.1); color: #1d4ed8; border: 1px solid rgba(37, 99, 235, 0.35); }
+.line-chip.scope-ok { background: rgba(22, 163, 74, 0.12); color: #15803d; border: 1px solid rgba(22, 163, 74, 0.35); }
+.line-chip.scope-missing { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.line-chip.custom { background: rgba(216, 83, 28, 0.1); color: #b45309; border: 1px solid rgba(216, 83, 28, 0.4); }
+.line-chip.addon { background: var(--rd-soft); color: var(--muted); border: 1px solid var(--line); }
+.line-actions { display: flex; gap: 0.9rem; align-items: center; flex-wrap: wrap; margin-top: 0.6rem; }
+.line-actions select { width: auto; max-width: 14rem; font-size: 0.85rem; padding: 0.35rem 0.5rem; }
+
+/* The sheet itself (see BottomSheet.tsx for the positioning story). */
+.sheet-overlay { z-index: 60; background: rgba(15, 20, 32, 0.45); }
+.sheet {
+  display: flex;
+  flex-direction: column;
+  background: var(--rd-card);
+  border: 1px solid var(--line);
+  box-shadow: 0 -12px 40px rgba(15, 23, 42, 0.28);
+  z-index: 61;
+}
+.sheet-bottom { border-radius: 16px 16px 0 0; }
+.sheet-modal { border-radius: 14px; box-shadow: 0 16px 48px rgba(15, 23, 42, 0.3); }
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.sheet-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.15rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0.35rem 0.5rem; /* comfortable tap target */
+}
+.sheet-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 0.9rem 1rem 1.1rem;
+}
+.sheet-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.sheet-section { margin-bottom: 1rem; }
+.sheet-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.45rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+.sheet-done {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.6rem 1.2rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sheet-remove { color: var(--bad); background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0.4rem 0; }
+.sheet-remove:disabled { opacity: 0.4; cursor: default; }
+
 /* ---- Embedded chrome (prompt 61 Part A item 9) ---------------------------
    Inside the estimate detail page the app drops the duplicated header chrome:
    no dark brand bar (the page has its own header), just a slim status row

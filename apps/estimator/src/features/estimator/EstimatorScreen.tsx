@@ -27,6 +27,7 @@ import {
 import type { LeadLink } from '../../lib/lead';
 import { emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/customer';
 import AddressAutocomplete from './AddressAutocomplete';
+import BottomSheet from './BottomSheet';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
 import { deleteEstimateChildren } from '../../lib/estimateLoad';
 import { listOps, type OutboxOp } from '../../offline/outbox';
@@ -203,6 +204,7 @@ export default function EstimatorScreen({
   leadLink,
   embed,
   editing,
+  focusLine,
 }: {
   catalog: Catalog;
   createdBy: string | null;
@@ -211,6 +213,9 @@ export default function EstimatorScreen({
   leadLink: LeadLink | null;
   embed: boolean;
   editing: LoadedEstimate | null;
+  // Prompt 76 Part F: a send-gate blocker deep link (?focus_line=<sort_order>)
+  // opens that line's editor sheet with the description focused.
+  focusLine?: number | null;
 }) {
   const { systemTypes, productsById, recipeSlotsBySystemType, salespeople, config } = catalog;
   // A catalog cached before 2026-07-13 has no addons key; tolerate it so an
@@ -410,24 +415,35 @@ export default function EstimatorScreen({
   // Rep's answers to the templates' BLANK placeholders, keyed by the context
   // hash production/scope.cjs computes (same keys the server uses).
   const [scopeAnswers, setScopeAnswers] = useState<Record<string, string>>(() => editing?.scopeAnswers ?? {});
-  // ---- Live proposal panel (build 25, STANDARD mode) -----------------------
-  // The assembled scope of work, visible and editable WHILE the estimate is
-  // built instead of only after save on the estimate page. The text has three
-  // owners, in precedence order:
-  //   1. the rep (panelEdited / dbScopeEdited): their words, protected by the
-  //      never-overwrite rule the server already enforces (scope_edited_at +
-  //      force),
-  //   2. the server writer (scopeGenerated): pec-estimate-scope's assembled
-  //      document, loaded on the auto-first save or a Regenerate click,
-  //   3. the local template preview (nothing generated yet): instant,
-  //      offline-safe substitution of the same templates.
+  // ---- Assembled scope document (build 25, reshaped by prompt 76) ----------
+  // The whole-document scope PANEL is gone (Part D): reps read and edit scope
+  // PER LINE in the sheet now. The assembled document itself still exists,
+  // because estimates.scope_of_work keeps feeding jobScope, the crew scope,
+  // and the declined filter; scopeText holds it here only as the crew-notes
+  // generator's source and for the BLANK warning on the Line items card.
   const [scopeText, setScopeText] = useState<string>(() => editing?.scopeOfWork ?? '');
   const [scopeGenerated, setScopeGenerated] = useState<boolean>(() => editing?.hasScope === true);
-  // Hand-edit tracking, split in two because they mean different writes: a
-  // panel edit this session must RIDE the next save (editedScope); a scope
-  // already edited in the database only gates force/stale semantics.
-  const [panelEdited, setPanelEdited] = useState(false);
+  // A scope already edited in the database (the old whole-document Edit text
+  // flow, or a custom-mode save) gates force/stale semantics. The prompt-76
+  // rework deleted the whole-document textarea, so there is no panel edit
+  // path anymore; per-line edits ride the save as lineDescription instead.
   const [dbScopeEdited, setDbScopeEdited] = useState<boolean>(() => !!editing?.scopeEditedAt);
+  // ---- Line editor sheet (prompt 76 Part C) --------------------------------
+  // The line list is a compact table now; tapping a row opens the bottom
+  // sheet for that ONE line. Area/custom lines address by index into areas[];
+  // add-on/one-off lines by their stable form key.
+  const [openLine, setOpenLine] = useState<{ kind: 'area'; idx: number } | { kind: 'addon'; key: string } | null>(null);
+  const [sheetFocusDesc, setSheetFocusDesc] = useState(false);
+  // Prompt 76 Part A3 (precedence): form indexes whose description the rep
+  // edited since the last EXPLICIT generation. The post-generation re-fetch
+  // skips these so a generation can never silently discard typed text; the
+  // rep pressing Generate/Regenerate clears the flag (that IS asking).
+  // A ref, not state: nothing renders from it.
+  const lineDescEditedRef = useRef<Set<number>>(new Set());
+  const addonDescEditedRef = useRef<Set<string>>(new Set());
+  // Per-line skip reasons from the last generation (Part B3): why the writer
+  // could not serve a line (no template on the system), keyed by form index.
+  const [skipReasonByIdx, setSkipReasonByIdx] = useState<Record<number, string>>({});
   const [scopeStale, setScopeStale] = useState<boolean>(() => editing?.scopeStale === true);
   const [scopeBusy, setScopeBusy] = useState(false);
   const [scopeError, setScopeError] = useState('');
@@ -672,17 +688,11 @@ export default function EstimatorScreen({
     return sections.join('\n\n---\n\n');
   }, [isCustom, lineForms, customLabelDefault, systemTypes, scopeAnswers, addonForms, addonCatalog]);
 
-  const scopeEditedAny = panelEdited || dbScopeEdited;
-  // What the panel shows: the rep's or the server's document once one exists,
-  // else the live local preview (which keeps updating as inputs change).
+  const scopeEditedAny = dbScopeEdited;
+  // The assembled document (server-written, or DB-edited via the old flow),
+  // else the live local preview. The whole-document textarea is GONE (prompt
+  // 76 Part D); this now only feeds the crew-notes generator's source text.
   const scopeDisplay = scopeGenerated || scopeEditedAny ? scopeText : localScopePreview;
-  const onScopeTextChange = (v: string) => {
-    setScopeText(v);
-    setPanelEdited(true);
-    setScopeError('');
-    // An edited proposal is an unsaved change: it rides the next save.
-    setSaveState('idle');
-  };
 
   // Call the ONE scope writer (pec-estimate-scope; the estimate page uses the
   // same function with the same semantics) and load the assembled document
@@ -706,42 +716,96 @@ export default function EstimatorScreen({
       if (!res.ok || out.success !== true) throw new Error(String(out.error || `Proposal generation failed (${res.status})`));
       if (out.generated !== true) {
         setScopeError(String(out.reason || 'Nothing to generate for this estimate yet.'));
+        // Even a nothing-to-generate run knows WHY each line was skipped
+        // (Part B3): an all-templateless estimate should still tell the rep,
+        // per line, to type the scope.
+        try {
+          const aRes = await supabase.from('estimate_areas').select('id,sort_order').eq('estimate_id', estimateId);
+          if (!aRes.error) {
+            const sortToFormIdx = lastSaveFormIdxBySortRef.current;
+            const formIdxByAreaId = new Map<string, number>();
+            for (const ar of (aRes.data ?? []) as Array<{ id: string; sort_order: number | null }>) {
+              const formIdx = sortToFormIdx[Number(ar.sort_order) || 0];
+              if (formIdx != null) formIdxByAreaId.set(ar.id, formIdx);
+            }
+            const reasons: Record<number, string> = {};
+            for (const s of (Array.isArray(out.skipped) ? out.skipped : []) as Array<{ area_id?: string | null; reason?: string; needs_rep_text?: boolean }>) {
+              if (!s || s.needs_rep_text !== true || !s.area_id) continue;
+              const formIdx = formIdxByAreaId.get(s.area_id);
+              if (formIdx != null) reasons[formIdx] = String(s.reason || 'No scope template for this line.');
+            }
+            setSkipReasonByIdx(reasons);
+          }
+        } catch { /* best-effort */ }
         return false;
       }
       setScopeText(String(out.scope_of_work ?? ''));
       setScopeGenerated(true);
-      setPanelEdited(false);
       setDbScopeEdited(false); // a successful write clears scope_edited_at server-side
       setScopeStale(false);
       // Prompt 74: pull the freshly written per-line descriptions back into
       // form state so the NEXT save preserves them (the save never authors a
       // description now; without this refresh, a save-after-generate in the
       // same session would null them and the send gate would block).
+      // Prompt 76 Part A3: a line whose description the rep edited THIS
+      // SESSION (lineDescEditedRef) is skipped, so a generation triggered
+      // elsewhere (the auto-first save) can never silently replace typed
+      // text in the form; the rep's words win on the next save.
       // Best-effort: a miss here is healed by reopening the estimate, which
       // round-trips descriptions through estimateLoad.
       try {
         const [aRes, lRes] = await Promise.all([
           supabase.from('estimate_areas').select('id,sort_order,is_custom').eq('estimate_id', estimateId),
-          supabase.from('estimate_line_items').select('estimate_area_id,description').eq('estimate_id', estimateId),
+          supabase.from('estimate_line_items').select('estimate_area_id,addon_id,label,description,sort_order').eq('estimate_id', estimateId).order('sort_order', { ascending: true }),
         ]);
         if (!aRes.error && !lRes.error) {
+          type LiRow = { estimate_area_id: string | null; addon_id: string | null; label: string | null; description: string | null; sort_order: number | null };
+          const liRows = (lRes.data ?? []) as LiRow[];
           const descByAreaId = new Map<string, string>();
-          for (const li of (lRes.data ?? []) as Array<{ estimate_area_id: string | null; description: string | null }>) {
+          for (const li of liRows) {
             if (li.estimate_area_id && li.description != null && !descByAreaId.has(li.estimate_area_id)) {
               descByAreaId.set(li.estimate_area_id, String(li.description));
             }
           }
           const sortToFormIdx = lastSaveFormIdxBySortRef.current;
+          const formIdxByAreaId = new Map<string, number>();
           const patches = new Map<number, string>();
           for (const ar of (aRes.data ?? []) as Array<{ id: string; sort_order: number | null; is_custom: boolean | null }>) {
-            if (ar.is_custom === true) continue;
             const formIdx = sortToFormIdx[Number(ar.sort_order) || 0];
+            if (formIdx != null) formIdxByAreaId.set(ar.id, formIdx);
+            if (ar.is_custom === true) continue;
             const desc = descByAreaId.get(ar.id);
-            if (formIdx != null && desc != null) patches.set(formIdx, desc);
+            if (formIdx != null && desc != null && !lineDescEditedRef.current.has(formIdx)) patches.set(formIdx, desc);
           }
           if (patches.size) {
             setAreas((prev) => prev.map((a, i) => (patches.has(i) ? { ...a, lineDescription: patches.get(i) as string } : a)));
           }
+          // Add-on lines refresh the same way: the writer fills snippet-bearing
+          // add-on descriptions server-side, and without this the next save
+          // would write the stale form value back over them. Saved add-on
+          // lines are the area-less rows minus the custom-mode composed line,
+          // in the same order the save appended them from addonForms.
+          const addonRows = liRows.filter((li) => li.estimate_area_id == null && String(li.label || '') !== CUSTOM_LINE_LABEL);
+          setAddonForms((prev) => {
+            if (addonRows.length !== prev.length) return prev; // shape moved under us: reopen heals
+            let changed = false;
+            const next = prev.map((f, i) => {
+              const desc = addonRows[i].description;
+              if (desc == null || addonDescEditedRef.current.has(f.key) || f.description === String(desc)) return f;
+              changed = true;
+              return { ...f, description: String(desc) };
+            });
+            return changed ? next : prev;
+          });
+          // Part B3: surface per-line skip reasons ("no scope template on
+          // system X") so the sheet can tell the rep to type the scope.
+          const reasons: Record<number, string> = {};
+          for (const s of (Array.isArray(out.skipped) ? out.skipped : []) as Array<{ area_id?: string | null; reason?: string; needs_rep_text?: boolean }>) {
+            if (!s || s.needs_rep_text !== true || !s.area_id) continue;
+            const formIdx = formIdxByAreaId.get(s.area_id);
+            if (formIdx != null) reasons[formIdx] = String(s.reason || 'No scope template for this line.');
+          }
+          setSkipReasonByIdx(reasons);
         }
       } catch { /* best-effort, see above */ }
       return true;
@@ -1529,7 +1593,10 @@ export default function EstimatorScreen({
     setAreas((prev) =>
       prev.map((a, idx) => (idx === i ? { ...a, slotValues: { ...a.slotValues, [slotId]: value } } : a)),
     );
-  const addArea = () =>
+  // Adding a line OPENS its sheet (prompt 76 Part C): the table row carries
+  // no inline inputs anymore, so the add flow is tap-add, edit in the sheet.
+  const addArea = () => {
+    const newIdx = areas.length;
     setAreas((prev) => {
       // New areas inherit the previous CALCULATOR area's system (a second
       // garage bay is likelier than a system switch; one tap changes it
@@ -1538,20 +1605,31 @@ export default function EstimatorScreen({
       const sysId = lastCalc?.systemTypeId ?? fallbackSystemId;
       return [...prev, { name: `Area ${prev.length + 1}`, sqft: '', systemTypeId: sysId, mvb: false, slotValues: defaultSlotValues(sysId), ...emptyLineFields }];
     });
+    setSheetFocusDesc(false);
+    setOpenLine({ kind: 'area', idx: newIdx });
+  };
   // A custom LINE on a normal estimate (prompt 69, decision 1): a typed
   // one-off scope with its own price, cost, and hours, riding the same
   // area-row pipeline. No system, no recipe, no catalog products.
-  const addCustomLine = () =>
+  const addCustomLine = () => {
+    const newIdx = areas.length;
     setAreas((prev) => [...prev, {
       name: customLabelDefault, sqft: '', systemTypeId: '', mvb: false, slotValues: {},
       ...emptyLineFields, isCustom: true,
     }]);
+    setSheetFocusDesc(false);
+    setOpenLine({ kind: 'area', idx: newIdx });
+  };
   const removeArea = (i: number) => {
     setAreas((prev) => prev.filter((_, idx) => idx !== i));
-    // Indexes shift on removal: drop the per-line polish undo state rather
-    // than let an undo land on the wrong line.
+    // Indexes shift on removal: drop every index-keyed per-line state rather
+    // than let an undo, an edited flag, or a skip reason land on the wrong
+    // line. The next generation rebuilds the skip reasons.
     setLinePrePolish({});
     setLinePolishError({});
+    lineDescEditedRef.current.clear();
+    setSkipReasonByIdx({});
+    setOpenLine((cur) => (cur && cur.kind === 'area' ? null : cur));
   };
 
   const onAreaSystemChange = (i: number, sysId: string) => {
@@ -1569,10 +1647,11 @@ export default function EstimatorScreen({
   const addAddonFromCatalog = (addonId: string) => {
     const a = availableAddons.find((x) => x.id === addonId);
     if (!a) return;
+    const key = uuid();
     setAddonForms((prev) => [
       ...prev,
       {
-        key: uuid(),
+        key,
         addonId: a.id,
         label: a.name,
         description: a.description ?? '',
@@ -1582,15 +1661,25 @@ export default function EstimatorScreen({
         optional: a.is_optional_default,
       },
     ]);
+    setSheetFocusDesc(false);
+    setOpenLine({ kind: 'addon', key });
   };
-  const addOneOff = () =>
+  const addOneOff = () => {
+    const key = uuid();
     setAddonForms((prev) => [
       ...prev,
-      { key: uuid(), addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', optional: false },
+      { key, addonId: null, label: '', description: '', qty: '1', unitPrice: '', unitCost: '', optional: false },
     ]);
+    setSheetFocusDesc(false);
+    setOpenLine({ kind: 'addon', key });
+  };
   const setAddonForm = (key: string, patch: Partial<AddonForm>) =>
     setAddonForms((prev) => prev.map((f) => (f.key === key ? { ...f, ...patch } : f)));
-  const removeAddonForm = (key: string) => setAddonForms((prev) => prev.filter((f) => f.key !== key));
+  const removeAddonForm = (key: string) => {
+    setAddonForms((prev) => prev.filter((f) => f.key !== key));
+    addonDescEditedRef.current.delete(key);
+    setOpenLine((cur) => (cur && cur.kind === 'addon' && cur.key === key ? null : cur));
+  };
 
   const addonsIncomplete = addonForms.some((f) => !f.label.trim() || !(Number(f.qty) > 0) || !(Number(f.unitPrice) >= 0));
   // The reason rule (prompt 69, tightened with a threshold): a written reason
@@ -1678,6 +1767,40 @@ export default function EstimatorScreen({
     return () => window.removeEventListener('message', onMsg);
   }, [embed]);
 
+  // Prompt 76 Part F: a send-gate blocker link opens the offending line's
+  // sheet with the description focused, addressed by the saved line item's
+  // sort_order. Area/custom lines are lineForms[k] (the save writes them in
+  // that order); add-on lines follow in addonForms order.
+  const openLineBySortOrder = useCallback((k: number) => {
+    if (!Number.isFinite(k) || k < 0) return;
+    if (k < lineForms.length) {
+      setSheetFocusDesc(true);
+      setOpenLine({ kind: 'area', idx: lineForms[k].formIdx });
+      return;
+    }
+    const f = addonForms[k - lineForms.length];
+    if (f) { setSheetFocusDesc(true); setOpenLine({ kind: 'addon', key: f.key }); }
+  }, [lineForms, addonForms]);
+  // Fresh mounts arrive with ?focus_line=<sort_order>; consumed once.
+  const focusLineConsumedRef = useRef(false);
+  useEffect(() => {
+    if (focusLine == null || focusLineConsumedRef.current) return;
+    focusLineConsumedRef.current = true;
+    openLineBySortOrder(focusLine);
+  }, [focusLine, openLineBySortOrder]);
+  // An already-mounted estimator gets the same ask by message, origin-checked
+  // like everything on this channel.
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.origin !== window.location.origin) return;
+      const msg = ev.data as { type?: string; sortOrder?: number } | null;
+      if (!msg || msg.type !== 'pec-estimator-open-line') return;
+      openLineBySortOrder(Number(msg.sortOrder));
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [openLineBySortOrder]);
+
   // The full page's Back button: return to wherever the rep came from when it
   // was a same-origin page (a full-screen estimator that dead-ends was the
   // complaint), else land on the dashboard root.
@@ -1726,46 +1849,136 @@ export default function EstimatorScreen({
     setPrePolish(null);
   }, [prePolish]);
 
-  // Per-line Polish (prompt 69): the same pec-estimate-custom-polish endpoint
-  // and the same in-memory undo, but scoped to ONE custom line's typed scope.
-  // Keyed by the line's index into areas[]; removing a line clears the map so
-  // an undo can never land on the wrong line after indexes shift.
-  const [linePrePolish, setLinePrePolish] = useState<Record<number, string>>({});
+  // ---- ONE per-line AI button (prompt 76 Part E) ---------------------------
+  // The separate Polish button is gone. "Generate with AI" lives in the
+  // sheet's Description header and branches by context, so the rep never
+  // chooses a mode:
+  //   description empty + a template exists -> run the scope writer,
+  //   description has text                  -> polish that text,
+  //   description empty + no template       -> polish the internal notes if
+  //                                            any, else ask for typed text.
+  // Polish keeps its undo (the pre-polish text, per line, cleared when a
+  // line is removed so it can never land on the wrong index).
+  const [linePrePolish, setLinePrePolish] = useState<Record<number, { field: 'customScope' | 'lineDescription'; text: string }>>({});
   const [linePolishBusy, setLinePolishBusy] = useState<number | null>(null);
   const [linePolishError, setLinePolishError] = useState<Record<number, string>>({});
-  const polishLineScope = useCallback(async (i: number) => {
-    const text = (areas[i]?.customScope ?? '').trim();
-    if (!text || linePolishBusy != null) return;
-    setLinePolishBusy(i);
+  const [addonPrePolish, setAddonPrePolish] = useState<Record<string, string>>({});
+  const [addonPolishBusy, setAddonPolishBusy] = useState<string | null>(null);
+  const [addonPolishError, setAddonPolishError] = useState<Record<string, string>>({});
+
+  // The shared polish call: POLISH, not authorship (the endpoint's contract
+  // preserves meaning, exclusions, and dollar figures and invents nothing).
+  const callPolish = useCallback(async (text: string): Promise<string> => {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error('Sign in to use Generate.');
+    const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ text }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Generate failed (${res.status})`);
+    return String(out.polished);
+  }, []);
+
+  // regenerateScope is defined below (it needs performSave); a ref lets the
+  // per-line Generate call it without a declaration-order knot.
+  const regenerateScopeRef = useRef<() => Promise<void>>(async () => {});
+
+  const generateForLine = useCallback(async (i: number) => {
+    const a = areas[i];
+    if (!a || linePolishBusy != null) return;
     setLinePolishError((prev) => ({ ...prev, [i]: '' }));
+    const field: 'customScope' | 'lineDescription' = a.isCustom ? 'customScope' : 'lineDescription';
+    const text = (a.isCustom ? a.customScope : a.lineDescription).trim();
+    if (!a.isCustom && !text) {
+      const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+      const tpl = sys ? ((a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template) : null;
+      if (tpl) {
+        // Empty + template: the writer fills it. Pressing Generate IS asking,
+        // so this line's edited flag clears and the refresh may patch it.
+        lineDescEditedRef.current.delete(i);
+        await regenerateScopeRef.current();
+        return;
+      }
+    }
+    const source = text || a.notes.trim();
+    if (!source) {
+      setLinePolishError((prev) => ({
+        ...prev,
+        [i]: a.isCustom
+          ? 'Type the scope first (or add internal notes for Generate to draft from).'
+          : 'No scope template exists for this system, so nothing writes itself. Type the scope here (or add internal notes for Generate to draft from).',
+      }));
+      return;
+    }
+    setLinePolishBusy(i);
     try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) throw new Error('Sign in to use polish.');
-      const res = await fetch('/.netlify/functions/pec-estimate-custom-polish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ text }),
-      });
-      const out = await res.json().catch(() => ({}));
-      if (!res.ok || !out.success || !out.polished) throw new Error(out.error || `Polish failed (${res.status})`);
-      setLinePrePolish((prev) => ({ ...prev, [i]: areas[i]?.customScope ?? '' }));
-      setAreas((prev) => prev.map((a, idx) => (idx === i ? { ...a, customScope: String(out.polished) } : a)));
+      const polished = await callPolish(source);
+      setLinePrePolish((prev) => ({ ...prev, [i]: { field, text: a.isCustom ? a.customScope : a.lineDescription } }));
+      setAreas((prev) => prev.map((x, idx) => (idx === i ? { ...x, [field]: polished } : x)));
+      if (field === 'lineDescription') lineDescEditedRef.current.add(i);
+      setSaveState('idle');
     } catch (e) {
       setLinePolishError((prev) => ({ ...prev, [i]: e instanceof Error ? e.message : String(e) }));
     } finally {
       setLinePolishBusy(null);
     }
-  }, [areas, linePolishBusy]);
+  }, [areas, linePolishBusy, systemTypes, callPolish]);
   const revertLinePolish = useCallback((i: number) => {
     setLinePrePolish((prev) => {
-      if (prev[i] == null) return prev;
-      const text = prev[i];
-      setAreas((cur) => cur.map((a, idx) => (idx === i ? { ...a, customScope: text } : a)));
+      const undo = prev[i];
+      if (undo == null) return prev;
+      setAreas((cur) => cur.map((a, idx) => (idx === i ? { ...a, [undo.field]: undo.text } : a)));
+      if (undo.field === 'lineDescription') lineDescEditedRef.current.add(i);
       const next = { ...prev };
       delete next[i];
       return next;
     });
+    setSaveState('idle');
+  }, []);
+
+  // Add-on / one-off lines: same branches. A catalog add-on with a scope
+  // snippet generates through the writer; otherwise typed text polishes.
+  const generateForAddon = useCallback(async (key: string) => {
+    const f = addonForms.find((x) => x.key === key);
+    if (!f || addonPolishBusy != null) return;
+    setAddonPolishError((prev) => ({ ...prev, [key]: '' }));
+    const text = f.description.trim();
+    if (!text) {
+      const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) : null;
+      if (cat && cat.scope_snippet && cat.scope_snippet.trim()) {
+        addonDescEditedRef.current.delete(key);
+        await regenerateScopeRef.current();
+        return;
+      }
+      setAddonPolishError((prev) => ({ ...prev, [key]: 'Type a description first; this line has no catalog scope language to generate from.' }));
+      return;
+    }
+    setAddonPolishBusy(key);
+    try {
+      const polished = await callPolish(text);
+      setAddonPrePolish((prev) => ({ ...prev, [key]: f.description }));
+      setAddonForms((prev) => prev.map((x) => (x.key === key ? { ...x, description: polished } : x)));
+      addonDescEditedRef.current.add(key);
+      setSaveState('idle');
+    } catch (e) {
+      setAddonPolishError((prev) => ({ ...prev, [key]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setAddonPolishBusy(null);
+    }
+  }, [addonForms, addonPolishBusy, addonCatalog, callPolish]);
+  const revertAddonPolish = useCallback((key: string) => {
+    setAddonPrePolish((prev) => {
+      if (prev[key] == null) return prev;
+      const text = prev[key];
+      setAddonForms((cur) => cur.map((x) => (x.key === key ? { ...x, description: text } : x)));
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setSaveState('idle');
   }, []);
 
   // "Generate from proposal" for the crew notes: sends the assembled proposal
@@ -2126,10 +2339,6 @@ export default function EstimatorScreen({
       if (editing) await deleteEstimateChildren(editing.id);
       else if (savedEstimateId) await deleteEstimateChildren(savedEstimateId);
 
-      // Live proposal (build 25): a panel edit rides this save under the
-      // hand-edited lock; otherwise an already-written document (edited or
-      // machine-made) is marked stale, because saves no longer regenerate.
-      const editedScopeText = !isCustom && panelEdited && scopeText.trim() ? scopeText : null;
       const { id } = await saveEstimateOffline({
         // The screen's pre-minted id (or the edit's), NEVER a fresh one: the
         // early draft card and every Save upsert the same row (prompt 47).
@@ -2181,12 +2390,12 @@ export default function EstimatorScreen({
         // explicitly chose that record. An edit keeps its stored lead.
         leadId: editing?.leadId ?? linkedLead?.id ?? leadLink?.id ?? null,
         // Custom saves write the scope themselves (with scope_edited_at). A
-        // standard save flags the document stale whenever one exists and this
-        // save is not carrying fresh text: with auto-regenerate gone (build
-        // 25, cost + edit safety), "the estimate may have moved under the
-        // document" is now true of machine text too, not just edited text.
-        markScopeStale: isCustom ? false : editedScopeText == null && (dbScopeEdited || scopeGenerated),
-        editedScope: editedScopeText,
+        // standard save flags the document stale whenever one exists: with
+        // auto-regenerate gone (build 25, cost + edit safety), "the estimate
+        // may have moved under the document" is true of machine text too.
+        // The whole-document editedScope path is gone with its textarea
+        // (prompt 76 Part D); per-line edits ride the line items instead.
+        markScopeStale: isCustom ? false : (dbScopeEdited || scopeGenerated),
         isCustom,
         customScope: isCustom ? customScope : null,
         customPrice: isCustom ? sellPrice : null,
@@ -2199,8 +2408,8 @@ export default function EstimatorScreen({
       // mark the document stale and the Regenerate button is the only writer.
       // Custom estimates NEVER generate: the typed text IS the scope, and the
       // template writer would replace it with add-on snippets.
-      const shouldAutoGen = !isCustom && !opts?.skipAutoScope && editedScopeText == null &&
-        !dbScopeEdited && !panelEdited && !scopeGenerated && scopeQuestions.length === 0;
+      const shouldAutoGen = !isCustom && !opts?.skipAutoScope &&
+        !dbScopeEdited && !scopeGenerated && scopeQuestions.length === 0;
       let syncedNumber: number | null = editing?.estimateNumber ?? null;
       if (navigator.onLine) {
         await drainOutbox().catch(() => {});
@@ -2217,16 +2426,8 @@ export default function EstimatorScreen({
         // Offline: owed generation fires when the outbox drains (effect above).
         pendingAutoGenRef.current = id;
       }
-      // Mirror what the save just wrote into the panel's own state.
-      if (!isCustom) {
-        if (editedScopeText != null) {
-          setDbScopeEdited(true);
-          setPanelEdited(false);
-          setScopeStale(false);
-        } else if (dbScopeEdited || scopeGenerated) {
-          setScopeStale(true);
-        }
-      }
+      // Mirror what the save just wrote into local scope state.
+      if (!isCustom && (dbScopeEdited || scopeGenerated)) setScopeStale(true);
       setSavedEstimateId(id);
       draftWriteRef.current = true; // the row exists; the early draft must never fire after a full save
       await refreshPending();
@@ -2243,18 +2444,23 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, panelEdited, dbScopeEdited, scopeGenerated, scopeText, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
+  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
-  // Manual Regenerate (build 25): the only proposal writer after the first
-  // generation. Saves first when the form has unsaved changes, so the
-  // document always re-assembles from what the rep is looking at, never a
-  // stale row. Replacing edited text takes the same explicit confirm as the
-  // estimate page's Regenerate, and only then sends force=true.
+  // Manual Regenerate (build 25): the only whole-estimate scope writer after
+  // the first generation, now surfaced as "Regenerate scope" on the Line
+  // items card (prompt 76 Part D3). Saves first when the form has unsaved
+  // changes, so the document always re-assembles from what the rep is looking
+  // at, never a stale row. Replacing DB-edited text takes an explicit
+  // confirm, and only then sends force=true. Pressing Regenerate clears the
+  // per-line edited flags: the rep ASKED for a rewrite, so the refresh may
+  // replace typed text on templated lines (Part A3 precedence).
   const regenerateScope = useCallback(async () => {
     if (scopeBusy || !online || isCustom) return;
-    if (scopeEditedAny && !window.confirm('The proposal was edited by hand. Regenerating REPLACES the edited text with a fresh write-up assembled from the estimate. Continue?')) return;
+    if (scopeEditedAny && !window.confirm('The scope was edited by hand. Regenerating REPLACES the edited text with a fresh write-up assembled from the estimate. Continue?')) return;
     const force = scopeEditedAny;
+    lineDescEditedRef.current.clear();
+    addonDescEditedRef.current.clear();
     let id = savedEstimateId;
     if (saveState !== 'saved') {
       if (!canSave) {
@@ -2265,6 +2471,7 @@ export default function EstimatorScreen({
     }
     if (id) await generateScope(id, force);
   }, [scopeBusy, online, isCustom, scopeEditedAny, savedEstimateId, saveState, canSave, performSave, generateScope]);
+  useEffect(() => { regenerateScopeRef.current = regenerateScope; }, [regenerateScope]);
 
   const setIntakeField = <K extends keyof Intake>(k: K, v: Intake[K]) => setIntake((p) => ({ ...p, [k]: v }));
   const setCustomerField = (k: Exclude<keyof CustomerForm, 'isCommercial'>, v: string) =>
@@ -2570,14 +2777,16 @@ export default function EstimatorScreen({
                 <span>Scope of work</span>
                 <span className="scope-actions">
                   {prePolish != null && (
-                    <button type="button" className="link" onClick={revertPolish}>Undo polish</button>
+                    <button type="button" className="link" onClick={revertPolish}>Undo generate</button>
                   )}
-                  <button type="button" className="link" onClick={polishScope} disabled={polishBusy || !online || !customScope.trim()}>
-                    {polishBusy ? 'Polishing…' : 'Polish with AI'}
-                  </button>
+                  {config.estimateLineGenerateEnabled !== false && (
+                    <button type="button" className="link" onClick={polishScope} disabled={polishBusy || !online || !customScope.trim()}>
+                      {polishBusy ? 'Working…' : '✨ Generate with AI'}
+                    </button>
+                  )}
                 </span>
               </div>
-              <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Polish (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
+              <p className="hint">Type the scope in your own words; this is what the customer reads on the proposal. Generate (optional) cleans grammar and structure only: it keeps your exclusions and dollar figures, adds nothing, and can be undone.</p>
               <textarea
                 className="custom-scope"
                 rows={10}
@@ -2585,230 +2794,134 @@ export default function EstimatorScreen({
                 onChange={(e) => setCustomScope(e.target.value)}
                 placeholder="Describe the work: prep, what gets coated, what is excluded…"
               />
-              {polishError && <p className="warn">Polish failed: {polishError}</p>}
-              {!online && <p className="hint">Polish needs a connection; your typed text saves fine without it.</p>}
+              {polishError && <p className="warn">Generate failed: {polishError}</p>}
+              {!online && <p className="hint">Generate needs a connection; your typed text saves fine without it.</p>}
             </section>
           )}
 
+          {/* Line items (prompt 76 Part C): the per-area stacked cards
+              collapsed to compact tappable rows, DripJobs-shaped. Everything
+              editable (name, system, sqft, price, options, scope description,
+              internal notes) lives in the bottom-sheet editor a tap opens.
+              "Regenerate scope" here is the whole-estimate writer the deleted
+              scope panel used to own (Part D3); the per-line Generate button
+              lives in the sheet. */}
           {!isCustom && <section className="card">
             <div className="areas-head">
-              <span>Areas</span>
+              <span>Line items</span>
               <span className="scope-actions">
-                <button type="button" className="link" onClick={addCustomLine}>+ Add custom line</button>
-                <button type="button" className="link" onClick={addArea}>+ Add area</button>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={regenerateScope}
+                  disabled={scopeBusy || !online || (!savedEstimateId && !canSave)}
+                >
+                  {scopeBusy ? 'Writing…' : scopeGenerated ? 'Regenerate scope' : 'Write scope now'}
+                </button>
               </span>
             </div>
-            {/* Each area picks its own system AND solves its own price
-                (prompt 69): the job total is the sum of the lines, so the rep
-                can see and move each line without moving the others. Custom
-                lines (typed scope + typed price/cost/hours) live in the same
-                list. */}
-            {areas.map((a, i) => {
-              const rowIdx = lineRows.findIndex((r) => r.formIdx === i);
-              const row = rowIdx >= 0 ? lineRows[rowIdx] : null;
-              const lm = row && lineMoney ? lineMoney[rowIdx] : null;
-              const finalAmt = row && finalLineAmounts ? finalLineAmounts[rowIdx] : null;
-              const lineRed = lm?.gpPct != null && lm.gpPct * 100 < lineFloorPct - 0.05;
-              // Optional-line controls (prompt 72): same control and wording
-              // as the add-on checkbox so the rep learns one concept. The
-              // enabled setting is a CREATE gate: an already-optional line
-              // keeps its controls so it can still be managed. Ticking
-              // Optional seeds the preselect from Settings. An area's MVB
-              // rides its area (dropping the line drops its barrier), so MVB
-              // gets no separate control.
-              const optionalControls = optionalControlsVisible(config.optionalLinesEnabled, a.optional) && (
-                <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 4 }}>
-                  <label className="check addon-opt">
-                    <input
-                      type="checkbox"
-                      checked={a.optional}
-                      onChange={(e) => setArea(i, {
-                        optional: e.target.checked,
-                        preselected: e.target.checked ? (config.optionalLinesPreselectDefault !== false) : a.preselected,
-                      })}
-                    />
-                    <span>Optional (customer picks)</span>
-                  </label>
-                  {a.optional && (
-                    <label className="check addon-opt">
-                      <input type="checkbox" checked={a.preselected} onChange={(e) => setArea(i, { preselected: e.target.checked })} />
-                      <span>Starts selected for the customer</span>
-                    </label>
-                  )}
-                </div>
-              );
-              const moneyStrip = row && row.current != null && (
-                <div className="line-money" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline', fontSize: '.8rem', marginTop: 6 }}>
-                  {row.kind === 'calc' && (
-                    <span className="muted">calc {money2(row.calcPrice)}{row.override != null ? ` · selling ${money2(row.override)}` : ''}</span>
-                  )}
-                  {finalAmt != null && Math.abs(finalAmt - (row.current ?? 0)) >= 0.005 && (
-                    <span className="muted">after discount {money2(finalAmt)}</span>
-                  )}
-                  {lm && lm.gpPct != null && (
-                    <span className={lineRed ? 'gp-red' : ''} style={lineRed ? { color: '#dc2626', fontWeight: 600 } : undefined}>
-                      GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}
-                    </span>
-                  )}
-                </div>
-              );
-              if (a.isCustom) {
+            {!scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
+              <p className="warn">The estimate changed after the scope was written. Tap Regenerate scope before sending.</p>
+            )}
+            {scopeGenerated && scopeContainsBlank(scopeText) && (
+              <p className="warn">The word BLANK is still in the scope and the customer will see it. Answer the scope questions below, or edit the line descriptions.</p>
+            )}
+            {scopeError && <p className="warn">{scopeError}</p>}
+            <div className="line-table">
+              {areas.map((a, i) => {
+                const rowIdx = lineRows.findIndex((r) => r.formIdx === i);
+                const row = rowIdx >= 0 ? lineRows[rowIdx] : null;
+                const lm = row && lineMoney ? lineMoney[rowIdx] : null;
+                const finalAmt = row && finalLineAmounts ? finalLineAmounts[rowIdx] : null;
+                const lineRed = lm?.gpPct != null && lm.gpPct * 100 < lineFloorPct - 0.05;
+                const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+                const name = a.isCustom ? (a.name.trim() || customLabelDefault) : (a.name || `Area ${i + 1}`);
+                const sqftNum = Number(a.sqft);
+                const isMvbOnly = !a.isCustom && isMvbOnlySystem(a.systemTypeId);
+                const scopePresent = (a.isCustom ? a.customScope : a.lineDescription).trim() !== '';
+                const price = row ? (finalAmt ?? row.current ?? row.calcPrice) : null;
                 return (
-                  <div className="area area-custom" key={i} style={{ borderLeft: '3px solid #D8531C', paddingLeft: 10 }}>
-                    <div className="area-top">
-                      <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Custom line label (customer sees this)" />
-                      <span className="oneoff-badge" title="Custom line: typed scope and price, no recipe, no catalog materials.">custom</span>
-                      <button type="button" className="x" aria-label={`Remove ${a.name || 'custom line'}`} onClick={() => removeArea(i)}>×</button>
-                    </div>
-                    <div className="areas-head" style={{ marginTop: 6 }}>
-                      <span style={{ fontSize: '.8rem' }}>Scope (customer sees this, used word for word)</span>
-                      <span className="scope-actions">
-                        {linePrePolish[i] != null && (
-                          <button type="button" className="link" onClick={() => revertLinePolish(i)}>Undo polish</button>
-                        )}
-                        <button type="button" className="link" onClick={() => polishLineScope(i)} disabled={linePolishBusy === i || !online || !a.customScope.trim()}>
-                          {linePolishBusy === i ? 'Polishing…' : 'Polish with AI'}
-                        </button>
-                      </span>
-                    </div>
-                    <textarea
-                      className="custom-scope"
-                      rows={5}
-                      value={a.customScope}
-                      onChange={(e) => setArea(i, { customScope: e.target.value })}
-                      placeholder="Describe this line's work: prep, what gets done, what is excluded…"
-                    />
-                    {linePolishError[i] && <p className="warn">Polish failed: {linePolishError[i]}</p>}
-                    <div className="addon-nums">
-                      <label className="field"><span>Price $ (you set it{Number(a.priceInput) > 0 ? '' : ', required'})</span>
-                        <input inputMode="decimal" value={a.priceInput} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
-                      </label>
-                      <label className="field"><span>Material cost $</span>
-                        <input inputMode="decimal" value={a.customMaterialCost} onChange={(e) => setArea(i, { customMaterialCost: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
-                      </label>
-                      <label className="field"><span>Crew hours</span>
-                        <input inputMode="decimal" value={a.customLaborHours} onChange={(e) => setArea(i, { customLaborHours: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
-                      </label>
-                      <label className="field"><span>Sq ft (optional)</span>
-                        <input inputMode="decimal" value={a.sqft} onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
-                      </label>
-                    </div>
-                    {Number(a.priceInput) > 0 && !(Number(a.customMaterialCost) > 0) && !(Number(a.customLaborHours) > 0) && (
-                      <p className="warn addon-warn">No material cost or hours on this line: it books as pure margin and inflates GP until they are typed.</p>
-                    )}
-                    {optionalControls}
-                    {moneyStrip}
-                    <label className="field" style={{ marginTop: 6 }}><span>Internal notes (never shown to the customer)</span>
-                      <input value={a.notes} onChange={(e) => setArea(i, { notes: e.target.value })} placeholder="Context for this line…" />
-                    </label>
-                  </div>
+                  <button
+                    type="button"
+                    className="line-row"
+                    key={`area${i}`}
+                    onClick={() => { setSheetFocusDesc(false); setOpenLine({ kind: 'area', idx: i }); }}
+                    aria-label={`Edit line ${name}`}
+                  >
+                    <span className="line-row-main">
+                      <span className="line-row-name">{name}</span>
+                      {a.isCustom
+                        ? <span className="line-chip custom">custom</span>
+                        : <span className="line-row-sys">{sys?.name ?? 'No system'}{a.mvb ? ' +MVB' : ''}</span>}
+                      {!a.isCustom && (
+                        <span className="line-row-sys">{sqftNum > 0 ? `${Math.round(sqftNum).toLocaleString()} sqft` : 'no sqft yet'}</span>
+                      )}
+                    </span>
+                    <span className="line-row-price">{price != null ? money2(price) : '--'}</span>
+                    <span className="line-row-sub">
+                      {a.optional && <span className="line-chip optional">optional{a.preselected ? '' : ' · starts unticked'}</span>}
+                      {isMvbOnly
+                        ? <span className="line-chip addon">no scope needed</span>
+                        : scopePresent
+                          ? <span className="line-chip scope-ok">scope ✓</span>
+                          : <span className="line-chip scope-missing">no scope yet</span>}
+                      {row?.kind === 'calc' && row.override != null && row.calcPrice != null && <span>calc {money2(row.calcPrice)}</span>}
+                      {lm?.gpPct != null && (
+                        <span className={lineRed ? 'gp-red' : ''}>GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}</span>
+                      )}
+                    </span>
+                  </button>
                 );
-              }
-              return (
-                <div className="area" key={i}>
-                  <div className="area-top">
-                    <input className="area-name" value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder="Area name" />
-                    <select
-                      className="area-system"
-                      value={a.systemTypeId}
-                      onChange={(e) => onAreaSystemChange(i, e.target.value)}
-                      aria-label={`System for ${a.name || `Area ${i + 1}`}`}
-                    >
-                      {systemTypes.map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                      ))}
-                    </select>
-                    <input
-                      className="area-sqft"
-                      inputMode="decimal"
-                      value={a.sqft}
-                      onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })}
-                      placeholder="sq ft"
-                    />
-                    {areas.length > 1 && <button type="button" className="x" aria-label="Remove area" onClick={() => removeArea(i)}>×</button>}
-                  </div>
-                  {/* Per-area MVB (build 17), default OFF. Hidden on an MVB Only
-                      area, whose system already IS the barrier. */}
-                  {!isMvbOnlySystem(a.systemTypeId) && (
-                    <label className="check area-mvb">
-                      <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
-                      <span>Add moisture vapor barrier (MVB) to this area</span>
-                    </label>
-                  )}
-                  {/* Per-line price + GP (prompt 69): the line's solved price,
-                      an editable sell price for THIS line only, and its own
-                      GP, red under the line floor. */}
-                  {row && row.calcPrice != null && (
-                    <div className="addon-nums" style={{ marginTop: 4 }}>
-                      <label className="field"><span>Line price $ (calc {money(row.calcPrice)})</span>
-                        <input inputMode="decimal" value={a.priceInput} placeholder={String(row.calcPrice)} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} />
-                      </label>
-                    </div>
-                  )}
-                  {optionalControls}
-                  {moneyStrip}
-                  {Number(a.sqft) > 0 && (
-                    <label className="field" style={{ marginTop: 6 }}><span>Internal notes (fed to the scope writer, never shown to the customer)</span>
-                      <input value={a.notes} onChange={(e) => setArea(i, { notes: e.target.value })} placeholder="Context for this line's scope…" />
-                    </label>
-                  )}
-                </div>
-              );
-            })}
+              })}
+              {addonForms.map((f) => {
+                const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+                const total = r2(qty * (Number(f.unitPrice) || 0));
+                return (
+                  <button
+                    type="button"
+                    className="line-row"
+                    key={f.key}
+                    onClick={() => { setSheetFocusDesc(false); setOpenLine({ kind: 'addon', key: f.key }); }}
+                    aria-label={`Edit line ${f.label.trim() || 'one-off'}`}
+                  >
+                    <span className="line-row-main">
+                      <span className="line-row-name">{f.label.trim() || 'One-off line'}</span>
+                      <span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.addonId ? 'add-on' : 'one-off'}</span>
+                      {qty !== 1 && <span className="line-row-sys">x{qty}</span>}
+                    </span>
+                    <span className="line-row-price">{money2(total)}</span>
+                    <span className="line-row-sub">
+                      {f.optional && <span className="line-chip optional">optional</span>}
+                      {f.description.trim()
+                        ? <span className="line-chip scope-ok">description ✓</span>
+                        : <span className="line-chip addon">no description</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
             {customLineRows.length > 0 && engineAreas.length === 0 && (
               <p className="hint">Custom lines ride on a normal estimate: give at least one area a system and square footage, or switch the whole estimate to Custom.</p>
             )}
-          </section>}
-
-          <section className="card">
-            <div className="areas-head">
-              <span>Add-ons</span>
+            <div className="line-actions">
+              <button type="button" className="link" onClick={addArea}>+ Add area</button>
+              <button type="button" className="link" onClick={addCustomLine}>+ Add custom line</button>
               <button type="button" className="link" onClick={addOneOff}>+ One-off line</button>
-            </div>
-            <label className="field">
-              <span>Add from catalog</span>
               <select
                 value=""
+                aria-label="Add an add-on from the catalog"
                 onChange={(e) => { if (e.target.value) addAddonFromCatalog(e.target.value); }}
               >
-                <option value="">Pick an add-on…</option>
-                {availableAddons.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}{a.default_price > 0 ? ` (${money2(a.default_price)}/${a.unit})` : ''}
+                <option value="">+ Add-on from catalog…</option>
+                {availableAddons.map((ad) => (
+                  <option key={ad.id} value={ad.id}>
+                    {ad.name}{ad.default_price > 0 ? ` (${money2(ad.default_price)}/${ad.unit})` : ''}
                   </option>
                 ))}
               </select>
-            </label>
-            {addonForms.length === 0 && (
-              <p className="hint">Stem walls, joint filling, upgrades, drive time. Optional items stay OUT of the total until the customer picks them.</p>
-            )}
-            {addonForms.map((f) => (
-              <div className="addon-row" key={f.key}>
-                <div className="addon-main">
-                  {f.addonId ? (
-                    <span className="addon-label">{f.label}</span>
-                  ) : (
-                    <input className="addon-label-input" value={f.label} placeholder="One-off item name" onChange={(e) => setAddonForm(f.key, { label: e.target.value })} />
-                  )}
-                  {!f.addonId && <span className="oneoff-badge" title="Not in the catalog. If this keeps getting typed, promote it to the add-on catalog.">one-off</span>}
-                  <button type="button" className="x" aria-label={`Remove ${f.label || 'line'}`} onClick={() => removeAddonForm(f.key)}>×</button>
-                </div>
-                {!f.addonId && (
-                  <input className="addon-desc" value={f.description} placeholder="Description (customer sees this)" onChange={(e) => setAddonForm(f.key, { description: e.target.value })} />
-                )}
-                <div className="addon-nums">
-                  <label className="field"><span>Qty</span><input inputMode="decimal" value={f.qty} onChange={(e) => setAddonForm(f.key, { qty: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
-                  <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => setAddonForm(f.key, { unitPrice: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
-                  <label className="field"><span>Cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
-                  <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, { optional: e.target.checked })} /><span>Optional (customer picks)</span></label>
-                  <span className="addon-total">{money2(r2((Number(f.qty) > 0 ? Number(f.qty) : 1) * (Number(f.unitPrice) || 0)))}</span>
-                </div>
-                {Number(f.unitPrice) > 0 && !(Number(f.unitCost) > 0) && (
-                  <p className="warn addon-warn">No cost on this line: it books as pure margin and inflates GP until a cost is set{f.addonId ? ' (set a default in the Catalog)' : ''}.</p>
-                )}
-              </div>
-            ))}
-          </section>
+            </div>
+            <p className="hint">Tap a line to edit its price, options, and the scope the customer reads. Optional items stay out of the total until the customer picks them.</p>
+          </section>}
 
           {/* Template-driven, so they do not apply to a custom estimate. */}
           {!isCustom && scopeQuestions.length > 0 && (
@@ -2825,66 +2938,6 @@ export default function EstimatorScreen({
                   />
                 </label>
               ))}
-            </section>
-          )}
-
-          {/* Live proposal (build 25): the assembled customer-facing scope,
-              editable as the estimate is built. Before the first generation
-              it is a local template preview (instant, works offline); the
-              server-assembled document replaces it on the auto-first save,
-              and after that only the explicit Regenerate rewrites it. */}
-          {!isCustom && (
-            <section className="card scope-live">
-              <div className="areas-head">
-                <span>Proposal / Scope of work</span>
-                <span className="scope-actions">
-                  <button
-                    type="button"
-                    className="link"
-                    onClick={regenerateScope}
-                    disabled={scopeBusy || !online || (!savedEstimateId && !canSave)}
-                  >
-                    {scopeBusy ? 'Writing…' : scopeGenerated ? 'Regenerate proposal' : 'Write proposal now'}
-                  </button>
-                </span>
-              </div>
-              {!scopeDisplay.trim() ? (
-                <p className="hint">The proposal assembles here from your scope templates once an area has a system and square footage.</p>
-              ) : (
-                <>
-                  <textarea
-                    className="custom-scope"
-                    rows={12}
-                    value={scopeDisplay}
-                    onChange={(e) => onScopeTextChange(e.target.value)}
-                    aria-label="Proposal / scope of work"
-                  />
-                  {scopeBusy && <p className="hint">Writing the polished proposal…</p>}
-                  {!scopeBusy && scopeEditedAny && (
-                    <p className="hint">Edited by hand: the AI never replaces this text unless you tap Regenerate and confirm.</p>
-                  )}
-                  {!scopeBusy && !scopeEditedAny && !scopeGenerated && (
-                    <p className="hint">
-                      {scopeQuestions.length > 0
-                        ? 'Live template preview. Answer the questions above, then save, and the polished proposal writes itself.'
-                        : 'Live template preview. Save the estimate and the polished proposal writes itself.'}
-                    </p>
-                  )}
-                  {!scopeBusy && scopeStale && (scopeGenerated || scopeEditedAny) && (
-                    <p className="warn">
-                      The estimate changed after this proposal was written.
-                      {scopeEditedAny ? ' Your text stays as-is unless you tap Regenerate.' : ' Tap Regenerate proposal to bring it up to date.'}
-                    </p>
-                  )}
-                  {scopeContainsBlank(scopeDisplay) && (
-                    <p className="warn">The word BLANK is still in the text and the customer will see it. Answer the scope questions above, or edit it out here.</p>
-                  )}
-                  {scopeError && <p className="warn">{scopeError}</p>}
-                  {!online && !scopeGenerated && !scopeEditedAny && (
-                    <p className="hint">Offline: showing the template preview. The polished proposal writes itself once you are back online (or from the estimate page).</p>
-                  )}
-                </>
-              )}
             </section>
           )}
 
@@ -3311,6 +3364,281 @@ export default function EstimatorScreen({
           </section>}
         </div>
       </main>
+
+      {/* The line editor sheet (prompt 76 Part C): one line at a time,
+          DripJobs-shaped sections (Area, Pricing, Description, Internal
+          notes). BottomSheet owns the modal lifecycle. */}
+      {openLine && (() => {
+        const sheetBreakpoint = Number(config.lineSheetBreakpointPx) > 0 ? Number(config.lineSheetBreakpointPx) : 700;
+        const generateOn = config.estimateLineGenerateEnabled !== false;
+        const close = () => { setOpenLine(null); setSheetFocusDesc(false); };
+        if (openLine.kind === 'area') {
+          const i = openLine.idx;
+          const a = areas[i];
+          if (!a) return null;
+          const rowIdx = lineRows.findIndex((r) => r.formIdx === i);
+          const row = rowIdx >= 0 ? lineRows[rowIdx] : null;
+          const lm = row && lineMoney ? lineMoney[rowIdx] : null;
+          const finalAmt = row && finalLineAmounts ? finalLineAmounts[rowIdx] : null;
+          const lineRed = lm?.gpPct != null && lm.gpPct * 100 < lineFloorPct - 0.05;
+          const sys = systemTypes.find((s) => s.id === a.systemTypeId);
+          const isMvbOnly = !a.isCustom && isMvbOnlySystem(a.systemTypeId);
+          const tpl = !a.isCustom && sys ? ((a.mvb && sys.scope_template_mvb) ? sys.scope_template_mvb : sys.scope_template) : null;
+          const descValue = a.isCustom ? a.customScope : a.lineDescription;
+          const title = a.isCustom ? (a.name.trim() || customLabelDefault) : (a.name || `Area ${i + 1}`);
+          return (
+            <BottomSheet
+              open
+              onClose={close}
+              title={`Edit line: ${title}`}
+              breakpointPx={sheetBreakpoint}
+              focusSelector={sheetFocusDesc ? 'textarea[data-sheet-desc]' : null}
+              footer={<>
+                <button
+                  type="button"
+                  className="sheet-remove"
+                  disabled={!a.isCustom && areas.length === 1}
+                  onClick={() => { if (window.confirm('Remove this line from the estimate?')) removeArea(i); }}
+                >
+                  Remove line
+                </button>
+                <button type="button" className="sheet-done" onClick={close}>Done</button>
+              </>}
+            >
+              <div className="sheet-section">
+                <div className="sheet-section-title"><span>{a.isCustom ? 'Line' : 'Area'}</span>{a.isCustom ? <span className="line-chip custom">custom</span> : null}</div>
+                <label className="field"><span>{a.isCustom ? 'Line label (customer sees this)' : 'Area name'}</span>
+                  <input value={a.name} onChange={(e) => setArea(i, { name: e.target.value })} placeholder={a.isCustom ? customLabelDefault : 'Area name'} />
+                </label>
+                {!a.isCustom && (
+                  <>
+                    <label className="field"><span>System</span>
+                      <select value={a.systemTypeId} onChange={(e) => onAreaSystemChange(i, e.target.value)}>
+                        {systemTypes.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                      </select>
+                    </label>
+                    <label className="field"><span>Square footage</span>
+                      <input inputMode="decimal" value={a.sqft} onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="sq ft" />
+                    </label>
+                    {!isMvbOnly && (
+                      <label className="check">
+                        <input type="checkbox" checked={a.mvb} onChange={(e) => setArea(i, { mvb: e.target.checked })} />
+                        <span>Add moisture vapor barrier (MVB) to this area</span>
+                      </label>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="sheet-section">
+                <div className="sheet-section-title"><span>Pricing</span></div>
+                {a.isCustom ? (
+                  <>
+                    <div className="addon-nums">
+                      <label className="field"><span>Price $ (you set it{Number(a.priceInput) > 0 ? '' : ', required'})</span>
+                        <input inputMode="decimal" value={a.priceInput} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Material cost $</span>
+                        <input inputMode="decimal" value={a.customMaterialCost} onChange={(e) => setArea(i, { customMaterialCost: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Crew hours</span>
+                        <input inputMode="decimal" value={a.customLaborHours} onChange={(e) => setArea(i, { customLaborHours: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                      <label className="field"><span>Sq ft (optional)</span>
+                        <input inputMode="decimal" value={a.sqft} onChange={(e) => setArea(i, { sqft: e.target.value.replace(/[^0-9.]/g, '') })} placeholder="0" />
+                      </label>
+                    </div>
+                    {Number(a.priceInput) > 0 && !(Number(a.customMaterialCost) > 0) && !(Number(a.customLaborHours) > 0) && (
+                      <p className="warn addon-warn">No material cost or hours on this line: it books as pure margin and inflates GP until they are typed.</p>
+                    )}
+                  </>
+                ) : row && row.calcPrice != null ? (
+                  <label className="field"><span>Line price $ (calc {money(row.calcPrice)})</span>
+                    <input inputMode="decimal" value={a.priceInput} placeholder={String(row.calcPrice)} onChange={(e) => setArea(i, { priceInput: e.target.value.replace(/[^0-9.]/g, '') })} />
+                  </label>
+                ) : (
+                  <p className="hint">Enter the square footage (and pick a salesperson) and this line prices itself.</p>
+                )}
+                {optionalControlsVisible(config.optionalLinesEnabled, a.optional) && (
+                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 6 }}>
+                    <label className="check addon-opt">
+                      <input
+                        type="checkbox"
+                        checked={a.optional}
+                        onChange={(e) => setArea(i, {
+                          optional: e.target.checked,
+                          preselected: e.target.checked ? (config.optionalLinesPreselectDefault !== false) : a.preselected,
+                        })}
+                      />
+                      <span>Optional (customer picks)</span>
+                    </label>
+                    {a.optional && (
+                      <label className="check addon-opt">
+                        <input type="checkbox" checked={a.preselected} onChange={(e) => setArea(i, { preselected: e.target.checked })} />
+                        <span>Starts selected for the customer</span>
+                      </label>
+                    )}
+                  </div>
+                )}
+                {row && row.current != null && (
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline', fontSize: '.8rem', marginTop: 8 }}>
+                    {row.kind === 'calc' && (
+                      <span className="muted">calc {money2(row.calcPrice)}{row.override != null ? ` · selling ${money2(row.override)}` : ''}</span>
+                    )}
+                    {finalAmt != null && Math.abs(finalAmt - (row.current ?? 0)) >= 0.005 && (
+                      <span className="muted">after discount {money2(finalAmt)}</span>
+                    )}
+                    {lm && lm.gpPct != null && (
+                      <span className={lineRed ? 'gp-red' : ''} style={lineRed ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                        GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="sheet-section">
+                <div className="sheet-section-title">
+                  <span>Description (customer reads this)</span>
+                  <span className="scope-actions">
+                    {linePrePolish[i] != null && (
+                      <button type="button" className="link" onClick={() => revertLinePolish(i)}>Undo</button>
+                    )}
+                    {generateOn && !isMvbOnly && (
+                      <button
+                        type="button"
+                        className="link"
+                        onClick={() => void generateForLine(i)}
+                        disabled={linePolishBusy != null || scopeBusy || !online}
+                      >
+                        {linePolishBusy === i || scopeBusy ? 'Working…' : '✨ Generate with AI'}
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {/* Precedence (Part A3), stated where it happens: a template
+                    seeds this field through the scope writer, but a rep edit
+                    WINS (the save round-trips it verbatim and the refresh
+                    skips edited lines) until the rep presses Generate again,
+                    which is the one explicit way to ask for a rewrite. */}
+                <textarea
+                  data-sheet-desc="1"
+                  className="custom-scope"
+                  rows={7}
+                  value={descValue}
+                  onChange={(e) => {
+                    if (a.isCustom) setArea(i, { customScope: e.target.value });
+                    else { lineDescEditedRef.current.add(i); setArea(i, { lineDescription: e.target.value }); }
+                  }}
+                  placeholder={a.isCustom
+                    ? "Describe this line's work: prep, what gets done, what is excluded…"
+                    : 'The scope of work for this line. Generate fills it from the system template, or type your own.'}
+                />
+                {a.isCustom && <p className="hint">Used word for word on the customer proposal; the scope writer never rewrites it. Generate cleans up your typed text and can be undone.</p>}
+                {!a.isCustom && isMvbOnly && <p className="hint">MVB-only lines need no scope (no template describes a barrier-only job) and sending is never blocked on one. Anything typed here still shows to the customer.</p>}
+                {!a.isCustom && !isMvbOnly && !tpl && (
+                  <p className="warn">
+                    {skipReasonByIdx[i] ? `The scope writer skipped this line (${skipReasonByIdx[i]}). ` : `No scope template exists for ${sys?.name ?? 'this system'}, so nothing writes itself. `}
+                    Type the scope here; the customer reads it word for word, and sending stays blocked until it has one.
+                  </p>
+                )}
+                {!a.isCustom && !isMvbOnly && tpl && descValue.trim() !== '' && (
+                  <p className="hint">Your edit wins: saves keep this text as-is until you press Generate again.</p>
+                )}
+                {linePolishError[i] && <p className="warn">{linePolishError[i]}</p>}
+                {scopeError && <p className="warn">{scopeError}</p>}
+              </div>
+              <div className="sheet-section">
+                <div className="sheet-section-title"><span>Internal notes (never shown to the customer)</span></div>
+                <input
+                  value={a.notes}
+                  onChange={(e) => setArea(i, { notes: e.target.value })}
+                  placeholder={a.isCustom ? 'Context for this line…' : "Context for this line's scope (fed to the scope writer)…"}
+                />
+              </div>
+            </BottomSheet>
+          );
+        }
+        const f = addonForms.find((x) => x.key === openLine.key);
+        if (!f) return null;
+        const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+        const total = r2(qty * (Number(f.unitPrice) || 0));
+        const cat = f.addonId ? addonCatalog.find((x) => x.id === f.addonId) ?? null : null;
+        const hasSnippet = !!(cat && cat.scope_snippet && cat.scope_snippet.trim());
+        return (
+          <BottomSheet
+            open
+            onClose={close}
+            title={`Edit line: ${f.label.trim() || 'One-off'}`}
+            breakpointPx={sheetBreakpoint}
+            focusSelector={sheetFocusDesc ? 'textarea[data-sheet-desc]' : null}
+            footer={<>
+              <button
+                type="button"
+                className="sheet-remove"
+                onClick={() => { if (window.confirm('Remove this line from the estimate?')) removeAddonForm(f.key); }}
+              >
+                Remove line
+              </button>
+              <button type="button" className="sheet-done" onClick={close}>Done</button>
+            </>}
+          >
+            <div className="sheet-section">
+              <div className="sheet-section-title"><span>Line</span><span className={f.addonId ? 'line-chip addon' : 'line-chip custom'}>{f.addonId ? 'catalog add-on' : 'one-off'}</span></div>
+              {f.addonId ? (
+                <p style={{ margin: 0, fontWeight: 700 }}>{f.label}</p>
+              ) : (
+                <label className="field"><span>One-off item name</span>
+                  <input value={f.label} placeholder="One-off item name" onChange={(e) => setAddonForm(f.key, { label: e.target.value })} />
+                </label>
+              )}
+            </div>
+            <div className="sheet-section">
+              <div className="sheet-section-title"><span>Pricing</span></div>
+              <div className="addon-nums">
+                <label className="field"><span>Qty</span><input inputMode="decimal" value={f.qty} onChange={(e) => setAddonForm(f.key, { qty: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                <label className="field"><span>Price $</span><input inputMode="decimal" value={f.unitPrice} onChange={(e) => setAddonForm(f.key, { unitPrice: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                <label className="field"><span>Cost $</span><input inputMode="decimal" value={f.unitCost} onChange={(e) => setAddonForm(f.key, { unitCost: e.target.value.replace(/[^0-9.]/g, '') })} /></label>
+                <label className="check addon-opt"><input type="checkbox" checked={f.optional} onChange={(e) => setAddonForm(f.key, { optional: e.target.checked })} /><span>Optional (customer picks)</span></label>
+                <span className="addon-total">{money2(total)}</span>
+              </div>
+              {Number(f.unitPrice) > 0 && !(Number(f.unitCost) > 0) && (
+                <p className="warn addon-warn">No cost on this line: it books as pure margin and inflates GP until a cost is set{f.addonId ? ' (set a default in the Catalog)' : ''}.</p>
+              )}
+            </div>
+            <div className="sheet-section">
+              <div className="sheet-section-title">
+                <span>Description (customer reads this)</span>
+                <span className="scope-actions">
+                  {addonPrePolish[f.key] != null && (
+                    <button type="button" className="link" onClick={() => revertAddonPolish(f.key)}>Undo</button>
+                  )}
+                  {generateOn && (
+                    <button
+                      type="button"
+                      className="link"
+                      onClick={() => void generateForAddon(f.key)}
+                      disabled={addonPolishBusy != null || scopeBusy || !online}
+                    >
+                      {addonPolishBusy === f.key || scopeBusy ? 'Working…' : '✨ Generate with AI'}
+                    </button>
+                  )}
+                </span>
+              </div>
+              <textarea
+                data-sheet-desc="1"
+                className="custom-scope"
+                rows={5}
+                value={f.description}
+                onChange={(e) => { addonDescEditedRef.current.add(f.key); setAddonForm(f.key, { description: e.target.value }); }}
+                placeholder="Description (customer sees this)"
+              />
+              {hasSnippet && f.description.trim() === '' && (
+                <p className="hint">Empty: Generate fills it from the catalog scope language on the next scope write, or type your own.</p>
+              )}
+              {addonPolishError[f.key] && <p className="warn">{addonPolishError[f.key]}</p>}
+            </div>
+          </BottomSheet>
+        );
+      })()}
     </div>
   );
 }
