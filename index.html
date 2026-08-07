@@ -6362,13 +6362,25 @@ function cachedSystemTypes() {
 function fmtNotifTime(s) { try { return s ? new Date(s).toLocaleString() : ''; } catch (_) { return ''; } }
 function loadNotifications() {
   return cachedRef('notifs', async () => {
-    // target_view/target_id are the click destinations (2026-07-16 migration).
+    // Per-user targeting (prompt 75 D2): target_user_id NULL means shared
+    // (every pre-75 row keeps showing for everyone); a set value shows only
+    // for that admin_users.id. This is a QUERY FILTER, not a security
+    // boundary: staff RLS still lets any staff row read the whole table, so
+    // nothing sensitive ever goes in a targeted body. read_at stays the one
+    // shared column; a personally-targeted row read by its owner is fine.
+    const me = (state.adminUser && state.adminUser.id) || '00000000-0000-0000-0000-000000000000';
     // Asking PostgREST for a column that does not exist fails the WHOLE query
-    // (the build-26 lesson), so if the migration is not applied yet, retry
-    // with the legacy column list instead of letting the bell go dark.
+    // (the build-26 lesson), so each vintage falls back to the previous
+    // column list instead of letting the bell go dark.
     let r = await supabase.from('pec_notifications')
-      .select('id,type,job_id,body,priority,created_at,read_at,target_view,target_id')
+      .select('id,type,job_id,body,priority,created_at,read_at,target_view,target_id,target_user_id')
+      .or(`target_user_id.is.null,target_user_id.eq.${me}`)
       .order('created_at', { ascending: false }).limit(30);
+    if (r.error && /target_user_id/.test(r.error.message || '')) {
+      r = await supabase.from('pec_notifications')
+        .select('id,type,job_id,body,priority,created_at,read_at,target_view,target_id')
+        .order('created_at', { ascending: false }).limit(30);
+    }
     if (r.error && /target_view|target_id/.test(r.error.message || '')) {
       r = await supabase.from('pec_notifications')
         .select('id,type,job_id,body,priority,created_at,read_at')

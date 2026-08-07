@@ -1534,6 +1534,22 @@ async function handleReject(est, body) {
 // Best-effort by design: a logging failure must never break the customer page.
 const BOT_UA_RE = /\bbot\b|bot[\/;)]|crawler|spider|crawling|preview|prefetch|prerender|facebookexternalhit|whatsapp|slackbot|imgproxy|telegram|skypeuripreview|discord|twitterbot|linkedin|pinterest|embedly|googleimageproxy|snapchat|viber|\bline\//i;
 
+// "1st" / "2nd" / "3rd" / "11th" for the Slack line.
+function viewOrdinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+// Compact "3 hours" / "2 days" for "sent N ago".
+function agoLabel(ms) {
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${Math.max(mins, 1)} minute${mins === 1 ? '' : 's'}`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return `${hrs} hour${hrs === 1 ? '' : 's'}`;
+  const days = Math.floor(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'}`;
+}
+
 async function logEstimateView(est, event) {
   try {
     const ua = String(event.headers['user-agent'] || '').slice(0, 300);
@@ -1541,12 +1557,49 @@ async function logEstimateView(est, event) {
     const ip = String(event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim().slice(0, 60) || null;
     await sb('POST', '/pec_estimate_views', { estimate_id: est.id, user_agent: ua || null, ip });
 
-    const set = await sb('GET', '/settings?key=in.(estimate_view_notifications_enabled,estimate_view_notify_first_per_day)&select=key,value');
+    const set = await sb('GET', '/settings?key=in.(estimate_view_notifications_enabled,estimate_view_notify_first_per_day,estimate_view_slack_enabled)&select=key,value');
     const cfg = Object.fromEntries((set || []).map((r) => [r.key, r.value]));
+
+    // Which open is this? Counted AFTER the insert above, so the row just
+    // written is included ("1st view" on the very first open).
+    let viewCount = null;
+    try {
+      const vrows = await sb('GET', `/pec_estimate_views?estimate_id=eq.${est.id}&select=id`);
+      if (Array.isArray(vrows)) viewCount = vrows.length;
+    } catch (_) { /* count is decoration; the post below degrades without it */ }
+
+    // Slack on EVERY logged open (prompt 75 D1, Dylan's decision 7: no
+    // throttle; the bot-UA filter above is the only gate). Its own switch
+    // (estimate_view_slack_enabled), independent of the bell settings below;
+    // the first-per-day throttle applies to the BELL only. Best-effort,
+    // exactly like notifyOffice: wrapped, logged on failure, never blocks
+    // the customer render.
+    if (SLACK_OFFICE_WEBHOOK && String(cfg.estimate_view_slack_enabled || 'true') !== 'false') {
+      try {
+        const repName = (est.intake && est.intake.salesperson_name) || null;
+        const sentAgo = est.sent_at ? agoLabel(Date.now() - Date.parse(est.sent_at)) : null;
+        const url = `${SITE_URL}/e/${est.public_token}`;
+        const facts = [
+          est.price != null ? usd(est.price) : null,
+          repName ? `sold by ${repName}` : null,
+          viewCount ? `${viewOrdinal(viewCount)} view` : null,
+          sentAgo ? `sent ${sentAgo} ago` : null,
+        ].filter(Boolean).join(' · ');
+        const text = `:eyes: *${est.customer_name || 'Customer'} opened estimate ${estimateNo(est)}*${facts ? '\n' + facts : ''}\n<${url}|Open estimate>`;
+        const res = await fetch(SLACK_OFFICE_WEBHOOK, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+        });
+        if (!res.ok) console.error('public-estimate: view slack failed', res.status);
+      } catch (e) { console.error('public-estimate: view slack error', e.message); }
+    }
+
     if (String(cfg.estimate_view_notifications_enabled || 'true') === 'false') return;
     if (String(cfg.estimate_view_notify_first_per_day || 'false') === 'true') {
       // One bell per estimate per Phoenix day. Phoenix is UTC-7 year-round
-      // (no DST), so today's local midnight is a fixed UTC offset.
+      // (no DST), so today's local midnight is a fixed UTC offset. The
+      // per-rep row below sits after this return ON PURPOSE: shared and
+      // personal bells throttle together, so the two can never disagree
+      // about whether "today's view" was announced.
       const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Phoenix' }).format(new Date());
       const dupes = await sb('GET', `/pec_notifications?type=eq.estimate_viewed&target_id=eq.${est.id}&created_at=gte.${day}T07:00:00Z&select=id&limit=1`);
       if ((dupes || []).length) return;
@@ -1559,6 +1612,35 @@ async function logEstimateView(est, event) {
       target_view: 'estimates',
       target_id: est.id,
     });
+
+    // Personal bell for the rep who sold it (prompt 75 D2). Resolution chain:
+    // intake->salesperson_id -> pec_sales_team_members.auth_user_id ->
+    // admin_users(auth_user_id).id -> pec_notifications.target_user_id.
+    // If ANY hop fails (no salesperson on the intake, member with no login,
+    // pre-migration column missing), skip SILENTLY: the shared row above and
+    // Slack already fired. This is a display filter, never privacy: staff RLS
+    // still lets everyone read the row.
+    try {
+      const spId = est.intake && est.intake.salesperson_id;
+      if (!spId) return;
+      const members = await sb('GET', `/pec_sales_team_members?id=eq.${encodeURIComponent(spId)}&select=auth_user_id&limit=1`);
+      const authId = Array.isArray(members) && members[0] && members[0].auth_user_id;
+      if (!authId) return;
+      const admins = await sb('GET', `/admin_users?auth_user_id=eq.${encodeURIComponent(authId)}&select=id&limit=1`);
+      const adminId = Array.isArray(admins) && admins[0] && admins[0].id;
+      if (!adminId) return;
+      await sb('POST', '/pec_notifications', {
+        type: 'estimate_viewed_rep',
+        job_id: est.job_id || null,
+        body: est.estimate_number != null
+          ? `Your customer viewed estimate #${est.estimate_number}${viewCount ? ` (${viewOrdinal(viewCount)} view)` : ''}`
+          : 'Your customer viewed an estimate',
+        priority: 'normal',
+        target_view: 'estimates',
+        target_id: est.id,
+        target_user_id: adminId,
+      });
+    } catch (e) { console.warn('estimate view rep bell skipped:', e.message); }
   } catch (err) {
     console.warn('estimate view log skipped:', err.message);
   }
