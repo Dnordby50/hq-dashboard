@@ -97,15 +97,21 @@
     {
       "name": "Estimate view tracking",
       "area": "estimator",
-      "description": "Every customer open of the public estimate page is logged (link-preview bots from SMS/email apps filtered by user agent) and, when enabled, drops a shared bell notification for all staff; clicking it opens the estimate. The estimate card's Customer view section shows Viewed N times with the last open time. Settings > Estimates carries the notification switch (default on) and an optional first-view-per-day throttle (default off).",
+      "description": "Every customer open of the public estimate page is logged (link-preview bots from SMS/email apps filtered by user agent). On every logged open a Slack alert posts to #epoxysales with the customer, estimate number, price, salesperson, which open it is, and time since sent (its own switch, estimate_view_slack_enabled, default on; never throttled). When bell notifications are enabled, each open also drops a shared bell row for all staff plus a personal bell row for the salesperson on the estimate (resolved through the intake salesperson chain; pec_notifications.target_user_id, a display filter, not privacy); both bell rows share the optional first-view-per-day throttle. The estimate card's Customer view section shows a full view block: count, first and last open with relative times, the latest 10 individual opens, and a Hot chip when the shared hot rule is met (views >= estimate_hot_min_views with the last inside estimate_hot_window_hours; defaults 3/48, tunable in Settings > Estimates). A sent estimate with zero opens says Not opened yet.",
       "code": {
         "indexHtml": [
-          "renderEstimateDetail",
+          "loadNotifications",
           "notifTarget",
+          "pecEstimateHotSettings",
+          "pecEstimateIsHot",
+          "renderEstimateDetail",
           "renderSettingsEstimates"
         ],
         "netlifyFunctions": [
           "pec-public-estimate.cjs"
+        ],
+        "production": [
+          "estimate-views.cjs"
         ]
       },
       "tables": [
@@ -378,10 +384,13 @@
     {
       "name": "Sales Pipeline board",
       "area": "dashboard",
-      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip. Prompt 61 (Parts D-E): leads.source and customers.lead_source now share ONE vocabulary, the managed pec_lead_sources names (aliases column maps raw feed tokens at intake via resolveLeadSourceName, editable in Settings > Lead sources); badge color/label lookups normalize through leadSourceKey so canonical names stay colored. The source is manually editable on the lead detail (click the badge) and the customer detail (click the source line), the two stay in sync, and every change writes a source_changed lead_events row with the actor. No permission gate, no bulk edit, no kanban-card editor, all by explicit decision. Prompt 62: a derived Drafts column (estimates with status draft and no sent_at; NOT a leads.stage value) sits between Estimate Scheduled and Estimate Sent, and the board renders TWO card shapes: lead cards (now with a Draft chip when a draft estimate rides them, and a Contact line for business leads) plus estimate cards for estimates with no lead, which move by the estimate's own status and cannot be dragged (dropping a lead on Drafts explains itself). Counts, value rollups, search and date filters handle both shapes; source/campaign/owner filters exclude estimate cards; the Drafts footer shows a count when every card is priceless. Leads can be ARCHIVED off the board (archived_at; stage untouched, drips stopped three ways, contact kept) behind a Show: Archived filter, and the New lead modal uses the Individual/Business name model (first+last OR business_name always required, full_name stays the derived display column).",
+      "description": "A Kanban Sales Pipeline board (rail group Sales Pipeline, item Pipeline; individual records are still Leads) shows every lead as a card across seven pre-sale stages from New to Accepted or Lost, with drag-to-advance, per-column counts and pipeline value, source/campaign/owner filters, and speed-to-lead timers that turn red after an hour so no lead sits unclaimed. The Estimate Scheduled stage (third, between Contacted and Estimate Sent) fills itself when an on-site estimate appointment is booked (client Schedule Estimate flow or Routemize intake; a NEW lead entering it also stamps contacted_at) and empties back to Contacted when the last scheduled estimate is canceled; its cards carry an appointment date chip and the column sorts soonest visit first. Each card carries a Contacted Nx chip derived read-only from the outbound comms logs plus drip sends (calls, texts, emails matched by customer_id then normalized phone; drip ledger rows attributed by lead_id, with the drip mirror rows in the comms logs excluded so nothing double-counts; 0 reads Not contacted, red on an aging new lead) and a Hot/Warm/Cold AI score badge (70/40 cutoffs) with a hot-first sort in the filter bar. Facebook and Google form leads land in HQ automatically with an instant AI summary, 1-100 score, and next step, and duplicate submissions fold into the existing lead. Cards with an active drip enrollment show a small Drip chip. Prompt 61 (Parts D-E): leads.source and customers.lead_source now share ONE vocabulary, the managed pec_lead_sources names (aliases column maps raw feed tokens at intake via resolveLeadSourceName, editable in Settings > Lead sources); badge color/label lookups normalize through leadSourceKey so canonical names stay colored. The source is manually editable on the lead detail (click the badge) and the customer detail (click the source line), the two stay in sync, and every change writes a source_changed lead_events row with the actor. No permission gate, no bulk edit, no kanban-card editor, all by explicit decision. Prompt 62: a derived Drafts column (estimates with status draft and no sent_at; NOT a leads.stage value) sits between Estimate Scheduled and Estimate Sent, and the board renders TWO card shapes: lead cards (now with a Draft chip when a draft estimate rides them, and a Contact line for business leads) plus estimate cards for estimates with no lead, which move by the estimate's own status and cannot be dragged (dropping a lead on Drafts explains itself). Counts, value rollups, search and date filters handle both shapes; source/campaign/owner filters exclude estimate cards; the Drafts footer shows a count when every card is priceless. Leads can be ARCHIVED off the board (archived_at; stage untouched, drips stopped three ways, contact kept) behind a Show: Archived filter, and the New lead modal uses the Individual/Business name model (first+last OR business_name always required, full_name stays the derived display column). Prompt 75: cards carry a proposal-view corner chip, an eye icon with the open count that becomes a flame when the shared hot rule is met (estimate_hot_min_views/estimate_hot_window_hours in Settings > Estimates); it appears on no-lead estimate cards and on lead cards whose latest estimate was sent, loads in one aggregate query inside loadLeadsData, and is deliberately distinct from the AI Hot/Warm/Cold lead-score badge (lead quality vs the customer reading the proposal right now).",
       "code": {
         "indexHtml": [
           "changeLeadSource",
+          "estimateCardHtml",
+          "estimateViewChipHtml",
+          "leadCardHtml",
           "leadContactStats",
           "leadScoreBadge",
           "leadSourceKey",
@@ -392,9 +401,8 @@
           "openLeadLostModal",
           "openNewLeadModal",
           "renderLeads",
-          "wireLeadSourceEditor",
-          "estimateCardHtml",
-          "toggleLeadArchive"
+          "toggleLeadArchive",
+          "wireLeadSourceEditor"
         ],
         "netlifyFunctions": [
           "pec-lead-intake.cjs",
@@ -407,13 +415,14 @@
         ]
       },
       "tables": [
+        "estimates",
+        "lead_events",
         "leads",
         "pec_call_log",
-        "pec_sms_log",
         "pec_email_log",
+        "pec_estimate_views",
         "pec_lead_sources",
-        "lead_events",
-        "estimates"
+        "pec_sms_log"
       ],
       "since": "2026-07"
     },
@@ -804,27 +813,37 @@
     {
       "name": "Material ordering",
       "area": "dashboard",
-      "description": "A job-first Ordering view: a Jobs-to-order list of open jobs with schedule dates, crew, system, colors-confirmed and material-status chips, where you hand-pick the jobs to order for; the Order sheet aggregates the selected jobs by supplier with per-line editable order quantities that persist as manual overrides (order_qty_manual, kept through Recalculate until reset), ordered check-offs, hand-added lines (manual_added), and a print mode. Recalculate merges instead of clobbering (mergeRecalcLines). A by-customer putaway list and the date-range Pull Material modal remain. Ordering is gated behind a colors-confirmed check, surfaced as a disabled checkbox instead of a silent skip.",
+      "description": "A job-first Ordering view: a Jobs-to-order list of open jobs with schedule dates, crew, system, colors-confirmed and material-status chips, where you hand-pick the jobs to order for; the Order sheet aggregates the selected jobs by supplier with per-line editable order quantities that persist as manual overrides (order_qty_manual, kept through Recalculate until reset), ordered check-offs, hand-added lines (manual_added), and a print mode. Recalculate merges instead of clobbering (mergeRecalcLines). A by-customer putaway list and the date-range Pull Material modal remain. Ordering is gated behind a colors-confirmed check, surfaced as a disabled checkbox instead of a silent skip. Prompt 75: change-order areas never auto-generate material lines (crmPlanAreas drops is_change_order rows; a job whose only areas are change orders shows an explicit skip reason); a blank cure speed inherits the job's dominant one at plan-input time (inheritCureSpeeds) so same-product lines merge instead of splitting on the product|cure SKU key; a swatch area with no blend picked renders a zero-quantity 'Flake color not chosen' row that can never be ordered or persisted, plus a warning chip on the Jobs-to-order row; skip reasons render on the job row; and a Refresh button plus a 5-minute visibilitychange reload cover the page's reload-on-entry-only staleness gap.",
       "code": {
         "indexHtml": [
-          "renderJobs",
           "aggregateMaterialPull",
-          "resolveJobLines",
-          "mergeRecalcLines",
+          "applyFlakeNotChosen",
+          "calcAreasInputFor",
+          "computeMaterialPlan",
+          "crmPlanAreas",
+          "handleOrderLineToggle",
           "handleOrderQtyEdit",
           "handleOrderQtyReset",
-          "openProdAddLineModal",
-          "handleOrderLineToggle",
+          "inheritCureSpeeds",
+          "makePullCalcLines",
+          "mergeRecalcLines",
           "openMaterialPull",
+          "openProdAddLineModal",
+          "renderJobs",
           "renderMaterialPull",
-          "computeMaterialPlan"
+          "resolveJobLines"
+        ],
+        "production": [
+          "calculator.js"
         ]
       },
       "tables": [
-        "pec_prod_material_lines",
-        "pec_prod_products",
+        "job_area_materials",
+        "job_areas",
+        "pec_prod_crews",
         "pec_prod_job_schedule_days",
-        "pec_prod_crews"
+        "pec_prod_material_lines",
+        "pec_prod_products"
       ],
       "since": "2026-05"
     },
@@ -1187,7 +1206,7 @@
     {
       "name": "Notifications",
       "area": "platform",
-      "description": "A live notification bell in the top bar for events like costing submitted or sent back, payments edited or deleted, customer portal activity, and customer estimate views. Notifications are clickable and route straight to their source (the job's costing view, the invoice, the job card, or the estimate card), respecting each user's access.",
+      "description": "A live notification bell in the top bar for events like costing submitted or sent back, payments edited or deleted, customer portal activity, and customer estimate views. Notifications are clickable and route straight to their source (the job's costing view, the invoice, the job card, or the estimate card), respecting each user's access. Prompt 75: rows can target a single user (pec_notifications.target_user_id; NULL means shared, exactly as every pre-75 row). The bell loads shared rows plus your own targeted rows; this is a display filter, not a security boundary (staff RLS still reads the whole table), and read_at stays one shared column. First targeted use: the estimate_viewed_rep personal bell for the salesperson on a viewed estimate.",
       "code": {
         "indexHtml": [
           "loadNotifications",
@@ -1584,7 +1603,7 @@
     {
       "name": "Slack notifications",
       "area": "integrations",
-      "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events, including estimate accepted or declined and costings sent back with their reason.",
+      "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events: estimate accepted or declined, costings sent back with their reason, and (prompt 75) every customer open of a sent estimate with the price, salesperson, which open it is, and time since sent (switchable via estimate_view_slack_enabled in Settings > Estimates).",
       "code": {
         "netlifyFunctions": [
           "pec-notify-costing-sendback.cjs",
@@ -2171,6 +2190,26 @@
         "pec_notifications",
         "settings"
       ],
+      "since": "2026-08"
+    },
+    {
+      "name": "Deep links and shareable URLs",
+      "area": "platform",
+      "description": "The address bar mirrors wherever you are in the CRM as /?v=<view> plus a record id param (job, estimate, lead, customer, invoice), so any screen can be copied from the address bar or pasted into Slack and land a signed-in teammate on the same record. Every record row, pipeline card, global search result, and nav rail flyout item is a real anchor: plain click navigates in-app exactly as before (no reload), ctrl/cmd/middle-click opens a new tab (pecLinkClickGuard). A pasted link opens the outer CRM shell tab first (shared retry-click helper with the legacy ?view=prescott link), consumes once, and permission-gated views land on the dashboard with a toast instead of a blank panel. Back/Forward still walk views, including after arriving from a pasted URL (popstate falls back to parsing the URL). The legacy ?appt=<id> (Google Calendar), ?view=prescott, and ?portal=<token> contracts are untouched. Pipeline kanban drag survives: the anchor sits on the card's name with draggable=false, never around the draggable card.",
+      "code": {
+        "indexHtml": [
+          "pecNavUrl",
+          "pecHref",
+          "pecReadNavUrl",
+          "pecApplyNavParams",
+          "pecLinkClickGuard",
+          "pecSyncHistory",
+          "pecNavTuple",
+          "renderAuthUI",
+          "openJobQuickLook"
+        ]
+      },
+      "tables": [],
       "since": "2026-08"
     }
   ]

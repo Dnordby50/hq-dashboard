@@ -1,5 +1,38 @@
 [
   {
+    "id": "deep-links-new-tab",
+    "date": "2026-08-07",
+    "title": "Open anything in a new tab, and share a link to any screen",
+    "summary": "Every job row, estimate, lead card, customer, and search result is now a real link. Hold Ctrl (Cmd on Mac) and click, or middle click, to open it in a new tab; a plain click works exactly as before. The address bar also follows you around, so you can copy the URL of whatever you are looking at and paste it into Slack, and a signed-in teammate lands on the same record.",
+    "howto": [
+      "Ctrl click (Cmd click on Mac) or middle click any record row, pipeline card, search result, or menu item to open it in a new tab.",
+      "To share what you are looking at, copy the URL from the address bar and paste it anywhere; the link opens that exact record.",
+      "Back and Forward in the browser still walk through the screens you visited."
+    ]
+  },
+  {
+    "id": "estimate-view-slack-hot",
+    "date": "2026-08-07",
+    "title": "Know the moment a customer opens their proposal, and spot the hot ones",
+    "summary": "Every time a customer opens their estimate, a message posts to the #epoxysales Slack channel with who opened it, the price, the salesperson, which open it is, and how long since it was sent. The salesperson on the estimate also gets their own bell notification. The estimate page now shows the full view history (how many times, first and last open, each open listed), and estimates being read repeatedly get a flame on their Sales Pipeline card so you know who to call first.",
+    "howto": [
+      "Watch #epoxysales for the eyes alert whenever a proposal is opened; tap the link in it to jump to the estimate.",
+      "On the Sales Pipeline, an eye with a number shows how many times the proposal was opened; a flame means it is hot (repeat views, recently).",
+      "Tune what counts as hot, or turn the Slack alert off, in Settings > Estimates."
+    ]
+  },
+  {
+    "id": "ordering-change-order-fix",
+    "date": "2026-08-07",
+    "title": "Ordering no longer invents material for change orders",
+    "summary": "A change order area (like adding striping) no longer generates its own set of material lines, which used to create duplicate topcoat and phantom flake rows on the order sheet. Blank cure speeds now inherit the job's cure speed so the same product merges into one line. If a job's flake color was never picked, the order sheet says Flake color not chosen instead of listing a placeholder you could accidentally order, and the Ordering page has a Refresh button so job card edits made in another tab show up without a full reload.",
+    "howto": [
+      "Open a job with stray duplicate lines and hit Recalculate; the phantom rows are removed as long as they were never marked ordered.",
+      "If a job shows the flake color not chosen chip, pick the blend on the job card, then Recalculate.",
+      "Use the Refresh button on the Ordering page after editing a job card in another tab."
+    ]
+  },
+  {
     "id": "estimate-per-line-scope-schedule-terms",
     "date": "2026-08-06",
     "title": "Customer estimates now show the full scope under every line, a payment schedule, and terms",

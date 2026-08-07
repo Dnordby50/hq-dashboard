@@ -2432,6 +2432,34 @@
           "name": "estimate_schedule_enabled"
         }
       ]
+    },
+    {
+      "file": "2026-08-14_prompt75_notification_targeting.sql",
+      "date": "2026-08-14",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.pec_notifications.target_user_id"
+        },
+        {
+          "kind": "index",
+          "name": "idx_pec_notifications_target_user"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_view_slack_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_hot_min_views"
+        },
+        {
+          "kind": "setting",
+          "name": "estimate_hot_window_hours"
+        }
+      ]
     }
   ],
   "knownTables": [
