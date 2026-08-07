@@ -2,6 +2,42 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-07 MST] Cowork: EST-102066 root-caused and fixed live. The scope writer SKIPS templateless systems without clearing the old description, so prompt 74's clobber survives every Regenerate. Prompt 76 scoped (editable per-line descriptions, DripJobs-shaped estimator).
+
+By: Cowork
+
+Changed: two live prod UPDATEs via Supabase MCP (no migration, no code). Prompt 76 written and delivered to Dylan in chat as prompt-76-estimator-dripjobs.md.
+
+**THE BUG, and it is not what the report said.** Dylan reported "line item descriptions are not showing" on EST-102066 (Merlin Petrovich, SENT 2026-08-05, viewed 3 times). Two of the three area lines were fine. Someone regenerated the estimate at 2026-08-07 02:56 UTC and both Standard Flake lines healed to full 1,995-char scopes. The third line, `Patio: Custom System` at $1,900, still rendered the literal string **"385 sqft"** to the customer as its entire scope of work.
+
+**ROOT CAUSE.** `netlify/functions/pec-estimate-scope.cjs:223` pushes to `skipped[]` and `continue`s when an area's system type has no `scope_template`. It never nulls or rewrites `estimate_line_items.description`. So a description clobbered by the pre-prompt-74 save bug survives every regeneration forever, and the public page renders it because "385 sqft" is truthy. Prompt 74 killed the writer of the bad value but nothing reaches back and removes values already written on a line the generator cannot serve.
+
+**WHY THE REP PICKED CUSTOM SYSTEM.** Merlin's Patio area: `system_name = 'Custom System'`, `is_custom = false`, `custom_scope = null`, `notes = 'Grind, Stain and Seal'`. He needed Grind Stain and Seal. That system type exists but is `active = false` and templateless, so it is not in the dropdown. He picked the closest thing and typed his intent into internal notes, which the writer only uses as supplementary facts, never as the scope body.
+
+**BIGGER THAN ONE ESTIMATE. 6 of 11 system types have `scope_template IS NULL`:** Custom System, Metallic, MVB Only, Polydeck System, plus inactive Flake and Grind Stain and Seal. Only Standard Flake, Grind and Seal, Quartz and Concrete Polishing can produce scope. Three of the four jobs in the dashboard's own "Recently Sold Jobs" card are tagged CUSTOM SYSTEM. Every such estimate ships with no real scope, and prompt 74's hard send gate now blocks them with no way for the rep to clear the block, because TopCoat has no per-line description field a rep can edit at all.
+
+**LANDMINE FOUND, DEVIATION TAKEN.** Dylan chose "reactivate Grind Stain and Seal, write its template, switch the Patio area to it, regenerate." Cowork did NOT switch the area or activate the system type. Reason: **`Grind Stain and Seal` has 0 rows in `pec_prod_recipe_slots`**. Pointing a live sent line at it would give that line no material cost and broken GP math the next time anyone saves the estimate. Same hazard already live: **`Polydeck System` is `active = true` with 0 recipe slots.** Reactivation is gated on a recipe, which is Dylan's call because it moves money.
+
+**WHAT WAS ACTUALLY CHANGED LIVE (2 statements, both verified by re-query and by loading the public page):**
+1. `pec_prod_system_types.scope_template` seeded for `Grind Stain and Seal` (2,144 chars, house voice, no em dashes, derived from the existing Grind and Seal template plus the Concrete Polishing Ameripolish SureLock stain language). `active` LEFT AT false.
+2. `estimate_line_items.description` rewritten for EST-102066 `sort_order = 2` (2,167 chars) and `label` changed from `Patio: Custom System` to `Patio: Grind, Stain and Seal`. Merlin's `estimate_areas.system_type_id`, price ($1,900), and every other line untouched. Confirmed rendering on https://prescottepoxy.netlify.app/e/87975cd9-b61b-483f-8f08-b9bd908aa6ac.
+
+No email sent, per Dylan's decision. Aaron calls Merlin.
+
+**SECOND FINDING, not fixed.** The `Grind and Seal` template's own first line reads "Scope of work for grind, stain, and seal garage floor" but its body contains no stain step. Mislabeled or truncated. Not touched, since it is live on real estimates and the correct text is Dylan's call.
+
+**DripJobs comparison (done in Dylan's live account, proposal #3157980).** The Edit Line Item modal is: Service (product/service picker, Name with char counter, `Description Only` and `Optional` toggles), Pricing (Taxable, Calculator, Qty/Price/Tax Rate, big total), Description (a plain editable box with ONE "Generate with AI" button), footer `Save as new product/service`. **Exactly one AI feature in the whole proposal builder, and the description is always typeable.** That is the structural difference: TopCoat's scope is server-generated or nothing, which turns a missing template into a dead end instead of a 20-second fix.
+
+**PROMPT 76 SCOPED.** 12 multiple-choice questions asked and answered. Locked: per-line editable description on every line kind (templates seed, rep always edits, rep edit wins); the writer clears a description only when it matches the sqft fingerprint, never rep-typed text; line list collapses to a compact table with a full-height BOTTOM SHEET editor (rep works from a phone in the driveway); the whole-document scope UI is deleted from BOTH the estimator textarea and the estimate detail card while `estimates.scope_of_work` keeps feeding jobScope, crew scope, and the prompt-72 declined filter; Polish collapses into the single Generate button, which branches by context; AI price read and comps kept; send gate stays HARD but its messages become tappable links that open the offending line with the description focused; no tax concept; customer page layout untouched. Templates wanted for Metallic and MVB Only, to be DRAFTED for Dylan's approval and not written to the database.
+
+## Handoff to Dylan
+
+1. **Aaron calls Merlin** about the patio. The scope now reads correctly on the link he already has; no new email went out.
+2. **Review the Grind Stain and Seal scope text** Cowork wrote (Settings > Catalog, or query `pec_prod_system_types`). It is a derivation, not your words, and it is now the template every future grind/stain/seal job will inherit.
+3. **Grind Stain and Seal stays inactive until it has recipe slots.** Say the word and a session can build the recipe, then activate it.
+4. **`Polydeck System` is active right now with zero recipe slots.** Any estimate using it prices with no materials. Worth checking whether anything live has already gone out on it.
+5. **`Grind and Seal`'s template says "grind, stain, and seal" but has no stain step.** Tell a session what it should say.
+
 ## [2026-08-07 MST] Cowork: prompt 75 scoped (deep links / new-tab navigation, ordering line fixes, estimate view visibility). Root-caused the Bryan Smith duplicate lines: it is the topcoat, not the 1100 SL, and a change-order area is generating them.
 
 By: Cowork
