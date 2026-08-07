@@ -103,7 +103,7 @@ Both live reps resolve cleanly today: Aron Bronson (`c893da3f-…`, admin `bca09
 10. **Hot = repeat views, recently.** Both thresholds live in Settings (defaults: 3 or more views AND last view within 48 hours). Going quiet cools it off automatically.
 11. **The pipeline corner is an eye icon plus count, turning into a flame when hot.** Deliberately distinct from the existing AI Hot/Warm/Cold lead-score badge, which is untouched.
 12. **The schedule quick look's customer name links to the job detail when a CRM job exists, and renders as plain text when it does not** (manual "+ Add Job" entries). Never create a record from a read-only popup.
-13. On what he actually saw when material lines "did not populate": **he does not remember**. Fix the duplicates and harden the path so it cannot silently come up empty (Part C4).
+13. On what he actually saw when material lines "did not populate": **the job appeared in Jobs-to-order, the order sheet had no lines for it, and a full page reload fixed it.** Treat this as stale in-session state, not a generator bug, and see Part C4.
 
 ---
 
@@ -217,7 +217,21 @@ For a non-change-order area with no flake color picked (no `flake_color_id`, and
 
 ### C4. Prove the populate path, and make failure legible
 
-Dylan cannot recall whether the job never appeared, appeared with no lines, or only filled in after Recalculate. So:
+**Dylan pinned this down after the prompt was first written: the job DID appear in Jobs-to-order, the order sheet had no lines for it, and a full browser reload made the lines appear.** That is a staleness symptom, not a generator symptom. The generator was fine; the page was holding old state.
+
+The three candidates, in order of likelihood, all of which a reload clears:
+
+1. `state.crmAreasByProdJob` / `state.crmColorsConfirmedByProdJob` were loaded before the CRM job card had its areas or its colors-confirmed flag set. `loadCrmAreas` runs inside `loadJobs`, and `prodSwitchView` re-runs `loadJobs` on RE-ENTRY to Ordering (the B-022 fix, index.html ~41139). **But a user who never leaves the Ordering view never triggers that reload.** Editing the job card in a second tab, or having Anne confirm colors while Ordering sits open, reproduces exactly what Dylan saw.
+2. `state._calcCache` (index.html 38214, cleared only at the end of `loadJobs` and `loadCatalog`) holding an `{empty:true}` or `{error}` result computed against the stale areas.
+3. The colors-confirmed gate in `resolveJobLines` (~38851) holding the job out on a stale `false`.
+
+Reproduce candidate 1 before fixing anything: open Ordering, edit that job's areas or colors in a second tab, and watch the order sheet stay empty with no indication why. Then:
+
+- Add an explicit **Refresh** control on the Ordering page that re-runs `loadJobs` (which already clears `_calcCache` last, by design). One button, not a polling loop.
+- Consider re-running `loadJobs` when the tab regains visibility, matching the existing `visibilitychange` idle-probe pattern already in the file. Only if it is cheap; say what you chose and why.
+- Whatever the mechanism, the user must never be looking at an empty order sheet with no explanation. That is the actual bug Dylan hit.
+
+And regardless of cause:
 
 - `resolveJobLines` already returns a `{kind:'skipped', reason}` for every hold-out (colors not confirmed, no areas, calculator error, no lines produced). Make sure **the Ordering page surfaces that reason on the job row**, not only the Pull modal's summary. A job that produces nothing must say why, on screen, in one short sentence.
 - Re-run the Bryan Smith job (`58ec3097-6579-4e00-857c-a64d24eda220`) after the fix. Expected: **four** lines (1100 SL basecoat, Wombat flake, one merged Slow polyaspartic topcoat, and no striping-derived rows). Report the before and after quantities in the log entry. The two junk rows are unordered and undelivered, so `mergeRecalcLines` deletes them as stale.
@@ -363,6 +377,7 @@ Insert-only seeding, like every other settings migration in this repo.
 8. **The migration needs an `@artifacts` header** (rule 13) declaring the column and the index.
 9. **Prompt 74 shipped hours ago** and rewrote parts of the estimate detail render and all three send paths. Rebase on latest `main` and re-read the region before editing Part E.
 10. **`state._calcCache`** memoizes calculated lines per job and is cleared only by `loadJobs` / `loadCatalog`. Any change to the plan inputs must invalidate it, or the ordering page will keep serving the old lines within a session.
+11. **The Ordering page reloads on RE-ENTRY, not while you sit on it** (`prodSwitchView`, ~41139). Every staleness bug on that page hides in that gap. Do not "fix" it by reloading on every render; that page does two embedded multi-level queries per load.
 
 ---
 

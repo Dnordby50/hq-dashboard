@@ -22,6 +22,8 @@ Why: Dylan brought four things in one batch, then added a fifth mid-scoping. (1)
 
 **Numbering note for whoever reads this next:** the prompt files on disk stopped at 73, but prompt 74 shipped earlier the same day (commits ad6f381 through a6ca169) with no prompt file saved to the repo. The real next number came from the log and git, not the file listing. This is 75.
 
+**AMENDED same session, after Dylan pinned down the second half of the ordering complaint.** He did not remember at question time and answered "don't remember"; on a second pass he said the job DID show in Jobs-to-order, the order sheet had NO lines for it, and a full browser reload made them appear. That reframes Part C4 from a generator bug to a STALENESS bug, and the prompt was updated in place before hand-off. `loadCrmAreas` runs inside `loadJobs`, and `prodSwitchView` re-runs `loadJobs` only on RE-ENTRY to Ordering (the B-022 fix, index.html ~41139), so a user who never leaves the Ordering view keeps whatever `state.crmAreasByProdJob`, `state.crmColorsConfirmedByProdJob` and `state._calcCache` held when the page was first opened. Editing the job card in a second tab, or someone confirming colors while Ordering sits open, reproduces it exactly. The prompt now asks for that reproduction first, a Refresh control on the Ordering page, and a hard rule that an empty order sheet must always say why.
+
 **Open, non-blocking:** the URL param names (`v`, `job`, `estimate`, `lead`, `customer`, `invoice`) are effectively permanent once pasted into Slack threads, so they deserve one confirmation before the build; and whether the per-rep bell should also fire for Dylan on estimates he did not sell (spec says no).
 
 ## Handoff to Dylan
