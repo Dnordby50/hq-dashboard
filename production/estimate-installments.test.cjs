@@ -8,7 +8,7 @@ const {
   resolveDepositPct, defaultScheduleRows, scheduleValidationError,
   computeScheduleCents, freezeSchedule, scheduleSumsToTotal, triggerLabel,
 } = require('./estimate-installments.cjs');
-const { scopeSendBlockers, CLOBBER_DESC_RE, isMvbOnlyLineLabel } = require('./optional-lines.cjs');
+const { scopeSendBlockers, CLOBBER_DESC_RE, CLOBBER_DESC_EXACT_RE, isMvbOnlyLineLabel } = require('./optional-lines.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
 const { state, ok } = makeChecker();
@@ -112,6 +112,14 @@ const fixRow = (usd, extra) => ({ seq: 0, label: 'Row', amount_kind: 'fixed', am
     ok(isMvbOnlyLineLabel('Garage: MVB Only') && !isMvbOnlyLineLabel('MVB Only floor coating system'), 'MVB-only label forms');
     ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: null, label: 'Drive Time', description: null }], customAreaIds: new Set() }).length === 0, 'an add-on with no snippet never blocks (Drive Time ships without language)');
     ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: null, label: 'Stem Walls', description: '120 sqft' }], customAreaIds: new Set() }).length === 1, 'an add-on carrying the clobber fingerprint still blocks');
+  }
+
+  console.log('# exact clobber fingerprint (prompt 76 Part B: what the writer may CLEAR)');
+  {
+    ok(CLOBBER_DESC_EXACT_RE.test('385 sqft') && CLOBBER_DESC_EXACT_RE.test('  1430 sq ft  '), 'bare sqft strings match');
+    ok(!CLOBBER_DESC_EXACT_RE.test('970 sqft, includes moisture vapor barrier (MVB)'), 'sqft followed by real words never matches (rep text is never cleared)');
+    ok(!CLOBBER_DESC_EXACT_RE.test('We will grind 385 sqft of concrete.'), 'sqft inside a sentence never matches');
+    ok(!CLOBBER_DESC_EXACT_RE.test(''), 'empty string never matches');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

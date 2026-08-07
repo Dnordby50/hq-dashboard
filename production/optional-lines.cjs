@@ -118,6 +118,14 @@ function selectedScopeDoc(includedLines) {
 // ---------------------------------------------------------------------------
 const CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 
+// Prompt 76 Part B: the EXACT clobber fingerprint ("385 sqft" and nothing
+// else). The scope writer uses this to decide a description is machine junk
+// it may CLEAR on a templateless line. Deliberately stricter than the send
+// gate's prefix regex above: the gate may nag about "970 sqft, includes MVB"
+// (a human can fix it), but the writer must never DELETE text a human might
+// have typed after the number.
+const CLOBBER_DESC_EXACT_RE = /^\s*\d+\s*sq\s*ft\s*$/i;
+
 // The MVB-only system has no scope template by design (no template describes
 // a barrier-only job), so its lines are exempt from the scope requirement.
 // Label conventions from the estimator: "MVB Only" alone, or "Name: MVB Only".
@@ -168,6 +176,7 @@ module.exports = {
   optionalControlsVisible,
   SEND_GATE_MESSAGE,
   CLOBBER_DESC_RE,
+  CLOBBER_DESC_EXACT_RE,
   isMvbOnlyLineLabel,
   scopeSendBlockers,
   isOptionalLine,

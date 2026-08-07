@@ -32,6 +32,9 @@
 const { sb, badSecret, requireStaff } = require('./_pec-supabase.cjs');
 // Canonical BLANK-placeholder logic, shared with the estimator so keys match.
 const { applyAnswers, openQuestions, containsBlank } = require('../../production/scope.cjs');
+// Prompt 76 Part B: the EXACT clobber fingerprint ("385 sqft", nothing else).
+// Shared with the send gate's module so the two can never drift apart.
+const { CLOBBER_DESC_EXACT_RE } = require('../../production/optional-lines.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -194,7 +197,7 @@ exports.handler = async (event) => {
         // writer must never rewrite it; only the explicit Polish button
         // touches custom text, and only when the rep presses it.
         if (area && area.is_custom === true) {
-          skipped.push({ id: li.id, label: li.label, reason: 'custom line; typed scope used verbatim' });
+          skipped.push({ id: li.id, label: li.label, area_id: li.estimate_area_id, reason: 'custom line; typed scope used verbatim' });
           continue;
         }
         const sys = area ? systemById.get(area.system_type_id) : null;
@@ -220,7 +223,27 @@ exports.handler = async (event) => {
             internal_notes: area && area.notes && String(area.notes).trim() ? String(area.notes).trim() : null,
           });
         } else {
-          skipped.push({ id: li.id, label: li.label, reason: sys ? `no scope template on system "${sys.name}"` : 'area has no system' });
+          // Prompt 76 Part B: this writer used to skip WITHOUT touching the
+          // description, so a value the pre-prompt-74 save bug clobbered in
+          // ("385 sqft") survived every Regenerate forever (EST-102066). The
+          // writer must not leave a value it did not author and cannot vouch
+          // for, but it must NEVER delete rep-typed text, so the clear fires
+          // only on the EXACT fingerprint: digits + "sqft" and nothing else.
+          if (li.description != null && CLOBBER_DESC_EXACT_RE.test(String(li.description))) {
+            await sb('PATCH',
+              `/estimate_line_items?id=eq.${encodeURIComponent(li.id)}&estimate_id=eq.${encodeURIComponent(estimateId)}`,
+              { description: null });
+            li.description = null; // the assembled document below must not carry it either
+          }
+          skipped.push({
+            id: li.id,
+            label: li.label,
+            area_id: li.estimate_area_id,
+            reason: sys ? `no scope template on system "${sys.name}"` : 'area has no system',
+            // The estimator shows this per line (Part B3): no template means
+            // the generator can never fill this line; the rep types it.
+            needs_rep_text: true,
+          });
         }
         continue;
       }
