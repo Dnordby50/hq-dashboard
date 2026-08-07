@@ -7301,13 +7301,16 @@ const OPEN_ESTIMATE_STATUSES = ['draft', 'sent', 'signed', 'change_requested'];
 // keeps serving that cached DENY response to this iframe until its SW
 // updates; this makes the very next open work instead of waiting on the
 // browser's own update schedule.
-function estimatorFrameSrc({ leadId = null, estimateId = null } = {}) {
+function estimatorFrameSrc({ leadId = null, estimateId = null, focusLine = null } = {}) {
   try {
     navigator.serviceWorker.getRegistration('/estimator/').then(r => { if (r) r.update(); }).catch(() => {});
   } catch (_) { /* no SW support: nothing cached to worry about */ }
   const params = new URLSearchParams({ embed: '1' });
   if (estimateId) params.set('estimate_id', estimateId);
   else if (leadId) params.set('lead_id', leadId);
+  // Prompt 76 Part F: a send-gate blocker deep link opens this line's editor
+  // sheet with the description focused once the estimator loads.
+  if (focusLine != null) params.set('focus_line', String(focusLine));
   return `/estimator/?${params.toString()}`;
 }
 
@@ -7335,12 +7338,12 @@ function pecPostThemeToEstimator(frame) {
 // posts (ResizeObserver + rAF on its side). Fallback if no height arrives
 // within 1500ms (or the frame reports 0): min(1100px, 85vh) with internal
 // scrolling. Never below 520px either way.
-function mountInlineEstimator(container, { leadId = null, estimateId = null } = {}) {
+function mountInlineEstimator(container, { leadId = null, estimateId = null, focusLine = null } = {}) {
   if (pecEstInline.fallbackTimer) { clearTimeout(pecEstInline.fallbackTimer); pecEstInline.fallbackTimer = null; }
   const iframe = document.createElement('iframe');
   iframe.className = 'pec-estimator-inline';
   iframe.title = 'PEC Estimator';
-  iframe.src = estimatorFrameSrc({ leadId, estimateId });
+  iframe.src = estimatorFrameSrc({ leadId, estimateId, focusLine });
   iframe.style.height = Math.min(1100, Math.round(window.innerHeight * 0.85)) + 'px';
   container.innerHTML = '';
   container.appendChild(iframe);
@@ -28706,6 +28709,16 @@ async function renderEstimateDetail(estimateId) {
     }
     return `<details style="margin-top:2px"><summary style="cursor:pointer;color:var(--rd-accent,var(--accent));font-size:.72rem">View scope</summary><div style="color:var(--muted);font-size:.75rem;white-space:pre-wrap;margin-top:4px;max-height:260px;overflow-y:auto">${esc(text)}</div></details>`;
   };
+  // Prompt 76: a scope-bearing line with no description gets a loud inline
+  // note (the send gate will block on it; better to see it here first).
+  // Mirrors the gate's exemptions: custom areas and MVB-only lines never
+  // need one, add-on/one-off lines legitimately ship without.
+  const liCustomAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
+  const liNeedsScope = (li) => est.status !== 'accepted'
+    && !!li.estimate_area_id
+    && !liCustomAreaIds.has(li.estimate_area_id)
+    && !/(^|: )MVB Only$/.test(String(li.label || '').trim())
+    && !String(li.description == null ? '' : li.description).trim();
   // Optional-line state (prompt 72 F1): an "Optional" tag before acceptance;
   // after acceptance a DECLINED line (optional, not selected) renders struck
   // through with a Declined tag, read-only, and stays excluded from the
@@ -28722,6 +28735,7 @@ async function renderEstimateDetail(estimateId) {
       <td ${optional ? '' : 'colspan="1"'}>
         <div style="font-weight:600${declined ? ';text-decoration:line-through' : ''}">${esc(li.label || '')}${tag}${!li.addon_id && !li.estimate_area_id && !/floor coating system$|^Moisture vapor barrier \(MVB\)$/.test(String(li.label || '')) ? ' <span style="font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:#b45309;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:999px;padding:1px 7px;vertical-align:middle" title="Typed by hand, not from the add-on catalog. If this keeps getting typed, add it to the catalog.">one-off</span>' : ''}</div>
         ${lineDesc(li)}
+        ${liNeedsScope(li) ? '<div style="color:#b45309;font-size:.72rem;margin-top:2px">No scope of work yet. Edit the estimate and tap this line to type or generate it; sending is blocked until it has one.</div>' : ''}
       </td>
       <td style="text-align:right">${Number(li.qty) || 1}</td>
       <td style="text-align:right">${fmtMoney(li.unit_price)}</td>
@@ -28842,10 +28856,25 @@ async function renderEstimateDetail(estimateId) {
         </div>
 
         <div class="pec-card">
-          <div style="display:flex;justify-content:space-between;align-items:center">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
             <h3 style="margin:0">Line items</h3>
-            <button class="pec-btn ghost sm" id="estAddOptional">+ Add optional item</button>
+            <div style="display:flex;gap:8px">
+              <button class="pec-btn sm" id="estScopeGen">${est.scope_of_work ? 'Regenerate scope' : 'Generate scope'}</button>
+              <button class="pec-btn ghost sm" id="estAddOptional">+ Add optional item</button>
+            </div>
           </div>
+          ${est.scope_of_work && /\bBLANK\b/.test(String(est.scope_of_work)) ? `
+            <div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.45);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>The scope still says BLANK.</strong> Fill in the questions below (or edit the line in the estimator) before you send; a customer should never read the word BLANK in a document they are signing.
+            </div>` : ''}
+          ${est.scope_stale && est.scope_edited_at ? `
+            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>The estimate changed since the scope was edited by hand.</strong> The text is untouched; Regenerate scope replaces it with a fresh write-up from the current estimate.
+            </div>` : ''}
+          ${est.scope_stale && !est.scope_edited_at && est.scope_of_work ? `
+            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
+              <strong>The estimate changed since the scope was written.</strong> Tap Regenerate scope to bring the line descriptions up to date; sending is blocked until then.
+            </div>` : ''}
           <div class="pec-table-wrap" style="margin-top:8px"><table class="pec-table">
             <thead><tr><th>Item</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit</th><th style="text-align:right">Total</th><th></th></tr></thead>
             <tbody>${requiredItems.length ? requiredItems.map(li => lineRow(li, false)).join('') : '<tr><td colspan="5" style="color:var(--muted)">No line items recorded (estimate predates line items).</td></tr>'}</tbody>
@@ -28857,6 +28886,11 @@ async function renderEstimateDetail(estimateId) {
             </table></div>` : ''}
           <div style="display:flex;justify-content:flex-end;margin-top:10px;font-size:1.05rem;font-weight:800">
             Total: <span id="estItemsTotal" style="margin-left:8px">${fmtMoney(estimateLineItemsTotal(items))}</span>
+          </div>
+          <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
+            ${est.scope_edited_at
+              ? `Scope edited by hand ${esc(fmtRelativeTime(est.scope_edited_at))}. The AI never overwrites edits without the Regenerate click.`
+              : (est.scope_generated_at ? `Scope generated ${esc(fmtRelativeTime(est.scope_generated_at))}${est.scope_model ? ' · ' + esc(est.scope_model) : ''} from the verbatim system templates; only this estimate’s facts were substituted. Per-line text is editable in the estimator.` : 'Each line’s scope renders under it. Generate writes templated lines; templateless lines are typed on the line in the estimator.')}
           </div>
         </div>
 
@@ -28873,38 +28907,6 @@ async function renderEstimateDetail(estimateId) {
             <button class="pec-btn sm primary" id="estScopeAnswerSave">Save answers &amp; rewrite scope</button>
           </div>`;
         })()}
-
-        <div class="pec-card">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-            <h3 style="margin:0">Scope of work</h3>
-            <div style="display:flex;gap:8px">
-              ${est.scope_of_work ? '<button class="pec-btn ghost sm" id="estScopeEdit">Edit text</button>' : ''}
-              <button class="pec-btn sm" id="estScopeGen">${est.scope_of_work ? 'Regenerate' : 'Generate scope'}</button>
-            </div>
-          </div>
-          ${est.scope_of_work && /\bBLANK\b/.test(String(est.scope_of_work)) ? `
-            <div style="background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.45);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>This scope still says BLANK.</strong> Fill in the questions above (or Edit the text) before you send it; a customer should never read the word BLANK in a document they are signing.
-            </div>` : ''}
-          ${est.scope_stale && est.scope_edited_at ? `
-            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>The estimate changed since you edited this scope.</strong> Your text is untouched; Regenerate replaces it with a fresh write-up from the current estimate.
-            </div>` : ''}
-          ${est.scope_stale && !est.scope_edited_at && est.scope_of_work ? `
-            <div style="background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:8px;padding:8px 10px;font-size:.82rem;margin-top:10px">
-              <strong>The estimate changed since this scope was written.</strong> Saving no longer rewrites it by itself; Regenerate replaces it with a fresh write-up from the current estimate.
-            </div>` : ''}
-          <div id="estScopeView" style="margin-top:10px">
-            ${est.scope_of_work
-              ? `<div style="font-size:.84rem;line-height:1.55;white-space:pre-wrap;max-height:420px;overflow-y:auto;border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:10px 12px">${esc(est.scope_of_work)}</div>`
-              : '<div style="color:var(--muted);font-size:.82rem">No scope yet. Generate writes the customer-facing scope from the system templates and this estimate’s details (areas, stem walls, add-ons). It also runs by itself on the estimator’s first save, once the scope questions are answered and the device is online.</div>'}
-          </div>
-          <div style="color:var(--muted);font-size:.7rem;margin-top:8px">
-            ${est.scope_edited_at
-              ? `Edited by hand ${esc(fmtRelativeTime(est.scope_edited_at))}. The AI never overwrites your edits without the Regenerate click.`
-              : (est.scope_generated_at ? `Generated ${esc(fmtRelativeTime(est.scope_generated_at))}${est.scope_model ? ' · ' + esc(est.scope_model) : ''} from the verbatim system templates; only this estimate’s facts were substituted.` : '')}
-          </div>
-        </div>
 
         <div class="pec-card">
           <h3>Production detail</h3>
@@ -29331,55 +29333,31 @@ async function renderEstimateDetail(estimateId) {
     }
   });
 
-  // ---- Scope card actions ----------------------------------------------------
+  // ---- Regenerate scope (prompt 76 Part D3: lives on the Line items card;
+  // the whole-document Scope of work card and its Edit text flow are gone,
+  // while estimates.scope_of_work keeps being written by the server for
+  // jobScope, the crew scope, and the declined filter). Per-line text is
+  // edited in the estimator's line sheet.
   const genBtn = $('estScopeGen');
   if (genBtn) genBtn.addEventListener('click', async () => {
     // Regenerating over a HUMAN edit requires this explicit, warned click; the
     // server also refuses without force, so the UI cannot bypass the rule.
     const force = !!est.scope_edited_at;
-    if (force && !confirm('The scope was edited by hand. Regenerating REPLACES your edited text with a fresh write-up from the current estimate. Continue?')) return;
+    if (force && !confirm('The scope was edited by hand. Regenerating REPLACES the edited text with a fresh write-up from the current estimate. Continue?')) return;
     genBtn.disabled = true; genBtn.textContent = 'Writing…';
     try {
       const body = await callScopeGen(force);
       if (body.generated === false) {
         showToast(esc(body.reason || 'Nothing to generate for this estimate.'), { ttl: 6000 });
-        genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate' : 'Generate scope';
+        genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate scope' : 'Generate scope';
         return;
       }
       showToast('Scope written ✓', { ttl: 2500 });
       renderEstimateDetail(est.id);
     } catch (err) {
-      genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate' : 'Generate scope';
+      genBtn.disabled = false; genBtn.textContent = est.scope_of_work ? 'Regenerate scope' : 'Generate scope';
       showToast('Scope generation failed: ' + esc(err.message || String(err)), { ttl: 6000 });
     }
-  });
-  const scopeEditBtn = $('estScopeEdit');
-  if (scopeEditBtn) scopeEditBtn.addEventListener('click', () => {
-    const view = $('estScopeView');
-    view.innerHTML = `
-      <textarea id="estScopeTa" rows="16" style="width:100%;font-family:ui-monospace,monospace;font-size:.78rem;line-height:1.5">${esc(est.scope_of_work || '')}</textarea>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="pec-btn sm primary" id="estScopeSave">Save text</button>
-        <button class="pec-btn sm ghost" id="estScopeCancel">Cancel</button>
-      </div>
-      <div style="color:var(--muted);font-size:.7rem;margin-top:6px">Saving marks the scope as hand-edited: from then on the AI never replaces it without an explicit Regenerate.</div>`;
-    scopeEditBtn.style.display = 'none';
-    $('estScopeCancel').addEventListener('click', () => renderEstimateDetail(est.id));
-    $('estScopeSave').addEventListener('click', async () => {
-      const btn = $('estScopeSave');
-      btn.disabled = true; btn.textContent = 'Saving…';
-      try {
-        const upd = await withFreshWriteRetry(() => supabase.from('estimates')
-          .update({ scope_of_work: $('estScopeTa').value, scope_edited_at: new Date().toISOString(), scope_stale: false })
-          .eq('id', est.id), { label: 'estimate-scope-edit' });
-        if (upd.error) throw upd.error;
-        showToast('Scope saved', { ttl: 2000 });
-        renderEstimateDetail(est.id);
-      } catch (err) {
-        btn.disabled = false; btn.textContent = 'Save text';
-        showToast('Could not save scope: ' + esc(err.message || err), { ttl: 5000 });
-      }
-    });
   });
 }
 
@@ -29447,23 +29425,28 @@ function estimateOptionalGateOk(est) {
 const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 async function estimateSendGateOk(est) {
   const items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
+  // Prompt 76 Part F: blockers are structured now. A line-bound blocker
+  // carries its sort_order so the modal can LINK it: one tap opens that
+  // line's editor sheet with the description focused (under 20 seconds to
+  // clear). Estimate-level blockers (stale scope, schedule) stay plain rows.
   const blockers = [];
   if (est.scope_stale === true) {
-    blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope, then send.');
+    blockers.push({ msg: 'The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope (Line items card), then send.' });
   }
   const customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
   for (const li of items) {
     if (!li) continue;
     const label = li.label || 'Line';
     const desc = String(li.description == null ? '' : li.description).trim();
+    const sortOrder = Number.isFinite(Number(li.sort_order)) ? Number(li.sort_order) : null;
     if (!li.estimate_area_id) {
-      if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+      if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
       continue;
     }
     if (customAreaIds.has(li.estimate_area_id)) continue;
     if (/(^|: )MVB Only$/.test(String(label).trim())) continue;
-    if (!desc) blockers.push(`"${label}" has no scope of work yet. Generate the scope, then send.`);
-    else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+    if (!desc) blockers.push({ msg: `"${label}" has no scope of work yet.`, sortOrder });
+    else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
   }
   // Rule 4: a schedule (when one exists) must resolve to the OPENING total
   // exactly; sub-cent percent rounding is fine (the render's last-row
@@ -29474,24 +29457,78 @@ async function estimateSendGateOk(est) {
       .eq('estimate_id', est.id).order('seq', { ascending: true });
     if (!error && Array.isArray(inst) && inst.length) {
       if (inst.filter(r => r.is_deposit === true).length > 1) {
-        blockers.push('The payment schedule has two deposit rows; only one is allowed.');
+        blockers.push({ msg: 'The payment schedule has two deposit rows; only one is allowed.' });
       }
       const totalCents = Math.round((estimateOpeningTotal(est) ?? 0) * 100);
       const exact = (r) => r.amount_kind === 'percent' ? totalCents * (Number(r.amount_value) || 0) / 100 : Math.round((Number(r.amount_value) || 0) * 100);
       const diff = inst.reduce((s, r) => s + exact(r), 0) - totalCents;
       if (Math.abs(diff) >= 0.5) {
         const usdAbs = '$' + (Math.abs(diff) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        blockers.push(diff > 0
+        blockers.push({ msg: diff > 0
           ? `The payment schedule adds up to ${usdAbs} MORE than the estimate total. Fix it in the estimator's Payment schedule card.`
-          : `The payment schedule is ${usdAbs} short of the estimate total. Fix it in the estimator's Payment schedule card.`);
+          : `The payment schedule is ${usdAbs} short of the estimate total. Fix it in the estimator's Payment schedule card.` });
       }
     }
   } catch (_) { /* pre-migration: no schedule to gate */ }
   if (blockers.length) {
-    alert('This estimate cannot be sent yet:\n\n- ' + blockers.join('\n- ') + '\n\nFix the items above and send again.');
+    showEstimateSendBlockers(est, blockers);
     return false;
   }
   return true;
+}
+
+// Prompt 76 Part F: the blocker list is a MODAL with tappable rows instead of
+// an alert. Tapping a line-bound blocker opens that line's editor sheet in
+// the inline estimator with the description focused; estimate-level blockers
+// render as plain rows. Renders in #pecModalRoot (openModal), so it stacks
+// above Present mode (10000 over 9995).
+function showEstimateSendBlockers(est, blockers) {
+  openModal(`
+    <h3>This estimate cannot be sent yet</h3>
+    <div style="display:grid;gap:8px;margin:12px 0">
+      ${blockers.map(b => b.sortOrder != null ? `
+        <button type="button" class="pec-btn ghost est-blocker-link" data-sort="${b.sortOrder}" style="text-align:left;white-space:normal;line-height:1.45;display:block">
+          ${esc(b.msg)}
+          <span style="display:block;font-size:.72rem;color:var(--rd-accent,var(--accent));margin-top:3px;font-weight:600">Tap to open this line and type or generate its scope →</span>
+        </button>` : `
+        <div style="border:1px solid var(--rd-line,var(--border));border-radius:8px;padding:9px 11px;font-size:.85rem;line-height:1.45">${esc(b.msg)}</div>`).join('')}
+    </div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Close</button>
+    </div>
+  `, { onMount: modal => {
+    modal.querySelectorAll('.est-blocker-link').forEach(btn => btn.addEventListener('click', () => {
+      closeModal();
+      pecOpenEstimateLine(est.id, Number(btn.dataset.sort));
+    }));
+  } });
+}
+
+// Open ONE line's editor in the inline estimator. Already-mounted frame gets
+// the message (the estimator listens origin-checked); otherwise the frame
+// mounts fresh with ?focus_line=<sort_order> so the sheet opens on load.
+// From Present mode this first exits the presentation cleanly (the estimate
+// is unsent when the gate fires, so exit needs no confirm).
+function pecOpenEstimateLine(estimateId, sortOrder) {
+  const presentExit = document.getElementById('presentExit');
+  if (presentExit) presentExit.click();
+  const mounted = pecInlineEstimatorAlive() && String(pecEstInline.estimateId) === String(estimateId);
+  if (mounted) {
+    try { pecEstInline.iframe.contentWindow.postMessage({ type: 'pec-estimator-open-line', sortOrder }, window.location.origin); } catch (_) {}
+    try { pecEstInline.iframe.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+    return;
+  }
+  const host = document.getElementById('estInlineHost');
+  if (!host) { showToast('Open the estimate first, then edit the line.', { ttl: 4000 }); return; }
+  pecEstInline.closedFor = null;
+  const iframe = mountInlineEstimator(host, { estimateId, focusLine: sortOrder });
+  // Same layout switch renderEstimateDetail's openInlineEstimator applies.
+  host.style.display = 'block';
+  const left = document.getElementById('estSummaryLeft'); if (left) left.style.display = 'none';
+  const grid = document.getElementById('estSummaryGrid'); if (grid) grid.style.gridTemplateColumns = 'minmax(300px,1fr)';
+  const editBtn = document.getElementById('estEdit');
+  if (editBtn) { editBtn.disabled = true; editBtn.textContent = 'Editing below'; editBtn.title = 'The estimator is open below. Close it there to see the read-only summary.'; }
+  try { iframe.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
 }
 
 // The customer's OPENING total: required lines plus currently selected
