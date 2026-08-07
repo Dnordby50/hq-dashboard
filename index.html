@@ -19001,7 +19001,8 @@ async function renderSettingsEstimates() {
     .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimate_view_slack_enabled', 'estimate_hot_min_views', 'estimate_hot_window_hours', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
       'estimate_ai_enabled', 'comps_min_sample',
-      'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct']),
+      'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
+      'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px']),
     { label: 'settings-estimates' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const viewNotifsOn = (map.estimate_view_notifications_enabled || 'true') !== 'false';
@@ -19032,6 +19033,10 @@ async function renderSettingsEstimates() {
   const olOn = (map.optional_lines_enabled || 'true') !== 'false';
   const olPre = (map.optional_lines_preselect_default || 'true') !== 'false';
   const olWarn = Number(map.optional_lines_gp_warn_pct) > 0 ? Number(map.optional_lines_gp_warn_pct) : lpFloor;
+  // Line editor sheet (prompt 76). Defaults MUST match the estimator's
+  // catalog.ts and the migration seeds: true / 700.
+  const lsGenOn = (map.estimate_line_generate_enabled || 'true') !== 'false';
+  const lsBreak = Number(map.estimator_line_sheet_breakpoint_px) >= 320 ? Number(map.estimator_line_sheet_breakpoint_px) : 700;
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
@@ -19139,6 +19144,19 @@ async function renderSettingsEstimates() {
         </label>
         <button type="button" class="pec-btn ghost sm" id="olSave">Save</button>
       </div>
+    </div>
+    <div class="pec-card">
+      <div style="font-weight:700">Line editor</div>
+      <div style="color:var(--muted);font-size:.76rem;margin:4px 0 10px">The estimator's per-line editor (prompt 76): tapping a line opens a full-height bottom sheet on phones and a centered window on wide screens; the breakpoint decides where that switch happens. Generate with AI is the one AI button in the editor (writes templated scope, cleans up typed text); turning it off hides the button everywhere while typed descriptions keep working.</div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">
+          <input type="checkbox" id="lsSetGenOn" ${lsGenOn ? 'checked' : ''}> Generate with AI button on
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:.8rem">Sheet/window breakpoint (px)
+          <input type="number" id="lsSetBreak" min="320" max="2000" step="10" value="${lsBreak}" style="width:90px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit">
+        </label>
+        <button type="button" class="pec-btn ghost sm" id="lsSave">Save</button>
+      </div>
     </div>`;
   wireSettingsTabs(root);
 
@@ -19215,6 +19233,17 @@ async function renderSettingsEstimates() {
       await saveSetting('optional_lines_gp_warn_pct', warn);
     } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     showToast('Optional lines settings saved.');
+    renderSettings();
+  });
+  $('lsSave').addEventListener('click', async () => {
+    const btn = $('lsSave'); btn.disabled = true;
+    const bp = Math.floor(Number($('lsSetBreak').value));
+    if (!Number.isFinite(bp) || bp < 320 || bp > 2000) { showToast('The breakpoint must be between 320 and 2000 pixels.', { ttl: 4000 }); btn.disabled = false; return; }
+    try {
+      await saveSetting('estimate_line_generate_enabled', $('lsSetGenOn').checked ? 'true' : 'false');
+      await saveSetting('estimator_line_sheet_breakpoint_px', bp);
+    } catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    showToast('Line editor settings saved.');
     renderSettings();
   });
 }
@@ -41358,6 +41387,9 @@ function _mergeAcrossAreas(areaPlans) {
             <span style="color:var(--muted);font-size:.7rem;width:12px">${isOpen ? '&#9660;' : '&#9654;'}</span>
             <h3 style="margin:0;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</h3>
             ${s.active ? '' : '<span style="color:var(--muted);font-size:.7rem;flex:none">(inactive)</span>'}
+            ${s.active && !(s.scope_template && String(s.scope_template).trim()) ? '<span style="flex:none;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#b45309;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.4);border-radius:999px;padding:1px 8px" title="This system has no scope template: estimates using it get NO auto-written scope of work, and the rep has to type each line’s scope by hand before sending. Add a template in Edit.">no scope template</span>' : ''}
+            ${s.active && !((slotsBySys[s.id] || []).length) ? '<span style="flex:none;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#dc2626;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.45);border-radius:999px;padding:1px 8px" title="This system has ZERO recipe slots: any estimate using it prices with no material cost, so its GP math is wrong. Add the recipe below before letting estimates use it.">no recipe = no material cost</span>' : ''}
+            ${!s.active && !((slotsBySys[s.id] || []).length) ? '<span style="flex:none;font-size:.62rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);border:1px solid var(--rd-line,var(--border));border-radius:999px;padding:1px 8px" title="Do not reactivate this system until it has recipe slots: with none, estimates price with no material cost and broken GP.">recipe needed before activating</span>' : ''}
             <span style="margin-left:auto;color:var(--muted);font-size:.72rem;font-variant-numeric:tabular-nums;white-space:nowrap">Target GP ${pct(s.target_gp_pct)} · Labor ${pct(s.labor_budget_pct)} · Materials ${pct(s.materials_budget_pct)}</span>
             <button class="pec-btn sm" data-edit-system="${esc(s.id)}" style="flex:none">Edit</button>
           </div>

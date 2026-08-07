@@ -2460,6 +2460,22 @@
           "name": "estimate_hot_window_hours"
         }
       ]
+    },
+    {
+      "file": "2026-08-15_prompt76_line_editor_settings.sql",
+      "date": "2026-08-15",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "estimate_line_generate_enabled"
+        },
+        {
+          "kind": "setting",
+          "name": "estimator_line_sheet_breakpoint_px"
+        }
+      ]
     }
   ],
   "knownTables": [
