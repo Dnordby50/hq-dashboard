@@ -13,6 +13,11 @@
 // there is no circular require and the fixture tests can stub every provider.
 'use strict';
 
+// ONE deposit-percent resolution, shared with the estimator's schedule seeding
+// (prompt 74): system type's deposit_pct, else settings default_deposit_pct,
+// else 50. Lives in production/ so the estimator bundles the identical rule.
+const { resolveDepositPct } = require('../../production/estimate-installments.cjs');
+
 const EPS = 0.005;                 // same money epsilon as the AR predicates
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const usd = (n) => '$' + Number(n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -226,24 +231,26 @@ async function prepareDepositInstallment(sb, jobId, opts = {}) {
   if (job.deposit_amount != null && round2(job.deposit_amount) > EPS) {
     kind = 'fixed'; value = round2(job.deposit_amount); computed = value; source = 'job_manual';
   } else {
-    let pct = null;
+    let sysPct = null;
     const sysId = opts.systemTypeId || job.system_type_id;
     if (sysId) {
       try {
         const sr = await sb('GET', `/pec_prod_system_types?id=eq.${encodeURIComponent(sysId)}&select=deposit_pct&limit=1`);
         const st = Array.isArray(sr) ? sr[0] : null;
-        if (st && st.deposit_pct != null && Number(st.deposit_pct) > 0) { pct = Number(st.deposit_pct); source = 'system_type'; }
+        if (st && st.deposit_pct != null) sysPct = Number(st.deposit_pct);
       } catch (err) { console.warn('prepareDeposit: system type read failed:', String(err && err.message || err)); }
     }
-    if (pct == null) {
-      let v = null;
+    let settingPct = null;
+    if (!(Number.isFinite(sysPct) && sysPct > 0)) {
       try {
         const rows = await sb('GET', `/settings?key=eq.default_deposit_pct&select=value&limit=1`);
-        v = Array.isArray(rows) && rows[0] ? Number(rows[0].value) : null;
+        settingPct = Array.isArray(rows) && rows[0] ? Number(rows[0].value) : null;
       } catch (err) { console.warn('prepareDeposit: settings read failed:', String(err && err.message || err)); }
-      pct = (v != null && Number.isFinite(v) && v > 0) ? v : 50;   // 50 = the code's long-standing fallback
-      source = 'company_default';
     }
+    // Precedence lives in resolveDepositPct (shared with the estimator's
+    // schedule seeding, prompt 74): system > setting > 50.
+    const pct = resolveDepositPct(sysPct, settingPct);
+    source = (Number.isFinite(sysPct) && sysPct > 0) ? 'system_type' : 'company_default';
     if (!(price > 0)) return { prepared: false, reason: 'no_price' };
     kind = 'percent'; value = pct; computed = computeInstallmentAmount('percent', pct, price);
   }

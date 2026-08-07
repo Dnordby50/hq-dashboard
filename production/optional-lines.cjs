@@ -106,6 +106,55 @@ function selectedScopeDoc(includedLines) {
   return sections.join('\n\n---\n\n');
 }
 
+// ---------------------------------------------------------------------------
+// Prompt 74 send gate: per-line SCOPE. The customer page now renders each
+// line's description as its scope of work, so an estimate must not go out
+// while any scope-bearing line is empty or still carries the clobber
+// fingerprint (the old save path overwrote descriptions with "970 sqft";
+// prompt 74 Part A killed the writer, this catches a stale client that is
+// still writing it). Mirrored by the client gates in index.html; keep in
+// lockstep. HARD BLOCK, not a warning (locked decision 4), and the messages
+// NAME the offending lines: the rep is standing in a driveway.
+// ---------------------------------------------------------------------------
+const CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
+
+// The MVB-only system has no scope template by design (no template describes
+// a barrier-only job), so its lines are exempt from the scope requirement.
+// Label conventions from the estimator: "MVB Only" alone, or "Name: MVB Only".
+const isMvbOnlyLineLabel = (label) => /(^|: )MVB Only$/.test(String(label || '').trim());
+
+// items: estimate_line_items rows. customAreaIds: Set of estimate_areas ids
+// whose is_custom is true (a custom line's typed scope is the rep's own words
+// and is never required to exist). scopeStale: estimates.scope_stale.
+function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
+  const blockers = [];
+  if (scopeStale === true) {
+    blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope, then send.');
+  }
+  const customSet = customAreaIds instanceof Set ? customAreaIds : new Set(customAreaIds || []);
+  for (const li of (Array.isArray(items) ? items : [])) {
+    if (!li) continue;
+    const label = li.label || 'Line';
+    const desc = String(li.description == null ? '' : li.description).trim();
+    if (!li.estimate_area_id) {
+      // Add-on / one-off lines: many legitimately ship without scope language
+      // (Drive Time has no snippet), so only the clobber fingerprint blocks.
+      if (CLOBBER_DESC_RE.test(desc)) {
+        blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+      }
+      continue;
+    }
+    if (customSet.has(li.estimate_area_id)) continue; // typed scope is the rep's call
+    if (isMvbOnlyLineLabel(label)) continue;
+    if (!desc) {
+      blockers.push(`"${label}" has no scope of work yet. Generate the scope, then send.`);
+    } else if (CLOBBER_DESC_RE.test(desc)) {
+      blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
+    }
+  }
+  return blockers;
+}
+
 // The create-gate rule (optional_lines_enabled): when off, the Optional
 // checkbox does not render for a line that is not already optional, so no
 // NEW optional lines can be created; a line that IS optional keeps its
@@ -118,6 +167,9 @@ function optionalControlsVisible(enabled, isOptional) {
 module.exports = {
   optionalControlsVisible,
   SEND_GATE_MESSAGE,
+  CLOBBER_DESC_RE,
+  isMvbOnlyLineLabel,
+  scopeSendBlockers,
   isOptionalLine,
   isDeclinedLine,
   splitLineTotals,
