@@ -252,6 +252,54 @@ await section('pre-72 shaped rows (nothing optional): identical totals, job rows
   ok(declinedNoteLine([]) === null && selectedScopeDoc([]) === '', 'the helpers no-op on empty declines');
 });
 
+// --- Prompt 78 A3: the select action -----------------------------------------
+await section('select action: ticks persist immediately, price waits for the accept panel', async () => {
+  const db = mixedDb();
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: ['liP', 'liA'], signing: false }) });
+  ok(res.statusCode === 200, 'plain tick save succeeds');
+  ok(db.estimate_line_items.find((l) => l.id === 'liA').selected_by_customer === true, 'the add-on tick landed on its row');
+  ok(db.estimates[0].price === 4200, 'estimates.price did NOT move on a plain tick (decision 5: the required-only floor holds)');
+  ok(db.estimates[0].gp_dollars === undefined && db.estimates[0].gp_pct === undefined, 'no GP write on a plain tick');
+});
+
+await section('select with signing:true settles price + GP at the selection (honesty rule respected)', async () => {
+  const db = mixedDb();
+  // Give every line real cost data so the GP write is allowed.
+  db.estimate_line_items.forEach((l) => { l.unit_cost = { liG: 1400, liP: 1200, liA: 100 }[l.id]; });
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: ['liP'], signing: true }) });
+  ok(res.statusCode === 200, 'signing select succeeds');
+  ok(db.estimates[0].price === 7600, `price settles at required + ticked patio (got ${db.estimates[0].price})`);
+  ok(db.estimates[0].gp_dollars === 7600 - 1400 - 1200, `gp_dollars over the SAME included set (got ${db.estimates[0].gp_dollars})`);
+  ok(Math.abs(db.estimates[0].gp_pct - (5000 / 7600)) < 1e-9, 'gp_pct stored as a FRACTION, matching the estimator convention');
+});
+
+await section('select honesty rule: a zero unit_cost on a priced line writes NO gp at all', async () => {
+  const db = mixedDb();
+  db.estimate_line_items.forEach((l) => { l.unit_cost = l.id === 'liP' ? 0 : 1000; });
+  db.estimates[0].gp_dollars = 999; db.estimates[0].gp_pct = 0.5; // stored values must survive
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: ['liP'], signing: true }) });
+  ok(res.statusCode === 200, 'signing select still succeeds');
+  ok(db.estimates[0].price === 7600, 'price still settles');
+  ok(db.estimates[0].gp_dollars === 999 && db.estimates[0].gp_pct === 0.5, 'stored GP untouched: a fabricated margin is worse than a stale one');
+});
+
+await section('select refuses a terminal estimate: 409 and nothing written', async () => {
+  const db = mixedDb();
+  db.estimates[0].status = 'accepted';
+  quietFetch();
+  const mod = loadFn('pec-public-estimate.cjs', makeMockSb(db));
+  const res = await mod.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ token: TOKEN, action: 'select', selected_optional_ids: ['liA'], signing: true }) });
+  ok(res.statusCode === 409, 'a signed document is never re-selected (409)');
+  ok(db.estimate_line_items.find((l) => l.id === 'liA').selected_by_customer === false, 'no row write on a terminal status');
+  ok(db.estimates[0].price === 4200, 'price untouched on a terminal status');
+});
+
 // --- 9. The create gate --------------------------------------------------------
 await section('optional_lines_enabled=false: blocks creating a new optional line, never hides an existing one', async () => {
   ok(optionalControlsVisible(false, false) === false, 'disabled + not optional: the checkbox does not render, so no new optional line can be created');

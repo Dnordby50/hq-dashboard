@@ -1589,7 +1589,7 @@ async function handleSelect(est, body) {
   // a PRICED line means the cost data is missing, not that the margin is 100
   // percent, and a fabricated margin is worse than a stale one because it
   // looks authoritative in the pipeline. Any such line = write NO gp at all.
-  const costless = included.filter(li => Number(li.unit_cost) === 0 && Number(li.total) > 0);
+  const costless = included.filter(li => !(Number(li.unit_cost) > 0) && Number(li.total) > 0);
   const patch = { price: total };
   if (costless.length) {
     console.warn(`public-estimate select: gp skipped for estimate ${est.id}, zero unit_cost on priced line(s): ${costless.map(li => li.id).join(', ')}`);
