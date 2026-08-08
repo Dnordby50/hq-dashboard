@@ -2,6 +2,16 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Metallic scope template approved by Dylan and written live. MVB Only stays templateless pending approval.
+
+By: Claude Code
+
+Changed: one live prod UPDATE via Supabase MCP (no migration, no code): `pec_prod_system_types.scope_template` seeded for `Metallic` (1,963 chars, md5 f66510d0), guarded with `where scope_template is null` so it could never overwrite an existing template. Verified by re-query: Metallic is active with 4 recipe slots, so there is no pricing landmine; every Metallic estimate now auto-writes its line scope on the next generation, and the "no scope template" chip in Settings > Catalog clears by itself.
+
+The text is Dylan's edit of the prompt-76 draft (this is the approval the prompt 76 entry's handoff asked for), with two decisions he made explicitly when asked: the header/footer now read **4 day system / 4 days** to match the Day 1-4 body he wrote (prep + basecoat, metallic, cure day, Simiron 971 EFS gloss finish), and the "Concrete past garage door is not included" / "Stem walls are not included" lines stay HARDCODED at his choice, deliberately NOT the is/is not placeholders Standard Flake uses. Consequence recorded: a Metallic estimate whose intake ticks stem walls or coat-past-garage will still print "not included" on that line; the writer cannot resolve what is not a placeholder. His Day 3 / Day 4 lines were reformatted into the same bold day-header + bullet convention as Days 1 and 2, wording unchanged.
+
+Two open notes: (1) **MVB Only remains templateless**; its draft in the prompt 76 entry is still awaiting Dylan's word, and approving it must ship WITH the code change that retires the writer's MVB-only skip + the send gate's exemption, or the template sits unused. (2) Metallic has no `scope_template_mvb` variant, so a Metallic area with the MVB box ticked falls back to this standard template, which says nothing about the barrier or its extra day; if metallic-plus-MVB jobs are real, a variant is worth writing later.
+
 ## [2026-08-08 MST] Correction: two of the open-loop sweep's findings closed the same night, by the prompt 76 session running in parallel
 
 By: Claude Code
