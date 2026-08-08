@@ -51,6 +51,138 @@ Files touched: PROJECT-LOG.md (this entry).
 
 Nothing was changed. The two migrations and the prompt 76 log entry are the items worth clearing first; say the word and a session applies both migrations, regenerates SCHEMA.md, and writes the missing entry.
 
+## [2026-08-07 MST] Prompt 76 shipped: editable per-line scope descriptions, the DripJobs-shaped line editor (compact table + bottom sheet), one Generate button, tappable send-gate blockers, templateless-system warnings. Verified end to end on prod with a signed test estimate, zero residue.
+
+By: Claude Code
+
+Changed: seven commits on main (72704ad scope-writer clear + skip reasons, 81c4bf7 the estimator rework, 1daa49b detail-page scope card removal + tappable gate, cdbf432 catalog warnings + settings + migration, 62a0e9d gate fresh-read fix, 2c13ef3 sheet scroll-lock hardening, plus this docs commit). One new migration (settings seeds only, ALREADY APPLIED to prod via MCP), features.json (4 entries amended), What's New (1 entry), migration manifest regenerated.
+
+Why, and how each part works:
+
+**Part A, the description is finally a field the rep owns.** Prompt 74 built the lineDescription passthrough; nothing could EDIT it. Now every line kind opens an editor with a Description textarea: calculator areas edit lineDescription, custom lines edit customScope (verbatim rule untouched), add-ons and one-offs edit their description (catalog add-ons were not editable before at all). Precedence is explicit in code: a template seeds the field through the scope writer, but a rep edit WINS until the rep presses Generate again. Mechanism: lineDescEditedRef/addonDescEditedRef track lines edited this session; the post-generation refresh (the prompt-74 sort_order map) skips them, so an auto-first generation can never silently replace typed text; pressing Generate or Regenerate clears the flags because that IS asking. The refresh also now pulls add-on snippet descriptions back into form state (the same save-after-generate hole the area lines had).
+
+**Part B, the writer stops leaving stale text.** pec-estimate-scope.cjs's templateless branch NULLs the description ONLY when it matches the new CLOBBER_DESC_EXACT_RE (digits + sqft and NOTHING else, exported from production/optional-lines.cjs beside the send gate's prefix regex so they can never drift; 4 new fixture checks). Rep-typed text is never cleared, and the assembled document drops the cleared value too. Skip entries now carry area_id and needs_rep_text; the estimator maps them to form rows and the sheet shows the server's actual reason (verified live: 'no scope template on system "Custom System"'). The custom-line, add-on-no-snippet, and one-off/MVB branches are untouched per prompt 74's deviation note.
+
+**Part C, the editor.** The per-area stacked cards AND the separate Add-ons card collapsed into one Line items table: name, system, sqft, price, chips (OPTIONAL, scope check / no scope yet / no scope needed for MVB-only, custom/add-on/one-off), compact GP line. Tapping a row (or adding a line) opens BottomSheet.tsx with DripJobs' section order: Area (name/system/sqft/MVB), Pricing (line price or the custom cost basis, optional + starts-selected, calc/selling/GP strip), Description (+ the one Generate button + Undo), Internal notes. Footer: Remove line (guarded for the last area) + Done. Kept TopCoat-only concepts (MVB, GP readout); imported NO tax concept. **Modal lifecycles: this is a THIRD one**, inside the estimator PWA; it touches neither #pecModalRoot nor #prodModalRoot. #pecModalRoot is used (unchanged helpers) by the new blocker modal; #prodModalRoot untouched. The sheet owns escape-to-close, backdrop close, a Tab focus trap, focus restore, and scroll lock. The embed wrinkle: inlined on the estimate page the iframe is content-sized, so position:fixed would pin the sheet off screen; the sheet computes the iframe's VISIBLE slice from window.frameElement's rect (same-origin), positions absolutely inside it, re-computes on parent scroll/resize, and locks the parent page's scroll (body AND documentElement, restored on close), which is also what routes wheel/touch into the sheet's own overflow-y:auto scroller (prompt 71's iframe-wheel lesson). Under estimator_line_sheet_breakpoint_px it is a full-height bottom sheet; above, a centered window.
+
+**Part D, the whole-document scope UI is gone.** The estimator's Proposal/Scope textarea + its edited-scope save path (editedScope/panelEdited) are deleted; the estimate detail's Scope of work card (Edit text / Regenerate / 4,000-char readout) is deleted. Regenerate scope moved to the Line items card on BOTH surfaces, next to the per-line Generate; the stale and BLANK banners and the generated/edited provenance line moved with it, and detail-page line items show a loud "No scope of work yet" note mirroring the gate's exemptions. estimates.scope_of_work is STILL written by pec-estimate-scope and custom-mode saves; all three consumers verified live: jobScope (test accept produced jobs.scope byte-equal to estimates.scope_of_work), job_areas descriptions (both lines correct, crew-visible), and the prompt-72 declined filter (code path untouched; nothing declined in the test so the est.scope_of_work branch ran).
+
+**Part E, one AI button.** Polish is gone as a concept; "Generate with AI" lives in each Description header and branches by context: empty + template runs the writer (save-first, whole-estimate), text present polishes THAT text, empty + no template polishes internal notes or asks for typed text. Custom mode's button renamed to the same label, same undo. AI surfaces found in the estimate flow, per the audit ask: (1) scope writer, kept; (2) polish endpoint, kept as Generate's branch, its separate buttons removed; (3) AI price read + comps, untouched; (4) crew-notes generator ("Generate from proposal"), KEPT and not renamed: it is crew-facing, not part of the proposal builder Dylan called cluttered, and removing it was not named. JARVIS, lead game plan, drip AI untouched. Nothing else found.
+
+**Part F, the gate got a fresh read AND tappable links.** estimateSendGateOk builds structured blockers now; line-bound ones carry sort_order and render in a #pecModalRoot modal as buttons: tap one and the offending line's sheet opens with the description FOCUSED (mounted frame gets the origin-checked pec-estimator-open-line message; otherwise the frame mounts with ?focus_line=; Present mode exits first). DEVIATION FOUND WHILE VERIFYING, then fixed (62a0e9d): the gate used to judge the detail page's in-memory est snapshot, which the in-sheet fix flow never refreshes, so a rep who just cleared the block stayed blocked until a page re-render. The gate now re-reads line items, custom areas, scope_stale, and the opening total fresh (snapshot fallback on error). Rules unchanged: scope_stale, empty scope-bearing description, the prefix fingerprint, schedule-must-resolve; rule-2 exemptions exactly as prompt 74 left them. All three send paths run the SAME estimateSendGateOk call (email compose verified live blocked AND passing; text and Present share the identical call, code-verified; Present's modal stacks above the overlay, 10000 over 9995). Workflow note that has NOT changed: any save after generation still marks scope_stale, so the rhythm is still save, regenerate, send.
+
+**Part G, templateless surfaced.** Settings > Catalog > System Types chips every active system with no scope_template ("no scope template") and every active system with zero recipe slots ("no recipe = no material cost", the Polydeck hazard); inactive recipeless systems get "recipe needed before activating" so Grind Stain and Seal cannot be flipped on blind. Settings > Estimates gained a Line editor card (estimate_line_generate_enabled, estimator_line_sheet_breakpoint_px; migration 2026-08-15_prompt76_line_editor_settings.sql, seeds applied to prod, manifest regenerated).
+
+**Verification (all 10 steps, live prod as Dylan, test estimate EST-102082).** Baselines captured first (8 estimates / 18 areas / 24 line items / 0 installments / 96 jobs / 95 prod jobs / 94 customers / 17 leads). (1) Standard Flake 1,000 sqft + Custom System 400 sqft, saved: the Custom System line's description was NULL (not a sqft string) and the sheet showed the writer's skip reason. (2) Typed a 159-char scope on the Custom System line; survived save + full reload byte-for-byte (md5 91ef0890 verified in SQL). (3) Regenerate: the flake line refilled from the template (1,999 chars), the typed line's md5 unchanged. (4) Generate on the templateless line polished the typed text (no missing-template error), Undo restored it. (5) Emptied the flake description, saved, tried to send: the hard block fired as a modal, and tapping the blocker opened that line's sheet with the description focused. (6) Cleared it via the sheet's Generate, sent (email path, to Dylan's own address); the estimate went sent and the link went live. (7) curl (no JS at all) of /e/<token>: the typed Custom System scope rendered inside <details class="scopefold" open>, and @media print force-expands the folds (details.scopefold > *:not(summary) { display:block !important }). (8) Accepted + signed as "Prompt76 Testrun": jobs.scope equals estimates.scope_of_work, 2 job_areas rows with the correct per-line descriptions, prod job + areas created. (9) Bottom-sheet variant exercised inlined (by raising the breakpoint setting to 2000, then restoring 700): full-height sheet in the visible slice, repositions on parent scroll, internal scroller works, backdrop and escape close, parent scroll lock applied and restored. (10) npm test: 987 checks, 0 failed (945 baseline + prompt-75 additions + 4 new); estimator tsc + Vite build clean; every index.html script block parses.
+
+**Cleanup: zero residue.** 30 rows deleted in one transaction: 2 estimate_area_materials, 2 estimate_line_items, 2 estimate_areas, 4 pec_estimate_views, 1 estimate, 2 job_areas, 7 timeline_stages, 1 job, 1 pec_prod_busybusy_projects, 2 pec_prod_areas, 1 pec_prod_job, 1 customer, 4 pec_notifications, 1 pec_email_log. Post-cleanup counts match the baselines exactly. Residue outside the database (cannot delete from here): the Slack #epoxysales view posts, the test email in dnordby50@gmail.com, and POSSIBLY a real BusyBusy project (the autocreate row existed before cleanup; see handoff).
+
+**Findings for Dylan, restated per the prompt:**
+- The `Grind and Seal` template's first line still says "grind, stain, and seal" but its body has no stain step (Cowork's finding, still unfixed, still your call).
+- `Polydeck System` is active with zero recipe slots (now visibly chipped in the Catalog); `Grind Stain and Seal` stays inactive until it has recipe slots.
+- Pre-existing, unchanged: the AI price read errors on an estimate carrying a $0 calc line ("every line needs a positive calc_price"); a Custom System area with no recipe prices at $0, which is the recipeless hazard wearing a different hat.
+- The prompt-75 Cowork handoff (pec_notifications.target_user_id migration + SCHEMA.md regen) is STILL unapplied; confirmed live (the column is absent). Untouched by this build.
+
+**DRAFT scope_template for Metallic (Part G2, NOT written to the database, needs your approval and process corrections; derived from the Standard Flake template's structure and voice):**
+
+```
+Scope of work for metallic epoxy floor coating system
+
+2 day system
+
+**Day 1**
+
+**Surface Preparation**
+
+- Diamond grind concrete with 14 or 30 grit metal bond diamond tooling
+- Industrial HEPA vacuums will be used to limit the amount of dust on the floor and in the air
+- Perform minor cosmetic repairs to concrete, such as hairline cracks, shallow spalling areas
+- Does not include cracks wider than 1/8", or spalls deeper than 1/4" or larger than 3" in diameter
+- Does not include filling of control joints or expansion joints
+- Thoroughly vacuum area to remove any remaining dust
+
+**Basecoat Application**
+
+- Apply 1 coat of pigmented 100% solids epoxy basecoat to concrete by squeegee and roller
+- Concrete past garage door is/is not included
+- Stem walls are/are not included
+- We do not coat felt expansion material if it is present
+
+**Day 2**
+
+**Metallic Coat and Clear Coat**
+
+- Apply 100% solids epoxy with metallic pigment in the color BLANK, hand worked by squeegee and roller into a marbled finish
+- Metallic floors are hand worked and one of a kind: the final pattern is unique to your floor and will not exactly match any sample or photo
+- Apply 1 coat of Simiron clear gloss polyaspartic to floor by squeegee and roller
+
+**Cleanup**
+
+- Remove any debris, equipment, or waste materials generated during the coating process
+- Perform a final cleaning of the work area, leaving it in a tidy condition
+
+**Final Inspection**
+
+- Conduct a thorough inspection of the completed coating to ensure quality and adherence to specifications
+- Provide the client with a final walkthrough, explaining maintenance procedures and answering any questions
+- Do not drive on floor for 48 hours after final coat is applied
+- Do not close garage door for 24 hours after final coat is applied
+- Do not walk on floor for 24 hours after final coat is applied
+- Final payment is due upon completion of job
+
+**Warranty**
+
+Our 10 year warranty is in the attachments on this document on the left hand side
+
+Tentative start date:
+
+Expected project duration: 2 days
+```
+
+**DRAFT scope_template for MVB Only (same caveats):**
+
+```
+Scope of work for moisture vapor barrier application
+
+1 day system
+
+**Surface Preparation**
+
+- Diamond grind concrete with 14 or 30 grit metal bond diamond tooling
+- Industrial HEPA vacuums will be used to limit the amount of dust on the floor and in the air
+- Thoroughly vacuum area to remove any remaining dust
+
+**Moisture Vapor Barrier Application**
+
+- Apply 1 coat of moisture vapor barrier epoxy to concrete by squeegee and roller
+- The barrier seals the slab against moisture vapor transmission before any finish coating is applied
+- This scope covers the barrier only; no decorative or finish coating is included unless it appears as its own line on this estimate
+
+**Cleanup**
+
+- Remove any debris, equipment, or waste materials generated during the coating process
+- Perform a final cleaning of the work area, leaving it in a tidy condition
+
+**Final Inspection**
+
+- Do not walk on floor for 24 hours after the barrier is applied
+- Final payment is due upon completion of job
+
+Tentative start date:
+
+Expected project duration: 1 day
+```
+
+Heads up on MVB Only: today the writer SKIPS MVB-only lines by design and the send gate exempts them ("no template describes a barrier-only job"). If you approve this template, say so and a session will write it to the database AND retire that exemption in the same change, or the template would sit unused.
+
+## Handoff to Dylan
+
+1. **Try it:** open any draft estimate, tap a line in the Line items card, type or Generate its scope. Break a line on purpose and tap the send blocker to feel the 20-second fix.
+2. **Approve or edit the Metallic and MVB Only templates above** (day counts and product steps are my best derivation, not your words). Tell a session to write the approved text to pec_prod_system_types.
+3. **Check BusyBusy** for a project named "Prompt76 Testrun" (#102082) created 2026-08-07 evening by the accept autocreate, and delete it there if it exists; the local mapping row is already gone. The test email sits in dnordby50@gmail.com, and #epoxysales got a few EST-102082 view posts; both harmless, both labeled Prompt76 Testrun.
+4. **The prompt-75 Cowork handoff is still open** (notification-targeting migration + SCHEMA.md regen + live checks). Until it runs, the per-rep view bell keeps silently skipping.
+5. Recipe landmines now show as chips in Settings > Catalog: Polydeck System is active with no recipe (prices with no material cost); Grind Stain and Seal needs a recipe before reactivating.
+
 ## [2026-08-07 MST] Prompt 75 shipped: deep links + new-tab navigation everywhere, the Bryan Smith ordering bug fixed at the generator, Slack on every proposal view + a personal rep bell, and estimate view visibility (louder detail block, pipeline eye/flame chip)
 
 By: Claude Code

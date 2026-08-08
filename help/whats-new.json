@@ -1,5 +1,16 @@
 [
   {
+    "id": "line-editor-per-line-scope",
+    "date": "2026-08-07",
+    "title": "Tap any estimate line to edit it, including the scope the customer reads",
+    "summary": "The estimator's line list is a clean table now. Tap a line and a full screen editor opens with its name, price, options, internal notes, and a Description box you can type in. Every line can carry its own scope of work: templates still write it for systems that have one, and for systems that do not (like Custom System) you just type it. One Generate with AI button fills a templated line or cleans up your typed text. If sending is blocked because a line has no scope, the message is now a link: tap it and that line opens with the description ready to type.",
+    "howto": [
+      "Open an estimate, tap Edit, then tap any line in the Line items card to open its editor.",
+      "Type the scope in the Description box, or tap Generate with AI to write it from the system template (or clean up what you typed).",
+      "If a send is blocked, tap the message in the popup and the blocked line opens with the description focused. Fix it and send again."
+    ]
+  },
+  {
     "id": "deep-links-new-tab",
     "date": "2026-08-07",
     "title": "Open anything in a new tab, and share a link to any screen",
