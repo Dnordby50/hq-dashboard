@@ -2,6 +2,30 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: prompt 77 scoped (backlog clearance). Twelve scoping questions. The data killed one of Dylan's answers: only 2 of the 4 live clobbered rows can be regenerated, the rest sit on templateless systems.
+
+By: Cowork
+
+Changed: one new file, `claude-code-prompt-77-backlog-clearance.md`, plus this entry. No code, no schema, no data, no deploy. Read-only prod queries via Supabase MCP plus targeted greps.
+
+Why: Dylan asked for one prompt covering every open item including prompt 71. Packaging is one phased prompt (Part 0 migrations and docs, Part A clobber survivors, Part B catalog integrity, Part C prompt 71 verbatim, Part D housekeeping).
+
+**The finding that changed a locked decision.** Dylan chose "backfill everything fixable" on the sqft clobber. Querying each row's system type shows only EST-102038 (draft) and EST-102064 (SENT, Susan Nasser) are on Standard Flake and therefore regenerable. EST-102033 (Polydeck), EST-102046 (Custom System, Lynette, ACCEPTED) and Lynette's `job_areas` row `8f5d0ce4` are all on TEMPLATELESS systems, so `pec-estimate-scope.cjs` skips them and regeneration writes nothing. Since prompt 76 the writer CLEARS the fingerprint on those instead, which would leave Lynette's signed crew work order with a blank scope. The prompt therefore splits Part A: regenerate the two, clear the draft, and hand-write a short truthful scope for Lynette's 50 sqft garage skirt with the exact text printed in chat before any write.
+
+**Second correction worth recording.** These rows' labels are `<System> floor coating system`, not `Area: System`. They are pre-per-line-pricing vintage with one line per estimate, so any join from `estimate_line_items.label` to `estimate_areas.name` returns null. Key off estimate_id + sort_order.
+
+**Dylan's twelve locked decisions:** one phased prompt; build the Polydeck recipe and keep it active BUT he supplies the spec (Part B2 is a blocked task, no guessing, no placeholder rates); draft Metallic and MVB Only templates to a file for approval, never to the database; fix EST-102064 live with no email; backfill everything fixable; fix `Grind and Seal`'s title by dropping "stain" rather than adding a stain step; seed the FTP `pec_brand_identity` row with `estimate_terms_text` left NULL; build prompt 71 as scoped, all three surfaces plus the modal X; Claude Code applies the migrations itself and STOPS if permission-blocked rather than writing another handoff nobody reads; Claude Code reconstructs prompt 76's log entry from the five commit diffs; prompt 73's leftovers ride along as a ready-to-paste Cowork handoff; full live E2E verification.
+
+**Part 0 stop rule, and why it exists.** Three migrations are stranded (salesask 2026-07-31, prompt 75, prompt 76), two with their code already deployed. Every one got stranded the same way: a session hit the permission wall on prod DDL, wrote a handoff, and kept going. The prompt makes Part 0 gate everything and requires the session to END on a block, printing a Cowork prompt instead of continuing.
+
+Files touched: claude-code-prompt-77-backlog-clearance.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: Dylan runs prompt 77 in Claude Code. The Polydeck recipe spec is the one input he has to supply mid-build.
+
+## Handoff to Dylan
+
+Have the Polydeck recipe spec ready before you start Part B: per slot, the product, material_type, coverage or spread rate, unit, and whether it is required. Part B2 will print the Standard Flake recipe as a shape reference and then wait on you.
+
 ## [2026-08-08 MST] Cowork: open-loop sweep. Read-only audit of every outstanding handoff against the live database. Two migrations are unapplied while their code is already deployed, and prompt 76 shipped with no log entry and no What's New.
 
 By: Cowork
