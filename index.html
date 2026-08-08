@@ -22498,11 +22498,13 @@ function salesAskRowHtml(r, cfg) {
     : '';
   const coaching = salesAskJsonbLines(r.coaching);
   const turns = Array.isArray(r.transcript) ? r.transcript : null;
-  // Prompt 71 B3: the summary used to be EMPTY with only an aria-label, so
-  // there was nothing visible to click. Visible label + chevron now; the
-  // details stays collapsed by default and the aria behavior is unchanged.
+  // Prompt 71 B3 verified live, then REVERTED to the original: the summary's
+  // visible label was never missing; .qo-tr summary::before supplies "View
+  // transcript" / "Hide transcript" from CSS (index.html ~2174), and an
+  // inline label rendered as a duplicate right next to it. The details stays
+  // collapsed by default, aria-label unchanged.
   const transcriptHtml = (turns && turns.length)
-    ? `<details class="qo-tr"><summary aria-label="Toggle transcript" style="cursor:pointer;font-size:.76rem;font-weight:600;color:var(--rd-muted,#6b7280)">Full transcript ▸</summary>
+    ? `<details class="qo-tr"><summary aria-label="Toggle transcript"></summary>
          <div class="qo-tr-body">${turns.map(t => `<div style="margin-bottom:5px">${t && t.speaker ? `<strong>${esc(t.speaker)}:</strong> ` : ''}${esc((t && t.text) || '')}</div>`).join('')}</div>
        </details>`
     : '';
