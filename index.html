@@ -464,6 +464,19 @@ textarea{resize:vertical;min-height:60px}
 .pec-btn.ghost{background:transparent}
 .pec-btn.sm{padding:4px 10px;font-size:.7rem}
 .pec-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:14px}
+/* Settings shell (prompt 80): vertical rail + content column, assembled by
+   wireSettingsTabs' DOM restructure. The rail is sticky under the app
+   header (header is sticky top:0, ~64px tall; 80px matches the
+   .owner-sop-chat offset). Below the settings_rail_breakpoint_px width,
+   .pec-settings-narrow stacks the shell and swaps the list for the select. */
+.pec-settings-shell{display:flex;gap:14px;align-items:flex-start}
+.pec-settings-shell>[data-settings-rail]{flex:0 0 200px;position:sticky;top:80px}
+.pec-settings-content{flex:1;min-width:0}
+[data-settings-selectwrap]{display:none}
+.pec-settings-shell.pec-settings-narrow{display:block}
+.pec-settings-shell.pec-settings-narrow>[data-settings-rail]{position:static;margin-bottom:12px}
+.pec-settings-shell.pec-settings-narrow [data-settings-list]{display:none}
+.pec-settings-shell.pec-settings-narrow [data-settings-selectwrap]{display:block}
 .pec-card h3{font-family:var(--sans);font-weight:700;font-size:1rem;margin-bottom:12px;letter-spacing:.3px}
 .pec-grid-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
 .pec-stat{background:var(--s1);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
@@ -18827,38 +18840,203 @@ async function openBonusHandouts(bonusIds, payInfo) {
 // ============================================================
 // Settings (admin role only)
 // ============================================================
-// Settings tab shell. General = the existing config sections; Email = the
-// transactional-email panel. state.settingsTab persists the active tab.
+// Settings shell (prompt 80). The page MANIFEST is the artifact prompt 81
+// edits: one entry per Settings page, with the search keywords that let the
+// rail's search find a page by what you were looking for rather than the
+// page's name. Keywords are the one hand-maintained thing here; a
+// per-control search index was considered and rejected as unmaintainable
+// against ~78 controls that move in the next prompt. The `records` group is
+// defined and renders nothing until a page claims it (prompt 81).
+const SETTINGS_PAGES = [
+  // group: 'config' | 'records'
+  { key: 'general',      label: 'General',      group: 'config',
+    keywords: ['review link', 'referral', 'birthday', 'financing', 'labor burden', 'overtime', 'bonus', 'touch-up', 'metrics', 'upload'] },
+  { key: 'people',       label: 'People',       group: 'config', keywords: ['users', 'logins', 'roles', 'crew members', 'sales team', 'sign-in'] },
+  { key: 'email',        label: 'Email',        group: 'config', keywords: ['sender', 'from address', 'templates', 'test send'] },
+  { key: 'appointments', label: 'Appointments', group: 'config', keywords: ['booking', 'reminders', 'google calendar', 'routemize', 'salesask'] },
+  { key: 'drips',        label: 'Drips',        group: 'config', keywords: ['quiet hours', 'approval', 'instant reply', 'automation'] },
+  { key: 'estimates',    label: 'Estimates',    group: 'config', keywords: ['line pricing', 'optional lines', 'gp floor', 'comps', 'proposal'] },
+  { key: 'invoicing',    label: 'Invoicing',    group: 'config', keywords: ['deposit', 'payment schedule', 'installment'] },
+  { key: 'presentation', label: 'Presentation', group: 'config', keywords: ['present mode', 'sections', 'gallery', 'reviews'] },
+  { key: 'busybusy',     label: 'BusyBusy',     group: 'config', keywords: ['hours', 'import', 'payroll', 'geofence', 'time entries'] },
+  { key: 'brand',        label: 'Brand',        group: 'config', keywords: ['logo', 'terms', 'invoice text', 'status descriptions'] },
+];
+const SETTINGS_GROUP_LABELS = { config: 'Configuration', records: 'Records' };
+
+// Silent redirect map (prompt 80 Part E): old page keys route to their new
+// home BEFORE renderSettings dispatches. No toast, no "this has moved"
+// banner (a breadcrumb outlives its usefulness). One entry today; prompt 81
+// adds lines here instead of inventing the mechanism mid-move, and it keeps
+// the birthday-bell deep link (People) and the drift-banner deep link
+// (General) from silently 404ing into a blank view after keys change.
+const SETTINGS_KEY_ALIASES = { users: 'people' };
+
+// The rail breakpoint (settings_rail_breakpoint_px, seeded 900 by prompt
+// 79). Cached on window.pecState, NOT a module-scope const: settingsTabBar
+// is reachable from both the module and the classic script blocks, and
+// module-level consts are invisible to the classic blocks (the standing
+// gotcha). Falls back to 900 when the row is missing or unparseable.
+function settingsRailBreakpoint() {
+  const v = Number(window.pecState && window.pecState._settingsRailBreakpointPx);
+  return Number.isFinite(v) && v > 0 ? v : 900;
+}
+async function loadSettingsRailBreakpoint() {
+  const st = window.pecState;
+  if (!st || st._settingsRailBreakpointLoaded) return;
+  st._settingsRailBreakpointLoaded = true;
+  try {
+    const { data } = await supabase.from('settings').select('value').eq('key', 'settings_rail_breakpoint_px').maybeSingle();
+    const v = Number(data && data.value);
+    if (Number.isFinite(v) && v > 0) st._settingsRailBreakpointPx = v;
+  } catch (_) { /* row missing or unreadable: settingsRailBreakpoint() falls back to 900 */ }
+}
+
+// The Settings rail (prompt 80): "Settings" heading, the search input, then
+// the grouped page list, plus a hidden <select> twin the narrow-window mode
+// shows instead of the list. Returned as ONE element (data-settings-rail)
+// so every existing `root.innerHTML = settingsTabBar(key) + content` call
+// site keeps working unchanged; wireSettingsTabs assembles the two-column
+// shell around it afterwards. The old horizontally scrolling strip and its
+// right-edge mask fade are gone.
 function settingsTabBar(active) {
-  // The "Settings" label sits OUTSIDE the scrolling strip so it stays pinned;
-  // the strip scrolls horizontally on narrow windows (no wrap, no dropdown) with
-  // a static right-edge fade as the "there's more" affordance. Buttons are
-  // flex:0 0 auto so they never squash into ellipses.
-  const btn = (key, label) => `<button class="pec-btn ${active === key ? 'primary' : 'ghost'} sm" data-settings-tab="${key}" style="flex:0 0 auto;white-space:nowrap">${label}</button>`;
-  return `<div class="pec-card" style="display:flex;gap:8px;align-items:center;padding:10px 14px;margin-bottom:12px">
-    <strong style="margin-right:6px;flex:0 0 auto">Settings</strong>
-    <div data-settings-tabstrip style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:thin;-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 26px),transparent 100%);padding-bottom:2px">
-    ${btn('general', 'General')}
-    ${btn('people', 'People')}
-    ${btn('email', 'Email')}
-    ${btn('appointments', 'Appointments')}
-    ${btn('drips', 'Drips')}
-    ${btn('estimates', 'Estimates')}
-    ${btn('invoicing', 'Invoicing')}
-    ${btn('presentation', 'Presentation')}
-    ${btn('busybusy', 'BusyBusy')}
-    ${btn('brand', 'Brand')}
-    </div>
+  const query = String(state.settingsSearch || '');
+  const groups = ['config', 'records']
+    .map(key => ({ key, pages: SETTINGS_PAGES.filter(p => p.group === key) }))
+    .filter(g => g.pages.length);
+  // A group header only renders when there is more than one non-empty group,
+  // so today's all-config rail is a plain list with no stray heading.
+  const showHeaders = groups.length > 1;
+  const item = (p) => `<button class="pec-btn ${active === p.key ? 'primary' : 'ghost'} sm" data-settings-tab="${esc(p.key)}" data-search="${esc((p.label + ' ' + p.keywords.join(' ')).toLowerCase())}" style="display:block;width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.label)}</button>`;
+  const listHtml = groups.map(g => `
+      <div data-settings-group="${esc(g.key)}">
+        ${showHeaders ? `<div style="font-size:.62rem;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted);margin:10px 2px 4px">${esc(SETTINGS_GROUP_LABELS[g.key] || g.key)}</div>` : ''}
+        <div style="display:grid;gap:4px">${g.pages.map(item).join('')}</div>
+      </div>`).join('');
+  const optHtml = groups.map(g => `<optgroup label="${esc(SETTINGS_GROUP_LABELS[g.key] || g.key)}">${g.pages.map(p => `<option value="${esc(p.key)}"${active === p.key ? ' selected' : ''}>${esc(p.label)}</option>`).join('')}</optgroup>`).join('');
+  return `<div class="pec-card" data-settings-rail data-settings-active="${esc(active)}" style="padding:14px">
+    <strong style="display:block;margin-bottom:8px">Settings</strong>
+    <input data-settings-search type="search" placeholder="Search settings" value="${esc(query)}" autocomplete="off" style="width:100%;padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--s2);color:var(--text);font-size:.78rem;font-family:inherit;margin-bottom:8px">
+    <div data-settings-list>${listHtml}</div>
+    <label data-settings-selectwrap>
+      <select data-settings-select aria-label="Settings" style="width:100%;padding:7px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--s2);color:var(--text);font-size:.78rem;font-family:inherit">${optHtml}</select>
+    </label>
   </div>`;
 }
 function wireSettingsTabs(root) {
-  root.querySelectorAll('[data-settings-tab]').forEach(b => b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); }));
-  // Deep links (birthday bell -> People, drift banner -> General) may land on a
-  // tab that sits off-screen in the scroll strip; bring it into view.
-  try {
-    const act = root.querySelector('[data-settings-tabstrip] .pec-btn.primary');
-    if (act) act.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-  } catch (_) {}
+  const rail = root.querySelector('[data-settings-rail]');
+  if (!rail) return;
+  // Two-column layout by DOM RESTRUCTURE (prompt 80), not by markup changes
+  // at the 14 call sites: the rail is the first element the page's
+  // innerHTML set; everything after it is that page's content. Wrap the
+  // content siblings in .pec-settings-content and put rail + content inside
+  // a .pec-settings-shell flex container. Idempotent: some paths (the two
+  // migration-missing early returns, email) render and wire in quick
+  // succession, so a root that already has the shell is left alone.
+  let shell = root.querySelector('.pec-settings-shell');
+  if (!shell) {
+    shell = document.createElement('div');
+    shell.className = 'pec-settings-shell';
+    const content = document.createElement('div');
+    content.className = 'pec-settings-content';
+    const sibs = [];
+    for (let n = rail.nextSibling; n; n = n.nextSibling) sibs.push(n);
+    rail.parentNode.insertBefore(shell, rail);
+    shell.appendChild(rail);
+    sibs.forEach(s => content.appendChild(s));
+    shell.appendChild(content);
+  }
+
+  // Navigation: rail buttons and the narrow-mode select drive the same
+  // state.settingsTab -> renderSettings() path the old tab strip used.
+  // data-wired guards make a second wire pass on the same DOM a no-op, so
+  // the quick-succession render paths never stack duplicate listeners.
+  root.querySelectorAll('[data-settings-tab]').forEach(b => {
+    if (b.dataset.wired) return;
+    b.dataset.wired = '1';
+    b.addEventListener('click', () => { state.settingsTab = b.dataset.settingsTab; renderSettings(); });
+  });
+  const sel = rail.querySelector('[data-settings-select]');
+  if (sel && !sel.dataset.wired) {
+    sel.dataset.wired = '1';
+    sel.addEventListener('change', () => { state.settingsTab = sel.value; renderSettings(); });
+  }
+
+  // Search: show/hide on rail items ONLY, never a page re-render (a
+  // re-render would refetch settings from Supabase on every keypress). The
+  // query lives in state.settingsSearch so it survives the re-render that
+  // happens when a result is clicked.
+  const input = rail.querySelector('[data-settings-search]');
+  const applyFilter = () => {
+    const q = String(state.settingsSearch || '').trim().toLowerCase();
+    const matches = [];
+    rail.querySelectorAll('[data-settings-tab]').forEach(b => {
+      const hit = !q || (b.dataset.search || '').includes(q);
+      b.style.display = hit ? '' : 'none';
+      if (hit) matches.push(b);
+    });
+    rail.querySelectorAll('[data-settings-group]').forEach(g => {
+      const any = Array.prototype.some.call(g.querySelectorAll('[data-settings-tab]'), b => b.style.display !== 'none');
+      g.style.display = any ? '' : 'none';
+    });
+    if (sel) sel.querySelectorAll('option').forEach(o => {
+      const page = SETTINGS_PAGES.find(p => p.key === o.value);
+      const hay = page ? (page.label + ' ' + page.keywords.join(' ')).toLowerCase() : '';
+      o.hidden = !!q && !hay.includes(q);
+    });
+    return matches;
+  };
+  if (input && !input.dataset.wired) {
+    input.dataset.wired = '1';
+    input.addEventListener('input', () => { state.settingsSearch = input.value; applyFilter(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const m = applyFilter();
+        if (m.length === 1) { state.settingsSearch = ''; state.settingsTab = m[0].dataset.settingsTab; renderSettings(); }
+      } else if (e.key === 'Escape') {
+        input.value = '';
+        state.settingsSearch = '';
+        applyFilter();
+      }
+    });
+  }
+  applyFilter();
+  // Deep links (birthday bell -> People, drift banner -> General): if the
+  // page we just landed on is filtered out of the rail by a leftover search,
+  // clear the filter so the active item is visible (the spirit of the old
+  // strip's scrollIntoView).
+  const activeBtn = rail.querySelector('.pec-btn.primary[data-settings-tab]');
+  if (activeBtn && activeBtn.style.display === 'none') {
+    state.settingsSearch = '';
+    if (input) input.value = '';
+    applyFilter();
+  }
+
+  // Responsive (prompt 80 Part D): below settings_rail_breakpoint_px the
+  // rail collapses to the select; at or above it, the vertical list. Pure
+  // class toggle, no re-render. Re-checked on resize (debounced ~150ms) by
+  // ONE window listener at a time, stored on state (the _emailLogTimer
+  // pattern); it removes itself once the rail leaves the document.
+  const applyMode = () => {
+    const s = root.querySelector('.pec-settings-shell');
+    if (s) s.classList.toggle('pec-settings-narrow', window.innerWidth < settingsRailBreakpoint());
+  };
+  applyMode();
+  loadSettingsRailBreakpoint().then(applyMode);
+  if (state._settingsResizeHandler) { window.removeEventListener('resize', state._settingsResizeHandler); state._settingsResizeHandler = null; }
+  let resizeDebounce = null;
+  const onResize = () => {
+    clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(() => {
+      if (!document.body.contains(rail)) {
+        window.removeEventListener('resize', onResize);
+        if (state._settingsResizeHandler === onResize) state._settingsResizeHandler = null;
+        return;
+      }
+      applyMode();
+    }, 150);
+  };
+  state._settingsResizeHandler = onResize;
+  window.addEventListener('resize', onResize);
 }
 
 // Settings > Drips (prompt 42, and the new standing rule: every major
@@ -21555,11 +21733,15 @@ async function renderSettings() {
   // Clear any email-log auto-refresh timer from a previous render (avoids leaks
   // when leaving the Email tab or the Settings view).
   if (state._emailLogTimer) { clearInterval(state._emailLogTimer); state._emailLogTimer = null; }
+  // Same leave-and-re-enter hygiene for the rail's resize listener
+  // (prompt 80); wireSettingsTabs installs a fresh one per wire.
+  if (state._settingsResizeHandler) { window.removeEventListener('resize', state._settingsResizeHandler); state._settingsResizeHandler = null; }
+  // Silent redirects (prompt 80 Part E): consult SETTINGS_KEY_ALIASES before
+  // dispatch, so retired page keys (deep links, the data-ops-tab handler)
+  // land on their new home instead of 404ing into a blank view. Seeded with
+  // users -> people (prompt 57 Part H); prompt 81 adds lines to the map.
+  if (SETTINGS_KEY_ALIASES[state.settingsTab]) state.settingsTab = SETTINGS_KEY_ALIASES[state.settingsTab];
   if (state.settingsTab === 'people') return renderSettingsPeople();
-  // Users merged into People (prompt 57 Part H). The 'users' key still routes
-  // so existing deep links and the data-ops-tab handler never 404 into a
-  // blank view.
-  if (state.settingsTab === 'users') { state.settingsTab = 'people'; return renderSettingsPeople(); }
   if (state.settingsTab === 'email') return renderSettingsEmail();
   if (state.settingsTab === 'appointments') return renderSettingsAppointments();
   if (state.settingsTab === 'drips') return renderSettingsDrips();
