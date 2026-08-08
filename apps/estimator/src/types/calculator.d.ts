@@ -295,6 +295,7 @@ declare module '*/production/scope.cjs' {
     answersByKey: Record<string, string>,
   ): ScopeQuestion[];
   export function stableKey(contextLabel: string, context: string, ordinal?: number): string;
+  export function scopeBlanks(text: unknown): Array<{ kind: 'blank' | 'choice' | 'underscore'; snippet: string }>;
 }
 
 // Card-first draft + salesperson default rules (repo-root

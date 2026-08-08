@@ -9,6 +9,7 @@ const {
   computeScheduleCents, freezeSchedule, scheduleSumsToTotal, triggerLabel,
 } = require('./estimate-installments.cjs');
 const { scopeSendBlockers, CLOBBER_DESC_RE, CLOBBER_DESC_EXACT_RE } = require('./optional-lines.cjs');
+const { scopeBlanks } = require('./scope.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
 const { state, ok } = makeChecker();
@@ -119,6 +120,41 @@ const fixRow = (usd, extra) => ({ seq: 0, label: 'Row', amount_kind: 'fixed', am
     ok(!CLOBBER_DESC_EXACT_RE.test('970 sqft, includes moisture vapor barrier (MVB)'), 'sqft followed by real words never matches (rep text is never cleared)');
     ok(!CLOBBER_DESC_EXACT_RE.test('We will grind 385 sqft of concrete.'), 'sqft inside a sentence never matches');
     ok(!CLOBBER_DESC_EXACT_RE.test(''), 'empty string never matches');
+  }
+
+  console.log('# scopeBlanks: the three detectors, and no others (prompt 78 D1)');
+  {
+    const blank = scopeBlanks('Expected project duration: BLANK');
+    ok(blank.length === 1 && blank[0].kind === 'blank' && blank[0].snippet === 'Expected project duration: BLANK', 'literal BLANK found with its line as the snippet');
+    const choice = scopeBlanks('Stem walls are/are not included in this estimate.');
+    ok(choice.length === 1 && choice[0].kind === 'choice', 'unresolved are/are not choice found');
+    const dbl = scopeBlanks('Concrete past garage door is/is not  included');
+    ok(dbl.length === 1 && dbl[0].kind === 'choice', 'the live Metallic template double space (is/is not  included) still matches');
+    const under = scopeBlanks('Tentative start date: ____');
+    ok(under.length === 1 && under[0].kind === 'underscore', 'an underscore fill-in run found');
+    ok(scopeBlanks('Prepared for Blank Smith at 12 Main St.').length === 0, 'a customer named Blank Smith never trips the case-sensitive BLANK detector');
+    ok(scopeBlanks('Moisture vapor barrier is not included.').length === 0, 'an already-resolved "is not included" never matches');
+    ok(scopeBlanks('Section one\n---\nSection two').length === 0, 'a --- markdown rule never matches (only underscores are fill-ins)');
+    ok(scopeBlanks(null).length === 0 && scopeBlanks('').length === 0, 'null and empty are clean');
+    const long = scopeBlanks('X'.repeat(80) + ' BLANK');
+    ok(long.length === 1 && long[0].snippet.length === 60, 'snippets cap at 60 characters');
+  }
+
+  console.log('# blanks hard-block the send (prompt 78 D2)');
+  {
+    const area = (id, desc) => ({ id: 'li-' + id, estimate_area_id: 'a' + id, label: 'Garage: Standard Flake', description: desc });
+    const b1 = scopeSendBlockers({ scopeStale: false, items: [area(1, 'Scope of work for quartz coating BLANK AREA')], customAreaIds: new Set() });
+    ok(b1.length === 1 && /blank/.test(b1[0]) && b1[0].includes('BLANK AREA'), 'a BLANK in a line description blocks and quotes the snippet');
+    const b2 = scopeSendBlockers({ scopeStale: false, items: [area(1, 'Full scope.\nStem walls are/are not included.')], customAreaIds: new Set() });
+    ok(b2.length === 1, 'an unresolved choice in a line description blocks');
+    const custom = scopeSendBlockers({ scopeStale: false, items: [area(1, 'Pasted template with BLANK left in.')], customAreaIds: new Set(['a1']) });
+    ok(custom.length === 1, 'a custom line stays exempt from empty-description but its typed BLANK blocks');
+    const addon = scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: null, label: 'Stem Walls', description: 'Sealed to a height of ____' }], customAreaIds: new Set() });
+    ok(addon.length === 1, 'an add-on line with an underscore fill-in blocks');
+    const sow = scopeSendBlockers({ scopeStale: false, items: [area(1, 'Full scope text here.')], customAreaIds: new Set(), scopeOfWork: 'Expected project duration: BLANK' });
+    ok(sow.length === 1 && /scope of work still has a blank/.test(sow[0]), 'a BLANK in estimates.scope_of_work blocks at the estimate level');
+    ok(scopeSendBlockers({ scopeStale: false, items: [area(1, 'Full scope text here.')], customAreaIds: new Set(), scopeOfWork: 'All questions resolved.' }).length === 0, 'clean lines plus a clean scope_of_work pass');
+    ok(scopeSendBlockers({ scopeStale: false, items: [area(1, 'Full scope text here.')], customAreaIds: new Set() }).length === 0, 'callers that do not pass scopeOfWork are unaffected');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

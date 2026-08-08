@@ -2824,7 +2824,7 @@ export default function EstimatorScreen({
               <p className="warn">The estimate changed after the scope was written. Tap Regenerate scope before sending.</p>
             )}
             {scopeGenerated && scopeContainsBlank(scopeText) && (
-              <p className="warn">The word BLANK is still in the scope and the customer will see it. Answer the scope questions below, or edit the line descriptions.</p>
+              <p className="warn">The word BLANK is still in the scope. You will not be able to send this estimate until it is filled in. Answer the scope questions below, or edit the line descriptions.</p>
             )}
             {scopeError && <p className="warn">{scopeError}</p>}
             <div className="line-table">
@@ -2924,7 +2924,7 @@ export default function EstimatorScreen({
           {!isCustom && scopeQuestions.length > 0 && (
             <section className="card scope-questions">
               <div className="areas-head"><span>Finish the scope</span></div>
-              <p className="hint">Your template leaves these blanks for the customer. Fill them in now while you are on site; anything left blank shows up as the word BLANK in the scope they sign.</p>
+              <p className="hint">Your template leaves these blanks for you to fill in. Do it now while you are on site; anything left blank stops the estimate from being sent.</p>
               {scopeQuestions.map((q) => (
                 <label className="field" key={q.key}>
                   <span>{q.label}</span>

@@ -29709,14 +29709,11 @@ async function ensureEstimateToken(est) {
   }
 }
 
-// SEND GATE (warn, do not block), on ANY channel: a scope that still
-// literally says BLANK is the failure mode we fear most, a customer reading
-// BLANK in a document they are asked to sign. Honors Dylan's warn-but-allow.
-function estimateBlankScopeOk(est) {
-  return !/\bBLANK\b/.test(String(est.scope_of_work || ''))
-    || confirm('This estimate still says BLANK in the scope of work. The customer will see the word BLANK in the document. Send anyway?');
-}
-
+// estimateBlankScopeOk is GONE (prompt 78 D3): it was a warn-but-allow
+// confirm that scanned only scope_of_work. Dylan overruled it (hard block,
+// no override); the blank scans live in estimateSendGateOk now, which all
+// three send channels (email, text, Present's open-for-signing) route
+// through.
 // Prompt 72 send gate (decision 1): an estimate cannot be SENT with every
 // line optional, because required lines are what a customer cannot untick,
 // which is what makes the never-$0 floor automatic. A hard block (not a
@@ -29746,6 +29743,33 @@ function estimateOptionalGateOk(est) {
 // legitimately has none). MVB-only lines gate like any other since
 // 2026-08-08: Dylan approved a scope template for the MVB Only system.
 const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
+// Prompt 78 D3: CLIENT MIRROR of production/scope.cjs scopeBlanks; keep in
+// lockstep. Three detectors, and no others: the literal BLANK (case
+// sensitive, so a customer named Blank Smith never trips it), an unresolved
+// "is/is not" template choice (\s+ on the tail because the live Metallic
+// template carries a double space), and a ___ fill-in run (mdToSafeHtml
+// renders --- as a rule and never ___, so underscores are always fill-ins).
+// Returns [{kind, snippet}]; snippet is the trimmed line, capped at 60 chars.
+function estScopeBlanks(text) {
+  const src = String(text == null ? '' : text);
+  const out = [];
+  const scan = (re, kind) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const start = src.lastIndexOf('\n', m.index - 1) + 1;
+      let end = src.indexOf('\n', m.index);
+      if (end === -1) end = src.length;
+      let snippet = src.slice(start, end).trim();
+      if (snippet.length > 60) snippet = snippet.slice(0, 57) + '...';
+      out.push({ kind, snippet });
+    }
+  };
+  scan(/\bBLANK\b/g, 'blank');
+  scan(/\b(is|are)\s*\/\s*(is|are)\s+not\b/gi, 'choice');
+  scan(/_{3,}/g, 'underscore');
+  return out;
+}
 async function estimateSendGateOk(est) {
   // FRESH READ (prompt 76): the fix flow happens INSIDE the inline estimator
   // now (tap the blocker, type or Generate in the sheet), which writes
@@ -29755,16 +29779,17 @@ async function estimateSendGateOk(est) {
   // Best-effort: a failed read falls back to the snapshot.
   let items = Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [];
   let scopeStale = est.scope_stale === true;
+  let scopeOfWork = est.scope_of_work;
   let customAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
   try {
     const [liRes, aRes, eRes] = await Promise.all([
       supabase.from('estimate_line_items').select('label,description,sort_order,estimate_area_id,total,is_optional,selected_by_customer').eq('estimate_id', est.id).order('sort_order', { ascending: true }),
       supabase.from('estimate_areas').select('id,is_custom').eq('estimate_id', est.id),
-      supabase.from('estimates').select('scope_stale').eq('id', est.id).maybeSingle(),
+      supabase.from('estimates').select('scope_stale,scope_of_work').eq('id', est.id).maybeSingle(),
     ]);
     if (!liRes.error && Array.isArray(liRes.data)) items = liRes.data;
     if (!aRes.error && Array.isArray(aRes.data)) customAreaIds = new Set(aRes.data.filter(a => a && a.is_custom === true && a.id).map(a => a.id));
-    if (!eRes.error && eRes.data) scopeStale = eRes.data.scope_stale === true;
+    if (!eRes.error && eRes.data) { scopeStale = eRes.data.scope_stale === true; scopeOfWork = eRes.data.scope_of_work; }
   } catch (_) { /* snapshot fallback */ }
   // Prompt 76 Part F: blockers are structured now. A line-bound blocker
   // carries its sort_order so the modal can LINK it: one tap opens that
@@ -29779,6 +29804,14 @@ async function estimateSendGateOk(est) {
     const label = li.label || 'Line';
     const desc = String(li.description == null ? '' : li.description).trim();
     const sortOrder = Number.isFinite(Number(li.sort_order)) ? Number(li.sort_order) : null;
+    // Prompt 78 D3: blanks block on EVERY line, add-on and custom lines
+    // included (a pasted template with a BLANK left in a custom line is
+    // exactly the failure this catches). Hard block, no override (decision
+    // 15); the old estimateBlankScopeOk confirm is gone.
+    const blanks = estScopeBlanks(desc);
+    if (blanks.length) {
+      blockers.push({ msg: `"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`, sortOrder });
+    }
     if (!li.estimate_area_id) {
       if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
       continue;
@@ -29786,6 +29819,13 @@ async function estimateSendGateOk(est) {
     if (customAreaIds.has(li.estimate_area_id)) continue;
     if (!desc) blockers.push({ msg: `"${label}" has no scope of work yet.`, sortOrder });
     else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
+  }
+  // Prompt 78 D3: estimates.scope_of_work is the internal record feeding the
+  // job and the crew scope; a blank there ships to the crew. Estimate-level
+  // blocker (no sortOrder), renders as a plain row like the stale-scope one.
+  const sowBlanks = estScopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
+  if (sowBlanks.length) {
+    blockers.push({ msg: `The scope of work still has a blank: "${sowBlanks[0].snippet}". Fill in the scope questions, then send.` });
   }
   // Rule 4: a schedule (when one exists) must resolve to the OPENING total
   // exactly; sub-cent percent rounding is fine (the render's last-row
@@ -30031,7 +30071,8 @@ async function openPresentMode(est) {
       area.innerHTML = `<span style="color:#fbbf24;font-weight:700">Live: the customer can tick options and sign below</span>`;
       return;
     }
-    area.innerHTML = `<button type="button" class="pec-present-btn primary" id="presentSign" style="padding:11px 20px;min-height:44px">Open for signing</button>`;
+    area.innerHTML = `<button type="button" class="pec-present-btn primary" id="presentSign" style="padding:11px 20px;min-height:44px">Open for signing</button>
+      <div style="font-size:.78rem;color:rgba(255,255,255,.65);margin-top:6px">The customer can tick options and sign on this iPad once you open it.</div>`;
     q('#presentSign').addEventListener('click', openForSigning);
   };
 
@@ -30056,8 +30097,10 @@ async function openPresentMode(est) {
   async function openForSigning() {
     if (!(await ensureEstimateToken(est))) return;
     if (!est.sent_at) {
-      // Same send gates as email/text (prompts 72 + 74): opening for
-      // signature IS sending.
+      // Same send gates as email/text (prompts 72 + 74 + 78): opening for
+      // signature IS sending. The blank hard-block rides inside
+      // estimateSendGateOk, so this channel can no longer skip it (it was
+      // the one send path with no blank check at all before prompt 78).
       if (!estimateOptionalGateOk(est)) return;
       if (!(await estimateSendGateOk(est))) return;
       if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
@@ -30163,7 +30206,6 @@ async function sendEstimateText(est, opts = {}) {
   if (!(await ensureEstimateToken(est))) return false;
   if (!opts.skipGate && !estimateOptionalGateOk(est)) return false;
   if (!opts.skipGate && !(await estimateSendGateOk(est))) return false;
-  if (!opts.skipGate && !estimateBlankScopeOk(est)) return false;
   if (!opts.skipConfirm && !confirm(`Text estimate ${estNumberLabel(est)} to ${qoFmtPhone(est.customer_phone)}? They will get the review-and-sign link with a "Reply STOP to opt out" line.`)) return false;
   try {
     await pecSendSms({ brand: 'prescott-epoxy', kind: 'estimate', estimate_token: est.public_token, to_number: est.customer_phone });
@@ -30239,12 +30281,11 @@ async function openEstimateSendModal(est, opts = {}) {
       const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
-      // Optional-lines send gate (prompt 72 decision 1), the per-line scope +
-      // schedule gate (prompt 74, hard block), then the blank-scope confirm
-      // (shared with the text channel, prompt 38).
+      // Optional-lines send gate (prompt 72 decision 1), then the per-line
+      // scope + schedule + blank gate (prompts 74/78, hard block, all
+      // channels).
       if (!estimateOptionalGateOk(est)) return;
       if (!(await estimateSendGateOk(est))) return;
-      if (!estimateBlankScopeOk(est)) return;
       sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
       try {
         // log_template_key 'estimate' keeps these out of the Invoicing "Last

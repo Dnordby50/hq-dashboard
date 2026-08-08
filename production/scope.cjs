@@ -106,6 +106,45 @@ function applyAnswers(text, answersByKey, contextLabel) {
   return out;
 }
 
+// Prompt 78 D1: every customer-visible unfilled placeholder in `text`, as
+// structured findings so the send gate can quote the offending text back to
+// the rep. Three detectors, and no others:
+//   blank      the literal BLANK (BLANK_RE above; case sensitivity is
+//              deliberate and load-bearing: a customer named Blank Smith must
+//              never trip it)
+//   choice     an unresolved "is/is not" or "are/are not" template choice.
+//              Dylan's templates carry "Stem walls are/are not included"; the
+//              scope writer leaves them verbatim when the intake cannot
+//              resolve them. The live Metallic template has a DOUBLE space in
+//              "is/is not  included", so \s+ on the tail is required, not
+//              cosmetic.
+//   underscore a ___ fill-in run. mdToSafeHtml renders --- as a horizontal
+//              rule and never ___, so an underscore run in a scope is always
+//              a fill-in; no divider heuristic needed.
+// Each finding is {kind, snippet}: snippet is the trimmed surrounding line,
+// capped at 60 characters, so the blocker message shows what to look for.
+const CHOICE_RE = /\b(is|are)\s*\/\s*(is|are)\s+not\b/gi;
+const UNDERSCORE_RE = /_{3,}/g;
+
+function scopeBlanks(text) {
+  const src = String(text == null ? '' : text);
+  const out = [];
+  const scan = (re, kind) => {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const { start, end } = lineBounds(src, m.index);
+      let snippet = src.slice(start, end).trim();
+      if (snippet.length > 60) snippet = snippet.slice(0, 57) + '...';
+      out.push({ kind, snippet });
+    }
+  };
+  scan(BLANK_RE, 'blank');
+  scan(CHOICE_RE, 'choice');
+  scan(UNDERSCORE_RE, 'underscore');
+  return out;
+}
+
 // Open questions across a set of {text, contextLabel} sources, deduped by key,
 // EXCLUDING any the given answers already cover. This is what both the
 // estimator (from the chosen systems' templates) and the estimate page (from
@@ -124,4 +163,4 @@ function openQuestions(sources, answersByKey) {
   return [...byKey.values()];
 }
 
-module.exports = { containsBlank, detectBlanks, applyAnswers, openQuestions, stableKey };
+module.exports = { containsBlank, detectBlanks, applyAnswers, openQuestions, stableKey, scopeBlanks };

@@ -118,6 +118,12 @@ function selectedScopeDoc(includedLines) {
 // ---------------------------------------------------------------------------
 const CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 
+// Prompt 78 D2: the blank scan (literal BLANK, unresolved is/is not choices,
+// underscore fill-in runs) shares ONE detector with the estimator and the
+// scope writer. The failure this prevents: a customer reading the word BLANK
+// in a document they are being asked to sign.
+const { scopeBlanks } = require('./scope.cjs');
+
 // Prompt 76 Part B: the EXACT clobber fingerprint ("385 sqft" and nothing
 // else). The scope writer uses this to decide a description is machine junk
 // it may CLEAR on a templateless line. Deliberately stricter than the send
@@ -132,7 +138,7 @@ const CLOBBER_DESC_EXACT_RE = /^\s*\d+\s*sq\s*ft\s*$/i;
 // The old MVB-only exemption is GONE (2026-08-08): Dylan approved a scope
 // template for the MVB Only system, so its lines generate like any other
 // area line and the gate requires their scope like any other.
-function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
+function scopeSendBlockers({ scopeStale, items, customAreaIds, scopeOfWork }) {
   const blockers = [];
   if (scopeStale === true) {
     blockers.push('The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope, then send.');
@@ -142,6 +148,15 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
     if (!li) continue;
     const label = li.label || 'Line';
     const desc = String(li.description == null ? '' : li.description).trim();
+    // Prompt 78 D2: blanks block on EVERY line, add-on and custom lines
+    // included. Custom lines stay exempt from the empty-description rule
+    // below (a typed scope is the rep's call), but a pasted template with an
+    // unfilled BLANK in a custom line is exactly the failure this catches.
+    // One blocker per line, quoting the first offending snippet.
+    const blanks = scopeBlanks(desc);
+    if (blanks.length) {
+      blockers.push(`"${label}" still has a blank in its scope of work: "${blanks[0].snippet}". Fill it in, then send.`);
+    }
     if (!li.estimate_area_id) {
       // Add-on / one-off lines: many legitimately ship without scope language
       // (Drive Time has no snippet), so only the clobber fingerprint blocks.
@@ -156,6 +171,13 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
     } else if (CLOBBER_DESC_RE.test(desc)) {
       blockers.push(`"${label}" still shows only square footage where its scope should be. Regenerate the scope.`);
     }
+  }
+  // Prompt 78 D2: estimates.scope_of_work is the internal record feeding the
+  // job and the crew scope; a blank there ships to the crew even though the
+  // customer page no longer renders it. Estimate-level blocker.
+  const sowBlanks = scopeBlanks(String(scopeOfWork == null ? '' : scopeOfWork));
+  if (sowBlanks.length) {
+    blockers.push(`The scope of work still has a blank: "${sowBlanks[0].snippet}". Fill in the scope questions, then send.`);
   }
   return blockers;
 }
