@@ -2,6 +2,32 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: standing rule 12 AMENDED in CLAUDE.md, and a correction to my own orphan count from the entry two below. The "~35 headless settings rows" figure was wrong. The real number is 22.
+
+By: Cowork
+
+Changed: `CLAUDE.md` (rule 12 rewritten in place, line 45), one new file `settings-orphan-inventory.md`, plus this entry. No code, no schema, no data, no deploy. Read-only Supabase SELECT plus greps across netlify/, estimator/, apps/, production/, scripts/, supabase/.
+
+Why: Dylan reversed his earlier "hold the scope" answer and took all three cleanup items (amend rule 12, build a surface for the headless rows, ship updated_at). Amending rule 12 is a standing-rule change, so it is recorded here explicitly rather than buried in a prompt file.
+
+**Rule 12, as amended.** Parameters must still live in the `settings` table and be tunable with no code change; that guarantee is retained in full and is the half worth keeping. What changed is VISIBILITY: at most TWO controls per feature sit front-of-card, everything else goes behind that card's collapsed Advanced disclosure. Added clause: state and caches are NOT settings and must never get a control, on the test of whether the value is written by a human or by the app. The amendment note in CLAUDE.md cites the audit that motivated it so a future session does not revert it as unexplained drift.
+
+**The correction, which matters more than the amendment.** The analysis entry below claims about 35 settings rows have no Settings surface. That number is wrong and it was wrong in the direction that flattered the finding. It came from grepping `map.<key>` in index.html, which only catches the General tab's access pattern; every sub-tab renderer reads through a differently named local. Five keys with perfectly good working controls were counted as orphans: `salesask_sync_enabled`, `salesask_push_window_days`, `salesask_pull_lookback_days`, `routemize_answer_routing`, `routemize_service_type_map`, all live in Settings > Appointments. Anyone building from the old number would have built duplicate controls for five settings that already have them.
+
+**Re-derived properly, by grepping every key for an actual runtime consumer, the 37 non-UI rows split three ways.**
+
+1. **22 genuine rule-12 gaps** (live consumer, no control anywhere): `drip_kill_switch`, `security_alerts_enabled`, `security_alerts_lookback_min`, `busybusy_export_base_url`, `default_labor_hourly_rate`, nine `estimator_*` keys read by the SEPARATE estimator app (`apps/estimator/src/lib/catalog.ts`, not the dashboard), and all ten `ops_check_*` toggles.
+
+2. **2 rows that are not settings at all** and must never get a control: `metrics_tab_ai_insights` (a cached AI response, currently a ~1,500-char generated paragraph with `generated_at` and `model` fields) and `people_merge_dismissed` (an array of dismissed merge-pair IDs). Both are app-written. Under the amended rule they should not be in `settings`; moving them is out of scope, but building UI for them would be a mistake and a future audit must not re-flag them as gaps.
+
+3. **3 dead rows** whose only appearance anywhere is the migration that seeded them (`2026-06-21_estimator_core.sql`): `drip_autosend_email`, `drip_autosend_sms`, `estimator_enabled`. NOT to be deleted in prompt 81. `estimator_enabled` reads 'false' while the estimator is plainly in use, which means either the key was abandoned or something reads it under a name the grep missed. Confirm first, delete in a separate prompt with its own entry.
+
+**Two findings inside group 1 worth acting on deliberately.** `drip_kill_switch` is a kill switch with NO UI, read live by `netlify/functions/_pec-drip.cjs`: the one setting you would most want to reach in a hurry currently requires raw SQL. It goes front-of-card in Automations, but prompt 81 must first establish which of `drip_kill_switch` and `drip_sending_enabled` the engine actually honours, because shipping two controls that both claim to stop sending is worse than one. And the nine estimator keys are consumed by the separate estimator app; confirm it reads them from `settings` at runtime rather than at build time before promising a control changes anything.
+
+Files touched: CLAUDE.md (rule 12), settings-orphan-inventory.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: unchanged sequence. Prompt 79, then prompt 80, then Cowork writes prompt 81 against the real manifest, using settings-orphan-inventory.md as the input for the new controls. Prompt 81's scope grew by the 22 controls; the estimator-app and drip_kill_switch questions above must be answered inside that prompt, not assumed.
+
 ## [2026-08-08 MST] Cowork: prompts 79 and 80 scoped from the Settings IA analysis. Twelve scoping questions, all answered. Phased deliberately: a one-file migration, then a container-only rebuild that moves zero settings.
 
 By: Cowork
