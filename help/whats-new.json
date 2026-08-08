@@ -1,5 +1,15 @@
 [
   {
+    "id": "metallic-mvb-scope-templates",
+    "date": "2026-08-08",
+    "title": "Metallic and MVB Only estimates now write their own scope",
+    "summary": "Dylan approved scope templates for the Metallic and MVB Only systems, so their estimate lines now fill in a full scope of work automatically, the same as Standard Flake. MVB Only lines used to be excused from the scope requirement because no template existed; now they need a scope like every other line before sending, and Generate fills it in one tap.",
+    "howto": [
+      "Price a Metallic or MVB Only area as usual; the scope writes itself on save or when you tap Generate.",
+      "You can still tap the line and edit the text; your edit wins until you press Generate again."
+    ]
+  },
+  {
     "id": "line-editor-per-line-scope",
     "date": "2026-08-07",
     "title": "Tap any estimate line to edit it, including the scope the customer reads",

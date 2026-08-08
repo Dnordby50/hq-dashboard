@@ -179,7 +179,10 @@ exports.handler = async (event) => {
     //   add-on lines-> the catalog scope_snippet (skipped when empty; Drive
     //                  Time and Upgraded Flake Color ship without language)
     //   one-offs    -> keep the rep's own description, never model-written
-    //   MVB-only    -> no template describes a barrier-only job; skipped
+    //   MVB-only    -> generates from the MVB Only system's template like any
+    //                  other area line (seeded 2026-08-08; the old "no
+    //                  template describes a barrier-only job" skip was a data
+    //                  condition, not code, so nothing here changed)
     // Each target carries its RAW template (with any literal BLANK) under a
     // contextLabel (system or add-on name), used to detect BLANK questions with
     // keys that match the estimator's. The `template` sent to the model has the

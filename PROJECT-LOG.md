@@ -2,6 +2,18 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] MVB Only template approved and written live; the MVB-only scope exemption retired everywhere. (Amends the Metallic entry below: both drafts are now approved and live.)
+
+By: Claude Code
+
+Changed: one live prod UPDATE via Supabase MCP (`pec_prod_system_types.scope_template` for `MVB Only`, 1,027 chars, md5 7fe52912, guarded on `scope_template is null`), plus the code change the prompt 76 entry said must ship WITH this approval, in the same commit.
+
+Dylan's one edit to the draft: the word "equipment" removed from the cleanup line ("Remove any debris or waste materials generated during the coating process"), matching his Metallic edit. Everything else as drafted.
+
+**The exemption retirement, and why no writer change was needed.** The old "no template describes a barrier-only job" skip turned out to be a DATA condition, not code: MVB Only areas carry estimate_area_id + system_type_id, so pec-estimate-scope's normal area branch picks the new template up by itself (comment updated to say so). What WAS code got removed in lockstep: `isMvbOnlyLineLabel` and its skip in production/optional-lines.cjs scopeSendBlockers (helper deleted, was only used there), the client gate mirror and the detail page's liNeedsScope note in index.html, and the estimator's special-casing (the "no scope needed" chip, the needs-no-scope hint, and the hidden Generate button on MVB-only lines; the hidden per-area MVB checkbox on an MVB Only area STAYS, that one is about a redundant control, not scope). Tests updated: the exemption fixture now asserts the opposite (an empty MVB-only line BLOCKS), net one check.
+
+Consequence to know: any existing draft with an MVB Only line and no description now hard-blocks at send until one Generate tap fills it, which is exactly the templateless-to-typed flow prompt 76 built, except this system generates. MVB Only is active with 1 recipe slot, so no pricing landmine. Verified: npm test green (986 checks), estimator tsc + Vite build clean, every index.html script block parses.
+
 ## [2026-08-08 MST] Metallic scope template approved by Dylan and written live. MVB Only stays templateless pending approval.
 
 By: Claude Code

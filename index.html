@@ -28740,13 +28740,13 @@ async function renderEstimateDetail(estimateId) {
   };
   // Prompt 76: a scope-bearing line with no description gets a loud inline
   // note (the send gate will block on it; better to see it here first).
-  // Mirrors the gate's exemptions: custom areas and MVB-only lines never
-  // need one, add-on/one-off lines legitimately ship without.
+  // Mirrors the gate's exemptions: custom areas never need one, add-on/
+  // one-off lines legitimately ship without. MVB-only lines gate like any
+  // other since 2026-08-08 (the system has a template now).
   const liCustomAreaIds = new Set((est.estimate_areas || []).filter(a => a && a.is_custom === true && a.id).map(a => a.id));
   const liNeedsScope = (li) => est.status !== 'accepted'
     && !!li.estimate_area_id
     && !liCustomAreaIds.has(li.estimate_area_id)
-    && !/(^|: )MVB Only$/.test(String(li.label || '').trim())
     && !String(li.description == null ? '' : li.description).trim();
   // Optional-line state (prompt 72 F1): an "Optional" tag before acceptance;
   // after acceptance a DECLINED line (optional, not selected) renders struck
@@ -29448,9 +29448,10 @@ function estimateOptionalGateOk(est) {
 // production/optional-lines.cjs scopeSendBlockers and
 // production/estimate-installments.cjs scheduleValidationError; keep in
 // lockstep. Messages NAME the offending lines: the rep is in a driveway.
-// Custom lines (typed scope, the rep's call) and MVB-only lines (no template
-// describes a barrier-only job) are exempt from rule 2; add-on/one-off lines
-// are checked only for the fingerprint (Drive Time legitimately has none).
+// Custom lines (typed scope, the rep's call) are exempt from rule 2;
+// add-on/one-off lines are checked only for the fingerprint (Drive Time
+// legitimately has none). MVB-only lines gate like any other since
+// 2026-08-08: Dylan approved a scope template for the MVB Only system.
 const EST_CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 async function estimateSendGateOk(est) {
   // FRESH READ (prompt 76): the fix flow happens INSIDE the inline estimator
@@ -29490,7 +29491,6 @@ async function estimateSendGateOk(est) {
       continue;
     }
     if (customAreaIds.has(li.estimate_area_id)) continue;
-    if (/(^|: )MVB Only$/.test(String(label).trim())) continue;
     if (!desc) blockers.push({ msg: `"${label}" has no scope of work yet.`, sortOrder });
     else if (EST_CLOBBER_DESC_RE.test(desc)) blockers.push({ msg: `"${label}" still shows only square footage where its scope should be.`, sortOrder });
   }

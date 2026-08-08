@@ -8,7 +8,7 @@ const {
   resolveDepositPct, defaultScheduleRows, scheduleValidationError,
   computeScheduleCents, freezeSchedule, scheduleSumsToTotal, triggerLabel,
 } = require('./estimate-installments.cjs');
-const { scopeSendBlockers, CLOBBER_DESC_RE, CLOBBER_DESC_EXACT_RE, isMvbOnlyLineLabel } = require('./optional-lines.cjs');
+const { scopeSendBlockers, CLOBBER_DESC_RE, CLOBBER_DESC_EXACT_RE } = require('./optional-lines.cjs');
 const { makeChecker } = require('./_drip-test-kit.cjs');
 
 const { state, ok } = makeChecker();
@@ -108,8 +108,7 @@ const fixRow = (usd, extra) => ({ seq: 0, label: 'Row', amount_kind: 'fixed', am
     ok(clob.length === 1 && /square footage/.test(clob[0]), 'the clobber fingerprint blocks (stale-client defense)');
     ok(CLOBBER_DESC_RE.test('1430 sqft') && CLOBBER_DESC_RE.test(' 970 sq ft') && !CLOBBER_DESC_RE.test('Approx. 970 sqft of coating'), 'fingerprint anchors at the start');
     ok(scopeSendBlockers({ scopeStale: false, items: [area(1, null)], customAreaIds: new Set(['a1']) }).length === 0, 'a custom line with no typed scope is the rep\'s call, never blocked');
-    ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: 'a9', label: 'MVB Only', description: null }], customAreaIds: new Set() }).length === 0, 'MVB-only line is exempt (no template describes a barrier-only job)');
-    ok(isMvbOnlyLineLabel('Garage: MVB Only') && !isMvbOnlyLineLabel('MVB Only floor coating system'), 'MVB-only label forms');
+    ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: 'a9', label: 'MVB Only', description: null }], customAreaIds: new Set() }).length === 1, 'MVB-only lines gate like any other since 2026-08-08 (the system has a template now)');
     ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: null, label: 'Drive Time', description: null }], customAreaIds: new Set() }).length === 0, 'an add-on with no snippet never blocks (Drive Time ships without language)');
     ok(scopeSendBlockers({ scopeStale: false, items: [{ id: 'x', estimate_area_id: null, label: 'Stem Walls', description: '120 sqft' }], customAreaIds: new Set() }).length === 1, 'an add-on carrying the clobber fingerprint still blocks');
   }

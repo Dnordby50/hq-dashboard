@@ -126,14 +126,12 @@ const CLOBBER_DESC_RE = /^\s*\d+\s*sq\s*ft/i;
 // have typed after the number.
 const CLOBBER_DESC_EXACT_RE = /^\s*\d+\s*sq\s*ft\s*$/i;
 
-// The MVB-only system has no scope template by design (no template describes
-// a barrier-only job), so its lines are exempt from the scope requirement.
-// Label conventions from the estimator: "MVB Only" alone, or "Name: MVB Only".
-const isMvbOnlyLineLabel = (label) => /(^|: )MVB Only$/.test(String(label || '').trim());
-
 // items: estimate_line_items rows. customAreaIds: Set of estimate_areas ids
 // whose is_custom is true (a custom line's typed scope is the rep's own words
 // and is never required to exist). scopeStale: estimates.scope_stale.
+// The old MVB-only exemption is GONE (2026-08-08): Dylan approved a scope
+// template for the MVB Only system, so its lines generate like any other
+// area line and the gate requires their scope like any other.
 function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
   const blockers = [];
   if (scopeStale === true) {
@@ -153,7 +151,6 @@ function scopeSendBlockers({ scopeStale, items, customAreaIds }) {
       continue;
     }
     if (customSet.has(li.estimate_area_id)) continue; // typed scope is the rep's call
-    if (isMvbOnlyLineLabel(label)) continue;
     if (!desc) {
       blockers.push(`"${label}" has no scope of work yet. Generate the scope, then send.`);
     } else if (CLOBBER_DESC_RE.test(desc)) {
@@ -177,7 +174,6 @@ module.exports = {
   SEND_GATE_MESSAGE,
   CLOBBER_DESC_RE,
   CLOBBER_DESC_EXACT_RE,
-  isMvbOnlyLineLabel,
   scopeSendBlockers,
   isOptionalLine,
   isDeclinedLine,

@@ -2837,7 +2837,6 @@ export default function EstimatorScreen({
                 const sys = systemTypes.find((s) => s.id === a.systemTypeId);
                 const name = a.isCustom ? (a.name.trim() || customLabelDefault) : (a.name || `Area ${i + 1}`);
                 const sqftNum = Number(a.sqft);
-                const isMvbOnly = !a.isCustom && isMvbOnlySystem(a.systemTypeId);
                 const scopePresent = (a.isCustom ? a.customScope : a.lineDescription).trim() !== '';
                 const price = row ? (finalAmt ?? row.current ?? row.calcPrice) : null;
                 return (
@@ -2860,11 +2859,9 @@ export default function EstimatorScreen({
                     <span className="line-row-price">{price != null ? money2(price) : '--'}</span>
                     <span className="line-row-sub">
                       {a.optional && <span className="line-chip optional">optional{a.preselected ? '' : ' · starts unticked'}</span>}
-                      {isMvbOnly
-                        ? <span className="line-chip addon">no scope needed</span>
-                        : scopePresent
-                          ? <span className="line-chip scope-ok">scope ✓</span>
-                          : <span className="line-chip scope-missing">no scope yet</span>}
+                      {scopePresent
+                        ? <span className="line-chip scope-ok">scope ✓</span>
+                        : <span className="line-chip scope-missing">no scope yet</span>}
                       {row?.kind === 'calc' && row.override != null && row.calcPrice != null && <span>calc {money2(row.calcPrice)}</span>}
                       {lm?.gpPct != null && (
                         <span className={lineRed ? 'gp-red' : ''}>GP {money2(lm.gpDollars)} ({pct(lm.gpPct)}){lineRed ? ` · below ${lineFloorPct}% floor` : ''}</span>
@@ -3502,7 +3499,7 @@ export default function EstimatorScreen({
                     {linePrePolish[i] != null && (
                       <button type="button" className="link" onClick={() => revertLinePolish(i)}>Undo</button>
                     )}
-                    {generateOn && !isMvbOnly && (
+                    {generateOn && (
                       <button
                         type="button"
                         className="link"
@@ -3533,14 +3530,13 @@ export default function EstimatorScreen({
                     : 'The scope of work for this line. Generate fills it from the system template, or type your own.'}
                 />
                 {a.isCustom && <p className="hint">Used word for word on the customer proposal; the scope writer never rewrites it. Generate cleans up your typed text and can be undone.</p>}
-                {!a.isCustom && isMvbOnly && <p className="hint">MVB-only lines need no scope (no template describes a barrier-only job) and sending is never blocked on one. Anything typed here still shows to the customer.</p>}
-                {!a.isCustom && !isMvbOnly && !tpl && (
+                {!a.isCustom && !tpl && (
                   <p className="warn">
                     {skipReasonByIdx[i] ? `The scope writer skipped this line (${skipReasonByIdx[i]}). ` : `No scope template exists for ${sys?.name ?? 'this system'}, so nothing writes itself. `}
                     Type the scope here; the customer reads it word for word, and sending stays blocked until it has one.
                   </p>
                 )}
-                {!a.isCustom && !isMvbOnly && tpl && descValue.trim() !== '' && (
+                {!a.isCustom && tpl && descValue.trim() !== '' && (
                   <p className="hint">Your edit wins: saves keep this text as-is until you press Generate again.</p>
                 )}
                 {linePolishError[i] && <p className="warn">{linePolishError[i]}</p>}
