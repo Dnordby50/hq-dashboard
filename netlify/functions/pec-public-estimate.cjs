@@ -1597,7 +1597,10 @@ async function handleSelect(est, body) {
     const cost = included.reduce((s, li) => s + (Number(li.unit_cost) || 0) * (Number(li.qty) || 0), 0);
     const gpDollars = Math.round((total - cost) * 100) / 100;
     patch.gp_dollars = gpDollars;
-    patch.gp_pct = total > 0 ? Math.round((gpDollars / total) * 10000) / 100 : null;
+    // gp_pct is stored as a FRACTION (0-1), not a percent: the estimator
+    // writes gpDollars / finalSell (EstimatorScreen ~993) and every dashboard
+    // render multiplies by 100. Match that convention exactly.
+    patch.gp_pct = total > 0 ? gpDollars / total : null;
   }
 
   // Status guard on the PATCH so a signature landing mid-flight can never be
