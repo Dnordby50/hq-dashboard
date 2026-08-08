@@ -940,7 +940,13 @@ function literatureBlockHtml(literature, accent) {
 async function loadBrand(brandKey) {
   let brand = { ...BRAND_DEFAULTS };
   try {
-    const biRows = await sb('GET', `/pec_brand_identity?brand=eq.${encodeURIComponent(brandKey || 'prescott-epoxy')}&select=*&limit=1`);
+    // estimates.brand carries the SHORT forms ('PEC'/'FTP') while
+    // pec_brand_identity keys on the long ones, so an unmapped 'FTP' lookup
+    // would silently fall through to PEC's identity (and 'PEC' cost a wasted
+    // no-match query every page load). Normalize first; anything that is not
+    // FTP maps to prescott-epoxy, which preserves the old fallback semantics.
+    const key = presentationBrandKey(brandKey);
+    const biRows = await sb('GET', `/pec_brand_identity?brand=eq.${encodeURIComponent(key)}&select=*&limit=1`);
     if (Array.isArray(biRows) && biRows[0]) brand = { ...BRAND_DEFAULTS, ...biRows[0] };
     else {
       const fallback = await sb('GET', `/pec_brand_identity?brand=eq.prescott-epoxy&select=*&limit=1`);
@@ -968,7 +974,9 @@ async function notifyOffice(est, kind, detail) {
 
   // Email (best-effort)
   try {
-    const brandKey = est.brand || 'prescott-epoxy';
+    // pec_email_senders keys on the LONG brand forms; est.brand carries the
+    // short ones ('PEC'/'FTP'), so an unmapped lookup never matches a sender.
+    const brandKey = presentationBrandKey(est.brand);
     let sender = null;
     try {
       const senders = await sb('GET', `/pec_email_senders?brand=eq.${encodeURIComponent(brandKey)}&select=*&limit=1`);
