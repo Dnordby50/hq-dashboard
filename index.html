@@ -8451,6 +8451,12 @@ function prodModalWireX(closeFn) {
   const btn = document.querySelector('#prodModalRoot [data-prod-modal-x]');
   if (btn) btn.addEventListener('click', closeFn);
 }
+// The production/catalog views run in their own isolated module scope, so
+// these cross the boundary the same way as window.invalidateRefCache /
+// window.computeMaterialPlan (found live: a bare reference threw
+// ReferenceError inside openProductModal and no catalog modal could open).
+window.prodModalXHeadHtml = prodModalXHeadHtml;
+window.prodModalWireX = prodModalWireX;
 
 // Lightweight toast notification. Stacks at the bottom-right. opts:
 //   ttl: ms before auto-dismiss (default 5000)
@@ -40070,7 +40076,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodAddLineBg">
         <div class="pec-modal">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <h3 style="margin:0 0 4px">Add material line</h3>
           <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">${esc(job.customer_name)} <span>#${esc(job.proposal_number)}</span>. Hand-added lines survive Recalculate and can be removed from the Order sheet.</div>
           <div class="pec-field"><label>Product</label><select id="prodAddLineProduct">${optHtml}</select></div>
@@ -40091,7 +40097,7 @@ function _mergeAcrossAreas(areaPlans) {
     sel.addEventListener('change', syncUnit);
     const close = () => { $('prodModalRoot').innerHTML = ''; };
     $('prodAddLineCancel').addEventListener('click', close);
-    prodModalWireX(close);
+    window.prodModalWireX(close);
     $('prodAddLineBg').addEventListener('click', (e) => { if (e.target.id === 'prodAddLineBg') close(); });
     $('prodAddLineSave').addEventListener('click', async () => {
       errEl.textContent = '';
@@ -40159,7 +40165,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPullBg">
         <div class="pec-modal prod-modal-wide">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
               <h3 style="margin:0">${jobIds ? 'Order' : 'Material Pull'}</h3>
@@ -40235,7 +40241,7 @@ function _mergeAcrossAreas(areaPlans) {
 
     const closePull = () => { state._pullJobIds = null; $('prodModalRoot').innerHTML = ''; };
     $('prodPullClose').addEventListener('click', closePull);
-    prodModalWireX(closePull);
+    window.prodModalWireX(closePull);
     $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closePull(); });
     if (!jobIds) { // date toolbar only exists in date-range mode
       $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
@@ -40830,7 +40836,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodDetailBg">
         <div class="pec-modal prod-modal-wide">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
               <h3 style="margin:0">${esc(j.customer_name)} <span style="color:var(--muted);font-weight:400">#${esc(j.proposal_number)}</span></h3>
@@ -40870,7 +40876,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     renderDetailLines();
     $('prodDetailClose').addEventListener('click', closeJobDetail);
-    prodModalWireX(closeJobDetail);
+    window.prodModalWireX(closeJobDetail);
     $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closeJobDetail(); });
     $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
     $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
@@ -41102,7 +41108,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodAddonBg">
         <div class="pec-modal">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} add-on</h3>
           <div class="pec-field"><label>Name</label><input id="adName" value="${esc(a.name)}"></div>
           <div class="pec-field"><label>Description</label><input id="adDesc" value="${esc(a.description || '')}"></div>
@@ -41126,7 +41132,7 @@ function _mergeAcrossAreas(areaPlans) {
       </div>`;
     const close = () => { $('prodModalRoot').innerHTML = ''; };
     $('adCancel').addEventListener('click', close);
-    prodModalWireX(close);
+    window.prodModalWireX(close);
     $('prodAddonBg').addEventListener('click', e => { if (e.target.id === 'prodAddonBg') close(); });
     $('adSave').addEventListener('click', async () => {
       const name = $('adName').value.trim();
@@ -41323,7 +41329,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPModalBg">
         <div class="pec-modal">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} product</h3>
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
           <div class="pec-row-3">
@@ -41382,7 +41388,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('pmCancel').addEventListener('click', closer);
-    prodModalWireX(closer);
+    window.prodModalWireX(closer);
     $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     // The Default basecoat field only applies to Flake products; keep its
     // visibility live as the material type changes so a mid-edit type switch
@@ -41781,7 +41787,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodSModalBg">
         <div class="pec-modal">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} system type</h3>
           <div class="pec-field"><label>Name</label><input id="smName" value="${esc(s.name)}"></div>
           <div class="pec-field"><label>Description</label><input id="smDesc" value="${esc(s.description || '')}"></div>
@@ -41827,7 +41833,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('smCancel').addEventListener('click', closer);
-    prodModalWireX(closer);
+    window.prodModalWireX(closer);
     $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('smSave').addEventListener('click', async () => {
       const laborPctRaw = $('smLaborPct').value;
@@ -41880,7 +41886,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodRSlotBg">
         <div class="pec-modal">
-          ${prodModalXHeadHtml('')}
+          ${window.prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} recipe slot</h3>
           <div class="pec-row-3">
             <div class="pec-field"><label>Order #</label><input id="rsOrder" type="number" min="0" step="1" value="${esc(slot.order_index)}"></div>
@@ -41932,7 +41938,7 @@ function _mergeAcrossAreas(areaPlans) {
     syncKind();
     $('rsType').addEventListener('change', () => { $('rsProduct').innerHTML = `<option value="">User picks at job time</option>` + productOpts($('rsType').value); });
     $('rsCancel').addEventListener('click', closer);
-    prodModalWireX(closer);
+    window.prodModalWireX(closer);
     $('prodRSlotBg').addEventListener('click', (e) => { if (e.target.id === 'prodRSlotBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('rsSave').addEventListener('click', async () => {
       const kind = $('rsKind').value;
