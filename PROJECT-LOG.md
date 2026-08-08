@@ -2,6 +2,43 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: SalesAsk go-live BLOCKED, and not on the env vars. Pulled a real recording through the SalesAsk MCP and the live payload does not match what extractRecordingFields expects in four places. Also: the #leads Slack channel already exists.
+
+By: Cowork
+
+Changed: nothing. No code, no schema, no data, no deploy, no env var, no setting flipped. `salesask_sync_enabled` is still 'false' and MUST stay false until the mapper is fixed. Read-only: SalesAsk MCP (org wTe1NH7s2Vg2pjekFedE "Prescott Epoxy Company", admin access), Supabase MCP, Slack MCP, and targeted reads of netlify/functions/_pec-salesask.cjs.
+
+Why: Dylan pasted prompt 77's Cowork handoff (7 tasks: SalesAsk go-live 1-4, prompt-73 leftovers 5-7). Task 4 asked for the first real recording's coaching/tags payload shape because the UI renders defensively against an unverified shape. That shape is now verified, and it is the reason to STOP rather than proceed.
+
+**Three real processed recordings already exist in SalesAsk** (nothing has ever reached our database because the sync is off): "Merlin P" 2026-08-06 38min uid YZGohJ0..., "Tom Bechtel" 2026-08-05 21min uid dqEGy6..., "Test" 2026-08-01 9min uid dqEGy6.... Two distinct rep uids. Shape read from the Merlin P document, which is fully processed with AI content.
+
+**FOUR MISMATCHES between the live document and `extractRecordingFields` (_pec-salesask.cjs:91-120).**
+
+1. **`occurred_at` will always be null, and that breaks 2 of the 3 matchers.** The extractor does `const when = pick('createdAt', ...); const d = new Date(when); if (!isNaN(d))`. The live `createdAt` is a **Firestore timestamp object** `{_seconds: 1785949023, _nanoseconds: 417000000}`, not a string. `new Date({_seconds})` is Invalid Date, so the field is silently skipped. `matchRecordingToAppointment` requires `rec.occurred_at` for BOTH the rep+time-window matcher and the name-fuzzy matcher, so only `event_id` matching can ever fire.
+
+2. **`rep_email` will always be null, which makes task 3 a no-op on its own.** The extractor coalesces `userEmail` / `user_email` / `repEmail` / `doc.user.email` / `doc.user.userEmail` / `doc.owner.email`. The live document has **none of them**. Rep identity is `uid`, a Firebase UID (`YZGohJ0akjex3FWarzYPLpzu0iQ2`). So filling `salesask_email` in Settings resolves nothing unless the extractor learns to map uid -> member. `pec_sales_team_members` needs a salesask **uid** column, or the emailMap needs a uid index.
+
+3. **`tags` will render UUIDs to the user.** `doc.tags` is `["91dac8cf-9673-4b08-b937-65e8d774ffd5", "c0d78518-cac4-4ffa-a2d0-253d6f8828ab"]`, i.e. tag IDs, not labels. The human-readable labels live somewhere else entirely: `salesInsights.tags` = `["Follow Up", "Hot Lead"]`. The extractor stores `doc.tags` verbatim.
+
+4. **`process_followed` / `process_missed` / `process_total` will always be null, so the score chip has nothing to score.** The extractor reads flat `doc.processFollowed` / `processMissed` / `processTotal`. The live document has none of those. It has `process.answers[]`, 30 entries, each `{questionId, question, answer: "yes"|"no", coaching, utteranceIndex}`, plus `process.summary`. Counting Merlin P: **13 yes, 17 no, 30 total = 43%**, which is below `salesask_score_amber_pct` (70), so the first real scored call would read red. That is the AI rubric being strict about steps that happen after the on-site visit (financing, trial close, referrals, deposit), not a data error.
+
+**`coaching` is a string, not an object.** `doc.coaching` is a long markdown document, and it stores fine in the jsonb column. But there is a much richer `coachingStructured.sections[]` (praise / improve, each with items carrying label, desc, quote, utteranceIndex) that the extractor ignores. Also unused and valuable: `structuredActionItems` (explicit / client / emailDraft), `customerProfile.default`, `objections`, `competitors[]`, `salesInsights` (isClosed, dealConfidence, offer, tags), and talk-ratio metrics.
+
+**Consequence, stated plainly.** If tasks 1 through 4 are done as written, the sync turns on and recordings arrive with no date, no rep, no appointment match except by event_id, UUID tags, and no process score. It would look broken, and the natural conclusion would be that prompt 77's build was wrong. It was not; it was written defensively against an unverified shape, exactly as flagged, and now the shape is known.
+
+**Slack finding: the channel already exists.** `#leads` (C0B377N7H7D) was created by Dylan on 2026-05-12 and is not archived. Handoff task 5 is half done: only the incoming webhook needs creating, not the channel.
+
+**Nothing else was actionable from this session.** Tasks 1, 2, 6 need Netlify dashboard and SalesAsk admin access (no connector for either; the SalesAsk MCP is read-only: list/get/search/stats). Task 3 needs Aaron's SalesAsk login email and is blocked behind finding 2 regardless. Task 7 needs the Routemize booking URL from Dylan. Task 4 is gated on all of them.
+
+Files touched: PROJECT-LOG.md (this entry).
+
+## Handoff to Dylan
+
+1. **Do not flip "Sync appointments and pull recordings" on yet.** A short prompt fixing the four mappings should land first, or the first sync produces empty-looking rows.
+2. `#leads` already exists. You need the incoming webhook for it, not a new channel.
+3. Still needed from you: the two SalesAsk secrets set in Netlify, the webhook registered in SalesAsk, Aaron's SalesAsk login email, and the Routemize booking URL.
+4. Worth knowing before you read the first score: the rubric marked Merlin P 13 of 30. Most misses are post-visit steps (Enhancify, trial close, direct ask, scheduled follow-up, referrals, deposit).
+
 ## [2026-08-08 MST] Prompt 77 shipped: the backlog cleared. Both stranded migrations applied, the sqft clobber survivors fixed (Susan live, Lynette's crew order hand-written), Grind and Seal retitled, FTP brand row seeded, and prompt 71 (SalesAsk surfaces + modal close X) built and verified live end to end.
 
 By: Claude Code
