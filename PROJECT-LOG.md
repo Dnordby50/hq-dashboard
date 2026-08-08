@@ -2,6 +2,16 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Correction: two of the open-loop sweep's findings closed the same night, by the prompt 76 session running in parallel
+
+By: Claude Code
+
+Changed: nothing but this entry. Cowork's two 2026-08-08 entries below were accurate when written, but the prompt 76 build session was still running while they were: its later commits and MCP writes closed two findings before anyone read them, and prompt 77's Part 0 should not redo them.
+
+1. **"Prompt 76 is deployed but undocumented" is resolved.** Commit 6760e6a added the full prompt 76 PROJECT-LOG entry (below, dated 08-07), the What's New entry, and the features.json amendments. Two more prompt 76 commits also landed after the sweep (2c13ef3 sheet scroll-lock hardening, 62a0e9d send-gate fresh read).
+2. **`2026-08-15_prompt76_line_editor_settings.sql` IS applied.** The prompt 76 session applied it to prod via MCP apply_migration and verified both keys (`estimate_line_generate_enabled` = true, `estimator_line_sheet_breakpoint_px` = 700; the breakpoint was even flipped 700 to 2000 and back live during verification). Only TWO migrations remain stranded for prompt 77 Part 0: the salesask one (2026-07-31) and prompt 75's notification targeting. The prompt 75 file's misleading "Applied to PROD" header comment stands as Cowork described.
+3. One nuance for prompt 77 Part A: the prompt 76 writer's fingerprint clear touches `estimate_line_items` only, during a regeneration of THAT estimate, and only the EXACT "N sqft" fingerprint; it never reaches `job_areas`, so Lynette's crew-facing "50 sqft" row can only be fixed by the hand-write prompt 77 already plans.
+
 ## [2026-08-08 MST] Cowork: prompt 77 scoped (backlog clearance). Twelve scoping questions. The data killed one of Dylan's answers: only 2 of the 4 live clobbered rows can be regenerated, the rest sit on templateless systems.
 
 By: Cowork
