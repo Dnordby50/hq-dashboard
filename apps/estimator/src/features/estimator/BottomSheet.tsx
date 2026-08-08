@@ -92,17 +92,26 @@ export default function BottomSheet({
     const prevown = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     let parentBody: HTMLElement | null = null;
-    let prevParent = '';
+    let parentHtml: HTMLElement | null = null;
+    let prevParentBody = '';
+    let prevParentHtml = '';
     try {
       if (framed && window.parent?.document?.body) {
         parentBody = window.parent.document.body;
-        prevParent = parentBody.style.overflow;
+        prevParentBody = parentBody.style.overflow;
         parentBody.style.overflow = 'hidden';
+        // Belt and braces: body{overflow:hidden} only reaches the viewport
+        // when html's overflow is visible (propagation), so lock the
+        // documentElement too in case the dashboard ever styles it.
+        parentHtml = window.parent.document.documentElement;
+        prevParentHtml = parentHtml.style.overflow;
+        parentHtml.style.overflow = 'hidden';
       }
     } catch { /* cross-origin: nothing to lock */ }
     return () => {
       document.body.style.overflow = prevown;
-      if (parentBody) { try { parentBody.style.overflow = prevParent; } catch { /* gone */ } }
+      if (parentBody) { try { parentBody.style.overflow = prevParentBody; } catch { /* gone */ } }
+      if (parentHtml) { try { parentHtml.style.overflow = prevParentHtml; } catch { /* gone */ } }
     };
   }, [open, framed]);
 
