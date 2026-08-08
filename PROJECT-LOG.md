@@ -2,6 +2,30 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: prompts 79 and 80 scoped from the Settings IA analysis. Twelve scoping questions, all answered. Phased deliberately: a one-file migration, then a container-only rebuild that moves zero settings.
+
+By: Cowork
+
+Changed: two new files, `claude-code-prompt-79-settings-updated-at.md` and `claude-code-prompt-80-settings-rail-shell.md`, plus this entry. No code, no schema, no data, no deploy. Follows the analysis entry below.
+
+Why: Dylan answered twelve multiple-choice scoping questions on the Settings redesign. Every answer took the recommended option, so the target below is locked, not provisional.
+
+**Dylan's twelve decisions.** Vertical rail plus a search box (not a regrouped horizontal strip). Records stay INSIDE Settings as a labeled group, not promoted to main nav. The 16 never-saved knobs get hidden behind an Advanced disclosure, not deleted. `settings.updated_at` ships FIRST as its own isolated prompt. BusyBusy loses its top-level tab and becomes a card in Integrations with a drill-in. All customer-facing text (estimate T&C, invoice intro, payment instructions, terms, thank-you, footer, status descriptions, email templates, scope templates) consolidates onto one Templates page, leaving Brand as logo/colors/review links only. Phasing is shell first, then content. Deep links get a silent redirect map, explicitly NOT a "this has moved" banner. Presentation folds into Customer Portal. Below the breakpoint the rail becomes a dropdown. Advanced sections always start collapsed. Scope held: nothing new pulled in, the ~35 headless settings rows stay headless for now and appointment types stay as they are.
+
+**The load-bearing design decision in prompt 80, worth recording because it is what makes the phasing safe.** There are 14 call sites, all `root.innerHTML = settingsTabBar('<key>') + content` followed by `wireSettingsTabs(root)`. The obvious way to get a two-column layout is to have `settingsTabBar` open wrapper divs and make each call site close them, which is fourteen chances to leave a tag unclosed in a 2.6 MB file. The prompt forbids that and instead restructures the DOM inside `wireSettingsTabs(root)`, which every call site already invokes: find the rail element, wrap the siblings after it, drop both into a flex shell. Zero call-site edits, and it must be idempotent because the two migration-missing early-return branches (People 20723, Brand 23550) render and wire in quick succession.
+
+**Prompt 80 also introduces `SETTINGS_PAGES`,** a manifest of `{key, label, group, keywords}`. It ships with the current ten pages, all `group: 'config'`, so the shell is provably behaviour-neutral. Prompt 81 becomes a manifest edit plus markup moves rather than a nav rewrite. The `records` group exists in code and renders nothing until something claims it; group headers only render when the group is non-empty, so today the rail shows a plain list.
+
+**The one rule prompt 79 leans on hardest.** `updated_at` is nullable, has NO column default, and is NOT backfilled. A NULL row means "not written since 2026-08-16", which IS the audit signal; backfilling `now()` would assert all 97 rows were touched today and erase the only measurement available. The prompt calls this out as the single most likely way to get it wrong and includes a verification query that fails loudly if `touched` is anything other than 1 (the `settings_rail_breakpoint_px` seed the same migration inserts, so prompt 80 has no migration of its own).
+
+**Deliberate deferrals recorded so they are not lost.** The five duplicated local `saveSetting` helpers (index.html 18896, 19079, 19324, 20049, 37680) are a real defect and a live temptation while editing this code; both prompts explicitly forbid touching them and hand them to prompt 81, where the pages they live in are being rewritten anyway. The ~35 settings rows with no UI at all (`ops_check_*`, `estimator_charm_band`, `estimator_sundries_pct`, `default_labor_hourly_rate`, `drip_kill_switch`, `security_alerts_*`) remain unaddressed by choice.
+
+**Still open, and Cowork flagged it as the thing that undoes this work.** Standing rule 12 (CLAUDE.md line 45) requires every major feature's key parameters be adjustable from company Settings. That is what produced the clutter, and the audit shows a third of what it produced has never been used. Proposed amendment, NOT adopted and not written into CLAUDE.md: keep the settings-table-backed, no-code-edit-to-tune requirement, drop the must-be-visible requirement, cap a feature at two front-of-card controls with the rest behind Advanced. Dylan has not ruled on this. Reorganizing without it buys months, not a fix.
+
+Files touched: claude-code-prompt-79-settings-updated-at.md (new), claude-code-prompt-80-settings-rail-shell.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: Dylan runs prompt 79 in Claude Code, verifies the three queries in it (especially that `touched` = 1), then runs prompt 80. Prompt 81 (content split: dissolve General, Templates page, Integrations, Customer Portal, Advanced disclosures, card descriptions, shared saveSetting) gets written by Cowork AFTER 80 ships, so it can be written against the real manifest rather than a predicted one.
+
 ## [2026-08-08 MST] Cowork: SalesAsk go-live BLOCKED, and not on the env vars. Pulled a real recording through the SalesAsk MCP and the live payload does not match what extractRecordingFields expects in four places. Also: the #leads Slack channel already exists.
 
 By: Cowork
