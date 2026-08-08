@@ -211,18 +211,12 @@ function notFoundPage() {
 // Page render
 // ---------------------------------------------------------------------------
 
-function scopeRowsHtml(est, sysName, totalSqft) {
-  const mvbLabel = est.mvb === 'standalone' ? 'Moisture vapor barrier (standalone)'
-    : est.mvb === 'addon' ? 'Included' : null;
-  const systemLabel = sysName || (est.mvb === 'standalone' ? 'Moisture vapor barrier (MVB)' : null);
-  const rows = [
-    systemLabel ? ['System', esc(systemLabel)] : null,
-    totalSqft > 0 ? ['Square footage', esc(Math.round(totalSqft).toLocaleString('en-US')) + ' sq ft'] : null,
-    mvbLabel ? ['Moisture vapor barrier', esc(mvbLabel)] : null,
-    est.flake_color ? ['Flake color', esc(est.flake_color)] : null,
-  ].filter(Boolean);
-  return rows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${v}</td></tr>`).join('');
-}
+// Prompt 78 B1: the top "Scope of work" summary table (system / combined
+// square footage / MVB / flake color) is GONE. A single footage at the top is
+// a sum across lines that may carry different systems, so it is wrong the
+// moment an estimate has more than one line; footage belongs on the line it
+// describes (liSubtitleHtml). Flake color survives as a one-line note above
+// "Your project" so it does not vanish from the signed document.
 
 // The sqft subtitle under a line's label (prompt 74 A2): derived from the
 // line's AREA row (no new column; description is scope-only now). Customer-
@@ -363,7 +357,7 @@ function customerDisplay(est) {
   };
 }
 
-function estimatePage(est, brand, sysName, totalSqft, opts) {
+function estimatePage(est, brand, opts) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const biz = b.business_name || 'Prescott Epoxy Company';
   const logoUrl = b.logo_url || LOGO_URL;
@@ -374,10 +368,15 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   // Area lookup for the per-line sqft subtitles (prompt 74 A2).
   const areaById = new Map((Array.isArray(opts && opts.areas) ? opts.areas : []).map(a => [a.id, a]));
   // PREVIEW MODE (15c): staff sees the EXACT customer page from this same
-  // renderer, but nothing is live. interactive gates the client script + the
-  // enabled controls, so a preview carries NO public token and NO working
-  // actions (buttons render disabled). Faithful preview or none.
+  // renderer, but nothing is live. Faithful preview or none.
   const preview = !!(opts && opts.preview);
+  // TICKING: the checkboxes are live and the recalc script runs. True on any
+  // open estimate, including a staff preview, because a rep demoing the page
+  // needs to see the price move. False on accepted / rejected / lost, where
+  // the document is a frozen record.
+  const ticking = state.live;
+  // INTERACTIVE (unchanged meaning): the customer can actually act. Gates the
+  // public token, the accept / change / decline panels, and every POST.
   const interactive = state.live && !preview;
   const items = Array.isArray(est.line_items) ? est.line_items : [];
   const total = (interactive || preview) ? includedTotal(items) : Number(est.price || includedTotal(items));
@@ -550,9 +549,6 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   .termsbox { max-height:260px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; font-size:13.5px; color:#374151; line-height:1.65; }
   .optcard { display:flex; gap:12px; align-items:flex-start; border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; transition:border-color .15s, box-shadow .15s; }
   .optcard:has(.opt-toggle:checked) { border-color:${accent}; box-shadow:0 0 0 1px ${accent}; }
-  table.scope { width:100%; border-collapse:collapse; font-size:14.5px; }
-  table.scope td { padding:9px 0; border-bottom:1px solid #eef0f3; vertical-align:top; }
-  table.scope td.k { color:#6b7280; width:180px; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:1.8px; padding-right:12px; }
   table.tot { width:100%; border-collapse:collapse; font-size:14.5px; font-variant-numeric:tabular-nums; margin-top:10px; }
   table.tot td { padding:5px 12px; }
   table.tot td:first-child { text-align:right; color:#6b7280; }
@@ -598,7 +594,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
   }
 </style></head>
 <body>
-  ${preview ? `<div style="position:sticky;top:0;z-index:10;background:${accent};color:#fff;text-align:center;padding:10px 16px;font-size:13.5px;font-weight:700;letter-spacing:.02em">PREVIEW &middot; this is exactly what the customer will see. It has not been sent, and the buttons are disabled.</div>` : ''}
+  ${preview ? `<div style="position:sticky;top:0;z-index:10;background:${accent};color:#fff;text-align:center;padding:10px 16px;font-size:13.5px;font-weight:700;letter-spacing:.02em">PREVIEW &middot; this is exactly what the customer will see. It has not been sent. You can tick options to watch the price move, and the accept, change and decline buttons stay disabled.</div>` : ''}
   <div class="wrap">
     ${preview ? '' : state.banner}
     <div class="card">
@@ -615,7 +611,7 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
         <div class="right">
           <div class="eyebrow">${(state.live || preview) ? 'Your total' : 'Total'}</div>
           <div class="big" id="heroTotal">${usd(total)}</div>
-          ${interactive ? '<div class="sub">Updates as you tick optional items</div>' : ''}
+          ${ticking ? '<div class="sub">Updates as you tick optional items</div>' : ''}
         </div>
       </div>
       <div class="pad">
@@ -623,18 +619,17 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
           <div><span class="lbl">Prepared for</span><div style="font-weight:700">${esc(who.name || '')}</div>${who.company && who.contact ? `<div style="color:#4b5563;margin-top:2px">Attn: ${esc(who.contact)}</div>` : ''}${who.address ? `<div style="color:#4b5563;margin-top:2px">${esc(who.address)}</div>` : ''}</div>
           <div><span class="lbl">Estimate</span><div style="color:#4b5563">${esc(invNoTxt)}${est.sent_at ? ' &middot; sent ' + esc(fmtStamp(est.sent_at)) : ''}</div></div>
         </div>
-        <div class="eyebrow">Scope of work</div>
-        <table class="scope">${scopeRowsHtml(est, sysName, totalSqft)}</table>
         ${/* Prompt 74 A4: the whole-document scope render is GONE. The scope
              lives under each line now (decision 3); estimates.scope_of_work
              stays the internal record feeding the job, the crew scope, and
              the declined-line filter, and is never rendered here again. */''}
+        ${est.flake_color ? `<div style="color:#4b5563;font-size:14px;margin-top:4px">Flake color: <strong>${esc(est.flake_color)}</strong></div>` : ''}
         <div class="eyebrow" style="margin-top:26px">Your project</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>
-          <tbody>${lineItemRowsHtml(items, !interactive, areaById)}</tbody>
+          <tbody>${lineItemRowsHtml(items, !ticking, areaById)}</tbody>
         </table>
-        ${optionalCardsHtml(items, !interactive, areaById)}
+        ${optionalCardsHtml(items, !ticking, areaById)}
         ${/* "Your investment" (prompt 74 F6). No tax row: estimates carries no
              tax concept, so none is invented and none is hardcoded at $0. */''}
         <div class="eyebrow" style="margin-top:26px">Your investment</div>
@@ -660,9 +655,13 @@ function estimatePage(est, brand, sysName, totalSqft, opts) {
       <div class="meta">${[b.address_line, b.phone, b.license_number ? 'License ' + b.license_number : ''].filter(Boolean).map(esc).join(' &middot; ')}</div>
     </div>
   </div>
-${!interactive ? '' : `<script>
+${/* One IIFE, two sections (prompt 78 A1). The TICKING section (checkbox
+     recalc) is emitted for any open estimate, INCLUDING a staff preview, so a
+     rep demoing the page sees the price move. The ACTION section below it is
+     emitted only when interactive: it is the ONLY place TOKEN appears, so a
+     preview render can never leak the live public token. */''}
+${!ticking ? '' : `<script>
 (function(){
-  var TOKEN=${JSON.stringify(String(est.public_token))};
   var money=function(n){return '$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});};
   var toggles=Array.prototype.slice.call(document.querySelectorAll('.opt-toggle'));
   var baseTotal=${JSON.stringify(includedTotal(items.filter(li => li && !isOptionalLine(li))))};
@@ -712,6 +711,26 @@ ${!interactive ? '' : `<script>
   }
   toggles.forEach(function(cb){ cb.addEventListener('change', refresh); });
   refresh();
+${interactive ? `
+  var TOKEN=${JSON.stringify(String(est.public_token))};
+
+  // Prompt 78 A3: persist ticks as the customer makes them. Debounced so a
+  // click-through of five options sends one request, and fire-and-forget: a
+  // lost tick costs nothing because the signature freeze at accept remains
+  // the authority. Never surfaces an error.
+  var selTimer=null;
+  function saveSelection(signing){
+    try{
+      fetch('/api/estimate/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN,action:'select',selected_optional_ids:selectedIds(),signing:!!signing})}).catch(function(){});
+    }catch(_){}
+  }
+  toggles.forEach(function(cb){ cb.addEventListener('change', function(){
+    clearTimeout(selTimer);
+    selTimer=setTimeout(function(){ saveSelection(false); }, 250);
+  }); });
+  // estimates.price is written only once the customer opens the accept panel
+  // (decision 5): signing:true tells the server to also settle price + GP.
+  var signingAnnounced=false;
 
   var panels={accept:'panelAccept',change:'panelChange',reject:'panelReject'};
   function show(which){
@@ -727,7 +746,14 @@ ${!interactive ? '' : `<script>
     }
   }
   var bA=document.getElementById('btnAccept'), bC=document.getElementById('btnChange'), bR=document.getElementById('btnReject');
-  if(bA) bA.addEventListener('click',function(){show('accept');});
+  if(bA) bA.addEventListener('click',function(){
+    show('accept');
+    if(!signingAnnounced){
+      signingAnnounced=true;
+      clearTimeout(selTimer);
+      saveSelection(true);
+    }
+  });
   if(bC) bC.addEventListener('click',function(){show('change');});
   if(bR) bR.addEventListener('click',function(){show('reject');});
 
@@ -769,6 +795,7 @@ ${!interactive ? '' : `<script>
     if(!confirm('Decline this estimate?')) return;
     post({token:TOKEN,action:'reject',reason:reason}, goR);
   });
+` : ''}
 })();
 <\/script>`}
 </body></html>`);
@@ -798,7 +825,9 @@ async function loadLineItems(estimateId) {
     // estimate_area_id rides along (prompt 69) so ensureJobCreated can carry
     // each line's price + scope onto its job_areas row; the page render
     // ignores it.
-    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,estimate_area_id,label,description,qty,unit_price,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
+    // unit_cost rides along (prompt 78 A3) so the select action's GP
+    // recompute can run server-side; it is never rendered on the page.
+    const rows = await sb('GET', `/estimate_line_items?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,estimate_area_id,label,description,qty,unit_price,unit_cost,total,is_optional,selected_by_customer,sort_order&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
 }
@@ -857,14 +886,6 @@ async function loadAreas(estimateId) {
     const rows = await sb('GET', `/estimate_areas?estimate_id=eq.${encodeURIComponent(estimateId)}&select=id,name,sqft,sort_order,system_type_id,mvb,flake_product_id,basecoat_product_id,topcoat_product_id,basecoat_cure_speed,topcoat_cure_speed,is_custom,custom_label&order=sort_order.asc`);
     return Array.isArray(rows) ? rows : [];
   } catch (_) { return []; }
-}
-
-async function loadSystemName(systemTypeId) {
-  if (!systemTypeId) return null;
-  try {
-    const rows = await sb('GET', `/pec_prod_system_types?id=eq.${encodeURIComponent(systemTypeId)}&select=name&limit=1`);
-    return Array.isArray(rows) && rows[0] ? rows[0].name : null;
-  } catch (_) { return null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -1539,6 +1560,53 @@ async function handleReject(est, body) {
   return json(200, { ok: true });
 }
 
+// Prompt 78 A3: persist the customer's optional-item ticks as they happen.
+// Fired debounced from the live page on every tick (signing:false, rows only)
+// and ONCE when the customer first opens the accept panel (signing:true,
+// which also settles estimates.price + GP at the selection they are about to
+// sign). estimates.price is NOT written on plain ticks (decision 5): prompt
+// 72 defines price as the required-only floor while open, and the pipeline's
+// "$X (up to $Y)" reads exactly that, so every-tick writes would move
+// forecast dollars on unsigned clicks.
+async function handleSelect(est, body) {
+  // A signed document is never re-selected. 409 and write NOTHING on any
+  // terminal status; the open statuses (sent/signed/change_requested/draft)
+  // proceed.
+  if (est.status === 'accepted' || est.status === 'rejected' || est.status === 'lost') {
+    return json(409, { ok: false, error: 'This estimate is no longer open.' });
+  }
+  const selectedIds = Array.isArray(body.selected_optional_ids) ? body.selected_optional_ids.slice(0, 50).map(String) : [];
+  // The one selection writer: idempotent, optional rows only, scoped to this
+  // estimate. Same helper the accept path uses; never duplicated.
+  await applySelection(est.id, est.line_items, selectedIds);
+  if (body.signing !== true) return json(200, { ok: true });
+
+  const frozen = freezeLineItems(est.line_items, selectedIds);
+  const total = Math.round(includedTotal(frozen) * 100) / 100;
+  const included = frozen.filter(li => li && (!isOptionalLine(li) || li.selected_by_customer === true));
+
+  // GP over the SAME included set, with the honesty rule: a zero unit_cost on
+  // a PRICED line means the cost data is missing, not that the margin is 100
+  // percent, and a fabricated margin is worse than a stale one because it
+  // looks authoritative in the pipeline. Any such line = write NO gp at all.
+  const costless = included.filter(li => Number(li.unit_cost) === 0 && Number(li.total) > 0);
+  const patch = { price: total };
+  if (costless.length) {
+    console.warn(`public-estimate select: gp skipped for estimate ${est.id}, zero unit_cost on priced line(s): ${costless.map(li => li.id).join(', ')}`);
+  } else {
+    const cost = included.reduce((s, li) => s + (Number(li.unit_cost) || 0) * (Number(li.qty) || 0), 0);
+    const gpDollars = Math.round((total - cost) * 100) / 100;
+    patch.gp_dollars = gpDollars;
+    patch.gp_pct = total > 0 ? Math.round((gpDollars / total) * 10000) / 100 : null;
+  }
+
+  // Status guard on the PATCH so a signature landing mid-flight can never be
+  // clobbered: the accept CAS flips status to accepted, which this filter
+  // excludes. A zero-row result is a no-op, not an error.
+  await sb('PATCH', `/estimates?id=eq.${encodeURIComponent(est.id)}&status=in.(sent,signed,change_requested,draft)`, patch);
+  return json(200, { ok: true });
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
@@ -1626,10 +1694,19 @@ async function logEstimateView(est, event) {
       const dupes = await sb('GET', `/pec_notifications?type=eq.estimate_viewed&target_id=eq.${est.id}&created_at=gte.${day}T07:00:00Z&select=id&limit=1`);
       if ((dupes || []).length) return;
     }
+    // Prompt 78 C: name-first bell body, "Susan Nasser viewed estimate
+    // #102064 (2nd view)". customerDisplay resolves the split-column identity
+    // and prefers the company name on a commercial record, so the bell reads
+    // the same name the rest of the system uses. Write-time string only; the
+    // renderer prints n.body verbatim and existing rows are left alone.
+    const viewerName = customerDisplay(est).name || 'A customer';
+    const viewSuffix = viewCount ? ` (${viewOrdinal(viewCount)} view)` : '';
     await sb('POST', '/pec_notifications', {
       type: 'estimate_viewed',
       job_id: est.job_id || null,
-      body: est.estimate_number != null ? `Customer viewed estimate #${est.estimate_number}` : 'Customer viewed an estimate',
+      body: est.estimate_number != null
+        ? `${viewerName} viewed estimate #${est.estimate_number}${viewSuffix}`
+        : `${viewerName} viewed an estimate`,
       priority: 'normal',
       target_view: 'estimates',
       target_id: est.id,
@@ -1654,9 +1731,11 @@ async function logEstimateView(est, event) {
       await sb('POST', '/pec_notifications', {
         type: 'estimate_viewed_rep',
         job_id: est.job_id || null,
+        // Same name-first shape as the shared bell; the name makes the old
+        // "Your customer" prefix redundant.
         body: est.estimate_number != null
-          ? `Your customer viewed estimate #${est.estimate_number}${viewCount ? ` (${viewOrdinal(viewCount)} view)` : ''}`
-          : 'Your customer viewed an estimate',
+          ? `${viewerName} viewed estimate #${est.estimate_number}${viewSuffix}`
+          : `${viewerName} viewed an estimate`,
         priority: 'normal',
         target_view: 'estimates',
         target_id: est.id,
@@ -1683,6 +1762,7 @@ exports.handler = async (event) => {
       if (action === 'accept') return await handleAccept(est, body, event);
       if (action === 'change') return await handleChange(est, body);
       if (action === 'reject') return await handleReject(est, body);
+      if (action === 'select') return await handleSelect(est, body);
       return json(400, { ok: false, error: 'Unknown action' });
     } catch (err) {
       console.error('public-estimate action error:', err.message);
@@ -1708,16 +1788,14 @@ exports.handler = async (event) => {
     try {
       const est = await loadEstimateById(qs.preview);
       if (!est) return notFoundPage();
-      const [brand, sysName, areas, financing, literature, installments] = await Promise.all([
+      const [brand, areas, financing, literature, installments] = await Promise.all([
         loadBrand(est.brand),
-        loadSystemName(est.system_type_id),
         loadAreas(est.id),
         loadFinancingSettings(sb),
         loadLiterature(est.brand),
         loadInstallments(est.id),
       ]);
-      const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
-      return estimatePage(est, brand, sysName, totalSqft, { preview: true, financing, literature, areas, installments });
+      return estimatePage(est, brand, { preview: true, financing, literature, areas, installments });
     } catch (err) {
       console.error('public-estimate preview error:', err.message);
       return notFoundPage();
@@ -1730,16 +1808,14 @@ exports.handler = async (event) => {
   try {
     const est = await loadEstimate(token);
     if (!est) return notFoundPage();
-    const [brand, sysName, areas, financing, literature, installments, acceptedPay] = await Promise.all([
+    const [brand, areas, financing, literature, installments, acceptedPay] = await Promise.all([
       loadBrand(est.brand),
-      loadSystemName(est.system_type_id),
       loadAreas(est.id),
       loadFinancingSettings(sb),
       loadLiterature(est.brand),
       loadInstallments(est.id),
       loadAcceptedPay(est),
     ]);
-    const totalSqft = areas.reduce((s, a) => s + (Number(a.sqft) > 0 ? Number(a.sqft) : 0), 0);
     // Await (not fire-and-forget): the lambda may freeze the instant the
     // response returns, which would drop an un-awaited insert.
     // present=1 (prompt 64): the dashboard's Present mode loads this live page
@@ -1748,7 +1824,7 @@ exports.handler = async (event) => {
     // skipping this log; render, buttons, and the action path are identical.
     // A customer who hand-added the param would only skip a convenience log.
     if (String(qs.present || '') !== '1') await logEstimateView(est, event);
-    return estimatePage(est, brand, sysName, totalSqft, { financing, literature, areas, installments, acceptedPay });
+    return estimatePage(est, brand, { financing, literature, areas, installments, acceptedPay });
   } catch (err) {
     console.error('public-estimate error:', err.message);
     return notFoundPage();
@@ -1761,5 +1837,5 @@ exports._internals = {
   deterministicUuid, includedTotal, freezeLineItems, ensureJobCreated,
   loadEstimate, loadEstimateById, estimatePage, notFoundPage, stateForStatus, moveLead,
   mdToSafeHtml, applySelection, loadLiterature, literatureBlockHtml, presentationBrandKey,
-  loadInstallments, loadAcceptedPay, liSubtitleHtml,
+  loadInstallments, loadAcceptedPay, liSubtitleHtml, handleSelect,
 };
