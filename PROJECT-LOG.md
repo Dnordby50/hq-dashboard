@@ -2,6 +2,34 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: prompt 78 scoped (proposal polish). Eighteen scoping questions. Two of Dylan's four asks turned out to be already built, and the blank gate he asked for was already dead on the one channel that needed it most.
+
+By: Cowork
+
+Changed: one new file, `claude-code-prompt-78-proposal-polish.md`, plus this entry. No code, no schema, no data, no deploy. Targeted reads of `pec-public-estimate.cjs`, `production/scope.cjs`, `production/optional-lines.cjs` and four `index.html` anchors.
+
+Why: Dylan brought four items in one message (optional checkboxes that do not update the price, remove the combined square footage from the top of the customer estimate, put the real customer name in the notification bell, and block a send when the proposal still has blanks). Packaging is one phased prompt, Parts A through D, with ZERO migrations by design given three were stranded in the last two weeks.
+
+**The findings that changed the scope.**
+
+1. **The optional-tick complaint was a Preview problem, not a live-page bug.** `interactive = state.live && !preview` (pec-public-estimate.cjs:381) does three jobs at once: disables the checkboxes, suppresses the whole client script, and gates the accept panel. The real `/e/<token>` page has always ticked and recalculated correctly. Dylan was looking at the Preview modal, which is behaving as designed. Part A1 splits the flag into `ticking` (checkboxes plus recalc, true on any open estimate including a preview) and `interactive` (the token and the actions), which fixes the complaint without touching the live path.
+
+2. **Present mode can already sign on the iPad.** `openForSigning` (index.html:29763) drops the preview srcdoc and points the iframe at the REAL live URL with `present=1`, then polls for the signature. Dylan asked to be able to sign in Present; it shipped in prompt 64. The prompt says so explicitly and forbids rebuilding it, which is the only reason it is not two days of duplicated work.
+
+3. **The Present sign path skips the blank check entirely.** `openForSigning` at 29768-29769 calls the optional gate and the scope gate but NOT `estimateBlankScopeOk`. Email (29873) and text (29954) both call it. So the one channel where a rep hands an iPad to a customer is the channel with no blank check at all. Part D closes this by folding the blank rules INTO `scopeSendBlockers` / `estimateSendGateOk`, which all three channels already route through, and deleting the standalone warn.
+
+4. **The blank check also looks in the wrong field.** It scans `est.scope_of_work` only. Since prompt 74 the customer reads `estimate_line_items.description`, one per line. A BLANK in a line description trips nothing today.
+
+**Dylan's decisions worth recording.** Whole summary table removed from the customer page, both change order pages and the staff estimate detail card (his reason: a combined footage lies when the lines carry different systems); flake color keeps a one-line note so it does not vanish from the signed document; the estimates LIST keeps its sqft column and $/sqft sort; bell reads `<name> viewed estimate #N (2nd view)` with no backfill of existing rows; blanks are a HARD block with no override and no settings switch (rule 12 waived deliberately, recorded in the prompt).
+
+**The one place Cowork pushed back and lost, deliberately.** Dylan first chose to write `estimates.price` on every customer tick. Prompt 72 defines `price` as the required-only floor while open and the pipeline renders `$X (up to $Y)` off exactly that, so ticking would move pipeline and forecast dollars on unsigned clicks. Presented with that, he moved to writing price only once the customer opens the accept panel. Residue he accepted: an abandoned accept panel leaves `price` mid-range on an open estimate. It degrades gracefully (the `(up to $Y)` render keys on `price !== price_all_options`, still true), and the prompt requires the shipping entry to record it.
+
+**One rule added that was not asked for.** The accept-panel write also recomputes GP from `estimate_line_items.unit_cost`, but if ANY included line has unit_cost 0 while total > 0, it writes NO gp at all and warns. A zero cost means missing data, not a 100 percent margin, and a fabricated margin in the pipeline is worse than a stale one.
+
+Files touched: claude-code-prompt-78-proposal-polish.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: Dylan runs prompt 78 in Claude Code. No input is needed mid-build; every decision is locked in the file.
+
 ## [2026-08-08 MST] MVB Only template approved and written live; the MVB-only scope exemption retired everywhere. (Amends the Metallic entry below: both drafts are now approved and live.)
 
 By: Claude Code
