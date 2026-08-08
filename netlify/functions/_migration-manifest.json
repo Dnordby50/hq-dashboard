@@ -2499,6 +2499,22 @@
           "name": "estimator_line_sheet_breakpoint_px"
         }
       ]
+    },
+    {
+      "file": "2026-08-16_prompt79_settings_updated_at.sql",
+      "date": "2026-08-16",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "column",
+          "name": "public.settings.updated_at"
+        },
+        {
+          "kind": "setting",
+          "name": "settings_rail_breakpoint_px"
+        }
+      ]
     }
   ],
   "knownTables": [

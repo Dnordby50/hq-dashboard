@@ -2047,15 +2047,18 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 95
+RLS: enabled · rows: 98
 
 | column | type | nullable | default |
 |---|---|---|---|
 | id | uuid | no | gen_random_uuid() |
 | key | text | no |  |
 | value | text | yes |  |
+| updated_at | timestamptz | yes | (none, set by trigger) |
 
 PK: id
+Trigger: settings_touch_updated_at (BEFORE INSERT OR UPDATE, sets updated_at := now(); the trigger is the ONLY writer, there is no column default). **Do NOT backfill updated_at: a NULL means the row has not been written since the 2026-08-16 prompt-79 migration ran, and that NULL is the audit signal the column exists to provide.** Row-count note: this block previously read 95; a live count on 2026-08-08 (pre-migration) returned 97, so the documented number had drifted by 2 (the live schema wins); 98 after the settings_rail_breakpoint_px seed.
+Key added 2026-08-08 (prompt 79): settings_rail_breakpoint_px ('900'; below this viewport width the prompt-80 Settings rail collapses to a single dropdown instead of a vertical list, the estimator_line_sheet_breakpoint_px pattern). Inserted insert-only. Settings 97 rows to 98.
 Keys added 2026-08-08 (prompt 77 Part 0, applying the two stranded migrations): salesask_sync_enabled ('false'; nothing pushes to or pulls from SalesAsk until Dylan flips it on AFTER the API key + webhook exist in Netlify), salesask_push_window_days ('14'), salesask_pull_lookback_days ('3'), all in Settings > Appointments; estimate_view_slack_enabled ('true'; #epoxysales post on EVERY logged proposal open, independent of the bell's first-per-day throttle), estimate_hot_min_views ('3') and estimate_hot_window_hours ('48') (hot = views >= min AND last view within the window), all in Settings > Estimates. Settings 89 rows to 95 in this session (the salesask migration's three seeds landed first, then the prompt-75 three).
 Keys added 2026-08-07 (prompt 76, applied by that session): estimate_line_generate_enabled ('true'; hides the per-line Generate button when false) and estimator_line_sheet_breakpoint_px ('700'; below this viewport width the line editor is a full-height bottom sheet, above it a centered window), in Settings > Estimates under "Line editor".
 Keys added 2026-08-05 (prompt 72), in Settings > Estimates under "Optional lines": optional_lines_enabled ('true'; a CREATE gate: when false the Optional checkbox does not render in the estimator, but already-optional lines on existing estimates still render and work), optional_lines_preselect_default ('true'; whether a newly ticked-Optional area or custom line starts pre-selected for the customer; add-ons always start unselected), optional_lines_gp_warn_pct ('40', seeded from the live line_pricing_gp_floor_pct; the required-only GP% threshold below which the estimator shows the amber warn-not-block notice). Inserted insert-only. Settings 78 rows to 81.
