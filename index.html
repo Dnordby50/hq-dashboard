@@ -22419,16 +22419,22 @@ function customerSalesAskCardHtml() {
 // hot-estimate rule so the customer card, the estimate card, and the pipeline
 // board share one settings read.
 async function salesAskScoreThresholds() {
-  return cachedRef('salesAskScoreCfg', async () => {
+  // cachedRef expects a supabase-shaped {data, error} from the fetcher and
+  // hands back {data} on a cache HIT; returning a bare object here makes
+  // hits collapse to {data: undefined} and every score render red (found
+  // live in this build's E2E; pecEstimateHotSettings had the same latent
+  // shape bug and got the same fix).
+  const res = await cachedRef('salesAskScoreCfg', async () => {
     try {
       const r = await supabase.from('settings').select('key,value').in('key', ['salesask_score_green_pct', 'salesask_score_amber_pct']);
       const map = Object.fromEntries(((r && r.data) || []).map(s => [s.key, s.value]));
-      return {
+      return { data: {
         green: Number(map.salesask_score_green_pct) > 0 ? Number(map.salesask_score_green_pct) : 90,
         amber: Number(map.salesask_score_amber_pct) > 0 ? Number(map.salesask_score_amber_pct) : 70,
-      };
-    } catch (_) { return { green: 90, amber: 70 }; }
+      }, error: null };
+    } catch (_) { return { data: { green: 90, amber: 70 }, error: null }; }
   }, { ttlMs: 60000 });
+  return (res && res.data) || { green: 90, amber: 70 };
 }
 // null when process_total is missing or zero: missing data is NOT 0%, and a
 // divide-by-zero must never reach the DOM.
@@ -27164,16 +27170,22 @@ function pecEstimateIsHot({ viewCount, lastViewedAt, minViews = 3, windowHours =
 // a minute so the board and the detail page share one settings read; changing
 // a value in Settings changes both surfaces with no deploy.
 async function pecEstimateHotSettings() {
-  return cachedRef('estimateHotCfg', async () => {
+  // cachedRef hands back {data} on a cache HIT, so the fetcher must return
+  // the supabase {data, error} shape. This function used to return a bare
+  // object: misses worked, hits collapsed to {data: undefined} and the hot
+  // rule silently ran on coded defaults instead of Settings (same latent bug
+  // found live in salesAskScoreThresholds during the prompt 71 E2E).
+  const res = await cachedRef('estimateHotCfg', async () => {
     try {
       const r = await supabase.from('settings').select('key,value').in('key', ['estimate_hot_min_views', 'estimate_hot_window_hours']);
       const map = Object.fromEntries(((r && r.data) || []).map(s => [s.key, s.value]));
-      return {
+      return { data: {
         minViews: Number(map.estimate_hot_min_views) > 0 ? Number(map.estimate_hot_min_views) : 3,
         windowHours: Number(map.estimate_hot_window_hours) > 0 ? Number(map.estimate_hot_window_hours) : 48,
-      };
-    } catch (_) { return { minViews: 3, windowHours: 48 }; }
+      }, error: null };
+    } catch (_) { return { data: { minViews: 3, windowHours: 48 }, error: null }; }
   }, { ttlMs: 60000 });
+  return (res && res.data) || { minViews: 3, windowHours: 48 };
 }
 // Prompt 75 F2: the corner chip. An eye + view count; a flame when the hot
 // rule is met. Deliberately DISTINCT from leadScoreBadge (the AI Hot/Warm/
