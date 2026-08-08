@@ -1,6 +1,7 @@
 # TopCoat HQ Dashboard: Supabase Schema Reference (public schema)
 
 Generated 2026-07-21 from the live schema of project `zdfpzmmrgotynrwkeakd` via MCP `list_tables`.
+Refreshed 2026-08-08 (Claude Code, prompt 77 Part 0) after applying the two stranded migrations live via MCP: (1) `2026-07-31_salesask_integration.sql`: new `pec_salesask_recordings` table (RLS staff-read, service-role write), `pec_appointments.salesask_synced_at` / `salesask_sync_hash`, `pec_sales_team_members.salesask_email`, and three `salesask_*` settings keys (sync ships 'false'); (2) `2026-08-14_prompt75_notification_targeting.sql`: `pec_notifications.target_user_id` (uuid, FK admin_users.id on delete set null; NULL = shared row, a display filter not a security boundary) + its index and three estimate-view settings keys. Also documented here for the first time: the two prompt-76 keys (`estimate_line_generate_enabled`, `estimator_line_sheet_breakpoint_px`) applied by the prompt 76 session on 2026-08-07. Settings 89 rows to 95. Only those sections changed.
 Refreshed 2026-08-06 (Claude Code) after applying the prompt-74 migration (2026-08-13_prompt74_estimate_schedule_terms.sql) live via MCP: new `estimate_installments` table (the estimate-side payment schedule, mirroring pec_invoice_installments minus computed_amount), `pec_brand_identity.estimate_terms_text`, and the `estimate_schedule_enabled` settings key. Only those sections changed.
 Refreshed 2026-08-06 (Claude Code) after applying the prompt-73 migration (2026-08-12_prompt73_instant_touch_drips.sql) live via MCP: pec_drip_steps gained fixed_template / fixed_subject / auto_send and ai_guidance went NULLABLE; the lead campaign was renumbered to 9 steps (new day-0 instant-touch step at index 0, existing 8 shifted to 1..8, max_touches 9; zero active enrollments at renumber time, so nothing was bumped); settings gained routemize_booking_url (seeded EMPTY, Dylan supplies the real URL), drip_instant_touch_enabled ('true'), and routemize_answer_routing (the questionId route map). Only those sections changed.
 Refreshed 2026-07-27 (Cowork) against the live schema after the prompt-51 migration: pec_prod_jobs (ten touchup_* columns + idx_pec_prod_jobs_touchup_queue) and the settings key list. Only those changed; every other section is unchanged from the refreshes below.
@@ -609,6 +610,8 @@ RLS: enabled · rows: 0
 | created_at | timestamptz | no | now() |
 | updated_at | timestamptz | no | now() |
 | routemize_appt_id | text | yes |  |
+| salesask_synced_at | timestamptz | yes |  |
+| salesask_sync_hash | text | yes |  |
 
 PK: id
 FK: customer_id → customers.id; sales_member_id → pec_sales_team_members.id
@@ -994,9 +997,11 @@ RLS: enabled · rows: 20
 | read_at | timestamptz | yes |  |
 | target_view | text | yes |  |
 | target_id | uuid | yes |  |
+| target_user_id | uuid | yes |  |
 
 PK: id
-FK: job_id → jobs.id
+FK: job_id → jobs.id; target_user_id → admin_users.id (on delete set null)
+Note: target_user_id (prompt 75, applied 2026-08-08) — NULL means shared (every pre-existing row), a value means the bell shows the row only to that user. Client-side DISPLAY filter, not a security boundary: staff RLS still reads the whole table. Index idx_pec_notifications_target_user (target_user_id, created_at desc).
 
 ### pec_ops_items
 RLS: enabled · rows: 0
@@ -1755,11 +1760,49 @@ RLS: enabled · rows: 2
 | google_connected_at | timestamptz | yes |  |
 | auth_user_id | uuid | yes |  |
 | name_aliases | text[] | no | '{}' |
+| salesask_email | text | yes |  |
 
 PK: id
 FK: auth_user_id → auth.users.id
 Unique: (auth_user_id) WHERE auth_user_id IS NOT NULL — partial index uq_pec_sales_team_members_auth_user; one login maps to at most one member, any number of unmapped (NULL) rows allowed. Set from Settings > Sales Team; drives the estimator's current-user salesperson default (prompt 47).
 name_aliases (added 2026-07-28, prompt 54) is the commission rename safety net. Commission is attributed by FREE-TEXT lowercased name against pec_job_ar.salesperson, not by id, so a rename would otherwise orphan a rep's history. The BEFORE UPDATE trigger `pec_sales_capture_name_alias` captures the OLD name into this array on any rename, whatever path wrote it (People screen, the legacy Sales Team card, or Studio), and removes the current name from the array when a name is reused. renderCommission folds aliases into both the rate lookup and the excluded-names set, current names winning. The trigger is deliberately NOT gated on people_mirror_enabled: it is a safety net, not part of the mirror.
+salesask_email (2026-07-31 migration, applied 2026-08-08) is the rep's SalesAsk login override; the sync resolves salesask_email → people.email → google_email.
+
+### pec_salesask_recordings
+RLS: enabled · rows: 0
+
+| column | type | nullable | default |
+|---|---|---|---|
+| id | uuid | no | gen_random_uuid() |
+| salesask_recording_id | text | no |  |
+| appointment_id | uuid | yes |  |
+| lead_id | uuid | yes |  |
+| customer_id | uuid | yes |  |
+| sales_member_id | uuid | yes |  |
+| rep_email | text | yes |  |
+| occurred_at | timestamptz | yes |  |
+| duration_seconds | numeric(10,1) | yes |  |
+| status | text | yes |  |
+| title | text | yes |  |
+| summary | text | yes |  |
+| notes | text | yes |  |
+| action_items | jsonb | yes |  |
+| coaching | jsonb | yes |  |
+| tags | jsonb | yes |  |
+| process_followed | integer | yes |  |
+| process_missed | integer | yes |  |
+| process_total | integer | yes |  |
+| recording_url | text | yes |  |
+| transcript | jsonb | yes |  |
+| raw | jsonb | yes |  |
+| match_method | text | yes |  |
+| transcript_pending | boolean | no | true |
+| created_at | timestamptz | no | now() |
+| updated_at | timestamptz | no | now() |
+
+PK: id
+FK: appointment_id → pec_appointments.id (on delete set null); customer_id → customers.id (on delete set null); sales_member_id → pec_sales_team_members.id (on delete set null)
+Unique: salesask_recording_id. lead_id deliberately has NO FK (matches pec_appointments.lead_id, survives lead soft-delete). Indexes: idx_pec_salesask_recordings_customer (customer_id, occurred_at desc), idx_pec_salesask_recordings_appt, idx_pec_salesask_recordings_lead (lead_id, occurred_at desc). Same trust model as pec_call_log: staff READ, service-role write only (pec-webhook-salesask.cjs + pec-salesask-sync.cjs). status: 'processing' | 'processed' | 'processing-failed'. transcript = SalesAsk utterances {speaker,text,start,end} verbatim; raw = last full API/webhook document. match_method: 'event_id' | 'rep_time_window' | 'name_fuzzy' | 'unmatched'.
 
 ### pec_sms_log
 RLS: enabled · rows: 68
@@ -2004,7 +2047,7 @@ FK: customer_id → customers.id; job_id → jobs.id; review_request_id → pec_
 Note: widened 2026-07-31 (prompt 60) from the 6-column stub for the Zapier Google Business Profile feed. **job_id and customer_id are now NULLABLE** (a Google review arrives before we know whose job it is; the intake inserts unmatched and matches after). `external_id` is the Google review id and the intake's idempotency key (partial UNIQUE index uq_reviews_external_id where not null). `review_text` is the customer's public review; the legacy `feedback` column stays for internal notes. CHECKs: source in ('manual','zapier_gbp'); match_status in ('unmatched','auto','confirmed','rejected'). The intake function is FORBIDDEN from writing 'confirmed'; only a human confirm in the Reviews view does, and only 'confirmed' can create a pec_review_bonuses row. crew_lead/crew_id are copied from the request snapshot on match, never re-derived.
 
 ### settings
-RLS: enabled · rows: 81
+RLS: enabled · rows: 95
 
 | column | type | nullable | default |
 |---|---|---|---|
@@ -2013,6 +2056,8 @@ RLS: enabled · rows: 81
 | value | text | yes |  |
 
 PK: id
+Keys added 2026-08-08 (prompt 77 Part 0, applying the two stranded migrations): salesask_sync_enabled ('false'; nothing pushes to or pulls from SalesAsk until Dylan flips it on AFTER the API key + webhook exist in Netlify), salesask_push_window_days ('14'), salesask_pull_lookback_days ('3'), all in Settings > Appointments; estimate_view_slack_enabled ('true'; #epoxysales post on EVERY logged proposal open, independent of the bell's first-per-day throttle), estimate_hot_min_views ('3') and estimate_hot_window_hours ('48') (hot = views >= min AND last view within the window), all in Settings > Estimates. Settings 89 rows to 95 in this session (the salesask migration's three seeds landed first, then the prompt-75 three).
+Keys added 2026-08-07 (prompt 76, applied by that session): estimate_line_generate_enabled ('true'; hides the per-line Generate button when false) and estimator_line_sheet_breakpoint_px ('700'; below this viewport width the line editor is a full-height bottom sheet, above it a centered window), in Settings > Estimates under "Line editor".
 Keys added 2026-08-05 (prompt 72), in Settings > Estimates under "Optional lines": optional_lines_enabled ('true'; a CREATE gate: when false the Optional checkbox does not render in the estimator, but already-optional lines on existing estimates still render and work), optional_lines_preselect_default ('true'; whether a newly ticked-Optional area or custom line starts pre-selected for the customer; add-ons always start unselected), optional_lines_gp_warn_pct ('40', seeded from the live line_pricing_gp_floor_pct; the required-only GP% threshold below which the estimator shows the amber warn-not-block notice). Inserted insert-only. Settings 78 rows to 81.
 Keys added 2026-08-04 (prompt 70), in Settings > Estimates under "Pricing intelligence": estimate_ai_enabled ('true'; the master switch for the AI price read, gated server-side in pec-estimate-ai.cjs AND client-side, 'false' returns a clean disabled response, never an error) and comps_min_sample ('3'; the ONE sample-size knob shared by the comps ladder in production/comps.js and the per-line AI confidence flag in production/ai-lines.cjs, so the panel and the flag can never disagree about what "thin" means). Inserted insert-only. Settings 76 rows to 78.
 Keys added 2026-08-04 (prompt 69), in Settings > Estimates under "Line pricing": line_pricing_gp_floor_pct ('40', seeded from the live estimator_floor_gp_pct; the per-line GP floor that turns a line red in the estimator), line_pricing_block_below_floor ('false', whether a below-floor LINE forces the save confirmation, or only warns), line_pricing_custom_label_default ('Custom work', the prefilled label on a new custom line), line_pricing_reason_threshold_pct ('2') and line_pricing_reason_threshold_dollars ('100') (a written reason is required when the final total lands under the calculated total by more than the GREATER of the two). Inserted insert-only. Settings 71 rows to 76.

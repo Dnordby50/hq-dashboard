@@ -9,8 +9,10 @@
 -- 2026-08-14: per-user notification targeting + estimate-view visibility
 -- settings (prompt 75: Slack on every proposal view, a personal bell for the
 -- selling rep, and the shared "hot estimate" rule).
--- Author: Claude Code. Applied to PROD (zdfpzmmrgotynrwkeakd) via MCP from the
--- prompt 75 session. Idempotent.
+-- Author: Claude Code, in the prompt 75 session (which could NOT apply it:
+-- permission mode blocked the DDL write; see the prompt 75 PROJECT-LOG entry).
+-- Applied to PROD (zdfpzmmrgotynrwkeakd) via MCP in the prompt 77 session on
+-- 2026-08-08. Idempotent.
 --
 -- WHY target_user_id: pec_notifications is a shared table with a single
 -- shared read_at; every existing row shows for everyone and MUST keep doing
