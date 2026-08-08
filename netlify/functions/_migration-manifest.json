@@ -2342,6 +2342,22 @@
       ]
     },
     {
+      "file": "2026-08-11_prompt71_salesask_score_settings.sql",
+      "date": "2026-08-11",
+      "hasHeader": true,
+      "none": null,
+      "artifacts": [
+        {
+          "kind": "setting",
+          "name": "salesask_score_green_pct"
+        },
+        {
+          "kind": "setting",
+          "name": "salesask_score_amber_pct"
+        }
+      ]
+    },
+    {
       "file": "2026-08-11_prompt72_optional_lines.sql",
       "date": "2026-08-11",
       "hasHeader": true,
@@ -2372,6 +2388,13 @@
           "name": "optional_lines_gp_warn_pct"
         }
       ]
+    },
+    {
+      "file": "2026-08-12_prompt71_lead_customer_backfill.sql",
+      "date": "2026-08-12",
+      "hasHeader": true,
+      "none": "data-only backfill (leads.customer_id + pec_appointments.customer_id fill-if-blank)",
+      "artifacts": []
     },
     {
       "file": "2026-08-12_prompt73_instant_touch_drips.sql",
