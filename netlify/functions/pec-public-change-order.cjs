@@ -78,10 +78,14 @@ function coPage(co, job, customer, brand) {
   const b = { ...BRAND_DEFAULTS, ...(brand || {}) };
   const logo = b.logo_url || LOGO_URL;
   const signed = co.status === 'signed';
-  const scopeRows = [
-    co.system_name ? `<tr><td class="k">System</td><td>${esc(co.system_name)}</td></tr>` : '',
-    (co.sqft != null && Number(co.sqft) > 0) ? `<tr><td class="k">Square footage</td><td>${esc(Number(co.sqft).toLocaleString('en-US'))} sq ft</td></tr>` : '',
-    co.description ? `<tr><td class="k">Scope</td><td style="white-space:pre-wrap">${esc(co.description)}</td></tr>` : '',
+  // Prompt 78 B2: the summary rows (System / Square footage / Scope) left the
+  // meta table with the estimate page's footage removal. Square footage is
+  // gone outright; System and Scope have no per-line equivalent on a change
+  // order (a CO has no line items), so they survive as one-line notes below
+  // the table, same pattern as the estimate page's flake color note.
+  const scopeNotes = [
+    co.system_name ? `<div style="color:#4b5563;font-size:14px;margin-top:4px">System: <strong>${esc(co.system_name)}</strong></div>` : '',
+    co.description ? `<div style="color:#4b5563;font-size:14px;margin-top:4px"><strong>Scope:</strong> <span style="white-space:pre-wrap">${esc(co.description)}</span></div>` : '',
   ].filter(Boolean).join('');
 
   const signedBlock = `
@@ -154,9 +158,9 @@ function coPage(co, job, customer, brand) {
           <tr><td class="k">Customer</td><td>${esc((customer && customer.name) || '')}</td></tr>
           ${job && job.address ? `<tr><td class="k">Job address</td><td>${esc(job.address)}</td></tr>` : ''}
           <tr><td class="k">Change order</td><td><strong>${esc(co.title)}</strong></td></tr>
-          ${scopeRows}
           <tr><td class="k">Date issued</td><td>${esc(fmtStamp(co.created_at))}</td></tr>
         </table>
+        ${scopeNotes}
         <div class="price"><span style="font-size:13px;color:#64748b;text-transform:uppercase;letter-spacing:.6px">Change order total</span><span class="amt">${usd(co.amount)}</span></div>
         <div style="font-size:12.5px;color:#64748b">This amount is added to the job's invoice total.</div>
         ${signed ? signedBlock : signForm}

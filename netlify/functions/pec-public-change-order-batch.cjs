@@ -86,10 +86,13 @@ async function loadBatch(token) {
 // the job's created_at ordering (same numbering the dashboard card shows).
 // greyed renders the read-only "already approved" context style (decision 7).
 function coSection(co, num, greyed) {
-  const scopeRows = [
-    co.system_name ? `<tr><td class="k">System</td><td>${esc(co.system_name)}</td></tr>` : '',
-    (co.sqft != null && Number(co.sqft) > 0) ? `<tr><td class="k">Square footage</td><td>${esc(Number(co.sqft).toLocaleString('en-US'))} sq ft</td></tr>` : '',
-    co.description ? `<tr><td class="k">Scope</td><td style="white-space:pre-wrap">${esc(co.description)}</td></tr>` : '',
+  // Prompt 78 B2: same treatment as the single CO page. Square footage row
+  // gone outright; System and Scope have no per-line equivalent on a change
+  // order, so they survive as one-line notes (the estimate page's flake
+  // color pattern).
+  const scopeNotes = [
+    co.system_name ? `<div style="color:#4b5563;font-size:14px;margin-top:4px">System: <strong>${esc(co.system_name)}</strong></div>` : '',
+    co.description ? `<div style="color:#4b5563;font-size:14px;margin-top:4px"><strong>Scope:</strong> <span style="white-space:pre-wrap">${esc(co.description)}</span></div>` : '',
   ].filter(Boolean).join('');
   return `
       <div class="cosec${greyed ? ' greyed' : ''}">
@@ -98,9 +101,9 @@ function coSection(co, num, greyed) {
           ${greyed ? `<span class="donepill">Already approved${co.signed_at ? ' ' + esc(new Date(co.signed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) : ''}</span>` : ''}
         </div>
         <table class="meta">
-          ${scopeRows}
           <tr><td class="k">Date issued</td><td>${esc(fmtStamp(co.created_at))}</td></tr>
         </table>
+        ${scopeNotes}
         <div class="secprice"><span>Change order total</span><strong>${usd(co.amount)}</strong></div>
       </div>`;
 }
