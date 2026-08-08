@@ -2,6 +2,40 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: Settings IA analysis. Walked all 11 DripJobs Company Settings tabs plus their 9 sidebar pages, inventoried TopCoat's 10 tabs, and queried the live settings table. Sixteen of the 78 UI knobs have never been saved once.
+
+By: Cowork
+
+Changed: one new file, `settings-ia-analysis.md`, plus this entry. No code, no schema, no data, no deploy. Read-only Supabase SELECTs against `settings` only. Targeted greps of the ten `renderSettings*` functions in index.html (no end-to-end read).
+
+Why: Dylan asked for a DripJobs teardown and suggestions for regrouping TopCoat's Settings tab, which he called extremely cluttered. Analysis only. No build prompt written yet, scoping questions are still open with him.
+
+**What DripJobs actually does that matters.** Not the tab list, the two-tier split. Nine sidebar pages hold RECORDS (Booking Form, Card Labels, Crews, Employees, Products/Services, Reminders, Subcontractors, Users) and one of those nine, Company Settings, holds eleven tabs of pure CONFIGURATION (Company Information, Brand, Email Settings, App Settings, Calendar, Templates, Notifications, Payments, Integrations, Customer Portal, Add-Ons). TopCoat mixes both tiers: General alone stacks a 30-knob card on top of five record lists (Crews, Team Members, Sales Team, Lead Sources, System Types).
+
+**Three DripJobs patterns recommended for adoption:** one-line description under every card heading; tabs named for the domain, never the vendor (their CompanyCam/QuickBooks/Angi/Twilio/Routemize all live in one Integrations tab, so TopCoat's top-level BusyBusy tab should become a card there); and one tab owning everything the customer sees (their Customer Portal, versus TopCoat scattering this across Brand, Presentation and Estimates).
+
+**Two DripJobs patterns explicitly rejected.** Their App Settings is its own junk drawer (tags, schedule defaults, lead assignment, drip pause, estimate comms, countersign) and repeats TopCoat's General mistake. Their Brand tab is nearly empty and carries a live "Portal Accent Color has moved" notice, a visible scar from a bad split; if TopCoat reorganizes, redirect deep links instead of leaving breadcrumbs.
+
+**The database findings, which are the part worth acting on regardless of the redesign.**
+
+1. `settings` has 97 rows. The Settings UI exposes 78 keys (`map.<key>` references). They do not line up in either direction.
+
+2. Sixteen of the 78 UI knobs have NEVER been saved. Rows are only created on first write, so an absent row means the control has not been touched since it shipped: `bonus_crew_fraction_pct`, `bonus_labor_burden_pct`, `bonus_lock_days`, `bonus_ot_multiplier`, `costing_count_pending_bonus`, `costing_default_labor_budget_pct`, `costing_labor_from_hours`, `financing_apply_url`, `financing_apr_pct`, `financing_embed_url`, `financing_enabled`, `financing_min_amount`, `financing_provider_name`, `financing_term_months`, `metrics_ai_cache_days`, `metrics_default_window`. The entire financing block and the entire labor/bonus costing block from prompt 56 are running on hardcoded defaults while occupying roughly a third of the General tab.
+
+3. About 35 settings rows have NO Settings surface at all: `ops_check_*`, `estimator_charm_band`, `estimator_sundries_pct`, `estimator_target_gp_pct`, `default_labor_hourly_rate`, `drip_kill_switch`, `drip_autosend_email`, `drip_autosend_sms`, `security_alerts_*`, `migration_drift_*`, `metrics_tab_ai_insights`, `estimator_allowed_emails`, `busybusy_export_base_url` and others. So standing rule 12 is broken in both directions at once.
+
+4. `settings` is `(id, key, value)` with no `updated_at`. There is no way to distinguish a live knob from a dead one except by row absence, and that signal burns the first time anyone saves. Adding `updated_at` is one migration and makes every future audit trivial. Recommended before any reorganization, so the cleanup can be measured afterward.
+
+**Structural finding independent of grouping.** `settingsTabBar` (index.html:18794) already carries a comment describing a horizontally scrolling strip with a right-edge fade as the "there's more" affordance. A horizontal nav needing a fade gradient at ten items is out of room. The recommendation is a vertical grouped rail (DripJobs' shape), which holds fifteen items with group headers and no scrolling, plus a settings search box filtering card and label text. At ~80 controls, search beats navigation for anything touched less than weekly, and it makes the tab count stop mattering. DripJobs does not have search; this would be TopCoat doing better rather than matching.
+
+**Proposed target: five RECORDS pages (People, Crews, System Types, Lead Sources, Appointment Types) and eleven CONFIGURATION pages (Company, Customer Portal, Templates, Sales & Estimates, Invoicing, Scheduling, Automations, Notifications, Job Costing, Integrations, Advanced).** General disappears entirely. All 78 UI keys were checked against these buckets; none is orphaned.
+
+**Recommendation that goes beyond the ask.** Rule 12 is the root cause and reorganizing without amending it buys months, not a fix. Proposed amendment recorded in the analysis file: keep the requirement that parameters be settings-table backed and changeable without a code edit (that is the part with value), drop the requirement that every one be VISIBLE, and cap a feature at two front-of-card controls with the rest behind an Advanced disclosure. Not adopted, Dylan's call.
+
+Files touched: settings-ia-analysis.md (new), PROJECT-LOG.md (this entry).
+
+Next steps: Dylan answers the scoping questions in chat (rail vs tabs, whether records move out of Settings, whether the 16 dead knobs get deleted or just hidden, whether `updated_at` ships first). Then Cowork writes the build prompt. Nothing is committed to a build yet.
+
 ## [2026-08-08 MST] Cowork: prompt 78 scoped (proposal polish). Eighteen scoping questions. Two of Dylan's four asks turned out to be already built, and the blank gate he asked for was already dead on the one channel that needed it most.
 
 By: Cowork
