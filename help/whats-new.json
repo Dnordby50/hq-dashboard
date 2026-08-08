@@ -1,5 +1,16 @@
 [
   {
+    "id": "proposal-polish-ticks-blanks",
+    "date": "2026-08-08",
+    "title": "Tickable options in Preview, a cleaner estimate header, and blanks now stop a send",
+    "summary": "The estimate Preview now works like the real customer page: tick optional items and watch the total, the payment schedule, and the signing amount update live (the accept, change and decline buttons stay disabled, and it is still not sent). The top of the customer estimate is cleaner too: the combined square footage summary is gone because footage lives on each line, and the flake color shows as a short note. And an estimate can no longer be sent, by email, text, or Open for signing in Present mode, while the scope still has an unfilled blank: the word BLANK, an unresolved is/is not choice, or a ____ fill-in. The blocker names the line and quotes the text so you can fix it in one tap.",
+    "howto": [
+      "Tap Preview on any estimate and tick the optional items to demo the price moving before you send.",
+      "If a send is blocked, tap the blocker message: it opens that line's editor with the description ready to fix.",
+      "When a customer ticks options on their own link, their choices are saved as they go, so you can see where they landed."
+    ]
+  },
+  {
     "id": "salesask-surfaces-modal-close",
     "date": "2026-08-08",
     "title": "Sales visit recordings on the customer, pipeline, and estimate, plus a close X on every popup",
