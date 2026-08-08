@@ -2,6 +2,31 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-08 MST] Cowork: open-loop sweep. Read-only audit of every outstanding handoff against the live database. Two migrations are unapplied while their code is already deployed, and prompt 76 shipped with no log entry and no What's New.
+
+By: Cowork
+
+Changed: nothing but this entry. No code, no schema, no data, no deploy. Read-only queries against prod (zdfpzmmrgotynrwkeakd) via Supabase MCP, plus git log/reflog and the top five PROJECT-LOG entries.
+
+Why: Dylan asked what open loops exist. Rather than repeat the handoff sections verbatim, each one was checked against live state, because several were already closed and two had drifted.
+
+**Finding 1, the one that matters. Prompt 76 is deployed but undocumented.** Five commits (72704ad, 81c4bf7, 1daa49b, cdbf432, 62a0e9d) were pushed to origin/main on 2026-08-07 at 05:58 MST. There is NO PROJECT-LOG entry for prompt 76 shipping, NO help/whats-new.json entry (the newest is still prompt 75's deep-links), and no claude-code-prompt-76 file on disk (it was delivered to Dylan in chat only). The build is live; the record of it is not. Whoever writes that entry should reconstruct it from the five commit messages.
+
+**Finding 2. Two migrations are unapplied, both with their code already live.** Verified by direct information_schema and settings queries:
+- `2026-08-14_prompt75_notification_targeting.sql`: `pec_notifications.target_user_id` does NOT exist and none of the three estimate-view settings keys exist. Note a documentation trap: that file's own header comment claims "Applied to PROD via MCP from the prompt 75 session". It was not. The prompt 75 log entry is correct (permission mode blocked the DDL write); the migration file's header is wrong.
+- `2026-08-15_prompt76_line_editor_settings.sql`: neither `estimate_line_generate_enabled` nor `estimator_line_sheet_breakpoint_px` exists.
+Both are additive and both have coded fallbacks, so nothing is broken. The live consequences are: the per-rep estimate-view bell silently never fires, the hot rule runs on coded defaults 3/48 instead of Settings, the two new line-editor tunables are not adjustable from Settings (rule 12 unmet), and the Schema Drift panel correctly flags five artifacts as missing.
+
+**Finding 3. Closed since they were written, no action needed.** PEC's estimate terms and conditions text IS written (pec_brand_identity, 1 row, non-empty). `Grind Stain and Seal` now has a scope template. EST-102066 (Merlin) is clean.
+
+**Finding 4. Still open, verified live.** Seven line rows still match the sqft clobber fingerprint: EST-102064 Susan Nasser is SENT and customer-facing; EST-102046 Lynette Williams is ACCEPTED and her `job_areas` description still reads "50 sqft" on the crew work order; drafts 102033 and 102038 self-heal on Regenerate; three more are soft-deleted. `Polydeck System` is still active with zero recipe slots. Six system types are still templateless (Metallic, Grind and Seal - Urethane, Flake, Custom System, MVB Only, Polydeck System). `routemize_booking_url` is still empty. The prompt 71 SalesAsk migration is still unapplied (zero salesask tables). FTP still has no `pec_brand_identity` row.
+
+Files touched: PROJECT-LOG.md (this entry).
+
+## Handoff to Dylan
+
+Nothing was changed. The two migrations and the prompt 76 log entry are the items worth clearing first; say the word and a session applies both migrations, regenerates SCHEMA.md, and writes the missing entry.
+
 ## [2026-08-07 MST] Prompt 75 shipped: deep links + new-tab navigation everywhere, the Bryan Smith ordering bug fixed at the generator, Slack on every proposal view + a personal rep bell, and estimate view visibility (louder detail block, pipeline eye/flame chip)
 
 By: Claude Code
