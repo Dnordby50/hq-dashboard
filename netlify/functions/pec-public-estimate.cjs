@@ -1166,6 +1166,20 @@ async function ensureJobCreated(est) {
     customer = created[0];
   }
 
+  // Prompt 71 Part A1: write the resolved customer back onto the lead and its
+  // appointments. The &customer_id=is.null filter IS the fill-if-blank guard,
+  // so a re-run or repeat accept can never overwrite a corrected link. Best-
+  // effort BY DESIGN: the accept path is the one flow in this app where a
+  // thrown error costs a real signed job. Wrap, log, continue.
+  if (est.lead_id && customer && customer.id) {
+    try {
+      await sb('PATCH', `/leads?id=eq.${encodeURIComponent(est.lead_id)}&customer_id=is.null`, { customer_id: customer.id });
+      await sb('PATCH', `/pec_appointments?lead_id=eq.${encodeURIComponent(est.lead_id)}&customer_id=is.null`, { customer_id: customer.id });
+    } catch (err) {
+      console.warn('lead/appointment customer backwrite skipped (acceptance unaffected):', String(err && err.message || err));
+    }
+  }
+
   // -- public.jobs (the Jobs page side)
   const jobId = deterministicUuid(`job:${est.id}`);
   const existingJobs = await sb('GET', `/jobs?id=eq.${jobId}&select=id&limit=1`);

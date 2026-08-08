@@ -1,5 +1,16 @@
 [
   {
+    "id": "salesask-surfaces-modal-close",
+    "date": "2026-08-08",
+    "title": "Sales visit recordings on the customer, pipeline, and estimate, plus a close X on every popup",
+    "summary": "SalesAsk visit insights now show up where you work: the full recording history on the customer page, a color coded process score chip on each pipeline card, and the latest visit on the estimate page next to pricing. Every popup in the app also has a close X pinned to its top right corner, so a long popup no longer hides its close button.",
+    "howto": [
+      "Open a customer to see every recorded sales visit with its score, summary, action items, coaching notes, and full transcript.",
+      "On the pipeline board, look for the SalesAsk score chip on a lead card to see how the visit went at a glance.",
+      "Tune the green and amber score thresholds in Settings, under Appointments."
+    ]
+  },
+  {
     "id": "metallic-mvb-scope-templates",
     "date": "2026-08-08",
     "title": "Metallic and MVB Only estimates now write their own scope",

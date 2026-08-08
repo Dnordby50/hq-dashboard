@@ -78,7 +78,7 @@
     {
       "name": "Customer-facing estimate (send, sign, accept)",
       "area": "estimator",
-      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order. Prompt 72: the page renders 'Your project' (required lines, no checkbox, plus pre-selected optional lines with a ticked toggle) and 'Options to add'; accept guards against a zero-selection POST; on a partial accept the job is built from the selected areas only and declined lines stay on the estimate as the record. See 'Optional line items on any line'. Prompt 74: the page renders DripJobs-proposal style. Every line shows its label, a sq ft subtitle derived from its area (plus the MVB note), and its FULL scope of work expanded under the line inside a zero-JS details/summary collapse (print always expands); the whole-document scope render is gone (estimates.scope_of_work is internal-only now). The reading order is header, prepared-for, scope summary table, Your project, Options to add, Your investment (subtotal + project total + emphasized balance line), payment schedule, financing, terms and conditions (per-brand pec_brand_identity.estimate_terms_text in a scrollable box above the signature; no card when empty), then signature/actions and literature. A hard send gate on every channel (email, text, Present's Open for signing) blocks while scope_stale is true, any scope-bearing line has an empty description or the old sqft clobber fingerprint, or the payment schedule does not resolve to the estimate total; the block names the offending lines. After signing, the accepted banner offers 'Pay your deposit now' linking the existing pay page (resolveCurrentAsk amount, card + ACH, no surcharge, never auto-redirect; absent when no deposit row exists).",
+      "description": "Reps send a private link where the customer reviews the scope and line items, ticks optional add-ons with a live-updating total, and accepts by typing their name to sign, or requests changes or declines with a reason. Accepting automatically creates the job on both the Jobs page and the Job Schedule with all areas and work-order details carried over, including a custom estimate's typed square footage (into the job's sqft) and the internal crew notes. A Preview button shows the exact customer page before sending; the preview modal (prompt 63 Part D) has a header bar with the estimate number and a ✕, and closes on ✕, Escape, or backdrop click via openModal's opt-in dismissible flag (data-entry modals keep their stray-click/Escape protection; the offline estimator fallback modal has a confirm-gated ✕ only). Prompt 69: on accept every job_areas row now carries its line's final price and scope description, and a custom line becomes a real job_areas row (name from custom_label, no system) so the crew sees it on the work order. Prompt 72: the page renders 'Your project' (required lines, no checkbox, plus pre-selected optional lines with a ticked toggle) and 'Options to add'; accept guards against a zero-selection POST; on a partial accept the job is built from the selected areas only and declined lines stay on the estimate as the record. See 'Optional line items on any line'. Prompt 74: the page renders DripJobs-proposal style. Every line shows its label, a sq ft subtitle derived from its area (plus the MVB note), and its FULL scope of work expanded under the line inside a zero-JS details/summary collapse (print always expands); the whole-document scope render is gone (estimates.scope_of_work is internal-only now). The reading order is header, prepared-for, scope summary table, Your project, Options to add, Your investment (subtotal + project total + emphasized balance line), payment schedule, financing, terms and conditions (per-brand pec_brand_identity.estimate_terms_text in a scrollable box above the signature; no card when empty), then signature/actions and literature. A hard send gate on every channel (email, text, Present's Open for signing) blocks while scope_stale is true, any scope-bearing line has an empty description or the old sqft clobber fingerprint, or the payment schedule does not resolve to the estimate total; the block names the offending lines. After signing, the accepted banner offers 'Pay your deposit now' linking the existing pay page (resolveCurrentAsk amount, card + ACH, no surcharge, never auto-redirect; absent when no deposit row exists). Prompt 77 (2026-08-08): pec_brand_identity now has a 'finishing-touch' row (FTP name, shared PEC address/phone, FTP accent #ff6b1a; license_number and estimate_terms_text deliberately NULL, so no ROC number and no terms card render on FTP paperwork until Dylan fills them in Settings > Brand), and loadBrand/notifyOffice normalize est.brand's short forms ('PEC'/'FTP') through presentationBrandKey before the pec_brand_identity / pec_email_senders lookups, so an FTP estimate picks up FTP's identity instead of silently falling through to PEC's.",
       "code": {
         "indexHtml": [
           "openEstimateSendModal"
@@ -2028,13 +2028,18 @@
     {
       "name": "SalesAsk sales visit recordings",
       "area": "leads",
-      "description": "Integration with SalesAsk (AI recording/coaching for in-home sales). pec-salesask-sync.cjs (cron */15, gated by settings salesask_sync_enabled) pushes upcoming pec_appointments to SalesAsk's scheduled-tasks API with event_id = appointment id so the rep's mobile recording auto-attaches; it also reconciles recent recordings (SalesAsk webhooks have no retries) and completes pending rows (transcript fetch, appointment matching via event_id -> rep+time-window -> name fuzzy, then a 'salesask_recording' lead_events row that is both the lead-timeline surface and pec-lead-ai's context feed). pec-webhook-salesask.cjs (routed /api/salesask/webhook, ?secret= vs SALESASK_WEBHOOK_SECRET, always-200 after auth) ingests recording.processed thin rows immediately. Recordings land in pec_salesask_recordings (staff-read RLS, service-role writes; linked to appointment/lead/customer/sales_member; estimates join relationally via lead_id). Surfaces: lead timeline branch in leadEventHtml, customer profile card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk), read-only recording section in openAppointmentForm (#afSalesAskRow), settings card in renderSettingsAppointments (master toggle + push window + lookback + per-member salesask_email on pec_sales_team_members). Rep email resolution: salesask_email -> people.email -> google_email (loadRepEmailMap in _pec-salesask.cjs). Env: SALESASK_API_KEY, SALESASK_WEBHOOK_SECRET. MCP: get_sales_recordings tool in mcp.cjs.",
+      "description": "Integration with SalesAsk (AI recording/coaching for in-home sales). SCHEMA APPLIED TO PROD 2026-08-08 (prompt 77 Part 0; the 2026-07-31 migration had been stranded since it was written, so every surface below rendered its run-the-migration empty state until then). pec-salesask-sync.cjs (cron */15, gated by settings salesask_sync_enabled, still 'false' pending the Cowork env-var handoff) pushes upcoming pec_appointments to SalesAsk's scheduled-tasks API with event_id = appointment id so the rep's mobile recording auto-attaches; it also reconciles recent recordings (SalesAsk webhooks have no retries) and completes pending rows (transcript fetch, appointment matching via event_id -> rep+time-window -> name fuzzy, then a 'salesask_recording' lead_events row that is both the lead-timeline surface and pec-lead-ai's context feed). pec-webhook-salesask.cjs (routed /api/salesask/webhook, ?secret= vs SALESASK_WEBHOOK_SECRET, always-200 after auth) ingests recording.processed thin rows immediately. Recordings land in pec_salesask_recordings (staff-read RLS via is_admin_staff(), which IS this app's any-signed-in-staff predicate, so reps see their own visits; service-role writes; linked to appointment/lead/customer/sales_member). Linkage (prompt 71 Part A): the accept path in pec-public-estimate.cjs backwrites the resolved customer onto the lead and its appointments fill-if-blank; pec-appt-intake carries the matched lead's customer_id onto new appointments; a one-time backfill (2026-08-12_prompt71_lead_customer_backfill.sql) linked existing rows; and every read resolves by TWO keys (customer_id OR the customer's lead ids, loadSalesAskForCustomer). Surfaces (prompt 71 Parts B-D): customer profile card (customerSalesAskCardHtml / salesAskRowHtml / mountCustomerSalesAsk; colored process-score badge, coaching + tags rendered defensively, visible Full transcript toggle), pipeline lead card score chip (salesAskLeadChipHtml, batched load in loadLeadsData, display-only because the card is draggable), estimate detail card above Pricing intelligence (mountEstimateSalesAsk; lead_id first, then two-key by customer; hides when empty except a muted line for a past unrecorded visit), lead timeline branch in leadEventHtml, read-only recording section in openAppointmentForm (#afSalesAskRow), settings card in renderSettingsAppointments (master toggle + push window + lookback + score color thresholds salesask_score_green_pct/amber_pct validated green>amber + per-member salesask_email). Score colors via salesAskScoreThresholds/salesAskScorePct/salesAskScoreColors; neutral grey when process_total is missing. Rep email resolution: salesask_email -> people.email -> google_email (loadRepEmailMap in _pec-salesask.cjs). Env: SALESASK_API_KEY, SALESASK_WEBHOOK_SECRET. MCP: get_sales_recordings tool in mcp.cjs.",
       "code": {
         "indexHtml": [
           "leadEventHtml",
           "customerSalesAskCardHtml",
           "salesAskRowHtml",
           "mountCustomerSalesAsk",
+          "loadSalesAskForCustomer",
+          "mountEstimateSalesAsk",
+          "salesAskLeadChipHtml",
+          "salesAskScoreThresholds",
+          "loadLeadsData",
           "openAppointmentForm",
           "renderSettingsAppointments"
         ],
@@ -2043,7 +2048,11 @@
           "netlify/functions/pec-webhook-salesask.cjs",
           "netlify/functions/pec-salesask-sync.cjs",
           "netlify/functions/pec-lead-ai.cjs",
+          "netlify/functions/pec-public-estimate.cjs",
+          "netlify/functions/pec-appt-intake.cjs",
           "supabase/migrations/2026-07-31_salesask_integration.sql",
+          "supabase/migrations/2026-08-11_prompt71_salesask_score_settings.sql",
+          "supabase/migrations/2026-08-12_prompt71_lead_customer_backfill.sql",
           "netlify/functions/mcp.cjs"
         ]
       },
@@ -2051,13 +2060,17 @@
         "pec_salesask_recordings",
         "pec_appointments",
         "pec_sales_team_members",
+        "leads",
+        "customers",
         "lead_events",
         "settings"
       ],
       "settings": [
         "salesask_sync_enabled",
         "salesask_push_window_days",
-        "salesask_pull_lookback_days"
+        "salesask_pull_lookback_days",
+        "salesask_score_green_pct",
+        "salesask_score_amber_pct"
       ],
       "since": "2026-07-28"
     },

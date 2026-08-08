@@ -640,6 +640,13 @@ button.pec-stat:hover{border-color:var(--accent)}
 .pec-modal-xhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex:0 0 auto;font-size:.85rem}
 .pec-modal-xclose{background:none;border:0;color:var(--muted);font-size:1.05rem;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}
 .pec-modal-xclose:hover{color:inherit;background:var(--s2)}
+/* Prompt 71 Part E1: the sticky close header openModal() now renders on every
+   modal by default (opt out with closeButton:false). The negative margins pull
+   it over .pec-modal's 24px padding to the modal's edge; sticky keeps it
+   pinned while the modal body scrolls (the email log's iframe eats wheel
+   events, so the bottom Close can be unreachable without this); the opaque
+   background + z-index stop content sliding underneath it. */
+.pec-modal-stickyhead{position:sticky;top:0;margin:-24px -24px 14px;background:var(--s1);z-index:6;border-radius:var(--radius) var(--radius) 0 0}
 /* Email Log row detail: wider than the 520px default so the 600px email
    chrome renders without horizontal scrolling inside its iframe. */
 .pec-modal.pec-modal-email-log{max-width:min(720px,94vw)}
@@ -7384,6 +7391,7 @@ function openEstimatorFrame({ leadId = null, estimateId = null, offlineNote = fa
       <strong>Estimator</strong>
       <button type="button" class="pec-modal-xclose" id="pecEstFrameClose" aria-label="Close estimator" title="Close the estimator. Anything typed but not saved is lost.">✕</button>
     </div>${note}<iframe class="pec-estimator-frame" src="${estimatorFrameSrc({ leadId, estimateId })}" title="PEC Estimator"></iframe>`,
+    { closeButton: false }, // renders its own confirm-gated ✕ header above
   );
   const modal = wrap.querySelector('.pec-modal');
   if (modal) modal.classList.add('pec-modal-estimator');
@@ -8345,10 +8353,20 @@ function showCrmRenderError(err, view) {
 // ============================================================
 // Modal helpers
 // ============================================================
-function openModal(html, { onMount, dismissible = false } = {}) {
+function openModal(html, { onMount, dismissible = false, title = '', closeButton = true } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'pec-modal-bg';
-  wrap.innerHTML = `<div class="pec-modal">${html}</div>`;
+  // Prompt 71 Part E1: a sticky ✕ header on every modal BY DEFAULT (pass
+  // closeButton: false to opt out; the estimator/preview modals do, they
+  // render their own .pec-modal-xhead). The ✕ closes only THIS wrap, so a
+  // modal stacked over another cannot take both down. Bottom Close/Cancel
+  // buttons stay untouched: they are muscle memory and cost nothing.
+  const head = closeButton
+    ? `<div class="pec-modal-xhead pec-modal-stickyhead"><span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title ? esc(title) : ''}</span><button type="button" class="pec-modal-xclose" data-pec-modal-x aria-label="Close" title="Close">✕</button></div>`
+    : '';
+  wrap.innerHTML = `<div class="pec-modal">${head}${html}</div>`;
+  const xBtn = wrap.querySelector('[data-pec-modal-x]');
+  if (xBtn) xBtn.addEventListener('click', () => pecCloseModalWrap(wrap));
   // Backdrop click closes ONLY for info dialogs (no inputs). Data-entry modals
   // (payment, edit contact, change order, compose, ...) must be dismissed with
   // their explicit Cancel/✕ button so a stray click just outside the box can't
@@ -8419,6 +8437,20 @@ function pecCloseModalWrap(wrap) {
   if (!root || !root.querySelector('[data-pec-dismissible]')) pecUnbindModalEscape();
 }
 window.pecCloseModal = closeModal;
+
+// Prompt 71 Part E2: the SAME sticky ✕ header for #prodModalRoot's seven
+// hand-rolled modals (two-modal-roots gotcha: the roots share CSS and no JS).
+// This pair deliberately does NOT drag #prodModalRoot into openModal's
+// lifecycle: the markup helper goes inside each modal's own template and the
+// wire-up binds the ✕ to that modal's OWN closer. #prodModalRoot holds one
+// modal at a time (every open replaces innerHTML), so the selector is safe.
+function prodModalXHeadHtml(title) {
+  return `<div class="pec-modal-xhead pec-modal-stickyhead"><span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title ? esc(title) : ''}</span><button type="button" class="pec-modal-xclose" data-prod-modal-x aria-label="Close" title="Close">✕</button></div>`;
+}
+function prodModalWireX(closeFn) {
+  const btn = document.querySelector('#prodModalRoot [data-prod-modal-x]');
+  if (btn) btn.addEventListener('click', closeFn);
+}
 
 // Lightweight toast notification. Stacks at the bottom-right. opts:
 //   ttl: ms before auto-dismiss (default 5000)
@@ -19608,6 +19640,16 @@ async function renderSettingsAppointments() {
         <div class="pec-field"><label>Recording lookback (days)</label>
           <input type="number" id="saLookback" min="1" step="1" value="${esc(saSettings.salesask_pull_lookback_days || '3')}"></div>
       </div>
+      <div class="pec-row-2" style="max-width:460px">
+        <div class="pec-field"><label>Score green at or above (%)</label>
+          <input type="number" id="saGreen" min="1" max="100" step="1" value="${esc(saSettings.salesask_score_green_pct || '90')}"></div>
+        <div class="pec-field"><label>Score amber at or above (%)</label>
+          <input type="number" id="saAmber" min="1" max="100" step="1" value="${esc(saSettings.salesask_score_amber_pct || '70')}"></div>
+      </div>
+      <div style="color:var(--muted);font-size:.68rem;margin:2px 0 8px">
+        Process score colors on the customer card, the pipeline chip, and the estimate card: green at or
+        above the first number, amber at or above the second, red below. Green must be higher than amber.
+      </div>
       <div style="font-size:.65rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin:10px 0 2px">Rep SalesAsk emails</div>
       ${members.map(m => `
         <div style="display:flex;align-items:center;gap:12px;padding:7px 0;border-bottom:1px solid var(--rd-line,var(--border))">
@@ -19754,6 +19796,24 @@ async function renderSettingsAppointments() {
     const v = Math.max(1, parseInt(e.target.value, 10) || 3); e.target.value = v;
     saSaveSetting('salesask_pull_lookback_days', v);
   });
+  // Prompt 71 Part F: the pair is validated TOGETHER. An inverted pair (green
+  // <= amber) is refused with the input reverted, rather than silently saved
+  // and rendering every score red.
+  const saThresholdHandler = (key, fallback) => (e) => {
+    const clamp = (n, d) => Math.min(100, Math.max(1, parseInt(n, 10) || d));
+    const green = key === 'salesask_score_green_pct' ? clamp(e.target.value, 90) : clamp(root.querySelector('#saGreen')?.value, 90);
+    const amber = key === 'salesask_score_amber_pct' ? clamp(e.target.value, 70) : clamp(root.querySelector('#saAmber')?.value, 70);
+    if (green <= amber) {
+      saStatus('Not saved: green must be higher than amber.');
+      e.target.value = fallback();
+      return;
+    }
+    const v = key === 'salesask_score_green_pct' ? green : amber;
+    e.target.value = v;
+    saSaveSetting(key, v).then(ok => { if (ok) saSettings[key] = String(v); });
+  };
+  root.querySelector('#saGreen')?.addEventListener('change', saThresholdHandler('salesask_score_green_pct', () => saSettings.salesask_score_green_pct || '90'));
+  root.querySelector('#saAmber')?.addEventListener('change', saThresholdHandler('salesask_score_amber_pct', () => saSettings.salesask_score_amber_pct || '70'));
   root.querySelectorAll('[data-sa-email]').forEach(inp => inp.addEventListener('change', async () => {
     const email = inp.value.trim() || null;
     const { error } = await withFreshWriteRetry(() => supabase.from('pec_sales_team_members').update({ salesask_email: email }).eq('id', inp.dataset.saEmail), { label: 'salesask-email-save' });
@@ -22354,7 +22414,67 @@ function customerSalesAskCardHtml() {
       <div class="qo-mini"><div data-salesask-body class="qo-callist"><div class="qo-empty">Loading recordings…</div></div></div>
     </div>`;
 }
-function salesAskRowHtml(r) {
+// Prompt 71 B1: the score color thresholds from Settings > Appointments
+// (salesask_score_green_pct / salesask_score_amber_pct), cached 60s like the
+// hot-estimate rule so the customer card, the estimate card, and the pipeline
+// board share one settings read.
+async function salesAskScoreThresholds() {
+  return cachedRef('salesAskScoreCfg', async () => {
+    try {
+      const r = await supabase.from('settings').select('key,value').in('key', ['salesask_score_green_pct', 'salesask_score_amber_pct']);
+      const map = Object.fromEntries(((r && r.data) || []).map(s => [s.key, s.value]));
+      return {
+        green: Number(map.salesask_score_green_pct) > 0 ? Number(map.salesask_score_green_pct) : 90,
+        amber: Number(map.salesask_score_amber_pct) > 0 ? Number(map.salesask_score_amber_pct) : 70,
+      };
+    } catch (_) { return { green: 90, amber: 70 }; }
+  }, { ttlMs: 60000 });
+}
+// null when process_total is missing or zero: missing data is NOT 0%, and a
+// divide-by-zero must never reach the DOM.
+function salesAskScorePct(r) {
+  const f = Number(r && r.process_followed), t = Number(r && r.process_total);
+  if (!Number.isFinite(f) || !Number.isFinite(t) || t <= 0) return null;
+  return Math.round((f / t) * 100);
+}
+// One color rule for every surface. The color-mix background + darker ink
+// pattern matches the prompt-75 view chips, which already pass both themes.
+function salesAskScoreColors(pct, cfg) {
+  if (pct == null) return 'background:color-mix(in srgb,#64748b 14%,transparent);color:var(--rd-muted,#64748b)';
+  if (pct >= cfg.green) return 'background:color-mix(in srgb,#16a34a 15%,transparent);color:#15803d';
+  if (pct >= cfg.amber) return 'background:color-mix(in srgb,#d97706 16%,transparent);color:#b45309';
+  return 'background:color-mix(in srgb,#ef4444 15%,transparent);color:#dc2626';
+}
+function salesAskScoreBadgeHtml(r, cfg) {
+  const pct = salesAskScorePct(r);
+  const label = pct == null
+    ? 'Process score pending'
+    : `${pct}% · ${Number(r.process_followed)} of ${Number(r.process_total)} steps`;
+  return `<span title="SalesAsk sales-process score (thresholds in Settings > Appointments)" style="display:inline-flex;align-items:center;border-radius:999px;padding:2px 10px;font-size:.74rem;font-weight:700;${salesAskScoreColors(pct, cfg)}">${esc(label)}</span>`;
+}
+// Prompt 71 B2: coaching / tags are jsonb whose real shape has never been
+// written in prod. Render defensively: strings, arrays of strings, arrays of
+// objects (text/title/label/note, in that order), or a flat object of string
+// values. Anything else renders NOTHING rather than "[object Object]".
+function salesAskJsonbLines(v) {
+  if (v == null) return [];
+  if (typeof v === 'string') return v.trim() ? [v] : [];
+  if (Array.isArray(v)) {
+    return v.map(x => {
+      if (typeof x === 'string') return x;
+      if (x && typeof x === 'object') return x.text || x.title || x.label || x.note || '';
+      return '';
+    }).filter(Boolean);
+  }
+  if (typeof v === 'object') {
+    return Object.entries(v)
+      .filter(([, val]) => typeof val === 'string' && val.trim())
+      .map(([k, val]) => `${k.replace(/[_-]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())}: ${val}`);
+  }
+  return [];
+}
+function salesAskRowHtml(r, cfg) {
+  cfg = cfg || { green: 90, amber: 70 };
   const fmtDur = (s) => {
     const n = Number(s);
     if (!Number.isFinite(n) || n <= 0) return '';
@@ -22365,21 +22485,29 @@ function salesAskRowHtml(r) {
     const d = iso ? new Date(iso) : null;
     return (d && !isNaN(d.getTime())) ? d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
   };
-  const score = (r.process_followed != null && r.process_total != null) ? `process ${r.process_followed}/${r.process_total}` : '';
-  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds), score].filter(Boolean).join(' · ');
+  const metaBits = [fmtWhen(r.occurred_at || r.created_at), fmtDur(r.duration_seconds)].filter(Boolean).join(' · ');
+  const tags = salesAskJsonbLines(r.tags);
+  const tagsHtml = tags.length
+    ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin:4px 0 2px">${tags.map(t => `<span style="border-radius:999px;padding:1px 8px;font-size:.68rem;background:color-mix(in srgb,#64748b 12%,transparent);color:var(--rd-muted,#64748b)">${esc(t)}</span>`).join('')}</div>`
+    : '';
+  const coaching = salesAskJsonbLines(r.coaching);
   const turns = Array.isArray(r.transcript) ? r.transcript : null;
+  // Prompt 71 B3: the summary used to be EMPTY with only an aria-label, so
+  // there was nothing visible to click. Visible label + chevron now; the
+  // details stays collapsed by default and the aria behavior is unchanged.
   const transcriptHtml = (turns && turns.length)
-    ? `<details class="qo-tr"><summary aria-label="Toggle transcript"></summary>
+    ? `<details class="qo-tr"><summary aria-label="Toggle transcript" style="cursor:pointer;font-size:.76rem;font-weight:600;color:var(--rd-muted,#6b7280)">Full transcript ▸</summary>
          <div class="qo-tr-body">${turns.map(t => `<div style="margin-bottom:5px">${t && t.speaker ? `<strong>${esc(t.speaker)}:</strong> ` : ''}${esc((t && t.text) || '')}</div>`).join('')}</div>
        </details>`
     : '';
   const items = Array.isArray(r.action_items) ? r.action_items.map(i => typeof i === 'string' ? i : (i && (i.text || i.title)) || '').filter(Boolean) : [];
-  const hasCard = !!(r.summary || items.length || transcriptHtml);
+  const hasCard = !!(r.summary || items.length || coaching.length || transcriptHtml);
   const cardHtml = hasCard
     ? `<div class="qo-summary">
         <div class="qo-summary-head"><span class="qo-summary-title">Visit summary</span><span class="qo-ai">Powered by AI ✦</span></div>
         ${r.summary ? qoBulletsHtml(r.summary) : '<div class="qo-call-none">No summary yet.</div>'}
         ${items.length ? `<div class="qo-next-title">Action items</div>${qoBulletsHtml(items.join('\n'))}` : ''}
+        ${coaching.length ? `<div class="qo-next-title">Coaching</div>${qoBulletsHtml(coaching.join('\n'))}` : ''}
         ${r.recording_url ? `<div style="margin-top:6px;font-size:.76rem"><a href="${esc(r.recording_url)}" target="_blank" rel="noopener">Listen in SalesAsk ↗</a></div>` : ''}
         ${transcriptHtml}
       </div>`
@@ -22388,26 +22516,107 @@ function salesAskRowHtml(r) {
     <div class="qo-call-head">
       <span class="qo-call-ic">${QO_SVG.phone}</span>
       <span class="qo-call-title">${esc(r.title || 'Sales visit')}</span>
+      ${salesAskScoreBadgeHtml(r, cfg)}
       <span class="qo-call-meta">${esc(metaBits)}</span>
     </div>
+    ${tagsHtml}
     ${cardHtml}
   </div>`;
+}
+// Prompt 71 A4: resolve a customer's recordings through BOTH keys, because
+// most historical rows carry only one of them: (1) recordings stamped with
+// this customer_id, (2) recordings on any of the customer's leads. Two
+// queries merged and de-duped by id (NOT a PostgREST embed OR), newest first
+// by occurred_at falling back to created_at. res.error is checked on every
+// read: supabase-js returns an empty-looking response for a nonexistent
+// column WITHOUT throwing.
+async function loadSalesAskForCustomer(customerId, limit = 25) {
+  const leadsRes = await supabase.from('leads').select('id').eq('customer_id', customerId);
+  if (leadsRes.error) throw leadsRes.error;
+  const leadIds = (leadsRes.data || []).map(l => l.id);
+  const [byCust, byLead] = await Promise.all([
+    supabase.from('pec_salesask_recordings').select('*')
+      .eq('customer_id', customerId).order('occurred_at', { ascending: false, nullsFirst: false }).limit(limit),
+    leadIds.length
+      ? supabase.from('pec_salesask_recordings').select('*')
+          .in('lead_id', leadIds).order('occurred_at', { ascending: false, nullsFirst: false }).limit(limit)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (byCust.error) throw byCust.error;
+  if (byLead.error) throw byLead.error;
+  const seen = new Set(); const merged = [];
+  for (const r of [...(byCust.data || []), ...(byLead.data || [])]) {
+    if (r && r.id && !seen.has(r.id)) { seen.add(r.id); merged.push(r); }
+  }
+  const ts = r => { const t = Date.parse(r.occurred_at || r.created_at || ''); return Number.isFinite(t) ? t : -Infinity; };
+  merged.sort((a, b) => ts(b) - ts(a));
+  return merged.slice(0, limit);
 }
 async function mountCustomerSalesAsk(card, c) {
   if (!card) return;
   const body = card.querySelector('[data-salesask-body]');
   try {
-    const { data, error } = await supabase.from('pec_salesask_recordings').select('*')
-      .eq('customer_id', c.id).order('occurred_at', { ascending: false, nullsFirst: false }).limit(25);
-    if (error) throw error;
+    const [data, cfg] = await Promise.all([loadSalesAskForCustomer(c.id, 25), salesAskScoreThresholds()]);
     if (!data || !data.length) {
       body.innerHTML = '<div class="qo-empty">No sales visit recordings yet. Recordings land here automatically once SalesAsk sync is on and a rep records at this customer\'s appointment.</div>';
       return;
     }
-    body.innerHTML = data.map(salesAskRowHtml).join('');
+    body.innerHTML = data.map(r => salesAskRowHtml(r, cfg)).join('');
   } catch (e) {
     const needsMigration = /pec_salesask_recordings/.test(e.message || '');
     body.innerHTML = `<div class="qo-empty">${needsMigration ? 'Run the 2026-07-31_salesask_integration.sql migration to enable sales visit recordings.' : esc(e.message || 'Could not load recordings.')}</div>`;
+  }
+}
+// Prompt 71 Part D: the estimate detail's SalesAsk card. Resolution order for
+// "the recording for this estimate": (1) est.lead_id -> most recent recording
+// with that lead_id; (2) else est.customer_id -> the two-key resolution; (3)
+// else nothing. Renders the SAME salesAskRowHtml as the customer card so the
+// two surfaces cannot drift. Empty state: the card HIDES (locked decision 12),
+// with ONE exception: when the estimate's lead has an appointment already in
+// the past and no recording came back, a single muted line says so, because
+// "the rep did not record" is a management signal and a blank space is not.
+async function mountEstimateSalesAsk(container, est) {
+  if (!container) return;
+  try {
+    let rec = null;
+    if (est.lead_id) {
+      const r = await supabase.from('pec_salesask_recordings').select('*')
+        .eq('lead_id', est.lead_id).order('occurred_at', { ascending: false, nullsFirst: false })
+        .order('created_at', { ascending: false }).limit(1);
+      if (r.error) throw r.error;
+      rec = (r.data && r.data[0]) || null;
+    }
+    if (!rec && est.customer_id) {
+      const merged = await loadSalesAskForCustomer(est.customer_id, 1);
+      rec = merged[0] || null;
+    }
+    if (rec) {
+      const cfg = await salesAskScoreThresholds();
+      container.innerHTML = `
+        <div class="pec-card">
+          <h3>Sales visit recording</h3>
+          <div class="qo-mini"><div class="qo-callist">${salesAskRowHtml(rec, cfg)}</div></div>
+        </div>`;
+      return;
+    }
+    // The unrecorded-visit exception: only a PAST appointment earns the line.
+    if (est.lead_id) {
+      const a = await supabase.from('pec_appointments').select('start_at')
+        .eq('lead_id', est.lead_id).lt('start_at', new Date().toISOString())
+        .order('start_at', { ascending: false }).limit(1);
+      if (!a.error && a.data && a.data[0]) {
+        const d = new Date(a.data[0].start_at);
+        const when = isNaN(d.getTime()) ? '' : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        container.innerHTML = `<div style="color:var(--muted);font-size:.76rem;margin:2px 0 12px">On-site visit${when ? ' ' + esc(when) : ''}, no SalesAsk recording captured.</div>`;
+        return;
+      }
+    }
+    container.innerHTML = '';
+  } catch (e) {
+    // Pre-migration or transient failure: render nothing rather than an error
+    // card on a page the rep is trying to price from.
+    console.warn('[estimates] salesask:', e && e.message);
+    container.innerHTML = '';
   }
 }
 
@@ -22767,7 +22976,14 @@ async function openEmailLogDetail(r, staffNames) {
     </table></div>
     <div id="pecEmailLogBody"><div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading email body…</div></div>
     <div class="pec-modal-actions"><button class="pec-btn" onclick="pecCloseModal()">Close</button></div>
-  `, { onMount: m => m.classList.add('pec-modal-email-log') });
+  `, {
+    // Prompt 71 Part E3: read-only, so Escape + backdrop-click close it (the
+    // sandboxed body iframe used to trip the data-entry guard, and the iframe
+    // eats wheel events so the bottom Close could be off screen for good).
+    dismissible: true,
+    title: 'Email',
+    onMount: m => m.classList.add('pec-modal-email-log'),
+  });
   const box = document.getElementById('pecEmailLogBody');
   const notCaptured = '<div class="pec-empty">Body not captured (sent before email-body logging was added).</div>';
   try {
@@ -26869,6 +27085,41 @@ async function loadLeadsData() {
       }
     } catch (err) { console.warn('[leads] estimate views skipped:', err.message || err); }
   }
+  // Prompt 71 Part C: SalesAsk process scores for the board chips, in TWO
+  // batched queries over the ids already in hand (a per-card query on a
+  // kanban with dozens of cards is a hard no): recordings by lead_id, plus
+  // recordings by customer_id for leads that carry one (the A4 two-key rule).
+  // Latest recording per lead wins. Best-effort: on any error the board
+  // renders with no chips, never an error.
+  let salesAsk = null;
+  if (leads.length) {
+    try {
+      const custByLead = {};
+      for (const l of leads) if (l.customer_id) custByLead[l.id] = l.customer_id;
+      const custIds = [...new Set(Object.values(custByLead))];
+      const [cfg, byLeadRes, byCustRes] = await Promise.all([
+        salesAskScoreThresholds(),
+        supabase.from('pec_salesask_recordings')
+          .select('lead_id,customer_id,process_followed,process_total,occurred_at,created_at')
+          .in('lead_id', leads.map(l => l.id)),
+        custIds.length
+          ? supabase.from('pec_salesask_recordings')
+              .select('lead_id,customer_id,process_followed,process_total,occurred_at,created_at')
+              .in('customer_id', custIds)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (byLeadRes.error) throw byLeadRes.error;
+      if (byCustRes.error) throw byCustRes.error;
+      const leadIdsByCust = {};
+      for (const [lid, cid] of Object.entries(custByLead)) (leadIdsByCust[cid] ||= []).push(lid);
+      const byLead = {};
+      const saTs = r => { const t = Date.parse(r.occurred_at || r.created_at || ''); return Number.isFinite(t) ? t : -Infinity; };
+      const consider = (lid, r) => { if (!byLead[lid] || saTs(r) > saTs(byLead[lid])) byLead[lid] = r; };
+      for (const r of byLeadRes.data || []) if (r.lead_id) consider(r.lead_id, r);
+      for (const r of byCustRes.data || []) for (const lid of (leadIdsByCust[r.customer_id] || [])) consider(lid, r);
+      salesAsk = { byLead, cfg };
+    } catch (err) { console.warn('[leads] salesask scores skipped:', err.message || err); }
+  }
   // Source options: schema tokens + anything already in the data + the active
   // ONE vocabulary (prompt 61 Part D): the managed pec_lead_sources names
   // drive the pickers, and values already present in the data ride along so
@@ -26876,7 +27127,7 @@ async function loadLeadsData() {
   const sources = [];
   for (const s of (srcRes.error ? [] : srcRes.data || [])) if (s.name && !sources.includes(s.name)) sources.push(s.name);
   for (const l of leads) if (l.source && !sources.includes(l.source)) sources.push(l.source);
-  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft, sentEstByLead, estViews };
+  return { leads, valueMap, staffNames: staffNames || {}, sources, contactStats, dripActive, estimateAppts, boardEstimates, leadsWithDraft, sentEstByLead, estViews, salesAsk };
 }
 
 // The board card's contact chip. count semantics: null = logs unavailable
@@ -26943,6 +27194,19 @@ function estimateViewChipHtml(estId) {
     : 'background:color-mix(in srgb,#0ea5e9 12%,transparent);color:#0369a1'}">${hot ? flame : eye} ${v.count}</span>`;
 }
 
+// Prompt 71 Part C: the pipeline score chip, DISPLAY-ONLY on purpose. The
+// card is draggable (moveLeadStage) and the lead detail timeline already
+// carries the recording via leadEventHtml; a nested click target inside a
+// draggable card is a reliable source of "the card jumped when I clicked"
+// bugs. No chip and no placeholder when the lead has no recording.
+function salesAskLeadChipHtml(lead) {
+  const d = state.leadsData && state.leadsData.salesAsk;
+  const r = d && d.byLead && d.byLead[lead.id];
+  if (!r) return '';
+  const pct = salesAskScorePct(r);
+  const label = pct == null ? 'SalesAsk' : `SalesAsk ${pct}%`;
+  return `<span class="pec-age" title="SalesAsk sales-process score for this lead's latest recorded visit (thresholds in Settings > Appointments)" style="font-weight:700;${salesAskScoreColors(pct, d.cfg)}">${esc(label)}</span>`;
+}
 function leadCardHtml(lead) {
   const value = (state.leadsData && state.leadsData.valueMap[lead.id]) || 0;
   const flags = (lead.ai_analysis && Array.isArray(lead.ai_analysis.risk_flags)) ? lead.ai_analysis.risk_flags : [];
@@ -26974,6 +27238,7 @@ function leadCardHtml(lead) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:${esc(srcColor)}">${esc(leadSourceLabel(lead.source))}</span>
       ${leadScoreBadge(lead)}
+      ${salesAskLeadChipHtml(lead)}
       ${apptChip}
       ${state.leadsData && state.leadsData.dripActive && state.leadsData.dripActive.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#7c3aed 14%,transparent);color:#7c3aed" title="Active drip: automatic follow-ups are running for this lead">Drip</span>' : ''}
       ${state.leadsData && state.leadsData.leadsWithDraft && state.leadsData.leadsWithDraft.has(lead.id) ? '<span class="pec-age" style="background:color-mix(in srgb,#64748b 14%,transparent);color:#475569" title="A draft estimate is in progress for this lead (it rides this card; drafts with no lead get their own card in the Drafts column)">Draft</span>' : ''}
@@ -29008,6 +29273,12 @@ async function renderEstimateDetail(estimateId) {
           </div>` : ''}
           <div style="color:var(--muted);font-size:.68rem;margin-top:8px">Estimates include a 2% sundries and disposables cost baked into the price. Internal only; the customer sees the total.</div>
         </div>
+        ${/* Prompt 71 Part D: the SalesAsk visit for this estimate mounts
+            here, directly ABOVE Pricing intelligence: what the customer asked
+            for in the room is context for how the estimate got priced. The
+            container renders nothing when no recording exists (one muted line
+            when a past visit went unrecorded). */''}
+        <div id="estSalesAskCard"></div>
         <div class="pec-card">
           <h3>Pricing intelligence</h3>
           ${snapComps ? `
@@ -29073,6 +29344,9 @@ async function renderEstimateDetail(estimateId) {
   // container; nothing it does re-renders this page.
   renderEstJobInfoBlock($('estJobInfo'), est.id).catch(err => console.warn('[estimates] job info block:', err && err.message));
 
+  // SalesAsk visit card (prompt 71 Part D): self-contained, best-effort.
+  mountEstimateSalesAsk($('estSalesAskCard'), est).catch(err => console.warn('[estimates] salesask card:', err && err.message));
+
   // ---- Inline estimator region (prompt 61 Part A) ---------------------------
   // The region below the toolbar is EITHER the read-only summary (the left
   // column of the grid) or the inline estimator. Draft opens with the
@@ -29125,7 +29399,7 @@ async function renderEstimateDetail(estimateId) {
           <strong>${esc(estNum)} · customer preview</strong>
           <button type="button" class="pec-modal-xclose" id="estPreviewClose" aria-label="Close preview" title="Close">✕</button>
         </div>
-        <iframe id="estPreviewFrame" title="Estimate preview" style="flex:1 1 auto;min-height:0;width:100%;border:0;background:#fff"></iframe>`, { dismissible: true });
+        <iframe id="estPreviewFrame" title="Estimate preview" style="flex:1 1 auto;min-height:0;width:100%;border:0;background:#fff"></iframe>`, { dismissible: true, closeButton: false });
       const modal = wrap.querySelector('.pec-modal');
       if (modal) { modal.classList.add('pec-modal-estimator'); }
       wrap.querySelector('#estPreviewClose').addEventListener('click', () => pecCloseModalWrap(wrap));
@@ -32335,7 +32609,8 @@ function openJobQuickLook(jobId) {
         <h3 style="margin:0;font-size:1.1rem">${qlNameHtml}${job.is_callback ? ' <span style="font-size:.6rem;font-weight:700;background:#0ea5e9;color:#fff;border-radius:4px;padding:1px 5px;vertical-align:middle;white-space:nowrap">TOUCHUP</span>' : ''}</h3>
         <div style="font-size:.8rem;color:var(--muted);margin-top:2px">${esc(job.address || 'No address')}</div>
       </div>
-      <button type="button" class="pec-btn ghost sm" onclick="window.pecCloseModal()" aria-label="Close">✕</button>
+      ${/* hand-rolled ✕ removed (prompt 71 Part E1): openModal's default
+          sticky header now carries the one close control */''}
     </div>
     <div style="margin:12px 0 2px">
       ${row('Proposal', job.proposal_number ? esc(job.proposal_number) : dash)}
@@ -39781,6 +40056,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodAddLineBg">
         <div class="pec-modal">
+          ${prodModalXHeadHtml('')}
           <h3 style="margin:0 0 4px">Add material line</h3>
           <div style="font-size:.78rem;color:var(--muted);margin-bottom:12px">${esc(job.customer_name)} <span>#${esc(job.proposal_number)}</span>. Hand-added lines survive Recalculate and can be removed from the Order sheet.</div>
           <div class="pec-field"><label>Product</label><select id="prodAddLineProduct">${optHtml}</select></div>
@@ -39801,6 +40077,7 @@ function _mergeAcrossAreas(areaPlans) {
     sel.addEventListener('change', syncUnit);
     const close = () => { $('prodModalRoot').innerHTML = ''; };
     $('prodAddLineCancel').addEventListener('click', close);
+    prodModalWireX(close);
     $('prodAddLineBg').addEventListener('click', (e) => { if (e.target.id === 'prodAddLineBg') close(); });
     $('prodAddLineSave').addEventListener('click', async () => {
       errEl.textContent = '';
@@ -39868,6 +40145,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPullBg">
         <div class="pec-modal prod-modal-wide">
+          ${prodModalXHeadHtml('')}
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
               <h3 style="margin:0">${jobIds ? 'Order' : 'Material Pull'}</h3>
@@ -39943,6 +40221,7 @@ function _mergeAcrossAreas(areaPlans) {
 
     const closePull = () => { state._pullJobIds = null; $('prodModalRoot').innerHTML = ''; };
     $('prodPullClose').addEventListener('click', closePull);
+    prodModalWireX(closePull);
     $('prodPullBg').addEventListener('click', (e) => { if (e.target.id === 'prodPullBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closePull(); });
     if (!jobIds) { // date toolbar only exists in date-range mode
       $('prodPullStart').addEventListener('change', (e) => { state._pull.start = e.target.value; renderMaterialPull(); });
@@ -40537,6 +40816,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodDetailBg">
         <div class="pec-modal prod-modal-wide">
+          ${prodModalXHeadHtml('')}
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
               <h3 style="margin:0">${esc(j.customer_name)} <span style="color:var(--muted);font-weight:400">#${esc(j.proposal_number)}</span></h3>
@@ -40576,6 +40856,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     renderDetailLines();
     $('prodDetailClose').addEventListener('click', closeJobDetail);
+    prodModalWireX(closeJobDetail);
     $('prodDetailBg').addEventListener('click', (e) => { if (e.target.id === 'prodDetailBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closeJobDetail(); });
     $('prodDetailRecalc').addEventListener('click', recalcActiveJob);
     $('prodDetailSaveLines').addEventListener('click', saveActiveJobLineEdits);
@@ -40807,6 +41088,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodAddonBg">
         <div class="pec-modal">
+          ${prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} add-on</h3>
           <div class="pec-field"><label>Name</label><input id="adName" value="${esc(a.name)}"></div>
           <div class="pec-field"><label>Description</label><input id="adDesc" value="${esc(a.description || '')}"></div>
@@ -40830,6 +41112,7 @@ function _mergeAcrossAreas(areaPlans) {
       </div>`;
     const close = () => { $('prodModalRoot').innerHTML = ''; };
     $('adCancel').addEventListener('click', close);
+    prodModalWireX(close);
     $('prodAddonBg').addEventListener('click', e => { if (e.target.id === 'prodAddonBg') close(); });
     $('adSave').addEventListener('click', async () => {
       const name = $('adName').value.trim();
@@ -41026,6 +41309,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodPModalBg">
         <div class="pec-modal">
+          ${prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} product</h3>
           <div class="pec-field"><label>Name</label><input id="pmName" value="${esc(p.name)}"></div>
           <div class="pec-row-3">
@@ -41084,6 +41368,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('pmCancel').addEventListener('click', closer);
+    prodModalWireX(closer);
     $('prodPModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodPModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     // The Default basecoat field only applies to Flake products; keep its
     // visibility live as the material type changes so a mid-edit type switch
@@ -41482,6 +41767,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodSModalBg">
         <div class="pec-modal">
+          ${prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} system type</h3>
           <div class="pec-field"><label>Name</label><input id="smName" value="${esc(s.name)}"></div>
           <div class="pec-field"><label>Description</label><input id="smDesc" value="${esc(s.description || '')}"></div>
@@ -41527,6 +41813,7 @@ function _mergeAcrossAreas(areaPlans) {
     `;
     const closer = () => { $('prodModalRoot').innerHTML = ''; };
     $('smCancel').addEventListener('click', closer);
+    prodModalWireX(closer);
     $('prodSModalBg').addEventListener('click', (e) => { if (e.target.id === 'prodSModalBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('smSave').addEventListener('click', async () => {
       const laborPctRaw = $('smLaborPct').value;
@@ -41579,6 +41866,7 @@ function _mergeAcrossAreas(areaPlans) {
     $('prodModalRoot').innerHTML = `
       <div class="pec-modal-bg" id="prodRSlotBg">
         <div class="pec-modal">
+          ${prodModalXHeadHtml('')}
           <h3>${existing ? 'Edit' : 'New'} recipe slot</h3>
           <div class="pec-row-3">
             <div class="pec-field"><label>Order #</label><input id="rsOrder" type="number" min="0" step="1" value="${esc(slot.order_index)}"></div>
@@ -41630,6 +41918,7 @@ function _mergeAcrossAreas(areaPlans) {
     syncKind();
     $('rsType').addEventListener('change', () => { $('rsProduct').innerHTML = `<option value="">User picks at job time</option>` + productOpts($('rsType').value); });
     $('rsCancel').addEventListener('click', closer);
+    prodModalWireX(closer);
     $('prodRSlotBg').addEventListener('click', (e) => { if (e.target.id === 'prodRSlotBg' && !e.currentTarget.querySelector('form, input, textarea, select')) closer(); });
     $('rsSave').addEventListener('click', async () => {
       const kind = $('rsKind').value;
