@@ -2,6 +2,43 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-09 MST] Cowork: a live estimate already in the pipeline has BLANK in it. EST-102054 went to the customer reading "Tentative start date: BLANK", and the prompt-78 gate now makes it un-sendable until someone fills it in.
+
+By: Cowork
+
+Changed: nothing. One read-only Supabase query, run as the last residue check of the verification pass two entries below. Recorded separately rather than edited into that entry, per standing rule 3.
+
+Sweeping every line description on every non-deleted estimate for the literal `BLANK` turns up exactly two rows, both on **EST-102054 (Tom Bechtel, status draft, emailed to tebechtel@msn.com on 2026-08-08 at 13:00:02Z)**, on the lines "Back Patio: Quartz" and "Front Patio: Quartz". Both read:
+
+```
+Tentative start date:
+
+BLANK
+
+Expected project duration:
+
+BLANK
+```
+
+Two consequences, and they point in opposite directions.
+
+1. **A customer already has this.** The email went out before the blank gate was live, so the proposal in Tom Bechtel's inbox literally says "Tentative start date: BLANK". That is a sales problem today, not a code problem.
+2. **The gate will now refuse every re-send of it.** Not tested against 102054 on purpose: exercising it means opening the send composer on a REAL customer's estimate, and a gate miss would email him. The mechanism is the same one confirmed line-for-line on the throwaway EST-102088 (`estimateSendGateOk` scans every line description on a fresh read, `\bBLANK\b`, hard block, no override), so this is inference from a verified mechanism rather than a live test, and it should be treated as very likely rather than proven.
+
+This is the blank gate doing exactly what decision 15 asked for, on the first real estimate it meets. Worth knowing that the first thing it blocks is a live deal, and worth Dylan filling those two fields in before he next touches 102054. Sweep is cheap and worth repeating after prompt 81:
+
+```sql
+select e.estimate_number, e.status, li.label
+from estimate_line_items li join estimates e on e.id = li.estimate_id
+where e.deleted_at is null and li.description like '%BLANK%';
+```
+
+Files touched: PROJECT-LOG.md (this entry).
+
+## Handoff to Dylan
+
+Fill in "Tentative start date" and "Expected project duration" on both Quartz lines of EST-102054 before re-sending it. Until then that estimate cannot be emailed, texted, or opened for signing.
+
 ## [2026-08-09 MST] Cowork: prompt 80's owed browser walkthrough, run on the deployed Settings rail. Ten pages, search, both deep links, the alias redirect: all clean. Two things this pass did NOT do, and one unrelated defect it found.
 
 By: Cowork
