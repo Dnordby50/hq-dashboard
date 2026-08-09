@@ -1,5 +1,16 @@
 [
   {
+    "id": "modal-header-and-email-buttons",
+    "date": "2026-08-09",
+    "title": "The black bar on modals is gone, and email buttons now always look like buttons",
+    "summary": "Every modal opened from the dashboard had a dark bar across the top; that bar is gone and the close X now sits in a small white circle that stays put while you scroll. Customer emails got a matching fix: the View and sign, View Invoice and Pay, and Review and sign buttons are now added automatically under your message when you send, in the brand accent color, centered. Before this, editing the message could quietly turn the button into a plain blue link. Drip and blast emails show the same button for estimate, payment, and review links.",
+    "howto": [
+      "Send an estimate or invoice as usual: write your message in the editor and the button is appended for you (a note under the editor confirms it).",
+      "You cannot edit or remove the button from the editor; it is fixed per email type so it always renders correctly.",
+      "Change order approval emails use the same button and no longer show the long backup link under it."
+    ]
+  },
+  {
     "id": "proposal-polish-ticks-blanks",
     "date": "2026-08-08",
     "title": "Tickable options in Preview, a cleaner estimate header, and blanks now stop a send",
