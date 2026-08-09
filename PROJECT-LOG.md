@@ -1,3 +1,21 @@
+## [2026-08-09 MST] Prompt 81 written (not executed): the modal black bar is a theme-variable miss, and the estimate email button is being eaten by Quill.
+
+By: Cowork
+
+Changed: nothing in the repo except this entry. This session diagnosed two issues Dylan reported, asked 12 scoping questions, and produced the Claude Code build prompt (printed in chat as prompt 81). No code, no migration, no commit beyond this log entry.
+
+**Issue 1, the black bar across the top of every modal.** `.pec-modal-stickyhead` (index.html:662) sets `background:var(--s1)`. `--s1` is `#111118` on the `:root` dark palette and is only overridden to `#ffffff` under `body.pec-portal-mode` (index.html:724). The CRM dashboard is NOT portal mode: the redesign block at index.html:1659 repaints `.pec-modal` to `var(--rd-shell)` (white) but never touches the sticky header, so the opaque bar prompt 71 added renders near-black on a white modal. Same root cause for `.pec-modal-xhead`'s `border-bottom:1px solid var(--border)` and `.pec-modal-xclose`'s `color:var(--muted)`. Affects EVERY modal opened through `openModal()` (index.html:8378) and every `prodModalRoot` modal (index.html:8461), not just the Edit appointment one Dylan screenshotted. Fix chosen: repaint, do not restructure.
+
+**Issue 2, the estimate email link "looks funny with different colors."** The default body in `openEstimateSendModal` (index.html ~30442) DOES build a proper accent-colored button, but it is loaded into the editor with `quill.clipboard.dangerouslyPasteHTML(defaultBody)` (index.html:30451) and Quill 2.0.2 keeps only whitelisted formats: the `style` attribute is stripped off the anchor. `quill.root.innerHTML` is then what gets sent, so the customer receives a bare `<a href>` that email clients render blue and underlined against the chrome's near-black body text. **The invoice compose modal has the identical bug** (index.html:12001): `emailResolveBody` resolves `{{cta}}` into button HTML client-side and Quill eats it the same way. Change-order emails (index.html:11474 and 11515) build `body_html` directly without Quill, which is why their buttons survive, and that is exactly the inconsistency Dylan noticed. Drip emails are a third variant: `dripEmailHtml` in netlify/functions/_pec-drip.cjs:535 linkifies the code-appended URL tail as bare `#c2410c` orange text.
+
+**Decisions locked with Dylan (12 questions, all answered):** (1) CTA lives OUTSIDE the Quill editor and is appended by the send path, so nothing can strip or mangle it; (2) button label is fixed per email type, not editable, no settings row; (3) color comes from `pec_brand_identity.accent_color` everywhere, including the change-order emails that hardcode `#D8531C` today; (4) button is centered with vertical breathing room, matching the DripJobs example Dylan attached; (5) NO raw-URL fallback line under the button anywhere, including the change-order "Or open this link" line which gets deleted; (6) surrounding chrome (logo, accent name banner, signature, footer) is untouched; (7) drips get the button for BOTH the estimate link and the pay link but keep their deliberately plain no-chrome note look; (8) modal fix is a repaint only, sticky header goes to the shell background with a plain grey close X, no bar, no markup change, no title relocation.
+
+**Risk flagged to whoever builds this:** the visible-text URL disappears from drip emails when the tail becomes a button. The ledger stores what was sent, so the drip row's stored body must keep the URL in a form that still reads as an audit record; the prompt tells Claude Code to keep the plain-text body as the stored artifact and apply the button only in the HTML render.
+
+## Handoff to Dylan
+
+Paste prompt 81 (printed in this session's chat) into Claude Code. Note that `main` is currently 3 commits ahead of `origin/main` (28c46f5, bbe662b, 40bb3e6), so prompt 80's Settings rail and the two verification entries are committed locally but not deployed; the email and modal changes will ride the same push when Dylan pushes.
+
 # PEC CRM (TopCoat) Project Log
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
