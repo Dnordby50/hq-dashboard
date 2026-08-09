@@ -14,7 +14,7 @@ const { sb, json } = require('./_pec-supabase.cjs');
 const {
   runDrips, drainBlasts, flushApprovedDrips, enrollJobInvoiceDrip,
   sendQuoSmsReal, sendResendEmailReal, getSmsSender, getEmailSender,
-  dripEmailHtml, STOP_LINE, SITE_URL,
+  dripEmailHtml, getBrandAccent, STOP_LINE, SITE_URL,
 } = require('./_pec-drip.cjs');
 const { runInstallmentTriggers } = require('./_pec-installments.cjs');
 
@@ -29,11 +29,14 @@ exports.handler = async () => {
     // fixture tests can stub them.
     let installments = null;
     try {
+      // Prompt 81: the injected renderer carries the brand accent so the
+      // installment reminder's pay tail renders as the accent button too.
+      const accent = await getBrandAccent(sb);
       installments = await runInstallmentTriggers({
         sb,
         providers: {
           sendSms: sendQuoSmsReal, sendEmail: sendResendEmailReal,
-          getSmsSender, getEmailSender, dripEmailHtml,
+          getSmsSender, getEmailSender, dripEmailHtml: (t) => dripEmailHtml(t, { accent }),
           enrollInvoiceDrip: enrollJobInvoiceDrip, STOP_LINE, SITE_URL,
         },
       });

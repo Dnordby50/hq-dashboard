@@ -36,7 +36,7 @@
 
 const {
   quietHours, toE164, sendQuoSmsReal, sendResendEmailReal,
-  getSmsSender, getEmailSender, dripEmailHtml,
+  getSmsSender, getEmailSender, dripEmailHtml, getBrandAccent,
 } = require('./_pec-drip.cjs');
 
 const BRAND = 'prescott-epoxy';
@@ -178,7 +178,7 @@ async function processCustomerRule(sb, rule, appt, ctx, now, summary, caches, se
       const subject = rule.on_book
         ? 'Your appointment with Prescott Epoxy Company is booked'
         : 'Appointment reminder from Prescott Epoxy Company';
-      const html = dripEmailHtml(body);
+      const html = dripEmailHtml(body, { accent: await getBrandAccent(sb) });
       let out;
       if (!sender || !sender.from_email) out = { ok: false, id: null, error: 'no email sender for brand' };
       else {

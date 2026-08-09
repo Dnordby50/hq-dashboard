@@ -522,6 +522,37 @@ async function getEmailSender(sb, cache) {
 const escHtml = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// Prompt 81: CTA accent for the drip render, from pec_brand_identity.
+// Memoized per function instance (a brand-color edit shows up on the next
+// cold start, which is fine for a color); falls back to the historical
+// orange when the row is missing or the fetch fails.
+const DRIP_FALLBACK_ACCENT = '#D8531C';
+let _brandAccentMemo = null;
+async function getBrandAccent(sb) {
+  if (_brandAccentMemo) return _brandAccentMemo;
+  try {
+    const rows = await sb('GET', `/pec_brand_identity?brand=eq.${DRIP_BRAND}&select=accent_color&limit=1`);
+    const c = Array.isArray(rows) && rows[0] && rows[0].accent_color;
+    if (c) _brandAccentMemo = c;
+  } catch (_) { /* fallback below */ }
+  return _brandAccentMemo || DRIP_FALLBACK_ACCENT;
+}
+
+// Prompt 81: the code-appended tails (kindTail + the installment reminder)
+// render as a lead-in sentence with a centered accent button beneath it,
+// naked URL stripped from the visible email. ONLY this HTML render is
+// upgraded: the ledger keeps the plain-text 'View and sign your estimate
+// here: <url>' verbatim as the audit record, and the SMS leg is untouched.
+// A tail edited in Drip Approvals that no longer matches a pattern falls
+// through to the plain linkified render. The review /r/ URL lands in the
+// button href byte-for-byte or click logging silently breaks.
+const DRIP_TAIL_BUTTONS = [
+  { re: /^View and sign your estimate here:\s*(https?:\/\/\S+)$/, label: 'View &amp; sign your estimate' },
+  { re: /^(?:(?:Amount due now|Balance):\s*\$[\d,.]+\.\s*)?Pay online here:\s*(https?:\/\/\S+)$/, label: 'Pay online' },
+  { re: /^View your invoice and pay online here:\s*(https?:\/\/\S+)$/, label: 'Pay online' },
+  { re: /^Leave a review here:\s*(https?:\/\/\S+)$/, label: 'Leave a review' },
+];
+
 // Drip emails deliberately look like a short personal note, NOT the branded
 // invoice chrome (wrapInChrome in pec-send-email.cjs): a heavy header on a
 // "just checking in" email reads as a blast. Plain paragraphs, name signature,
@@ -529,12 +560,47 @@ const escHtml = (s) => String(s == null ? '' : s)
 // replies are not machine-tracked (the replied kill-switch reads SMS/call
 // logs), so the opt-out line invites a reply that staff acts on with the
 // Stop drip button.
-function dripEmailHtml(bodyText) {
-  // Code-appended tails (estimate/pay links) arrive as plain-text URLs in the
-  // body so the ledger stores exactly what was sent; linkify them here.
-  const linkify = (s) => s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" style="color:#c2410c">$1</a>');
-  const paras = String(bodyText || '').split(/\n\s*\n/)
-    .map(p => `<p style="margin:0 0 14px">${linkify(escHtml(p.trim())).replace(/\n/g, '<br>')}</p>`).join('');
+// opts.accent: CTA/link color (callers pass await getBrandAccent(sb)).
+// opts.blast: apply the blast promotion rule instead of the tail patterns --
+// a body that ends with its ONLY url gets that url promoted to a button;
+// two or more urls anywhere stay inline (stacked buttons mid-blast read as
+// broken).
+function dripEmailHtml(bodyText, opts = {}) {
+  const accent = opts.accent || DRIP_FALLBACK_ACCENT;
+  const linkify = (s) => s.replace(/(https?:\/\/[^\s<]+)/g, `<a href="$1" style="color:${escHtml(accent)}">$1</a>`);
+  const button = (url, label) => `<p style="text-align:center;margin:22px 0"><a href="${escHtml(url)}" style="display:inline-block;background:${escHtml(accent)};color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">${label}</a></p>`;
+  const plainPara = (t) => `<p style="margin:0 0 14px">${linkify(escHtml(t)).replace(/\n/g, '<br>')}</p>`;
+  const rawParas = String(bodyText || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  let paras;
+  if (opts.blast) {
+    const urls = String(bodyText || '').match(/https?:\/\/[^\s<]+/g) || [];
+    const lastIdx = rawParas.length - 1;
+    const endMatch = lastIdx >= 0 ? rawParas[lastIdx].match(/^([\s\S]*?)\s*(https?:\/\/\S+)$/) : null;
+    if (urls.length === 1 && endMatch) {
+      const url = endMatch[2];
+      const label = url.includes('/e/') ? 'View &amp; sign your estimate'
+        : url.includes('/pay/') ? 'Pay online'
+        : url.includes('/r/') ? 'Leave a review'
+        : 'Open the link';
+      paras = rawParas.slice(0, lastIdx).map(plainPara).join('')
+        + (endMatch[1] ? plainPara(endMatch[1]) : '')
+        + button(url, label);
+    } else {
+      paras = rawParas.map(plainPara).join('');
+    }
+  } else {
+    paras = rawParas.map(p => {
+      for (const t of DRIP_TAIL_BUTTONS) {
+        const m = p.match(t.re);
+        if (m) {
+          const url = m[1];
+          const leadIn = p.slice(0, p.length - url.length).trim();
+          return (leadIn ? `<p style="margin:0 0 14px">${escHtml(leadIn)}</p>` : '') + button(url, t.label);
+        }
+      }
+      return plainPara(p);
+    }).join('');
+  }
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#1f2937;max-width:600px;margin:0 auto;padding:8px 0">
     ${paras}
     <p style="margin:18px 0 0;color:#6b7280;font-size:12px">Prescott Epoxy Company, Prescott, AZ. Prefer not to hear from us? Just reply and tell us and we will stop.</p>
@@ -749,7 +815,7 @@ async function sendInstantTouch(sb, leadId, opts = {}) {
         try {
           res = await senders.sendEmail({
             from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
-            subject: emailSubject, html: dripEmailHtml(emailBody), reply_to: sender.reply_to || undefined,
+            subject: emailSubject, html: dripEmailHtml(emailBody, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
           });
         } catch (err) { res = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
         await sb('POST', '/pec_email_log', {
@@ -1402,7 +1468,7 @@ async function runDrips(deps) {
           try {
             out = await sendEmail({
               from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
-              subject: emailSubject, html: dripEmailHtml(emailBody), reply_to: sender.reply_to || undefined,
+              subject: emailSubject, html: dripEmailHtml(emailBody, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
             });
           } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
           await sb('POST', '/pec_email_log', {
@@ -1483,7 +1549,7 @@ async function sendApprovedLeg(sb, providers, ctx) {
   try {
     out = await providers.sendEmail({
       from: `${sender.from_name} <${sender.from_email}>`, to: rcpt.email,
-      subject: subject || 'From Prescott Epoxy', html: dripEmailHtml(body), reply_to: sender.reply_to || undefined,
+      subject: subject || 'From Prescott Epoxy', html: dripEmailHtml(body, { accent: await getBrandAccent(sb) }), reply_to: sender.reply_to || undefined,
     });
   } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
   await sb('POST', '/pec_email_log', {
@@ -1857,7 +1923,7 @@ async function drainBlasts(deps, opts = {}) {
           try {
             out = await sendEmail({
               from: `${sender.from_name} <${sender.from_email}>`, to,
-              subject: row.subject || 'From Prescott Epoxy', html: dripEmailHtml(row.body),
+              subject: row.subject || 'From Prescott Epoxy', html: dripEmailHtml(row.body, { accent: await getBrandAccent(sb), blast: true }),
               reply_to: sender.reply_to || undefined,
             });
           } catch (err) { out = { ok: false, id: null, error: 'transport: ' + String(err && err.message || err).slice(0, 400) }; }
@@ -1894,7 +1960,7 @@ module.exports = {
   enrollJobInvoiceDrip, enrollReviewDrip, reviewCopyViolation,
   enrollSubject, resolveRecipient, checkKillSwitches,
   masterSwitchOn, kindTail, quietHours, toE164, phoneTail, scrubCopy, capSms,
-  usd, dripEmailHtml, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
+  usd, dripEmailHtml, getBrandAccent, buildRenderPrompt, RENDER_SYSTEM_PROMPT,
   RENDER_SYSTEM_PROMPTS, RUN_CAP, BLAST_BATCH, STOP_LINE, SITE_URL,
   // Prompt 42: approval gate + settings-driven quiet hours.
   resolvePendingStep, flushApprovedDrips, getDripConfig, parseQuietSettings,

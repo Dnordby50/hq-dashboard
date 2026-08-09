@@ -1662,6 +1662,40 @@ body:not(.pec-portal-mode) .pec-modal {
   border-radius: 14px;
   color: var(--rd-ink);
 }
+/* Prompt 81 (decision 8, final): the sticky ✕ header inherited --s1
+   (near-black on the dark root palette) while .pec-modal itself was repainted
+   to --rd-shell, so every CRM modal wore a black bar. The BAR goes away
+   entirely (transparent, no border); the ✕ becomes a small pinned white
+   circle with a soft shadow so it stays readable over whatever scrolls
+   beneath it. The sticky wrap itself stays: it is what keeps the ✕ reachable
+   on modals whose iframe eats wheel events (prompt 71). Scoped to
+   .pec-modal-xhead.pec-modal-stickyhead so the estimator/preview iframe
+   modals (bare .pec-modal-xhead with a real title) keep their header rule. */
+body:not(.pec-portal-mode) .pec-modal-stickyhead {
+  background: transparent;
+  border-radius: 14px 14px 0 0;
+}
+body:not(.pec-portal-mode) .pec-modal-xhead.pec-modal-stickyhead { border-bottom: 0; }
+body:not(.pec-portal-mode) .pec-modal-xclose { color: var(--rd-muted); }
+body:not(.pec-portal-mode) .pec-modal-xclose:hover {
+  color: var(--rd-ink);
+  background: var(--rd-soft);
+}
+body:not(.pec-portal-mode) .pec-modal-stickyhead .pec-modal-xclose {
+  background: #fff;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(15,20,32,.16), 0 0 0 1px var(--rd-line);
+}
+body:not(.pec-portal-mode) .pec-modal-stickyhead .pec-modal-xclose:hover {
+  background: var(--rd-soft);
+  color: var(--rd-ink);
+}
 body:not(.pec-portal-mode) .pec-modal h3 { color: var(--rd-ink); }
 body:not(.pec-portal-mode) .pec-modal .pec-field input,
 body:not(.pec-portal-mode) .pec-modal .pec-field textarea,
@@ -11466,12 +11500,13 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
     b.disabled = true; b.textContent = 'Sending…';
     try {
       const link = `${location.origin}/co/${r.token}`;
+      await fetchBrandIdentity(); // prompt 81: CTA accent comes from pec_brand_identity, not a hardcoded hex
       // Compose-mode send with its OWN log key so the Last-invoiced column
       // (which counts compose/invoice) never mistakes a CO link for an invoice.
       await pecSendEmail({
         brand, to_email: customer.email, job_id: jobId, customer_id: customer.id,
         subject: `Change order approval: ${r.title}`,
-        body_html: `<p>Hi ${esc(customer.name || '')},</p><p>A change order for your project needs your approval:</p><p><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</p><p><a href="${esc(link)}" style="display:inline-block;background:#D8531C;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; sign</a></p><p style="font-size:13px;color:#64748b">Or open this link: ${esc(link)}</p>`,
+        body_html: `<p>Hi ${esc(customer.name || '')},</p><p>A change order for your project needs your approval:</p><p><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</p>${emailCtaButtonHtml(link, 'Review &amp; sign')}`,
         log_template_key: 'change_order',
       });
       showToast('Approval link emailed ✓', { ttl: 3000 });
@@ -11509,10 +11544,11 @@ async function mountChangeOrderCard(el, { jobId, customerId, onChanged, sigRows 
       if (!customer?.email) { showToast('No email on file for this customer.', { ttl: 4000 }); return; }
       emailB.disabled = true; emailB.textContent = 'Sending…';
       try {
+        await fetchBrandIdentity(); // prompt 81: CTA accent comes from pec_brand_identity, not a hardcoded hex
         await pecSendEmail({
           brand, to_email: customer.email, job_id: jobId, customer_id: customer.id,
           subject: `${pendingRows.length} change orders need your approval`,
-          body_html: `<p>Hi ${esc(customer.name || '')},</p><p>${pendingRows.length} change orders for your project need your approval. One signature covers all of them:</p><ul>${pendingRows.map(r => `<li><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</li>`).join('')}</ul><p>Total to approve: <strong>${invUSD(grand)}</strong></p><p><a href="${esc(bLink)}" style="display:inline-block;background:#D8531C;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600">Review &amp; sign all</a></p><p style="font-size:13px;color:#64748b">Or open this link: ${esc(bLink)}</p>`,
+          body_html: `<p>Hi ${esc(customer.name || '')},</p><p>${pendingRows.length} change orders for your project need your approval. One signature covers all of them:</p><ul>${pendingRows.map(r => `<li><strong>${esc(r.title)}</strong> · ${invUSD(invNum(r.amount))}</li>`).join('')}</ul><p>Total to approve: <strong>${invUSD(grand)}</strong></p>${emailCtaButtonHtml(bLink, 'Review &amp; sign all')}`,
           log_template_key: 'change_order',
         });
         showToast('Batch approval link emailed ✓', { ttl: 3000 });
@@ -11980,6 +12016,7 @@ function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {
       <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="cmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
       <div class="pec-field"><label>Subject</label><input id="cmpSubject"></div>
       <div class="pec-field"><label>Body</label><div id="cmpEditorWrap" style="background:#fff;border-radius:6px"><div id="cmpEditor" style="min-height:240px"></div></div></div>
+      ${values.cta ? '<div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">A "View Invoice &amp; Pay" button is added under your message automatically.</div>' : ''}
       <div class="prod-msg-err" id="cmpErr" style="min-height:16px"></div>
       <div class="pec-modal-actions">
         <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -11993,7 +12030,12 @@ function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {
         if (data) { subjectTpl = data.subject || subjectTpl; bodyTpl = data.html || bodyTpl; }
       } catch (_) { /* defaults */ }
       modal.querySelector('#cmpSubject').value = emailResolveSubject(subjectTpl, values);
-      const bodyHtml = emailResolveBody(bodyTpl, values);
+      // Prompt 81: {{cta}} resolves to EMPTY inside the editor (Quill strips
+      // the button's style attribute, which is how customers were getting a
+      // bare blue link); the real button is appended after the editor content
+      // at send time below. The replace drops the template's now-empty
+      // <p></p> so the editor doesn't show a stray blank line.
+      const bodyHtml = emailResolveBody(bodyTpl, { ...values, cta: '' }).replace(/<p>\s*<\/p>/g, '');
       let quill = null;
       try {
         await ensureQuill();
@@ -12011,7 +12053,7 @@ function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {
         let cc = modal.querySelector('#cmpCc').value.trim();
         if (modal.querySelector('#cmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
         const subject = modal.querySelector('#cmpSubject').value.trim();
-        const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#cmpEditorTa')?.value || '');
+        const bodyOut = (quill ? quill.root.innerHTML : (modal.querySelector('#cmpEditorTa')?.value || '')) + (values.cta || '');
         if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
         if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
         sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
@@ -23676,7 +23718,7 @@ function emailComposeValues(row) {
   const b = state.brandIdentity || EMAIL_BRAND_DEFAULTS;
   const invNo = row.hq_invoice_number || row.dripjobs_deal_id || String(row.id || '').slice(0, 8);
   const cta = row.public_token
-    ? `<a href="${location.origin}/pay/${row.public_token}" style="display:inline-block;background:${esc(b.accent_color || '#D8531C')};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">View Invoice &amp; Pay</a>`
+    ? emailCtaButtonHtml(`${location.origin}/pay/${row.public_token}`, 'View Invoice &amp; Pay')
     : '';
   const name = b.business_name || 'Prescott Epoxy Company';
   return {
@@ -23691,6 +23733,17 @@ function emailResolveBody(tpl, values) {
 }
 function emailResolveSubject(tpl, values) {
   return String(tpl || '').replace(/\{\{(\w+)\}\}/g, (_, k) => values[k] != null ? String(values[k]) : '');
+}
+// Prompt 81: the ONE builder for every staff-sent email CTA button. Centered
+// with breathing room, accent from pec_brand_identity. The button HTML must
+// be appended OUTSIDE the Quill editor at send time: Quill 2 keeps only
+// whitelisted formats and strips the style attribute off pasted anchors, so
+// a button pasted INTO the editor reaches the customer as a bare blue link.
+// `label` is trusted HTML (fixed per email type, e.g. 'View &amp; sign'),
+// never user input.
+function emailCtaButtonHtml(url, label) {
+  const accent = (state.brandIdentity && state.brandIdentity.accent_color) || '#D8531C';
+  return `<p style="text-align:center;margin:24px 0"><a href="${esc(url)}" style="display:inline-block;background:${esc(accent)};color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">${label}</a></p>`;
 }
 // Lazy-load Quill from cdnjs on first compose-modal open.
 let _quillLoading = null;
@@ -30412,7 +30465,6 @@ async function openEstimateSendModal(est, opts = {}) {
   if (!(await ensureEstimateToken(est))) return;
   await fetchBrandIdentity();
   const brand = 'prescott-epoxy'; // PEC-only, matches est.brand today
-  const accent = (state.brandIdentity && state.brandIdentity.accent_color) || '#D8531C';
   const link = `${location.origin}/e/${est.public_token}`;
   const number = estNumberLabel(est);
   const firstName = (est.customer_name || '').trim().split(/\s+/)[0] || 'there';
@@ -30424,9 +30476,12 @@ async function openEstimateSendModal(est, opts = {}) {
   const totalTxt = fmtMoney(estimateOpeningTotal(est) ?? est.price);
   const staffEmail = state.adminUser?.email || '';
   const defaultSubject = `Your estimate ${number} from Prescott Epoxy Company`;
+  // Prompt 81: the CTA button lives OUTSIDE the editor (appended to the sent
+  // body below); Quill 2 strips the style attribute off pasted anchors, so a
+  // button placed in defaultBody reached the customer as a bare blue link.
+  const ctaHtml = emailCtaButtonHtml(link, 'View &amp; sign your estimate');
   const defaultBody = `<p>Hi ${esc(firstName)},</p>
 <p>Thank you for the opportunity to quote your project. Your estimate ${esc(number)} (${esc(totalTxt)}) is ready to review online. You can look it over, tick any optional add-ons, and accept and sign right from your phone.</p>
-<p style="margin:18px 0"><a href="${esc(link)}" style="display:inline-block;background:${esc(accent)};color:#fff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">View &amp; sign your estimate</a></p>
 <p>Want something adjusted first? Use the Request changes button on the estimate, or just reply to this email.</p>`;
   openModal(`
     <h3>${est.sent_at ? 'Re-send estimate' : 'Send estimate'} ${esc(number)}</h3>
@@ -30437,7 +30492,7 @@ async function openEstimateSendModal(est, opts = {}) {
     <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;margin-bottom:10px;cursor:pointer"><input type="checkbox" id="estCmpCopyMe"> Copy me${staffEmail ? ' (' + esc(staffEmail) + ')' : ''}</label>
     <div class="pec-field"><label>Subject</label><input id="estCmpSubject" value="${esc(defaultSubject)}"></div>
     <div class="pec-field"><label>Body</label><div id="estCmpEditorWrap" style="background:#fff;border-radius:6px"><div id="estCmpEditor" style="min-height:220px"></div></div></div>
-    <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
+    <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">A "View &amp; sign your estimate" button is added under your message automatically. Sending makes the customer link live (it 404s until then). The customer can accept and sign, request changes, or decline on that page.</div>
     <div class="prod-msg-err" id="estCmpErr" style="min-height:16px"></div>
     <div class="pec-modal-actions">
       <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
@@ -30460,7 +30515,9 @@ async function openEstimateSendModal(est, opts = {}) {
       let cc = modal.querySelector('#estCmpCc').value.trim();
       if (modal.querySelector('#estCmpCopyMe').checked && staffEmail) cc = cc ? (cc + ',' + staffEmail) : staffEmail;
       const subject = modal.querySelector('#estCmpSubject').value.trim();
-      const bodyOut = quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '');
+      // Prompt 81: the CTA is appended here, after the editor, so Quill can
+      // never strip its styling (both editor and textarea fallback paths).
+      const bodyOut = (quill ? quill.root.innerHTML : (modal.querySelector('#estCmpEditorTa')?.value || '')) + ctaHtml;
       if (!to) { errEl.textContent = 'Enter a recipient.'; return; }
       if (!subject) { errEl.textContent = 'Enter a subject.'; return; }
       // Optional-lines send gate (prompt 72 decision 1), then the per-line
