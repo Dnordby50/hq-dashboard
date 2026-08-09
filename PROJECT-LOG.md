@@ -2,6 +2,53 @@
 
 Newest entries on top. Append only. Never edit or delete past entries. If a previous entry was wrong, write a new correction entry that references it.
 
+## [2026-08-09 MST] Cowork: prompt 78's live verification pass on the deployed site. Five of six checks pass outright. The sixth, Present mode, passes only on an UNSENT estimate, because the whole gate sits inside `if (!est.sent_at)`.
+
+By: Cowork
+
+Changed: nothing in code, schema, settings or deploy. One test estimate created, sent, exercised and cleaned up (EST-102088, id 7039f07d-8561-48c4-a1f3-91034f1049ab, against a throwaway customer "ZZ Cowork Test P78"), plus this entry. Read-only everywhere else. Verified on the deployed build (b2e7291, https://prescottepoxy.netlify.app), signed in as Dylan, with Supabase MCP reads for every acceptance.
+
+**Task 1, preview ticks. PASS, twice.** First on the real EST-102054 (Tom Bechtel, three optional lines): ticking "Back Patio" moved heroTotal, subTotal and grandTotal together, 4,375.00 -> 11,375.00, exactly the 7,000 line; unticking restored 4,375.00; `btnAccept`, `btnChange` and `btnReject` stayed `disabled` throughout; the banner reads verbatim "PREVIEW · this is exactly what the customer will see. It has not been sent. You can tick options to watch the price move, and the accept, change and decline buttons stay disabled." Nothing was written: the three line rows on 102054 hold the same `selected_by_customer` values they held before the preview. 102054 carries no payment schedule, so the schedule clause was re-run on the test estimate, which does: unticking there moved hero/sub/grand 4,485.00 -> 2,805.00 AND both percent installment rows 2,242.50 -> 1,402.50 in the same tick. Payment-schedule rows recompute.
+
+**Task 2, the token leak. PASS, zero occurrences.** The preview iframe's rendered HTML (39,102 chars for 102054) contains the estimate's `public_token` zero times, in dashed form, undashed form, and by its first eight characters. Three UUID-like strings do appear and all three are the optional lines' own row ids, which the tick checkboxes need. Stronger than the grep: the preview emits ONE script of 2,861 chars and it contains no `fetch(` and no `XMLHttpRequest` at all, so a preview cannot post anywhere even if a handler were reachable.
+
+**Task 3, the live tick and the accept-panel settle. PASS, and the fraction convention is now on the record from production data.** EST-102088, one required line (Main: Standard Flake, 500 sqft, 2,805.00, unit_cost 1,345.83) and one optional (Optional Patio, 300 sqft, 1,680.00, unit_cost 806.79), sent by email only to dnordby50@gmail.com at 05:58:20Z. Opened at /e/a05f666b. The optional line rendered pre-ticked (it was saved `selected_by_customer = true`), so the tick was exercised in BOTH directions on the live page: untick -> the row flipped to false within the debounce window and `estimates.price` stayed 2805.00; re-tick -> back to true, `price` still 2805.00. Then "Accept & sign" was clicked and NOTHING typed or signed.
+
+| field | before the accept panel | after |
+|---|---|---|
+| price | 2805.00 | 4485.00 |
+| gp_dollars | 1459.17 | 2332.38 |
+| gp_pct | 0.5202 | **0.5200** |
+| status / signed_name / accepted_at | sent / null / null | sent / null / null |
+
+`gp_pct` moved to **0.5200, a fraction, not 52.00**, which is the ac02260 correction behaving correctly in production; the staff card renders it "GP 52.0%" and the estimates list "52.0%", so both consumers multiply by 100 as designed. Both GP fields moved together, so the honesty rule's skip path was not exercised and no "gp skipped" line was expected or looked for; every included line on this estimate carried a real unit_cost. Price moved once and only once.
+
+**Task 4, the blank hard-block. PASS on email and text. Present mode is conditional, see below.** With `Flake color: BLANK` in the Optional Patio line description:
+
+- Email: the composer opens, and the gate fires on the send button (this is where `estimateSendGateOk` lives, not on the composer opening; a future verifier should not read the composer opening as a miss). Blocked with `"Optional Patio: Standard Flake" still has a blank in its scope of work: "Flake color: BLANK". Fill it in, then send.` No email sent.
+- Text: blocked with the identical blocker, and `window.confirm` was never reached, so the gate precedes the confirm as written.
+- The line blocker is tappable and does what prompt 76 Part F promised: one tap closed the modal, opened the Optional Patio line's editor sheet inside the inline estimator, and left the description textarea as `document.activeElement`.
+- Present > Open for signing: on the estimate as it stood (already sent), clicking "Open for signing" produced NO blocker and NO confirm, and went straight to live. `sent_at` was then nulled on this test row only, the page reloaded, and the same click blocked with the same BLANK snippet, confirm never reached. `sent_at` was restored afterwards.
+
+Removing the blank and regenerating the scope cleared every blocker: the text channel then passed the gate and reached its confirm, which was declined. Nothing was sent (`pec_sms_log` gained zero rows for the whole session; `pec_email_log` gained exactly one row, the intended task-3 send).
+
+**Task 5, the bell. PASS, both halves.** The two rows written by the task-3 opens read `ZZ Cowork Test P78 viewed estimate #102088 (1st view)` and `(2nd view)`, in both the `estimate_viewed` and `estimate_viewed_rep` shapes, name-first with the ordinal, exactly the Part C format. Older pre-deploy rows are untouched and still read `Customer viewed estimate #102066`; the bell dropdown was opened as staff and shows both wordings side by side, new rows named and the 8/7 row generic. No backfill happened.
+
+**Task 6, cleanup.** Estimate soft-deleted through the dashboard's Archive (deleted_at 06:16:47Z, confirmed by the public link now returning "Estimate not found"). Test customer hard-deleted (customers is back to 94, its pre-test count; `estimates.customer_id` had to be nulled first because that FK is NO ACTION). 2 `pec_estimate_views` rows and 4 `pec_notifications` rows deleted, scoped by the estimate id; the bell shows no test rows. Zero drip enrollments, zero leads, zero SMS rows were created at any point. **Two things deliberately left, both disclosed rather than scrubbed:** the soft-deleted estimate still owns its 2 line items and 2 installment rows (children of a soft-deleted estimate, the same state EST-102034 and EST-102028 sit in), and `pec_email_log` row 1e4f401e-096d-40e3-b91e-5b15a648a2e5 stays, because an email really was sent to a real inbox and deleting the log row would make the audit trail lie.
+
+## Findings for the next Claude Code session
+
+1. **Present mode's gate is inside `if (!est.sent_at)` (index.html openForSigning, ~30283).** On an already-sent estimate, "Open for signing" runs no optional gate, no blank gate and no confirm. There is a defensible reading (the link is already live, so re-opening it is not a send) and a bad one (a rep who edits a sent estimate, leaves a BLANK in, and re-presents on the iPad hits no wall at all, while email and text both stop him). Prompt 78's claim that the blank block covers "every channel" is true per send, not per channel. Decide which it should be; do not silently assume the current shape was intended.
+2. **The settle is not sticky.** After the accept-panel settle wrote 4485.00, a later staff Save from the estimator rewrote `price` back to 2805.00 and `gp_pct` to 0.5202. Expected (the estimator owns price on save) but it is the mirror image of the abandoned-accept-panel consequence already recorded, and anyone reading a pipeline number should know both directions exist.
+3. **Preview's inner panel buttons are not disabled.** Only `btnAccept`, `btnChange` and `btnReject` carry `disabled`. `goAccept` ("Sign & accept for $X"), `goChange` and `goReject` inside the hidden panels do not. They are unreachable because the only openers are the disabled three, and the preview script has no network call of any kind, so this is cosmetic, not a hole. Worth one line of belt-and-braces if that code is touched again.
+4. **Google Places clobbers manual address edits in the New estimate modal.** Selecting a suggestion once, then typing over street/city/state/zip, silently reverts all four to the selected place on the next blur. Reproduced three times; the test estimate went out with "Oscar White Road, Prescott, WV, 25862" attached to a Prescott AZ job. Nothing to do with prompt 78, but it is a live data-entry bug on a customer-facing field.
+5. **A view was logged 21 seconds after the send, from an iPhone user agent, before any human opened the link.** It became "(1st view)" and pushed the human open to "(2nd view)". Either Dylan opened it on his phone that fast or a mail client prefetched the link. If it is the latter, every emailed estimate is getting a phantom first view and the ordinals in the bell are off by one. Worth one look at the user agents on `pec_estimate_views` before trusting the counter.
+6. Two operational notes for whoever automates this next: the send composer's blocker fires on the send button, not on open; and the "Edit line" sheet, the whole estimate editor in fact, lives inside the `iframe.pec-estimator-inline`, so anything driving it has to reach through the frame.
+
+Files touched: PROJECT-LOG.md (this entry).
+
+Next steps: prompts 79 and 80 are committed and unpushed at the time of writing; Dylan approved pushing them, so the deploy and the ten-Settings-pages walkthrough follow in a separate entry.
+
 ## [2026-08-08 MST] Prompt 80 shipped: the Settings shell. Vertical rail + search + responsive dropdown + silent alias redirects. The container changed; not one setting moved.
 
 By: Claude Code
