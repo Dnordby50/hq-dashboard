@@ -1,5 +1,57 @@
 [
   {
+    "id": "post-sign-payment-prompt",
+    "date": "2026-08-10",
+    "title": "Customers are asked how they want to pay the moment they sign",
+    "summary": "Right after a customer signs their estimate, the page now shows their invoice amount and asks how they want to pay: card or bank through Stripe, check, cash, Zelle, or financing. Before, the page only sometimes showed a small deposit link, and a customer could sign and walk away without ever being asked. The prompt shows whatever is currently due, whether that is the deposit, a scheduled installment, or the balance. Choosing check, cash, or Zelle notifies the office automatically so you can watch for it. You can turn the prompt off in Settings.",
+    "howto": [
+      "Nothing to do: every estimate signed from now on shows the payment chooser automatically.",
+      "The customer can also skip it; the invoice link stays right there and you can still send the invoice yourself as before.",
+      "To turn it off, open Settings, go to Invoicing, and flip 'Ask for payment right after signing'."
+    ]
+  },
+  {
+    "id": "numeric-invoice-numbers",
+    "date": "2026-08-10",
+    "title": "Invoice numbers are now numbers only",
+    "summary": "Every invoice now shows a clean all-digit number. New jobs automatically get the next number in a series starting at 10001, and the handful of older invoices that displayed a short code with letters were given real numbers. Invoices that already showed a numeric DripJobs number keep it, so nothing a customer has already seen changes.",
+    "howto": [
+      "Nothing to do: numbers are assigned automatically when a job is created.",
+      "You can still type your own number on a job if you ever need a specific one."
+    ]
+  },
+  {
+    "id": "customer-info-top-bar",
+    "date": "2026-08-10",
+    "title": "Customer info now sits locked at the top of the estimate",
+    "summary": "In the estimator, the customer card no longer lives as a box in the left column. Once the customer's info is entered it collapses into a compact bar across the top of the estimate showing the name, type, phone, email, and address. The bar is locked so nothing gets bumped while you work the estimate; tap it any time to reopen the full card and edit.",
+    "howto": [
+      "Start a new estimate and fill in the customer as usual, then tap Done (or pick an existing customer from search) and the card locks into the top bar.",
+      "Tap the bar whenever you need to change something; tap Done to lock it again.",
+      "Opening an existing estimate shows the bar already locked."
+    ]
+  },
+  {
+    "id": "inline-flake-color",
+    "date": "2026-08-10",
+    "title": "Edit the flake color right from the job, and picking it confirms colors",
+    "summary": "The Colors card on a job's detail page now has a flake color box with the full list of blends to pick from, so you can set or change the color without opening the estimate. It writes to the same place the estimate page does, and saving a color also marks the job's colors confirmed in the same click, since picking the color is the confirmation.",
+    "howto": [
+      "Open the job, find the Colors card on the Details tab, type or pick the flake color, and hit Save color.",
+      "Colors flip to confirmed automatically when you save a color; the Unconfirm button still works if plans change."
+    ]
+  },
+  {
+    "id": "calendar-returns-to-today",
+    "date": "2026-08-10",
+    "title": "The production calendar comes back to this week after scheduling",
+    "summary": "After you schedule or reschedule a job, the calendar now returns to the current week. Before, it jumped to the week of the job's earliest scheduled day, which for a rescheduled job was often its original date from weeks back.",
+    "howto": [
+      "Schedule a job as usual; when the modal closes you land on today's week.",
+      "Use the arrows or the Today button to move around like always."
+    ]
+  },
+  {
     "id": "custom-only-estimate-save",
     "date": "2026-08-10",
     "title": "Estimates made of only custom lines now save, and Save always tells you what is missing",

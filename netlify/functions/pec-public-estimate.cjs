@@ -13,7 +13,10 @@
 //
 // The customer can do exactly THREE things (decision 2): accept and sign
 // (typed name), request changes with a message, or reject with a reason.
-// NO payment on this page (decision 3): the deposit lives in the invoice path.
+// Payment on this page happens ONLY after acceptance (decision 3 amended
+// 2026-08-10): the accepted banner asks how the customer wants to pay (card
+// via Stripe Checkout, check/cash/Zelle intent, or the financing card), all
+// riding the invoice path's existing endpoints. Pre-sign, still no payment.
 //
 // Optional line items are tickable (decision 4); the selection at signature
 // time is frozen onto the estimate (selected_by_customer + the final price).
@@ -33,7 +36,7 @@
 // status), so exactly one request wins the transition.
 
 const { sb, json, randomToken, tokenFromEvent, epoxyStages } = require('./_pec-supabase.cjs');
-const { prepareDepositInstallment, resolveCurrentAsk } = require('./_pec-installments.cjs');
+const { prepareDepositInstallment, resolveCurrentAsk, round2 } = require('./_pec-installments.cjs');
 // Estimate-side payment schedule (prompt 74): the same math module the
 // estimator's schedule card runs, so the customer render, the accept-time
 // freeze, and the rep's card can never disagree about a dollar.
@@ -296,19 +299,69 @@ function optionalCardsHtml(items, readOnly, areaById) {
         </div>`;
 }
 
+// The post-sign payment chooser (Dylan, 2026-08-10): signing flows straight
+// into "how would you like to pay". Card/bank goes to Stripe Checkout with
+// the amount resolved server-side at click time; check/cash/Zelle reuse the
+// invoice page's /api/invoice/intent contract (job token) so the office is
+// notified identically; Financing jumps to the Ways-to-pay card lower on
+// this same page. Skipping is always allowed: the invoice link is right
+// there and staff send it normally. Never an auto-redirect.
+function acceptedPayChooserHtml(payCta, b, financingOffered) {
+  const zelle = b.zelle_email || 'dylan@prescottepoxy.com';
+  const phone = b.phone || '(928) 800-8154';
+  const biz = b.business_name || 'Prescott Epoxy Company';
+  const tok = encodeURIComponent(String(payCta.token || ''));
+  const kindParam = payCta.kind === 'deposit' ? 'deposit' : (payCta.kind === 'balance' ? 'balance' : 'installment');
+  const what = (payCta.isDeposit ? usd(payCta.amount) + ' deposit' : usd(payCta.amount) + ' payment');
+  return `
+      <div class="noprint" style="margin-top:14px;background:#fff;border:1px solid #d1e7d8;border-radius:12px;padding:16px 18px;color:#1f2937">
+        <div style="font-weight:800;font-size:16px">Your invoice is ready. How would you like to pay your ${esc(what)}?</div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px">
+          <a class="btn accent" href="/api/stripe/checkout?token=${tok}&kind=${kindParam}">Pay by card or bank</a>
+          <button type="button" class="btn ink" id="estOfflineToggle">Check, cash, or Zelle</button>
+          ${financingOffered ? '<a class="btn ink" href="#financingCard">Financing</a>' : ''}
+        </div>
+        <div style="margin-top:10px;font-size:13px;color:#6b7280">Card or bank transfer (ACH), no card fees, secured by Stripe. Prefer to decide later? <a href="${esc(payCta.url)}" style="color:inherit">View your invoice</a> any time.</div>
+        <div id="estOfflinePanel" style="display:none;margin-top:14px;border-top:1px solid #eef0f3;padding-top:14px">
+          <p style="margin:0 0 10px;font-size:14px;line-height:1.6">Pay by check (give it to the crew or mail it), cash in person, or send Zelle to <strong>${esc(zelle)}</strong>. Questions? Call ${esc(biz)} at <strong>${esc(phone)}</strong>.</p>
+          <div style="font-size:13px;color:#6b7280">Let our office know how you plan to pay so we can watch for it:</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">
+            <button type="button" data-est-intent="check" class="btn ink" style="padding:9px 14px;font-size:13px">Paying by check</button><button type="button" data-est-intent="cash" class="btn ink" style="padding:9px 14px;font-size:13px">Paying cash</button><button type="button" data-est-intent="zelle" class="btn ink" style="padding:9px 14px;font-size:13px">Sending Zelle</button>
+          </div>
+          <div id="estIntentStatus" style="margin-top:12px;font-size:13px;font-weight:600"></div>
+        </div>
+        <script>
+          (function(){
+            var t=${JSON.stringify(String(payCta.token || ''))}, ph=${JSON.stringify(phone)};
+            var tog=document.getElementById('estOfflineToggle'), panel=document.getElementById('estOfflinePanel');
+            if(tog&&panel){tog.addEventListener('click',function(){panel.style.display=panel.style.display==='none'?'block':'none';});}
+            var status=document.getElementById('estIntentStatus');
+            Array.prototype.forEach.call(document.querySelectorAll('[data-est-intent]'),function(btn){
+              btn.addEventListener('click',function(){
+                var m=btn.getAttribute('data-est-intent');
+                Array.prototype.forEach.call(document.querySelectorAll('[data-est-intent]'),function(x){x.disabled=true;});
+                if(status){status.style.color='#6b7280';status.textContent='Letting the office know…';}
+                fetch('/api/invoice/intent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t,method:m})})
+                  .then(function(r){return r.json();}).then(function(d){
+                    if(d&&d.ok){if(status){status.style.color='#16a34a';status.textContent='Thanks! Our office has been notified and will be in touch.';}}
+                    else{throw new Error('failed');}
+                  }).catch(function(){
+                    if(status){status.style.color='#dc2626';status.textContent='Could not reach the office automatically. Please call '+ph+'.';}
+                    Array.prototype.forEach.call(document.querySelectorAll('[data-est-intent]'),function(x){x.disabled=false;});
+                  });
+              });
+            });
+          })();
+        </script>
+      </div>`;
+}
+
 // Status banner + whether the action buttons render. accepted / rejected /
-// lost are terminal: a signed document must not be re-signable.
-function stateForStatus(est, payCta) {
+// lost are terminal: a signed document must not be re-signable. `ui` carries
+// the brand row + whether the financing card renders, for the pay chooser.
+function stateForStatus(est, payCta, ui) {
   if (est.status === 'accepted') {
-    // Prompt 74 Part E: right after signing, offer the deposit payment. The
-    // link is the EXISTING pay page (/pay/<job token>); the amount there is
-    // resolved server-side by resolveCurrentAsk at click time, card and ACH,
-    // no surcharge, exactly like every other payment. A plain link, never an
-    // auto-redirect, and skipping is fine (the deposit stays planned and
-    // staff send it normally). Absent when the accept created no deposit row.
-    const payHtml = payCta
-      ? `<div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><a class="btn accent noprint" href="${esc(payCta.url)}">Pay your ${usd(payCta.amount)} deposit now</a><span style="font-size:13px;color:#14532d">Card or bank transfer (ACH), no card fees. Prefer to wait? We will send your invoice.</span></div>`
-      : '';
+    const payHtml = payCta ? acceptedPayChooserHtml(payCta, (ui && ui.brand) || {}, !!(ui && ui.financingOffered)) : '';
     return {
       live: false,
       banner: `<div class="banner ok"><strong>Accepted and signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}</strong>${est.signed_at ? ' on ' + esc(fmtStamp(est.signed_at)) : ''}. We will be in touch to schedule your project. You can print or save this page for your records.${payHtml}</div>`,
@@ -363,7 +416,14 @@ function estimatePage(est, brand, opts) {
   const logoUrl = b.logo_url || LOGO_URL;
   const primary = esc(b.primary_color);
   const accent = esc(b.accent_color);
-  const state = stateForStatus(est, opts && opts.acceptedPay);
+  // Does the financing card render lower on this page? Computed up front
+  // (financingBlockHtml is pure and cheap) so the accepted banner's pay
+  // chooser knows whether its Financing link has a #financingCard to jump to.
+  // Accepted pages price from est.price, matching the `total` math below.
+  const acceptedTotal = Number(est.price || includedTotal(Array.isArray(est.line_items) ? est.line_items : []));
+  const financingOffered = est.status === 'accepted'
+    && financingBlockHtml(opts && opts.financing, acceptedTotal, { accent: b.accent_color }) !== '';
+  const state = stateForStatus(est, opts && opts.acceptedPay, { brand: b, financingOffered });
   const who = customerDisplay(est);
   // Area lookup for the per-line sqft subtitles (prompt 74 A2).
   const areaById = new Map((Array.isArray(opts && opts.areas) ? opts.areas : []).map(a => [a.id, a]));
@@ -464,7 +524,7 @@ function estimatePage(est, brand, opts) {
 
       <div id="panelAccept" class="panel" style="display:none">
         <div style="font-weight:700;margin-bottom:6px">Accept this estimate</div>
-        <div style="font-size:13.5px;color:#6b7280;line-height:1.6;margin-bottom:12px">By typing your name and signing, you accept this estimate for the total shown above, which reflects the items you have selected. We will contact you to schedule the work and arrange the deposit.</div>
+        <div style="font-size:13.5px;color:#6b7280;line-height:1.6;margin-bottom:12px">By typing your name and signing, you accept this estimate for the total shown above, which reflects the items you have selected. Right after signing you can pay your deposit online, or choose check, cash, Zelle, or financing. We will contact you to schedule the work.</div>
         <label class="lbl">Type your full name as your signature</label>
         <input id="sigName" autocomplete="name" placeholder="Full name" maxlength="120">
         <div id="sigPreview" style="font-family:'Snell Roundhand','Segoe Script',cursive;font-size:26px;min-height:34px;margin-top:8px;border-bottom:1.5px solid #94a3b8;max-width:360px;padding:2px 6px"></div>
@@ -841,27 +901,56 @@ async function loadInstallments(estimateId) {
   } catch (_) { return []; }
 }
 
-// Part E: the deposit CTA on the accepted page. Non-null only when the accept
-// created a deposit installment that is still the CURRENT ask (resolved by
-// the same resolveCurrentAsk the pay page and Stripe checkout use, so the
-// button disappears by itself once the deposit is paid or waived).
+// Settings kill switch for the post-sign chooser. Missing key = enabled, so
+// the prompt works before anyone has ever touched Settings.
+async function paymentPromptDisabled() {
+  try {
+    const rows = await sb('GET', `/settings?key=eq.post_sign_payment_prompt_enabled&select=value&limit=1`);
+    return !!(Array.isArray(rows) && rows[0]) && String(rows[0].value) === 'false';
+  } catch (_) { return false; }
+}
+
+// Part E, widened 2026-08-10: the accepted page now asks HOW the customer
+// wants to pay, so this must be non-null whenever ANYTHING is currently due,
+// not only when the deposit installment is the current ask (the old deposit-
+// only gate is why a signer could walk away unprompted). Resolution still
+// runs through the same resolveCurrentAsk the pay page and Stripe checkout
+// use; with no schedule rows it falls back to the invoice page's legacy rule
+// (deposit still due, else the remaining balance).
 async function loadAcceptedPay(est) {
   try {
     if (est.status !== 'accepted' || !est.job_id) return null;
     const jr = await sb('GET', `/jobs?id=eq.${encodeURIComponent(est.job_id)}&select=id,price,status,public_token,deposit_amount,deposit_collected,deposit_waived,voided_at,archived_at&limit=1`);
     const job = Array.isArray(jr) && jr[0] ? jr[0] : null;
     if (!job || !job.public_token || job.voided_at || job.archived_at) return null;
+    if (await paymentPromptDisabled()) return null;
     const [inst, pays] = await Promise.all([
       sb('GET', `/pec_invoice_installments?job_id=eq.${encodeURIComponent(job.id)}&select=*`),
       sb('GET', `/pec_payments?job_id=eq.${encodeURIComponent(job.id)}&select=amount`),
     ]);
     const installments = Array.isArray(inst) ? inst : [];
-    if (!installments.some(i => i && i.is_deposit)) return null; // no deposit row = no button
-    const ask = resolveCurrentAsk({ job, installments, payments: Array.isArray(pays) ? pays : [] });
-    if (!ask || ask.mode !== 'installment' || !ask.isDeposit || !(ask.amount > 0)) return null;
-    return { url: `/pay/${job.public_token}`, amount: ask.amount };
+    const payments = Array.isArray(pays) ? pays : [];
+    const ask = resolveCurrentAsk({ job, installments, payments });
+    let amount = 0, isDeposit = false, kind = 'installment';
+    if (ask) {
+      // kind=installment covers mode 'balance' too: the checkout's
+      // computeInstallmentCharge resolves both from the same ask.
+      if ((ask.mode !== 'installment' && ask.mode !== 'balance') || !(ask.amount > 0)) return null;
+      amount = ask.amount; isDeposit = !!ask.isDeposit;
+    } else {
+      // No schedule rows: legacy invoice math (mirrors the pay page's
+      // payButtons deposit/balance rule).
+      const paid = round2(payments.reduce((s, p) => s + (Number(p.amount) || 0), 0));
+      const balance = round2(Number(job.price) - paid);
+      if (!(balance > 0.005)) return null;
+      const depositDue = !job.deposit_collected && !job.deposit_waived;
+      const owed = job.deposit_amount != null ? round2(job.deposit_amount) : round2(Number(job.price) * 0.5);
+      if (depositDue && owed >= 0.5 && owed < balance - 0.005) { amount = owed; isDeposit = true; kind = 'deposit'; }
+      else { amount = balance; kind = 'balance'; }
+    }
+    return { token: job.public_token, url: `/pay/${job.public_token}`, amount, isDeposit, kind };
   } catch (err) {
-    console.warn('public-estimate: deposit CTA skipped:', err.message);
+    console.warn('public-estimate: payment prompt skipped:', err.message);
     return null;
   }
 }

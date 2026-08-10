@@ -450,7 +450,7 @@ RLS: enabled · rows: 86
 | salesperson | text | yes |  |
 | bill_to_address | text | yes |  |
 | line_items | jsonb | yes |  |
-| hq_invoice_number | text | yes |  |
+| hq_invoice_number | text | yes | nextval('pec_invoice_number_seq')::text |
 | voided_at | timestamptz | yes |  |
 | deposit_waived | boolean | no | false |
 | colors_confirmed | boolean | no | false |

@@ -15285,7 +15285,7 @@ async function renderJobDetailInner(id) {
   // Same warm-up for the PDF's financing lines (prompt 58 Part F).
   fetchFinancingSettings().catch(() => {});
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading job…</div>';
-  const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes, salesRes] = await withFreshSession(() => Promise.all([
+  const [jobRes, sysRes, areasRes, prodRes, slotRes, settingsRes, salesRes, estFlakeRes, flakeColorsRes] = await withFreshSession(() => Promise.all([
     supabase.from('jobs')
       .select('*,customers(id,name,first_name,last_name,company_name,email,phone,company,token),photos(*)')
       .eq('id', id).single(),
@@ -15297,6 +15297,11 @@ async function renderJobDetailInner(id) {
     // Sales team for the admin Salesperson editor (prompt 55 Part B). Cached:
     // the table is tiny and salesTeamSelectHtml reads state.salesTeam.
     cachedRef('salesTeam', () => supabase.from('pec_sales_team_members').select('*').order('name')),
+    // Latest linked estimate's flake color, for the inline editor on the
+    // Colors card (edit the color without opening the estimate). Best-effort:
+    // a miss just hides the editor.
+    supabase.from('estimates').select('id,flake_color').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
+    cachedRef('flakeColors', () => supabase.from('colors').select('*').eq('category', 'flake-blend').order('name')),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
     console.warn('[pec] job fetch failed; clearing openJobId:', jobRes.error.message);
@@ -15305,6 +15310,10 @@ async function renderJobDetailInner(id) {
     return;
   }
   const job = jobRes.data;
+  // Inline flake-color editor data (Colors card). flakeEst is the job's most
+  // recent non-deleted estimate; no estimate -> no editor.
+  const flakeEst = (!estFlakeRes.error && Array.isArray(estFlakeRes.data) && estFlakeRes.data[0]) || null;
+  const flakeBlends = ((!flakeColorsRes.error && flakeColorsRes.data) || []).filter(c => c.active !== false);
   // Real schedule state. The truth lives on the linked pec_prod_jobs row + its
   // pec_prod_job_schedule_days (matched by dripjobs_deal_id); a job counts as
   // scheduled if it has an install_date OR any schedule-day rows -- the same
@@ -15590,6 +15599,15 @@ async function renderJobDetailInner(id) {
         </div>
         <button class="pec-btn ${job.colors_confirmed ? 'ghost' : 'primary'} sm" id="jobColorsToggle">${job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed'}</button>
       </div>
+      ${flakeEst ? `
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:10px">
+        <div class="pec-field" style="margin:0;max-width:240px">
+          <label>Flake color</label>
+          <input id="jobFlakeColor" list="jobFlakeBlends" value="${esc(flakeEst.flake_color || '')}" placeholder="Not picked yet">
+          <datalist id="jobFlakeBlends">${flakeBlends.map(c => `<option value="${esc(c.name)}"></option>`).join('')}</datalist>
+        </div>
+        <button class="pec-btn sm" id="jobFlakeSave">Save color</button>
+      </div>` : ''}
     </div>
 
     <div id="jobAreas"></div>
@@ -16682,6 +16700,33 @@ async function renderJobDetailInner(id) {
       console.error('[pec] colors_confirmed toggle failed', err);
       colorsToggle.disabled = false; colorsToggle.textContent = job.colors_confirmed ? 'Unconfirm' : 'Mark colors confirmed';
       alert(isSessionStale(err) ? 'The session briefly stalled — tap the button again.' : 'Could not update: ' + (err.message || err));
+    }
+  });
+
+  // Inline flake-color save (Colors card). Writes the SAME estimates.flake_color
+  // the estimate page edits, so both surfaces stay one field. Pairing rule
+  // (Dylan, 2026-08-10): picking a color IS the confirmation, so saving a
+  // non-empty color also marks colors confirmed in the same click. Uses the
+  // lightweight immediate-write pattern above, never the big Save.
+  const flakeSaveBtn = $('jobFlakeSave');
+  if (flakeSaveBtn && flakeEst) flakeSaveBtn.addEventListener('click', async () => {
+    const val = ($('jobFlakeColor').value || '').trim() || null;
+    flakeSaveBtn.disabled = true; flakeSaveBtn.textContent = 'Saving…';
+    try {
+      const upd = await withFreshWriteRetry(() => supabase.from('estimates').update({ flake_color: val }).eq('id', flakeEst.id), { label: 'job-flake-color' });
+      if (upd.error) throw upd.error;
+      const confirmNow = !!val && !job.colors_confirmed;
+      if (confirmNow) {
+        const cu = await withFreshWriteRetry(() => supabase.from('jobs').update({ colors_confirmed: true, colors_confirmed_at: new Date().toISOString() }).eq('id', id), { label: 'colors-confirmed' });
+        if (cu.error) throw cu.error;
+      }
+      try { await logJobActivity(id, 'save', { flake_color: flakeEst.flake_color || null, colors_confirmed: job.colors_confirmed }, { flake_color: val, colors_confirmed: job.colors_confirmed || confirmNow }); } catch (_) {}
+      showToast(val ? ('Flake color saved' + (confirmNow ? ' · colors confirmed ✓' : '')) : 'Flake color cleared', { ttl: 3000 });
+      renderJobDetail(id);
+    } catch (err) {
+      console.error('[pec] flake color save failed', err);
+      flakeSaveBtn.disabled = false; flakeSaveBtn.textContent = 'Save color';
+      alert(isSessionStale(err) ? 'The session briefly stalled — tap the button again.' : 'Could not save: ' + (err.message || err));
     }
   });
 
@@ -20258,13 +20303,14 @@ function openApptRuleModal(rule, onDone) {
 async function renderSettingsInvoicing() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled']),
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'post_sign_payment_prompt_enabled']),
     { label: 'settings-invoicing' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
   const schedOn = map.payment_schedules_enabled !== 'false';
   const gateOn = map.installment_approval_required !== 'false';
   const estSchedOn = map.estimate_schedule_enabled !== 'false';
+  const payPromptOn = map.post_sign_payment_prompt_enabled !== 'false';
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-invoicing-save' });
@@ -20291,6 +20337,17 @@ async function renderSettingsInvoicing() {
             : 'The estimator hides the Payment schedule card; accepted estimates get the standard auto-prepared deposit, exactly as before. Existing signed schedules are untouched.'}</div>
         </div>
         <button type="button" class="pec-btn sm ${estSchedOn ? '' : 'primary'}" id="setEstSchedOn">${estSchedOn ? 'Turn estimate schedules OFF' : 'Turn estimate schedules ON'}</button>
+      </div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700">Ask for payment right after signing: ${payPromptOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${payPromptOn
+            ? 'The moment a customer signs their estimate, the page asks how they want to pay whatever is due (card/bank via Stripe, check, cash, Zelle, or financing). Turn this off to go back to the quiet accepted banner; staff send the invoice by hand.'
+            : 'The accepted page shows only the thank-you banner. Staff send the invoice by hand. Turn this on to ask the customer how they want to pay immediately after signing.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${payPromptOn ? '' : 'primary'}" id="setPayPromptOn">${payPromptOn ? 'Turn the prompt OFF' : 'Turn the prompt ON'}</button>
       </div>
     </div>
     <div class="pec-card">
@@ -20330,6 +20387,12 @@ async function renderSettingsInvoicing() {
     const to = schedOn ? 'false' : 'true';
     const btn = $('setSchedOn'); btn.disabled = true;
     try { await saveSetting('payment_schedules_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  $('setPayPromptOn').addEventListener('click', async () => {
+    const to = payPromptOn ? 'false' : 'true';
+    const btn = $('setPayPromptOn'); btn.disabled = true;
+    try { await saveSetting('post_sign_payment_prompt_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
     renderSettings();
   });
   $('setEstSchedOn').addEventListener('click', async () => {
@@ -33562,9 +33625,10 @@ function openScheduleModal(jobId) {
         }
         closeModal();
         scheduleSaveToast(job, firstSavedIso, { undoSnapshot });
-        // Pin the calendar to the week containing the first scheduled day so
-        // the user sees the new pill without scrolling.
-        if (firstSavedIso) state.scheduleAnchor = firstSavedIso;
+        // Return to TODAY's week, not the job's first scheduled day: for a
+        // returning/rescheduled job that day is the ORIGINAL date, which
+        // yanked the calendar back weeks (Dylan, 2026-08-10).
+        state.scheduleAnchor = isoDate(new Date());
         renderSchedule();
       });
       const clearBtn = modal.querySelector('#schedClear');
@@ -34334,7 +34398,9 @@ function openAddJobModal() {
 
           closeModal();
           showToast(`${draft.existing_job_id ? 'Rescheduled' : 'Added'} job for ${esc(draft.customer_name)}. ${sortedIso.length} day${sortedIso.length===1?'':'s'} scheduled.`);
-          state.scheduleAnchor = sortedIso[0];
+          // Same rule as the schedule modal: land on TODAY's week after
+          // saving, never the earliest selected day (old date for reschedules).
+          state.scheduleAnchor = isoDate(new Date());
           await renderSchedule();
         } catch (err) {
           // Every write above is now bounded (withDeadline/withFreshWrite), so a

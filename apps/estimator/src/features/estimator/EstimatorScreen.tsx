@@ -26,7 +26,7 @@ import {
   type LineItemInput,
 } from '../../offline/estimates';
 import type { LeadLink } from '../../lib/lead';
-import { emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/customer';
+import { composeCustomerAddress, composeCustomerName, emptyCustomer, splitLegacyName, type CustomerForm } from '../../lib/customer';
 import AddressAutocomplete from './AddressAutocomplete';
 import BottomSheet from './BottomSheet';
 import type { LoadedEstimate } from '../../lib/estimateLoad';
@@ -197,6 +197,11 @@ function intakeFromLoaded(raw: Record<string, unknown>): Intake {
   };
 }
 
+// ONE completeness rule shared by the save gate and the customer lock: a
+// commercial estimate needs its company, a residential one a last name.
+// Deliberately nothing else; the address is never a gate.
+const customerComplete = (c: CustomerForm) => (c.isCommercial ? c.company.trim() !== '' : c.lastName.trim() !== '');
+
 export default function EstimatorScreen({
   catalog,
   createdBy,
@@ -302,6 +307,12 @@ export default function EstimatorScreen({
       zip: leadLink.zip ?? '',
     };
   });
+  // Customer lock (Dylan's ask): once the info is inputted the card collapses
+  // into a summary bar at the top of the estimate; clicking the bar reopens
+  // it. Starts locked only when the seed already carries a savable identity
+  // (editing an estimate, or a lead deep link with a name); a fresh estimate
+  // opens with the fields ready to type into.
+  const [custLocked, setCustLocked] = useState<boolean>(() => customerComplete(customer));
   // Duplicate-customer search (prompt 44): find an existing customer/lead and
   // link the estimate to it instead of creating a fresh unlinked record.
   // linkedLead overrides the URL leadLink at save time (the rep deliberately
@@ -338,6 +349,9 @@ export default function EstimatorScreen({
     setCustSearch('');
     setCustMatches([]);
     setCustSearchOpen(false);
+    // Picking a match IS "info inputted", so the card locks right away when
+    // the record carries a savable identity. Plain typing never auto-locks.
+    if (customerComplete(m.form)) setCustLocked(true);
     if (m.kind === 'lead') {
       setLinkedLead({ id: m.id, name: m.name });
       setLinkNote(null);
@@ -1697,10 +1711,13 @@ export default function EstimatorScreen({
   // total by more than the threshold, no matter how the rep got there (a
   // per-line edit, the job discount, or both). Small trims pass silently.
   const overrideNeedsReason = reasonRequired && !overrideReason.trim();
-  // Identity gate (build 23): a commercial estimate needs its company, a
-  // residential one a last name. Deliberately nothing else; the address is
-  // never a gate (a rep standing in the driveway knows where they are).
-  const customerIncomplete = customer.isCommercial ? !customer.company.trim() : !customer.lastName.trim();
+  // Identity gate (build 23): the rule itself lives in customerComplete at
+  // module scope, shared with the customer lock.
+  const customerIncomplete = !customerComplete(customer);
+  // Locked-bar content: composed name plus whatever contact parts exist,
+  // joined so empty fields drop out instead of leaving stray separators.
+  const custSummaryName = composeCustomerName(customer);
+  const custSummarySub = [customer.phone.trim(), customer.email.trim(), composeCustomerAddress(customer) ?? ''].filter(Boolean).join(' · ');
   // Prompt 58 Part E: soft warning only. Moisture and MOHS hardness are the
   // two site readings the crew work order really needs; an empty one warns
   // here and on the job page but never blocks save, send, or accept. The
@@ -2689,43 +2706,40 @@ export default function EstimatorScreen({
         </div>
       )}
 
-      <main className="cols">
-        <div className="left">
-          {/* MOHS + moisture banner (prompt 62 Part H): loud, never a block.
-              Dylan wrote "required for every quote" but chose warning-only
-              and confirmed it on a second pass, so this is an unmissable red
-              banner (here AND on the estimate detail page), not a gate. It
-              replaces the old quiet woMissingFields line. */}
-          {woMissingFields.length > 0 && (
-            <div className="wo-banner" role="alert">
-              {woMissingFields.join(' and ')} {woMissingFields.length === 1 ? 'is' : 'are'} blank. The crew work order will print {woMissingFields.length === 1 ? 'it' : 'them'} blank. Fill {woMissingFields.length === 1 ? 'it' : 'them'} in under Work order below. Saving and sending still work.
-            </div>
-          )}
-          {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
-              system type: Custom turns the whole estimate into typed scope +
-              typed price for one-off work. Non-destructive: hidden area and
-              answer state survives a toggle round-trip. */}
-          <section className="card inputs">
-            <div className="areas-head">
-              <span>Estimate type</span>
-              <div className="cust-type" role="group" aria-label="Estimate type">
-                <button type="button" className={isCustom ? '' : 'on'} onClick={() => setIsCustom(false)}>Standard</button>
-                <button type="button" className={isCustom ? 'on' : ''} onClick={() => setIsCustom(true)}>Custom</button>
-              </div>
-            </div>
-            {isCustom && (
-              <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
-            )}
+      {/* Customer header (Dylan's ask): full width above the two columns.
+          Once the info is inputted the card locks into a compact summary bar;
+          the WHOLE bar is a button that reopens the editable card. */}
+      <div className="cust-top">
+        {custLocked ? (
+          <section
+            className="card cust-summary"
+            role="button"
+            tabIndex={0}
+            aria-label="Customer info, click to edit"
+            onClick={() => setCustLocked(false)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCustLocked(false); } }}
+          >
+            {custSummaryName
+              ? <strong className="cust-summary-name">{custSummaryName}</strong>
+              : <strong className="cust-summary-name cust-summary-empty">Add customer info</strong>}
+            <span className="cust-tag">{customer.isCommercial ? 'Commercial' : 'Residential'}</span>
+            {custSummarySub && <span className="cust-summary-sub">{custSummarySub}</span>}
+            <span className="cust-summary-edit" aria-hidden="true">✎ Edit</span>
           </section>
-
-          <section className="card inputs">
+        ) : (
+          <section className="card inputs cust-full">
             <div className="areas-head">
               <span>Customer</span>
-              {/* Residential = first + last name; Commercial = company
-                  (required) + optional contact person. One fact, two views. */}
-              <div className="cust-type" role="group" aria-label="Customer type">
-                <button type="button" className={customer.isCommercial ? '' : 'on'} onClick={() => setCommercial(false)}>Residential</button>
-                <button type="button" className={customer.isCommercial ? 'on' : ''} onClick={() => setCommercial(true)}>Commercial</button>
+              <div className="cust-head-actions">
+                {/* Residential = first + last name; Commercial = company
+                    (required) + optional contact person. One fact, two views. */}
+                <div className="cust-type" role="group" aria-label="Customer type">
+                  <button type="button" className={customer.isCommercial ? '' : 'on'} onClick={() => setCommercial(false)}>Residential</button>
+                  <button type="button" className={customer.isCommercial ? 'on' : ''} onClick={() => setCommercial(true)}>Commercial</button>
+                </div>
+                {/* Done collapses back to the summary even with fields still
+                    missing; the save gate elsewhere names what is absent. */}
+                <button type="button" className="link" onClick={() => setCustLocked(true)}>Done</button>
               </div>
             </div>
             {custSearchEnabled && (
@@ -2814,7 +2828,41 @@ export default function EstimatorScreen({
               </div>
             </div>
           </section>
+        )}
+      </div>
 
+      <main className="cols">
+        <div className="left">
+          {/* MOHS + moisture banner (prompt 62 Part H): loud, never a block.
+              Dylan wrote "required for every quote" but chose warning-only
+              and confirmed it on a second pass, so this is an unmissable red
+              banner (here AND on the estimate detail page), not a gate. It
+              replaces the old quiet woMissingFields line. */}
+          {woMissingFields.length > 0 && (
+            <div className="wo-banner" role="alert">
+              {woMissingFields.join(' and ')} {woMissingFields.length === 1 ? 'is' : 'are'} blank. The crew work order will print {woMissingFields.length === 1 ? 'it' : 'them'} blank. Fill {woMissingFields.length === 1 ? 'it' : 'them'} in under Work order below. Saving and sending still work.
+            </div>
+          )}
+          {/* Standard / Custom is an ESTIMATE-level switch (build 24), not a
+              system type: Custom turns the whole estimate into typed scope +
+              typed price for one-off work. Non-destructive: hidden area and
+              answer state survives a toggle round-trip. */}
+          <section className="card inputs">
+            <div className="areas-head">
+              <span>Estimate type</span>
+              <div className="cust-type" role="group" aria-label="Estimate type">
+                <button type="button" className={isCustom ? '' : 'on'} onClick={() => setIsCustom(false)}>Standard</button>
+                <button type="button" className={isCustom ? 'on' : ''} onClick={() => setIsCustom(true)}>Custom</button>
+              </div>
+            </div>
+            {isCustom && (
+              <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
+            )}
+          </section>
+
+          {/* The Customer card moved to the full-width header above these
+              columns (Dylan's ask); the left column now starts with Estimate
+              type then Salesperson. */}
           <section className="card inputs">
             <label className="field">
               <span>Salesperson</span>

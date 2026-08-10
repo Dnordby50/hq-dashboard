@@ -302,6 +302,26 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
 }
 .cust-type button.on { background: var(--accent); color: #fff; }
 
+/* Customer header (Dylan's ask): the card sits full width above the two
+   columns on the same 60rem rail. .cols brings its own top padding, so this
+   wrapper only pads the sides and top. */
+.cust-top { width: 100%; max-width: 60rem; margin: 0 auto; padding: 1rem 1rem 0; }
+/* Locked: a compact one-line summary. The whole bar is the button; the
+   pencil hint on the right is what says "tap to edit". */
+.cust-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.75rem; padding: 0.7rem 1rem; cursor: pointer; }
+.cust-summary:hover { border-color: var(--accent); }
+.cust-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cust-summary-name { font-size: 1rem; }
+.cust-summary-empty { color: var(--muted); }
+.cust-summary-sub { color: var(--muted); font-size: 0.85rem; min-width: 0; overflow-wrap: anywhere; }
+.cust-summary-edit { margin-left: auto; color: var(--accent); font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+.cust-tag { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.5rem; }
+/* Unlocked: the pill toggle and Done share the head's right side. */
+.cust-head-actions { display: flex; align-items: center; gap: 0.75rem; }
+/* The card is full width now, so the short fields sit four across; the wide
+   spans (company, addresses) and the city/state/zip row are unchanged. */
+@media (min-width: 760px) { .cust-full .cust-grid { grid-template-columns: repeat(4, 1fr); } }
+
 /* Custom estimate mode (build 24): the Standard/Custom switch reuses
    .cust-type. The typed scope box fills its card; the head's Polish/Undo
    actions sit together on the right. */
@@ -565,3 +585,4 @@ textarea { font-size: 1rem; padding: 0.6rem 0.7rem; border: 1px solid var(--line
   margin-left: 0;
 }
 .screen.embed .cols { padding: 0.25rem 0 0.5rem; max-width: none; }
+.screen.embed .cust-top { padding: 0.25rem 0 0; max-width: none; }
