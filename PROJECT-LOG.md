@@ -1,3 +1,31 @@
+## [2026-08-10 MST] Cowork: prompt 84 written. Tom Bechtel's "sent" estimate was clobbered back to draft by the estimator; Jason Magimel's blank estimate was emailed and texted to a real customer.
+
+By: Cowork
+
+Changed: repaired one `estimates` row in the live database (EST-102054), added claude-code-prompt-84-estimate-sent-state.md at the repo root, plus this entry. No code, no migration, no schema change.
+
+**Dylan's two reports.** (1) "Tom Bechtel's estimate was sent, but it still says it's in drafts. Need to make sure that once it's sent, it auto-goes to sent." (2) "Jason says sent, but there was never a proposal created and sent." Both were diagnosed against the live Supabase project (zdfpzmmrgotynrwkeakd) before the prompt was written; neither is what it looks like from the UI.
+
+**Report 1: the estimator overwrites `status` with a stale snapshot.** EST-102054 (id 6b328cec-2089-4d0a-b134-beb4263ea296) read `status='draft'`, `sent_at='2026-08-08 13:00:02.748+00'`, `client_updated_at='2026-08-08 13:04:45.094+00'`. It was sent at 13:00 and re-saved from the estimator four minutes later, and the re-save wrote 'draft' back over 'sent'. `sent_at` survived because the estimator never writes that column, which makes the mismatch a reliable fingerprint for this bug. Mechanism: EstimatorScreen.tsx ~2412 passes `status: editing?.status ?? 'draft'` into saveEstimateOffline, `editing` being the snapshot captured when the screen opened (estimateLoad.ts ~256), and offline/estimates.ts ~209 puts that value into the upsert row on EVERY save. The estimator has no business owning `status` at all: markEstimateSent (index.html:30484) is the single sent-state flip for all three channels. Worse than a plain race, the write also rides the offline FIFO outbox, so a save queued in a driveway before a send can land after it. The pipeline already compensates (index.html:28082 `estColOf` treats draft+sent_at as sent), which is exactly why the card looked right in one place and wrong in every other surface Dylan looked at.
+
+**Report 1 repair, executed.** `UPDATE estimates SET status='sent' WHERE deleted_at IS NULL AND status='draft' AND sent_at IS NOT NULL` returned exactly ONE row: EST-102054, Tom Bechtel, now status='sent', sent_at unchanged at 2026-08-08 13:00:02.748+00. Count of draft-with-sent_at rows before: 1. After: 0. No other row in the table had the fingerprint.
+
+**Report 2: an empty estimate was sent to a real customer.** EST-102075 (id b08e261c-1e4c-4920-9506-96813a731bbd, Jason Magimel, lead 09582540-1336-44fd-9024-a116c4066ce0) reads `status='sent'`, `sent_at='2026-08-10 17:03:49.903+00'` (10:03 AM MST today), `price=NULL`, ZERO `estimate_areas` rows and ZERO `estimate_line_items` rows. It is the prompt-47 pre-minted draft card for an estimate started 2026-08-06 and never built. pec_email_log carries a delivered email at 10:03:49 ("Your estimate EST-102075 from Prescott Epoxy Company") and pec_sms_log carries a sent text at 10:03:52, both to the customer, both with the live /e/ link. So Dylan's read is right in substance (no proposal was ever created) and the system sent it anyway. Root cause: estimateSendGateOk (index.html:30071) derives every blocker from a `for (const li of items)` loop, so zero line items produces zero blockers and the gate passes. estimateOptionalGateOk (index.html:30021) has the same hole, and production/optional-lines.cjs sendGateError says it in a comment: "no lines at all is a different problem, not this gate". It was right; nobody built the other problem's check. lead_events shows the lead advanced estimate_scheduled -> estimate_sent off that send, so the drip handoff and the conversion metrics both counted it.
+
+**One thing worth naming for the record.** The hollow shell exists because a rep started an estimate and could not finish it, which is the exact failure prompt 82 just fixed (no Save button on a custom-line-only estimate). The send gate is still the right fix, but the volume of hollow shells should drop once prompt 82 deploys.
+
+**Decisions locked with Dylan (12 multiple-choice questions across three rounds, all answered).** (1) Fix the estimator AND add a DB trigger, because code alone cannot stop an already-queued outbox row from replaying stale status. (2) Editing a sent estimate keeps it sent and shows an "edited after send" notice with a re-send affordance; no silent mutation, no block, no revert to draft. (3) Tom's row repaired now by Cowork, so the prompt ships a guard and NOT a backfill. (4) One shared derived-state helper (draft + sent_at = sent), routed through every surface, not just the pipeline. (5) Empty estimate is a HARD send block, no override. (6) Empty means zero line items OR an opening total that is null or zero. (7) Enforced on the client AND mirrored server-side. (8) The trigger blocks all status regressions; `sent <-> change_requested` stays legal because markEstimateSent depends on it. (9) Jason's row is Dylan's to handle: Cowork left it untouched and sent no customer communication. (10) No change to how hollow drafts render in the Drafts column, no expiry job. (11) One prompt, two commits. (12) Runs after Dylan pushes the waiting commits.
+
+Files touched: claude-code-prompt-84-estimate-sent-state.md (new), PROJECT-LOG.md (this entry). Live database: one UPDATE, described above.
+
+Next steps: Dylan pushes the commits waiting on main (prompt 81 modal CSS, prompt 82 Save gate), then runs prompt 84 in Claude Code, then prompt 83.
+
+## Handoff to Dylan
+
+1. EST-102075 (Jason Magimel) is untouched by design. He has a live link to a blank estimate as of 10:03 AM today; the row is still `sent`, so the link resolves. Decide whether to build the estimate over the top of it or kill it.
+2. Push the waiting commits when ready; prompt 82's Save fix is what stops new hollow drafts from being created.
+3. Tom Bechtel's estimate (EST-102054) now reads Sent everywhere. No action needed.
+
 ## [2026-08-10 MST] Five direct asks from Dylan shipped: calendar returns to today after scheduling, inline flake color paired with colors-confirmed, customer info locked at the top of the estimator, a post-sign payment chooser (the Rob fix), and digits-only invoice numbers.
 
 By: Claude Code
