@@ -17,6 +17,7 @@ import {
   customLinePricing,
   applyLineSellPrice,
   allocateProportionally,
+  lineRowsReady,
   roundEstimatePrice,
 } from './calculator.js';
 
@@ -277,6 +278,44 @@ console.log('per-line-pricing.test.js');
   for (const l of per.lines) {
     assertEq(l.price, roundEstimatePrice(l.priceRaw, { increment: 5, charmThreshold: 1000, charmBand: 250 }), `line "${l.name}" is increment/charm rounded`);
   }
+}
+
+// --- 11. Custom-line-only estimates price with the engine dormant (prompt 82)
+// The bug: the estimator required an engine price (`hasPrice`) before ANY line
+// chain ran, so ONE custom line with a typed price could never produce a base
+// total and the Save button never rendered. The rule now lives in
+// lineRowsReady: the engine price is required only when a calculator line
+// exists. This block walks the whole chain the screen runs: readiness -> base
+// total -> allocation -> per-line money.
+{
+  const custom = { kind: 'custom', current: 3500 };
+
+  // Readiness rule itself.
+  assertEq(lineRowsReady([custom], false), true, 'one custom line with a typed price is ready with NO engine price');
+  assertEq(lineRowsReady([{ kind: 'custom', current: null }], false), false, 'a custom line with no typed price is not ready');
+  assertEq(lineRowsReady([], false), false, 'no lines at all is not ready');
+  assertEq(lineRowsReady([custom, { kind: 'calc', current: 2000 }], false), false, 'a calculator line still requires the engine price');
+  assertEq(lineRowsReady([custom, { kind: 'calc', current: 2000 }], true), true, 'custom + calc line is ready once the engine priced');
+
+  // The chain: base total from the rows, per-line money from the typed basis.
+  const rows = [custom];
+  const ready = lineRowsReady(rows, false);
+  const baseTotal = ready ? Math.round(rows.reduce((s, r) => s + r.current, 0) * 100) / 100 : null;
+  assertEq(baseTotal, 3500, 'custom-line-only base total is non-null and equals the typed price');
+  const amounts = allocateProportionally(baseTotal, rows.map((r) => r.current));
+  assertEq(amounts, [3500], 'allocation over one custom line returns its full amount');
+  const m = customLinePricing({ price: amounts[0], materialCost: 400, laborHours: 6, laborRate: 60, commissionPct: 10, sundriesPct: 3 });
+  assertEq(m.price, 3500, 'per-line money prices at the typed amount');
+  assertEq(m.gpDollars != null && m.gpDollars > 0, true, `per-line money carries a real GP (${m.gpDollars})`);
+  assertEq(m.budgetedHours, 6, 'typed hours survive into the money buckets');
+
+  // Mixed estimate: the sum-of-lines total includes the custom line.
+  const areas = [{ id: 'a1', name: 'Garage', sqft: 1000, system_type_id: 'std', flake_product_id: 'flake' }];
+  const per = computePerLinePricing({ ...baseInput, areas });
+  const mixed = [{ kind: 'calc', current: per.lines[0].price }, custom];
+  assertEq(lineRowsReady(mixed, true), true, 'mixed calc + custom estimate is ready');
+  const mixedTotal = Math.round(mixed.reduce((s, r) => s + r.current, 0) * 100) / 100;
+  assertEq(mixedTotal, Math.round((per.lines[0].price + 3500) * 100) / 100, 'mixed total is the sum of the calc price and the typed price');
 }
 
 // ----------------------------------------------------------------------------

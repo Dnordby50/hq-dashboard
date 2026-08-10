@@ -1,5 +1,16 @@
 [
   {
+    "id": "custom-only-estimate-save",
+    "date": "2026-08-10",
+    "title": "Estimates made of only custom lines now save, and Save always tells you what is missing",
+    "summary": "An estimate whose only line was a custom line (a typed price with no square footage) could not be saved: the Save button simply never appeared, on phones and desktops alike. That is fixed. A custom-line-only estimate now prices like any other (the total is the sum of your typed prices, with real GP from the typed cost and hours), and the Save button now shows on every estimate, in every state. When something still blocks saving, the button sits disabled with a short note beside it naming exactly what to fix, like the custom line that needs a price or the area that needs square footage.",
+    "howto": [
+      "Add a custom line, type its price (plus material cost and crew hours if you want GP), fill in the customer, and Save works with no areas at all.",
+      "If Save is greyed out, read the note next to it: it names the exact thing blocking the save.",
+      "Mixed estimates still work the same: calculator areas price from square footage and custom lines add their typed price on top."
+    ]
+  },
+  {
     "id": "modal-header-and-email-buttons",
     "date": "2026-08-09",
     "title": "The black bar on modals is gone, and email buttons now always look like buttons",

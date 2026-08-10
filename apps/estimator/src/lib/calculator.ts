@@ -13,6 +13,7 @@ import {
   lineItemsTotal as _lineItemsTotal,
   lineItemsGp as _lineItemsGp,
   allocateProportionally as _allocateProportionally,
+  lineRowsReady as _lineRowsReady,
   CALC_VERSION as _CALC_VERSION,
 } from '../../../../production/calculator.js';
 
@@ -183,4 +184,8 @@ export const lineItemsGp = (items: MoneyLineItem[], standardCommissionPct?: numb
   _lineItemsGp(items, standardCommissionPct, opts);
 export const allocateProportionally = (total: number, weights: number[]): number[] =>
   _allocateProportionally(total, weights);
+export const lineRowsReady = (
+  rows: Array<{ kind: 'calc' | 'custom'; current: number | null }>,
+  hasEnginePrice: boolean,
+): boolean => _lineRowsReady(rows, hasEnginePrice);
 export const CALC_VERSION: string = _CALC_VERSION;

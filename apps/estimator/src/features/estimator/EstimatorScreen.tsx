@@ -6,6 +6,7 @@ import {
   computePerLinePricing,
   customLinePricing,
   lineItemsTotal,
+  lineRowsReady,
   roundEstimatePrice,
   type Area,
   type CustomLineMoney,
@@ -892,7 +893,16 @@ export default function EstimatorScreen({
   // A custom line missing its typed price blocks pricing the job (its share
   // of the total would be a guess). Engine errors already null the calc rows.
   const customLineUnpriced = customLineRows.some((r) => r.current == null);
-  const linesReady = hasPrice && lineRows.length > 0 && lineRows.every((r) => r.current != null);
+  const calcLineCount = lineRows.filter((r) => r.kind === 'calc').length;
+  // The engine is legitimately dormant when there is nothing for it to price
+  // (prompt 82): an estimate whose lines are all custom is not broken, and
+  // conflating "the engine produced nothing" with "the estimate has no price"
+  // is what made Ron's custom-line-only estimate unsaveable.
+  const engineDormant = !isCustom && calcLineCount === 0;
+  // The engine price is required only when a calculator line exists; a
+  // custom-line-only estimate with a typed price is ready (lineRowsReady in
+  // production/calculator.js, where the fixture test drives it).
+  const linesReady = lineRowsReady(lineRows, hasPrice);
 
   // The system-portion BASE price: the sum of the lines' current prices
   // (per-line overrides applied). The job-level sell/discount operates on it.
@@ -1097,7 +1107,7 @@ export default function EstimatorScreen({
   }, [shapedLines]);
   const openingMoney = useMemo(() => moneyOver((l) => !l.is_optional || l.selected_by_customer), [moneyOver]);
   const requiredMoney = useMemo(() => moneyOver((l) => !l.is_optional), [moneyOver]);
-  const moneyReady = !isCustom && hasPrice && linesReady && adjusted != null;
+  const moneyReady = !isCustom && linesReady && adjusted != null;
 
   const totalPrice = isCustom
     ? (sellPrice != null ? r2(sellPrice + addonsBaseTotal) : null)
@@ -1699,13 +1709,42 @@ export default function EstimatorScreen({
     !intake.moisture ? 'Moisture' : null,
     !intake.mohs_hardness ? 'MOHS hardness' : null,
   ].filter(Boolean) as string[];
-  // Custom mode gates on customer + a typed price > 0, nothing else: no
-  // areas, no materials, no calculated price. Standard mode now gates on
-  // linesReady: the engine priced AND every custom line has its typed price.
-  const canSave = !!salesperson && !addonsIncomplete && !customerIncomplete && saveState !== 'saving' &&
-    (isCustom
-      ? customPrice != null
-      : linesReady && !mvbMissing && !overrideNeedsReason);
+  // Prompt 82: the SINGLE source of truth for "why can't I save?". Every save
+  // gate lives here as one plain-English line; the Save button now renders in
+  // every state and shows the first entry beside it when disabled, because a
+  // silently absent (or silently disabled) Save is the bug class this kills.
+  // Empty array = saveable.
+  const saveBlockers: string[] = useMemo(() => {
+    const list: string[] = [];
+    if (!salesperson) list.push('Pick a salesperson.');
+    if (customerIncomplete) {
+      list.push(customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.');
+    }
+    if (isCustom) {
+      if (customPrice == null) list.push('Type the price (the Price field, custom mode has no calculator).');
+    } else {
+      if (mvbMissing) list.push(`The product "${MVB_PRODUCT_NAME}" is missing or inactive in the Catalog, so the moisture vapor barrier cannot be priced. Restore it or uncheck MVB on the areas.`);
+      if (err) list.push(ERROR_COPY[err] ?? err);
+      if (areas.length === 0) list.push('Add at least one area or custom line.');
+      areas.forEach((a, i) => {
+        if (a.isCustom) return;
+        const label = a.name || `Area ${i + 1}`;
+        if (!(Number(a.sqft) > 0)) list.push(`Enter the square footage on "${label}" (or remove that line).`);
+        else if (!a.systemTypeId) list.push(`Pick a system on "${label}".`);
+      });
+      for (const r of lineRows) {
+        if (r.kind === 'custom' && r.current == null) list.push(`Type a price on the custom line "${r.label}".`);
+      }
+      if (overrideNeedsReason) list.push('Type a reason for the price change.');
+      // Safety net: if the chain is not ready for a reason none of the checks
+      // above named, still refuse with SOMETHING rather than diverge from
+      // linesReady and ship an enabled button whose save no-ops.
+      if (list.length === 0 && !linesReady) list.push('The job is not priced yet.');
+    }
+    if (addonsIncomplete) list.push('Finish the add-on lines (each needs a label and a price).');
+    return list;
+  }, [salesperson, customerIncomplete, customer.isCommercial, isCustom, customPrice, mvbMissing, err, areas, lineRows, overrideNeedsReason, linesReady, addonsIncomplete]);
+  const canSave = saveBlockers.length === 0 && saveState !== 'saving';
 
   // Flake color at estimate level: the first area's swatch pick names it; the
   // customer often picks AFTER the presentation, so null is normal here and
@@ -2041,9 +2080,19 @@ export default function EstimatorScreen({
   // after). Returns the estimate id on success so callers can chain on it.
   const performSave = useCallback(async (opts?: { skipAutoScope?: boolean }): Promise<string | null> => {
     // sellPrice non-null covers both modes: the typed custom price, or the
-    // engine/override price. The engine snapshot is only required in standard.
-    if (!salesperson || sellPrice == null || totalPrice == null) return null;
-    if (!isCustom && (!pricing || !hasPrice)) return null;
+    // engine/override price. The engine snapshot is only required when a
+    // calculator line exists (prompt 82): a custom-line-only estimate saves
+    // with the engine dormant. Never bail silently; a guard that trips here
+    // names its reason in the save slot instead of no-oping (the old silent
+    // `return null` is how Ron's bug hid).
+    if (
+      !salesperson || sellPrice == null || totalPrice == null ||
+      (!isCustom && calcLineCount > 0 && (!pricing || !hasPrice))
+    ) {
+      setSaveState('error');
+      setSaveError(saveBlockers[0] ?? 'The estimate is not ready to save yet.');
+      return null;
+    }
     if (editing && !online) {
       setSaveState('error');
       setSaveError('Editing an existing estimate needs a connection (it rewrites saved areas). Reconnect and save again.');
@@ -2200,7 +2249,7 @@ export default function EstimatorScreen({
           sortOrder: 0,
         });
       } else {
-        const calcCount = lineRows.filter((r) => r.kind === 'calc').length;
+        const calcCount = calcLineCount;
         lineRows.forEach((row, k) => {
           const a = areas[row.formIdx];
           const amt = finalLineAmounts ? finalLineAmounts[k] : (row.current ?? 0);
@@ -2345,8 +2394,10 @@ export default function EstimatorScreen({
         estimateId: estimateIdForSave(editing?.id ?? null, draftId),
         status: editing?.status ?? 'draft',
         // A custom estimate has no system; writing the dominant one would be
-        // a lie the metrics attribute revenue to.
-        systemTypeId: isCustom ? null : dominantSystemId,
+        // a lie the metrics attribute revenue to. A custom-line-only standard
+        // estimate has none either (dominantSystemId falls through to '' when
+        // no calc area exists, and '' is not a uuid), so it lands null too.
+        systemTypeId: isCustom ? null : (dominantSystemId || null),
         salesperson: { id: salesperson.id, name: salesperson.name, commission_pct: salesperson.commission_pct ?? 0 },
         intake: intakePayload,
         // Split shape straight through; saveEstimateOffline trims, composes
@@ -2444,7 +2495,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
+  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only whole-estimate scope writer after
@@ -2514,6 +2565,31 @@ export default function EstimatorScreen({
           stays readable in old rows but is never written again. The quiet
           missing-fields line is replaced by the red wo-banner up top. */}
     </>
+  );
+
+  // The ONE Save row for both modes (prompt 82). It renders UNCONDITIONALLY,
+  // outside every pricing gate: when the estimate cannot be saved the button
+  // is disabled with the first blocker named beside it in plain text (no
+  // tooltip; Dylan hit this on a phone, where there is no hover). The custom
+  // and standard rows used to be two near-identical copies inside their mode
+  // gates; one helper means they cannot drift again.
+  const saveRow = (
+    <div className="save-row">
+      <button type="button" className="save" disabled={!canSave} onClick={onSave}>
+        {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
+      </button>
+      {saveState === 'saved' && (
+        <span className="save-note ok">
+          {savedOffline
+            ? (isCustom ? 'Saved offline · will sync when online' : 'Saved offline · will sync when online · scope writes itself once connected (or from the estimate page)')
+            : 'Saved & synced'}
+        </span>
+      )}
+      {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
+      {saveState !== 'saved' && saveState !== 'error' && saveBlockers.length > 0 && (
+        <span className="save-note bad">{saveBlockers[0]}</span>
+      )}
+    </div>
   );
 
   return (
@@ -2897,9 +2973,10 @@ export default function EstimatorScreen({
                 );
               })}
             </div>
-            {customLineRows.length > 0 && engineAreas.length === 0 && (
-              <p className="hint">Custom lines ride on a normal estimate: give at least one area a system and square footage, or switch the whole estimate to Custom.</p>
-            )}
+            {/* The old "give at least one area a system and square footage"
+                hint is gone (prompt 82): a custom-line-only estimate is a
+                first-class priceable estimate now, and that advice was
+                exactly wrong for it. */}
             <div className="line-actions">
               <button type="button" className="link" onClick={addArea}>+ Add area</button>
               <button type="button" className="link" onClick={addCustomLine}>+ Add custom line</button>
@@ -3076,23 +3153,22 @@ export default function EstimatorScreen({
                 {woMissingFields.length > 0 && (
                   <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see Work order above). Saving still works.</p>
                 )}
-                <div className="save-row">
-                  <button type="button" className="save" disabled={!canSave} onClick={onSave}>
-                    {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
-                  </button>
-                  {saveState === 'saved' && (
-                    <span className="save-note ok">{savedOffline ? 'Saved offline · will sync when online' : 'Saved & synced'}</span>
-                  )}
-                  {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
-                </div>
               </>
             )}
-            {!isCustom && salesperson && !hasPrice && !err && !mvbMissing && <p className="hint">Enter the square footage to price the job.</p>}
+            {/* Only when a CALCULATOR line is missing its square footage: a
+                custom-line-only estimate needs no sqft, and telling Ron to
+                enter one was exactly the wrong advice (prompt 82). */}
+            {!isCustom && salesperson && !hasPrice && !err && !mvbMissing &&
+              areas.some((a) => !a.isCustom && !(Number(a.sqft) > 0 && a.systemTypeId)) &&
+              <p className="hint">Enter the square footage to price the job.</p>}
             {err && <p className="error">{(ERROR_COPY[err] ?? err) + (pricing?.errorArea ? ` (area: ${pricing.errorArea})` : '')}</p>}
             {!isCustom && hasPrice && customLineUnpriced && (
               <p className="warn">A custom line has no price yet. Type its price on the line (Areas card) to price the job.</p>
             )}
-            {hasPrice && pricing && adjusted && (
+            {/* The money block keys off the LINE chain, not the engine
+                (prompt 82): with only custom lines the engine is dormant and
+                `pricing` is legitimately null, but the estimate still prices. */}
+            {!isCustom && linesReady && adjusted && (
               <>
                 <div className="price">{money(totalPrice)}</div>
                 {/* Optional-lines totals (prompt 72, decision 6). The
@@ -3146,18 +3222,29 @@ export default function EstimatorScreen({
                   <div><dt>Gross profit</dt><dd className={gpBelowTarget ? 'gp-red' : ''}>{money(combinedGpDollars)} ({pct(combinedGpPct)})</dd></div>
                   <div><dt>Target GP</dt><dd>{Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}%</dd></div>
                   <div><dt>GP / hour</dt><dd>{money2(combinedGpPerHour)}</dd></div>
-                  <div><dt>Materials</dt><dd>{money2(r2((pricing.materialsCost ?? 0) + customMaterialsTotal))}{customMaterialsTotal > 0 ? <span className="muted"> · incl. {money2(customMaterialsTotal)} custom</span> : null}</dd></div>
-                  <div><dt>Labor ({pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%)</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
-                  <div><dt>Sundries ({Number(pricing.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
-                  <div><dt>Commission (standard {pricing.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
+                  {/* Engine dormant (custom lines only): materials is the
+                      typed custom cost alone, and the pct labels fall back to
+                      the config (labor is a RATE, not a pct, so it shows as
+                      $/hr). The dollar figures come from `adjusted`, summed
+                      from customLinePricing, and are right either way. */}
+                  <div><dt>Materials</dt><dd>{money2(r2((pricing?.materialsCost ?? 0) + customMaterialsTotal))}{pricing != null && customMaterialsTotal > 0 ? <span className="muted"> · incl. {money2(customMaterialsTotal)} custom</span> : null}</dd></div>
+                  <div><dt>Labor ({pricing != null ? `${pricing.laborPct != null ? Number(pricing.laborPct).toFixed(1).replace(/\.0$/, '') : '--'}%` : `${money2(config.laborRate)}/hr`})</dt><dd>{money2(adjusted.laborDollars)}<span className="muted"> · {adjusted.budgetedHours?.toFixed(1) ?? '--'}h</span></dd></div>
+                  <div><dt>Sundries ({Number(pricing?.sundriesPct ?? config.sundriesPct).toFixed(1).replace(/\.0$/, '')}%)</dt><dd>{money2(adjusted.sundriesDollars)}</dd></div>
+                  <div><dt>Commission (standard {pricing?.standardCommissionPct ?? config.standardCommissionPct}%)</dt><dd>{money2(combinedCommission)}</dd></div>
                   {addonCost > 0 && <div><dt>Add-on cost</dt><dd>{money2(addonCost)}</dd></div>}
                 </dl>
-                {/* How the price was reached, in one plain-English line. */}
-                <p className="derivation">
-                  {engineCost != null && pricing.price != null
-                    ? `cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(pricing.price)}${mixedSystems ? `, each area solved at its own system's target` : ''}${customLineRows.length > 0 ? ` + ${customLineRows.length} custom line${customLineRows.length > 1 ? 's' : ''} at typed prices` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`
-                    : ''}
-                </p>
+                {/* How the price was reached, in one plain-English line.
+                    Engine dormant: the custom-lines-only phrasing, no engine
+                    sentence, and no empty <p> either way (prompt 82). */}
+                {engineCost != null && pricing != null && pricing.price != null ? (
+                  <p className="derivation">
+                    {`cost of ${money(engineCost)} priced to a ${Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target GP = ${money(pricing.priceRaw)}, rounded to ${money(pricing.price)}${mixedSystems ? `, each area solved at its own system's target` : ''}${customLineRows.length > 0 ? ` + ${customLineRows.length} custom line${customLineRows.length > 1 ? 's' : ''} at typed prices` : ''}${charmFired ? ' (charm-priced just under a round number, so GP dips slightly under target on purpose)' : ''}`}
+                  </p>
+                ) : engineDormant && customLineRows.length > 0 ? (
+                  <p className="derivation">
+                    {customLineRows.length === 1 ? '1 custom line at a typed price' : `${customLineRows.length} custom lines at typed prices`}
+                  </p>
+                ) : null}
                 {gpBelowTarget && (
                   <p className="warn gp-warn">GP is below the {Number(targetGpPctResolved).toFixed(1).replace(/\.0$/, '')}% target{mixedSystems ? ' (price-weighted across the area systems)' : ' for this system'}. Saving still works; the number is just red on purpose.</p>
                 )}
@@ -3170,27 +3257,23 @@ export default function EstimatorScreen({
                     {config.linePricingBlockBelowFloor === true ? ' Saving asks you to confirm.' : ' Saving still works; the line is red on purpose.'}
                   </p>
                 )}
-                {pricing.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
+                {pricing?.materialsMissingCost && pricing.materialsMissingCost.length > 0 && (
                   <p className="warn">No cost set for: {pricing.materialsMissingCost.join(', ')}. Price may be understated until these are priced in the Catalog.</p>
                 )}
-                <p className="calcver">engine {pricing.calcVersion}</p>
+                {/* No engine result, no engine version line. */}
+                {pricing != null && <p className="calcver">engine {pricing.calcVersion}</p>}
                 {customerIncomplete && (
                   <p className="warn">{customer.isCommercial ? 'Enter the company name (Customer card) to save.' : 'Enter the customer’s last name (Customer card) to save.'}</p>
                 )}
                 {woMissingFields.length > 0 && (
                   <p className="warn">Work order: {woMissingFields.join(' and ')} not filled in (see More detail above). Saving still works.</p>
                 )}
-                <div className="save-row">
-                  <button type="button" className="save" disabled={!canSave} onClick={onSave}>
-                    {saveState === 'saving' ? 'Saving…' : editing ? 'Save changes' : 'Save estimate'}
-                  </button>
-                  {saveState === 'saved' && (
-                    <span className="save-note ok">{savedOffline ? 'Saved offline · will sync when online · scope writes itself once connected (or from the estimate page)' : 'Saved & synced'}</span>
-                  )}
-                  {saveState === 'error' && <span className="save-note bad">{saveError || 'Save failed'}</span>}
-                </div>
               </>
             )}
+            {/* Save renders in EVERY state of BOTH modes (prompt 82): outside
+                the money gates, disabled with its blocker named when it must
+                be. A missing Save button is never the interface again. */}
+            {saveRow}
           </section>
 
           {/* Payment schedule (prompt 74): created and approved HERE, before

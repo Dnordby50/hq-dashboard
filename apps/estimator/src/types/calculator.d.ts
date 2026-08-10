@@ -111,6 +111,10 @@ declare module '*/production/calculator.js' {
   export function lineItemsTotal(items: unknown[], opts?: { withAllOptions?: boolean }): number;
   export function lineItemsGp(items: unknown[], standardCommissionPct?: number, opts?: { withAllOptions?: boolean }): number;
   export function allocateProportionally(total: number, weights: number[]): number[];
+  export function lineRowsReady(
+    rows: Array<{ kind: 'calc' | 'custom'; current: number | null }>,
+    hasEnginePrice: boolean,
+  ): boolean;
   export function applySellPrice(
     pricing: unknown,
     sellPrice: number,

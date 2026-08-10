@@ -895,6 +895,27 @@ export function customLinePricing({ price, materialCost = 0, laborHours = 0, lab
 }
 
 /**
+ * Prompt 82: is the per-line money chain ready to run? The engine is a pricer
+ * for CALCULATOR lines only, so an estimate whose lines are all custom is not
+ * broken, it is an estimate the engine legitimately has no work on. The engine
+ * price is therefore required only when at least one calculator line exists;
+ * every line must carry a current price either way. This rule used to live
+ * inline in the estimator as `hasPrice && ...`, which is exactly what made a
+ * custom-line-only estimate unsaveable (the Save button never rendered).
+ * Estimator-only export: no inline mirror.
+ *
+ * @param {Array<{kind: 'calc'|'custom', current: number|null}>} rows
+ * @param {boolean} hasEnginePrice  the engine solved a price with no error
+ * @returns {boolean}
+ */
+export function lineRowsReady(rows, hasEnginePrice) {
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  const calcCount = rows.filter((r) => r && r.kind === 'calc').length;
+  if (calcCount > 0 && !hasEnginePrice) return false;
+  return rows.every((r) => r && r.current != null);
+}
+
+/**
  * The ONE optional-item money rule, shared by the estimator, the estimate
  * page, and the public customer page: a line with is_optional=true is EXCLUDED
  * from the total until selected_by_customer=true. `withAllOptions` answers the
