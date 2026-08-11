@@ -481,6 +481,15 @@ function estimatePage(est, brand, opts) {
     }
   }
   const lastSched = scheduleView && scheduleView.length ? scheduleView[scheduleView.length - 1] : null;
+  // Deposit row for the investment summary (phase 5): index into the SOURCE
+  // array (same order as scheduleView) because scheduleView drops is_deposit.
+  // The ticking script updates #depToStart from the recomputed schedule by
+  // this index; it is a passive mirror, NEVER a td.amt[data-sched-kind] cell
+  // (an extra sched cell would corrupt the joint remainder allocation).
+  const depIdx = scheduleView
+    ? (frozenSchedule || instRows).findIndex(r => r && r.is_deposit)
+    : -1;
+  const depositView = depIdx >= 0 && scheduleView ? scheduleView[depIdx] : null;
   const schedAttrs = (r) => r.frozen ? '' : ` data-sched-kind="${esc(r.kind)}" data-sched-value="${Number(r.value) || 0}" data-sched-orig="${r.cents}"`;
   const scheduleBlock = !scheduleView ? '' : `
         <div style="margin-top:26px">
@@ -607,6 +616,16 @@ function estimatePage(est, brand, opts) {
   table.sched tr.last td.amt { font-weight:800; color:${accent}; }
   .balline { text-align:right; margin-top:8px; font-size:14.5px; color:#374151; font-variant-numeric:tabular-nums; }
   .balline strong { color:${accent}; font-weight:800; }
+  /* Investment band (2026-08-10, DripJobs-parity phase 5): full-width accent
+     band with Project total left and the closing balance right. PEC brand
+     accent only, never DripJobs purple. */
+  .totband { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; flex-wrap:wrap; background:${accent}; color:#fff; border-radius:12px; padding:16px 20px; margin-top:12px; font-variant-numeric:tabular-nums; }
+  .totband .bandlbl { font-size:11px; font-weight:800; letter-spacing:1.6px; text-transform:uppercase; color:rgba(255,255,255,.82); margin-bottom:2px; }
+  .totband .bandval { font-size:26px; font-weight:800; line-height:1.1; }
+  .totband .bandval2 { font-size:20px; font-weight:800; line-height:1.1; }
+  table.tot tr.dep td { background:${accent}14; font-weight:700; color:${primary}; }
+  table.tot tr.dep td:first-child { border-radius:8px 0 0 8px; }
+  table.tot tr.dep td:last-child { border-radius:0 8px 8px 0; color:${accent}; }
   .termsbox { max-height:260px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; font-size:13.5px; color:#374151; line-height:1.65; }
   .optcard { display:flex; gap:12px; align-items:flex-start; border:1.5px solid #e5e7eb; border-radius:12px; padding:14px 16px; background:#fff; transition:border-color .15s, box-shadow .15s; }
   .optcard:has(.opt-toggle:checked) { border-color:${accent}; box-shadow:0 0 0 1px ${accent}; }
@@ -696,9 +715,12 @@ function estimatePage(est, brand, opts) {
         <div class="eyebrow" style="margin-top:26px">Your investment</div>
         <table class="tot">
           <tr><td>Subtotal</td><td id="subTotal">${usd(total)}</td></tr>
-          <tr class="total"><td>Project total</td><td id="grandTotal">${usd(total)}</td></tr>
+          ${depositView ? `<tr class="dep"><td>Deposit to start</td><td id="depToStart">${usd(depositView.cents / 100)}</td></tr>` : ''}
         </table>
-        ${lastSched ? `<div class="balline">${esc(lastSched.label)} (${esc(lastSched.due.toLowerCase())}): <strong id="balCompletion">${usd(lastSched.cents / 100)}</strong></div>` : ''}
+        <div class="totband">
+          <div><div class="bandlbl">Project total</div><div class="bandval" id="grandTotal">${usd(total)}</div></div>
+          ${lastSched ? `<div style="text-align:right"><div class="bandlbl">${esc(lastSched.label)} (${esc(lastSched.due.toLowerCase())})</div><div class="bandval2" id="balCompletion">${usd(lastSched.cents / 100)}</div></div>` : ''}
+        </div>
         ${scheduleBlock}
       </div>
     </div>
@@ -768,6 +790,9 @@ ${!ticking ? '' : `<script>
       schedCells.forEach(function(c,i){ c.textContent=money((cents[i]||0)/100); });
       var bal=document.getElementById('balCompletion');
       if(bal && cents.length) bal.textContent=money((cents[cents.length-1]||0)/100);
+      var dep=document.getElementById('depToStart');
+      var depIdx=${JSON.stringify(depIdx)};
+      if(dep && depIdx>=0 && cents.length>depIdx) dep.textContent=money((cents[depIdx]||0)/100);
     }
   }
   toggles.forEach(function(cb){ cb.addEventListener('change', refresh); });

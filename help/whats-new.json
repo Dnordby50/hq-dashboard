@@ -1,5 +1,15 @@
 [
   {
+    "id": "estimate-investment-band",
+    "date": "2026-08-10",
+    "title": "The estimate's investment summary got a clearer look",
+    "summary": "The Your investment section on the customer estimate now shows the subtotal, a highlighted Deposit to start row, and a bold band with the project total on the left and the balance at completion on the right. All three update live as the customer ticks optional add-ons, and an accepted estimate keeps showing exactly the numbers that were signed.",
+    "howto": [
+      "Nothing to do: every estimate page shows the new summary automatically.",
+      "Preview any open estimate and tick an optional line to watch the deposit and balance update."
+    ]
+  },
+  {
     "id": "empty-estimate-send-block",
     "date": "2026-08-10",
     "title": "Empty estimates can no longer be sent",

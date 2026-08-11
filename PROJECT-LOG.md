@@ -1,3 +1,19 @@
+## [2026-08-10 MST] Customer estimate "Your investment" band (DripJobs-parity batch, phase 5 of 5): deposit-to-start row + project-total band with balance at completion, all live-updating.
+
+By: Claude Code
+
+Changed: netlify/functions/pec-public-estimate.cjs only, features.json (customer estimate entry), help/whats-new.json, plus this entry. No migration, no settings key. Committed and pushed. (Shipped as the 5th phase but 4th in time; the estimator rework, phase 4, follows in its own commit.)
+
+**What changed, from the captured DripJobs proposal.** The Your investment table dropped its plain Project total row for the DripJobs shape: Subtotal, then an accent-tinted "Deposit to start" row (only when the schedule has a deposit row), then a full-width PEC-accent band with Project total on the left and the closing balance (the LAST schedule row's label + milestone, usually remaining balance at completion) on the right. The old right-aligned balance line folded into the band. PEC brand tokens only, no DripJobs purple.
+
+**The one mechanism worth knowing.** The optional-lines ticking script recomputes the payment schedule by JOINT allocation over every `td.amt[data-sched-kind]` cell in DOM order, remainder on the last. The new Deposit-to-start cell therefore must NOT be another sched cell (it would corrupt the allocation). It is a passive mirror: the server embeds the deposit's index into the schedule (found on the SOURCE rows, because the render view drops is_deposit) and refresh() copies `cents[depIdx]` into #depToStart after each recompute. Accepted pages render the frozen signature values and never recompute, exactly as before.
+
+**Verification.** node --check clean; npm test all 17 suites green (nothing renders-asserts this block; the schedule math itself is fixture-tested in estimate-installments). Visual check on a preview link is Dylan's after deploy.
+
+## Handoff to Dylan
+
+1. After deploy, open any open estimate's preview: the investment block should show the deposit row + the orange total band, and ticking an optional line should move Deposit to start, Project total, and the balance together.
+
 ## [2026-08-10 MST] Prompt 84, commit 2 of 2: an empty estimate cannot be sent, by any channel, client or server.
 
 By: Claude Code
