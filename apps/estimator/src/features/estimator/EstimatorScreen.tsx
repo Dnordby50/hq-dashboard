@@ -516,6 +516,11 @@ export default function EstimatorScreen({
     })),
   );
   const [scheduleOpen, setScheduleOpen] = useState<boolean>(() => (editing?.installments ?? []).length > 0);
+  // Auto-seed bookkeeping (2026-08-18): the first hand edit to any schedule
+  // row ends auto behavior for the session, and Remove schedule is remembered
+  // so the seed never fights the rep inside one sitting.
+  const [scheduleTouched, setScheduleTouched] = useState(false);
+  const [scheduleRemoved, setScheduleRemoved] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [savedOffline, setSavedOffline] = useState(false);
@@ -1207,16 +1212,35 @@ export default function EstimatorScreen({
       if (r.key !== key) return patch.isDeposit === true ? { ...r, isDeposit: false } : r; // one deposit max
       return { ...r, ...patch };
     }));
+    setScheduleTouched(true);
     setSaveState('idle');
   };
   const addScheduleRow = () => {
     setScheduleRows((prev) => [...prev, { key: uuid(), label: '', kind: 'percent', valueInput: '', trigger: 'on_completion', dueDate: '', isDeposit: false }]);
+    setScheduleTouched(true);
     setSaveState('idle');
   };
   const removeScheduleRow = (key: string) => {
     setScheduleRows((prev) => prev.filter((r) => r.key !== key));
+    setScheduleTouched(true);
     setSaveState('idle');
   };
+
+  // Auto-seed (2026-08-18): every NEW estimate starts with the default
+  // schedule, so the customer proposal always shows a payment plan (Dylan's
+  // locked decision; the seeded shape is deposit percent + remaining balance
+  // at completion, which passes the send gate by construction). Edits NEVER
+  // auto-seed: zero rows on an existing estimate means the rep removed it.
+  // While untouched, a dominant-system change re-seeds so that system's own
+  // deposit_pct is honored; the first hand edit or Remove schedule ends all
+  // auto behavior for this session.
+  const scheduleAutoseedOn = scheduleEnabled && config.estimateScheduleAutoseed !== false;
+  const hasOpeningTotal = totalPrice != null && totalPrice > 0;
+  useEffect(() => {
+    if (editing || !scheduleAutoseedOn || scheduleTouched || scheduleRemoved || !hasOpeningTotal) return;
+    seedSchedule();
+    setScheduleOpen(true);
+  }, [editing, scheduleAutoseedOn, scheduleTouched, scheduleRemoved, hasOpeningTotal, seedSchedule]);
 
   // ---- Pricing-logic panel values (INTERNAL only, never on the public page) --
   const pricePerSqft = totalPrice != null && totalSqft > 0 ? totalPrice / totalSqft : null;
@@ -3336,7 +3360,7 @@ export default function EstimatorScreen({
               <div className="areas-head">
                 <span>Payment schedule</span>
                 {scheduleRows.length > 0 && (
-                  <button type="button" className="link" onClick={() => { setScheduleRows([]); setSaveState('idle'); }}>Remove schedule</button>
+                  <button type="button" className="link" onClick={() => { setScheduleRows([]); setScheduleRemoved(true); setSaveState('idle'); }}>Remove schedule</button>
                 )}
               </div>
               {!scheduleOpen && scheduleRows.length === 0 ? (

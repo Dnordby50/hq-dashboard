@@ -20393,13 +20393,14 @@ function openApptRuleModal(rule, onDone) {
 async function renderSettingsInvoicing() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'post_sign_payment_prompt_enabled', 'invoice_terms_residential_default', 'invoice_terms_commercial_default']),
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'estimate_schedule_autoseed', 'post_sign_payment_prompt_enabled', 'invoice_terms_residential_default', 'invoice_terms_commercial_default']),
     { label: 'settings-invoicing' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
   const schedOn = map.payment_schedules_enabled !== 'false';
   const gateOn = map.installment_approval_required !== 'false';
   const estSchedOn = map.estimate_schedule_enabled !== 'false';
+  const estSchedSeedOn = map.estimate_schedule_autoseed !== 'false';
   const payPromptOn = map.post_sign_payment_prompt_enabled !== 'false';
   const termsRes = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_residential_default] ? map.invoice_terms_residential_default : 'due_on_completion';
   const termsCom = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_commercial_default] ? map.invoice_terms_commercial_default : 'net_30';
@@ -20442,6 +20443,15 @@ async function renderSettingsInvoicing() {
         </div>
         <button type="button" class="pec-btn sm ${estSchedOn ? '' : 'primary'}" id="setEstSchedOn">${estSchedOn ? 'Turn estimate schedules OFF' : 'Turn estimate schedules ON'}</button>
       </div>
+      ${estSchedOn ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line,#e5e7eb)">
+        <div>
+          <div style="font-weight:700">Start new estimates with the default schedule: ${estSchedSeedOn ? 'ON' : 'OFF'}</div>
+          <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${estSchedSeedOn
+            ? 'Every new estimate is pre-filled with the default plan (deposit percent from the system type, balance due at completion), so the customer proposal always shows a payment schedule unless the rep edits or removes it. Editing an existing estimate never re-adds a removed schedule.'
+            : 'New estimates start with no schedule; reps add one from the Payment schedule card when they want it, exactly as before.'}</div>
+        </div>
+        <button type="button" class="pec-btn sm ${estSchedSeedOn ? '' : 'primary'}" id="setEstSchedSeed">${estSchedSeedOn ? 'Turn auto-fill OFF' : 'Turn auto-fill ON'}</button>
+      </div>` : ''}
     </div>
     <div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
@@ -20514,6 +20524,13 @@ async function renderSettingsInvoicing() {
     const to = estSchedOn ? 'false' : 'true';
     const btn = $('setEstSchedOn'); btn.disabled = true;
     try { await saveSetting('estimate_schedule_enabled', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); btn.disabled = false; return; }
+    renderSettings();
+  });
+  const seedBtn = $('setEstSchedSeed');
+  if (seedBtn) seedBtn.addEventListener('click', async () => {
+    const to = estSchedSeedOn ? 'false' : 'true';
+    seedBtn.disabled = true;
+    try { await saveSetting('estimate_schedule_autoseed', to); } catch (err) { showToast('Could not update: ' + (err.message || err), { ttl: 5000 }); seedBtn.disabled = false; return; }
     renderSettings();
   });
   $('setInstGate').addEventListener('click', async () => {

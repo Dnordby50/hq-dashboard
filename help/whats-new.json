@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-schedule-autoseed",
+    "date": "2026-08-10",
+    "title": "New estimates come with the payment schedule already filled in",
+    "summary": "Every new estimate now starts with the default payment plan: the deposit (at the system type's percent, or the company default) and the remaining balance due at completion. That means every proposal a customer opens shows the payment schedule without the rep having to build one. You can still change it, add installments, or remove it on any estimate, and once you touch it the estimator stops auto-filling for that estimate. Opening an old estimate never re-adds a schedule that was removed.",
+    "howto": [
+      "Start a new estimate and price it; the Payment schedule card fills itself in and shows on the proposal.",
+      "Edit or remove the schedule on the card if a job needs something different.",
+      "To go back to the old build-it-yourself behavior, open Settings, go to Invoicing, and turn off 'Start new estimates with the default schedule'."
+    ]
+  },
+  {
     "id": "invoice-terms",
     "date": "2026-08-10",
     "title": "Invoices now state their payment terms at the top",

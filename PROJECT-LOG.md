@@ -1,3 +1,22 @@
+## [2026-08-10 MST] Payment schedule auto-seeds on every new estimate (DripJobs-parity batch, phase 2 of 5): every proposal now shows the payment plan by default.
+
+By: Claude Code
+
+Changed: apps/estimator/src/lib/catalog.ts, apps/estimator/src/features/estimator/EstimatorScreen.tsx, index.html (Settings > Invoicing), supabase/migrations/2026-08-18_estimate_schedule_autoseed.sql (new, ALREADY APPLIED to prod via MCP), SCHEMA.md, features.json (2 entries), help/whats-new.json, plus this entry. New settings key: estimate_schedule_autoseed ('true'). Estimator rebuilt (tsc clean, vite build green; estimator/ is gitignored, Netlify rebuilds on deploy). Committed and pushed.
+
+**WHY.** Prompt 74 built the estimate-side payment schedule, but a rep had to click "Set up payment schedule" on every estimate, so most proposals shipped with no payment plan visible. Dylan's locked decision (2026-08-10 planning session): auto-seed the default schedule on every NEW estimate so the customer page always shows it, matching DripJobs' schedule block. The seeded shape is the existing defaultScheduleRows (deposit percent + remaining balance at completion), which sums to 100% with one deposit row BY CONSTRUCTION, so the prompt-82-era send gate needs no change.
+
+**HOW it decides when to seed (the interesting part).** A useEffect seeds only when ALL of: this is a NEW estimate (editing != null NEVER seeds: zero rows on a saved estimate means the rep removed the schedule on purpose, and re-adding it on open would be the app fighting the rep), the company toggle and the new autoseed toggle are on, the rep has not touched a schedule row this session (scheduleTouched, set by every row mutator), the rep has not clicked Remove schedule (scheduleRemoved), and an opening total exists. While untouched, a dominant-system change re-seeds so the system type's own deposit_pct is honored once areas are picked; the first hand edit ends all auto behavior for the sitting. The effect depends on seedSchedule's useCallback identity, which is stable because dominantSystem is a .find against the stable catalog array (checked before wiring, it is what makes the effect loop-safe).
+
+**Settings surface.** Second front-of-card control on the existing "Payment schedule on estimates" card (still the two-control budget): "Start new estimates with the default schedule ON/OFF", only rendered while schedules are on at all.
+
+**Verification.** tsc --noEmit clean; vite build green; migration applied via MCP (data-only, one settings row). Full flow to re-test after deploy: new estimate -> price -> schedule appears seeded; remove -> save -> reopen -> stays absent; /e/ preview shows the schedule with live percent recalc; accept copies the signed schedule to pec_invoice_installments (accept path untouched by this phase).
+
+## Handoff to Dylan
+
+1. After deploy, give the estimator PWA one visit to pick up the new build, then start a throwaway estimate: the Payment schedule card should fill itself in once a price exists.
+2. If the crew of reps hates the pre-fill, Settings > Invoicing > "Start new estimates with the default schedule" turns it off without losing anything.
+
 ## [2026-08-10 MST] Invoice terms shipped (DripJobs-parity batch, phase 1 of 5): every invoice now states its terms at the top, commercial clients default to Net 30, and payment reminders wait for the due date.
 
 By: Claude Code

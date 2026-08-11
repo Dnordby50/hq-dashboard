@@ -57,6 +57,7 @@ export type PricingConfig = {
   // Payment schedule (prompt 74). Defaults MUST match the migration seeds:
   // true / 50 (the code's long-standing deposit fallback).
   estimateScheduleEnabled: boolean; // estimate_schedule_enabled: the schedule card on/off company-wide
+  estimateScheduleAutoseed: boolean; // estimate_schedule_autoseed: NEW estimates start with the default schedule (2026-08-18)
   defaultDepositPct: number;        // default_deposit_pct: last stop in the deposit-percent precedence
   hideMaterialQty: boolean;
   commissionConfigured: boolean; // false until Dylan sets a default commission rate
@@ -137,6 +138,7 @@ export async function loadCatalog(): Promise<Catalog> {
         'optional_lines_gp_warn_pct',
         'estimator_customer_search_enabled',
         'estimate_schedule_enabled',
+        'estimate_schedule_autoseed',
         'default_deposit_pct',
         'sync_stuck_threshold_attempts',
         'sync_stuck_escalation_enabled',
@@ -186,6 +188,7 @@ export async function loadCatalog(): Promise<Catalog> {
     optionalLinesPreselectDefault: String(settings['optional_lines_preselect_default'] ?? 'true').toLowerCase() !== 'false',
     optionalLinesGpWarnPct: num('optional_lines_gp_warn_pct', num('line_pricing_gp_floor_pct', 40)),
     estimateScheduleEnabled: String(settings['estimate_schedule_enabled'] ?? 'true').toLowerCase() !== 'false',
+    estimateScheduleAutoseed: String(settings['estimate_schedule_autoseed'] ?? 'true').toLowerCase() !== 'false',
     defaultDepositPct: num('default_deposit_pct', 50),
     hideMaterialQty: String(settings['estimator_hide_material_qty'] ?? 'true').toLowerCase() === 'true',
     commissionConfigured:
