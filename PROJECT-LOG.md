@@ -1,3 +1,25 @@
+## [2026-08-10 MST] Combined estimate/job page: a signed estimate and its job are ONE page now, tabs like DripJobs, from either entry point.
+
+By: Claude Code
+
+Changed: index.html only (renderJobDetailInner + a new jobEstimateTabHtml, renderEstimateDetail, renderEstimates, the invoice Open-estimate handler), features.json (2 entries), help/whats-new.json, plus this entry. No migration, no schema change, no settings key (page layout and navigation are not tunable parameters). Committed and pushed.
+
+**What Dylan asked for and what shipped.** "The estimate page should turn into the combined estimate/job page, like DripJobs." It does, from his seat: clicking a signed estimate's card (list, pipeline, search, deep link, anywhere that funnels through renderEstimateDetail) now lands on ONE combined page carrying the job AND the estimate, and clicking the job card lands on the same page. Under the hood the combined page is the JOB detail, which grew a pill tab strip (Job | Estimate | Messages and Calls, the invoice rework's shape) and an Estimate tab; renderEstimateDetail soft-redirects there whenever `est.job_id` is set. WHY job-side hosting: the job page already fetched the source estimate in its batched load (the flake-color reverse query, now widened), and already had the hidden-toggle tab machinery from the comms tab, so the merge extends two proven patterns instead of relocating ~1,500 lines of photos/signature/change-order/saveJob wiring into the estimates view. Draft and sent estimates (no job yet) keep today's estimate page byte-identical.
+
+**The Estimate tab.** Read-only summary from the same batched fetch: EST number, status chip (estimateEffectiveStatus), sold price + GP, lifecycle trail (created/sent/signed/accepted/declined), customer view tracking (count, last open, the Hot chip via pecEstimateIsHot; one best-effort sequential query, it cannot join the Promise.all because it needs the estimate id), line items with optional-line badges and the shared estimateLineItemsTotal money rule, and the scope of work. Two buttons: View invoice, and Open estimate page for the full record (edit, re-send, present, archive).
+
+**The redirect and its three escape hatches (the part worth understanding).** renderEstimateDetail redirects only when `est.job_id && !keepInline && pin !== est.id`. (1) keepInline: a live inline estimator NEVER redirects; leaving the view would destroy the iframe and typed work (landmine 1). (2) pecEstDetailPinned: Open estimate page pins that one estimate so the full page renders; the pin clears on back, on nav-away, on the estimates list, and on opening a different estimate. (3) No job, no redirect: drafts, sent, and accepted-without-job (a bare "Mark accepted" creates no job) all keep the current page. Back-button correctness: the redirect sets pecLastNavKey = null before switchView, which makes pecSyncHistory REPLACE the just-pushed ?estimate= history entry with the job tuple instead of stacking on it, so Back returns to where you came from and never to a URL that instantly re-redirects. Jobs with no estimate (manual schedule entries, DripJobs webhook deals) simply have no Estimate pill; nothing else changes for them. The commit-2 View Estimate toolbar button and the invoice's Open estimate now open the Estimate TAB directly (navigating to the estimate view would just bounce through the redirect).
+
+**Verification.** npm test green (28 passed, exit 0). Inline-script parse check identical to HEAD (the one known pre-existing block-0 failure). Every new id renders once and wires once (grep-counted). Live click-through is Dylan's after deploy (handoff below).
+
+## Handoff to Dylan
+
+1. After deploy, open Brad Hixson's estimate from the Estimates list: you should land on the combined job page, Estimate tab active, with EST-102098's price, line items, and signed trail. The Job and Messages and Calls tabs sit alongside.
+2. Tap Open estimate page on the Estimate tab: the full estimate page (Edit, Present, re-send) renders and does NOT bounce back. Back returns to the combined page.
+3. Open a DRAFT estimate: today's estimate page, pixel-identical, estimator and all.
+4. Open a manually added schedule job's card: no Estimate pill, everything else as before.
+5. Press Back after landing on the combined page from the estimates list: you should return to the list, not loop.
+
 ## [2026-08-10 MST] Cross-navigation: real toolbar buttons now tie an estimate, its job, and its invoice together on all three detail pages.
 
 By: Claude Code

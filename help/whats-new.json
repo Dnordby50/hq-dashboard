@@ -1,5 +1,16 @@
 [
   {
+    "id": "combined-estimate-job-page",
+    "date": "2026-08-10",
+    "title": "One combined page for a signed estimate and its job",
+    "summary": "Once an estimate becomes a job, opening either record lands on one combined page, the way DripJobs shows a deal. The job page now has Job, Estimate, and Messages and Calls tabs. The Estimate tab shows the estimate number, status, price, line items, scope, and when the customer opened it. The full estimate page (edit, re-send, present) is one click away via Open estimate page.",
+    "howto": [
+      "Open any signed estimate from the Estimates list or pipeline; you land on the combined page.",
+      "Use the Job, Estimate, and Messages and Calls tabs under the header.",
+      "Need to edit or re-send the estimate? Tap Open estimate page on the Estimate tab."
+    ]
+  },
+  {
     "id": "estimate-job-invoice-crosslinks",
     "date": "2026-08-10",
     "title": "Jump between an estimate, its job, and its invoice",

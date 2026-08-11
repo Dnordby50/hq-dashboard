@@ -7373,6 +7373,11 @@ function estimatorFrameSrc({ leadId = null, estimateId = null, focusLine = null 
 // that page shows the summary instead of stubbornly remounting the estimator.
 // gotHeight gates the fixed-height fallback.
 const pecEstInline = { estimateId: null, iframe: null, closedFor: null, gotHeight: false, fallbackTimer: null };
+// Combined-page bypass (2026-08-10): an estimate WITH a job normally redirects
+// to the combined job page. Setting this to the estimate's id (the job page's
+// "Open estimate page" button does) lets the full estimate page render for
+// that one estimate until the user backs out or opens a different estimate.
+let pecEstDetailPinned = null;
 
 function pecInlineEstimatorAlive() {
   return !!(pecEstInline.iframe && document.body.contains(pecEstInline.iframe));
@@ -12530,8 +12535,10 @@ async function renderJobInvoice(jobId) {
   }));
   $('pecInvBack').addEventListener('click', () => { detachInvoiceRefocus(); state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+  // Straight to the combined job page's Estimate tab (going via the estimate
+  // view would only bounce through the signed-estimate redirect).
   const invOpenEst = $('pecInvOpenEstimate');
-  if (invOpenEst) invOpenEst.addEventListener('click', () => { detachInvoiceRefocus(); state.openEstimateId = estLinkRow.id; state.openInvoiceJobId = null; switchView('estimates'); });
+  if (invOpenEst) invOpenEst.addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.jobDetailTabFor = jobId; state.jobDetailTab = 'estimate'; state.openInvoiceJobId = null; switchView('jobs'); });
   const chargeB = $('pecInvCharge'); if (chargeB) chargeB.addEventListener('click', () => openChargeCardModal(row));
   const invPdfB = $('pecInvDownloadPdf'); if (invPdfB) invPdfB.addEventListener('click', () => pecDownloadInvoicePdf(row, payments));
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
@@ -15499,6 +15506,74 @@ async function renderWorkOrder(ctx) {
   win.document.close();
 }
 
+// The combined page's Estimate tab (2026-08-10): a read-only summary of the
+// job's source estimate, rendered from the same batched fetch as the rest of
+// the job detail. Deliberately NOT the full estimate page: no send kit, no
+// optional-line toggles, no archive; the "Open estimate page" button pins the
+// full page (pecEstDetailPinned) so the signed-estimate redirect lets it
+// through. Every id in here is jobEst*-prefixed (saveJob byId contract).
+function jobEstimateTabHtml(est, viewsInfo, hotCfg) {
+  const items = (Array.isArray(est.estimate_line_items) ? est.estimate_line_items : [])
+    .slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const gpPctTxt = est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : null;
+  const lineRow = (li) => {
+    const optional = estLineOptional(li);
+    const declined = optional && !li.selected_by_customer;
+    return `<tr style="${declined ? 'opacity:.55' : ''}">
+      <td style="padding:5px 8px">${esc(li.label || 'Line')}${optional ? ` <span class="pec-badge" style="font-size:.62rem">${declined ? 'Optional, not taken' : 'Optional, added'}</span>` : ''}</td>
+      <td style="padding:5px 8px;text-align:right;white-space:nowrap${declined ? ';text-decoration:line-through' : ''}">${fmtMoney(li.total)}</td>
+    </tr>`;
+  };
+  const trail = [];
+  if (est.created_at) trail.push([est.created_at, 'Created']);
+  if (est.sent_at) trail.push([est.sent_at, 'Sent to customer']);
+  if (est.signed_at) trail.push([est.signed_at, `Signed${est.signed_name ? ' by ' + esc(est.signed_name) : ''}`]);
+  if (est.accepted_at) trail.push([est.accepted_at, 'Accepted']);
+  if (est.rejected_at) trail.push([est.rejected_at, `Declined${est.rejected_reason ? ': ' + esc(est.rejected_reason) : ''}`]);
+  trail.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const isHot = viewsInfo && viewsInfo.count
+    ? pecEstimateIsHot({ viewCount: viewsInfo.count, lastViewedAt: viewsInfo.last, minViews: hotCfg.minViews, windowHours: hotCfg.windowHours })
+    : false;
+  return `
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <strong style="font-size:1.05rem">${esc(estNumberLabel(est))}</strong>
+          ${estStatusChip(estimateEffectiveStatus(est))}
+          <span style="font-size:1rem;font-weight:700">${fmtMoney(est.price)}</span>
+          ${est.gp_dollars != null ? `<span style="color:var(--muted);font-size:.8rem">GP ${fmtMoney(est.gp_dollars)}${gpPctTxt ? ` (${gpPctTxt})` : ''}</span>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="pec-btn sm" id="jobEstOpenFull" title="The full estimate record: edit, re-send, present, archive">Open estimate page</button>
+          <button class="pec-btn sm" id="jobEstViewInvoice">View invoice</button>
+        </div>
+      </div>
+      ${trail.length ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:10px;padding-top:8px;font-size:.76rem;color:var(--muted)">
+        ${trail.map(([t, label]) => `<div style="padding:1px 0">${label} · ${esc(fmtRelativeTime(t))}</div>`).join('')}
+      </div>` : ''}
+      ${viewsInfo ? `<div style="border-top:1px solid var(--rd-line,var(--border));margin-top:8px;padding-top:8px;font-size:.78rem">
+        ${viewsInfo.count
+          ? `<strong>Customer opened it ${viewsInfo.count} time${viewsInfo.count === 1 ? '' : 's'}</strong>${viewsInfo.last ? ` <span style="color:var(--muted)">· last ${esc(fmtRelativeTime(viewsInfo.last))}</span>` : ''}
+             ${isHot ? `<span class="pec-badge" style="background:color-mix(in srgb,#ef4444 16%,transparent);color:#dc2626;border-color:color-mix(in srgb,#ef4444 40%,transparent);font-weight:700;margin-left:6px">&#128293; Hot</span>` : ''}`
+          : '<span style="color:var(--muted)">Customer view: not opened.</span>'}
+      </div>` : ''}
+    </div>
+    ${items.length ? `<div class="pec-card">
+      <h3 style="margin:0 0 6px">Line items</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:.84rem">
+        ${items.map(lineRow).join('')}
+        <tr style="border-top:1px solid var(--rd-line,var(--border))">
+          <td style="padding:6px 8px;font-weight:700">Total</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700">${fmtMoney(estimateLineItemsTotal(items))}</td>
+        </tr>
+      </table>
+    </div>` : ''}
+    ${est.scope_of_work ? `<div class="pec-card">
+      <h3 style="margin:0 0 6px">Scope of work</h3>
+      <div style="font-size:.82rem;white-space:pre-wrap;max-height:340px;overflow-y:auto">${esc(est.scope_of_work)}</div>
+    </div>` : ''}`;
+}
+
 // Thin wrapper so a throw anywhere in the (large) detail render surfaces a
 // retry card instead of a blank screen. renderJobDetail is reached both via
 // switchView (which has its own fence) AND directly from the jobs-row click and
@@ -15535,7 +15610,10 @@ async function renderJobDetailInner(id) {
     // Latest linked estimate's flake color, for the inline editor on the
     // Colors card (edit the color without opening the estimate). Best-effort:
     // a miss just hides the editor.
-    supabase.from('estimates').select('id,flake_color,estimate_number').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
+    // Widened from id,flake_color for the combined page's Estimate tab: the
+    // flake editor keeps reading id/flake_color off the same row, the tab
+    // renders the rest. Still one query, newest wins.
+    supabase.from('estimates').select('id,estimate_number,status,price,calc_price,gp_dollars,gp_pct,sent_at,signed_at,signed_name,accepted_at,rejected_at,rejected_reason,change_request_note,created_at,updated_at,flake_color,scope_of_work,public_token,estimate_line_items(*)').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
     cachedRef('flakeColors', () => supabase.from('colors').select('*').eq('category', 'flake-blend').order('name')),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
@@ -15702,7 +15780,27 @@ async function renderJobDetailInner(id) {
   // Tab memory: same job keeps its tab across the frequent post-save
   // re-renders; a different job starts back on Details.
   if (state.jobDetailTabFor !== id) { state.jobDetailTabFor = id; state.jobDetailTab = 'details'; }
-  const activeTab = state.jobDetailTab === 'comms' ? 'comms' : 'details';
+  // 'estimate' is only a legal tab when the job actually has one (manual and
+  // DripJobs jobs have no estimates row); anything else falls to 'details'.
+  const activeTab = state.jobDetailTab === 'comms' ? 'comms'
+    : (state.jobDetailTab === 'estimate' && flakeEst) ? 'estimate' : 'details';
+
+  // Estimate-tab extras (combined page): view tracking for the Customer views
+  // block. Best-effort and only when an estimate exists; an error just hides
+  // the block. Sequential on purpose: the estimate id comes from the batched
+  // read above, so this cannot join the Promise.all.
+  let jobEstViews = null;
+  let jobEstHotCfg = { minViews: 3, windowHours: 48 };
+  if (flakeEst) {
+    try {
+      const vr = await supabase.from('pec_estimate_views')
+        .select('viewed_at', { count: 'exact' })
+        .eq('estimate_id', flakeEst.id)
+        .order('viewed_at', { ascending: false }).limit(1);
+      if (!vr.error) jobEstViews = { count: vr.count || 0, last: (vr.data && vr.data[0] && vr.data[0].viewed_at) || null };
+      jobEstHotCfg = await pecEstimateHotSettings();
+    } catch (_) {}
+  }
 
   // $/sqft for the header chip. Effective sqft = the manual jobs.sqft when
   // set (the #jobSqft backfill field), else the estimate areas sum. Computed
@@ -15815,12 +15913,21 @@ async function renderJobDetailInner(id) {
       </div>
     </div>
 
-    <!-- Job detail tabs. The Messages & Calls trigger lives in the toolbar
-         (left-aligned with the other actions per Dylan 2026-07-10; it had sat
-         top right since 2026-07-09) and
-         TOGGLES the two panes. Switching toggles display ONLY (never
+    <!-- Job detail tabs (combined page, 2026-08-10): a pill strip under the
+         header card, the invoice rework's shape. Job | Estimate (only when the
+         job has one) | Messages & Calls. Switching toggles display ONLY (never
          re-renders), so unsaved Details edits and live handlers survive;
-         toolbar + header card above stay visible on both tabs. -->
+         toolbar + header card above stay visible on every tab. The Estimate
+         pane's ids are all jobEst*-prefixed so saveJob's read-by-id contract
+         on the Details pane can never collide with them. -->
+    <div class="pec-toolbar" id="pecJobTabs" style="gap:6px;margin-bottom:10px">
+      <button class="pec-btn sm ${activeTab === 'details' ? 'primary' : 'ghost'}" data-jobtab="details">Job</button>
+      ${flakeEst ? `<button class="pec-btn sm ${activeTab === 'estimate' ? 'primary' : 'ghost'}" data-jobtab="estimate">Estimate</button>` : ''}
+      <button class="pec-btn sm ${activeTab === 'comms' ? 'primary' : 'ghost'}" data-jobtab="comms">Messages &amp; Calls</button>
+    </div>
+
+    ${flakeEst ? `<div id="pecJobTabEstimate" style="display:${activeTab === 'estimate' ? '' : 'none'}">${jobEstimateTabHtml(flakeEst, jobEstViews, jobEstHotCfg)}</div>` : ''}
+
     <div id="pecJobTabDetails" style="display:${activeTab === 'details' ? '' : 'none'}">
 
     <div class="pec-card" id="jobColorsCard" style="border-left:4px solid ${job.colors_confirmed ? '#16a34a' : (colorsUrgent ? '#dc2626' : '#d97706')}">
@@ -15996,8 +16103,10 @@ async function renderJobDetailInner(id) {
   });
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
+  // Since the combined page shipped, View Estimate opens the Estimate TAB
+  // right here (navigating to the estimate page would just redirect back).
   const viewEstBtn = $('pecJobViewEstimate');
-  if (viewEstBtn) viewEstBtn.addEventListener('click', () => { state.openEstimateId = flakeEst.id; state.openJobId = null; switchView('estimates'); });
+  if (viewEstBtn) viewEstBtn.addEventListener('click', () => showJobTab('estimate'));
 
   // Job detail tabs. commsMounted is LOCAL on purpose: every re-render rebuilds
   // the DOM from scratch, so the mount must happen again per render; a global
@@ -16009,12 +16118,21 @@ async function renderJobDetailInner(id) {
   // Email history for this job (prompt 36; async, read-only, details tab).
   mountRecordEmailLog($('pecJobEmailsCard'), { jobId: id });
   const showJobTab = (tab) => {
+    if (tab === 'estimate' && !$('pecJobTabEstimate')) tab = 'details';
     state.jobDetailTab = tab;
     $('pecJobTabDetails').style.display = tab === 'details' ? '' : 'none';
+    const estPane = $('pecJobTabEstimate');
+    if (estPane) estPane.style.display = tab === 'estimate' ? '' : 'none';
     $('pecJobTabComms').style.display = tab === 'comms' ? '' : 'none';
+    document.querySelectorAll('#pecJobTabs [data-jobtab]').forEach((b) => {
+      b.classList.toggle('primary', b.dataset.jobtab === tab);
+      b.classList.toggle('ghost', b.dataset.jobtab !== tab);
+    });
     const tabBtn = $('pecJobTabBtnComms');
-    tabBtn.classList.toggle('primary', tab === 'comms');
-    tabBtn.title = tab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer';
+    if (tabBtn) {
+      tabBtn.classList.toggle('primary', tab === 'comms');
+      tabBtn.title = tab === 'comms' ? 'Back to job details' : 'Texts and calls with this customer';
+    }
     if (tab === 'comms') {
       mountCommsOnce();
       // Hidden-mount fix: scrollHeight is 0 while display:none, so the mount's
@@ -16024,8 +16142,19 @@ async function renderJobDetailInner(id) {
       if (feed && feed.scrollTop === 0) feed.scrollTop = feed.scrollHeight;
     }
   };
-  // One toolbar button toggles the two panes (highlighted while on comms).
+  // The pill strip is the primary switcher; the toolbar comms button stays as
+  // a toggle shortcut (highlighted while on comms).
+  document.querySelectorAll('#pecJobTabs [data-jobtab]').forEach((b) => b.addEventListener('click', () => showJobTab(b.dataset.jobtab)));
   $('pecJobTabBtnComms').addEventListener('click', () => showJobTab(state.jobDetailTab === 'comms' ? 'details' : 'comms'));
+  // Estimate-pane wiring (combined page). jobEstOpenFull PINS the full
+  // estimate page first, so the signed-estimate redirect lets it render.
+  const jobEstOpenFullBtn = $('jobEstOpenFull');
+  if (jobEstOpenFullBtn && flakeEst) jobEstOpenFullBtn.addEventListener('click', () => {
+    pecEstDetailPinned = String(flakeEst.id);
+    state.openEstimateId = flakeEst.id; state.openJobId = null; switchView('estimates');
+  });
+  const jobEstViewInvoiceBtn = $('jobEstViewInvoice');
+  if (jobEstViewInvoiceBtn) jobEstViewInvoiceBtn.addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
   // Header phone's Text action (prompt 38): the job's OWN comms feed is the
   // canonical text-the-customer surface, so route there, not to Messages.
   const textCustBtn = $('pecJobTextCust');
@@ -29095,6 +29224,7 @@ function estimateSqft(est) {
 async function renderEstimates() {
   pecSyncHistory(); // capture list/detail nav reached by direct re-render (not switchView)
   if (state.openEstimateId) return renderEstimateDetail(state.openEstimateId);
+  pecEstDetailPinned = null; // back on the list: the combined-page bypass is spent
   const root = $('pecViewRoot');
   root.innerHTML = '<div class="pec-empty"><span class="pec-spinner" aria-hidden="true"></span>Loading estimates…</div>';
   // Archived toggle (build 17): the default view excludes archived rows; the
@@ -29548,7 +29678,7 @@ async function renderEstimateDetail(estimateId) {
       <div id="estInlineHost" style="display:none;margin-bottom:14px"></div>
       <div id="estDetailBody"></div>`;
   }
-  const back = () => { unmountInlineEstimator(); state.openEstimateId = null; renderEstimates(); };
+  const back = () => { unmountInlineEstimator(); state.openEstimateId = null; pecEstDetailPinned = null; renderEstimates(); };
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="estBack">← Back to estimates</button></div>';
   let res;
   try {
@@ -29569,6 +29699,24 @@ async function renderEstimateDetail(estimateId) {
     return;
   }
   const est = res.data;
+  // Combined page (2026-08-10): an estimate that already became a job renders
+  // as the job page's Estimate tab, one page for the whole sale. The pin
+  // (jobEstOpenFull) bypasses this so the FULL page stays reachable; a live
+  // inline estimator never redirects (leaving would destroy typed work); a
+  // pin for a DIFFERENT estimate is stale and drops. pecLastNavKey = null
+  // makes pecSyncHistory REPLACE the just-pushed ?estimate= entry with the
+  // job tuple instead of stacking on it, so Back never lands on a URL that
+  // immediately redirects forward again.
+  if (pecEstDetailPinned && String(pecEstDetailPinned) !== String(est.id)) pecEstDetailPinned = null;
+  if (est.job_id && !keepInline && String(pecEstDetailPinned) !== String(est.id)) {
+    state.openEstimateId = null;
+    state.openJobId = est.job_id;
+    state.jobDetailTabFor = est.job_id;
+    state.jobDetailTab = 'estimate';
+    pecLastNavKey = null;
+    switchView('jobs');
+    return;
+  }
   const intake = est.intake || {};
   const sysName = est.pec_prod_system_types && est.pec_prod_system_types.name ? est.pec_prod_system_types.name : null;
   const leadName = est.leads && est.leads.full_name ? est.leads.full_name : null;
@@ -30095,17 +30243,19 @@ async function renderEstimateDetail(estimateId) {
     if (pecInlineEstimatorAlive() && String(pecEstInline.estimateId) === String(est.id)
       && !confirm('The estimator is open on this estimate. Leaving the page closes it and unsaved edits are lost. Leave anyway?')) return;
     state.openEstimateId = null;
+    pecEstDetailPinned = null;
     go();
   };
+  // Open job lands on the combined page's Job tab explicitly (jobDetailTab may
+  // still read 'estimate' from an earlier visit to the same job).
+  const estGoJob = () => estNavAway(() => {
+    state.openJobId = est.job_id; state.jobDetailTabFor = est.job_id; state.jobDetailTab = 'details';
+    switchView('jobs');
+  });
   const openJobLink = $('estOpenJob');
-  if (openJobLink) openJobLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    estNavAway(() => { state.openJobId = est.job_id; switchView('jobs'); });
-  });
+  if (openJobLink) openJobLink.addEventListener('click', (e) => { e.preventDefault(); estGoJob(); });
   const openJobBtn = $('estOpenJobBtn');
-  if (openJobBtn) openJobBtn.addEventListener('click', () => {
-    estNavAway(() => { state.openJobId = est.job_id; switchView('jobs'); });
-  });
+  if (openJobBtn) openJobBtn.addEventListener('click', estGoJob);
   const viewInvoiceBtn = $('estViewInvoiceBtn');
   if (viewInvoiceBtn) viewInvoiceBtn.addEventListener('click', () => {
     estNavAway(() => { state.openInvoiceJobId = est.job_id; switchView('invoicing'); });
