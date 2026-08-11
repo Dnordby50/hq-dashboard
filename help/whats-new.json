@@ -1,5 +1,15 @@
 [
   {
+    "id": "estimate-sent-status-truth",
+    "date": "2026-08-10",
+    "title": "Sent estimates stay marked Sent, even after edits",
+    "summary": "A sent estimate no longer slips back to In Draft when someone re-saves it from the estimator. Sending is now the only thing that sets the sent state, the database itself refuses any change that would move an estimate backward, and every list, badge, and pipeline card reads the same truth. If a sent estimate is edited afterward, its page now shows a notice that the customer's link already has the new numbers, with a Re-send button right there.",
+    "howto": [
+      "Nothing to do: estimates you send now stay Sent everywhere, including after edits.",
+      "If you edit an estimate after sending it, look for the orange notice at the top of its page and use Re-send so the customer knows to take a fresh look."
+    ]
+  },
+  {
     "id": "invoice-page-rework",
     "date": "2026-08-10",
     "title": "The invoice page got a cleaner layout with tabs",

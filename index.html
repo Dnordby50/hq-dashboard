@@ -7454,7 +7454,7 @@ function openEstimatorFrame({ leadId = null, estimateId = null, offlineNote = fa
 async function leadOpenEstimates(leadId) {
   try {
     const { data, error } = await supabase.from('estimates')
-      .select('id,estimate_number,status,price,created_at')
+      .select('id,estimate_number,status,sent_at,price,created_at')
       .eq('lead_id', leadId)
       .in('status', OPEN_ESTIMATE_STATUSES)
       .is('deleted_at', null)
@@ -7628,7 +7628,7 @@ async function createDraftEstimateNow({ leadId = null, customerId = null, extras
 function showDuplicateEstimateModal(estimates, onCreateNew) {
   const rows = estimates.map(e => {
     const num = e.estimate_number != null ? `EST-${e.estimate_number}` : '(unnumbered)';
-    const meta = EST_STATUS_META[e.status] || [e.status, '#64748b'];
+    const meta = EST_STATUS_META[estimateEffectiveStatus(e)] || [e.status, '#64748b'];
     return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border))">
       <div>
         <strong>${esc(num)}</strong>
@@ -9869,7 +9869,7 @@ async function gsSearchEstimates(q) {
   const numTok = s.replace(/^est-?/i, '');
   if (/^\d+$/.test(numTok)) parts.push(`estimate_number.eq.${numTok}`);
   const r = await supabase.from('estimates')
-    .select('id,estimate_number,status,price,customer_name,customer_address,created_at', { count: 'exact' })
+    .select('id,estimate_number,status,sent_at,price,customer_name,customer_address,created_at', { count: 'exact' })
     .is('deleted_at', null).or(parts.join(','))
     .order('created_at', { ascending: false }).limit(5);
   if (r.error) { console.warn('[search] estimates:', r.error.message); return { rows: [], count: 0 }; }
@@ -9938,7 +9938,7 @@ function renderGlobalSearchResults(res, q) {
       <a class="rd-search-row" href="${esc(pecHref('estimates', { openEstimateId: r.id }))}" data-gs-est="${esc(r.id)}">
         <span class="rd-search-row-top">
           <span class="rd-search-name">${r.estimate_number != null ? 'EST-' + esc(r.estimate_number) : '(unnumbered)'} · ${esc(r.customer_name || '(no name)')}</span>
-          ${estStatusChip(r.status)}
+          ${estStatusChip(estimateEffectiveStatus(r))}
           <span class="rd-search-price">${fmtMoney(r.price)}</span>
         </span>
         <span class="rd-search-row-sub">${esc(r.customer_address || 'No address')}</span>
@@ -27637,7 +27637,7 @@ async function loadLeadsData() {
   // card shape; rows WITH a lead ride their lead card (Draft chip below), so
   // nothing ever gets two cards.
   const boardEstimates = allEstimates.filter(e => !e.lead_id);
-  const leadsWithDraft = new Set(allEstimates.filter(e => e.lead_id && e.status === 'draft' && !e.sent_at).map(e => e.lead_id));
+  const leadsWithDraft = new Set(allEstimates.filter(e => e.lead_id && estimateEffectiveStatus(e) === 'draft').map(e => e.lead_id));
   // Prompt 75 F3: view counts for the corner chip, in ONE aggregate round
   // trip over the estimate ids already on the board (never per-card). Two
   // audiences: no-lead estimate cards, and lead cards that carry a SENT
@@ -27860,7 +27860,7 @@ function estimateCardHtml(est) {
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
       <span class="pec-badge" style="--pec-badge-bg:#334155">Estimate</span>
-      ${estStatusChip(est.status)}
+      ${estStatusChip(estimateEffectiveStatus(est))}
     </div>
     <div style="font-size:.72rem;color:var(--rd-muted,#6b7280);margin-top:4px">${est.estimate_number != null ? 'EST-' + esc(est.estimate_number) : '(unnumbered)'}</div>
     ${price ? `<div style="margin:6px 0 0;font-size:.95rem;font-weight:600">${invUSD0(price)}</div>` : ''}
@@ -28348,7 +28348,9 @@ async function renderLeads() {
   // ESTIMATE'S OWN status, never a drag. Drafts is a derived column (status
   // 'draft', sent_at null), NOT a leads.stage value.
   const EST_CARD_COLUMN = { sent: 'estimate_sent', change_requested: 'presented', signed: 'accepted', accepted: 'accepted', rejected: 'lost', lost: 'lost' };
-  const estColOf = e => e.status === 'draft' ? (e.sent_at ? 'estimate_sent' : 'drafts') : (EST_CARD_COLUMN[e.status] || null);
+  // Prompt 84: the draft-vs-sent read routes through the shared helper (this
+  // rule was born here; estimateEffectiveStatus is its extraction).
+  const estColOf = e => { const s = estimateEffectiveStatus(e); return s === 'draft' ? 'drafts' : (EST_CARD_COLUMN[s] || null); };
   const estCards = (f.archived === 'archived' ? [] : (data.boardEstimates || [])).filter(e => {
     // Attribute filters an estimate card cannot answer (source, campaign,
     // owner) EXCLUDE it: a filtered board shows only cards the filter can
@@ -28634,7 +28636,7 @@ async function renderLeadDetail(leadId) {
       supabase.from('leads').select('*').eq('id', leadId).is('deleted_at', null).maybeSingle(),
       supabase.from('lead_events').select('*').eq('lead_id', leadId).order('created_at', { ascending: false }).limit(200),
       qoStaffNames(),
-      supabase.from('estimates').select('id,estimate_number,status,price,price_all_options,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
+      supabase.from('estimates').select('id,estimate_number,status,sent_at,price,price_all_options,created_at').eq('lead_id', leadId).is('deleted_at', null).order('created_at', { ascending: false }),
       loadOutboundTouchLogs().catch(err => { console.warn('[leads] touch logs:', err.message || err); return null; }),
       // Drip enrollment (latest) + this lead's send ledger. Pre-migration
       // both error and degrade to "no drip block".
@@ -28857,7 +28859,7 @@ async function renderLeadDetail(leadId) {
             <div class="pec-lead-est-row" data-open-estimate="${esc(est.id)}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--rd-line,var(--border));cursor:pointer">
               <div style="display:flex;align-items:center;gap:8px">
                 <strong>${est.estimate_number != null ? 'EST-' + esc(est.estimate_number) : '(unnumbered)'}</strong>
-                ${estStatusChip(est.status)}
+                ${estStatusChip(estimateEffectiveStatus(est))}
               </div>
               <div style="display:flex;gap:12px;align-items:baseline">
                 <span style="font-weight:600">${fmtMoney(est.price)}${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5 ? ` <span style="color:var(--muted);font-size:.72rem;font-weight:400">(up to ${fmtMoney(est.price_all_options)})</span>` : ''}</span>
@@ -29018,6 +29020,21 @@ const EST_STATUS_META = {
   rejected:         ['Rejected', '#dc2626'],
   lost:             ['Lost', '#475569'],
 };
+// Prompt 84 (locked decision 4): THE one derived-state rule for an estimate's
+// draft-vs-sent truth, extracted from the pipeline's estColOf. Contract in one
+// sentence: an estimate with a sent_at has been sent, whatever its status
+// column says. WHY it exists: the estimator's offline outbox used to replay a
+// stale status='draft' over a sent row (EST-102054), and while the estimator
+// no longer writes status on edits and the DB trigger (2026-08-19 migration)
+// refuses regressions, rows written by old cached clients must still READ
+// correctly on every surface. So every surface that keys on draft-vs-sent
+// routes through this; no surface may key on the raw status column alone.
+// Takes the ROW (needs both status and sent_at), returns the status the row
+// effectively has.
+function estimateEffectiveStatus(est) {
+  if (!est) return 'draft';
+  return est.status === 'draft' && est.sent_at ? 'sent' : est.status;
+}
 function estStatusChip(status) {
   const meta = EST_STATUS_META[status] || [titleCaseValue(status || 'unknown'), '#64748b'];
   // The `system` modifier is the one badge class that actually consumes
@@ -29075,7 +29092,7 @@ async function renderEstimates() {
   let res;
   try {
     let qb = supabase.from('estimates')
-      .select('id,estimate_number,status,price,price_all_options,calc_price,price_override_reason,gp_pct,created_at,deleted_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft,mvb,system_type_id),pec_prod_system_types(name)');
+      .select('id,estimate_number,status,sent_at,price,price_all_options,calc_price,price_override_reason,gp_pct,created_at,deleted_at,customer_name,customer_phone,customer_address,lead_id,estimate_areas(sqft,mvb,system_type_id),pec_prod_system_types(name)');
     // The one place we DELIBERATELY read archived rows.
     qb = showArchived ? qb.not('deleted_at', 'is', null) : qb.is('deleted_at', null);
     res = await withFreshSession(() => qb.order('created_at', { ascending: false }).limit(500), { label: 'renderEstimates' });
@@ -29102,7 +29119,7 @@ async function renderEstimates() {
         <td style="text-align:right">${sqft > 0 ? Math.round(sqft).toLocaleString() : '--'}</td>
         <td style="text-align:right;font-weight:600">${fmtMoney(est.price)}${est.status !== 'accepted' && est.price_all_options != null && est.price != null && Number(est.price_all_options) - Number(est.price) >= 0.5 ? `<div style="color:var(--muted);font-size:.68rem;font-weight:400">up to ${fmtMoney(est.price_all_options)}</div>` : ''}</td>
         <td style="text-align:right">${est.gp_pct != null ? (Number(est.gp_pct) * 100).toFixed(1) + '%' : '--'}</td>
-        <td>${estStatusChip(est.status)}</td>
+        <td>${estStatusChip(estimateEffectiveStatus(est))}</td>
         <td style="white-space:nowrap;color:var(--muted)">${esc(fmtRelativeTime(est.created_at))}</td>
         ${showArchived ? `<td><button class="pec-btn ghost sm est-restore" data-est-id="${esc(est.id)}">Restore</button></td>` : ''}
       </tr>`;
@@ -29400,7 +29417,7 @@ async function renderEstJobInfoBlock(container, estimateId) {
     // non-admins, mirroring the estimator's check. Commission attribution
     // flows into GP; a sent estimate's salesperson only moves by admin hand.
     const spSet = !!(intake.salesperson_id || intake.salesperson_name);
-    const spCreatorUnsentDraft = est.status === 'draft' && !est.sent_at
+    const spCreatorUnsentDraft = estimateEffectiveStatus(est) === 'draft'
       && !!est.created_by && !!(state.session && state.session.user)
       && String(est.created_by) === String(state.session.user.id);
     const spLocked = spSet && !isAdmin() && !spCreatorUnsentDraft;
@@ -29677,12 +29694,32 @@ async function renderEstimateDetail(estimateId) {
         ${isArchived
           ? '<button class="pec-btn sm primary" id="estRestore">Restore</button>'
           : '<button class="pec-btn sm ghost danger" id="estArchive" title="Soft-delete: hides it from the list and 404s the public link. Restorable from the Archived filter.">Archive</button>'}
-        ${['draft', 'sent', 'change_requested'].includes(est.status)
+        ${['draft', 'sent', 'change_requested'].includes(estimateEffectiveStatus(est))
           ? pecSplitSendHtml('pecEstSend', est.sent_at ? 'Re-send to customer' : 'Send to customer')
           : `<button class="pec-btn sm primary" disabled title="This estimate is ${esc(est.status)}; it can no longer be sent.">Send to customer</button>`}
       </div>
     </div>
     ${isArchived ? `<div style="background:rgba(100,116,139,.12);border:1px solid rgba(100,116,139,.4);border-radius:8px;padding:10px 12px;font-size:.84rem;margin-bottom:10px"><strong>This estimate is archived.</strong> Its public link is inactive. Restore it to make it active again.</div>` : ''}
+    ${(() => {
+      // Edited after send (prompt 84, locked decision 2): editing a sent
+      // estimate KEEPS it sent (the estimator no longer writes status, and
+      // the DB trigger refuses regressions), so the honest thing left to do
+      // is say so. When the row was saved from the estimator after the last
+      // send (client_updated_at > sent_at), the customer's live link is
+      // already showing the new numbers; this notice tells the rep and hands
+      // them the EXISTING send affordance (the Re-send button up in the
+      // toolbar; the notice button just clicks it, it is not a second send
+      // path). Only while the estimate is still sendable: once accepted or
+      // lost, re-sending is off the table and the notice would only confuse.
+      const editedAfterSend = !isArchived
+        && ['sent', 'change_requested'].includes(estimateEffectiveStatus(est))
+        && est.sent_at && est.client_updated_at
+        && Date.parse(est.client_updated_at) > Date.parse(est.sent_at);
+      return editedAfterSend ? `<div style="background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.45);border-radius:8px;padding:10px 12px;font-size:.84rem;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><strong>This estimate changed after it was sent.</strong> It was edited ${esc(fmtRelativeTime(est.client_updated_at))}, after it went to the customer ${esc(fmtRelativeTime(est.sent_at))}. Their link already shows the new numbers. Re-send it so they know to take a fresh look.</div>
+        <button class="pec-btn sm" id="estEditedResend">Re-send to customer</button>
+      </div>` : '';
+    })()}
     ${(() => {
       // MOHS + moisture banner (prompt 62 Part H): same loud warning as the
       // estimator, never a block. Blank means the crew work order prints
@@ -29700,7 +29737,7 @@ async function renderEstimateDetail(estimateId) {
             <div>
               <div style="font-size:1.35rem;font-weight:800">${esc(estNumberLabel(est))}</div>
               <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
-                ${estStatusChip(est.status)}
+                ${estStatusChip(estimateEffectiveStatus(est))}
                 <span style="color:var(--muted);font-size:.75rem">created ${esc(fmtRelativeTime(est.created_at))}</span>
               </div>
             </div>
@@ -29955,7 +29992,9 @@ async function renderEstimateDetail(estimateId) {
     // A summary refresh happened around a live estimator (a save, a line-item
     // change): keep the untouched iframe and re-apply the layout.
     applyInlineLayout();
-  } else if (est.status === 'draft' && !isArchived && String(pecEstInline.closedFor) !== String(est.id)) {
+  } else if (estimateEffectiveStatus(est) === 'draft' && !isArchived && String(pecEstInline.closedFor) !== String(est.id)) {
+    // Prompt 84: effective status, so a drifted draft-with-sent_at row (sent
+    // in truth) never auto-opens the estimator over a live customer link.
     openInlineEstimator();
   }
   $('estEdit').addEventListener('click', openInlineEstimator);
@@ -30029,6 +30068,11 @@ async function renderEstimateDetail(estimateId) {
       });
     },
   });
+  // The edited-after-send notice's button IS the toolbar's send kit (prompt
+  // 84): it clicks the existing primary, so both open the same Email + Text
+  // flow with the same gates. Never a second send path.
+  const editedResend = $('estEditedResend');
+  if (editedResend) editedResend.addEventListener('click', () => { const m = $('pecEstSendMain'); if (m) m.click(); });
   const openJobLink = $('estOpenJob');
   if (openJobLink) openJobLink.addEventListener('click', (e) => {
     e.preventDefault();

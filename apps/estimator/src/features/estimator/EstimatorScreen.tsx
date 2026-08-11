@@ -2433,7 +2433,15 @@ export default function EstimatorScreen({
         // The screen's pre-minted id (or the edit's), NEVER a fresh one: the
         // early draft card and every Save upsert the same row (prompt 47).
         estimateId: estimateIdForSave(editing?.id ?? null, draftId),
-        status: editing?.status ?? 'draft',
+        // Prompt 84: status is written ONLY when this save CREATES the row.
+        // An edit, a re-save after the early draft card pre-minted the row
+        // (draftWriteRef), or a second Save in the same session
+        // (savedEstimateId) must not touch it: the old `editing?.status ??
+        // 'draft'` re-wrote the open-time snapshot on every save, so a save
+        // queued offline before a send could land after it and clobber
+        // status='sent' back to 'draft' (EST-102054). The dashboard owns the
+        // sent flip; the estimator only ever births a row as 'draft'.
+        status: editing || savedEstimateId || draftWriteRef.current ? undefined : 'draft',
         // A custom estimate has no system; writing the dominant one would be
         // a lie the metrics attribute revenue to. A custom-line-only standard
         // estimate has none either (dominantSystemId falls through to '' when

@@ -111,9 +111,16 @@ export type SaveEstimateArgs = {
   // Set when EDITING an existing estimate: the same id makes the outbox upsert
   // an in-place update (decision: reopening edits in place, no version rows).
   estimateId?: string | null;
-  // Preserved on edit so reopening a sent estimate cannot silently reset it to
-  // draft. New estimates pass 'draft'.
-  status: string;
+  // Written ONLY when the row is being CREATED (prompt 84): pass 'draft' on
+  // the save that first creates the row, omit on every later save of the same
+  // id. The estimator does not own status. The dashboard's send/accept/reject
+  // paths do (markEstimateSent is the one sent-state flip), and the old
+  // "preserve editing.status" shape re-wrote a stale snapshot on every edit,
+  // which is how a queued offline save clobbered a sent estimate back to
+  // draft (EST-102054). Omitting the key is sufficient AND correct: the
+  // upsert's on-conflict update only touches supplied columns, the same
+  // property this file already relies on for estimate_number.
+  status?: string | null;
   // The DOMINANT area's system (most sqft) for reporting; every area prices
   // with its own system via estimate_areas.system_type_id. Null on a custom
   // estimate (build 24): there is no system, and writing one would be a lie
@@ -206,7 +213,6 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     // Carries through the outbox unchanged, so an estimate written offline at a
     // job site still lands attached to its lead when the phone gets signal.
     lead_id: args.leadId ?? null,
-    status: args.status,
     intake: {
       ...args.intake,
       salesperson_id: args.salesperson.id,
@@ -267,6 +273,12 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     client_updated_at: now,
     rev: 0,
   };
+  // status rides the row ONLY on a create (prompt 84): an edit's upsert must
+  // leave the column alone so a queued offline save can never replay a stale
+  // 'draft' over a row the dashboard has since flipped to 'sent'. The DB
+  // trigger (2026-08-19 migration) backstops this by refusing regressions
+  // outright, so even an old cached client's write cannot land.
+  if (args.status != null) estimateRow.status = args.status;
   // Human-edited scope + estimate changed: flag it stale so the estimate page
   // shows the Regenerate banner. Deliberately NOT written otherwise, so the
   // upsert leaves the column alone on ordinary saves.
