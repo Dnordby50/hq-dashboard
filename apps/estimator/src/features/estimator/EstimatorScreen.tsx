@@ -2627,6 +2627,49 @@ export default function EstimatorScreen({
     </>
   );
 
+  // ---- Stale-bundle self-heal (prompt 85 Task D) ---------------------------
+  // Root cause of the 2026-08-11 missing-Save report: the precached app shell
+  // serves the OLD index.html (and its old hashed JS) on a cold open right
+  // after a deploy, and skipWaiting/clientsClaim cannot swap JavaScript that
+  // is already executing, so a whole session can run last week's bundle. On
+  // open, when online, compare the live index.html's main asset hash to the
+  // running one. Mismatch + untouched screen: reload once (sessionStorage
+  // guards the once; if the SW has not swapped the shell yet, the second pass
+  // falls through to the notice instead of reload-looping). Mismatch + ANY
+  // work in progress (editing, or customer/areas differ from their mount
+  // snapshot, which keeps a lead-prefilled open eligible for the quiet
+  // notice, never a reload): a one-line non-blocking notice only. Silently
+  // destroying typed work to install an update would be the worse bug.
+  const bootSnapshotRef = useRef<string | null>(null);
+  if (bootSnapshotRef.current === null) bootSnapshotRef.current = JSON.stringify({ c: customer, a: areas });
+  const workInProgressRef = useRef(false);
+  workInProgressRef.current = !!editing || JSON.stringify({ c: customer, a: areas }) !== bootSnapshotRef.current;
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/estimator/index.html', { cache: 'no-store' });
+        if (!res.ok || cancelled) return;
+        const liveMatch = (await res.text()).match(/assets\/(index-[A-Za-z0-9_-]+\.js)/);
+        const runningMatch = String(import.meta.url).match(/(index-[A-Za-z0-9_-]+\.js)/);
+        if (!liveMatch || !runningMatch || cancelled || liveMatch[1] === runningMatch[1]) return;
+        const reloadKey = 'pecEstimatorReloadedFor';
+        if (!workInProgressRef.current && sessionStorage.getItem(reloadKey) !== liveMatch[1]) {
+          sessionStorage.setItem(reloadKey, liveMatch[1]);
+          location.reload();
+          return;
+        }
+        setUpdateReady(true);
+      } catch {
+        // Offline or transient network failure: the estimator must open in a
+        // no-signal driveway regardless. The check simply does not run.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // The ONE Save row for both modes (prompt 82). It renders UNCONDITIONALLY,
   // outside every pricing gate: when the estimate cannot be saved the button
   // is disabled with the first blocker named beside it in plain text (no
@@ -2713,6 +2756,10 @@ export default function EstimatorScreen({
           )}
         </div>
       </header>
+
+      {updateReady && (
+        <div className="update-note">A newer version of the estimator is available. Reload this page once your estimate is saved.</div>
+      )}
 
       {syncPanelOpen && stuckOps.length > 0 && (
         <div className="sync-panel" role="region" aria-label="Saves not syncing">

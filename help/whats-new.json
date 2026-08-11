@@ -1,5 +1,15 @@
 [
   {
+    "id": "estimator-sticky-save-and-self-update",
+    "date": "2026-08-11",
+    "title": "The estimator Save button now stays on screen on your phone",
+    "summary": "On phones, the Save button rides in a bar pinned to the bottom of the screen, so it is visible at every scroll position, with the reason it is disabled named right beside it. The estimator also checks for a newer version when it opens: a fresh screen updates itself, and if you are mid-estimate it shows a small note asking you to reload after saving instead of interrupting you.",
+    "howto": [
+      "Open the estimator on your phone; the Save bar sits at the bottom of the screen the whole time.",
+      "If you see a note that a newer version is available, finish and save, then reload the page."
+    ]
+  },
+  {
     "id": "combined-estimate-job-page",
     "date": "2026-08-10",
     "title": "One combined page for a signed estimate and its job",

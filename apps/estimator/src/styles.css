@@ -167,7 +167,50 @@ body.embed #root { height: auto; }
 .sync-panel-actions .as-btn:disabled { opacity: 0.5; cursor: default; }
 .sync-retry-outcome { color: #a7f3d0; font-size: 0.8rem; }
 
+/* Stale-bundle notice (prompt 85 Task D): one line, non-blocking, shown only
+   when a newer deploy exists AND work is in progress (a pristine open just
+   reloads itself instead). */
+.update-note {
+  margin: 0.5rem 1rem 0;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.4rem;
+  background: var(--panel);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
 .save-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.25rem; }
+/* Sticky mobile save bar (prompt 85): below 760px the ONE save row pins to
+   the bottom of the viewport so Save is visible at every scroll position.
+   Full-page shells only. In the EMBED iframe the page auto-sizes to content
+   (the dashboard's height listener), so there is no internal scrolling and
+   position: fixed would pin to the iframe's own full-content viewport, i.e.
+   float uselessly mid-document; the embed keeps the in-flow row. */
+@media (max-width: 759.98px) {
+  .screen:not(.embed) .save-row {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    margin: 0;
+    padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom));
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.25);
+  }
+  .screen:not(.embed) .save-row .save { flex-shrink: 0; }
+  .screen:not(.embed) .save-row .save-note {
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Room under the last real control so the fixed bar never covers it. */
+  .screen:not(.embed) { padding-bottom: calc(4.6rem + env(safe-area-inset-bottom)); }
+}
 .save {
   background: var(--accent);
   color: #fff;
