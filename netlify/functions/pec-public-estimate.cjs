@@ -47,6 +47,7 @@ const {
   triggerLabel,
 } = require('../../production/estimate-installments.cjs');
 const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
+const { resolveDefaultTerms } = require('./_pec-invoice-terms.cjs');
 const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
 // Optional-lines rules (prompt 72): the same module the estimator bundles,
 // so the accept guard and the job-side filters share one implementation.
@@ -1294,10 +1295,26 @@ async function ensureJobCreated(est) {
   const jobId = deterministicUuid(`job:${est.id}`);
   const existingJobs = await sb('GET', `/jobs?id=eq.${jobId}&select=id&limit=1`);
   if (!existingJobs.length) {
+    // Invoice terms (2026-08-17): the new job carries its default terms from
+    // the commercial rule (the estimate is in hand, so this is authoritative)
+    // AND writes job_class so the rule self-serves on every later surface.
+    // Best-effort settings read: a failed read falls back to the locked
+    // defaults inside resolveDefaultTerms.
+    let termsSettings = {};
+    try {
+      const tRows = await sb('GET', '/settings?key=in.(invoice_terms_residential_default,invoice_terms_commercial_default)&select=key,value');
+      termsSettings = Object.fromEntries((Array.isArray(tRows) ? tRows : []).map(r => [r.key, r.value]));
+    } catch (_) { /* locked defaults */ }
+    const invoiceTerms = resolveDefaultTerms({
+      estimateCommercial: est.customer_is_commercial,
+      companyName: est.customer_company || (customer && customer.company_name) || null,
+    }, termsSettings);
     await sb('POST', '/jobs', {
       id: jobId,
       customer_id: customer.id,
       type: 'epoxy',
+      invoice_terms: invoiceTerms,
+      job_class: est.customer_is_commercial != null ? (est.customer_is_commercial ? 'commercial' : 'residential') : null,
       address: est.customer_address || null,
       scope: jobScope,
       // jobs.sqft is TEXT, so both paths write a string.

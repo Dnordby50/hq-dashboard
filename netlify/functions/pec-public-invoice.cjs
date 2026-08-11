@@ -22,6 +22,7 @@ const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.
 // and the staff UI). A job with no installment rows resolves to null and this
 // page renders EXACTLY its legacy full-balance behavior.
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
+const { termsLabel } = require('./_pec-invoice-terms.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // Accounting-style negatives ("-$745.00"): a refund is a negative pec_payments
@@ -323,6 +324,15 @@ function invoicePage(row, brand, payments, opts) {
   const dateLine = row.completed_date
     ? `Completed ${esc(fmtDate(row.completed_date))}`
     : (row.signed_date ? `Signed ${esc(fmtDate(row.signed_date))}` : '');
+  // Invoice terms (2026-08-17): the top-of-invoice terms line, shown in the
+  // hero AND the bill-to band (DripJobs shows its due date in both spots).
+  // Informational only: the schedule/ask owns every amount and the due box.
+  // Paid invoices keep the terms label but drop the date (nothing is due).
+  const termsBits = [];
+  const termsName = termsLabel(row.invoice_terms);
+  if (termsName && row.invoice_terms !== 'custom_date') termsBits.push(termsName);
+  if (row.invoice_due_date && due > 0.005) termsBits.push('Due ' + fmtDate(row.invoice_due_date));
+  const termsLine = termsBits.map(esc).join(' &middot; ');
 
   return htmlResponse(200, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Invoice ${esc(invNo)} &middot; ${esc(biz)}</title>
@@ -406,6 +416,7 @@ function invoicePage(row, brand, payments, opts) {
           <div class="eyebrow">${esc(biz)}</div>
           <div class="big">Invoice #${esc(invNo)}</div>
           ${dateLine ? `<div class="sub">${dateLine}</div>` : ''}
+          ${termsLine ? `<div class="sub" style="color:rgba(255,255,255,.88);font-weight:700">${termsLine}</div>` : ''}
         </div>
         <div class="right">
           <div class="eyebrow">${ask ? 'Amount due now' : 'Amount due'}</div>
@@ -423,6 +434,7 @@ function invoicePage(row, brand, payments, opts) {
         <div class="grid2">
           <div><div class="lbl">Bill to</div><div style="font-weight:700">${esc(row.customer_name || '')}</div><div style="color:#4b5563;margin-top:2px">${esc(billTo)}</div></div>
           <div><div class="lbl">Job address</div><div style="color:#4b5563">${esc(row.address || billTo)}</div>${dateLine ? `<div style="color:#4b5563;font-size:13px;margin-top:4px">${dateLine}</div>` : ''}</div>
+          ${termsLine ? `<div><div class="lbl">Terms</div><div style="color:#4b5563;font-weight:600">${termsLine}</div></div>` : ''}
         </div>
         <table class="li">
           <thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead>

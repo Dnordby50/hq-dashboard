@@ -10080,6 +10080,35 @@ function invAddDays(d, n) { const x = invParse(d); x.setUTCDate(x.getUTCDate() +
 function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
 const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
 const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
+// Invoice terms (2026-08-17): client mirror of _pec-invoice-terms.cjs. Keep
+// the two in lockstep (same rule as resolveCurrentAsk / pecInstallmentAsk).
+// The TERM is the rule, jobs.invoice_due_date is its resolution. Labels are
+// customer-facing: no em dashes.
+const PEC_INVOICE_TERMS_LABELS = { due_on_completion: 'Due upon completion', due_on_receipt: 'Due upon receipt', net_15: 'Net 15', net_30: 'Net 30', custom_date: 'Due by date' };
+const PEC_INVOICE_NET_DAYS = { net_15: 15, net_30: 30 };
+const pecInvoiceTermsLabel = terms => PEC_INVOICE_TERMS_LABELS[terms] || '';
+// The due date a term resolves to (YYYY-MM-DD or null). Phoenix day math via
+// the existing inv* helpers (fixed UTC-7, no DST in Arizona).
+function pecInvoiceComputeDueDate(terms, firstSentIso, completedDate) {
+  if (PEC_INVOICE_NET_DAYS[terms]) {
+    if (!firstSentIso) return null;
+    const sentDay = new Date(Date.parse(firstSentIso) - 7 * 3600 * 1000).toISOString().slice(0, 10);
+    return invAddDays(sentDay, PEC_INVOICE_NET_DAYS[terms]);
+  }
+  if (terms === 'due_on_completion') return completedDate || null;
+  if (terms === 'due_on_receipt') return firstSentIso ? new Date(Date.parse(firstSentIso) - 7 * 3600 * 1000).toISOString().slice(0, 10) : null;
+  return null;
+}
+// "Net 30 · Due 9/9/2026" line for internal surfaces and the PDF. Paid
+// invoices keep the label, drop the date (mirror of the public page rule).
+function pecInvoiceTermsLine(row) {
+  const bits = [];
+  const label = pecInvoiceTermsLabel(row.invoice_terms);
+  if (label && row.invoice_terms !== 'custom_date') bits.push(label);
+  const balance = invNum(row.balance_remaining != null ? row.balance_remaining : row.balance);
+  if (row.invoice_due_date && balance > 0.005) bits.push('Due ' + invFmtDate(row.invoice_due_date));
+  return bits.join(' · ');
+}
 // timestamptz -> "Jul 16, 2026, 7:48 AM" in Phoenix time. Same fixed UTC-7
 // shift as invToday/phxDay (Phoenix has no DST, so the constant offset is
 // always right); shift then read UTC parts, never the browser's local zone.
@@ -10679,7 +10708,8 @@ function pecDownloadInvoicePdf(row, payments) {
   const payHtml = (payments && payments.length)
     ? `<h3 class="doc-h3">Payments received</h3><table class="doc-tbl"><thead><tr><th>Date</th><th>Method</th><th>Reference</th><th class="r">Amount</th></tr></thead><tbody>${payments.map(p => `<tr><td>${invFmtDate(p.received_date)}</td><td>${esc(titleCaseValue(p.method) || '—')}</td><td>${esc(p.reference || '—')}</td><td class="r">${invUSD(invNum(p.amount))}</td></tr>`).join('')}</tbody></table>`
     : '';
-  const head = `<div class="doc-title"><h1>Invoice</h1><div class="meta">#${esc(invNo)}<br>${esc(new Date().toLocaleDateString())}</div></div>`;
+  const termsLine = pecInvoiceTermsLine(row);
+  const head = `<div class="doc-title"><h1>Invoice</h1><div class="meta">#${esc(invNo)}<br>${esc(new Date().toLocaleDateString())}${termsLine ? `<br><strong>${esc(termsLine)}</strong>` : ''}</div></div>`;
   const body = `
     <div class="doc-billto"><div class="lbl">Bill to</div><div class="name">${esc(row.customer_name || '')}</div><div class="doc-note">${esc(row.address || '')}</div></div>
     <table class="doc-tbl"><thead><tr><th>Description</th><th class="r">Amount</th></tr></thead><tbody>${itemsHtml}</tbody></table>
@@ -11965,13 +11995,18 @@ function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {
     try {
       await pecSendSms({ brand: smsBrand, job_id: row.id, customer_id: row.customer_id, kind: 'invoice' });
       // First-send wins, same stamp as the email path (the null->set
-      // transition is the ONE moment the invoice drip enrolls).
+      // transition is the ONE moment the invoice drip enrolls). Net terms
+      // resolve their due date off this same moment, in the same patch.
       if (!row.invoice_first_sent_at) {
         const nowIso = new Date().toISOString();
-        withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+        const stampPatch = { invoice_first_sent_at: nowIso };
+        const autoDue = pecInvoiceComputeDueDate(row.invoice_terms, nowIso, row.completed_date);
+        if (!row.invoice_due_date && autoDue) stampPatch.invoice_due_date = autoDue;
+        withFreshWrite(() => supabase.from('jobs').update(stampPatch).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
           .then(res => {
             if (!(res && res.error)) {
               row.invoice_first_sent_at = nowIso;
+              if (stampPatch.invoice_due_date) row.invoice_due_date = stampPatch.invoice_due_date;
               enrollInvoiceDripClient(row.id).catch(() => {});
             }
           })
@@ -12067,10 +12102,14 @@ function pecInvoiceSendKit(row, { invNo = '', onDone = null, onSent = null } = {
           // public link" and the Settings test-send (not real invoice sends).
           if (!row.invoice_first_sent_at) {
             const nowIso = new Date().toISOString();
-            withFreshWrite(() => supabase.from('jobs').update({ invoice_first_sent_at: nowIso }).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
+            const stampPatch = { invoice_first_sent_at: nowIso };
+            const autoDue = pecInvoiceComputeDueDate(row.invoice_terms, nowIso, row.completed_date);
+            if (!row.invoice_due_date && autoDue) stampPatch.invoice_due_date = autoDue;
+            withFreshWrite(() => supabase.from('jobs').update(stampPatch).eq('id', row.id).is('invoice_first_sent_at', null), { label: 'invoice-first-sent' })
               .then(res => {
                 if (!(res && res.error)) {
                   row.invoice_first_sent_at = nowIso;
+                  if (stampPatch.invoice_due_date) row.invoice_due_date = stampPatch.invoice_due_date;
                   // Phase 3: the first invoice send enrolls automatic payment
                   // reminders (campaign ships dry_run; nothing texts/emails
                   // until Dylan flips it live). Stamp-guarded = exactly once.
@@ -12337,6 +12376,10 @@ async function renderJobInvoice(jobId) {
       <div class="pec-ar-headline" style="font-size:1.4rem">${esc(row.customer_name || '—')}</div>
       <div class="pec-ar-sub">${esc(row.address || '')}</div>
       <div class="pec-ar-sub" style="margin-top:4px">Invoice ${esc(invNo)} · <span class="pec-badge ${esc(row.status)}">${esc(String(row.status).replace('_', ' '))}</span> · ${ageChip}</div>
+      <div class="pec-ar-sub" style="margin-top:4px">Terms: ${(() => {
+        const tl = pecInvoiceTermsLine(row);
+        return tl ? `<strong>${esc(tl)}</strong>` : '<span style="color:var(--muted)">none set</span>';
+      })()} <button type="button" id="pecInvEditTerms" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">Edit terms</button></div>
     </div>
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Invoice total</div><div class="pec-stat-val">${invUSD(row.price)}</div></div>
@@ -12443,6 +12486,50 @@ async function renderJobInvoice(jobId) {
     const url = `${location.origin}/pay/${row.public_token}`;
     try { await navigator.clipboard.writeText(url); showToast('Public invoice link copied', { ttl: 2500 }); }
     catch (_) { window.prompt('Copy this link:', url); }
+  });
+
+  // Invoice terms editor (2026-08-17): writes jobs.invoice_terms +
+  // invoice_due_date. Net terms auto-compute the date from the first-send day
+  // (Phoenix); custom_date requires a hand-picked date. Idempotent PATCH, so
+  // the recover+retry write wrapper is safe.
+  const termsB = $('pecInvEditTerms');
+  if (termsB) termsB.addEventListener('click', () => {
+    const termOpts = Object.entries(PEC_INVOICE_TERMS_LABELS)
+      .map(([k, v]) => `<option value="${k}" ${row.invoice_terms === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
+    openModal(`
+      <h3>Invoice terms</h3>
+      <div class="pec-row-2">
+        <div class="pec-field"><label>Terms</label><select id="invTermsSel"><option value="">None</option>${termOpts}</select></div>
+        <div class="pec-field"><label>Due date</label><input type="date" id="invTermsDue" value="${esc(row.invoice_due_date || '')}"></div>
+      </div>
+      <div style="color:var(--muted);font-size:.72rem;margin-bottom:10px">Net terms count from the day the invoice first went out (leave the date blank to auto-fill; it fills at first send if the invoice has not gone out yet). When a payment schedule exists, the schedule decides what is due and when; the terms line is informational.</div>
+      <div class="prod-msg-err" id="invTermsErr" style="min-height:16px"></div>
+      <div class="pec-modal-actions">
+        <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+        <button type="button" class="pec-btn primary" id="invTermsSave">Save</button>
+      </div>
+    `, { onMount: modal => {
+      modal.querySelector('#invTermsSel').addEventListener('change', () => {
+        const t = modal.querySelector('#invTermsSel').value;
+        const auto = pecInvoiceComputeDueDate(t, row.invoice_first_sent_at, row.completed_date);
+        modal.querySelector('#invTermsDue').value = auto || '';
+      });
+      modal.querySelector('#invTermsSave').addEventListener('click', async () => {
+        const errEl = modal.querySelector('#invTermsErr'); errEl.textContent = '';
+        const t = modal.querySelector('#invTermsSel').value || null;
+        let dueDate = modal.querySelector('#invTermsDue').value || null;
+        if (t === 'custom_date' && !dueDate) { errEl.textContent = 'Pick the due date.'; return; }
+        if (t && !dueDate) dueDate = pecInvoiceComputeDueDate(t, row.invoice_first_sent_at, row.completed_date);
+        const btn = modal.querySelector('#invTermsSave'); btn.disabled = true;
+        try {
+          const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ invoice_terms: t, invoice_due_date: dueDate }).eq('id', row.id), { label: 'invoice-terms-save' });
+          if (upd && upd.error) throw upd.error;
+          closeModal();
+          showToast('Invoice terms saved', { ttl: 2500 });
+          renderInvoicing();
+        } catch (err) { errEl.textContent = err.message || String(err); btn.disabled = false; }
+      });
+    } });
   });
 
   // The send flow lives in pecInvoiceSendKit (prompt 45 refactor: the
@@ -12845,8 +12932,11 @@ async function markJobComplete(row) {
     // if a schedule day is ever added back later. Same deploy-safe fallback as
     // the other status writers if the column is missing.
     const patch = { completed_date: today, status: 'completed', status_manual_at: new Date().toISOString() };
+    // Invoice terms (2026-08-17): completion is the trigger that resolves a
+    // due-upon-completion invoice's due date. Same patch, no extra write.
+    if (row.invoice_terms === 'due_on_completion' && !row.invoice_due_date) patch.invoice_due_date = today;
     let upd = await withFreshWriteRetry(() => supabase.from('jobs').update(patch).eq('id', row.id), { label: 'mark-complete' });
-    if (upd.error && /status_manual_at/.test(upd.error.message || '')) {
+    if (upd.error && /status_manual_at|invoice_due_date/.test(upd.error.message || '')) {
       upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ completed_date: today, status: 'completed' }).eq('id', row.id), { label: 'mark-complete' });
     }
     if (upd.error) throw upd.error;
@@ -20303,7 +20393,7 @@ function openApptRuleModal(rule, onDone) {
 async function renderSettingsInvoicing() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'post_sign_payment_prompt_enabled']),
+    .in('key', ['default_deposit_pct', 'payment_schedules_enabled', 'installment_approval_required', 'estimate_schedule_enabled', 'post_sign_payment_prompt_enabled', 'invoice_terms_residential_default', 'invoice_terms_commercial_default']),
     { label: 'settings-invoicing' });
   const map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
   const depPct = map.default_deposit_pct != null ? map.default_deposit_pct : '50';
@@ -20311,6 +20401,11 @@ async function renderSettingsInvoicing() {
   const gateOn = map.installment_approval_required !== 'false';
   const estSchedOn = map.estimate_schedule_enabled !== 'false';
   const payPromptOn = map.post_sign_payment_prompt_enabled !== 'false';
+  const termsRes = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_residential_default] ? map.invoice_terms_residential_default : 'due_on_completion';
+  const termsCom = PEC_INVOICE_TERMS_LABELS[map.invoice_terms_commercial_default] ? map.invoice_terms_commercial_default : 'net_30';
+  // custom_date is a per-invoice choice, never a company default.
+  const termsOpts = sel => Object.entries(PEC_INVOICE_TERMS_LABELS).filter(([k]) => k !== 'custom_date')
+    .map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
 
   const saveSetting = async (key, value) => {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-invoicing-save' });
@@ -20326,6 +20421,15 @@ async function renderSettingsInvoicing() {
         <input type="number" id="setDepPct" min="0" max="100" step="0.5" value="${esc(depPct)}" style="width:110px;text-align:right"> <strong>%</strong>
         <button type="button" class="pec-btn primary sm" id="setDepPctSave">Save</button>
         <span id="setDepPctErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
+      </div>
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">Invoice terms</h3>
+      <div style="color:var(--muted);font-size:.76rem;margin-bottom:10px">Every invoice states its terms at the top of the page and the PDF. New jobs default by client type (a business name or a commercial estimate makes the client commercial); staff can change any single invoice from its Edit terms button. Net terms count from the day the invoice first goes out, and payment reminders wait for the due date.</div>
+      <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;text-transform:none">Residential <select id="setTermsRes">${termsOpts(termsRes)}</select></label>
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;text-transform:none">Commercial <select id="setTermsCom">${termsOpts(termsCom)}</select></label>
+        <span id="setTermsErr" style="color:var(--danger,#dc2626);font-size:.78rem"></span>
       </div>
     </div>
     <div class="pec-card">
@@ -20383,6 +20487,17 @@ async function renderSettingsInvoicing() {
     catch (err) { errEl.textContent = err.message || String(err); }
     btn.disabled = false;
   });
+  const wireTermsSelect = (id, key) => {
+    $(id).addEventListener('change', async () => {
+      const errEl = $('setTermsErr'); errEl.textContent = '';
+      const sel = $(id); sel.disabled = true;
+      try { await saveSetting(key, sel.value); showToast('Default terms saved', { ttl: 2500 }); }
+      catch (err) { errEl.textContent = err.message || String(err); }
+      sel.disabled = false;
+    });
+  };
+  wireTermsSelect('setTermsRes', 'invoice_terms_residential_default');
+  wireTermsSelect('setTermsCom', 'invoice_terms_commercial_default');
   $('setSchedOn').addEventListener('click', async () => {
     const to = schedOn ? 'false' : 'true';
     const btn = $('setSchedOn'); btn.disabled = true;

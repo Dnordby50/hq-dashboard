@@ -1,5 +1,16 @@
 [
   {
+    "id": "invoice-terms",
+    "date": "2026-08-10",
+    "title": "Invoices now state their payment terms at the top",
+    "summary": "Every invoice now carries payment terms, shown at the top of the customer's invoice page and on the PDF: residential jobs default to Due upon completion, and commercial clients default to Net 30 with the due date counted from the day the invoice first goes out. You can change any single invoice's terms from its Edit terms button, and payment reminders now wait for the due date instead of nudging a Net 30 customer three days after the send. When an invoice has a payment schedule, the schedule still decides what is due and when; the terms line is informational.",
+    "howto": [
+      "Nothing to do for defaults: new jobs pick their terms from the client type automatically (a business name or commercial estimate means commercial).",
+      "To change one invoice, open it in Invoicing and use the Edit terms button next to the terms line.",
+      "To change the company defaults, open Settings, go to Invoicing, and set the Residential and Commercial dropdowns under Invoice terms."
+    ]
+  },
+  {
     "id": "post-sign-payment-prompt",
     "date": "2026-08-10",
     "title": "Customers are asked how they want to pay the moment they sign",

@@ -17,6 +17,7 @@
 // (prompt 74): system type's deposit_pct, else settings default_deposit_pct,
 // else 50. Lives in production/ so the estimator bundles the identical rule.
 const { resolveDepositPct } = require('../../production/estimate-installments.cjs');
+const { computeDueDate } = require('./_pec-invoice-terms.cjs');
 
 const EPS = 0.005;                 // same money epsilon as the AR predicates
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -320,7 +321,7 @@ async function runInstallmentTriggers(deps) {
   const todayIso = phoenixTodayIso(now());
 
   const jobIds = [...new Set(list.map(i => i.job_id))];
-  const jobs = await sb('GET', `/jobs?id=in.(${jobIds.map(encodeURIComponent).join(',')})&select=id,status,price,voided_at,archived_at,customer_id,hq_invoice_number,dripjobs_deal_id,public_token,invoice_first_sent_at,deposit_collected,deposit_waived`);
+  const jobs = await sb('GET', `/jobs?id=in.(${jobIds.map(encodeURIComponent).join(',')})&select=id,status,price,voided_at,archived_at,customer_id,hq_invoice_number,dripjobs_deal_id,public_token,invoice_first_sent_at,deposit_collected,deposit_waived,completed_date,invoice_terms,invoice_due_date`);
   const jobById = Object.fromEntries((Array.isArray(jobs) ? jobs : []).map(j => [j.id, j]));
   const pays = await sb('GET', `/pec_payments?job_id=in.(${jobIds.map(encodeURIComponent).join(',')})&select=job_id,amount`);
   const paysByJob = {};
@@ -460,7 +461,12 @@ async function autoSendInstallment(deps, { inst, job, ask, nowIso }) {
   // First-send stamp (first-send-wins, same rule as the staff send paths) and
   // the reminder-drip enrollment anchored to it.
   if (!job.invoice_first_sent_at) {
-    await sb('PATCH', `/jobs?id=eq.${encodeURIComponent(job.id)}&invoice_first_sent_at=is.null`, { invoice_first_sent_at: nowIso })
+    // Net terms resolve their due date off this same first-send moment, in
+    // the same conditional patch (mirror of the staff-send stamp sites).
+    const stampPatch = { invoice_first_sent_at: nowIso };
+    const autoDue = computeDueDate(job.invoice_terms, { firstSentIso: nowIso, completedDate: job.completed_date });
+    if (!job.invoice_due_date && autoDue) stampPatch.invoice_due_date = autoDue;
+    await sb('PATCH', `/jobs?id=eq.${encodeURIComponent(job.id)}&invoice_first_sent_at=is.null`, stampPatch)
       .catch(e => console.error('installments: first-sent stamp failed', e.message));
   }
   if (P.enrollInvoiceDrip) {

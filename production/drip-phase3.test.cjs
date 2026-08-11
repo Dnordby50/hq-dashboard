@@ -190,6 +190,33 @@ function invTables(over = {}) {
     const enr = fx.db.pec_drip_enrollments[0];
     ok(enr.status === 'stopped' && enr.stop_reason === 'paid' && providers.ai.length === 0, 'a fully paid balance stops the reminders before any render');
   }
+
+  console.log('# invoice drip: a future due date holds reminders (invoice terms, 2026-08-17)');
+  {
+    // Net 30: due date in the future -> the touch HOLDS (enrollment stays
+    // active, nothing renders) and the sequence re-anchors to the due-date
+    // morning so touches run due+0/+3/+7/+14, never day-3 dunning off the
+    // send date. The adapter compares against real wall-clock time, so the
+    // fixture uses a far-future date.
+    const fx = makeDb(invTables());
+    fx.db.jobs[0].invoice_terms = 'net_30';
+    fx.db.jobs[0].invoice_due_date = '2099-01-01';
+    const { deps, providers } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    const enr = fx.db.pec_drip_enrollments[0];
+    ok(sum.held === 1 && providers.ai.length === 0, 'future due date holds the touch before any render');
+    ok(enr.status === 'active' && enr.next_send_at === '2099-01-01T15:00:00.000Z' && enr.enrolled_at === '2099-01-01T15:00:00.000Z',
+      'enrollment stays active, re-anchored to the due-date morning (8 AM Phoenix)');
+  }
+  {
+    // Due date already past -> reminders run exactly as before (no hold).
+    const fx = makeDb(invTables());
+    fx.db.jobs[0].invoice_terms = 'net_30';
+    fx.db.jobs[0].invoice_due_date = '2026-07-01';
+    const { deps, providers } = stubDeps(fx);
+    const sum = await runDrips(deps);
+    ok(sum.dry_run === 1 && providers.ai.length === 1 && !sum.held, 'a past due date never holds: reminders run');
+  }
   {
     // Partial payment: keeps reminding with the LOWERED balance; a later full
     // payment stops the next run (recompute-per-run, never cached).

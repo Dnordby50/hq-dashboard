@@ -932,7 +932,7 @@ async function resolveRecipient(sb, subjectType, subjectId) {
   const id = encodeURIComponent(subjectId);
   if (subjectType === 'job') {
     // status + deposit flags feed the installment resolver (prompt 45).
-    const jobs = await sb('GET', `/jobs?id=eq.${id}&select=id,price,status,public_token,customer_id,voided_at,archived_at,completed_date,hq_invoice_number,invoice_first_sent_at,address,deposit_collected,deposit_waived&limit=1`);
+    const jobs = await sb('GET', `/jobs?id=eq.${id}&select=id,price,status,public_token,customer_id,voided_at,archived_at,completed_date,hq_invoice_number,invoice_first_sent_at,address,deposit_collected,deposit_waived,invoice_terms,invoice_due_date&limit=1`);
     const job = (Array.isArray(jobs) && jobs[0]) || null;
     if (!job) return { ok: false, reason: 'job_missing' };
     const custs = job.customer_id
@@ -1046,6 +1046,25 @@ const KIND_CHECKS = {
       }
     } catch (err) {
       console.warn('pec-drip: installment resolve skipped (legacy balance):', String(err && err.message || err));
+    }
+    // Invoice terms (2026-08-17): no schedule owns this invoice (a schedule
+    // returned above), so a FUTURE due date holds the reminders. 'hold' never
+    // ends the enrollment: the runner leaves it active and this PATCH
+    // re-anchors the whole sequence to the due-date morning (8 AM Phoenix),
+    // so a Net 30 customer gets touches at due+0/+3/+7/+14, not day 3
+    // dunning off the send date. Re-anchoring enrolled_at is deliberate: the
+    // step scheduler computes every next_send_at from it. Known trade-off,
+    // accepted: checkReplied counts replies since enrolled_at, so a reply
+    // BEFORE the due date will not auto-stop the sequence (nothing is
+    // sending during the hold anyway, and staff see the reply in comms).
+    if (job.invoice_due_date) {
+      const dueMs = Date.parse(job.invoice_due_date + 'T15:00:00Z');   // 8 AM Phoenix (fixed UTC-7)
+      if (Number.isFinite(dueMs) && dueMs > Date.now()) {
+        const dueIso = new Date(dueMs).toISOString();
+        await sb('PATCH', `/pec_drip_enrollments?id=eq.${encodeURIComponent(enr.id)}&status=eq.active`,
+          { enrolled_at: dueIso, next_send_at: dueIso }).catch(() => {});
+        return { action: 'hold', reason: 'awaiting_due_date' };
+      }
     }
     rcpt.balance = balance;   // the ONLY amount the copy may state
     return null;
@@ -1231,6 +1250,9 @@ async function runDrips(deps) {
       // adapters attach copy context: rcpt.estimate / rcpt.balance).
       const kill = await checkKillSwitches(sb, enr, campaign, rcpt);
       if (kill) {
+        // 'hold' (invoice terms, due date in the future) keeps the enrollment
+        // active: the adapter already pushed next_send_at to the due date.
+        if (kill.action === 'hold') { summary.held = (summary.held || 0) + 1; continue; }
         await endEnrollment(sb, enr, kill.action, kill.reason, nowIso);
         summary[kill.action === 'completed' ? 'completed' : 'stopped']++;
         continue;
@@ -1637,6 +1659,9 @@ async function resolvePendingStep(deps, { enrollmentId, stepIndex, action, edits
   const rcpt = await resolveRecipient(sb, subjectType, subjectId);
   const kill = await checkKillSwitches(sb, enr, campaign, rcpt);
   if (kill) {
+    // 'hold' (invoice due date in the future): not sendable NOW, but nothing
+    // is wrong; leave the rendered rows and the enrollment intact.
+    if (kill.action === 'hold') return { ok: false, error: kill.reason };
     await voidRows('voided: ' + kill.reason);
     await endEnrollment(sb, enr, kill.action, kill.reason, nowIso);
     return { ok: true, outcome: 'voided', reason: kill.reason };

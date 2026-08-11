@@ -23,6 +23,8 @@ Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration 
 
 Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration (2026-08-03_lead_stage_estimate_scheduled.sql, applied via MCP): `leads.estimate_scheduled_at` (timestamptz, nullable) and `leads_stage_check` replaced to admit `estimate_scheduled` (seven stages, verified live via pg_get_constraintdef). Only the leads section changed.
 
+Refreshed 2026-08-10 (Claude Code) after the invoice-terms migration (2026-08-17_invoice_terms.sql, applied via MCP and verified by live re-query): `jobs.invoice_terms` (text, CHECK in due_on_completion / due_on_receipt / net_15 / net_30 / custom_date, nullable) and `jobs.invoice_due_date` (date, nullable); two settings keys `invoice_terms_residential_default` (seeded 'due_on_completion') and `invoice_terms_commercial_default` (seeded 'net_30'); `pec_job_ar` recreated with the two columns APPENDED (the view is an explicit column list; create or replace view cannot reorder). Backfill: 92 open jobs classified by the deterministic commercial rule (job_class, then the source estimate's customer_is_commercial, then customers.company_name non-empty) -> 3 net_30, 89 due_on_completion; due dates derived where the trigger had already fired. The TERM is the rule, the DATE is its resolution (stamped at first send for net terms, at completion for due_on_completion); shared logic in netlify/functions/_pec-invoice-terms.cjs with a client mirror in index.html.
+
 Refreshed 2026-07-31 (Claude Code) after the review-drip migration (2026-08-04_review_drip.sql, applied via MCP): two new tables `pec_review_requests` and `pec_review_bonuses`; `reviews` widened for the Zapier Google feed (source/platform/external_id/reviewer_name/review_text/review_url/posted_at/match_status/matched_by/matched_at/crew_lead/crew_id/review_request_id) with `job_id` and `customer_id` NOT NULL DROPPED (a Google review arrives before we know whose job it is); `pec_drip_campaigns_kind_check` recreated to admit 'review' (verified live via pg_get_constraintdef); seven `review_*` settings keys (settings 58 rows to 65). The seeded Review request campaign is mode **'live'** (decision 15): the approval gate is its only safety.
 
 Refreshed 2026-07-31 (Claude Code) after the lead-source-unification migration (2026-08-05_lead_source_unification.sql, applied via MCP): `pec_lead_sources.aliases` (text[] not null default '{}'), six new managed rows (19 to 25), and a data-only rewrite of `leads.source` (9 rows: meta->Facebook, google->Google, manual->Manual entry, other->Other, webform->Website, word_of_mouth->Word of Mouth) and `customers.lead_source` (0 rows changed; values were already managed names, 55 nulls untouched). Only the pec_lead_sources section changed shape.
@@ -464,6 +466,8 @@ RLS: enabled · rows: 86
 | colors_confirmed_by_customer_at | timestamptz | yes |  |
 | invoice_first_sent_at | timestamptz | yes |  |
 | crew_notes | text | yes |  |
+| invoice_terms | text | yes |  |
+| invoice_due_date | date | yes |  |
 
 PK: id
 FK: customer_id → customers.id; system_type_id → pec_prod_system_types.id

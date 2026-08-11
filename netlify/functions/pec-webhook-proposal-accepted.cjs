@@ -5,6 +5,7 @@
 
 const { sb, epoxyStages, paintStages, badSecret, json, randomToken, logIngest } = require('./_pec-supabase.cjs');
 const { prepareDepositInstallment } = require('./_pec-installments.cjs');
+const { resolveDefaultTerms } = require('./_pec-invoice-terms.cjs');
 
 const ENDPOINT = 'proposal-accepted';
 
@@ -93,9 +94,20 @@ exports.handler = async (event) => {
       if (existingJobs.length) job = existingJobs[0];
     }
     if (!job) {
+      // Invoice terms (2026-08-17): DripJobs deals get the same default-terms
+      // stamp as native accepts. The webhook payload carries no business-name
+      // field, so the only commercial signal here is the customer's stored
+      // company_name; everything else lands residential and staff can flip it
+      // from the invoice's Edit terms button. Best-effort settings read.
+      let termsSettings = {};
+      try {
+        const tRows = await sb('GET', '/settings?key=in.(invoice_terms_residential_default,invoice_terms_commercial_default)&select=key,value');
+        termsSettings = Object.fromEntries((Array.isArray(tRows) ? tRows : []).map(r => [r.key, r.value]));
+      } catch (_) { /* locked defaults */ }
       const createdJobs = await sb('POST', '/jobs', {
         customer_id: customer.id,
         type,
+        invoice_terms: resolveDefaultTerms({ companyName: customer.company_name || null }, termsSettings),
         address: address || null,
         package: pkg || null,
         scope: cleanScope,
