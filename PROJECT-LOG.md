@@ -1,3 +1,24 @@
+## [2026-08-10 MST] Google review link fixed: the /r/ redirect now lands customers on the real PEC review dialog instead of google.com's homepage.
+
+By: Claude Code
+
+Changed: netlify/functions/pec-review-redirect.cjs (fallback constant), supabase/schema.sql (seed values + comments), the LIVE `settings.google_review_link_epoxy` row (via Supabase MCP), plus this entry. No migration (settings row update, not schema), no What's New (nothing visible changes inside the dashboard). Committed and pushed.
+
+**The bug was data, not code.** Dylan reported the review link in emails/campaigns "links to Netlify". The Netlify link is by design: `_pec-drip.cjs` appends `${SITE_URL}/r/<token>` to every review ask (email AND SMS through one kindTail return), and `/r/*` routes to pec-review-redirect.cjs, which logs the click and 302s to whatever URL sits in `settings.google_review_link_epoxy`. The real failure: that settings row still held the seeded placeholder `https://g.page/r/prescottepoxy/review`, which is not a real review URL. Verified live before changing anything: it 302s to google.com's bare homepage. So every review ask since launch has dead-ended one hop after the click.
+
+**The fix, verified end to end.** Derived the real place ID from the maps.app.goo.gl link on prescottepoxy.com (FTID 0x872d2fae98c4c781:0xe71009e90703faf2 decodes to place ID ChIJgcfEmK4vLYcR8voDB-kJEOc; the ChIJ form is a deterministic protobuf/base64 encoding of the FTID), built the one-tap URL `https://search.google.com/local/writereview?placeid=ChIJgcfEmK4vLYcR8voDB-kJEOc`, and confirmed in a real browser that it resolves to the Prescott Epoxy Company profile (1030 Sandretto Dr K, 4.9 stars, 151 reviews) with the write-review dialog fragment (#lrd=...,3). Then: updated the live settings row, updated FALLBACK_REVIEW_URL in the function (it existed so a dead settings read never strands a customer; it was the same dead placeholder), and updated the schema.sql seeds. Post-fix live check: `curl -I https://prescottepoxy.netlify.app/r/plan-verify-test` returns 302 with the new writereview Location. No email/drip code touched; the /r/ tracking hop and its click logging stay exactly as prompt 60 built them.
+
+**Known follow-up (flagged, not fixed).** pec-review-redirect.cjs only ever reads the epoxy key, so if review drips ever run for Finishing Touch Painting jobs, those customers would land on the epoxy review page. Also `google_review_link_paint` still holds its own dead placeholder (marked as such in schema.sql now). Handoff below covers the paint value; making the redirect company-aware is deferred until FTP actually sends review asks.
+
+## Handoff to Cowork
+
+See the Cowork prompt printed in chat this session: obtain FTP's real Google review URL and update `settings.google_review_link_paint`.
+
+## Handoff to Dylan
+
+1. One of your own review-drip emails or texts: click its Leave a review link. You should land on the Google review dialog for Prescott Epoxy Company. (Heads-up: because YOU manage the profile, Google may show you the profile without the review box; a customer account gets the dialog. The 302 Location is already verified to be the writereview URL.)
+2. Nothing else changes; the /r/ click tracking still records first click and click counts.
+
 ## [2026-08-10 MST] Estimator reworked to the DripJobs editor shape (parity batch, phase 4 of 5, the last to ship): Settings | Notes tabs below the columns, three-lane notes, fewer boxes.
 
 By: Claude Code

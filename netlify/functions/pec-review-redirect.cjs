@@ -18,8 +18,12 @@
 const { sb, tokenFromEvent } = require('./_pec-supabase.cjs');
 
 // Same as the live settings value today; used only if the settings read fails
-// or the row is missing, so the customer is never stranded.
-const FALLBACK_REVIEW_URL = 'https://g.page/r/prescottepoxy/review';
+// or the row is missing, so the customer is never stranded. This is the
+// verified one-tap review URL for the Prescott Epoxy Company Business Profile
+// (place id derived from the maps.app.goo.gl link on prescottepoxy.com). The
+// old g.page/r/prescottepoxy slug was a seeded placeholder that 302'd to
+// google.com's homepage.
+const FALLBACK_REVIEW_URL = 'https://search.google.com/local/writereview?placeid=ChIJgcfEmK4vLYcR8voDB-kJEOc';
 
 exports.handler = async (event) => {
   let dest = FALLBACK_REVIEW_URL;

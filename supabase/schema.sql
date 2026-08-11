@@ -152,7 +152,10 @@ create table if not exists public.settings (
 );
 
 insert into public.settings (key, value) values
-  ('google_review_link_epoxy', 'https://g.page/r/prescottepoxy/review'),
+  -- Verified one-tap review URL for the PEC Google Business Profile (2026-08-10).
+  ('google_review_link_epoxy', 'https://search.google.com/local/writereview?placeid=ChIJgcfEmK4vLYcR8voDB-kJEOc'),
+  -- PLACEHOLDER: not a real review URL. Replace with FTP's verified
+  -- writereview link before any paint-side review flow goes live.
   ('google_review_link_paint', 'https://g.page/r/finishingtouchpainting/review'),
   ('referral_reward_amount', '50')
 on conflict (key) do nothing;
