@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimator-tabs-and-notes",
+    "date": "2026-08-10",
+    "title": "The estimator got tabs and three kinds of notes",
+    "summary": "The estimate editor is tidier: Estimate type and Salesperson share one card, the comps and AI price panels tuck away until you tap them, and a new Settings and Notes tab strip sits under the columns. Settings holds the payment schedule and shows where the deposit percent comes from. Notes now has three lanes: Crew notes (team only, prints on the work order), Client notes (the customer reads these on their estimate as 'A note from us'), and Company notes (office only, never sent).",
+    "howto": [
+      "Open any estimate and use the Settings and Notes tabs under the main columns.",
+      "Type a client note in the Notes tab and preview the estimate; it appears above the line items.",
+      "Tap Comparable jobs or AI price read on the right to expand them when you want them."
+    ]
+  },
+  {
     "id": "estimate-investment-band",
     "date": "2026-08-10",
     "title": "The estimate's investment summary got a clearer look",

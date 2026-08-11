@@ -496,6 +496,13 @@ export default function EstimatorScreen({
   // generate text is kept for undo (the polish pattern), and a hand-edit
   // since the last generate makes the next generate ask before overwriting.
   const [crewNotes, setCrewNotes] = useState<string>(() => editing?.crewNotes ?? '');
+  // Three-lane notes (2026-08-20, DripJobs-parity phase 4): client notes are
+  // CLIENT VISIBLE (customer estimate page, "A note from us"); company notes
+  // are INTERNAL ONLY. Crew notes above keep their crew-work-order contract.
+  const [clientNotes, setClientNotes] = useState<string>(() => editing?.clientNotes ?? '');
+  const [companyNotes, setCompanyNotes] = useState<string>(() => editing?.companyNotes ?? '');
+  // Bottom tab strip (Settings | Notes), the DripJobs editor shape.
+  const [estTab, setEstTab] = useState<'settings' | 'notes'>('settings');
   const [crewNotesEdited, setCrewNotesEdited] = useState(false);
   const [preGenCrewNotes, setPreGenCrewNotes] = useState<string | null>(null);
   const [crewNotesBusy, setCrewNotesBusy] = useState(false);
@@ -1593,6 +1600,8 @@ export default function EstimatorScreen({
         customPrice: null,
         customSqft: isCustom ? customSqft : null,
         crewNotes,
+        clientNotes,
+        companyNotes,
       });
       if (navigator.onLine) drainOutbox().then(refreshPending).catch(() => {});
       else void refreshPending();
@@ -1600,7 +1609,7 @@ export default function EstimatorScreen({
       draftTrigger.reset();
       draftWriteRef.current = false;
     }
-  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customSqft, crewNotes, draftId, draftTrigger, refreshPending]);
+  }, [savedEstimateId, editing, salesperson, customer, intake, scopeAnswers, createdBy, linkedLead, leadLink, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, draftId, draftTrigger, refreshPending]);
   const saveDraftRef = useRef(saveDraft);
   useEffect(() => { saveDraftRef.current = saveDraft; }, [saveDraft]);
 
@@ -2501,6 +2510,8 @@ export default function EstimatorScreen({
         customPrice: isCustom ? sellPrice : null,
         customSqft: isCustom ? customSqft : null,
         crewNotes,
+        clientNotes,
+        companyNotes,
       });
       // Auto-first, then manual (build 25): the ONE automatic generation
       // happens on the save that has a scope-templated estimate with every
@@ -2544,7 +2555,7 @@ export default function EstimatorScreen({
       setSaveError(e instanceof Error ? e.message : String(e));
       return null;
     }
-  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
+  }, [salesperson, pricing, hasPrice, calcLineCount, saveBlockers, sellPrice, totalPrice, totalAllOptions, requiredOnlyTotal, requiredMoney, requiredGpPct, editing, online, areas, lineRows, lineMoney, finalLineAmounts, calcTotal, priceMoved, shortfall, belowFloorLines, lineFloorPct, deriveProducts, slotsFor, intake, basePrice, discounted, adjusted, overrideReason, totalSqft, inputsKey, comps, compsLabel, ai, customer, flakeColorFromPicks, createdBy, leadLink, linkedLead, refreshPending, embed, postToParent, addonForms, scopeAnswers, belowFloor, combinedGpDollars, combinedGpPct, combinedGpPerHour, combinedCommission, dominantSystemId, systemTypes, config, generateScope, isCustom, customScope, customSqft, crewNotes, clientNotes, companyNotes, customCommission, dbScopeEdited, scopeGenerated, scopeQuestions, savedEstimateId, draftId, customLabelDefault, scheduleShared]);
   const onSave = useCallback(() => { void performSave(); }, [performSave]);
 
   // Manual Regenerate (build 25): the only whole-estimate scope writer after
@@ -2879,6 +2890,10 @@ export default function EstimatorScreen({
               system type: Custom turns the whole estimate into typed scope +
               typed price for one-off work. Non-destructive: hidden area and
               answer state survives a toggle round-trip. */}
+          {/* Estimate type + Salesperson share ONE card (2026-08-10 phase 4
+              declutter): both are set-once-per-estimate controls, and two
+              stacked two-line boxes were the exact "boxes" Dylan wanted
+              fewer of. The Customer card lives in the full-width header. */}
           <section className="card inputs">
             <div className="areas-head">
               <span>Estimate type</span>
@@ -2890,12 +2905,6 @@ export default function EstimatorScreen({
             {isCustom && (
               <p className="hint">Custom estimate for one-off work: you type the scope and the price yourself. Areas and the material calculator are off (switch back to Standard to use them); add-ons still work.</p>
             )}
-          </section>
-
-          {/* The Customer card moved to the full-width header above these
-              columns (Dylan's ask); the left column now starts with Estimate
-              type then Salesperson. */}
-          <section className="card inputs">
             <label className="field">
               <span>Salesperson</span>
               {salespersonLocked ? (
@@ -3169,31 +3178,8 @@ export default function EstimatorScreen({
             {workOrderFields}
           </section>}
 
-          {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
-              the crew work order only; never on the customer proposal, the
-              customer estimate page, or the PDF. Generate is manual-only. */}
-          <section className="card">
-            <div className="areas-head">
-              <span>Notes for the crew (internal)</span>
-              <span className="scope-actions">
-                {preGenCrewNotes != null && (
-                  <button type="button" className="link" onClick={undoCrewNotes}>Undo generate</button>
-                )}
-                <button type="button" className="link" onClick={generateCrewNotes} disabled={crewNotesBusy || !online || !crewNotesScopeSource}>
-                  {crewNotesBusy ? 'Generating…' : 'Generate from proposal'}
-                </button>
-              </span>
-            </div>
-            <p className="hint">Only the crew sees this; it prints on the work order, never on the customer proposal. Generate drafts cliff notes and watch-outs from the proposal; you can edit or undo.</p>
-            <textarea
-              rows={8}
-              value={crewNotes}
-              onChange={(e) => { setCrewNotes(e.target.value); setCrewNotesEdited(true); setSaveState('idle'); }}
-              placeholder="Cliff notes and watch-outs for the crew: access, prep, site conditions, customer asks…"
-            />
-            {crewNotesError && <p className="warn">Generate failed: {crewNotesError}</p>}
-            {!online && <p className="hint">Generate needs a connection; typed crew notes save fine without it.</p>}
-          </section>
+          {/* Crew notes moved to the Notes tab below the columns (2026-08-10
+              phase 4): the three-lane notes strip is the DripJobs shape. */}
         </div>
 
         <div className="right">
@@ -3356,13 +3342,124 @@ export default function EstimatorScreen({
             {saveRow}
           </section>
 
+          {/* Payment schedule moved to the Settings tab below the columns
+              (2026-08-10 phase 4), the DripJobs editor shape. */}
+
+          {/* Comps and the AI price read key off system + sqft, which a custom
+              estimate does not have; hidden rather than pretending. Both are
+              collapsed disclosures under the Money card since the phase-4
+              declutter: pricing intelligence stays one tap away in the rail,
+              never behind a tab a rep forgets, but stops eating the column. */}
+          {!isCustom && <details className="card comps">
+            <summary className="areas-head" style={{ cursor: 'pointer' }}><span>Comparable jobs</span></summary>
+            {!(totalSqft > 0) && <p className="hint">Comps appear once the square footage is set.</p>}
+            {totalSqft > 0 && compsFailed && (
+              <p className="hint">{online ? 'Could not load completed jobs to compare against.' : 'Comps need a connection; the price above works offline.'}</p>
+            )}
+            {totalSqft > 0 && !compsFailed && !comps && <p className="hint">Loading completed jobs…</p>}
+            {comps && comps.sample_size === 0 && <p className="hint">{compsLabel}.</p>}
+            {comps && comps.sample_size > 0 && (
+              <>
+                <div className="comps-median">
+                  Median {money2(comps.median_ppsf)}/sqft
+                  {comps.median_ppsf != null && totalSqft > 0 && (
+                    <span className="muted"> · {money(comps.median_ppsf * totalSqft)} at {Math.round(totalSqft)} sqft</span>
+                  )}
+                </div>
+                <p className="comps-rule">{compsLabel}</p>
+                {mixedCompsNote && <p className="warn">{mixedCompsNote}</p>}
+                <div className="comps-table-wrap">
+                  <table className="comps-table">
+                    <thead><tr><th>Customer</th><th>Sqft</th><th>Price</th><th>$/sqft</th><th>GP%</th></tr></thead>
+                    <tbody>
+                      {comps.rows.map((r) => (
+                        <tr key={r.id}>
+                          <td>{r.customer_name || '--'}</td>
+                          <td>{r.sqft != null ? Math.round(r.sqft).toLocaleString() : '--'}</td>
+                          <td>{money(r.price)}</td>
+                          <td>{r.ppsf != null ? `$${r.ppsf.toFixed(2)}` : '--'}</td>
+                          <td>{r.gp_pct != null ? `${(r.gp_pct * 100).toFixed(0)}%` : '--'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {compsCaveat && <p className="hint" style={{ marginTop: 6 }}>{compsCaveat}.</p>}
+              </>
+            )}
+          </details>}
+
+          {!isCustom && <details className="card ai-panel">
+            <summary className="areas-head" style={{ cursor: 'pointer' }}><span>AI price read</span></summary>
+            {config.estimateAiEnabled === false && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
+            {config.estimateAiEnabled !== false && !(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
+            {totalSqft > 0 && hasPrice && !online && ai?.status !== 'ready' && <p className="hint">Needs a connection; the calculated price and comps stand on their own.</p>}
+            {ai?.status === 'loading' && <p className="hint">Analyzing each line against its own comps…</p>}
+            {ai?.status === 'disabled' && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
+            {ai?.status === 'error' && <p className="warn">AI read failed: {ai.err}</p>}
+            {ai?.status === 'ready' && ai.rec && (
+              <>
+                <div className="ai-range">{money(ai.rec.recommended_low)} to {money(ai.rec.recommended_high)}</div>
+                <p className="ai-why">{ai.rec.why}</p>
+                {/* Per-line reads (prompt 70): each line's range, its why, and
+                    a SERVER-computed confidence chip (comps-backed / thin
+                    sample / no comps), never model-claimed. */}
+                {Array.isArray(ai.rec.lines) && ai.rec.lines.length > 0 && (
+                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                    {ai.rec.lines.map((l) => (
+                      <div key={l.line_key} style={{ borderTop: '1px solid rgba(128,128,128,.25)', paddingTop: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700 }}>{l.label || l.line_key}</span>
+                          <span
+                            title={l.confidence === 'comps_backed' ? 'Enough same-system comps back this read.'
+                              : l.confidence === 'thin_sample' ? 'Fewer same-system comps than the minimum; treat as directional.'
+                              : 'No comparable jobs exist for this line.'}
+                            style={{
+                              fontSize: '.68rem', fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
+                              padding: '2px 8px', borderRadius: 999,
+                              background: l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)',
+                              color: l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit',
+                            }}
+                          >{l.confidence_label || l.confidence}</span>
+                        </div>
+                        <div style={{ fontWeight: 700, fontSize: '.9rem', marginTop: 2 }}>{money(l.recommended_low)} to {money(l.recommended_high)}</div>
+                        <p className="ai-why" style={{ marginTop: 4 }}>{l.why}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {ai.rec.history_available && ai.rec.intent_read && (
+                  <p className="ai-why"><strong>Customer signal:</strong> {ai.rec.intent_read}</p>
+                )}
+                {ai.rec.history_available === false && (
+                  <p className="hint">No call or text history on file for this customer.</p>
+                )}
+                <p className="calcver">The AI never sets the price; you do.</p>
+              </>
+            )}
+          </details>}
+        </div>
+      </main>
+
+      {/* Bottom tab strip (2026-08-10, DripJobs-parity phase 4): the DripJobs
+          proposal editor's Settings | Notes tabs, full width below the
+          columns. React state keeps hidden tabs' inputs alive; the iframe
+          height listener on the dashboard side follows the height change. */}
+      <div className="cust-type" role="tablist" aria-label="Estimate sections" style={{ display: 'inline-flex', margin: '14px 0 10px' }}>
+        <button type="button" role="tab" aria-selected={estTab === 'settings'} className={estTab === 'settings' ? 'on' : ''} onClick={() => setEstTab('settings')}>Settings</button>
+        <button type="button" role="tab" aria-selected={estTab === 'notes'} className={estTab === 'notes' ? 'on' : ''} onClick={() => setEstTab('notes')}>Notes</button>
+      </div>
+
+      {estTab === 'settings' && (
+        <>
           {/* Payment schedule (prompt 74): created and approved HERE, before
               the customer ever sees the estimate (locked decision 5). Zero
               rows = no schedule block on the page and the legacy auto-deposit
               on accept. Percent rows recompute live on the customer page as
               options are ticked; the send gate blocks a schedule that does
               not resolve to the estimate total. Hidden company-wide by the
-              estimate_schedule_enabled setting (rule 12). */}
+              estimate_schedule_enabled setting (rule 12). Auto-seeded on new
+              estimates (2026-08-18) unless the rep removed it. */}
           {scheduleEnabled && (
             <section className="card">
               <div className="areas-head">
@@ -3432,98 +3529,81 @@ export default function EstimatorScreen({
             </section>
           )}
 
-          {/* Comps and the AI price read key off system + sqft, which a custom
-              estimate does not have; hidden rather than pretending. */}
-          {!isCustom && <section className="card comps">
-            <div className="areas-head"><span>Comparable jobs</span></div>
-            {!(totalSqft > 0) && <p className="hint">Comps appear once the square footage is set.</p>}
-            {totalSqft > 0 && compsFailed && (
-              <p className="hint">{online ? 'Could not load completed jobs to compare against.' : 'Comps need a connection; the price above works offline.'}</p>
-            )}
-            {totalSqft > 0 && !compsFailed && !comps && <p className="hint">Loading completed jobs…</p>}
-            {comps && comps.sample_size === 0 && <p className="hint">{compsLabel}.</p>}
-            {comps && comps.sample_size > 0 && (
-              <>
-                <div className="comps-median">
-                  Median {money2(comps.median_ppsf)}/sqft
-                  {comps.median_ppsf != null && totalSqft > 0 && (
-                    <span className="muted"> · {money(comps.median_ppsf * totalSqft)} at {Math.round(totalSqft)} sqft</span>
-                  )}
-                </div>
-                <p className="comps-rule">{compsLabel}</p>
-                {mixedCompsNote && <p className="warn">{mixedCompsNote}</p>}
-                <div className="comps-table-wrap">
-                  <table className="comps-table">
-                    <thead><tr><th>Customer</th><th>Sqft</th><th>Price</th><th>$/sqft</th><th>GP%</th></tr></thead>
-                    <tbody>
-                      {comps.rows.map((r) => (
-                        <tr key={r.id}>
-                          <td>{r.customer_name || '--'}</td>
-                          <td>{r.sqft != null ? Math.round(r.sqft).toLocaleString() : '--'}</td>
-                          <td>{money(r.price)}</td>
-                          <td>{r.ppsf != null ? `$${r.ppsf.toFixed(2)}` : '--'}</td>
-                          <td>{r.gp_pct != null ? `${(r.gp_pct * 100).toFixed(0)}%` : '--'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {compsCaveat && <p className="hint" style={{ marginTop: 6 }}>{compsCaveat}.</p>}
-              </>
-            )}
-          </section>}
+          {/* Read-only payments summary: WHERE the deposit percent comes from
+              (system type vs company default), so a rep never wonders why a
+              seeded deposit says 25 on one job and 50 on another. Per-estimate
+              display toggles (DripJobs' "Show schedule on proposal") are a
+              deliberate follow-up, not built here. */}
+          <section className="card">
+            <div className="areas-head"><span>Payments</span></div>
+            <p className="hint">
+              Deposit percent for this estimate resolves to {String(resolveDepositPct(dominantSystem?.deposit_pct, config.defaultDepositPct))}%
+              ({dominantSystem?.deposit_pct != null ? `the ${dominantSystem.name} system's own percent` : 'the company default'}).
+              Card and bank payment, check, Zelle, and financing are offered automatically on the signed job's invoice.
+            </p>
+          </section>
+        </>
+      )}
 
-          {!isCustom && <section className="card ai-panel">
-            <div className="areas-head"><span>AI price read</span></div>
-            {config.estimateAiEnabled === false && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
-            {config.estimateAiEnabled !== false && !(totalSqft > 0 && hasPrice) && <p className="hint">Runs automatically once system and square footage are set.</p>}
-            {totalSqft > 0 && hasPrice && !online && ai?.status !== 'ready' && <p className="hint">Needs a connection; the calculated price and comps stand on their own.</p>}
-            {ai?.status === 'loading' && <p className="hint">Analyzing each line against its own comps…</p>}
-            {ai?.status === 'disabled' && <p className="hint">Turned off in Settings (Estimates, Pricing intelligence).</p>}
-            {ai?.status === 'error' && <p className="warn">AI read failed: {ai.err}</p>}
-            {ai?.status === 'ready' && ai.rec && (
-              <>
-                <div className="ai-range">{money(ai.rec.recommended_low)} to {money(ai.rec.recommended_high)}</div>
-                <p className="ai-why">{ai.rec.why}</p>
-                {/* Per-line reads (prompt 70): each line's range, its why, and
-                    a SERVER-computed confidence chip (comps-backed / thin
-                    sample / no comps), never model-claimed. */}
-                {Array.isArray(ai.rec.lines) && ai.rec.lines.length > 0 && (
-                  <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
-                    {ai.rec.lines.map((l) => (
-                      <div key={l.line_key} style={{ borderTop: '1px solid rgba(128,128,128,.25)', paddingTop: 8 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700 }}>{l.label || l.line_key}</span>
-                          <span
-                            title={l.confidence === 'comps_backed' ? 'Enough same-system comps back this read.'
-                              : l.confidence === 'thin_sample' ? 'Fewer same-system comps than the minimum; treat as directional.'
-                              : 'No comparable jobs exist for this line.'}
-                            style={{
-                              fontSize: '.68rem', fontWeight: 700, letterSpacing: '.4px', textTransform: 'uppercase',
-                              padding: '2px 8px', borderRadius: 999,
-                              background: l.confidence === 'comps_backed' ? 'rgba(22,163,74,.15)' : l.confidence === 'thin_sample' ? 'rgba(217,119,6,.15)' : 'rgba(128,128,128,.18)',
-                              color: l.confidence === 'comps_backed' ? '#15803d' : l.confidence === 'thin_sample' ? '#b45309' : 'inherit',
-                            }}
-                          >{l.confidence_label || l.confidence}</span>
-                        </div>
-                        <div style={{ fontWeight: 700, fontSize: '.9rem', marginTop: 2 }}>{money(l.recommended_low)} to {money(l.recommended_high)}</div>
-                        <p className="ai-why" style={{ marginTop: 4 }}>{l.why}</p>
-                      </div>
-                    ))}
-                  </div>
+      {estTab === 'notes' && (
+        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+          {/* Crew notes (prompt 32, Part B): INTERNAL, both modes. Prints on
+              the crew work order only; never on the customer proposal, the
+              customer estimate page, or the PDF. Generate is manual-only. */}
+          <section className="card">
+            <div className="areas-head">
+              <span>Crew notes <span className="muted" style={{ fontSize: '.68rem', fontWeight: 700, letterSpacing: '.5px' }}>TEAM ONLY</span></span>
+              <span className="scope-actions">
+                {preGenCrewNotes != null && (
+                  <button type="button" className="link" onClick={undoCrewNotes}>Undo generate</button>
                 )}
-                {ai.rec.history_available && ai.rec.intent_read && (
-                  <p className="ai-why"><strong>Customer signal:</strong> {ai.rec.intent_read}</p>
-                )}
-                {ai.rec.history_available === false && (
-                  <p className="hint">No call or text history on file for this customer.</p>
-                )}
-                <p className="calcver">The AI never sets the price; you do.</p>
-              </>
-            )}
-          </section>}
+                <button type="button" className="link" onClick={generateCrewNotes} disabled={crewNotesBusy || !online || !crewNotesScopeSource}>
+                  {crewNotesBusy ? 'Generating…' : 'Generate from proposal'}
+                </button>
+              </span>
+            </div>
+            <p className="hint">Only the crew sees this; it prints on the work order, never on the customer proposal. Generate drafts cliff notes and watch-outs from the proposal; you can edit or undo.</p>
+            <textarea
+              rows={8}
+              value={crewNotes}
+              onChange={(e) => { setCrewNotes(e.target.value); setCrewNotesEdited(true); setSaveState('idle'); }}
+              placeholder="Cliff notes and watch-outs for the crew: access, prep, site conditions, customer asks…"
+            />
+            {crewNotesError && <p className="warn">Generate failed: {crewNotesError}</p>}
+            {!online && <p className="hint">Generate needs a connection; typed crew notes save fine without it.</p>}
+          </section>
+
+          {/* Client notes (2026-08-20): CLIENT VISIBLE. Renders on the
+              customer estimate page as "A note from us". */}
+          <section className="card">
+            <div className="areas-head">
+              <span>Client notes <span style={{ fontSize: '.68rem', fontWeight: 700, letterSpacing: '.5px', color: '#b45309' }}>CLIENT VISIBLE</span></span>
+            </div>
+            <p className="hint">The customer reads this on their estimate page, above the line items. Keep it warm and specific; leave it blank for no note.</p>
+            <textarea
+              rows={8}
+              value={clientNotes}
+              onChange={(e) => { setClientNotes(e.target.value); setSaveState('idle'); }}
+              placeholder="A note the customer will read on their estimate…"
+            />
+          </section>
+
+          {/* Company notes (2026-08-20): INTERNAL ONLY, office context that
+              belongs to the estimate rather than the crew work order. */}
+          <section className="card">
+            <div className="areas-head">
+              <span>Company notes <span className="muted" style={{ fontSize: '.68rem', fontWeight: 700, letterSpacing: '.5px' }}>INTERNAL ONLY</span></span>
+            </div>
+            <p className="hint">Office-only context for this estimate (pricing history, callbacks, who talked to whom). Never printed, never sent.</p>
+            <textarea
+              rows={8}
+              value={companyNotes}
+              onChange={(e) => { setCompanyNotes(e.target.value); setSaveState('idle'); }}
+              placeholder="Internal context for the office…"
+            />
+          </section>
         </div>
-      </main>
+      )}
 
       {/* The line editor sheet (prompt 76 Part C): one line at a time,
           DripJobs-shaped sections (Area, Pricing, Description, Internal

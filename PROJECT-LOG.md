@@ -1,3 +1,26 @@
+## [2026-08-10 MST] Estimator reworked to the DripJobs editor shape (parity batch, phase 4 of 5, the last to ship): Settings | Notes tabs below the columns, three-lane notes, fewer boxes.
+
+By: Claude Code
+
+Changed: apps/estimator/src/features/estimator/EstimatorScreen.tsx, apps/estimator/src/lib/estimateLoad.ts, apps/estimator/src/offline/estimates.ts, netlify/functions/pec-public-estimate.cjs, supabase/migrations/2026-08-20_estimate_notes.sql (new, ALREADY APPLIED to prod via MCP), SCHEMA.md, features.json (2 entries), help/whats-new.json, plus this entry. Estimator rebuilt (tsc clean, vite build green). Committed and pushed. This closes the five-phase DripJobs-parity batch planned with Dylan this morning (1 invoice terms, 2 schedule auto-seed, 3 invoice page, 5 investment band shipped earlier today; prompt 84 landed in between as phase 4's prerequisite).
+
+**Fewer boxes, same machinery.** Estimate type and Salesperson merged into ONE card (both are set-once controls; two stacked two-line boxes were exactly the clutter Dylan named). Comps and the AI price read became collapsed `<details>` disclosures in the right rail: pricing intelligence stays one tap away, never behind a tab a rep forgets, but stops eating the column. The Money card is untouched and the Save row keeps its prompt-82 invariant: ALWAYS rendered, never inside a tab or disclosure.
+
+**The tab strip, the DripJobs editor shape.** Below the two columns: a Settings | Notes pill strip (the same cust-type button styling as the Standard/Custom toggle, so no new CSS). Settings = the Payment schedule card moved verbatim (auto-seed, editor, send-gate messaging all identical) plus a new read-only Payments summary that names WHERE the deposit percent comes from (the dominant system's own deposit_pct vs the company default), which kills the "why does this job seed 25 and that one 50" question. DripJobs' per-proposal display toggles (Show schedule on proposal etc.) are a deliberate follow-up, not built. Notes = three lanes with visibility badges, stacking on phone via auto-fit grid: Crew notes [TEAM ONLY] (the existing card moved whole, AI generate + undo intact, still prints only on the crew work order), Client notes [CLIENT VISIBLE] (NEW, estimates.client_notes), Company notes [INTERNAL ONLY] (NEW, estimates.company_notes). React keeps hidden-tab state alive, so nothing is lost switching tabs mid-edit.
+
+**Client notes render on the customer page.** pec-public-estimate.cjs shows a non-empty client note as an "A note from us" block between the prepared-for grid and the line items: escaped, newline-preserving, on live, preview, and accepted renders. crew_notes and company_notes are never rendered there, stated in the code where the next person will look. Both new columns ride both save paths (the prompt-47 draft autosave AND the full save), write null when blank so clearing persists, and load back through estimateLoad.
+
+**Why this was the last phase.** It sat behind prompt 84 on purpose: 84 changed who owns estimates.status on the exact save path this rework touches (notes ride the same saveEstimateOffline calls), and landing the rework first would have meant rebasing the estimator twice. The notes writes never touch status, so the new DB status guard is indifferent to them, verified by the full suite.
+
+**Verification.** tsc --noEmit clean; vite build green (estimator/ rebuilt; gitignored, Netlify rebuilds on deploy); npm test all 17 suites green; node --check on pec-public-estimate.cjs; migration applied via MCP (additive, two nullable columns).
+
+## Handoff to Dylan
+
+1. After deploy, give the estimator PWA a visit to pick up the build, then open any estimate: the Settings and Notes tabs sit under the columns; crew notes moved there (nothing was lost, it is the same field).
+2. Type a client note on a test estimate, save, preview the /e/ page: "A note from us" should sit above the line items.
+3. Phone check at 390px: the three notes lanes should stack; the tab strip and Save row should behave.
+4. If the collapsed Comps/AI panels bug the reps, say so; they can default open per-panel with one attribute.
+
 ## [2026-08-10 MST] Customer estimate "Your investment" band (DripJobs-parity batch, phase 5 of 5): deposit-to-start row + project-total band with balance at completion, all live-updating.
 
 By: Claude Code

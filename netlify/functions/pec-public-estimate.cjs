@@ -704,6 +704,13 @@ function estimatePage(est, brand, opts) {
              stays the internal record feeding the job, the crew scope, and
              the declined-line filter, and is never rendered here again. */''}
         ${est.flake_color ? `<div style="color:#4b5563;font-size:14px;margin-top:4px">Flake color: <strong>${esc(est.flake_color)}</strong></div>` : ''}
+        ${/* Client note (2026-08-20, phase 4): the estimator's CLIENT VISIBLE
+             notes lane. Escaped, paragraph-preserved. crew_notes and
+             company_notes NEVER render here. */''}
+        ${est.client_notes && String(est.client_notes).trim() ? `<div style="margin-top:18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px">
+          <div class="eyebrow" style="margin-bottom:4px">A note from us</div>
+          <div style="color:#374151;font-size:14.5px;line-height:1.6;white-space:pre-wrap">${esc(String(est.client_notes).trim())}</div>
+        </div>` : ''}
         <div class="eyebrow" style="margin-top:26px">Your project</div>
         <table class="li">
           <thead><tr><th>Item</th><th style="text-align:right">Amount</th></tr></thead>

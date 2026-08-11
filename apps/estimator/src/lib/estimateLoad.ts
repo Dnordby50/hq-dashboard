@@ -105,6 +105,11 @@ export type LoadedEstimate = {
   customSqft: string;
   // Internal crew brief (prompt 32, Part B); empty when none saved.
   crewNotes: string;
+  // Three-lane notes (2026-08-20, DripJobs-parity phase 4). clientNotes is
+  // CLIENT VISIBLE (renders on the customer estimate page); companyNotes is
+  // INTERNAL ONLY (office). crewNotes above stays crew-work-order-only.
+  clientNotes: string;
+  companyNotes: string;
 };
 
 // Split columns win; a row without them (saved before the migration/backfill)
@@ -280,6 +285,8 @@ export async function loadEstimateForEdit(id: string): Promise<LoadedEstimate | 
     customPrice: e.custom_price != null ? String(e.custom_price) : '',
     customSqft: e.custom_sqft != null ? String(e.custom_sqft) : '',
     crewNotes: e.crew_notes != null ? String(e.crew_notes) : '',
+    clientNotes: e.client_notes != null ? String(e.client_notes) : '',
+    companyNotes: e.company_notes != null ? String(e.company_notes) : '',
   };
 }
 

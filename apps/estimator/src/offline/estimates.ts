@@ -163,6 +163,11 @@ export type SaveEstimateArgs = {
   // on the estimator, copied to jobs.crew_notes on accept, printed on the crew
   // work order only. Never customer-facing.
   crewNotes?: string | null;
+  // Three-lane notes (2026-08-20): clientNotes renders on the customer page
+  // ("A note from us"); companyNotes is internal-only. Both write null when
+  // blank so clearing persists, same rule as crew_notes.
+  clientNotes?: string | null;
+  companyNotes?: string | null;
   // The engine's computed price (calc_price) and the manual-override provenance
   // (build 17). calcPrice keeps the math; totals.price is what actually sells.
   calcPrice: number | null;
@@ -248,6 +253,8 @@ export async function saveEstimateOffline(args: SaveEstimateArgs): Promise<{ id:
     custom_sqft: isCustom ? args.customSqft ?? null : null,
     // Written on every save (null when blank) so clearing the field persists.
     crew_notes: (args.crewNotes ?? '').trim() || null,
+    client_notes: (args.clientNotes ?? '').trim() || null,
+    company_notes: (args.companyNotes ?? '').trim() || null,
     materials_cost: p?.materialsCost ?? null,
     fixed_addons: p?.fixedAddons ?? 0,
     labor_pct: p?.laborPct ?? null,

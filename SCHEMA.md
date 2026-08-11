@@ -23,6 +23,8 @@ Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration 
 
 Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration (2026-08-03_lead_stage_estimate_scheduled.sql, applied via MCP): `leads.estimate_scheduled_at` (timestamptz, nullable) and `leads_stage_check` replaced to admit `estimate_scheduled` (seven stages, verified live via pg_get_constraintdef). Only the leads section changed.
 
+Refreshed 2026-08-10 (Claude Code, fourth note) after the estimate-notes migration (2026-08-20_estimate_notes.sql, applied via MCP): `estimates.client_notes` (text, nullable, CLIENT VISIBLE: renders on the customer estimate page as "A note from us") and `estimates.company_notes` (text, nullable, INTERNAL ONLY). `crew_notes` keeps its crew-work-order-only contract. Additive only.
+
 Refreshed 2026-08-10 (Claude Code, third note) after the prompt-84 status-guard migration (2026-08-19_prompt84_estimate_status_guard.sql, applied via MCP and verified by live re-query of pg_trigger plus a live rejection test on a throwaway row): new function `public.estimate_status_guard()` and BEFORE UPDATE OF status trigger `trg_estimate_status_guard` on `public.estimates`. No table, column, or settings change. The trigger refuses any status update that lowers the lifecycle rank (draft 0 < sent 1 = change_requested 1 < signed 2 < accepted 3 = rejected 3 = lost 3), so a stale offline-outbox replay can never clobber a sent estimate back to draft again; `sent <-> change_requested` stays legal in both directions (markEstimateSent depends on it), unknown statuses pass through, and the exception message names the row plus the old and new status. See the estimates section note.
 
 Refreshed 2026-08-10 (Claude Code, second note) after the autoseed migration (2026-08-18_estimate_schedule_autoseed.sql, applied via MCP): one settings key `estimate_schedule_autoseed` (seeded 'true'). Data-only; no table or column changed. The estimator pre-fills the default payment schedule on NEW estimates while this is on.
@@ -316,6 +318,8 @@ RLS: enabled · rows: 9
 | estimate_number | integer | yes | nextval('estimates_estimate_number_seq') |
 | line_items | jsonb | yes |  |
 | crew_notes | text | yes |  |
+| client_notes | text | yes |  |
+| company_notes | text | yes |  |
 | custom_sqft | numeric | yes |  |
 | mvb | text | no | 'none' |
 | flake_color | text | yes |  |
