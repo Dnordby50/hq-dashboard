@@ -12213,9 +12213,14 @@ async function renderJobInvoice(jobId) {
       // Dylan opens per customer. A failed read degrades to no pending markers.
       supabase.from('pec_stripe_pending').select('id,payment_intent,kind,amount,status,failure_message,created_at,resolved_at')
         .eq('job_id', jobId).in('status', ['pending', 'failed']).order('created_at'),
+      // The source estimate, for the Open estimate toolbar button. Best-effort:
+      // an error (or a manual/DripJobs job with no estimate) just hides the
+      // button. Newest wins, the same convention as the job page's flake read.
+      supabase.from('estimates').select('id,estimate_number').eq('job_id', jobId).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
     ]), { label: 'renderJobInvoice' });
-  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }, { error: e }, { error: e }]; }
-  const [arRes, payRes, coSigRes, emLogRes, smLogRes, instRes, achRes] = res;
+  } catch (e) { res = [{ error: e }, {}, {}, { error: e }, { error: e }, { error: e }, { error: e }, { error: e }]; }
+  const [arRes, payRes, coSigRes, emLogRes, smLogRes, instRes, achRes, estLinkRes] = res;
+  const estLinkRow = (estLinkRes && !estLinkRes.error && Array.isArray(estLinkRes.data) && estLinkRes.data[0]) || null;
   const coSigRows = (coSigRes && !coSigRes.error) ? (coSigRes.data || []) : [];
   const backBar = '<div class="pec-toolbar"><button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button></div>';
   if (arRes.error) { root.innerHTML = backBar + `<div class="pec-empty">${esc(arRes.error.message)}</div>`; $('pecInvBack').addEventListener('click', () => { state.openInvoiceJobId = null; renderInvoicing(); }); return; }
@@ -12375,6 +12380,7 @@ async function renderJobInvoice(jobId) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button>
         <button class="pec-btn sm" id="pecInvOpenJob">Open job card</button>
+        ${estLinkRow ? `<button class="pec-btn sm" id="pecInvOpenEstimate" title="The estimate this job came from${estLinkRow.estimate_number ? ` (EST-${esc(estLinkRow.estimate_number)})` : ''}">Open estimate</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
         ${pecSplitSendHtml('pecInvSend', 'Send invoice')}
@@ -12524,6 +12530,8 @@ async function renderJobInvoice(jobId) {
   }));
   $('pecInvBack').addEventListener('click', () => { detachInvoiceRefocus(); state.openInvoiceJobId = null; renderInvoicing(); });
   $('pecInvOpenJob').addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+  const invOpenEst = $('pecInvOpenEstimate');
+  if (invOpenEst) invOpenEst.addEventListener('click', () => { detachInvoiceRefocus(); state.openEstimateId = estLinkRow.id; state.openInvoiceJobId = null; switchView('estimates'); });
   const chargeB = $('pecInvCharge'); if (chargeB) chargeB.addEventListener('click', () => openChargeCardModal(row));
   const invPdfB = $('pecInvDownloadPdf'); if (invPdfB) invPdfB.addEventListener('click', () => pecDownloadInvoicePdf(row, payments));
   const payB = $('pecInvPay'); if (payB) payB.addEventListener('click', () => openPaymentModal(row, { deposit: false }));
@@ -15527,7 +15535,7 @@ async function renderJobDetailInner(id) {
     // Latest linked estimate's flake color, for the inline editor on the
     // Colors card (edit the color without opening the estimate). Best-effort:
     // a miss just hides the editor.
-    supabase.from('estimates').select('id,flake_color').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
+    supabase.from('estimates').select('id,flake_color,estimate_number').eq('job_id', id).is('deleted_at', null).order('created_at', { ascending: false }).limit(1),
     cachedRef('flakeColors', () => supabase.from('colors').select('*').eq('category', 'flake-blend').order('name')),
   ]), { label: 'renderJobDetail' });
   if (jobRes.error) {
@@ -15724,6 +15732,7 @@ async function renderJobDetailInner(id) {
     <div class="pec-toolbar pec-job-toolbar">
       <button class="pec-btn ghost" id="pecJobBack">← Back to jobs</button>
       <button class="pec-btn sm" id="pecJobViewInvoice">View Invoice</button>
+      ${flakeEst ? `<button class="pec-btn sm" id="pecJobViewEstimate" title="The estimate this job came from${flakeEst.estimate_number ? ` (EST-${esc(flakeEst.estimate_number)})` : ''}">View Estimate</button>` : ''}
       <button class="pec-btn sm" id="pecJobCopyPortal">Copy portal link</button>
       ${job.customers?.token
         ? `<button class="pec-btn sm" id="pecJobViewPortal">View customer portal</button>`
@@ -15987,6 +15996,8 @@ async function renderJobDetailInner(id) {
   });
   $('pecJobBack').addEventListener('click', () => { state.openJobId = null; switchView('jobs'); });
   $('pecJobViewInvoice').addEventListener('click', () => { state.openInvoiceJobId = id; state.openJobId = null; switchView('invoicing'); });
+  const viewEstBtn = $('pecJobViewEstimate');
+  if (viewEstBtn) viewEstBtn.addEventListener('click', () => { state.openEstimateId = flakeEst.id; state.openJobId = null; switchView('estimates'); });
 
   // Job detail tabs. commsMounted is LOCAL on purpose: every re-render rebuilds
   // the DOM from scratch, so the mount must happen again per render; a global
@@ -29685,6 +29696,10 @@ async function renderEstimateDetail(estimateId) {
     <div class="pec-toolbar" style="justify-content:space-between">
       <button class="pec-btn ghost" id="estBack">← Back to estimates</button>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${est.job_id ? `
+          <button class="pec-btn sm" id="estOpenJobBtn" title="The job card created when this estimate was accepted">Open job</button>
+          <button class="pec-btn sm" id="estViewInvoiceBtn" title="This job's invoice and payments">View invoice</button>
+        ` : ''}
         <button class="pec-btn sm" id="estEdit" title="Opens the estimator right here on the page; saving edits this estimate in place">Edit</button>
         <button class="pec-btn sm" id="estPreview" title="See exactly what the customer will get, without sending">Preview</button>
         <button class="pec-btn sm" id="estPresent" title="Full-screen on-site presentation: your story, process, photos, and reviews, ending on this estimate. The customer can sign right on your device.">Present</button>
@@ -30073,11 +30088,27 @@ async function renderEstimateDetail(estimateId) {
   // flow with the same gates. Never a second send path.
   const editedResend = $('estEditedResend');
   if (editedResend) editedResend.addEventListener('click', () => { const m = $('pecEstSendMain'); if (m) m.click(); });
+  // Leaving this view destroys a live inline estimator iframe (and any typed
+  // work in it), so every nav-away to the job/invoice confirms first when the
+  // estimator for THIS estimate is open.
+  const estNavAway = (go) => {
+    if (pecInlineEstimatorAlive() && String(pecEstInline.estimateId) === String(est.id)
+      && !confirm('The estimator is open on this estimate. Leaving the page closes it and unsaved edits are lost. Leave anyway?')) return;
+    state.openEstimateId = null;
+    go();
+  };
   const openJobLink = $('estOpenJob');
   if (openJobLink) openJobLink.addEventListener('click', (e) => {
     e.preventDefault();
-    state.openJobId = est.job_id;
-    switchView('jobs');
+    estNavAway(() => { state.openJobId = est.job_id; switchView('jobs'); });
+  });
+  const openJobBtn = $('estOpenJobBtn');
+  if (openJobBtn) openJobBtn.addEventListener('click', () => {
+    estNavAway(() => { state.openJobId = est.job_id; switchView('jobs'); });
+  });
+  const viewInvoiceBtn = $('estViewInvoiceBtn');
+  if (viewInvoiceBtn) viewInvoiceBtn.addEventListener('click', () => {
+    estNavAway(() => { state.openInvoiceJobId = est.job_id; switchView('invoicing'); });
   });
   const openLead = $('estOpenLead');
   if (openLead) openLead.addEventListener('click', (e) => {

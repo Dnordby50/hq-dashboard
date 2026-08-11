@@ -1,3 +1,22 @@
+## [2026-08-10 MST] Cross-navigation: real toolbar buttons now tie an estimate, its job, and its invoice together on all three detail pages.
+
+By: Claude Code
+
+Changed: index.html (renderEstimateDetail toolbar + wiring, renderJobDetailInner toolbar + the batched estimate query, renderJobInvoice fetch + toolbar + wiring), features.json (3 entries), help/whats-new.json, plus this entry. No migration, no schema change, no settings key (navigation is not a tunable parameter, same rule-12 call as the invoice rework). Committed and pushed.
+
+**WHY (the Brad Hixson report).** Dylan could not get from the just-signed EST-102098 to its job card. The link existed but was a tiny "Open job" text link inside the green Signed banner inside the Customer view card, AND it was gated on `est.signed_at`, so an accepted-but-differently-flagged estimate could hide it entirely. Meanwhile the job page had no way back to its estimate at all, and neither did the invoice page.
+
+**What shipped.** Estimate detail: Open job + View invoice toolbar buttons whenever `est.job_id` is set (job_id ONLY; the signed_at gate is gone from navigation). Job detail: View Estimate button, fed by the SAME batched reverse query the flake-color editor already ran (`estimates.job_id=eq.<job>`, newest wins), widened by one column (estimate_number, used in the hover title); manual and DripJobs jobs with no estimate get no button, per house style. Invoice page: Open estimate button next to Open job card, fed by an 8th query in the existing Promise.all (the catch fallback array grew to 8 entries with it, it is length-matched by position).
+
+**The two non-obvious details.** (1) Every estimate-side nav-away (including the old banner link) now goes through one `estNavAway` helper that confirms first when the inline estimator is open on this estimate, because leaving the view destroys the iframe and any typed work. (2) The old banner handler never cleared `state.openEstimateId`, so after jumping to the job the URL tuple carried BOTH ?job= and a stale ?estimate=; all nav-away paths clear it now.
+
+**Verification.** npm test green (exit 0, 28 passing incl. all suites). Inline-script parse check identical to HEAD (the one known pre-existing block-0 failure). Each new id (estOpenJobBtn, estViewInvoiceBtn, pecJobViewEstimate, pecInvOpenEstimate) appears exactly twice in index.html: one render, one wire.
+
+## Handoff to Dylan
+
+1. After deploy, open Brad Hixson's estimate (EST-102098): Open job and View invoice sit at the left of the toolbar. Round-trip all three pages with the new buttons.
+2. A job added manually on the schedule (or a DripJobs-imported one) shows no View Estimate button; that is correct, there is no estimate to open.
+
 ## [2026-08-10 MST] Google review link fixed: the /r/ redirect now lands customers on the real PEC review dialog instead of google.com's homepage.
 
 By: Claude Code

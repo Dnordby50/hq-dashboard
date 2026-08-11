@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-job-invoice-crosslinks",
+    "date": "2026-08-10",
+    "title": "Jump between an estimate, its job, and its invoice",
+    "summary": "The three records for one sale are now tied together. A signed estimate's page has Open job and View invoice buttons in the toolbar, the job page has a View Estimate button, and the invoice page has an Open estimate button next to Open job card. No more hunting through lists to find the matching record.",
+    "howto": [
+      "Open a signed estimate and use Open job or View invoice in the top toolbar.",
+      "From a job card, tap View Estimate to see the estimate it came from.",
+      "From an invoice, tap Open estimate."
+    ]
+  },
+  {
     "id": "estimator-tabs-and-notes",
     "date": "2026-08-10",
     "title": "The estimator got tabs and three kinds of notes",
