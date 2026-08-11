@@ -1678,21 +1678,26 @@
     {
       "name": "Staff authentication",
       "area": "platform",
-      "description": "Supabase email and password sign-in with owner-versus-employee shell gating, password reset, a global auth gate, and sign-in event logging.",
+      "description": "Supabase email and password sign-in with owner-versus-employee shell gating, password reset, a global auth gate, and sign-in event logging. Staff offboarding (prompt 86, 2026-08-11): a Revoke login action on the person's card (Settings > People, gated on can_manage_team, never on your own card) permanently bans the auth user, deletes their sessions server-side (pec_admin_kill_sessions RPC, service_role only), stamps admin_users.login_revoked_at/by, optionally reassigns their OPEN work (open ops items, undone todos, unread notifications, live leads by auth uid) to a picked login, and writes an audit_log row. Restore login unbans and clears the stamp with permissions preserved. A kill-switch poll (pecStartRevokedLoginWatch, login_revoked_poll_seconds settings key) makes an open tab drop to the sign-in screen within about a minute of a revoke. Never touches people/sales/crew rows (the mirror trigger would retire the roles).",
       "code": {
         "indexHtml": [
           "initAuth",
           "passwordSignIn",
           "passwordReset",
           "renderAuthUI",
-          "renderGlobalAuthGate"
+          "renderGlobalAuthGate",
+          "openRevokeLoginConfirm",
+          "pecStartRevokedLoginWatch"
         ],
         "netlifyFunctions": [
-          "pec-log-signin.cjs"
+          "pec-log-signin.cjs",
+          "pec-revoke-login.cjs"
         ]
       },
       "tables": [
-        "sign_in_log"
+        "sign_in_log",
+        "admin_users",
+        "audit_log"
       ],
       "since": null
     },

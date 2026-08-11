@@ -1,5 +1,16 @@
 [
   {
+    "id": "revoke-login",
+    "date": "2026-08-11",
+    "title": "Offboard a login without losing any history",
+    "summary": "Settings > People can now revoke a person's login: they are signed out everywhere within a minute, cannot sign back in, and every record they touched keeps their name. Their sales and crew roles are untouched. You can reassign their open items to someone else during the revoke, and a Restore login button undoes it later with the same email, password, and permissions.",
+    "howto": [
+      "Open Settings > People and click the person, then Revoke login in their Login section.",
+      "Pick who receives their open items, or choose Do not reassign, and confirm.",
+      "To bring them back later, open the same card and click Restore login."
+    ]
+  },
+  {
     "id": "estimator-sticky-save-and-self-update",
     "date": "2026-08-11",
     "title": "The estimator Save button now stays on screen on your phone",

@@ -23,6 +23,8 @@ Refreshed 2026-07-29 (Claude Code) after the material-order-overrides migration 
 
 Refreshed 2026-07-29 (Claude Code) after the estimate-scheduled-stage migration (2026-08-03_lead_stage_estimate_scheduled.sql, applied via MCP): `leads.estimate_scheduled_at` (timestamptz, nullable) and `leads_stage_check` replaced to admit `estimate_scheduled` (seven stages, verified live via pg_get_constraintdef). Only the leads section changed.
 
+Refreshed 2026-08-11 (Claude Code) after the revoke-login migration (2026-08-21_revoke_login.sql, applied via MCP and verified by information_schema re-query): `admin_users.login_revoked_at` (timestamptz, nullable; null = active login, every pre-existing row) and `admin_users.login_revoked_by` (uuid, nullable, FK -> admin_users.id on delete set null); new function `public.pec_admin_kill_sessions(uuid)` (SECURITY DEFINER, deletes the target's auth.sessions rows so refresh tokens cascade away; EXECUTE granted to service_role ONLY, verified live via routine_privileges — a staff session cannot call it); settings key `login_revoked_poll_seconds` ('60'). Revoke deliberately lives on admin_users, never people.active: people_mirror_forward would push `active` through to the sales/crew role tables. Additive only.
+
 Refreshed 2026-08-10 (Claude Code, fourth note) after the estimate-notes migration (2026-08-20_estimate_notes.sql, applied via MCP): `estimates.client_notes` (text, nullable, CLIENT VISIBLE: renders on the customer estimate page as "A note from us") and `estimates.company_notes` (text, nullable, INTERNAL ONLY). `crew_notes` keeps its crew-work-order-only contract. Additive only.
 
 Refreshed 2026-08-10 (Claude Code, third note) after the prompt-84 status-guard migration (2026-08-19_prompt84_estimate_status_guard.sql, applied via MCP and verified by live re-query of pg_trigger plus a live rejection test on a throwaway row): new function `public.estimate_status_guard()` and BEFORE UPDATE OF status trigger `trg_estimate_status_guard` on `public.estimates`. No table, column, or settings change. The trigger refuses any status update that lowers the lifecycle rank (draft 0 < sent 1 = change_requested 1 < signed 2 < accepted 3 = rejected 3 = lost 3), so a stale offline-outbox replay can never clobber a sent estimate back to draft again; `sent <-> change_requested` stays legal in both directions (markEstimateSent depends on it), unknown statuses pass through, and the exception message names the row plus the old and new status. See the estimates section note.
@@ -84,9 +86,12 @@ RLS: enabled · rows: 6
 | role | text | no | 'office' |
 | created_at | timestamptz | no | now() |
 | company | text | no | 'both' |
+| login_revoked_at | timestamptz | yes |  |
+| login_revoked_by | uuid | yes |  |
 
 PK: id
-FK: auth_user_id → auth.users.id
+FK: auth_user_id → auth.users.id; login_revoked_by → admin_users.id (on delete set null)
+Note: login_revoked_at null = active login (2026-08-21_revoke_login.sql). Set = the auth user is permanently banned (ban_duration 876000h) and their auth.sessions were deleted via pec_admin_kill_sessions (service_role-only SECURITY DEFINER); pec-revoke-login.cjs is the only writer. Restore unbans and nulls both columns. Revoke never touches people/sales/crew rows (the people_mirror_forward trigger would propagate active=false to the role tables).
 
 ### audit_log
 RLS: enabled · rows: 754

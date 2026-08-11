@@ -6589,6 +6589,50 @@ function _pecProbeSession(triggerLabel) {
     });
 }
 
+// Revoked-login kill switch (prompt 86, locked decision 3). A banned auth
+// user's access JWT stays valid until it expires (GoTrue cannot revoke a
+// signed JWT), so an open tab would keep working for up to an hour after a
+// revoke. This poll closes that window: every login_revoked_poll_seconds
+// (settings key, default 60, read once at start) the app reads ITS OWN
+// admin_users row (one row, one column, skipped entirely while the tab is
+// hidden; an immediate check fires when the tab becomes visible again) and,
+// if login_revoked_at is set, signs out locally and lands on the sign-in
+// screen with a plain message. withFreshSession per the wedge rules; a
+// transient read failure just waits for the next tick.
+let _pecRevokePollTimer = null;
+let _pecRevokeCheckBusy = false;
+async function _pecRevokedLoginCheck(label) {
+  if (_pecRevokeCheckBusy) return;
+  if (!state || !state.adminUser || !state.session) return;
+  if (document.hidden) return;
+  const uid = state.session.user && state.session.user.id;
+  if (!uid) return;
+  _pecRevokeCheckBusy = true;
+  try {
+    const r = await withFreshSession(() => supabase.from('admin_users').select('login_revoked_at').eq('auth_user_id', uid).maybeSingle(), { label: `revoked-check-${label}` });
+    if (r && !r.error && r.data && r.data.login_revoked_at) {
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch (_) {}
+      state.session = null; state.adminUser = null;
+      renderGlobalAuthGate();
+      const errEl = $('pecSigninError');
+      if (errEl) { errEl.style.color = 'var(--danger)'; errEl.textContent = 'Your access was removed by an admin. If you think this is a mistake, contact them.'; }
+    }
+  } catch (_) { /* transient; next tick tries again */ }
+  finally { _pecRevokeCheckBusy = false; }
+}
+async function pecStartRevokedLoginWatch() {
+  if (_pecRevokePollTimer) return;
+  _pecRevokePollTimer = true; // claim before the async settings read so a re-render cannot double-start
+  let secs = 60;
+  try {
+    const r = await supabase.from('settings').select('value').eq('key', 'login_revoked_poll_seconds').maybeSingle();
+    const n = Number(r && r.data && r.data.value);
+    if (Number.isFinite(n) && n >= 15) secs = Math.round(n);
+  } catch (_) {}
+  _pecRevokePollTimer = setInterval(() => _pecRevokedLoginCheck('interval'), secs * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) _pecRevokedLoginCheck('visibilitychange'); });
+}
+
 // Trigger A: tab hidden->visible after 15+ min idle.
 let _pecHiddenAt = 0;
 document.addEventListener('visibilitychange', () => {
@@ -7275,6 +7319,9 @@ function renderAuthUI() {
     return;
   }
   signIn.style.display = 'none'; pending.style.display = 'none'; app.style.display = '';
+  // Revoked-login kill switch (prompt 86): starts once per page life, only
+  // once a signed-in staff view actually rendered.
+  pecStartRevokedLoginWatch();
   // Populate the top-right user badge from state.adminUser. Avatar shows up to
   // 2 initials from name; sub line is the role title-cased into something
   // friendly (admin -> Admin, pm -> Project Manager).
@@ -21405,8 +21452,8 @@ async function renderSettingsPeople() {
     supabase.from('pec_prod_crews').select('*').order('name'),
     supabase.from('pec_sales_team_members').select('*'),
     supabase.from('pec_prod_crew_members').select('*'),
-    supabase.from('admin_users').select('id,name,email,role,auth_user_id').order('name'),
-    supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days']),
+    supabase.from('admin_users').select('id,name,email,role,auth_user_id,login_revoked_at,login_revoked_by').order('name'),
+    supabase.from('settings').select('key,value').in('key', ['people_merge_dismissed', 'people_mirror_enabled', 'birthday_reminder_enabled', 'birthday_reminder_lead_days', 'login_revoked_poll_seconds']),
     isLoginAdmin ? supabase.from('user_permissions').select('*') : Promise.resolve({ data: [] }),
     isLoginAdmin ? supabase.from('sign_in_log').select('email,ip_address,user_agent,signed_in_at').order('signed_in_at', { ascending: false }).limit(20) : Promise.resolve({ data: [] }),
   ]), { label: 'renderSettingsPeople' });
@@ -21490,7 +21537,7 @@ async function renderSettingsPeople() {
               <td>${cm ? `<select data-person-crew style="min-width:110px"><option value="">No crew</option>${crews.map(c => `<option value="${esc(c.id)}" ${cm.crew_id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${cm ? `<input class="prod-num" type="number" min="0" step="0.01" data-person-wage value="${esc(cm.hourly_wage ?? '')}" placeholder="default rate" style="width:100px">` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${sm ? `<input class="prod-num" type="number" min="0" max="100" step="0.5" data-person-pct value="${esc(sm.commission_pct ?? 0)}" style="width:80px">${sm.exclude_from_commission ? ' <span title="Excluded from the Commission report" style="font-size:.7rem;color:var(--muted)">excl.</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
-              <td style="font-size:.78rem">${au ? `${esc(au.email || au.name || 'linked')} <span class="pec-badge ${esc(au.role || '')}">${esc(au.role || '')}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
+              <td style="font-size:.78rem">${au ? `${esc(au.email || au.name || 'linked')} <span class="pec-badge ${esc(au.role || '')}">${esc(au.role || '')}</span>${au.login_revoked_at ? ' <span class="pec-badge" style="background:#dc2626;color:#fff" title="This login is revoked: they cannot sign in. Open the person to restore it.">Login revoked</span>' : ''}` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${pecBirthdayLabel(p.birth_month, p.birth_day) || '<span style="color:#b45309" title="No birthday set. Edit to add one.">Not set</span>'}</td>
               <td><input type="checkbox" data-person-active ${p.active !== false ? 'checked' : ''} style="width:auto"></td>
               <td><button class="pec-btn sm ghost" data-person-edit>Edit</button></td>
@@ -21517,9 +21564,28 @@ async function renderSettingsPeople() {
         </table>
         </div>
       </details>
+    </div>
+    <div class="pec-card">
+      <details>
+        <summary style="cursor:pointer;font-weight:700">Advanced</summary>
+        <div class="pec-field" style="max-width:340px;margin-top:10px">
+          <label>Revoked-login check interval (seconds)</label>
+          <input type="number" min="15" step="5" id="pecRevokePollSecs" value="${esc(settingsMap.login_revoked_poll_seconds || '60')}">
+          <span style="color:var(--muted);font-size:.7rem">How often an open dashboard tab checks whether its own login was revoked (and drops to the sign-in screen if it was). Applies on each user's next page load.</span>
+        </div>
+      </details>
     </div>` : ''}
   `;
   wireSettingsTabs(root);
+  const pollInp = $('pecRevokePollSecs');
+  if (pollInp) pollInp.addEventListener('change', async () => {
+    const n = Math.max(15, Math.round(Number(pollInp.value) || 60));
+    pollInp.value = n;
+    try {
+      const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key: 'login_revoked_poll_seconds', value: String(n) }, { onConflict: 'key' }), { label: 'settings-revoke-poll-save' });
+      if (w.error) throw w.error;
+    } catch (err) { showToast('Could not save the interval: ' + (err.message || err), { ttl: 6000 }); }
+  });
   $('pecPersonAddBtn').addEventListener('click', () => openPersonModal(null));
   root.querySelectorAll('[data-person-edit]').forEach(b => b.addEventListener('click', () => {
     openPersonModal(b.closest('tr[data-person-id]').dataset.personId);
@@ -21610,6 +21676,71 @@ async function renderSettingsPeople() {
 // the adopt trigger spawning a duplicate person); the login link sets
 // people.admin_user_id. Birthday is REQUIRED on new adds (locked decision 5)
 // but not retroactively blocking on edits (that is what the nag is for).
+// Revoke-login confirm (prompt 86). Fetches the open-work counts from the
+// function's preview action first (client RLS cannot count another user's
+// todos), then confirms with a reassign picker. Plain confirm, no
+// type-the-name step (locked decision 6).
+async function openRevokeLoginConfirm(au, personName) {
+  let counts = null;
+  try {
+    const res = await fetch('/.netlify/functions/pec-revoke-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session.access_token}` },
+      body: JSON.stringify({ action: 'preview', adminUserId: au.id }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (res.ok && out.counts) counts = out.counts;
+  } catch (_) { /* counts are informational; the dialog still opens */ }
+  const total = counts ? (counts.ops_items + counts.todos + counts.notifications + counts.leads) : null;
+  const countsLine = counts
+    ? (total
+      ? `They have open items: ${[counts.ops_items ? `${counts.ops_items} ops item${counts.ops_items === 1 ? '' : 's'}` : '', counts.todos ? `${counts.todos} to-do${counts.todos === 1 ? '' : 's'}` : '', counts.notifications ? `${counts.notifications} unread notification${counts.notifications === 1 ? '' : 's'}` : '', counts.leads ? `${counts.leads} live lead${counts.leads === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')}.`
+      : 'They have no open items to reassign.')
+    : 'Open-item counts unavailable right now; reassignment still works.';
+  const targets = (state.peopleAdminUsers || []).filter(u => u.id !== au.id && !u.login_revoked_at);
+  openModal(`
+    <h3>Revoke login for ${esc(personName || au.email || au.name)}?</h3>
+    <p style="font-size:.85rem;line-height:1.5">This ends their access and signs them out everywhere. Their name stays on everything they worked on (estimates, jobs, leads, history), and their sales or crew roles are not affected. You can restore the login later.</p>
+    <p style="font-size:.82rem;color:var(--muted)">${esc(countsLine)}</p>
+    <div class="pec-field"><label>Reassign their open items to</label>
+      <select id="revokeReassignTo">
+        <option value="">Do not reassign</option>
+        ${targets.map(u => `<option value="${esc(u.id)}">${esc(u.name || u.email)}</option>`).join('')}
+      </select>
+    </div>
+    <div id="revokeLoginErr" style="min-height:18px;font-size:.8rem;color:var(--danger)"></div>
+    <div class="pec-modal-actions">
+      <button class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button class="pec-btn danger" id="revokeLoginGo">Revoke login</button>
+    </div>
+  `);
+  $('revokeLoginGo').addEventListener('click', async () => {
+    const btn = $('revokeLoginGo');
+    const errEl = $('revokeLoginErr');
+    btn.disabled = true; errEl.textContent = '';
+    try {
+      const body = { action: 'revoke', adminUserId: au.id };
+      const to = $('revokeReassignTo').value;
+      if (to) body.reassignToAdminUserId = to;
+      const res = await fetch('/.netlify/functions/pec-revoke-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session.access_token}` },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out.error || 'Revoke failed');
+      const c = out.counts || {};
+      const movedTotal = (c.ops_items || 0) + (c.todos || 0) + (c.notifications || 0) + (c.leads || 0);
+      closeModal();
+      showToast(`Login revoked for ${au.email || au.name}.${movedTotal ? ` Moved ${movedTotal} open item${movedTotal === 1 ? '' : 's'} (${[c.ops_items ? `${c.ops_items} ops` : '', c.todos ? `${c.todos} to-dos` : '', c.notifications ? `${c.notifications} notifications` : '', c.leads ? `${c.leads} leads` : ''].filter(Boolean).join(', ')}).` : ''}`, { ttl: 8000 });
+      renderSettings();
+    } catch (e) {
+      btn.disabled = false;
+      errEl.textContent = e.message || String(e);
+    }
+  });
+}
+
 function openPersonModal(personId) {
   const existing = personId ? (state.people || []).find(p => p.id === personId) : null;
   const p = existing || { full_name: '', display_name: '', email: '', phone: '', active: true, birth_month: null, birth_day: null };
@@ -21636,10 +21767,23 @@ function openPersonModal(personId) {
       <span style="color:var(--muted);font-size:.78rem;align-self:center">Admin (full access)</span>
       <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" data-person-perm="can_finalize_costing" ${finalizeAllowed ? 'checked' : ''} style="width:auto"> Finalize costing</label>
     </div>`;
+  // Revoke/restore gate (prompt 86, locked decision 4): can_manage_team, the
+  // same permission the people RPCs require, deliberately NOT role='admin'.
+  // Missing permissions row = allowed (the app-wide all-true fallback).
+  const viewerPermRow = (state.peoplePerms || []).find(r => r.admin_user_id === state.adminUser?.id);
+  const viewerCanManageTeam = !(viewerPermRow && viewerPermRow.can_manage_team === false);
+  const revokerName = (au && au.login_revoked_by)
+    ? (((state.peopleAdminUsers || []).find(u => u.id === au.login_revoked_by) || {}).name || '')
+    : '';
   const loginSectionHtml = !isLoginAdmin ? '' : `
     <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;padding-top:8px;border-top:1px solid var(--rd-line,var(--border))">Login</div>
     ${au ? `
       <div style="font-size:.8rem;margin-bottom:6px"><strong>${esc(au.email || au.name || '')}</strong> · linked auth ${au.auth_user_id ? '✓' : '<span style="color:#b45309">not connected</span>'}</div>
+      ${au.login_revoked_at ? `
+      <div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.35);border-radius:8px;padding:8px 10px;font-size:.8rem;margin:2px 0 8px">
+        <strong>Login revoked</strong> ${esc(fmtRelativeTime(au.login_revoked_at))}${revokerName ? ` by ${esc(revokerName)}` : ''}. They cannot sign in. Their name stays on everything they worked on, and their sales or crew roles were not affected.
+        ${viewerCanManageTeam ? '<div style="margin-top:6px"><button type="button" class="pec-btn sm primary" id="personRestoreLogin">Restore login</button> <span style="color:var(--muted);font-size:.72rem">same email and password, permissions unchanged; items that were reassigned stay where they went</span></div>' : ''}
+      </div>` : ''}
       <div class="pec-row-2">
         <div class="pec-field"><label>Role</label>
           <select id="personLoginRole">
@@ -21650,6 +21794,7 @@ function openPersonModal(personId) {
         </div>
         <div class="pec-field" style="align-self:end">
           ${au.auth_user_id ? '<button type="button" class="pec-btn sm" id="personResetPw">Reset password</button>' : ''}
+          ${!au.login_revoked_at && viewerCanManageTeam && au.id !== state.adminUser?.id ? '<button type="button" class="pec-btn sm danger" id="personRevokeLogin" title="Ends their access and signs them out everywhere. Their records and their sales or crew roles are untouched.">Revoke login</button>' : ''}
           ${au.id !== state.adminUser?.id ? '<button type="button" class="pec-btn sm danger" id="personDeleteLogin">Delete login</button>' : ''}
         </div>
       </div>
@@ -21725,6 +21870,21 @@ function openPersonModal(personId) {
     };
     if (roleSel) { syncPermBlocks(); roleSel.addEventListener('change', syncPermBlocks); }
     modal.querySelector('#personResetPw')?.addEventListener('click', () => { openResetPasswordForm(au); });
+    modal.querySelector('#personRevokeLogin')?.addEventListener('click', () => { openRevokeLoginConfirm(au, p.full_name); });
+    modal.querySelector('#personRestoreLogin')?.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/.netlify/functions/pec-revoke-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.session.access_token}` },
+          body: JSON.stringify({ action: 'restore', adminUserId: au.id }),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out.error || 'Restore failed');
+        closeModal();
+        showToast(`Login restored for ${au.email || au.name}. They can sign in again with the same email and password.`, { ttl: 6000 });
+        renderSettings();
+      } catch (e) { err.textContent = 'Could not restore the login: ' + (e.message || e); }
+    });
     modal.querySelector('#personDeleteLogin')?.addEventListener('click', async () => {
       if (!au) return;
       if (!confirm(`Delete the login for ${au.email || au.name}? The person record stays; only the sign-in account row goes. (This does not delete the linked auth account.)`)) return;
