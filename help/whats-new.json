@@ -1,5 +1,16 @@
 [
   {
+    "id": "invoice-page-rework",
+    "date": "2026-08-10",
+    "title": "The invoice page got a cleaner layout with tabs",
+    "summary": "The invoice screen now leads with the two buttons you actually use (Send invoice and Receive payment) plus a More actions menu for everything else, one info card with the client, invoice number, date invoiced, due date, terms, and salesperson, and three tabs underneath: Invoice (line items, change orders, payments), Settings (payment schedule, deposit, void), and Notes (every email and text sent). Two new abilities: Customer view opens the exact page the customer sees, and Void invoice cancels an invoice cleanly (it leaves every list and total, and its pay link goes dead).",
+    "howto": [
+      "Open any invoice from Invoicing; switch tabs to move between the line items, the payment schedule, and the send history.",
+      "Use More actions for the PDF, the public link, card charges, line edits, change orders, and voiding.",
+      "Add or fix a due date right on the info card with Add due date or Edit terms."
+    ]
+  },
+  {
     "id": "estimate-schedule-autoseed",
     "date": "2026-08-10",
     "title": "New estimates come with the payment schedule already filled in",

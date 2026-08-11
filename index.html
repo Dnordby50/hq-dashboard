@@ -12354,40 +12354,65 @@ async function renderJobInvoice(jobId) {
         : '<div class="pec-empty">No invoice emails or texts have been sent for this job yet.</div>'}
     </div>`;
   const canComplete = ['scheduled', 'in_progress'].includes(row.status);
+  // DripJobs-shape rework (2026-08-10, parity batch phase 3): toolbar with a
+  // More-actions dropdown, a single info card (client | invoice # | dates |
+  // Due on | Terms | salesperson), the money stats, then a pill tab strip
+  // Invoice | Settings | Notes. Every tab body renders in this one pass from
+  // the already-batched fetch and toggles `hidden` (zero refetch on tab
+  // switch); state.invoiceTab survives the charge-card refocus re-render.
+  // Element ids are UNCHANGED from the pre-rework page so the wiring below
+  // works as before; the More-actions menu holds the real buttons (not
+  // proxies), it is just a positioned container that toggles hidden.
+  const activeInvTab = ['invoice', 'settings', 'notes'].includes(state.invoiceTab) ? state.invoiceTab : 'invoice';
+  const dateInvoiced = row.invoice_first_sent_at
+    ? invFmtDate(new Date(Date.parse(row.invoice_first_sent_at) - 7 * 3600 * 1000).toISOString().slice(0, 10))
+    : null;
+  const termsName = pecInvoiceTermsLabel(row.invoice_terms);
+  const menuBtn = (id, label, danger) => `<button class="pec-btn ghost sm" id="${id}" style="justify-content:flex-start;text-align:left;width:100%${danger ? ';color:#dc2626' : ''}">${label}</button>`;
+  const invTabBtn = (key, label) => `<button class="pec-btn sm ${activeInvTab === key ? 'primary' : 'ghost'}" data-invtab="${key}">${label}</button>`;
   root.innerHTML = `
     <div class="pec-toolbar" style="justify-content:space-between">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="pec-btn ghost" id="pecInvBack">← Back to invoicing</button>
         <button class="pec-btn sm" id="pecInvOpenJob">Open job card</button>
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${canComplete ? '<button class="pec-btn sm" id="pecInvComplete">Mark Complete</button>' : ''}
-        <button class="pec-btn sm" id="pecInvEditLines">Edit line items</button>
-        <button class="pec-btn sm" id="pecInvChangeOrder">Add change order</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
         ${pecSplitSendHtml('pecInvSend', 'Send invoice')}
-        <button class="pec-btn sm" id="pecInvDownloadPdf">Download PDF</button>
-        <button class="pec-btn sm" id="pecInvCopyLink">Copy public invoice link</button>
-        ${(!row.deposit_collected && !row.deposit_waived) ? '<button class="pec-btn sm" id="pecInvDeposit">Record deposit</button>' : ''}
-        <button class="pec-btn sm" id="pecInvCharge">Charge card</button>
-        <button class="pec-btn sm primary" id="pecInvPay">Record payment</button>
+        <button class="pec-btn sm primary" id="pecInvPay">Receive payment</button>
+        <div style="position:relative">
+          <button class="pec-btn sm" id="pecInvMore" aria-haspopup="true">More actions &#9662;</button>
+          <div id="pecInvMoreMenu" hidden style="position:absolute;right:0;top:calc(100% + 4px);z-index:1000;background:var(--rd-card,#fff);border:1px solid var(--rd-line,#e6e8ec);border-radius:8px;box-shadow:0 8px 24px rgba(15,20,32,.16);min-width:200px;display:flex;flex-direction:column;padding:6px;gap:2px">
+            ${menuBtn('pecInvDownloadPdf', 'Download PDF')}
+            ${menuBtn('pecInvCustomerView', 'Customer view')}
+            ${menuBtn('pecInvCopyLink', 'Copy public link')}
+            ${menuBtn('pecInvCharge', 'Charge card')}
+            ${menuBtn('pecInvEditLines', 'Edit line items')}
+            ${menuBtn('pecInvChangeOrder', 'Add change order')}
+            ${(!row.deposit_collected && !row.deposit_waived) ? menuBtn('pecInvDeposit', 'Record deposit') : ''}
+            ${canComplete ? menuBtn('pecInvComplete', 'Mark Complete') : ''}
+            ${menuBtn('pecInvVoid', 'Void invoice…', true)}
+          </div>
+        </div>
       </div>
     </div>
     <div class="pec-card">
-      <div class="pec-ar-headline" style="font-size:1.4rem">${esc(row.customer_name || '—')}</div>
-      <div class="pec-ar-sub">${esc(row.address || '')}</div>
-      <div class="pec-ar-sub" style="margin-top:4px">Invoice ${esc(invNo)} · <span class="pec-badge ${esc(row.status)}">${esc(String(row.status).replace('_', ' '))}</span> · ${ageChip}</div>
-      <div class="pec-ar-sub" style="margin-top:4px">Terms: ${(() => {
-        const tl = pecInvoiceTermsLine(row);
-        return tl ? `<strong>${esc(tl)}</strong>` : '<span style="color:var(--muted)">none set</span>';
-      })()} <button type="button" id="pecInvEditTerms" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">Edit terms</button></div>
+      <div style="display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap">
+        <div style="min-width:220px">
+          <div class="pec-ar-headline" style="font-size:1.4rem">${esc(row.customer_name || '—')}</div>
+          <div class="pec-ar-sub">${esc(row.address || '')}</div>
+          <div class="pec-ar-sub">${[row.customer_email || '', row.customer_phone ? qoFmtPhone(row.customer_phone) : ''].filter(Boolean).map(esc).join(' · ')}</div>
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+          <div><div class="pec-stat-label">Invoice #</div><div style="font-weight:700">${esc(invNo)}</div><div class="pec-ar-sub"><span class="pec-badge ${esc(row.status)}">${esc(String(row.status).replace('_', ' '))}</span> ${ageChip}</div></div>
+          <div><div class="pec-stat-label">Date invoiced</div><div style="font-weight:700">${dateInvoiced || '—'}</div>${dateInvoiced ? '' : '<div class="pec-ar-sub">not sent yet</div>'}</div>
+          <div><div class="pec-stat-label">Due on</div><div style="font-weight:700">${row.invoice_due_date ? esc(invFmtDate(row.invoice_due_date)) : `<button type="button" id="pecInvAddDue" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">Add due date</button>`}</div></div>
+          <div><div class="pec-stat-label">Terms</div><div style="font-weight:700">${termsName ? esc(termsName) : '—'}</div><div class="pec-ar-sub"><button type="button" id="pecInvEditTerms" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">Edit terms</button></div></div>
+          <div><div class="pec-stat-label">Salesperson</div><div style="font-weight:700">${esc(row.salesperson || '—')}</div></div>
+        </div>
+      </div>
     </div>
     <div class="pec-grid-stats">
       <div class="pec-stat"><div class="pec-stat-label">Invoice total</div><div class="pec-stat-val">${invUSD(row.price)}</div></div>
-      <div class="pec-stat"><div class="pec-stat-label">Deposit</div><div class="pec-stat-val">${row.deposit_waived ? 'Waived' : (row.deposit_amount != null ? invUSD(row.deposit_amount) : '—')}</div><div class="pec-ar-sub">${
-        row.deposit_collected ? 'collected'
-        : row.deposit_waived ? 'no deposit needed · <button type="button" id="pecInvRequireDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">require deposit</button>'
-        : `not collected${invNum(row.paid_to_date) > 0 ? ' · <button type="button" id="pecInvMarkDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">mark collected</button>' : ''} · <button type="button" id="pecInvWaiveDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">no deposit needed</button>`
-      }</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Paid to date</div><div class="pec-stat-val">${invUSD(row.paid_to_date)}</div></div>
       <div class="pec-stat"><div class="pec-stat-label">Balance</div><div class="pec-stat-val">${invUSD(row.balance)}</div></div>
       ${ask ? `<div class="pec-stat" style="border-left:3px solid var(--rd-accent,var(--accent,#D8531C))"><div class="pec-stat-label">Due now</div><div class="pec-stat-val">${
@@ -12401,6 +12426,12 @@ async function renderJobInvoice(jobId) {
         : 'paid in full'
       }</div>${achPendingTotal > 0.005 ? `<div class="pec-ar-sub" style="color:var(--muted)" title="${esc(ACH_TIP)}">${invUSD(achPendingTotal)} bank transfer clearing</div>` : ''}</div>` : ''}
     </div>
+    <div style="display:flex;gap:6px;margin:14px 0 10px" id="pecInvTabs">
+      ${invTabBtn('invoice', 'Invoice')}
+      ${invTabBtn('settings', 'Settings')}
+      ${invTabBtn('notes', 'Notes')}
+    </div>
+    <div id="invTabSettings" ${activeInvTab === 'settings' ? '' : 'hidden'}>
     ${(() => {
       if (instErr) return `<div class="pec-card"><h3>Payment schedule</h3><div class="pec-empty">Couldn&#39;t load the payment schedule (apply the 2026-07-22_invoice_installments.sql migration first).<br><span style="font-size:.72rem;color:var(--muted)">${esc(instRes.error.message || '')}</span></div></div>`;
       const canPrepDeposit = !row.deposit_collected && !row.deposit_waived
@@ -12445,6 +12476,22 @@ async function renderJobInvoice(jobId) {
       </div>`;
     })()}
     <div class="pec-card">
+      <h3>Deposit</h3>
+      <div style="font-weight:700;font-size:1.05rem">${row.deposit_waived ? 'Waived' : (row.deposit_amount != null ? invUSD(row.deposit_amount) : '—')}</div>
+      <div class="pec-ar-sub">${
+        row.deposit_collected ? 'collected'
+        : row.deposit_waived ? 'no deposit needed · <button type="button" id="pecInvRequireDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">require deposit</button>'
+        : `not collected${invNum(row.paid_to_date) > 0 ? ' · <button type="button" id="pecInvMarkDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">mark collected</button>' : ''} · <button type="button" id="pecInvWaiveDep" class="pec-btn ghost sm" style="padding:1px 8px;font-size:.7rem">no deposit needed</button>`
+      }</div>
+    </div>
+    <div class="pec-card">
+      <h3>Void invoice</h3>
+      <div class="pec-ar-sub" style="margin-bottom:8px">Voiding removes this invoice from every list and AR number and kills the public pay link. Recorded payments stay in history. Use it for cancelled jobs and invoices raised in error.</div>
+      <button type="button" class="pec-btn sm" id="pecInvVoid2" style="color:#dc2626;border-color:#dc2626">Void invoice…</button>
+    </div>
+    </div>
+    <div id="invTabInvoice" ${activeInvTab === 'invoice' ? '' : 'hidden'}>
+    <div class="pec-card">
       <h3>Line items</h3>
       <div class="pec-scroll-x"><table class="pec-table">
         <thead><tr><th>Item</th><th>Scope</th><th style="text-align:right">Price</th></tr></thead>
@@ -12457,7 +12504,14 @@ async function renderJobInvoice(jobId) {
         <thead><tr><th>Date</th><th>Method</th><th>Reference</th><th style="text-align:right">Amount</th><th>Recorded by</th><th></th></tr></thead>
         <tbody>${payRows}</tbody></table></div>
     </div>
+    </div>
+    <div id="invTabNotes" ${activeInvTab === 'notes' ? '' : 'hidden'}>
     ${commCardHtml}
+    <div class="pec-card">
+      <h3>Job notes</h3>
+      <div class="pec-ar-sub">Job notes live on the job card, shared with production. <button type="button" class="pec-btn ghost sm" id="pecInvOpenJobNotes">Open job card</button></div>
+    </div>
+    </div>
   `;
   mountChangeOrderCard($('invCoCard'), { jobId, customerId: row.customer_id, sigRows: coSigRows, onChanged: () => renderJobInvoice(jobId) });
   root.querySelectorAll('[data-edit-pay]').forEach(b => b.addEventListener('click', () => {
@@ -12492,8 +12546,7 @@ async function renderJobInvoice(jobId) {
   // invoice_due_date. Net terms auto-compute the date from the first-send day
   // (Phoenix); custom_date requires a hand-picked date. Idempotent PATCH, so
   // the recover+retry write wrapper is safe.
-  const termsB = $('pecInvEditTerms');
-  if (termsB) termsB.addEventListener('click', () => {
+  const openInvTermsModal = () => {
     const termOpts = Object.entries(PEC_INVOICE_TERMS_LABELS)
       .map(([k, v]) => `<option value="${k}" ${row.invoice_terms === k ? 'selected' : ''}>${esc(v)}</option>`).join('');
     openModal(`
@@ -12530,7 +12583,91 @@ async function renderJobInvoice(jobId) {
         } catch (err) { errEl.textContent = err.message || String(err); btn.disabled = false; }
       });
     } });
+  };
+  const termsB = $('pecInvEditTerms');
+  if (termsB) termsB.addEventListener('click', openInvTermsModal);
+  const addDueB = $('pecInvAddDue');
+  if (addDueB) addDueB.addEventListener('click', openInvTermsModal);
+
+  // Tab strip (2026-08-10 rework): all three bodies are in the DOM from the
+  // one batched render; switching toggles `hidden` only, so listeners attach
+  // once and nothing refetches. state.invoiceTab survives the charge-card
+  // refocus re-render because renderJobInvoice reads it back at render time.
+  const invTabEls = { invoice: $('invTabInvoice'), settings: $('invTabSettings'), notes: $('invTabNotes') };
+  const invTabBtns = root.querySelectorAll('[data-invtab]');
+  const setInvTab = t => {
+    state.invoiceTab = t;
+    Object.entries(invTabEls).forEach(([k, el]) => { if (el) el.hidden = k !== t; });
+    invTabBtns.forEach(b => {
+      b.classList.toggle('primary', b.dataset.invtab === t);
+      b.classList.toggle('ghost', b.dataset.invtab !== t);
+    });
+  };
+  invTabBtns.forEach(b => b.addEventListener('click', () => setInvTab(b.dataset.invtab)));
+
+  // More-actions dropdown: a plain hidden container holding the REAL action
+  // buttons (ids unchanged), so every existing handler binds exactly as it
+  // always has. Any click inside closes the menu after the action fires.
+  const moreB = $('pecInvMore');
+  const moreMenu = $('pecInvMoreMenu');
+  if (moreB && moreMenu) {
+    // The outside-click closer only exists WHILE the menu is open (same
+    // pattern as pecWireSplitSend), so re-renders never stack document
+    // listeners.
+    const closeMore = () => { moreMenu.hidden = true; document.removeEventListener('click', closeMore); };
+    moreB.addEventListener('click', e => {
+      e.stopPropagation();
+      if (moreMenu.hidden) { moreMenu.hidden = false; setTimeout(() => document.addEventListener('click', closeMore), 0); }
+      else closeMore();
+    });
+    moreMenu.addEventListener('click', () => closeMore());
+  }
+
+  // Customer view: the exact page the customer sees at /pay/<token>.
+  const custViewB = $('pecInvCustomerView');
+  if (custViewB) custViewB.addEventListener('click', () => {
+    if (!row.public_token) { showToast('Public link not ready yet — run the brand/public-invoice migration.', { ttl: 4500 }); return; }
+    window.open(`${location.origin}/pay/${row.public_token}`, '_blank');
   });
+
+  const jobNotesB = $('pecInvOpenJobNotes');
+  if (jobNotesB) jobNotesB.addEventListener('click', () => { detachInvoiceRefocus(); state.openJobId = jobId; state.openInvoiceJobId = null; switchView('jobs'); });
+
+  // Void invoice (new with the rework): jobs.voided_at is the CRM's cancel.
+  // pec_job_ar filters voided rows, so AR, the lists, and the public pay
+  // link all self-heal on the next render. The reason goes to the job
+  // activity log (jobs has no void_reason column). The conditional
+  // `.is('voided_at', null)` makes a double-click or retry a no-op.
+  const doVoid = () => openModal(`
+    <h3>Void this invoice?</h3>
+    <div class="pec-ar-sub" style="margin-bottom:12px">${esc(row.customer_name || '')} · Invoice ${esc(invNo)} · ${invUSD(row.price)}.<br>The public pay link goes dead and the job leaves every invoicing list and AR total. Recorded payments stay in history. Reversing this later means clearing the void in the database, so be sure.</div>
+    <div class="pec-field"><label>Reason (kept in the job activity log)</label><input id="invVoidReason" placeholder="optional"></div>
+    <div class="prod-msg-err" id="invVoidErr" style="min-height:16px"></div>
+    <div class="pec-modal-actions">
+      <button type="button" class="pec-btn ghost" onclick="window.pecCloseModal()">Cancel</button>
+      <button type="button" class="pec-btn primary" id="invVoidGo" style="background:#dc2626;border-color:#dc2626">Void invoice</button>
+    </div>
+  `, { onMount: modal => {
+    modal.querySelector('#invVoidGo').addEventListener('click', async () => {
+      const errEl = modal.querySelector('#invVoidErr'); errEl.textContent = '';
+      const reason = modal.querySelector('#invVoidReason').value.trim();
+      const btn = modal.querySelector('#invVoidGo'); btn.disabled = true;
+      try {
+        const upd = await withFreshWriteRetry(() => supabase.from('jobs').update({ voided_at: new Date().toISOString() }).eq('id', row.id).is('voided_at', null), { label: 'invoice-void' });
+        if (upd && upd.error) throw upd.error;
+        try { await logJobActivity(row.id, 'voided', { status: row.status }, { reason: reason || null, source: 'invoice_void_button' }); } catch (_) {}
+        closeModal();
+        showToast('Invoice voided', { ttl: 3500 });
+        detachInvoiceRefocus();
+        state.openInvoiceJobId = null;
+        renderInvoicing();
+      } catch (err) { errEl.textContent = err.message || String(err); btn.disabled = false; }
+    });
+  } });
+  const voidB = $('pecInvVoid');
+  if (voidB) voidB.addEventListener('click', doVoid);
+  const voidB2 = $('pecInvVoid2');
+  if (voidB2) voidB2.addEventListener('click', doVoid);
 
   // The send flow lives in pecInvoiceSendKit (prompt 45 refactor: the
   // Approvals view sends a held installment through the SAME kit, so there is

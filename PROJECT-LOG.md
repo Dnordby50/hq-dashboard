@@ -1,3 +1,25 @@
+## [2026-08-10 MST] Invoice page reworked to the DripJobs shape (parity batch, phase 3 of 5): toolbar + info card + tabs, with Customer view and Void invoice new.
+
+By: Claude Code
+
+Changed: index.html only (renderJobInvoice restructured in place), features.json (invoicing entry), help/whats-new.json, plus this entry. No migration, no schema change, no settings key. Committed and pushed.
+
+**Layout, mirroring the captured DripJobs invoice page.** Toolbar: Back + Open job card on the left; Send invoice (the existing split kit), a primary Receive payment, and a More actions dropdown on the right. The dropdown holds the REAL buttons with their PRE-REWORK ids (Download PDF, Customer view, Copy public link, Charge card, Edit line items, Add change order, Record deposit, Mark Complete, Void invoice), which is the whole trick: the wiring block binds by id exactly as before, so nine actions moved into a menu with close to zero handler churn. Below: one info card (client identity + email/phone from pec_job_ar | Invoice # with status/age | Date invoiced | Due on with an inline "Add due date" | Terms with the phase-1 editor | Salesperson), then the money stats (Invoice total / Paid / Balance / Due-now ask), then pill tabs Invoice | Settings | Notes.
+
+**Tabs are hidden-toggles, not re-renders.** All three tab bodies render in the single existing batched fetch and switching toggles `hidden`; nothing refetches and listeners attach once. state.invoiceTab is read back at render time, so the charge-card refocus re-render (the one that redraws the whole view when a Stripe tab completes) lands the user back on the tab they were on. Tab homes: Invoice = line items + change-order card + payments; Settings = payment schedule (editor + Prepare deposit untouched), the Deposit card (the waive / require / mark-collected flags moved out of the old stat grid), and Void; Notes = the communication history panel + a job-notes pointer.
+
+**Void invoice is new.** There was no UI way to cancel an invoice; jobs.voided_at existed and pec_job_ar has filtered it since 2026-06, so voiding was a Studio-only act. The More menu and the Settings tab now open a confirm modal (typed reason optional, kept in the job activity log since jobs has no void_reason column) that stamps voided_at with a `.is('voided_at', null)` guard (double-click safe). Everything downstream self-heals because the view filters voided rows: the lists, AR totals, and the public pay link all drop it on the next render, exactly like the 2026-07-10 archived-jobs behavior.
+
+**Small deliberate changes.** "Record payment" is labeled "Receive payment" (DripJobs' verb; same handler). "Customer view" opens /pay/<token> in a new tab, the page the customer actually sees, so staff stop reasoning about the invoice from the internal view. The More-actions outside-click closer only exists while the menu is open (the pecWireSplitSend pattern), so refocus re-renders never stack document listeners.
+
+**Verification.** Inline script blocks parse identically to HEAD (the one classic-parse failure is the pre-existing HEAD one). All menu ids render exactly once; void wired from both entry points. Full staging click-through is on Dylan after deploy (send both legs, schedule edit, deposit flags, payment record/edit/delete, change order, PDF, charge-card refocus landing back on the same tab, void).
+
+## Handoff to Dylan
+
+1. After deploy, open an invoice and click through the three tabs and the More actions menu; everything that used to be a toolbar button lives there now.
+2. Try Customer view on any invoice; that is the exact customer page.
+3. Void is live and real: it removes the invoice from AR and kills the pay link. First use, pick a junk/test job.
+
 ## [2026-08-10 MST] Payment schedule auto-seeds on every new estimate (DripJobs-parity batch, phase 2 of 5): every proposal now shows the payment plan by default.
 
 By: Claude Code
