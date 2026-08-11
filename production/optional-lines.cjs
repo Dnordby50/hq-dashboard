@@ -49,6 +49,26 @@ function sendGateError(items) {
   return list.every(isOptionalLine) ? SEND_GATE_MESSAGE : null;
 }
 
+// Prompt 84 (Bug 2): "the different problem" the comment above always
+// deferred to, built. An EMPTY estimate must never reach a customer: EST-
+// 102075 (a prompt-47 pre-minted draft card, zero areas, zero line items,
+// null price) was emailed AND texted to a real customer because every
+// existing blocker came out of a loop over the line items, and zero items
+// produced zero blockers. HARD block, no override (locked decision 5), same
+// shape as sendGateError. Empty means (locked decision 6): zero line items,
+// OR an opening total (required + currently selected optional lines, the
+// exact number the public page shows when the link opens) that is null or
+// zero. Either one blocks. The message names the fix, not the failure.
+// Mirrored by the client gate in index.html estimateSendGateOk; keep in
+// lockstep. Customer-adjacent text: no em dashes (rule 6).
+const EMPTY_SEND_MESSAGE = 'This estimate has no priced lines yet. Open it in the estimator, add at least one line, and save before sending.';
+function emptySendError(items) {
+  const list = (Array.isArray(items) ? items : []).filter(Boolean);
+  if (!list.length) return EMPTY_SEND_MESSAGE;
+  const { opening } = splitLineTotals(list);
+  return opening > 0 ? null : EMPTY_SEND_MESSAGE;
+}
+
 // The accept guard (decision 4): the rep gate makes a zero-selection accept
 // unreachable through the UI; this is the defense against a crafted POST.
 // True when nothing survives selection or the surviving total is zero.
@@ -194,6 +214,8 @@ function optionalControlsVisible(enabled, isOptional) {
 module.exports = {
   optionalControlsVisible,
   SEND_GATE_MESSAGE,
+  EMPTY_SEND_MESSAGE,
+  emptySendError,
   CLOBBER_DESC_RE,
   CLOBBER_DESC_EXACT_RE,
   scopeSendBlockers,

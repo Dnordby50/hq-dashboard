@@ -19,7 +19,7 @@ const FN_DIR = path.join(__dirname, '..', 'netlify', 'functions');
 const {
   splitLineTotals, sendGateError, acceptSelectionInvalid, declinedAreaIdSet,
   filterAreasForJob, declinedNoteLine, selectedScopeDoc, optionalControlsVisible,
-  SEND_GATE_MESSAGE,
+  SEND_GATE_MESSAGE, EMPTY_SEND_MESSAGE, emptySendError,
 } = require('./optional-lines.cjs');
 
 let passed = 0, failed = 0;
@@ -149,6 +149,20 @@ await section('send gate: all-optional blocks, one required line passes', async 
   ok(sendGateError(allOpt) === SEND_GATE_MESSAGE, 'every line optional -> the gate message');
   ok(sendGateError(mixedDb().estimate_line_items) === null, 'one required line -> passes');
   ok(sendGateError([]) === null, 'no lines at all is a different problem, not this gate');
+});
+
+// --- 2b. Empty-estimate send gate (prompt 84, "the different problem") -------
+await section('empty send gate: zero lines block, null total blocks, zero total blocks, one priced line passes', async () => {
+  ok(emptySendError([]) === EMPTY_SEND_MESSAGE, 'zero line items -> blocked');
+  ok(emptySendError(null) === EMPTY_SEND_MESSAGE, 'no items array at all -> blocked');
+  ok(emptySendError([{ label: 'Garage', total: null }]) === EMPTY_SEND_MESSAGE, 'one line with a null total -> blocked (opening resolves to 0)');
+  ok(emptySendError([{ label: 'Garage', total: 0 }]) === EMPTY_SEND_MESSAGE, 'one line with a zero total -> blocked');
+  ok(emptySendError([{ label: 'Patio', total: 3400, is_optional: true, selected_by_customer: false }]) === EMPTY_SEND_MESSAGE,
+    'only an UNSELECTED optional line -> blocked (the opening page would show $0)');
+  ok(emptySendError([{ label: 'Garage', total: 4200 }]) === null, 'one priced required line -> passes');
+  ok(emptySendError([{ label: 'Patio', total: 3400, is_optional: true, selected_by_customer: true }]) === null,
+    'a pre-selected optional line with a price -> passes (it is in the opening total)');
+  ok(emptySendError(mixedDb().estimate_line_items) === null, 'the mixed fixture passes');
 });
 
 // --- 3. Pre-selected optional line and the stored floor ----------------------

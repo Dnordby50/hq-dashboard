@@ -1,3 +1,32 @@
+## [2026-08-10 MST] Prompt 84, commit 2 of 2: an empty estimate cannot be sent, by any channel, client or server.
+
+By: Claude Code
+
+Changed: index.html, production/optional-lines.cjs, production/optional-lines.test.js (8 new checks), netlify/functions/pec-send-sms.cjs, netlify/functions/pec-send-email.cjs, features.json (1 entry), help/whats-new.json, plus this entry. No migration, no schema change, no settings key (locked decision 5: a hard integrity block is not tunable). Committed and pushed (standing auto-push rule).
+
+**The bug (Jason Magimel, EST-102075).** A prompt-47 pre-minted draft card (zero areas, zero line items, null price) was emailed AND texted to a real customer with a live /e/ link, because every blocker estimateSendGateOk produces comes out of a `for (const li of items)` loop, and zero line items produce zero blockers, so the gate passed. production/optional-lines.cjs sendGateError even said it out loud: "no lines at all is a different problem, not this gate". This commit is that different problem. Jason's row (b08e261c) itself stays untouched by design (locked decision 9): it is Dylan's to handle.
+
+**The rule (locked decision 6).** Empty = zero line items OR an opening total (required lines plus currently selected optional lines, the exact number the customer's page shows on open) that is null or zero. Either one blocks. HARD block, no confirm (a confirm is what a rep in a driveway taps through). The message names the fix, not the failure: "This estimate has no priced lines yet. Open it in the estimator, add at least one line, and save before sending."
+
+**Client (all three channels through one gate).** The rule is the FIRST blocker in estimateSendGateOk, before the line-item loop, using the gate's existing fresh read (no second round trip) and estimateOpeningTotal. It renders as a plain estimate-level row in the blocker modal like the stale-scope one. Email compose, the text path, and Present mode's Open for signing all already route through this gate (confirmed; Present's first-send flip sits behind it, so a blank estimate cannot become live there either), so one insertion covers every channel.
+
+**Server (a stale tab or a crafted POST cannot get around the client).** Shared rule: emptySendError in production/optional-lines.cjs, a NEW export next to sendGateError (the existing gate's contract was deliberately left alone). pec-send-sms.cjs already loads the estimate by public_token for kind=estimate; its select now embeds estimate_line_items(total,is_optional,selected_by_customer) and refuses with a 400 carrying the same message. pec-send-email.cjs was the harder half: compose mode has no estimate awareness at all (client-built body), which is exactly how the blank email went out. The dashboard's estimate compose now passes estimate_id, and when it is present the function looks the estimate up and applies the same guard; a compose send with NO estimate_id (invoices, change orders, plain compose) behaves byte-for-byte as before, and compose mode is not restructured. WHY the guard also stays client-side when the server now blocks: the client message arrives as a named blocker row BEFORE the rep taps send, instead of a failed-send error after.
+
+**Tests.** 8 new fixture checks in optional-lines.test.js: zero lines block, missing array blocks, null total blocks, zero total blocks, an unselected-optional-only estimate blocks (its opening page would show $0), one priced required line passes, a pre-selected priced optional passes, the mixed fixture passes.
+
+**Not changed (locked decisions 9 + 10 and the do-not-touch list).** Jason's and Tom's rows; how hollow draft cards render in the Drafts column (no markers, no expiry job; the send gate is the fix, and prompt 82's Save fix already cut off the supply of new hollow shells); sent_at semantics; the outbox's ordering and idempotency; estimate_number assignment.
+
+**Verification.** npm test all suites green (exit 0) including the new cases. node --check on both touched functions and optional-lines.cjs. Inline index.html script blocks parse identically to HEAD. apps/estimator untouched by this commit (rebuilt and verified in commit 1).
+
+## Handoff to Dylan
+
+Post-deploy browser checks (the two live-session verification steps from the prompt, everything else is proven above):
+
+1. Hard-reload the dashboard and give the estimator PWA one visit to pick up the new build. Then open a SENT estimate in the estimator (Edit on its page), change something small, and save: the estimate must still read Sent afterward, and its page shows the new orange "changed after it was sent" notice with a Re-send button.
+2. On an estimate with no lines (there are hollow drafts in the Drafts column), try Send to customer on both the email and the text path: both must stop with "This estimate has no priced lines yet..." naming the fix.
+3. Heads-up: EST-102054 (Tom Bechtel) will show the edited-after-send notice immediately, because his row really was edited (13:04) after its send (13:00). That is the feature telling the truth; re-send whenever you want the notice gone.
+4. EST-102075 (Jason Magimel) is still yours to handle and still untouched: it reads sent with a live link to a blank estimate. The new gate stops the NEXT one; it does not clean up this one.
+
 ## [2026-08-10 MST] Prompt 84, commit 1 of 2: a sent estimate can never read (or be written back to) In Draft again. The estimator stopped writing status on edits, the database refuses status regressions, every surface reads one derived sent-state rule, and edits after a send are announced.
 
 By: Claude Code

@@ -30407,6 +30407,19 @@ async function estimateSendGateOk(est) {
   // line's editor sheet with the description focused (under 20 seconds to
   // clear). Estimate-level blockers (stale scope, schedule) stay plain rows.
   const blockers = [];
+  // Prompt 84 (Bug 2, locked decisions 5 + 6): an EMPTY estimate is a HARD
+  // block, first in the list, BEFORE the line-item loop, because every other
+  // blocker here comes out of that loop and zero items used to produce zero
+  // blockers (EST-102075: a pre-minted draft card with nothing in it was
+  // emailed and texted to a real customer). Empty = zero line items OR an
+  // opening total that resolves to null or zero; either one blocks, no
+  // confirm, no override (a confirm is what a rep in a driveway taps
+  // through). Uses the SAME fresh read as the rest of the gate (no second
+  // round trip). CLIENT MIRROR of production/optional-lines.cjs
+  // emptySendError; keep in lockstep.
+  if (!items.length || !(Number(estimateOpeningTotal({ ...est, estimate_line_items: items })) > 0)) {
+    blockers.push({ msg: 'This estimate has no priced lines yet. Open it in the estimator, add at least one line, and save before sending.' });
+  }
   if (scopeStale) {
     blockers.push({ msg: 'The scope of work is out of date: the estimate changed after the scope was written. Regenerate the scope (Line items card), then send.' });
   }
@@ -30712,6 +30725,8 @@ async function openPresentMode(est) {
       // signature IS sending. The blank hard-block rides inside
       // estimateSendGateOk, so this channel can no longer skip it (it was
       // the one send path with no blank check at all before prompt 78).
+      // Prompt 84: the EMPTY-estimate hard block rides the same gate, so a
+      // blank estimate cannot become live by this channel either.
       if (!estimateOptionalGateOk(est)) return;
       if (!(await estimateSendGateOk(est))) return;
       if (!confirm(`Open ${estNum} for signing? This makes the estimate live, the same as sending it. The customer's link will work from now on.`)) return;
@@ -30905,7 +30920,9 @@ async function openEstimateSendModal(est, opts = {}) {
       try {
         // log_template_key 'estimate' keeps these out of the Invoicing "Last
         // invoiced" counter (which keys on compose/invoice rows).
-        await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate' });
+        // estimate_id (prompt 84): lets the server refuse an EMPTY estimate
+        // even from a stale tab whose client gate predates the rule.
+        await pecSendEmail({ brand, subject, body_html: bodyOut, to_email: to, cc, log_template_key: 'estimate', estimate_id: est.id });
         await markEstimateSent(est);
         closeModal();
         showToast(`Estimate ${esc(number)} sent to ${esc(to)} ✓`, { ttl: 4000 });

@@ -7,11 +7,15 @@
 //
 // Two modes on one endpoint:
 //   Template: { template_key, brand, to_email, job_id?, customer_id?, vars?, cc? }
-//   Compose:  { brand, subject, body_html, to_email, job_id?, customer_id?, cc? }
+//   Compose:  { brand, subject, body_html, to_email, job_id?, customer_id?, cc?, estimate_id? }
+// estimate_id (prompt 84): sent by the dashboard's estimate compose so this
+// function can refuse to email an EMPTY estimate (zero line items or a zero
+// opening total); absent on every other send and nothing else changes.
 // Either way the body is wrapped in brand chrome (header/signature/footer) from
 // pec_brand_identity before sending.
 
 const { sb, requireStaff } = require('./_pec-supabase.cjs');
+const { emptySendError } = require('../../production/optional-lines.cjs');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -149,7 +153,7 @@ exports.handler = async (event) => {
 
   const { template_key, brand, to_email, job_id = null, customer_id = null, vars = {},
           subject: subjectOverride = null, body_html = null, cc = null,
-          log_template_key = null } = body;
+          log_template_key = null, estimate_id = null } = body;
   // Compose mode: the client sends an edited subject + body verbatim (tokens
   // already resolved client-side). Template mode: render from a stored template.
   // log_template_key lets a compose-mode caller pick its own LOG key (e.g.
@@ -176,6 +180,23 @@ exports.handler = async (event) => {
   }
 
   try {
+    // Prompt 84 (Bug 2): the empty-estimate hard block, server side. Compose
+    // mode has no estimate awareness of its own (the client builds the body),
+    // which is exactly how EST-102075's blank estimate email went out. The
+    // client now passes estimate_id on an estimate compose send; when it is
+    // present the estimate is looked up and the shared guard applies. A
+    // compose send with no estimate_id behaves exactly as it always has
+    // (invoices, change orders, plain compose), and compose mode itself is
+    // not restructured. Same rule + message as the client gate and the SMS
+    // mirror; shared in production/optional-lines.cjs.
+    if (estimate_id) {
+      const estRows = await sb('GET', `/estimates?id=eq.${encodeURIComponent(estimate_id)}&deleted_at=is.null&select=id,estimate_line_items(total,is_optional,selected_by_customer)&limit=1`);
+      const est = Array.isArray(estRows) ? estRows[0] : null;
+      if (!est) return jc(400, { ok: false, error: 'Estimate not found for that id.' });
+      const emptyErr = emptySendError(est.estimate_line_items);
+      if (emptyErr) return jc(400, { ok: false, error: emptyErr });
+    }
+
     // Rate limit: hard cap 50 sends per user per hour (Supabase counter, reliable
     // across function instances).
     const sinceIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();

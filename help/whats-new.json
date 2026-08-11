@@ -1,5 +1,15 @@
 [
   {
+    "id": "empty-estimate-send-block",
+    "date": "2026-08-10",
+    "title": "Empty estimates can no longer be sent",
+    "summary": "An estimate with no priced lines, or one that adds up to zero, can no longer be sent to a customer by any path: email, text, or opening it for signing in Present mode. The send now stops with a clear message telling you to open the estimate in the estimator, add at least one line, and save first. The same check runs on the server too, so even an old open tab cannot slip a blank estimate out.",
+    "howto": [
+      "Nothing to do for normal estimates: anything with at least one priced line sends exactly as before.",
+      "If a send is blocked with 'This estimate has no priced lines yet', open the estimate, use Edit to add and price its lines, save, and send again."
+    ]
+  },
+  {
     "id": "estimate-sent-status-truth",
     "date": "2026-08-10",
     "title": "Sent estimates stay marked Sent, even after edits",
