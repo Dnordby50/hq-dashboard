@@ -44,8 +44,12 @@
 //   - updated: patch the matched row; if missing, insert (upsert-safe).
 //     google_* columns are never touched (the existing push owns them).
 //   - canceled / deleted: set status='canceled' on the matched row (never a
-//     hard delete; the existing pec-appt-sync-push removes the Google event
-//     off that status on its next kick). No-op if not found.
+//     hard delete; the Google push kicked below removes the Google event off
+//     that status). No-op if not found.
+//   - Every write path kicks the Google Calendar push server-side
+//     (_pec-appt-push.cjs, prompt 88): the dashboard's client-side kick
+//     never runs for webhook-sourced writes, which left every Routemize
+//     booking off Google for a month. Best-effort; see kickPush below.
 //   - Lead linkage (prompt 43 decision 3): match a LIVE lead by last-10 phone
 //     or email and link it (plus its customer); else a customer by the same
 //     keys; else leave both null and carry name/phone on the appointment
@@ -83,6 +87,7 @@
 //     so the Sync Health view can answer "did the Zap fire?".
 
 const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
+const { pushApptById } = require('./_pec-appt-push.cjs');
 const { enrollLead } = require('./_pec-drip.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
 const { sameHumanOr } = require('./_pec-lead-match.cjs');
@@ -526,6 +531,21 @@ async function processApptIntake(deps, body) {
   const log = deps.logIngest || logIngest;
   const runReminders = deps.runReminders || ((d, o) => runApptReminders(d, o));
   const now = deps.now ? deps.now() : new Date();
+  // Google push kick (prompt 88): for A MONTH this intake wrote appointments
+  // that never reached Google, because the push only ever ran off the
+  // dashboard's client-side apptPostWrite kick and nothing here called it.
+  // Same contract as that client kick: best-effort, a push failure never
+  // fails the intake response (Routemize retries non-2xx, and a retried
+  // intake is worse than an unsynced row; the row keeps google_event_id null
+  // and the next write or the backfill re-pushes). Awaited, not detached: a
+  // lambda may freeze the instant the response returns, so truly-detached
+  // work can silently never run. Injectable so the fixture test can observe
+  // it; the default is also test-safe (pushApptById no-ops while
+  // GOOGLE_OAUTH_CLIENT_ID/SECRET are unset, which they are under node).
+  const kickPush = deps.kickPush || (async (id) => {
+    try { await pushApptById(db, id); }
+    catch (e) { console.warn('pec-appt-intake: google push kick failed (non-fatal):', e && e.message || e); }
+  });
 
   // The ingest log must show what Routemize ACTUALLY sent, not our mapping.
   const rawPayload = body;
@@ -568,6 +588,9 @@ async function processApptIntake(deps, body) {
         return { status: 200, body: { success: true, matched: false } };
       }
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`, { status: 'canceled' });
+      // Off the canceled status, the push deletes the Google event and
+      // clears the row's mapping (no-op if it never synced).
+      await kickPush(appt.id);
       // Walk an estimate_scheduled lead back to contacted (unless another
       // scheduled on-site estimate remains). Best-effort; never throws.
       await apptCancelLeadEffects(db, appt);
@@ -623,6 +646,7 @@ async function processApptIntake(deps, body) {
         const noteAdd = rz.statusNote || `Routemize sent an ${action} event with no readable start time; appointment left as-is.`;
         await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(appt.id)}`,
           { notes: [cleanStr(appt.notes), noteAdd].filter(Boolean).join('\n') });
+        await kickPush(appt.id); // notes ride the Google event description
         await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: no readable start time; noted on appointment ${appt.id}`, payload: rawPayload });
         return { status: 200, body: { success: true, updated: true, appointment_id: appt.id } };
       }
@@ -723,6 +747,7 @@ async function processApptIntake(deps, body) {
       if (!existingRow.lead_id && contact.lead_id) fields.lead_id = contact.lead_id;
       if (!existingRow.customer_id && contact.customer_id) fields.customer_id = contact.customer_id;
       await db('PATCH', `/pec_appointments?id=eq.${encodeURIComponent(existingRow.id)}`, fields);
+      await kickPush(existingRow.id);
       await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `${action}: appointment ${existingRow.id} updated`, payload: rawPayload });
       return { status: 200, body: { success: true, updated: true, appointment_id: existingRow.id, lead_id: fields.lead_id || existingRow.lead_id || null } };
     }
@@ -780,6 +805,7 @@ async function processApptIntake(deps, body) {
     }
     try { await runReminders({ sb: db }, { appointmentId: appt.id }); }
     catch (e) { console.warn('pec-appt-intake: confirmation kick failed (non-fatal):', e && e.message); }
+    await kickPush(appt.id);
 
     await log({ endpoint: ENDPOINT, deal_id: rmId, customer_name: customerName, outcome: 'ok', status_code: 200, message: `created: appointment ${appt.id}${appt.lead_id ? ` linked to lead ${appt.lead_id}` : ''}${member ? '' : (memberEmail || memberName ? ' (rep unmatched)' : '')}`, payload: rawPayload });
     return {
