@@ -53,6 +53,8 @@ Owner: Dylan Nordby. Other tools touching this project: Cowork (executes manual 
    -- @end
    ```
 
+14. High-risk migrations rehearse on a branch database first. Any migration touching MONEY tables (pec_payments, pec_invoice_installments, jobs price/AR columns, pec_job_ar), AUTH (admin_users, user_permissions, anything SECURITY DEFINER, RLS policies on staff tables), or estimates.status must be applied to a Supabase branch database first (MCP: create_branch, apply there, verify the outcome with real queries, then merge or discard) before touching prod. Plain additive columns elsewhere stay direct-to-prod as today. The trigger for this rule is what the migration TOUCHES, not how big it looks; a one-line grant change on a payment RPC rehearses, a new nullable text column on leads does not. (Added 2026-08-12, prompt 90 Task D.)
+
 ## Cowork Handoff Prompt Format
 
 Cowork prompts go to a separate operator with no chat history, no familiarity with the current session's reasoning, and no access to this conversation. They MUST be self-contained. When you write one, print it in chat as a fenced code block in this shape:
