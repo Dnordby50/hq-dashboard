@@ -1,3 +1,22 @@
+## [2026-08-12 MST] Bug fix: the estimate send modal looked linkless (Adam Camacho, EST-102095); the auto-appended sign button now renders read-only in the modal with its /e/ URL spelled out.
+
+By: Claude Code
+
+Changed: index.html (openEstimateSendModal markup only). Commit 2659273, pushed; the deployed index.html serves the new preview markup (curl-verified) and all inline scripts parse. A full visual walk of the modal was cut short: the "Send by email and text together" button opens a NATIVE confirm() for the text leg, which freezes the browser-automation session by design (the dialog itself sends nothing; both choices only lead to the compose modal). Dylan sees the new preview the moment he opens Send. No schema, no settings, no function change.
+
+**What Dylan hit.** Composing the send for Adam Camacho's estimate, the email body showed no link, so the send was (reasonably) abandoned. Root cause is prompt 81's own fix working as designed: Quill 2 strips the style attribute off pasted anchors, so the "View & sign your estimate" CTA button is appended to the body AT SEND TIME (index.html, the `bodyOut = editorHTML + ctaHtml` line in openEstimateSendModal), never shown in the editor; the only hint was one line of small gray caption text. The sent email would have carried the button, but nothing in the modal proved it. Fix: the modal now renders the ACTUAL button (pointer-events off) in a dashed "Added automatically under your message" box beneath the editor, with the /e/ URL printed under it. Nothing about the sent email changed.
+
+**The text-message half, checked against live data.** No text to Adam's number exists in pec_sms_log at all, and every estimate-kind text TopCoat has ever sent (checked the last 3 days of rows) embeds the /e/ link server-side (pec-send-sms builds the body; the client cannot omit it). So Dylan's text went out OUTSIDE TopCoat (personal phone or the Quo app directly; the Quo MCP rejected auth from this session, so the thread itself could not be read) and almost certainly had no link. The bigger catch: EST-102095 is still status DRAFT with sent_at null, and the public /e/ page 404s BY DESIGN until a send stamps it, so even a hand-copied link would have dead-ended for Adam. The estimate has its public_token; nothing else is wrong with it.
+
+Files touched: index.html, PROJECT-LOG.md.
+Next steps: None; Dylan just re-opens Send on EST-102095 (see handoff).
+Handoff to Cowork: None.
+
+## Handoff to Dylan
+
+1. Nothing was ever emailed to Adam, and the text you sent could not have carried a working link (the estimate is still Draft, and its link 404s until a real send flips it live). Open EST-102095, hit Send estimate, and you will now SEE the sign-button and its link under your message; sending activates the link and stamps the estimate Sent.
+2. If you want the text leg too, use the estimate's Text option rather than the Messages thread; that path always embeds the live link and logs it.
+
 ## [2026-08-12 MST] Bug fix: job detail showed no schedule for TopCoat-native and manually-paired jobs (Robert Brass); the schedule bridge now falls back to the estimate stamp and the name+address key.
 
 By: Cowork
