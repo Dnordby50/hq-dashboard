@@ -100,7 +100,7 @@ const CREATED = {
     ok(appt.start_at === '2026-07-23T17:00:00.000Z' && appt.end_at === '2026-07-23T18:00:00.000Z', 'Phoenix start + default 60-min end');
     ok(appt.lead_id === 'lead1', 'lead matched by last-10 phone');
     ok(appt.sales_member_id === 'sm1', 'rep matched by google_email, case-insensitive');
-    ok(appt.title === 'Jane Doe' && appt.location_address === '123 Main St' && appt.location_zip === '86301', 'title defaults to customer name; address carried');
+    ok(appt.title === 'On-site estimate for Jane Doe' && appt.location_address === '123 Main St' && appt.location_zip === '86301', 'title auto-derives "{Type label} for {Name}" (prompt 89); address carried');
     ok(appt.notes === 'Gate code 4321' && appt.customer_notes === 'We will text when on the way.', 'notes split preserved');
 
     const lead = fx.db.leads[0];
@@ -112,7 +112,7 @@ const CREATED = {
     ok(enr.status === 'stopped' && enr.stop_reason === 'appointment_booked' && enr.next_send_at === null, 'nurture drip paused (stopped, reason appointment_booked)');
     ok(fx.db.pec_drip_enrollments.find(e => e.id === 'enrE').status === 'active', 'estimate drip left alone');
     const bell = fx.db.pec_notifications[0];
-    ok(bell && bell.type === 'appointment_booked' && /Routemize booked Jane Doe for Dylan N/.test(bell.body), 'staff bell row written');
+    ok(bell && bell.type === 'appointment_booked' && /Routemize booked On-site estimate for Jane Doe, assigned to Dylan N/.test(bell.body), 'staff bell row written');
     ok(!/—/.test(bell.body), 'no em dash in the bell body');
     ok(captured.kicks.length === 1 && captured.kicks[0] === appt.id, 'confirmation kick fired once');
     ok(captured.logs.length === 1 && captured.logs[0].outcome === 'ok' && captured.logs[0].endpoint === 'appt-intake', 'ingest log ok');
@@ -186,7 +186,7 @@ const CREATED = {
     ok(out.status === 200 && out.body.created === true, '200 created');
     const appt = fx.db.pec_appointments[0];
     ok(appt.lead_id == null && appt.customer_id == null, 'no auto-created lead/customer, both null');
-    ok(appt.title === 'Stranger Sam', 'customer name kept as the title');
+    ok(appt.title === 'On-site estimate for Stranger Sam', 'unmatched contact still derives the auto-title');
     ok(/Routemize contact/.test(appt.notes) && /5205550000/.test(appt.notes), 'phone carried in internal notes');
     ok(appt.sales_member_id == null && /rep not matched/.test(appt.notes), 'unmatched rep leaves it unassigned and notes it');
     ok(fx.db.leads.length === 1 && fx.db.customers.length === 1, 'nothing was auto-created');
@@ -306,7 +306,7 @@ const CREATED = {
     ok(appt && appt.source === 'routemize' && appt.routemize_appt_id === '5ce70ae6-da0e-96da-1729-3a22bc9a90e6', 'row lands keyed on relatedEntityId');
     ok(appt.start_at === '2026-07-29T15:00:00.000Z' && appt.end_at === '2026-07-29T16:00:00.000Z', 'explicit Z trusted: 15:00Z stays 15:00Z, not shifted');
     ok(appt.appt_type === 'on_site_estimate', 'serviceName Estimate mapped via the settings map');
-    ok(appt.title === 'John Courtis, Estimate', 'our own title, appointmentTitle ignored');
+    ok(appt.title === 'On-site estimate for John Courtis', 'auto-title format, appointmentTitle ignored');
     ok(appt.sales_member_id === 'smA', 'rep resolved by assignedUsers[0].userName against google_email');
     ok(/What type of project\?: Epoxy Patio \/ Pool Deck/.test(appt.customer_notes) && /Cool deck/.test(appt.customer_notes), 'customerAnswers land as Q&A pairs in customer_notes');
     ok(appt.location_address === '100 Desert Rd' && appt.location_city === 'DEWEY' && appt.location_zip === '86327-5311', 'address block carried');
@@ -315,6 +315,12 @@ const CREATED = {
     ok(!!lead && fx.db.leads.length === 2, 'exactly ONE lead created for the unmatched booker (decision 9)');
     ok(appt.lead_id === lead.id, 'appointment linked to the created lead');
     ok(lead.source === 'google', "lead source is Routemize's own (leadSourceText slug), person-level");
+    // Prompt 89: the lead is born hanging off a customer row, and the
+    // appointment carries the same customer link.
+    const cust = fx.db.customers.find(c => c.name === 'John Courtis');
+    ok(!!cust && lead.customer_id === cust.id, 'customer row created and lead born linked to it (prompt 89)');
+    ok(cust.lead_source === 'google' && cust.company === 'prescott-epoxy', 'customer carries lead_source and PEC company');
+    ok(appt.customer_id === cust.id, 'appointment linked to the customer too');
     ok(lead.routemize_contact_id === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001' && lead.source_ref === '6e43abf5-aaaa-bbbb-cccc-ddddeeee0001', 'contact.contactId stored on the created lead');
     ok(lead.sms_consent === false, 'consent never inferred from a booking');
     ok(lead.stage === 'estimate_scheduled', 'created at new, then advanced by apptBookingLeadEffects like an in-app booking');
@@ -445,7 +451,7 @@ const CREATED = {
     await processApptIntake(deps, rzEnvelope({}, { serviceName: 'Mystery Service', relatedEntityId: 'rz-appt-m', contact: { contactId: 'c9', firstName: 'Al', lastName: 'B', email: 'al@example.com', phoneNumber: '5205551111' }, contactName: 'Al B' }));
     const m = fx.db.pec_appointments.find(a => a.routemize_appt_id === 'rz-appt-m');
     ok(m.appt_type === 'on_site_estimate', 'unmapped service defaults to on_site_estimate');
-    ok(m.title === 'Al B, Mystery Service', 'title still uses the raw service name');
+    ok(m.title === 'On-site estimate for Al B', 'unmapped service: auto-title from the defaulted type');
   }
 
   console.log(`\n${state.passed} passed, ${state.failed} failed`);

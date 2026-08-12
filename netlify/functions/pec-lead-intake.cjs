@@ -38,7 +38,7 @@ const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { enrollLead, sendInstantTouch, SITE_URL } = require('./_pec-drip.cjs');
 // Same-human matching lives in _pec-lead-match.cjs (prompt 56) so this
 // intake and the Routemize appointment intake share ONE dedupe rule.
-const { normPhone, findRecentLiveLead } = require('./_pec-lead-match.cjs');
+const { normPhone, findRecentLiveLead, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 
 const ENDPOINT = 'lead-intake';
@@ -201,6 +201,25 @@ exports.handler = async (event) => {
       return json(200, { success: true, deduped: true, lead_id: dupHuman.id });
     }
 
+    // Customers are the source of truth (prompt 89): the person exists ONCE
+    // as a customer row and the lead hangs off it. Same-human match first
+    // (shared rule), create when nobody matches. Best-effort ONLY in the
+    // sense that a resolution failure logs and leaves customer_id null (the
+    // lead must still land; the backfill posture reclaims strays), never in
+    // the sense of guessing a link.
+    let customer = { customer_id: null, created: false };
+    try {
+      customer = await resolveOrCreateCustomer(sb, {
+        name: fullName, firstName, lastName, businessName,
+        phone10, phone: phoneRaw, email,
+        address: cleanStr(body.address), city: cleanStr(body.city),
+        state: cleanStr(body.state), zip: cleanStr(body.zip),
+        source, brand: 'PEC',
+      });
+    } catch (e) {
+      console.warn('pec-lead-intake: customer resolve failed (lead lands unlinked):', e && e.message);
+    }
+
     // Insert the lead.
     const adMeta = {};
     for (const k of ['adset', 'ad_name', 'form_name', 'form_id', 'ad_id', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content']) {
@@ -208,6 +227,7 @@ exports.handler = async (event) => {
     }
     const created = await sb('POST', '/leads', {
       brand: 'PEC',
+      customer_id: customer.customer_id,
       source,
       source_ref: sourceRef,
       first_name: firstName,
@@ -272,7 +292,7 @@ exports.handler = async (event) => {
     await notifyLeadSlack(lead, notes, instant);
     await notifyLeadBell(sb, lead, instant);
 
-    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source})${instant.sent.length ? `; instant touch sent (${instant.sent.join('+')})` : `; instant touch: ${instant.reason || 'none'}`}`, payload: body });
+    await logIngest({ endpoint: ENDPOINT, deal_id: sourceRef, customer_name: fullName, outcome: 'ok', status_code: 200, message: `lead created (${source}); customer ${customer.created ? 'created' : (customer.customer_id ? 'matched' : 'unresolved')}${instant.sent.length ? `; instant touch sent (${instant.sent.join('+')})` : `; instant touch: ${instant.reason || 'none'}`}`, payload: body });
     return json(200, { success: true, deduped: false, lead_id: lead.id, instant_touch: { sent: instant.sent, skipped: instant.skipped, reason: instant.reason } });
   } catch (err) {
     console.error('pec-lead-intake failed:', err);

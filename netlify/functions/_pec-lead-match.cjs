@@ -10,6 +10,8 @@
 //     the same windowed dedupe as lead-intake, so the two intakes cannot
 //     drift apart on what counts as a duplicate.
 
+const { randomToken } = require('./_pec-supabase.cjs');
+
 const DEDUPE_WINDOW_DAYS = 90;
 
 // Last 10 digits, so '+1 (928) 555-1212' and '9285551212' match (the same
@@ -43,4 +45,41 @@ async function findRecentLiveLead(sb, { phone10, email, now, windowDays = DEDUPE
   return (Array.isArray(rows) && rows[0]) || null;
 }
 
-module.exports = { DEDUPE_WINDOW_DAYS, normPhone, sameHumanOr, findRecentLiveLead };
+// Prompt 89: customers are the source of truth; every lead hangs off one.
+// Resolve the person to a live customer row by the SAME same-human rule
+// (last-10 phone / exact email), creating the row when nobody matches. Lives
+// here so the two intakes and any future lead creator share ONE rule for
+// "is this person already a customer?" exactly as they already do for leads.
+// Matching is deliberately read-only on hit (no field backfilled onto an
+// existing customer: a typo in a web form must never overwrite a curated
+// customer record). Brand maps PEC -> 'prescott-epoxy', FTP ->
+// 'finishing-touch' (the same mapping pec-public-estimate uses).
+async function resolveOrCreateCustomer(db, f = {}) {
+  const or = sameHumanOr(f.phone10, f.email);
+  if (or) {
+    const rows = await db('GET',
+      `/customers?or=(${or})&archived_at=is.null&select=id&order=created_at.desc&limit=1`);
+    if (Array.isArray(rows) && rows[0]) return { customer_id: rows[0].id, created: false };
+  }
+  if (!f.name) return { customer_id: null, created: false }; // nothing to create from
+  const created = await db('POST', '/customers', {
+    token: randomToken(),
+    name: f.name,
+    first_name: f.firstName || null,
+    last_name: f.lastName || null,
+    company_name: f.businessName || null,
+    email: f.email || null,
+    phone: f.phone10 || f.phone || null,
+    billing_address_line1: f.address || null,
+    billing_city: f.city || null,
+    billing_state: f.state || null,
+    billing_zip: f.zip || null,
+    lead_source: f.source || null,
+    company: (f.brand === 'FTP' || f.brand === 'finishing-touch') ? 'finishing-touch' : 'prescott-epoxy',
+  }, true);
+  const row = Array.isArray(created) && created[0];
+  if (!row) throw new Error('customer insert returned no row');
+  return { customer_id: row.id, created: true };
+}
+
+module.exports = { DEDUPE_WINDOW_DAYS, normPhone, sameHumanOr, findRecentLiveLead, resolveOrCreateCustomer };

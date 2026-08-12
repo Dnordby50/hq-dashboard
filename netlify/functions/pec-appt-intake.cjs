@@ -90,7 +90,7 @@ const { sb, json, badSecret, logIngest } = require('./_pec-supabase.cjs');
 const { pushApptById } = require('./_pec-appt-push.cjs');
 const { enrollLead } = require('./_pec-drip.cjs');
 const { runApptReminders, apptBookingLeadEffects, apptCancelLeadEffects, apptDateStr, apptTimeStr } = require('./_pec-appt.cjs');
-const { sameHumanOr } = require('./_pec-lead-match.cjs');
+const { sameHumanOr, resolveOrCreateCustomer } = require('./_pec-lead-match.cjs');
 const { resolveLeadSourceName } = require('./_pec-lead-source.cjs');
 
 const ENDPOINT = 'appt-intake';
@@ -392,10 +392,14 @@ async function mapRoutemizeEnvelope(db, env) {
     || (cleanStr(data.eventTypeId) && typeMap[cleanStr(data.eventTypeId).toLowerCase()])
     || 'on_site_estimate';
 
-  // Our own title (decision 6): "John Courtis, Estimate". Routemize's
-  // appointmentTitle ("Meeting with - John") is deliberately ignored. This
-  // shows on the TopCoat calendar and syncs out to Google Calendar.
-  const title = [customerName, serviceName || TYPE_LABELS[apptType]].filter(Boolean).join(', ') || null;
+  // Our own title, in the ONE unified auto-title format (prompt 89):
+  // "{Type label} for {Name}", e.g. "On-site estimate for John Courtis".
+  // Routemize's appointmentTitle ("Meeting with - John") stays ignored, and
+  // serviceName no longer rides the title (it maps appt_type via the
+  // settings map above, and the raw picker value still reaches the rep
+  // through the internal notes). Shows on the TopCoat calendar, the Google
+  // event, and the modal. Customer-facing-safe wording: no em dashes.
+  const title = customerName ? `${TYPE_LABELS[apptType]} for ${customerName}` : null;
 
   // customerAnswers routed by questionId (prompt 73 Part A): 'customer'
   // answers become the customer-facing Job notes (decision 4: the customer
@@ -458,8 +462,26 @@ async function mapRoutemizeEnvelope(db, env) {
 // a failed create lands the appointment unlinked with the contact noted, it
 // never turns a good intake into a non-200.
 async function createRoutemizeLead(db, args) {
+  // Customers are the source of truth (prompt 89): resolve-or-create the
+  // customer row FIRST so the lead is born linked. The caller only reaches
+  // here when resolveContact matched neither lead nor customer, so this is
+  // nearly always a create; the helper still re-matches for safety. A
+  // failure leaves customer_id null rather than losing the lead.
+  let customerId = null;
+  try {
+    const c = await resolveOrCreateCustomer(db, {
+      name: args.customerName, firstName: args.firstName, lastName: args.lastName,
+      businessName: args.businessName, phone10: args.phone10, email: args.email,
+      address: args.address, city: args.city, state: args.state, zip: args.zip,
+      source: args.source, brand: 'PEC',
+    });
+    customerId = c.customer_id;
+  } catch (e) {
+    console.warn('pec-appt-intake: customer resolve for new lead failed (non-fatal):', e && e.message);
+  }
   const base = {
     brand: 'PEC', // decision 7: FTP does not use Routemize
+    customer_id: customerId,
     source: args.source,
     source_ref: args.contactId || null,
     first_name: args.firstName || (args.customerName ? args.customerName.split(' ')[0] : null),
@@ -516,8 +538,10 @@ async function notifyBell(db, appt, salesName) {
   const when = `${apptDateStr(appt.start_at)} at ${apptTimeStr(appt.start_at)}`;
   await db('POST', '/pec_notifications', {
     type: 'appointment_booked',
+    // Auto-titles already read "On-site estimate for Jane Doe" (prompt 89),
+    // so the rep rides an "assigned to" clause, not a second "for".
     body: `Routemize booked ${appt.title || TYPE_LABELS[appt.appt_type] || 'an appointment'}`
-      + (salesName ? ` for ${salesName}` : '') + ` (${when})`,
+      + (salesName ? `, assigned to ${salesName}` : '') + ` (${when})`,
     target_view: 'appointments',
     target_id: appt.id,
   });
@@ -685,6 +709,7 @@ async function processApptIntake(deps, body) {
           state: cleanStr(body.state), zip: cleanStr(body.zip),
         });
         contact.lead_id = lead.id;
+        contact.customer_id = lead.customer_id || null; // born linked (prompt 89)
         leadCreated = true;
       } catch (e) {
         // The appointment still lands (unlinked, contact noted below); a
@@ -731,7 +756,11 @@ async function processApptIntake(deps, body) {
       all_day: body.all_day === true,
       status: 'scheduled', // an 'updated' from Routemize means the booking is live
     };
-    const title = cleanStr(body.title) || customerName || TYPE_LABELS[apptType];
+    // Auto-title (prompt 89): "{Type label} for {Name}". An explicit title
+    // in the hand-rolled contract still wins (manual curls stay honest); the
+    // Routemize adapter already passes the derived format through body.title.
+    const title = cleanStr(body.title)
+      || (customerName ? `${TYPE_LABELS[apptType]} for ${customerName}` : TYPE_LABELS[apptType]);
     if (cleanStr(body.title) || customerName || !existingRow) fields.title = title;
     if (cleanStr(body.address)) fields.location_address = cleanStr(body.address);
     if (cleanStr(body.city)) fields.location_city = cleanStr(body.city);
