@@ -6625,12 +6625,127 @@ async function pecStartRevokedLoginWatch() {
   _pecRevokePollTimer = true; // claim before the async settings read so a re-render cannot double-start
   let secs = 60;
   try {
-    const r = await supabase.from('settings').select('value').eq('key', 'login_revoked_poll_seconds').maybeSingle();
-    const n = Number(r && r.data && r.data.value);
+    // One read serves both riders of this poll: the poll interval and the
+    // accept-celebration switch (prompt 87 Task B piggybacks on this timer
+    // rather than adding a second poll). Both are read once per page life;
+    // a settings change takes effect on the next open.
+    const r = await supabase.from('settings').select('key,value').in('key', ['login_revoked_poll_seconds', 'accept_celebration_enabled']);
+    const map = Object.fromEntries(((r && r.data) || []).map(row => [row.key, row.value]));
+    const n = Number(map.login_revoked_poll_seconds);
     if (Number.isFinite(n) && n >= 15) secs = Math.round(n);
+    _pecCelebrationEnabled = (map.accept_celebration_enabled || 'true') !== 'false';
   } catch (_) {}
-  _pecRevokePollTimer = setInterval(() => _pecRevokedLoginCheck('interval'), secs * 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) _pecRevokedLoginCheck('visibilitychange'); });
+  _pecRevokePollTimer = setInterval(() => { _pecRevokedLoginCheck('interval'); pecAcceptCelebrationCheck('interval'); }, secs * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { _pecRevokedLoginCheck('visibilitychange'); pecAcceptCelebrationCheck('visibilitychange'); } });
+  // Catch-up on open: an acceptance nobody saw celebrates once, now.
+  pecAcceptCelebrationCheck('open');
+}
+
+// ---------------------------------------------------------------------------
+// Accept celebration (prompt 87 Task B): confetti + a toast on the STAFF
+// dashboard when an estimate is accepted. Truth is estimates.accepted_at /
+// status='accepted' (so manual "mark accepted" flips celebrate too; DripJobs
+// webhook jobs have no estimates row and never will here). Exactly-once per
+// BROWSER via a localStorage high-water mark of the newest celebrated
+// accepted_at; a first-ever run seeds the mark to now so history is never
+// celebrated. Rides the revoke-poll timer above (no new poll; sub-minute
+// latency is explicitly not the bar). Never runs on the customer-facing
+// public page (that page is a Netlify function render, not this file, and
+// the state.adminUser guard below would refuse anyway).
+// ---------------------------------------------------------------------------
+const PEC_CELEBRATE_MARK_KEY = 'pecAcceptCelebratedThrough';
+let _pecCelebrationEnabled = true;
+let _pecCelebrateBusy = false;
+async function pecAcceptCelebrationCheck(label) {
+  if (!_pecCelebrationEnabled || _pecCelebrateBusy) return;
+  if (!state || !state.adminUser || !state.session) return;
+  if (document.hidden) return;
+  _pecCelebrateBusy = true;
+  try {
+    let mark = null;
+    try { mark = localStorage.getItem(PEC_CELEBRATE_MARK_KEY); } catch (_) { return; }
+    if (!mark) {
+      // First run on this browser: seed to now, celebrate only what comes next.
+      try { localStorage.setItem(PEC_CELEBRATE_MARK_KEY, new Date().toISOString()); } catch (_) {}
+      return;
+    }
+    const r = await withFreshSession(() => supabase.from('estimates')
+      .select('id,estimate_number,customer_name,price,accepted_at')
+      .eq('status', 'accepted').is('deleted_at', null)
+      .gt('accepted_at', mark)
+      .order('accepted_at', { ascending: true }).limit(20),
+      { label: `accept-celebrate-${label}` });
+    if (!r || r.error || !Array.isArray(r.data) || !r.data.length) return;
+    const rows = r.data;
+    // Advance the mark BEFORE showing anything so an overlapping tick (or a
+    // thrown render) can never celebrate the same acceptance twice.
+    try { localStorage.setItem(PEC_CELEBRATE_MARK_KEY, rows[rows.length - 1].accepted_at); } catch (_) {}
+    // One burst + one toast regardless of how many landed while nobody looked.
+    if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      pecConfettiBurst();
+    }
+    const line = (e) => `<strong>${esc(e.customer_name || 'A customer')}</strong> accepted estimate ${e.estimate_number != null ? '#' + e.estimate_number : ''} ${e.price != null ? '&middot; ' + fmtMoney(e.price) : ''}`;
+    const html = rows.length === 1
+      ? `🎉 ${line(rows[0])}`
+      : `🎉 <strong>${rows.length} estimates accepted!</strong><br>${rows.map(line).join('<br>')}`;
+    showToast(html, { ttl: 12000 });
+  } catch (_) { /* transient; next tick tries again */ }
+  finally { _pecCelebrateBusy = false; }
+}
+
+// Self-contained canvas confetti (no external lib: the CSP allows no confetti
+// CDN, and ~40 lines beats a vendor file). Two bottom-corner cannons, ~2.5s,
+// removes itself. pointer-events:none so it can never block a click.
+function pecConfettiBurst() {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:99999';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+    const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#a855f7', '#eab308'];
+    const parts = [];
+    const spawn = (x, dir) => {
+      for (let i = 0; i < 70; i++) {
+        const angle = (-Math.PI / 2) + dir * (Math.PI / 5) * Math.random();
+        const speed = 9 + Math.random() * 9;
+        parts.push({
+          x, y: canvas.height + 8,
+          vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+          w: 5 + Math.random() * 5, h: 8 + Math.random() * 6,
+          rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 0.3,
+          color: colors[(Math.random() * colors.length) | 0],
+          life: 140 + Math.random() * 50,
+        });
+      }
+    };
+    spawn(canvas.width * 0.12, 1);
+    spawn(canvas.width * 0.88, -1);
+    let frames = 0;
+    const tick = () => {
+      frames++;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      let alive = 0;
+      for (const p of parts) {
+        if (p.life <= 0) continue;
+        alive++;
+        p.life--;
+        p.vy += 0.22; p.vx *= 0.992;
+        p.x += p.vx; p.y += p.vy; p.rot += p.vr;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 40));
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+        ctx.restore();
+      }
+      if (alive && frames < 240) requestAnimationFrame(tick);
+      else canvas.remove();
+    };
+    requestAnimationFrame(tick);
+  } catch (_) { /* decoration only; never let it break the dashboard */ }
 }
 
 // Trigger A: tab hidden->visible after 15+ min idle.
@@ -19715,9 +19830,9 @@ async function renderSettingsDrips() {
 async function renderSettingsEstimates() {
   const root = $('pecViewRoot');
   const setRes = await withFreshSession(() => supabase.from('settings').select('key,value')
-    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimate_view_slack_enabled', 'estimate_hot_min_views', 'estimate_hot_window_hours', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
+    .in('key', ['estimate_view_notifications_enabled', 'estimate_view_notify_first_per_day', 'estimate_view_slack_enabled', 'estimate_accept_slack_enabled', 'estimate_hot_min_views', 'estimate_hot_window_hours', 'estimator_customer_search_enabled', 'sync_stuck_threshold_attempts', 'sync_stuck_escalation_enabled',
       'estimator_floor_gp_pct', 'line_pricing_gp_floor_pct', 'line_pricing_block_below_floor', 'line_pricing_custom_label_default', 'line_pricing_reason_threshold_pct', 'line_pricing_reason_threshold_dollars',
-      'estimate_ai_enabled', 'comps_min_sample',
+      'estimate_ai_enabled', 'comps_min_sample', 'accept_celebration_enabled',
       'optional_lines_enabled', 'optional_lines_preselect_default', 'optional_lines_gp_warn_pct',
       'estimate_line_generate_enabled', 'estimator_line_sheet_breakpoint_px']),
     { label: 'settings-estimates' });
@@ -19727,6 +19842,13 @@ async function renderSettingsEstimates() {
   // Prompt 75: Slack + the hot rule. Defaults MUST match the migration seeds
   // (true / 3 / 48) and the pecEstimateIsHot fallbacks.
   const viewSlackOn = (map.estimate_view_slack_enabled || 'true') !== 'false';
+  // Prompt 87: the accept celebration post rides inside the Slack card (rule
+  // 12 rationing: it is not its own front-of-card control). Default MUST
+  // match the migration seed and notifyOffice's fallback (true).
+  const acceptSlackOn = (map.estimate_accept_slack_enabled || 'true') !== 'false';
+  // Prompt 87 Task B: the dashboard confetti celebration. Default MUST match
+  // the migration seed and the poll reader (true).
+  const celebrateOn = (map.accept_celebration_enabled || 'true') !== 'false';
   const hotMinViews = Number(map.estimate_hot_min_views) > 0 ? Number(map.estimate_hot_min_views) : 3;
   const hotWindowHours = Number(map.estimate_hot_window_hours) > 0 ? Number(map.estimate_hot_window_hours) : 48;
   const dedupOn = (map.estimator_customer_search_enabled || 'true') !== 'false';
@@ -19759,7 +19881,7 @@ async function renderSettingsEstimates() {
     const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-estimates-save' });
     if (w && w.error) throw w.error;
   };
-  const toggleCard = (title, on, desc, btnId) => `
+  const toggleCard = (title, on, desc, btnId, extra = '') => `
     <div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
         <div>
@@ -19767,7 +19889,7 @@ async function renderSettingsEstimates() {
           <div style="color:var(--muted);font-size:.76rem;margin-top:4px">${desc}</div>
         </div>
         <button type="button" class="pec-btn sm ${on ? '' : 'primary'}" id="${btnId}">${on ? 'Turn OFF' : 'Turn ON'}</button>
-      </div>
+      </div>${extra}
     </div>`;
 
   root.innerHTML = `
@@ -19777,7 +19899,12 @@ async function renderSettingsEstimates() {
     ${toggleCard('Only notify on the first view each day', firstPerDayOn,
       'On: at most one bell per estimate per day, even if the customer opens it ten times. Off: a bell for every open. This throttles the BELL only; the Slack alert below always fires on every open while it is on.', 'setEstViewDaily')}
     ${toggleCard('Slack alert on every view', viewSlackOn,
-      'Posts to #epoxysales every single time a customer opens their estimate, with the price, the salesperson, which open it is, and how long since it was sent. Not throttled by the first-view-per-day switch above; this is its own channel.', 'setEstViewSlack')}
+      'Posts to #epoxysales every single time a customer opens their estimate, with the price, the salesperson, which open it is, and how long since it was sent. Not throttled by the first-view-per-day switch above; this is its own channel.', 'setEstViewSlack',
+      `<label style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:.8rem">
+        <input type="checkbox" id="setEstAcceptSlack" ${acceptSlackOn ? 'checked' : ''}> Celebration post when an estimate is accepted (customer, estimate number, total, salesperson)
+      </label>`)}
+    ${toggleCard('Accept celebration on the dashboard', celebrateOn,
+      'Confetti and a toast on every open staff dashboard when an estimate is accepted, including manual "mark accepted" flips. An acceptance nobody saw celebrates once on the next open. Each browser celebrates each acceptance exactly once; the animation is skipped for anyone whose device asks for reduced motion. Takes effect on the next page load.', 'setAcceptCelebrate')}
     <div class="pec-card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap">
         <div>
@@ -19885,6 +20012,13 @@ async function renderSettingsEstimates() {
   wire('setEstViewNotifs', 'estimate_view_notifications_enabled', viewNotifsOn);
   wire('setEstViewDaily', 'estimate_view_notify_first_per_day', firstPerDayOn);
   wire('setEstViewSlack', 'estimate_view_slack_enabled', viewSlackOn);
+  wire('setAcceptCelebrate', 'accept_celebration_enabled', celebrateOn);
+  $('setEstAcceptSlack').addEventListener('change', async (e) => {
+    const cb = e.target; cb.disabled = true;
+    try { await saveSetting('estimate_accept_slack_enabled', cb.checked ? 'true' : 'false'); }
+    catch (err) { showToast('Could not save: ' + (err.message || err), { ttl: 5000 }); cb.checked = !cb.checked; }
+    cb.disabled = false;
+  });
   $('setHotSave').addEventListener('click', async () => {
     const btn = $('setHotSave'); btn.disabled = true;
     const mv = Math.floor(Number($('setHotMinViews').value));

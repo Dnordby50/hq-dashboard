@@ -1,5 +1,16 @@
 [
   {
+    "id": "accept-celebration",
+    "date": "2026-08-12",
+    "title": "Confetti when an estimate is accepted",
+    "summary": "When a customer signs their estimate, every open dashboard fires a confetti burst and a toast with the customer, estimate number, and total. If it happened while nobody was looking, the next person to open the dashboard gets the celebration once. Each browser celebrates each acceptance one time only.",
+    "howto": [
+      "Keep the dashboard open and the celebration pops within about a minute of an acceptance.",
+      "Turn it on or off in Settings > Estimates under Accept celebration on the dashboard.",
+      "Devices set to reduced motion skip the animation and still show the toast."
+    ]
+  },
+  {
     "id": "revoke-login",
     "date": "2026-08-11",
     "title": "Offboard a login without losing any history",

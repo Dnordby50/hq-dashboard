@@ -1142,11 +1142,29 @@ async function notifyOffice(est, kind, detail) {
     }
   } catch (e) { console.error('public-estimate: notify email error', e.message); }
 
-  // Slack (best-effort, never blocks)
+  // Slack (best-effort, never blocks). The accept post is a CELEBRATION
+  // (prompt 87): win-first wording, the money, and the salesperson get their
+  // moment; change/decline keep the plain informational shape. The accept
+  // post has its own on/off (estimate_accept_slack_enabled, default on,
+  // mirroring estimate_view_slack_enabled) so the office can silence it
+  // without touching the view alerts.
   if (SLACK_OFFICE_WEBHOOK) {
     try {
-      const emoji = kind === 'accepted' ? ':tada:' : kind === 'change' ? ':pencil2:' : ':x:';
-      const text = `${emoji} *${headline}*${detail ? '\n> ' + detail.replace(/\n/g, '\n> ') : ''}\n<${url}|Open estimate>`;
+      let text;
+      if (kind === 'accepted') {
+        let acceptOn = true;
+        try {
+          const set = await sb('GET', '/settings?key=eq.estimate_accept_slack_enabled&select=value&limit=1');
+          acceptOn = String((set && set[0] && set[0].value) || 'true') !== 'false';
+        } catch (_) { /* missing row = on, same as every reader */ }
+        if (!acceptOn) return;
+        const repName = (est.intake && est.intake.salesperson_name) || null;
+        const facts = [usd(est.price), repName ? `sold by ${repName}` : null].filter(Boolean).join(' · ');
+        text = `:tada: :confetti_ball: *${est.customer_name || 'A customer'} just ACCEPTED estimate ${invNoTxt}!* :moneybag:\n${facts}${repName ? ` — way to go, ${repName}! :clap:` : ''}\n<${url}|Open estimate>`;
+      } else {
+        const emoji = kind === 'change' ? ':pencil2:' : ':x:';
+        text = `${emoji} *${headline}*${detail ? '\n> ' + detail.replace(/\n/g, '\n> ') : ''}\n<${url}|Open estimate>`;
+      }
       const res = await fetch(SLACK_OFFICE_WEBHOOK, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
       });

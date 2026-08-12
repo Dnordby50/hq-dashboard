@@ -1626,7 +1626,7 @@
     {
       "name": "Slack notifications",
       "area": "integrations",
-      "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events: estimate accepted or declined, costings sent back with their reason, and (prompt 75) every customer open of a sent estimate with the price, salesperson, which open it is, and time since sent (switchable via estimate_view_slack_enabled in Settings > Estimates).",
+      "description": "Outbound Slack alerts to the #epoxysales channel for key sales and production events: estimate accepted or declined, costings sent back with their reason, and (prompt 75) every customer open of a sent estimate with the price, salesperson, which open it is, and time since sent (switchable via estimate_view_slack_enabled in Settings > Estimates). Prompt 87: the accept post is a celebration message (customer, estimate number, total, salesperson, celebratory emoji) with its own switch, estimate_accept_slack_enabled, a checkbox inside the Slack card in Settings > Estimates; change/decline posts keep the plain informational shape. All posts share the SLACK_OFFICE_WEBHOOK Netlify env var; if NOTHING TopCoat posts to #epoxysales (accepts and view opens both missing), that env var is unset or its incoming webhook is dead, diagnosed 2026-08-12.",
       "code": {
         "netlifyFunctions": [
           "pec-notify-costing-sendback.cjs",
@@ -1635,6 +1635,24 @@
       },
       "tables": [],
       "since": "2026-07"
+    },
+    {
+      "name": "Accept celebration",
+      "area": "dashboard",
+      "description": "Confetti burst + toast on the staff dashboard when an estimate is accepted (prompt 87 Task B). Truth is estimates.status='accepted' / accepted_at, so manual mark-accepted flips celebrate too; DripJobs webhook jobs have no estimates row and do not. Live: rides the prompt-86 revoke-poll timer (no new poll; latency up to login_revoked_poll_seconds). Catch-up: acceptances that landed while no dashboard was open celebrate once on the next open, one combined burst + toast listing them. Exactly-once per browser via a localStorage high-water mark of accepted_at (pecAcceptCelebratedThrough); first-ever run seeds the mark and never celebrates history. Hand-rolled canvas confetti (CSP allows no CDN); prefers-reduced-motion skips the animation and keeps the toast. Never on the customer-facing public page. Switch: accept_celebration_enabled (default on, front-of-card in Settings > Estimates, read once per page life).",
+      "code": {
+        "indexHtml": [
+          "pecAcceptCelebrationCheck",
+          "pecConfettiBurst",
+          "pecStartRevokedLoginWatch",
+          "renderSettingsEstimates"
+        ]
+      },
+      "tables": [
+        "estimates",
+        "settings"
+      ],
+      "since": "2026-08"
     },
     {
       "name": "Revenue goals home",
