@@ -1,5 +1,16 @@
 [
   {
+    "id": "appointment-customer-search-autotitles",
+    "date": "2026-08-12",
+    "title": "Appointments link customers, with real search and automatic titles",
+    "summary": "The appointment form now links a customer instead of a lead. Type a few letters of a name, phone, or address to find them, or create a new customer right in the form. Titles fill in automatically, like On-site estimate for Tom Bechtel. The Customers page also gained All, Customers, and Prospects filters.",
+    "howto": [
+      "Open Appointments and click a time slot, then start typing in the Customer box to search.",
+      "Pick a match or use New customer to add one without leaving the form.",
+      "The title writes itself from the customer and appointment type; blocks with no customer keep a free text title."
+    ]
+  },
+  {
     "id": "calendar-sync-repaired",
     "date": "2026-08-12",
     "title": "Google Calendar sync repaired, with honest reconnect prompts",
