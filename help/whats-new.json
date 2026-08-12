@@ -1,5 +1,16 @@
 [
   {
+    "id": "estimate-communications-card",
+    "date": "2026-08-12",
+    "title": "See every text, call, and email right on the estimate",
+    "summary": "Each estimate now has a Communications card showing the full text and call history with that customer plus every email sent to them, with Call and Text buttons. The send window also shows the sign-here button and link that ride under your message, so you can see exactly what the customer will get.",
+    "howto": [
+      "Open any estimate and scroll to the Communications card in the right column.",
+      "Use the Text button to jump into that customer's message thread; texts sent there always carry the live estimate link.",
+      "Click an email row to see its full content and open tracking."
+    ]
+  },
+  {
     "id": "job-detail-schedule-bridge",
     "date": "2026-08-12",
     "title": "Job pages now show the install schedule for every kind of job",

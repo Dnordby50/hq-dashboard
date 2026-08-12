@@ -1,3 +1,18 @@
+## [2026-08-12 MST] Estimate page gains a Communications card: the merged texts+calls feed, the email log, and Call/Text buttons, all matched to the estimate's contact.
+
+By: Claude Code
+
+Changed: index.html (new estimateCommsCardHtml + mountEstimateComms next to the Messages machinery; card rendered after the Activity card in renderEstimateDetail's right column, mounted best-effort like the SalesAsk card), features.json (Customer-facing estimate entry), help/whats-new.json (one entry). Commit 2288b4c, pushed.
+
+**Why.** Dylan's follow-up to the Adam Camacho incident: "see exactly what communications went out" from the estimate itself, texts, calls, AND emails. The pieces all existed on other pages (job console's merged feed, customer page's cards, the shared email-log table); the estimate page had none of them.
+
+**How it works.** One read-only card: texts+calls through the SAME qoMergeFeedHtml the Messages thread and job console render, the email log through the shared emailLogTableHtml (compact) + wireEmailLogRows, and pecPhoneActionsHtml up top for Call / Text — Text deep-links into the Messages thread via the existing delegated handler, so composing keeps exactly one send path. The load-bearing detail is MATCHING: by phone last-10 (ilike on to/from) and exact email OR customer_id, because most log rows predate customer linking (live 2026-08-12: 219/372 texts, 1328/1741 calls, 39/86 emails carry no customer_id); contact resolution falls back estimate's frozen columns -> lead -> customer so pre-prompt-89 estimates still match. Deliberately NO compose box on the card.
+
+Files touched: index.html, features.json, help/whats-new.json, PROJECT-LOG.md.
+Next steps: None.
+Handoff to Cowork: None.
+Handoff to Dylan: Open any estimate; the Communications card sits under Activity in the right column.
+
 ## [2026-08-12 MST] Bug fix: the estimate send modal looked linkless (Adam Camacho, EST-102095); the auto-appended sign button now renders read-only in the modal with its /e/ URL spelled out.
 
 By: Claude Code
