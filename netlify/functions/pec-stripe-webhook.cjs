@@ -30,6 +30,7 @@ const { sb } = require('./_pec-supabase.cjs');
 // (best-effort; the resolver derives settlement from money, so a missed stamp
 // self-heals on the next settle call).
 const { settleInstallments } = require('./_pec-installments.cjs');
+const { depositOwed } = require('../../production/deposits.cjs');
 
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
@@ -99,7 +100,7 @@ async function recordPayment(s, jobId, kind, piId, amount) {
     const jr = await sb('GET', `/pec_job_ar?id=eq.${encodeURIComponent(jobId)}&select=price,paid_to_date,deposit_amount,deposit_collected,deposit_waived&limit=1`);
     const j = Array.isArray(jr) ? jr[0] : null;
     if (j && !j.deposit_collected && !j.deposit_waived) {
-      const owed = j.deposit_amount != null ? round2(j.deposit_amount) : round2(Number(j.price) * 0.5);
+      const owed = depositOwed(j.deposit_amount, j.price); // the ONE shared rule (production/deposits.cjs)
       const paid = round2(j.paid_to_date);
       if (kind === 'deposit' || paid + 0.005 >= owed) {
         await sb('PATCH', `/jobs?id=eq.${encodeURIComponent(jobId)}`, { deposit_collected: true });

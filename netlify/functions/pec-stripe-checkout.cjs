@@ -12,6 +12,7 @@ const { sb } = require('./_pec-supabase.cjs');
 // Prompt 45: kind=installment charges exactly the CURRENT installment amount,
 // resolved server-side by the shared resolver (never a client-supplied value).
 const { computeInstallmentCharge } = require('./_pec-installments.cjs');
+const { depositOwed } = require('../../production/deposits.cjs');
 
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const SITE_URL = process.env.URL || 'https://prescottepoxy.netlify.app';
@@ -103,7 +104,7 @@ exports.handler = async (event) => {
     }
   } else if (kind === 'deposit') {
     if (row.deposit_collected || row.deposit_waived) return redirect(`${SITE_URL}/pay/${token}`);
-    const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
+    const owed = depositOwed(row.deposit_amount, row.price); // the ONE shared rule (production/deposits.cjs)
     amount = round2(Math.min(owed, chargeable));
   } else if (kind === 'custom') {
     // Office-entered amount arrives in CENTS (?amt=). Validate + clamp SERVER-SIDE

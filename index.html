@@ -10285,6 +10285,30 @@ const invParse = d => d ? new Date(String(d).slice(0, 10) + 'T00:00:00Z') : null
 function invDaysBetween(a, b) { const da = invParse(a), db = invParse(b); if (!da || !db) return null; return Math.round((db - da) / 86400000); }
 const invDaysSince = d => d ? invDaysBetween(d, invToday()) : null;
 function invAddDays(d, n) { const x = invParse(d); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); }
+
+// CLIENT MIRRORS of production/deposits.cjs (fixture-tested there; keep in
+// lockstep, prompt 90 Task C). The deposit-owed rule used to exist as five
+// inline copies in this file plus four in Netlify functions; the functions
+// now require the module and every client site calls these two.
+const pecDepositOwed = (depositAmount, price) =>
+  depositAmount != null ? invRound2(Number(depositAmount)) : invRound2(Number(price || 0) * 0.5);
+const pecCoversDeposit = ({ paidToDate, amount, owed, waived }) =>
+  waived ? false : (Number(paidToDate || 0) + Number(amount || 0) + 0.005 >= Number(owed || 0));
+// CLIENT MIRRORS of production/job-money.cjs: the Metrics AR-as-of-date
+// predicate and the change-order price mutation.
+function pecArDueAsOf(j, D, paid) {
+  if (j.completed_date && j.completed_date <= D) return (j.price - paid > 0.005) ? j.price - paid : 0;
+  if (j.signed_date && j.signed_date <= D && paid <= 0.005 && !j.deposit_waived) return pecDepositOwed(j.deposit_amount, j.price);
+  return 0;
+}
+function pecApplyChangeOrder(price, lineItems, { name, description, amount }) {
+  return {
+    price: invRound2(Number(price || 0) + Number(amount || 0)),
+    line_items: (Array.isArray(lineItems) ? lineItems : []).concat([
+      { name, description: description || '', price: invRound2(Number(amount || 0)), is_change_order: true },
+    ]),
+  };
+}
 function invWeekStart(d) { const x = invParse(d); const back = (x.getUTCDay() + 6) % 7; x.setUTCDate(x.getUTCDate() - back); return x.toISOString().slice(0, 10); }
 const invShortDate = d => { const x = invParse(d); return x ? (x.getUTCMonth() + 1) + '/' + x.getUTCDate() : ''; };
 const invFmtDate = d => d ? (parseInt(d.slice(5, 7), 10) + '/' + parseInt(d.slice(8, 10), 10) + '/' + d.slice(0, 4)) : '—';
@@ -10519,7 +10543,7 @@ async function renderInvoicing() {
     .sort((a, b) => (b.last_payment_date || '').localeCompare(a.last_payment_date || ''));
 
   const completedOwed = completed.reduce((s, r) => s + r.balance, 0);
-  const depositOwed = r => r.deposit_amount != null ? r.deposit_amount : invRound2(r.price * 0.5);
+  const depositOwed = r => pecDepositOwed(r.deposit_amount, r.price);
   const pendingDeposits = signedNoDep.reduce((s, r) => s + depositOwed(r), 0);
   const activeBalance = active.reduce((s, r) => s + r.balance, 0);
   // AR = what's actually due now: completed work not paid in full, plus signed
@@ -10772,7 +10796,7 @@ function openChargeCardModal(row) {
   if (!(bal > 0.005)) { showToast('Nothing to charge; this invoice is paid in full.', { ttl: 3500 }); return; }
   // Mirror the existing deposit-due logic (same as the Record deposit button).
   const depDue = !row.deposit_collected && !row.deposit_waived;
-  const owed = row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5);
+  const owed = pecDepositOwed(row.deposit_amount, row.price);
   const depAmt = Math.min(owed, bal);
   const showDeposit = depDue && depAmt >= 0.5;
   const radioRow = (val, label, sub) => `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;font-weight:400;text-transform:none">
@@ -11263,8 +11287,7 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
         if (!Number.isFinite(amt) || amt === 0) { errEl.textContent = 'Enter a non-zero amount.'; return; }
         saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
         try {
-          const nextItems = existingItems.concat([{ name, description, price: invRound2(amt), is_change_order: true }]);
-          const nextPrice = invRound2(invNum(job.price) + amt);
+          const { price: nextPrice, line_items: nextItems } = pecApplyChangeOrder(job.price, existingItems, { name, description, amount: amt });
           const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
           if (upd.error) throw upd.error;
           await mintCoSignature(jobId, { area_id: null, title: name, description, system_name: null, sqft: null, amount: invRound2(amt) });
@@ -11302,8 +11325,7 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
           if (ins.error) throw ins.error;
           // The invoice line ships even at $0 so the included coat is
           // documented on the invoice; job price only moves by the amount.
-          const nextItems = existingItems.concat([{ name: title, description: '', price: invRound2(price), is_change_order: true }]);
-          const nextPrice = invRound2(invNum(job.price) + price);
+          const { price: nextPrice, line_items: nextItems } = pecApplyChangeOrder(job.price, existingItems, { name: title, amount: price });
           const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
           if (upd.error) {
             try { await supabase.from('job_areas').delete().eq('id', ins.data.id); } catch (_) {}
@@ -11352,8 +11374,7 @@ async function openChangeOrderModal(jobId, { onSaved, prefill = null } = {}) {
         if (ins.error) throw ins.error;
         // 2. The billing moment: same line + price write as simple mode. If it
         // fails, roll back the scope row so nothing half-exists.
-        const nextItems = existingItems.concat([{ name: title, description, price: invRound2(price), is_change_order: true }]);
-        const nextPrice = invRound2(invNum(job.price) + price);
+        const { price: nextPrice, line_items: nextItems } = pecApplyChangeOrder(job.price, existingItems, { name: title, description, amount: price });
         const upd = await withFreshWrite(() => supabase.from('jobs').update({ line_items: nextItems, price: nextPrice }).eq('id', jobId), { label: 'change-order' });
         if (upd.error) {
           try { await supabase.from('job_areas').delete().eq('id', ins.data.id); } catch (_) {}
@@ -13144,7 +13165,7 @@ async function deletePayment(p, jobId, row) {
 function openPaymentModal(row, { deposit }) {
   if (!row) return;
   const bal = invNum(row.balance);
-  const defAmt = deposit ? (row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5)) : bal;
+  const defAmt = deposit ? pecDepositOwed(row.deposit_amount, row.price) : bal;
   const title = deposit ? 'Record deposit' : 'Record payment';
   openModal(`
     <h3>${esc(title)}</h3>
@@ -13227,11 +13248,10 @@ function openPaymentModal(row, { deposit }) {
         // Mark the deposit collected when the user checked the box OR when this
         // payment brings paid-to-date up to (>=) the deposit owed, so a deposit is
         // reflected no matter how it is recorded. Never auto-mark a waived or
-        // already-collected deposit. depositOwed/EPS are inlined here because they
-        // live in renderInvoicing's scope, not this one.
-        const owed = row.deposit_amount != null ? invNum(row.deposit_amount) : invRound2(invNum(row.price) * 0.5);
-        const newPaid = invNum(row.paid_to_date || 0) + amount;
-        const coversDeposit = !row.deposit_waived && (newPaid + 0.005 >= owed);
+        // already-collected deposit. The shared rule (production/deposits.cjs
+        // mirrors) owns both the owed math and the covers predicate.
+        const owed = pecDepositOwed(row.deposit_amount, row.price);
+        const coversDeposit = pecCoversDeposit({ paidToDate: row.paid_to_date, amount, owed, waived: row.deposit_waived });
         const markDeposit = !row.deposit_collected && (!!fd.get('is_deposit') || coversDeposit);
         if (markDeposit) {
           try {
@@ -13945,12 +13965,9 @@ async function renderMetrics() {
   const todayIso = invToday();
   const arJobsAll = jobs.filter(jobOk);
   const arD = weeks.map(wk => wk.end > todayIso ? todayIso : wk.end);
-  const depositDue = j => j.deposit_amount != null ? j.deposit_amount : invRound2(j.price * 0.5);
-  const dueAt = (j, D, paid) => {
-    if (j.completed_date && j.completed_date <= D) return (j.price - paid > 0.005) ? j.price - paid : 0;
-    if (j.signed_date && j.signed_date <= D && paid <= 0.005 && !j.deposit_waived) return depositDue(j);
-    return 0;
-  };
+  // The as-of-date rule now lives in production/job-money.cjs (arDueAsOf,
+  // fixture-tested); pecArDueAsOf is its client mirror.
+  const dueAt = pecArDueAsOf;
   const arPerWeek = Array(weeks.length).fill(0);
   {
     // Single ascending pass: weeks are sorted, so each job's payment cursor
@@ -18428,6 +18445,22 @@ function commissionPeriod(dateStr) {
   const start = invAddDays(dateStr, -d.getUTCDay());   // Sunday on/before
   return { start, end: invAddDays(start, 6) };         // Saturday after
 }
+// CLIENT MIRRORS of production/commission.cjs (fixture-tested there; keep in
+// lockstep, prompt 90 Task C). commissionFriday/commissionPeriod above are
+// mirrored in that module too.
+const pecCommissionForPayment = (amount, pct) => Math.round(Number(amount || 0) * ((pct || 0) / 100) * 100) / 100;
+function pecBuildCommissionRates(teamRows) {
+  const rows = Array.isArray(teamRows) ? teamRows : [];
+  const pctByName = {};
+  for (const m of rows) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
+  for (const m of rows) for (const a of (m.name_aliases || [])) {
+    const k = String(a || '').toLowerCase();
+    if (k && !(k in pctByName)) pctByName[k] = Number(m.commission_pct || 0);
+  }
+  const excludedNames = new Set(rows.filter(m => m.exclude_from_commission)
+    .flatMap(m => [m.name, ...(m.name_aliases || [])]).map(n => String(n || '').toLowerCase()));
+  return { pctByName, excludedNames };
+}
 async function renderCommission() {
   const root = $('pecViewRoot');
   if (!can('can_view_commission')) { root.innerHTML = '<div class="pec-empty">You do not have access to Commission.</div>'; return; }
@@ -18461,18 +18494,11 @@ async function renderCommission() {
   // trigger) must resolve to the same rate or history silently loses its
   // attribution. Current names are loaded first and always win; an alias never
   // overrides another member's live name.
-  const pctByName = {};
-  for (const m of (teamRes.data || [])) pctByName[String(m.name || '').toLowerCase()] = Number(m.commission_pct || 0);
-  for (const m of (teamRes.data || [])) for (const a of (m.name_aliases || [])) {
-    const k = String(a || '').toLowerCase();
-    if (k && !(k in pctByName)) pctByName[k] = Number(m.commission_pct || 0);
-  }
-  // Sellers flagged exclude_from_commission (e.g. the owner) never appear in this
-  // report: filtered out of the payment lines, the sold-jobs list, and the
-  // salesperson dropdown. By the flag, not a hardcoded name, so Dylan sets it.
-  // Aliases inherit the exclusion for the same rename-safety reason.
-  const excludedNames = new Set((teamRes.data || []).filter(m => m.exclude_from_commission)
-    .flatMap(m => [m.name, ...(m.name_aliases || [])]).map(n => String(n || '').toLowerCase()));
+  // Sellers flagged exclude_from_commission (e.g. the owner) never appear in
+  // this report; aliases inherit rate AND exclusion for rename safety. The
+  // resolution rule lives in production/commission.cjs (fixture-tested);
+  // pecBuildCommissionRates is its client mirror.
+  const { pctByName, excludedNames } = pecBuildCommissionRates(teamRes.data || []);
   const isExcluded = name => excludedNames.has(String(name || '').toLowerCase());
   // payment_id -> payout row ({ amount, paid_on }); empty if the table is missing.
   const payoutByPid = Object.fromEntries(((poRes && poRes.data) || []).map(r => [r.payment_id, r]));
@@ -18494,7 +18520,7 @@ async function renderCommission() {
       payday: commissionFriday(p.received_date),   // correlating Friday from when money came in
 
       collected: amount,
-      commission: round2(amount * ((pct || 0) / 100)),   // default (pending) commission
+      commission: pecCommissionForPayment(amount, pct),  // default (pending) commission (shared rule)
       paid: !!payout,
       paidOn: payout ? payout.paid_on : null,
       paidAmount: payout ? invNum(payout.amount) : null,

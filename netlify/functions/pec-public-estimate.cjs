@@ -47,6 +47,7 @@ const {
   triggerLabel,
 } = require('../../production/estimate-installments.cjs');
 const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.cjs');
+const { depositOwed } = require('../../production/deposits.cjs');
 const { resolveDefaultTerms } = require('./_pec-invoice-terms.cjs');
 const { maybeCreateBusybusyProject } = require('./_pec-busybusy.cjs');
 // Optional-lines rules (prompt 72): the same module the estimator bundles,
@@ -977,7 +978,7 @@ async function loadAcceptedPay(est) {
       const balance = round2(Number(job.price) - paid);
       if (!(balance > 0.005)) return null;
       const depositDue = !job.deposit_collected && !job.deposit_waived;
-      const owed = job.deposit_amount != null ? round2(job.deposit_amount) : round2(Number(job.price) * 0.5);
+      const owed = depositOwed(job.deposit_amount, job.price); // the ONE shared rule (production/deposits.cjs)
       if (depositDue && owed >= 0.5 && owed < balance - 0.005) { amount = owed; isDeposit = true; kind = 'deposit'; }
       else { amount = balance; kind = 'balance'; }
     }

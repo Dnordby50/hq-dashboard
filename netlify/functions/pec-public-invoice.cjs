@@ -22,6 +22,7 @@ const { loadFinancingSettings, financingBlockHtml } = require('./_pec-financing.
 // and the staff UI). A job with no installment rows resolves to null and this
 // page renders EXACTLY its legacy full-balance behavior.
 const { resolveCurrentAsk } = require('./_pec-installments.cjs');
+const { depositOwed } = require('../../production/deposits.cjs');
 const { termsLabel } = require('./_pec-invoice-terms.cjs');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -194,7 +195,7 @@ function payButtons(b, row, token, pendingSum, ask) {
     </div>`;
   }
   const depositDue = !row.deposit_collected && !row.deposit_waived;
-  const owed = row.deposit_amount != null ? round2(row.deposit_amount) : round2(Number(row.price) * 0.5);
+  const owed = depositOwed(row.deposit_amount, row.price); // the ONE shared rule (production/deposits.cjs)
   // The legacy standalone deposit button only exists WITHOUT a schedule; with
   // one, the deposit is an installment and the current ask IS the button.
   const showDeposit = !ask && depositDue && owed >= 0.5 && owed < remainder - 0.005;
