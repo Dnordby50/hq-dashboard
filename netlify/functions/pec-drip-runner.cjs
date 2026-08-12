@@ -62,3 +62,20 @@ exports.handler = async () => {
     return json(500, { ok: false, error: String(err && err.message || err) });
   }
 };
+
+// Heartbeat (prompt 90 Task A): stamp AFTER a successful run by wrapping the
+// handler, so every ok exit path stamps (including gated no-ops: the
+// SCHEDULE firing is what the monitor watches, not the feature toggle)
+// without touching each return site. Best-effort by contract; a heartbeat
+// failure never fails the job.
+{
+  const { writeHeartbeat } = require('./_pec-supabase.cjs');
+  const _handler = exports.handler;
+  exports.handler = async (event, context) => {
+    const res = await _handler(event, context);
+    try {
+      if (res && res.statusCode === 200 && JSON.parse(res.body || '{}').ok === true) await writeHeartbeat('pec-drip-runner');
+    } catch (_) { /* best-effort */ }
+    return res;
+  };
+}

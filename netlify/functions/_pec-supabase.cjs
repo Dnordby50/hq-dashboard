@@ -165,4 +165,26 @@ async function logIngest(fields) {
   }
 }
 
-module.exports = { sb, json, badSecret, safeEqual, requireStaff, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest };
+// Heartbeat stamp for scheduled functions (prompt 90 Task A). Each scheduled
+// job calls this at the end of a SUCCESSFUL run; the daily
+// pec-system-heartbeat monitor flags any function whose last_ok_at is older
+// than its cadence plus slack. Same contract as logIngest: NEVER throws, a
+// heartbeat failure must never fail the job it observes. GET-then-write
+// instead of upsert because sb()'s headers are fixed (the saveTokenRow
+// pattern); scheduled jobs never race themselves on this row.
+async function writeHeartbeat(functionName, details) {
+  try {
+    const patch = { last_ok_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    if (details !== undefined) patch.details = details;
+    const rows = await sb('GET', `/pec_heartbeats?function_name=eq.${encodeURIComponent(functionName)}&select=function_name&limit=1`);
+    if (Array.isArray(rows) && rows[0]) {
+      await sb('PATCH', `/pec_heartbeats?function_name=eq.${encodeURIComponent(functionName)}`, patch);
+    } else {
+      await sb('POST', '/pec_heartbeats', { function_name: functionName, ...patch });
+    }
+  } catch (e) {
+    console.error(`writeHeartbeat(${functionName}) failed (non-fatal):`, e && e.message ? e.message : e);
+  }
+}
+
+module.exports = { sb, json, badSecret, safeEqual, requireStaff, randomToken, tokenFromEvent, epoxyStages, paintStages, logIngest, writeHeartbeat };

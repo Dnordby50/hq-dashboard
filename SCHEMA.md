@@ -956,6 +956,19 @@ RLS: enabled · rows: 2
 
 PK: id
 
+### pec_heartbeats
+RLS: enabled (staff SELECT via `pec_heartbeats_staff_read`; writes service-role only, no insert/update policy on purpose) · rows: 0 at creation
+
+| column | type | nullable | default |
+|---|---|---|---|
+| function_name | text | no |  |
+| last_ok_at | timestamptz | yes |  |
+| details | jsonb | yes |  |
+| updated_at | timestamptz | no | now() |
+
+PK: function_name
+Added 2026-08-12 (prompt 90 Task A, migration 2026-08-27_prompt90_heartbeats.sql). Every scheduled function stamps its row after a SUCCESSFUL run (writeHeartbeat in _pec-supabase.cjs, never-throws contract); the daily pec-system-heartbeat monitor flags staleness against the cadence map in _pec-health.cjs and stores its whole latest run as its own row's `details` JSON ({ran_at, ok, issues[], checks[]}). The Ops Queue's System health lines and the Settings > System health card DERIVE their display from these rows at render; nothing is inserted per failure. This is app-written state, not settings (rule 12); the four `system_health_*` settings keys are the knobs.
+
 ### pec_invoice_installments
 RLS: enabled · rows: 2
 

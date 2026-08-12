@@ -19517,6 +19517,7 @@ const SETTINGS_PAGES = [
   { key: 'presentation', label: 'Presentation', group: 'config', keywords: ['present mode', 'sections', 'gallery', 'reviews'] },
   { key: 'busybusy',     label: 'BusyBusy',     group: 'config', keywords: ['hours', 'import', 'payroll', 'geofence', 'time entries'] },
   { key: 'brand',        label: 'Brand',        group: 'config', keywords: ['logo', 'terms', 'invoice text', 'status descriptions'] },
+  { key: 'health',       label: 'System health', group: 'config', keywords: ['heartbeat', 'monitor', 'scheduled functions', 'slack alert', 'uptime', 'stale'] },
 ];
 const SETTINGS_GROUP_LABELS = { config: 'Configuration', records: 'Records' };
 
@@ -19697,6 +19698,135 @@ function wireSettingsTabs(root) {
 }
 
 // Settings > Drips (prompt 42, and the new standing rule: every major
+// Settings > System health (prompt 90 Task A, rule 12). Front of card: the
+// on/off switch and the staleness slack hours (the two knobs tuned in
+// normal operation); Slack toggle and the Stripe threshold sit behind
+// Advanced. Below the knobs: the latest monitor run READ-ONLY (from the
+// pec_heartbeats details JSON the daily run stores) and the per-function
+// heartbeat table, plus a Run now button hitting pec-system-heartbeat-run
+// (the HTTP twin; Netlify 403s direct invocation of scheduled functions).
+async function renderSettingsSystemHealth() {
+  const root = $('pecViewRoot');
+  let map = {}, beats = [];
+  try {
+    const [setRes, hbRes] = await withFreshSession(() => Promise.all([
+      supabase.from('settings').select('key,value').like('key', 'system_health_%'),
+      supabase.from('pec_heartbeats').select('*').order('function_name'),
+    ]), { label: 'settings-health' });
+    map = Object.fromEntries(((setRes && setRes.data) || []).map(r => [r.key, r.value]));
+    beats = (hbRes && !hbRes.error && hbRes.data) || [];
+  } catch (_) { /* renders with defaults; the card still shows */ }
+  const enabled = (map.system_health_enabled || 'true') !== 'false';
+  const slackOn = (map.system_health_slack_enabled || 'true') !== 'false';
+  const staleHours = map.system_health_stale_hours || '6';
+  const stripeDays = map.system_health_stripe_stale_days || '7';
+  const monitor = beats.find(b => b.function_name === 'pec-system-heartbeat');
+  const run = monitor && monitor.details;
+  const fmtAge = (iso) => {
+    if (!iso) return 'never';
+    const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+    if (h < 1) return `${Math.max(1, Math.round(h * 60))} min ago`;
+    if (h < 48) return `${Math.round(h)}h ago`;
+    return `${Math.round(h / 24)}d ago`;
+  };
+
+  const saveSetting = async (key, value) => {
+    const w = await withFreshWriteRetry(() => supabase.from('settings').upsert({ key, value: String(value) }, { onConflict: 'key' }), { label: 'settings-health-save' });
+    if (w && w.error) throw w.error;
+  };
+
+  root.innerHTML = `
+    ${settingsTabBar('health')}
+    <div class="pec-card">
+      <h3 style="margin-top:0">System heartbeat</h3>
+      <div style="color:var(--muted);font-size:.78rem;margin-bottom:12px">
+        Once a day the system checks itself: every scheduled job ran on time, webhooks and
+        messages are not failing, the Google review link still points at Google, Stripe payments
+        are not stuck, and the customer-facing pages answer. Problems appear in the Ops Queue and
+        as one Slack line; silence means green.
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;cursor:pointer;margin-bottom:10px">
+        <input type="checkbox" id="shEnabled" style="width:auto" ${enabled ? 'checked' : ''}>
+        Run the daily heartbeat checks</label>
+      <div class="pec-field" style="max-width:280px"><label>Staleness slack (hours)</label>
+        <input type="number" id="shSlackHours" min="1" step="1" value="${esc(staleHours)}">
+        <div style="font-size:.68rem;color:var(--muted);margin-top:3px">A scheduled job is flagged when its last good run is older than its normal cadence plus this many hours.</div></div>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:.78rem;color:var(--muted)">Advanced</summary>
+        <div style="padding:10px 0 0">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;text-transform:none;cursor:pointer;margin-bottom:10px">
+            <input type="checkbox" id="shSlack" style="width:auto" ${slackOn ? 'checked' : ''}>
+            Post one Slack line to #epoxysales when something is failing</label>
+          <div class="pec-field" style="max-width:280px"><label>Stripe stuck threshold (business days)</label>
+            <input type="number" id="shStripeDays" min="1" step="1" value="${esc(stripeDays)}"></div>
+        </div>
+      </details>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:8px" id="shStatus"></div>
+    </div>
+    <div class="pec-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">Latest run</h3>
+        <button class="pec-btn sm" id="shRunNow">Run now</button>
+      </div>
+      ${run ? `
+        <div style="font-size:.78rem;margin-bottom:8px">
+          ${run.disabled ? '<span style="color:var(--muted)">Checks were disabled at the last run.</span>'
+            : run.ok ? '<span style="color:var(--rd-success,#10b981);font-weight:700">All green</span>'
+            : `<span style="color:#dc2626;font-weight:700">${(run.issues || []).length} issue${(run.issues || []).length === 1 ? '' : 's'}</span>`}
+          <span style="color:var(--muted)"> · ran ${esc(fmtAge(run.ran_at))}</span>
+        </div>
+        ${(run.checks || []).map(c => `
+          <div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.78rem">
+            <span style="flex:none;width:10px">${c.ok ? '✓' : '✗'}</span>
+            <span style="flex:none;min-width:150px;color:var(--muted)">${esc(c.name)}</span>
+            <span>${c.ok ? '<span style="color:var(--muted)">ok</span>' : esc(c.issue || 'failed')}</span>
+          </div>`).join('')}`
+        : '<div class="pec-empty" style="padding:8px">No run recorded yet. The daily run happens at 7:45 AM, or use Run now.</div>'}
+    </div>
+    <div class="pec-card">
+      <h3 style="margin-top:0">Scheduled job heartbeats</h3>
+      <div style="color:var(--muted);font-size:.72rem;margin-bottom:8px">Each scheduled job stamps this after a successful run.</div>
+      ${beats.filter(b => b.function_name !== 'pec-system-heartbeat').map(b => `
+        <div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--rd-line,var(--border));font-size:.78rem">
+          <span style="flex:1">${esc(b.function_name)}</span>
+          <span style="color:var(--muted)">${esc(fmtAge(b.last_ok_at))}</span>
+        </div>`).join('') || '<div class="pec-empty" style="padding:8px">No heartbeats recorded yet (they appear as each schedule fires after this deploy).</div>'}
+    </div>
+  `;
+  wireSettingsTabs(root);
+
+  const status = (msg) => { const el = $('shStatus'); if (el) el.textContent = msg; };
+  const wire = (id, key, isCheckbox) => {
+    const el = $(id); if (!el) return;
+    el.addEventListener('change', async () => {
+      try { await saveSetting(key, isCheckbox ? String(el.checked) : el.value.trim()); status('Saved.'); setTimeout(() => status(''), 1500); }
+      catch (err) { status('Save failed: ' + (err.message || err)); }
+    });
+  };
+  wire('shEnabled', 'system_health_enabled', true);
+  wire('shSlackHours', 'system_health_stale_hours', false);
+  wire('shSlack', 'system_health_slack_enabled', true);
+  wire('shStripeDays', 'system_health_stripe_stale_days', false);
+  const runBtn = $('shRunNow');
+  if (runBtn) runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true; runBtn.textContent = 'Running…';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/.netlify/functions/pec-system-heartbeat-run', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session && session.access_token || ''}` },
+      });
+      const out = await res.json();
+      if (!res.ok || out.ok === false) throw new Error(out.error || `HTTP ${res.status}`);
+      showToast(out.issues && out.issues.length ? `Heartbeat ran: ${out.issues.length} issue${out.issues.length === 1 ? '' : 's'} found` : 'Heartbeat ran: all green', { ttl: 3000 });
+      renderSettingsSystemHealth();
+    } catch (err) {
+      runBtn.disabled = false; runBtn.textContent = 'Run now';
+      showToast('Heartbeat run failed: ' + (err.message || err), { ttl: 5000 });
+    }
+  });
+}
+
 // feature's knobs live in company Settings, settings-table backed, no code
 // edit to tune). Three controls: the master switch (the SAME
 // drip_sending_enabled row the admin Drips view toggles, so the two stay in
@@ -22367,13 +22497,16 @@ async function renderOpsQueue() {
       // open stuck-sync reports, both as cheap head-counts.
       supabase.from('pec_drip_sends').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
       supabase.from('pec_sync_stuck_reports').select('id', { count: 'exact', head: true }).is('resolved_at', null),
+      // The daily system-heartbeat monitor's stored latest run (prompt 90):
+      // check 10 derives its machine-health lines from this row at render.
+      supabase.from('pec_heartbeats').select('function_name,last_ok_at,details').eq('function_name', 'pec-system-heartbeat').maybeSingle(),
     ]), { label: 'renderOpsQueue' });
   } catch (e) {
     root.innerHTML = `<div class="pec-empty">Could not load the Ops Queue: ${esc(e.message || e)}</div>`;
     return;
   }
   if (state.view !== 'ops') return; // user navigated away mid-read
-  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes] = res;
+  const [itemsRes, adminsRes, jobsRes, bbEmpRes, bbNamesRes, dripCntRes, stuckCntRes, heartbeatRes] = res;
   const admins = adminsRes.error ? [] : (adminsRes.data || []);
   if (admins.length) state.adminUsers = admins;
   const adminName = id => { const a = admins.find(x => x.id === id); return a ? (a.name || a.email) : ''; };
@@ -22384,7 +22517,10 @@ async function renderOpsQueue() {
   let drift = null;
   if (on('ops_check_system_health')) {
     try {
-      const dr = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0', {
+      // -run alias (prompt 90): Netlify 403s direct HTTP invocation of
+      // schedule-declared functions, so fetching pec-migration-drift itself
+      // was silently dead and this line always read "unavailable".
+      const dr = await fetch('/.netlify/functions/pec-migration-drift-run?manual=1&notify=0', {
         headers: { Authorization: `Bearer ${state.session?.access_token || ''}` },
       });
       const dj = await dr.json();
@@ -22500,6 +22636,19 @@ async function renderOpsQueue() {
     }
     const stuck = (stuckCntRes && !stuckCntRes.error) ? (stuckCntRes.count || 0) : 0;
     if (stuck) rows.push({ key: null, label: `${stuck} estimator save${stuck === 1 ? '' : 's'} stuck syncing`, nav: { view: 'settings', tab: 'estimates' } });
+    // Machine health (prompt 90): DERIVED from the daily monitor's stored
+    // latest run, nothing inserted per failure; a red line self-clears when
+    // the next run comes back green. The one client-side check is the
+    // watcher itself: a monitor that has not run in over 30 hours (its 24h
+    // cadence plus slack) cannot vouch for anything, including itself.
+    const hb = (heartbeatRes && !heartbeatRes.error) ? heartbeatRes.data : null;
+    if (!hb || !hb.last_ok_at || (Date.now() - new Date(hb.last_ok_at).getTime()) > 30 * 3600000) {
+      rows.push({ key: null, label: hb ? 'System heartbeat has not run in over 30 hours' : 'System heartbeat has never run', nav: { view: 'settings', tab: 'health' } });
+    } else if (hb.details && Array.isArray(hb.details.issues)) {
+      for (const issue of hb.details.issues) {
+        rows.push({ key: null, label: esc(issue), nav: { view: 'settings', tab: 'health' } });
+      }
+    }
     push('health', 'System health', 'Aggregate signals with their own screens.', rows);
   }
 
@@ -22620,6 +22769,7 @@ async function renderSettings() {
   if (state.settingsTab === 'presentation') return renderSettingsPresentation();
   if (state.settingsTab === 'busybusy') return renderSettingsBusybusy();
   if (state.settingsTab === 'brand') return renderSettingsBrand();
+  if (state.settingsTab === 'health') return renderSettingsSystemHealth();
   const [{ data: settingsRows }, crewsRes, leadRes, salesRes, crewMembersRes, adminUsersRes] = await withFreshSession(() => Promise.all([
     supabase.from('settings').select('*').order('key'),
     supabase.from('pec_prod_crews').select('*').order('name'),
@@ -38972,7 +39122,8 @@ async function renderSchemaDrift() {
 
   let data = null, fetchErr = null;
   try {
-    const res = await fetch('/.netlify/functions/pec-migration-drift?manual=1&notify=0', {
+    // -run alias (prompt 90): the direct scheduled-function URL 403s.
+    const res = await fetch('/.netlify/functions/pec-migration-drift-run?manual=1&notify=0', {
       headers: { Authorization: `Bearer ${state.session?.access_token || ''}` },
     });
     data = await res.json();

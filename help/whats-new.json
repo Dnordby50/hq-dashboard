@@ -1,5 +1,16 @@
 [
   {
+    "id": "system-heartbeat",
+    "date": "2026-08-12",
+    "title": "TopCoat now checks its own machinery every morning",
+    "summary": "A daily heartbeat verifies every scheduled job ran, webhooks and messages are not failing, the Google review link works, Stripe payments are not stuck, and customer pages load. Problems show up in the Ops Queue and one Slack line; silence means everything is green.",
+    "howto": [
+      "Open Settings, then System health, to see the latest run and every job's last heartbeat.",
+      "Use Run now to check everything on demand.",
+      "Red findings also appear under System health in the Ops Queue until they clear."
+    ]
+  },
+  {
     "id": "appointment-customer-search-autotitles",
     "date": "2026-08-12",
     "title": "Appointments link customers, with real search and automatic titles",

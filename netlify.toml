@@ -115,6 +115,18 @@
 [functions."pec-salesask-sync"]
   schedule = "*/15 * * * *"
 
+# System heartbeat (prompt 90 Task A). Daily at 14:45 UTC = 07:45 MST, after
+# the morning dailies (13:00 auto-progress, 14:00 drift, 14:30 birthdays) so
+# their fresh heartbeats are visible; pec-lost-reason-backfill (15:00) is
+# covered by its 24h+slack window from yesterday's run. Checks scheduled-
+# function staleness, webhook/send failures, the review redirect, Stripe
+# pending staleness, and the public pages; stores the result for the Ops
+# Queue and Slacks ONE line only when something is red. On-demand runs go
+# through pec-system-heartbeat-run (Netlify 403s direct invocation of
+# schedule-declared functions).
+[functions."pec-system-heartbeat"]
+  schedule = "45 14 * * *"
+
 # Old auto-subdomain -> current one. The site was renamed from hq-prescott to
 # prescottepoxy; this 301s any request still hitting the old netlify.app host to
 # the current one (path + query preserved via :splat), so a browser Back button

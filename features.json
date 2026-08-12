@@ -2276,6 +2276,30 @@
       },
       "tables": [],
       "since": "2026-08"
+    },
+    {
+      "name": "System heartbeat",
+      "area": "ops",
+      "description": "The system watches itself (prompt 90 Task A, born from the review link that was dead from launch with nothing noticing). Every scheduled function stamps pec_heartbeats after a successful run (writeHeartbeat in _pec-supabase.cjs, best-effort never-throws; wired as a bottom-of-file handler wrapper in all ten scheduled .cjs so every ok exit stamps). The daily pec-system-heartbeat (14:45 UTC, cadence map in _pec-health.cjs, UPDATE IT when netlify.toml schedules change) runs six checks: scheduled-function staleness (cadence + system_health_stale_hours slack), webhook ingest errors in 24h, failed email/SMS sends in 24h (email keys on sent_at, sms on created_at, the SCHEMA gotcha), the /r/ review redirect actually pointing at google.com (the one check that would have caught the launch bug), pec_stripe_pending rows stuck past system_health_stripe_stale_days business days, and 5xx probes of the /e/ and /pay/ public shapes with a bogus token. Result stored as the monitor's own pec_heartbeats.details JSON; the Ops Queue's System health section and Settings > System health DERIVE display from it at render (nothing inserted per failure, self-clears on the next green run), the Ops view also watching the watcher client-side (monitor silent > 30h = its own line). ONE Slack line to #epoxysales only when something fails. Netlify 403s direct HTTP invocation of schedule-declared functions (verified live), hence pec-system-heartbeat-run.cjs (staff JWT or x-webhook-secret; the Run now button) and pec-migration-drift-run.cjs (an alias that un-broke the Ops/Schema-Drift manual drift fetches, which had been silently dead). Settings keys: system_health_enabled + system_health_stale_hours front-of-card, system_health_slack_enabled + system_health_stripe_stale_days behind Advanced (rule 12).",
+      "code": {
+        "indexHtml": [
+          "renderSettingsSystemHealth",
+          "renderOpsQueue"
+        ],
+        "netlifyFunctions": [
+          "_pec-health.cjs",
+          "pec-system-heartbeat.cjs",
+          "pec-system-heartbeat-run.cjs",
+          "pec-migration-drift-run.cjs",
+          "_pec-supabase.cjs"
+        ]
+      },
+      "tables": [
+        "pec_heartbeats",
+        "pec_ops_items",
+        "settings"
+      ],
+      "since": "2026-08"
     }
   ]
 }

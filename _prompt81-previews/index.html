@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Prompt 81 email previews</title></head>
+<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:24px;background:#f5f5f5">
+<h1 style="font-size:20px">Prompt 81: before/after email previews</h1>
+<p style="color:#555;font-size:13px;max-width:760px">Accent color #D8531C read live from pec_brand_identity. The estimate, invoice, and change order bodies here show the body region only; the deployed sends still wrap them in the brand chrome (logo, banner, signature, footer), which is untouched. Drip and blast previews are the complete rendered email, produced by the repo's real dripEmailHtml.</p>
+<h2 style="margin:32px 0 4px;font-size:16px">Estimate send email</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Before: Quill stripped the style attribute, so the customer got a bare blue link. After: the button is appended outside the editor and survives.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="estimate-email-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="estimate-email-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Invoice compose email</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Before: {{cta}} resolved inside Quill, which stripped the button styling. After: {{cta}} is empty in the editor and the button is appended at send.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="invoice-email-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="invoice-email-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Change order approval email (single)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Before: left-aligned hardcoded-color button plus the raw-URL fallback line. After: centered accent button, fallback line deleted (decision 5).</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="change-order-single-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="change-order-single-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Change order approval email (batch)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Same treatment as the single change order.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="change-order-batch-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="change-order-batch-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Drip email, estimate tail</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Ledger keeps this exact plain-text body; only the HTML render changed.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="drip-estimate-tail-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="drip-estimate-tail-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Drip email, pay tail (Balance wording)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Ledger keeps this exact plain-text body; only the HTML render changed.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="drip-pay-tail-balance-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="drip-pay-tail-balance-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Drip email, pay tail (Amount due now wording)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Ledger keeps this exact plain-text body; only the HTML render changed.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="drip-pay-tail-due-now-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="drip-pay-tail-due-now-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Installment reminder email</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Ledger keeps this exact plain-text body; only the HTML render changed.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="drip-installment-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="drip-installment-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Drip email, review tail</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Ledger keeps this exact plain-text body; only the HTML render changed.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="drip-review-tail-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="drip-review-tail-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Blast, single trailing URL (promoted to button)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Exactly one URL and the body ends with it, so it promotes to a button (decision 9).</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="blast-single-url-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="blast-single-url-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+<h2 style="margin:32px 0 4px;font-size:16px">Blast, two URLs (left inline on purpose)</h2>
+<p style="margin:0 0 10px;color:#555;font-size:13px">Two or more URLs stay inline; only the link color moved from the hardcoded orange to the brand accent.</p>
+<div style="display:flex;gap:12px">
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">BEFORE (what customers were getting)</div><iframe src="blast-multi-url-before.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+  <div style="flex:1"><div style="font-size:12px;color:#888;margin-bottom:4px">AFTER (this build)</div><iframe src="blast-multi-url-after.html" style="width:100%;height:420px;border:1px solid #ccc;border-radius:6px;background:#fff"></iframe></div>
+</div>
+</body></html>
